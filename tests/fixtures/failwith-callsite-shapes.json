@@ -587,14 +587,14 @@
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 1035,
+      "line": 1066,
       "tool": "scope_element",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 1080,
+      "line": 1111,
       "tool": "scope_element",
       "errKind": "identifier",
       "contextShape": "object-plain"

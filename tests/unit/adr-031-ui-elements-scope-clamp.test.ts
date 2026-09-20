@@ -208,6 +208,11 @@ describe("internal #142 — the refusal is built from which silence it was", () 
     expect((envelope.suggest ?? [])[0]).toMatch(/not a statement about the window or the element/);
     expect((envelope.suggest ?? []).join(" ")).toMatch(/not necessarily the one you named/);
     expect((envelope.suggest ?? []).join(" ")).toMatch(/budget is fixed/);
+    // …AND THE TRUE LINE THE DICTIONARY ALSO HAD. `SUGGESTS.UiaTimeout` is two lines and only the
+    // first is false here; replacing the entry wholesale dropped the second, which is the only
+    // advice on this arm that moves the caller to a different instrument. Restoring it without a
+    // cell left a mutation that removed it again killing nothing — so the cell is the restoration.
+    expect((envelope.suggest ?? []).join(" ")).toMatch(/screenshot\(detail='image'\)/);
   });
 
   it("does not assert the window was there when the client could not tell", async () => {
@@ -225,6 +230,33 @@ describe("internal #142 — the refusal is built from which silence it was", () 
     // also what `wait_until` advises for the same `why`, so the two roads agree.
     expect(envelope.code).toBe("WindowNotFound");
     expect((envelope.suggest ?? []).join(" ")).toMatch(/list_window_titles|desktop_discover|get_windows/);
+  });
+
+  it("says BOTH halves of an ambiguous answer, in the order they can be acted on", async () => {
+    // GATE 2, FOURTH PASS — and it is the third pass's own finding with its sign flipped. Routing
+    // this arm to `WindowNotFound` took the dictionary with it: five sentences about the window,
+    // NOT ONE about the element, for an answer whose whole property is that it is both. The
+    // previous cell could not see it, because `/list_window_titles|desktop_discover|get_windows/`
+    // is an OR that "window advice only" satisfies just as well as "window advice, then element".
+    //
+    // `wait_until` says both in one sentence for the same `why` on the same road. Two callers of
+    // one field must not disagree — that is the defect this whole PR is about.
+    //
+    // ASSERTED ON THE PROSE, NOT ON THE TOOL NAMES: `{tool:…}` is resolved to whatever this
+    // server registered for that capability before the caller sees it, which is why the cell above
+    // had to list three spellings in an OR — and an OR over renderings cannot say which HALF was
+    // advised. The sentences are this file's own bytes and do not move under the resolver.
+    const envelope = await scopeMissing("unreadable", "native");
+    const lines = envelope.suggest ?? [];
+    expect(lines[0]).toMatch(/window title FIRST/);
+    expect(lines.join("\n")).toMatch(/Then the element name/);
+    // …and the element half must come AFTER the window half, because the recovery order is the
+    // whole reason the code is `WindowNotFound` rather than `ElementNotFound`.
+    expect(lines.findIndex((l) => /window title FIRST/.test(l))).toBeLessThan(
+      lines.findIndex((l) => /Then the element name/.test(l)),
+    );
+    // The instrument that answers both halves at once, for the caller whom neither check settles.
+    expect(lines.join("\n")).toMatch(/screenshot\(detail='image'\)/);
   });
 
   it("carries the read's own error, which on a failed read is the only evidence there is", async () => {

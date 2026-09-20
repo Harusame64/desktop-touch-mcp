@@ -353,6 +353,21 @@ describe("a timed-out wait says which silence it was", () => {
     expect(suggestOf(ps)[0]).not.toMatch(/this build's UIA engine/);
   });
 
+  it("says nothing about vocabulary on an unrecognised answer, even though a client did answer", async () => {
+    // THE ONE MUTATION GATE 2's FOURTH PASS COULD NOT KILL: re-adding the vocabulary line for
+    // `unreadable` + PowerShell left all 28 cells green, because the `unreadable` + PowerShell cell
+    // above never passes `nativeFailed` — and without it the line's first condition short-circuits,
+    // so nobody was looking at the combination that actually reaches the guard.
+    //
+    // It is the same rule as the two silences above: the script said something this file did not
+    // recognise, so no name was compared with anything and there is nothing a vocabulary can
+    // explain. The words are in `context.lastLook.error`, which line one already points at.
+    miss = { why: "unreadable", via: "powershell", nativeFailed: "UIA operation timed out after 8000ms", error: "Access is denied. (0x80070005)" };
+    const envelope = await waitFor("element_appears");
+    expect(suggestOf(envelope)[0]).toMatch(/something this server does not recognise/);
+    expect(suggestOf(envelope).join("\n")).not.toMatch(/fell back to the PowerShell UIA client/);
+  });
+
   it("says the road changed once, not twice", async () => {
     // FOUND BY MUTATION (gate 2): dropping the `why !== "element_not_found"` exclusion from the
     // trailing push emits the vocabulary line TWICE on that silence, and every cell stayed green

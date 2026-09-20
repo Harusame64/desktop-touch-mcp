@@ -1009,6 +1009,10 @@ export const scopeElementHandler = async ({
               "Nothing was read, so this is not a statement about the window or the element",
               "Some window on this desktop is answering slowly and it is not necessarily the one you named — resolving a title reads every top-level window's name",
               "This read's budget is fixed, so retrying buys more attempts rather than a longer look: it helps only if the slowness passes",
+              // Kept from `SUGGESTS.UiaTimeout`, whose FIRST line is the false one. Replacing a
+              // dictionary entry wholesale takes its true lines with it, and this is the only line
+              // on this arm that moves the caller to a different instrument (gate 2, fourth pass).
+              "Try screenshot(detail='image') as a visual fallback",
             ],
             context: { windowTitle, name, automationId, controlType, why: answer.why, via: answer.via, ...readEvidence },
           }
@@ -1017,7 +1021,11 @@ export const scopeElementHandler = async ({
       if (answer.why === "read_failed" || (answer.why === "unreadable" && answer.via !== "native")) {
         return failCode(
           "ToolError",
-          `scope_element: the bounds read failed for "${effectiveTitle}" — nothing was learned about the window or the element`,
+          // NOT "nothing was learned about the window or the element" (gate 2, fourth pass): on this
+          // road `unreadable` means the script said something SPECIFIC and this file did not
+          // recognise it, so the words in `context.error` may well say something about the window.
+          // `wait_until`'s phrasing for the same value is the accurate one and is copied here.
+          `scope_element: the read of "${effectiveTitle}" did not produce an answer this server could use`,
           {
             suggest: [
               "Read context.error — it carries what the UIA client actually said, and it is the only evidence this refusal has",
@@ -1027,11 +1035,34 @@ export const scopeElementHandler = async ({
           }
         );
       }
+      if (answer.why === "unreadable") {
+        // NATIVE ROAD, AND THE CODE ALONE IS NOT THE ANSWER (gate 2, fourth pass). `WindowNotFound`
+        // is the right recovery ORDER, and taking the dictionary with it made the refusal say five
+        // window sentences and NOT ONE about the element — for an answer whose whole property is
+        // that it is both. The previous pass fixed exactly this defect pointing the other way (an
+        // ambiguous answer shipping the element-name advice), so keeping the code while letting the
+        // dictionary speak would be that defect with its sign flipped.
+        //
+        // The order is `wait_until`'s, for the same `why` and the same road, said as steps: you
+        // cannot find an element inside a window that is not there, so the window is checked first
+        // — but the element half is NOT dropped, because the common case is a window that is there
+        // under a name this client spells differently.
+        return failCode(
+          "WindowNotFound",
+          `scope_element: Element not found — or no window matched "${effectiveTitle}"; the native client cannot tell the two apart`,
+          {
+            suggest: [
+              "Check the window title FIRST with {tool:list_window_titles} — an element cannot be found inside a window that is not there",
+              "Then the element name with {tool:reidentify_element}: this engine gives the same answer for an element that is missing from a window that IS there",
+              "Try screenshot(detail='image') if neither settles it — it answers both halves at once",
+            ],
+            context: { windowTitle, name, automationId, controlType, why: answer.why, via: answer.via, ...readEvidence },
+          }
+        );
+      }
       const msg = answer.why === "window_not_found"
         ? `WindowNotFound: no window matched "${effectiveTitle}"`
-        : answer.why === "unreadable"
-          ? `WindowNotFound: Element not found — or no window matched "${effectiveTitle}"; the native client cannot tell the two apart`
-          : "Element not found";
+        : "Element not found";
       return failWith(new Error(msg), "scope_element", { windowTitle, name, automationId, controlType, why: answer.why, via: answer.via, ...readEvidence });
     }
 
