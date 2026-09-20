@@ -109,6 +109,7 @@ vi.mock("../../src/engine/identity-tracker.js", () => ({
 
 import { scopeElementHandler } from "../../src/tools/ui-elements.js";
 import { getElementBounds } from "../../src/engine/uia-bridge.js";
+import { resolveWindowTarget } from "../../src/tools/_resolve-window.js";
 import { _resetCaptureBackendForTests } from "../../src/engine/reachable-bounds.js";
 
 const ARGS = {
@@ -266,6 +267,13 @@ describe("internal #142 — the refusal is built from which silence it was", () 
     // interpolated into it — the exact smuggling class the declared-code arm exists to close. A
     // window whose title contains "is disabled" routed the refusal to `ElementDisabled` and
     // shipped "The element exists but is currently disabled" for a window that was never read.
+    // `classify` tests that arm (`_errors.ts:1243`) long BEFORE the window arm (`:1309`).
+    //
+    // THE FIRST VERSION OF THIS CELL COULD NOT FAIL: it passed the dangerous title in `ARGS`,
+    // and the suite mocks `resolveWindowTarget` to answer `"TestApp"` for everything, so the
+    // title never reached the message. The mutation that removes the declared prefix survived it.
+    // The resolver is what decides `effectiveTitle`, so the resolver is what this cell must move.
+    vi.mocked(resolveWindowTarget).mockResolvedValueOnce({ title: "Printer is disabled — Settings", warnings: [] } as Awaited<ReturnType<typeof resolveWindowTarget>>);
     vi.mocked(getElementBounds).mockResolvedValue({ found: null, why: "unreadable", via: "native" } as Awaited<ReturnType<typeof getElementBounds>>);
     const result = await scopeElementHandler({ ...ARGS, windowTitle: "Printer is disabled — Settings" });
     const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "{}";
