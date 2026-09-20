@@ -459,7 +459,10 @@ async function resolvePressPoint(
    * and the round that measured them corrected the prediction (win2, internal `4fd61b6`): a control
    * with NO NAME gives `unreadable` — the row is read and then dropped for having an empty Name —
    * while a region with no control of its own gives `window_answered`, the window's own title and
-   * `controlType:"Window"`. The second is byte for byte what a REMOVED control answers, which is why
+   * `controlType:"Window"`. **`Window` is what was measured; `Pane` is counted with it by
+   * prediction** — Chromium and Electron content normalises to a `Pane`, so over a browser window
+   * this rung never refuses, which is a blind spot chosen rather than discovered (gate 2). It is
+   * on the list to measure. The second is byte for byte what a REMOVED control answers, which is why
    * "the element is gone" cannot be read out of it. Both press.
    *
    * **What is left to guard is narrower than the case that motivated it**, because #133 and #134
@@ -501,10 +504,11 @@ async function resolvePressPoint(
     // entity's rect, the blind press this whole ladder exists to refuse (gate 2). A check that
     // cannot be made is `unreadable`, which presses, and says so in its row.
     let at: ElementAtPoint | null | undefined;
+    let askFailed = false;
     if (named !== "") {
       // The CALL is inside the try, not only its promise: a dep that throws synchronously (a
       // binding that is not there, a module that fails to load) escapes a `.catch()` on the result.
-      try { at = await deps.elementAtPoint?.(x, y); } catch { at = null; }
+      try { at = await deps.elementAtPoint?.(x, y); } catch { at = null; askFailed = true; }
     }
     const atName = at?.name?.trim() ?? "";
     const windowShaped = at !== undefined && at !== null
@@ -529,7 +533,32 @@ async function resolvePressPoint(
     const sameName = (a: string, b: string): boolean => {
       const fold = (t: string) => t.toLowerCase().replace(/&/g, "").replace(/\s+/g, " ").trim();
       const [x1, y1] = [fold(a), fold(b)];
-      return x1 !== "" && y1 !== "" && (x1.includes(y1) || y1.includes(x1));
+      // A name that folds to nothing is handled by the two rules below rather than by a guard of its
+      // own: `x1 === y1` keeps an exact match (a WinForms caption of `&&` renders as `&` and can be
+      // the UIA Name on both sides — refusing THAT is the one thing this predicate must never do),
+      // and `inside` refuses an empty needle, so `"&"` does not read as the same thing as every name
+      // that has a space in it. The guard those two replaced was measured redundant: removing it
+      // changed no cell's answer (gate 2's mutation, run).
+      // The shorter has to sit on a boundary in the longer, not merely inside it. `"Item 1"` is
+      // inside `"Item 12"`, and a virtualised list that scrolled one row between discover and act
+      // is the second of the two shapes this rung's own refusal message names — pressing the wrong
+      // row and answering `ok:true` is exactly what it exists to stop (gate 2). `"Save"` inside
+      // `"Save document (Ctrl+S)"` ends on a space and stands.
+      const inside = (long: string, short: string) => {
+        // `short === ""` is not "inside everything" here, and saying so is not belt-and-braces: the
+        // empty string is found at every index INCLUDING the end, where `indexOf` clamps and the
+        // loop below stops advancing. Removing the guard above to see whether a cell noticed hung
+        // the suite instead of reddening it (gate 2's mutation, run). A predicate that can hang is
+        // worse than one that can be wrong, and neither should depend on a caller's guard.
+        if (short === "") return false;
+        for (let i = long.indexOf(short); i !== -1; i = long.indexOf(short, i + 1)) {
+          const before = i === 0 ? "" : long[i - 1];
+          const after = long[i + short.length] ?? "";
+          if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) return true;
+        }
+        return false;
+      };
+      return x1 === y1 || inside(x1, y1) || inside(y1, x1);
     };
     // The two "not asked" cases say WHICH in the verdict rather than in a `why`: the vocabulary
     // extractor reads a `why` only where it is a literal at the call site (it is the grid's
@@ -553,6 +582,10 @@ async function resolvePressPoint(
       coordHwnd: String(aimHwnd),
       coordHwndFrom: handleFrom,
       point: { x, y },
+      // `unreadable` covers two things, and the round that added `atPointWhy` to the bridge is the
+      // reason this one is not allowed to: the check THREW, or the point is over nothing readable.
+      // Both press; only one of them is a defect somewhere (gate 2).
+      askFailed,
       named: named === "" ? null : named,
       atPoint: at ? { name: at.name, controlType: at.controlType, automationId: at.automationId ?? null } : null,
       label,

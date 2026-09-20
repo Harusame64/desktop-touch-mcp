@@ -153,6 +153,64 @@ describe("a coordinate press asks what is at the point", () => {
     expect(elementRows()[0]).toMatchObject({ atPointVerdict: "same" });
   });
 
+  it("folds what the fold is for, in the shapes that need it", async () => {
+    // Gate 2 measured that the two cells above pass with the fold REMOVED — a leading `&` and a
+    // doubled space are substring-compatible with the plain name anyway — so these are the shapes
+    // that actually need each step: an INTERIOR mnemonic, and a non-breaking space.
+    for (const [name, why] of [
+      ["Save &As", "interior mnemonic"],
+      ["Save\u00a0As", "non-breaking space"],
+    ] as const) {
+      const ent = entity({ locator: { uia: { name: "Save As" } } } as Partial<UiEntity>);
+      const { outcome } = await press({ elementAtPoint: () => AT({ name }) }, ent);
+      expect(outcome.ok, why).toBe(true);
+    }
+  });
+
+  it("calls two names that fold to nothing the same when they are the same string", async () => {
+    // `&&` in a WinForms caption renders as `&`, and can be the UIA Name on both sides. The fold
+    // empties it; refusing an exact match is the one thing this predicate must never do (gate 2).
+    const ent = entity({ locator: { uia: { name: "&" } } } as Partial<UiEntity>);
+    const { outcome } = await press({ elementAtPoint: () => AT({ name: "&" }) }, ent);
+    expect(outcome.ok).toBe(true);
+  });
+
+  it("does not call a name that folds to nothing the same as any name at all", async () => {
+    // The other half of the empty guard, and the one that decides a PRESS: without it, a name that
+    // folds to `""` sits at every boundary of the other string, so `"&"` would read as the same
+    // thing as `"Save document"` and the press would go out (gate 2 found the guard's first half
+    // pinned and this half not).
+    const ent = entity({ locator: { uia: { name: "&" } } } as Partial<UiEntity>);
+    const { outcome, deps } = await press({ elementAtPoint: () => AT({ name: "Save document" }) }, ent);
+    expect(outcome.ok).toBe(false);
+    expect(deps.mouseClick).not.toHaveBeenCalled();
+  });
+
+  it("refuses the row next door, which is the shape the refusal's own words name", async () => {
+    // `"Item 1"` is inside `"Item 12"`, and two-way containment without a boundary presses it. A
+    // virtualised list that scrolled one row between discover and act is "a list that moved under
+    // it" — the second scenario this rung's refusal message names, and the one it exists to stop.
+    const ent = entity({ locator: { uia: { name: "Item 12" } } } as Partial<UiEntity>);
+    const { outcome, deps } = await press({ elementAtPoint: () => AT({ name: "Item 1" }) }, ent);
+    expect(outcome.ok).toBe(false);
+    expect(deps.mouseClick).not.toHaveBeenCalled();
+    // …and the boundary is what decides it: the same name with a space after the match presses.
+    const ok = await press({ elementAtPoint: () => AT({ name: "Item 12 (modified)" }) }, ent);
+    expect(ok.outcome.ok).toBe(true);
+  });
+
+  it("says whether the check threw or the point was simply empty", async () => {
+    // Both press and both read `unreadable`; only one of them is a defect somewhere. The bridge
+    // learned the same lesson one commit earlier (`atPointWhy`).
+    const threw = await press({ elementAtPoint: () => { throw new Error("RPC_E_DISCONNECTED"); } });
+    expect(elementRows()[0]).toMatchObject({ atPointVerdict: "unreadable", askFailed: true });
+    expect(threw.outcome.ok).toBe(true);
+    rmSync(logPath, { force: true });
+    const empty = await press({ elementAtPoint: () => null });
+    expect(elementRows()[0]).toMatchObject({ atPointVerdict: "unreadable", askFailed: false });
+    expect(empty.outcome.ok).toBe(true);
+  });
+
   it("still refuses a name with nothing to do with the one this act carries", async () => {
     // The widening has a floor: neither string carries the other.
     const { outcome } = await press({ elementAtPoint: () => AT({ name: "OTHERQ" }) });
@@ -250,6 +308,24 @@ describe("a coordinate press asks what is at the point", () => {
     expect(outcome.ok).toBe(false);
     expect(deps.mouseClick).not.toHaveBeenCalled();
     expect(elementRows()[0]).toMatchObject({ atPointVerdict: "different" });
+  });
+
+  it("says the check was skipped where the ladder skips it, rather than leaving a gap", async () => {
+    // The ladder's own rule: "a skipped check writes a row saying so", or a reader counting
+    // `element_check` per press cannot tell an old build from a skipped rung. Two paths press
+    // without reaching this rung, and gate 2 found both rows unverified — deleting either left
+    // every cell green.
+    const { outcome: noDep } = await press({ aimRect: undefined });
+    expect(noDep.ok).toBe(true);
+    expect(elementRows()[0]).toMatchObject({ atPointVerdict: "not_asked_no_rect_dep" });
+    rmSync(logPath, { force: true });
+    // A window that is alive and whose rectangle cannot be read.
+    const { outcome: noRect } = await press({
+      aimRect: vi.fn(async () => null),
+      aimIsGone: vi.fn(async () => false),
+    } as Partial<ExecutorDeps>);
+    expect(noRect.ok).toBe(true);
+    expect(elementRows()[0]).toMatchObject({ atPointVerdict: "not_asked_no_window_rect" });
   });
 
   it("does not run where the ladder itself does not — no aim handle, no rung", async () => {
