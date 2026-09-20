@@ -131,12 +131,28 @@ describe("no generated condition is written in JavaScript", () => {
     ["setElementValue (by handle)", () => setElementValue("App", "x", "Save", undefined, { hwnd: 42n })],
     ["getTextViaValuePattern", () => getTextViaValuePattern("App")],
     ["getVirtualDesktopStatus", () => getVirtualDesktopStatus(["42"])],
+    // The by-handle BRANCHES inside roads already listed: each builds a different preamble, and the
+    // last round's sentence covered the functions while leaving these (gate 2).
+    ["getUiElements (pinned)", () => getUiElements("App", 3, 50, 10000, { pinnedHwnd: 42n })],
+    ["getTextViaTextPattern (pinned)", () => getTextViaTextPattern("App", 6000, { pinnedHwnd: 42n })],
+    ["insertTextViaTextPattern2 (by handle)", () => insertTextViaTextPattern2("App", "x", "Save", undefined, { hwnd: 42n })],
   ];
+
+  /**
+   * Everything between single quotes is the caller's, not the script's: a window title, a value to
+   * write, an AutomationId. `escapeLike` escapes `` ` * ? [ ] `` and `escapePS` doubles `'`, and
+   * neither touches `(`, `)`, `-` or `=` — so `Save (true)`, `app?debug=true` and `well-known true`
+   * all reach the script verbatim inside quotes, and all three would fail a sweep that reads them
+   * (gate 2, measured). Stripping the spans first is what makes "quoted is exempt" true rather than
+   * approximately true; `''` inside a PowerShell single-quoted string is an escaped quote, which is
+   * why the pattern consumes pairs.
+   */
+  const outsideQuotes = (script: string) => script.replace(/'(?:[^']|'')*'/g, "''");
 
   for (const [label, call] of roads) {
     it(`${label} writes no JavaScript boolean into a condition`, async () => {
       const script = await scriptOf(call);
-      expect(script).not.toMatch(JS_BOOLEAN_TOKEN);
+      expect(outsideQuotes(script)).not.toMatch(JS_BOOLEAN_TOKEN);
     });
   }
 
@@ -162,7 +178,17 @@ describe("no generated condition is written in JavaScript", () => {
     // THE FALSE POSITIVE THIS CELL MUST NOT HAVE, in the shape the product emits it (gate 2): a
     // window titled `truestore.json — Notepad` goes through `escapeLike` unchanged and lands in
     // every title search's condition. The earlier recogniser reddened on it.
-    expect("if ($w.Current.Name -like '*truestore.json*') { $target = $w; break }").not.toMatch(JS_BOOLEAN_TOKEN);
+    expect(outsideQuotes("if ($w.Current.Name -like '*truestore.json*') { $target = $w; break }")).not.toMatch(JS_BOOLEAN_TOKEN);
+    // The shapes the quote-stripping is for, each of which a caller can put in a title or a value:
+    for (const callers of [
+      "if ($w.Current.Name -like '*Save (true)*') { }",
+      "$vp.SetValue('(true)')",
+      "if ($c.AutomationId -eq '(false)') { }",
+      "if ($w.Current.Name -like '*app?debug=true*') { }",
+      "if ($w.Current.Name -like '*well-known true*') { }",
+    ]) {
+      expect(outsideQuotes(callers), callers).not.toMatch(JS_BOOLEAN_TOKEN);
+    }
     expect("$c.Name -like '*true*'").not.toMatch(JS_BOOLEAN_TOKEN);
     // PowerShell does not care about case, and neither does the defect.
     expect("If (True) { }").toMatch(JS_BOOLEAN_TOKEN);
