@@ -195,6 +195,20 @@ describe("internal #142 — the refusal is built from which silence it was", () 
     expect(envelope.context).toMatchObject({ why: "read_unfinished", via: "none" });
   });
 
+  it("does not tell the caller their app is unresponsive when another window is the slow one", async () => {
+    // GATE 2, THIRD PASS. The code is honest — a budget did expire — but `SUGGESTS.UiaTimeout`
+    // opens with "The target app may be unresponsive — wait and retry", and this change's own
+    // measurement says that is false in exactly the case that produces it: resolving a title reads
+    // every top-level window's name, so ONE hung window anywhere taxes every title-resolving read
+    // and the app the caller named may be perfectly healthy. The dictionary line must not ship
+    // here, and the read's own three lines must.
+    const envelope = await scopeMissing("read_unfinished", "none");
+    expect((envelope.suggest ?? []).join(" ")).not.toMatch(/target app may be unresponsive/);
+    expect((envelope.suggest ?? [])[0]).toMatch(/not a statement about the window or the element/);
+    expect((envelope.suggest ?? []).join(" ")).toMatch(/not necessarily the one you named/);
+    expect((envelope.suggest ?? []).join(" ")).toMatch(/budget is fixed/);
+  });
+
   it("does not assert the window was there when the client could not tell", async () => {
     // FOUND BY MUTATION: `unreadable` is what the NATIVE road answers for BOTH of its misses, and
     // it is the road this product runs. Folding it into the plain "Element not found" arm is how a
@@ -215,14 +229,48 @@ describe("internal #142 — the refusal is built from which silence it was", () 
   it("carries the read's own error, which on a failed read is the only evidence there is", async () => {
     // FOUND BY MUTATION: dropping the `error` spread killed nothing — `via: "none"` then sat
     // beside a refusal with nothing to explain either of them.
+    //
+    // THE CODE MOVED (gate 2, third pass): this asserted `UiaTimeout`, and `read_failed` is not a
+    // timeout — it is `spawn powershell.exe ENOENT`, a non-zero exit, or output that is not JSON.
+    // The caller was being advised to wait for an app to become responsive over a PowerShell that
+    // never started. `ToolError` is what `classify` itself falls back to for this class, so the
+    // vocabulary does not grow; what changes is that the arm now carries advice, and the advice
+    // points at the one thing the refusal actually knows.
     vi.mocked(getElementBounds).mockResolvedValue({
       found: null, why: "read_failed", via: "none", error: "PowerShell read failed: the real reason",
     } as Awaited<ReturnType<typeof getElementBounds>>);
     const result = await scopeElementHandler(ARGS);
     const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "{}";
-    const envelope = JSON.parse(text) as { code?: string; context?: Record<string, unknown> };
-    expect(envelope.code).toBe("UiaTimeout");
+    const envelope = JSON.parse(text) as { code?: string; error?: string; suggest?: string[]; context?: Record<string, unknown> };
+    expect(envelope.code).toBe("ToolError");
     expect(envelope.context).toMatchObject({ why: "read_failed", via: "none", error: "PowerShell read failed: the real reason" });
+    expect((envelope.suggest ?? []).join(" ")).not.toMatch(/target app may be unresponsive/);
+    expect((envelope.suggest ?? [])[0]).toMatch(/Read context\.error/);
+  });
+
+  it("treats an unrecognised PowerShell answer as a failed read, not as an ambiguous one", async () => {
+    // GATE 2, THIRD PASS. `unreadable` wears one name for two opposite situations: on the native
+    // road the engine discarded the distinction, and on the PowerShell road the script said
+    // something SPECIFIC this server did not recognise — the words are in `context.error`. Telling
+    // that caller "the client that answered cannot tell the two apart" names the wrong cause for
+    // text sitting in the same envelope. `wait_until` splits on the same field one file over.
+    const envelope = await scopeMissing("unreadable", "powershell");
+    expect(envelope.code).toBe("ToolError");
+    expect(envelope.error).not.toMatch(/cannot tell the two apart/);
+    expect((envelope.suggest ?? [])[0]).toMatch(/Read context\.error/);
+  });
+
+  it("declares its code rather than letting the window title choose one", async () => {
+    // GATE 2, THIRD PASS. The `unreadable` arm was the only one of the five spelling no
+    // `<Code>:` prefix, so it fell into `classify`'s substring cascade WITH THE CALLER'S TITLE
+    // interpolated into it — the exact smuggling class the declared-code arm exists to close. A
+    // window whose title contains "is disabled" routed the refusal to `ElementDisabled` and
+    // shipped "The element exists but is currently disabled" for a window that was never read.
+    vi.mocked(getElementBounds).mockResolvedValue({ found: null, why: "unreadable", via: "native" } as Awaited<ReturnType<typeof getElementBounds>>);
+    const result = await scopeElementHandler({ ...ARGS, windowTitle: "Printer is disabled — Settings" });
+    const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "{}";
+    const envelope = JSON.parse(text) as { code?: string };
+    expect(envelope.code).toBe("WindowNotFound");
   });
 
   it("still says ElementNotFound when the element really was not found", async () => {

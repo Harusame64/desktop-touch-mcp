@@ -193,6 +193,19 @@ describe("the bridge says which silence the read was", () => {
     }
   });
 
+  it("does not read an ARRAY as an element, which is the hole the object check left open", async () => {
+    // GATE 2, THIRD PASS. `typeof [] === "object"` and `[] !== null`, so an array walked straight
+    // past a guard written to stop exactly this class and became `found: []` — truthy, no fields,
+    // read downstream as an element with no rectangle. Today's script cannot print one; the guard
+    // is a TIER, and a tier with a gap in it is the shape this whole change is about.
+    nativeAnswer = () => { throw new Error("engine unavailable"); };
+    for (const printed of ["[]", '[{"name":"Save"}]']) {
+      scripts_reset();
+      psOutputs.push(printed);
+      expect(await getElementBounds("App", "Save"), printed).toMatchObject({ found: null, why: "read_failed", via: "powershell" });
+    }
+  });
+
   it("does not call an outside kill our own budget, because only one of them means 'wait'", async () => {
     // FOUND BY MUTATION (gate 2): `killed === true` → `signal !== undefined` survives every cell.
     // It is not equivalent — measured on node, a process killed by SOMEONE ELSE arrives as

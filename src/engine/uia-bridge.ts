@@ -1935,9 +1935,27 @@ export type BoundsMiss =
   | "window_not_found"
   /** The window was there and nothing in it matched. */
   | "element_not_found"
-  /** The client that answered says "no" without saying which of the two. Today: the native road. */
+  /**
+   * The answer does not say which of the two it was — and the two roads reach that for OPPOSITE
+   * reasons, so read `via` before writing advice on it.
+   *
+   * On the native road the engine computed the distinction and discarded it (`Ok(None)` for both a
+   * failed `find_window` and a failed `find_element_in_window`, `src/uia/tree.rs`), so the answer
+   * really is ambiguous and the recovery order — window first — is all that can be said.
+   * On the PowerShell road the script said something SPECIFIC that this file did not recognise; the
+   * words are carried in `error`, and calling that "cannot tell the two apart" would name the wrong
+   * cause for text that is sitting in the answer.
+   */
   | "unreadable"
-  /** The read itself failed, and no other client answered either. */
+  /**
+   * The read itself failed — nothing was concluded about the window or the element.
+   *
+   * It says nothing about WHO failed: `via` does. A spawn that never started answers
+   * `via: "none"`, while a script that ran and printed something unusable answers
+   * `via: "powershell"`, because a client did speak. (This doc said "and no other client answered
+   * either" until gate 2 read it against the two arms below it, which is the sort of sentence a
+   * caller builds a wrong recovery on.)
+   */
   | "read_failed"
   /**
    * The read was cut off by its own budget before it produced anything — nothing was concluded.
@@ -1983,8 +2001,14 @@ export type UiaVia = "native" | "powershell" | "none";
  * the other answered a different question than the caller asked, and the old shape had nowhere to
  * say so.
  *
- * `nativeFailed` is present only when the native client was asked, threw, and the PowerShell road
- * answered instead. MEASURED 2026-09-20 win2 (internal `25da27f`): hanging the target window's UI
+ * `nativeFailed` is present whenever the native client was asked and threw — which is NOT the same
+ * as "and PowerShell answered instead". It rides out on the `via: "none"` answers too, where the
+ * fall-back was cut off by its own budget and nobody spoke; a reader who takes a present
+ * `nativeFailed` as proof that PowerShell answered has the pair backwards, and the branch's own
+ * cell ("separates a read that was cut off…") asserts exactly that combination. Read `via` for who
+ * answered and `nativeFailed` for what the native road said on its way out.
+ *
+ * MEASURED 2026-09-20 win2 (internal `25da27f`): hanging the target window's UI
  * thread makes the native call throw `UIA operation timed out after 8000ms` while the PowerShell
  * road answers normally in 3.6 s — same call, same window, same moment. The caller got an ordinary
  * answer, and the only trace was a `console.warn` on the server's stderr.
@@ -2533,11 +2557,16 @@ try {
  */
 function answerFromPs(parsed: { error?: string } & Partial<ElementBounds>, nativeFailed?: string): BoundsAnswer {
   const carry = nativeFailed !== undefined ? { nativeFailed } : {};
-  // `5`, `"text"` and `null` are all valid JSON. Without this, the first two become a truthy
+  // `5`, `"text"`, `null` and `[]` are all valid JSON. Without this, the scalars become a truthy
   // `found` with no fields — which downstream reads as an element that was found and has no
   // rectangle, and advises the caller to scroll something that does not exist (gate 2). A wrong
   // answer, not a crash, which is the worse outcome.
-  if (typeof parsed !== "object" || parsed === null) {
+  //
+  // An ARRAY is the same harm through the one hole the first version of this guard left open:
+  // `typeof [] === "object"` and it is not `null`, so `[]` walked past a check written to stop
+  // exactly this (gate 2, third pass). Today's script cannot print one; the guard is a tier, and a
+  // tier with a gap in it is the shape this whole change is about.
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     return { found: null, why: "read_failed", via: "powershell", error: "PowerShell printed JSON that is not an object", ...carry };
   }
   if (parsed.error === undefined) return { found: parsed as ElementBounds, via: "powershell", ...carry };

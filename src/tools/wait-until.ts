@@ -192,26 +192,24 @@ function earnedAdvice(look: LastLook): string[] {
     lines.push("The read itself failed, so nothing was learned about the window or the element — the error is in context.lastLook.error. Retry before changing the target");
   }
 
-  // …and on every other silence the same fact is said after, because there it changes what a name
-  // MEANS without being the thing to fix first.
+  // …and NOWHERE ELSE. The same fact used to be said again after every other silence, on the
+  // reasoning that a changed road changes what a name MEANS even where the name is not the thing
+  // to fix first. Two gate-2 rounds narrowed that trailing line — first off `via: "none"` (no
+  // client spoke, so it asserted exactly what `UiaVia`'s own doc says `none` exists to prevent),
+  // then off a look that RESOLVED (a `value_changes` wait whose value was read on every poll
+  // opened with "the name you passed may be the native engine's" about a name that demonstrably
+  // worked, displacing "Increase timeoutMs") — and the third round found the remainder holds no
+  // true case at all:
   //
-  // GATED ON WHO ANSWERED, not on whether the engine failed (gate 2). When the fall-back was also
-  // cut off, `via` is `none` and no client spoke — and this sentence would assert exactly what
-  // `UiaVia`'s own doc says `none` exists to prevent, one file over. A read that reached nobody
-  // says nothing about anybody's vocabulary.
+  //   `window_not_found` — the element was never looked for, and a window title is not UIA
+  //   vocabulary. `read_unfinished` — nothing was observed. `read_failed`, and `unreadable` on the
+  //   PowerShell road — the read failed, so no name missed anything. There the envelope opened
+  //   with "nothing was learned about the window or the element" and line two told the caller
+  //   their name might be wrong: the same "asserts an observation that never happened" rule this
+  //   file states a hundred lines down about `baseline: ""`, one silence over.
   //
-  // …and never on a look that RESOLVED (gate 2, and this is the change's own defect shape one
-  // condition over). Two shapes reached here: a `value_changes` wait whose element was found and
-  // whose value was read on every poll, where the envelope opened with "the name you passed may
-  // be the native engine's" — a name that demonstrably worked, displacing "Increase timeoutMs",
-  // which is the right advice for a value that has not moved yet; and an `element_appears` wait
-  // that found the element without a rectangle, where line one said "found but has no rectangle"
-  // and line two said the name may be wrong. Neither is marginal: on any build with the addon, the
-  // only way to reach the PowerShell road at all is a native throw, so every fall-back carries
-  // `nativeFailed` and both fired every time.
-  if (fellBack && answered === "powershell" && look["resolved"] !== true && why !== "element_not_found") {
-    lines.push(vocabulary);
-  }
+  // A MISS is the only look a vocabulary can explain, and `element_not_found` is the only `why`
+  // that is one — so the line is said once, above, where it is earned.
   return lines;
 }
 

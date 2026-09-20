@@ -274,13 +274,36 @@ describe("a timed-out wait says which silence it was", () => {
     expect(suggestOf(envelope).join("\n")).toMatch(/No element by that name/);
   });
 
-  it("says the road changed SECOND when the silence is about something else", async () => {
-    // On a silence the fall-back did not cause, the vocabulary is still worth saying and is still
-    // not the thing to fix first. Two orders, one fact, decided by which silence it was.
+  it("does not question a NAME on a silence where no name was looked up", async () => {
+    // THIS CELL USED TO ASSERT THE OPPOSITE — that the vocabulary line is said second on every
+    // other silence, "because a changed road changes what a name means". Gate 2's third pass took
+    // the remainder apart: on `window_not_found` the element was never looked for, and a window
+    // title is not UIA vocabulary. There is no name here whose client could be the wrong one.
     miss = { why: "window_not_found", via: "powershell", nativeFailed: "UIA operation timed out after 8000ms" };
     const envelope = await waitFor("element_appears");
     expect(suggestOf(envelope)[0]).toMatch(/No window matched target\.windowTitle/);
-    expect(suggestOf(envelope)[1]).toMatch(/fell back to the PowerShell UIA client/);
+    expect(suggestOf(envelope).join("\n")).not.toMatch(/fell back to the PowerShell UIA client/);
+  });
+
+  it("says nothing about vocabulary on a read that failed, which compared no name with anything", async () => {
+    // The shape gate 2 named: `read_failed` on the PowerShell road. A client spoke and the read
+    // still failed, so line one is about the failure — and a second line telling the caller their
+    // name may be the other client's asserts an observation that never happened, which is the rule
+    // this suite's own `baseline: ""` cell states one silence over.
+    miss = { why: "read_failed", via: "powershell", nativeFailed: "UIA operation timed out after 8000ms", error: "PowerShell printed JSON that is not an object" };
+    const envelope = await waitFor("element_appears");
+    expect(suggestOf(envelope)[0]).toMatch(/The read itself failed/);
+    expect(suggestOf(envelope).join("\n")).not.toMatch(/fell back to the PowerShell UIA client/);
+  });
+
+  it("says nothing about vocabulary when the read ran out of its own budget", async () => {
+    // `read_unfinished` is the one silence that is not a statement about the window or the element.
+    // `via: "none"` already kept the line off this arm; the cell holds the pair together, because
+    // the two conditions were narrowed one round apart and either one alone would let it back.
+    miss = { why: "read_unfinished", via: "none", nativeFailed: "UIA operation timed out after 8000ms" };
+    const envelope = await waitFor("element_appears");
+    expect(suggestOf(envelope)[0]).toMatch(/ran out of its own budget/);
+    expect(suggestOf(envelope).join("\n")).not.toMatch(/fell back to the PowerShell UIA client/);
   });
 
   it("does not question the name of an element it found and read twice", async () => {

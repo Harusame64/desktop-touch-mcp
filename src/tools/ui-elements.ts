@@ -960,32 +960,74 @@ export const scopeElementHandler = async ({
       // shorten the element name, re-discover the element, and consider that their target might be
       // a CSS selector. `why` is data; the advice is what a caller acts on.
       //
-      // The code is spelled into the MESSAGE, which is how this product carries a declared code
-      // out through `failWith` — `classify` reads the message and never the class (`_errors.ts`).
-      //
       // All five silences, not the two that were easy (gate 2). `unreadable` is what the NATIVE
       // road answers for both of its misses, so leaving it on the plain "Element not found" arm
       // left a window that does not exist answering with the element-name advice on the road this
-      // product actually runs — verbatim the defect this was supposed to close. It still
-      // classifies as `ElementNotFound`, which is the honest routing for an answer that really is
-      // ambiguous; what changes is that the sentence stops asserting the half that may be false.
-      const msg = answer.why === "window_not_found"
-        ? `WindowNotFound: no window matched "${effectiveTitle}"`
-        : answer.why === "read_unfinished"
-          ? `UiaTimeout: the bounds read did not finish for "${effectiveTitle}"`
-          : answer.why === "read_failed"
-            ? `UiaTimeout: the bounds read failed for "${effectiveTitle}"`
-            : answer.why === "unreadable"
-              ? `Element not found — or no window matched "${effectiveTitle}"; the client that answered cannot tell the two apart`
-              : "Element not found";
-      return failWith(new Error(msg), "scope_element", {
+      // product actually runs — verbatim the defect this was supposed to close.
+      //
+      // TWO ROADS OUT, and an arm takes one or the other by whether the DICTIONARY is true of it.
+      // Where it is, the code is spelled into the MESSAGE and `classify` reads it (the
+      // declared-code arm in `_errors.ts`, which also stops a caller's window title from smuggling
+      // a keyword past the prefix — a title containing "is disabled" used to reach this cascade
+      // through the one arm here that declared nothing). Where the dictionary is NOT true, the arm
+      // declares its code and carries its own advice through `failCode`, which is the road this
+      // product already takes where a literal beats the dictionary (`toToolFailure`, `WaitTimeout`).
+      //
+      // GATE 2, THIRD PASS — the two READ silences were declared `UiaTimeout:`, and
+      // `SUGGESTS.UiaTimeout` opens with "The target app may be unresponsive — wait and retry".
+      // That is the sentence this change's own measurement says is false: a title search walks the
+      // root's children and reads each name, so ONE hung window anywhere on the desktop taxes
+      // every title-resolving read (#144) and the app the caller named may be perfectly healthy.
+      // `read_failed` is not a timeout at all — it is `spawn powershell.exe ENOENT`, a non-zero
+      // exit, or output that is not JSON. `wait_until` said the true thing for the same `why` one
+      // file over, so the two callers of one field contradicted each other about the same read.
+      //
+      // `unreadable` SPLITS BY WHO ANSWERED, for the reason `wait_until` splits: on the native
+      // road the engine really did discard the distinction, and `WindowNotFound` is the deliberate
+      // recovery ORDER — you cannot find an element inside a window that is not there. On the
+      // PowerShell road it means the script said something this server does not recognise, which
+      // is a failed read rather than an ambiguous answer, and the words are in `context.error`.
+      const context = {
         windowTitle, name, automationId, controlType,
         why: answer.why, via: answer.via,
         // The only evidence a failed read has. Dropping it left `via: "none"` sitting beside
         // "Element not found" with nothing to explain either.
         ...(answer.error !== undefined && { error: answer.error }),
         ...(answer.nativeFailed !== undefined && { nativeFailed: answer.nativeFailed }),
-      });
+      };
+      if (answer.why === "read_unfinished") {
+        return failCode(
+          "UiaTimeout",
+          `scope_element: the bounds read for "${effectiveTitle}" ran out of its own budget before answering — nothing was observed`,
+          {
+            suggest: [
+              "Nothing was read, so this is not a statement about the window or the element",
+              "Some window on this desktop is answering slowly and it is not necessarily the one you named — resolving a title reads every top-level window's name",
+              "This read's budget is fixed, so retrying buys more attempts rather than a longer look: it helps only if the slowness passes",
+            ],
+            context,
+          }
+        );
+      }
+      if (answer.why === "read_failed" || (answer.why === "unreadable" && answer.via !== "native")) {
+        return failCode(
+          "ToolError",
+          `scope_element: the bounds read failed for "${effectiveTitle}" — nothing was learned about the window or the element`,
+          {
+            suggest: [
+              "Read context.error — it carries what the UIA client actually said, and it is the only evidence this refusal has",
+              "Retry before changing the target: a read that failed has not disagreed with you about the name",
+            ],
+            context,
+          }
+        );
+      }
+      const msg = answer.why === "window_not_found"
+        ? `WindowNotFound: no window matched "${effectiveTitle}"`
+        : answer.why === "unreadable"
+          ? `WindowNotFound: Element not found — or no window matched "${effectiveTitle}"; the native client cannot tell the two apart`
+          : "Element not found";
+      return failWith(new Error(msg), "scope_element", context);
     }
 
     const content: ToolResult["content"] = [];
