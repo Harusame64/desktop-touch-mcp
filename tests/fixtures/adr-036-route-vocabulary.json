@@ -9,6 +9,7 @@
     "aim_check",
     "cdp",
     "containment_check",
+    "element_check",
     "homing",
     "keyboard",
     "mouse",
@@ -18,6 +19,7 @@
   ],
   "rung": [
     "cdp_click",
+    "element_at_point_differs",
     "excluded_window",
     "identity_changed",
     "keyboard",
