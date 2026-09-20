@@ -162,6 +162,24 @@ describe("a script that finds a window by title can see its frame", () => {
     expect(warm).toBeLessThan(script.indexOf(REGISTER));
   });
 
+  it("registers for every shape of title a caller can send, not just the convenient one", async () => {
+    // FOUND BY MUTATION: making the registration conditional on the title being non-empty —
+    // `${safeTitle ? PS_REGISTER_CLIENTSIDE_PROVIDERS : ""}` — killed nothing, because every road
+    // above is driven with the one title `"App"`. An empty title is not hypothetical: it survives
+    // `escapeLike`, emits `-like '**'`, and matches the first root child, so that mutation would
+    // ship a frameless tree to a real caller while the suite stayed green.
+    //
+    // The other two are the shapes that go through the escaping: `escapeLike` rewrites the four
+    // wildcard characters and the backtick, and a title is also where a caller's own language
+    // arrives.
+    for (const title of ["", "*?[]`", "保存 — メモ帳", "Save (true)"]) {
+      scripts.length = 0;
+      const script = await scriptOf(() => getElementBounds(title, "Save"));
+      expect(script, JSON.stringify(title)).toContain(REGISTER);
+      expect(warmsUpBeforeRegistering(script), JSON.stringify(title)).toBe(true);
+    }
+  });
+
   it("names the assembly exactly, because a typo would be caught and swallowed", async () => {
     // The registration sits inside `try { … } catch {}`. A wrong name, version or token throws
     // there and the script goes on to return a frameless window with no sign anything failed.
