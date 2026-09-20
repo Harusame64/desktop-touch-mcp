@@ -677,6 +677,33 @@ ${PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL}`;
 const MIRRORS_THE_WINDOW =
   `$c.ControlType.ProgrammaticName -eq 'ControlType.TitleBar' -and $targetName -ne '' -and $c.Name -eq $targetName`;
 
+/**
+ * …and WHEN it applies: only to a search made by NAME, and only when the caller said nothing about
+ * the type.
+ *
+ * MEASURED 2026-09-20 win2 (internal `e105936`, arm D4). The first version put the guard in every
+ * search unconditionally, and it took the title bar away from the one call that unambiguously
+ * wants it: `getElementBounds(window, name: undefined, controlType: "TitleBar")` answered the
+ * title bar's rectangle before and `null` after. With no name given the name filter is `$true`, so
+ * a guard whose entire subject is a NAME landing on the wrong element fired on a caller who had
+ * named nothing — and left no way to address a window's title bar from these roads at all. Moving
+ * a window by dragging its caption is a real call.
+ *
+ * A caller who gave a `controlType` has already said more than a name: the type filter is what
+ * discriminates then, and for any type but a bar it excludes the title bar outright.
+ *
+ * Decided in TypeScript rather than tested in PowerShell, so a search that does not need the guard
+ * does not carry it and does not pay the property read it needs either.
+ */
+function mirrorGuardPs(name: string | undefined, controlType?: string | undefined): string {
+  return name && !controlType ? ` -and -not (${MIRRORS_THE_WINDOW})` : "";
+}
+
+/** The caption, read once before a walk that is going to need it — and not read when it is not. */
+function captionReadPs(guard: string): string {
+  return guard === "" ? "" : `$targetName = ''\ntry { $targetName = $target.Current.Name } catch {}\n`;
+}
+
 function makeResolveWindowByTitlePs(safeTitle: string, notFoundJson: string): string {
   return `$target = $null
 $allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
@@ -708,16 +735,26 @@ ${PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL}`;
  *
  * …and **never the title bar that merely repeats `$target`'s name** — internal #136, gate 2.
  * Registering the clientside providers puts a synthesised `TitleBar` in this walk as a depth-1
- * child, ahead of the client area in MSAA order, and its `Name` is the window's caption. Without
- * the second guard, `getElementBounds("Save As", "Save")` stops at a thirty-pixel strip across the
- * top of the window: `wait_until` answers `ok:true` with that rect, the mouse's tier-3 re-query
- * aims a click at the caption, and `scope_element` screenshots it. That is #134's defect one
- * element deeper — the fix for a window answering for its contents, failing into the window's own
- * title bar answering instead.
+ * child whose `Name` is the window's caption, and every search here takes the FIRST match of
+ * `-like '*needle*'`.
+ *
+ * MEASURED 2026-09-20 win2 (internal `e105936`), which narrowed this from what was first written
+ * here. The frame is **not** ahead of the client area: on the fixture the children come back
+ * `MenuBar, Button, TitleBar, MenuItem, …`, so a needle that occurs in BOTH the caption and a
+ * control still finds the control, on every build. What fires is the other case — a needle that
+ * occurs ONLY in the caption. For a window called `RCD136-SAVEQ-…`, `getElementBounds(window,
+ * "SAVEQ")` answered `{name: <the caption>, controlType: TitleBar}`, a 23-pixel strip across the
+ * top, and `wait_until` answered `ok:true` with it. With the guard both answer what they answered
+ * before the registration existed: not found.
+ *
+ * So it is #134's defect one element deeper, and the same shape: a search that finds nothing used
+ * to say so, and came to answer with the window instead. The window was already behind a guard;
+ * its title bar was not.
  *
  * Narrow on purpose: a title bar whose name is NOT the window's caption still matches, and so does
- * one asked for by control type. What is refused is the element that is the window under another
- * name. The caption is read once, before the walk, rather than per element.
+ * one asked for by control type — see `mirrorGuardPs` for when this clause is emitted at all, and
+ * for the call it took away before that was measured. The caption is read once, before the walk,
+ * rather than per element.
  *
  * The frame stays REACHABLE — the walk descends through the title bar as before, so `Close` and
  * `Minimize` are found as its children, which is what the registration was added for.
@@ -725,15 +762,13 @@ ${PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL}`;
  * `$trueC` and `$target` are the caller's; `$script:found` is what it reads afterwards. The depth
  * cap counts descendants, so `maxDepth` keeps the reach each road had.
  */
-function makeFindDescendantPs(match: string, maxDepth: number): string {
+function makeFindDescendantPs(match: string, maxDepth: number, guard = ""): string {
   return `$found = $null
-$targetName = ''
-try { $targetName = $target.Current.Name } catch {}
-function FindElement($el, $depth) {
+${captionReadPs(guard)}function FindElement($el, $depth) {
     if ($script:found) { return }
     if ($depth -gt 0) {
         $c = $el.Current
-        if ((${match}) -and -not (${MIRRORS_THE_WINDOW})) { $script:found = $el; return }
+        if ((${match})${guard}) { $script:found = $el; return }
     }
     if ($depth -gt ${maxDepth}) { return }
     $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
@@ -778,13 +813,11 @@ $found = $null
 # Only FromHandle was caught, so a window closing here died with a PowerShell exception, reached
 # the caller as a JSON parse error, and the executor read that as an ordinary UIA failure — the
 # route that used to end at a blind press of the remembered rect (PR 側 codex の P1).
-$targetName = ''
-try { $targetName = $target.Current.Name } catch {}
-try {
+${captionReadPs(mirrorGuardPs(name, controlType))}try {
 $all   = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
-    if ((${nameFilter}) -and (${idFilter}) -and (${typeFilter}) -and -not (${MIRRORS_THE_WINDOW})) { $found = $el; break }
+    if ((${nameFilter}) -and (${idFilter}) -and (${typeFilter})${mirrorGuardPs(name, controlType)}) { $found = $el; break }
 }
 } catch { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
 if (-not $found) { Write-Output '{"ok":false,"error":"Element not found"}'; exit }
@@ -851,13 +884,11 @@ $desc  = [System.Windows.Automation.TreeScope]::Descendants
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $found = $null
 # The same catch as the click script's — see there.
-$targetName = ''
-try { $targetName = $target.Current.Name } catch {}
-try {
+${captionReadPs(mirrorGuardPs(name))}try {
 $all   = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
-    if ((${nameFilter}) -and (${idFilter}) -and -not (${MIRRORS_THE_WINDOW})) { $found = $el; break }
+    if ((${nameFilter}) -and (${idFilter})${mirrorGuardPs(name)}) { $found = $el; break }
 }
 } catch { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
 if (-not $found) { Write-Output '{"ok":false,"error":"Element not found"}'; exit }
@@ -900,12 +931,10 @@ $desc  = [System.Windows.Automation.TreeScope]::Descendants
 ${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"error":"Window not found"}`)}
 
 $found = $null
-$targetName = ''
-try { $targetName = $target.Current.Name } catch {}
-$all = $target.FindAll($desc, $trueC)
+${captionReadPs(mirrorGuardPs(name, controlType))}$all = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
-    if ((${nameFilter}) -and (${idFilter}) -and (${typeFilter}) -and -not (${MIRRORS_THE_WINDOW})) {
+    if ((${nameFilter}) -and (${idFilter}) -and (${typeFilter})${mirrorGuardPs(name, controlType)}) {
         $found = $el; break
     }
 }
@@ -955,12 +984,10 @@ $desc  = [System.Windows.Automation.TreeScope]::Descendants
 ${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"error":"Window not found"}`)}
 
 $found = $null
-$targetName = ''
-try { $targetName = $target.Current.Name } catch {}
-$all = $target.FindAll($desc, $trueC)
+${captionReadPs(mirrorGuardPs(name))}$all = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
-    if ((${nameFilter}) -and (${idFilter}) -and -not (${MIRRORS_THE_WINDOW})) { $found = $el; break }
+    if ((${nameFilter}) -and (${idFilter})${mirrorGuardPs(name)}) { $found = $el; break }
 }
 if (-not $found) { Write-Output '{"ok":false,"error":"Element not found"}'; exit }
 
@@ -1769,13 +1796,11 @@ $desc  = [System.Windows.Automation.TreeScope]::Descendants
 ${resolveTargetPs}
 
 $found = $null
-$targetName = ''
-try { $targetName = $target.Current.Name } catch {}
-try {
+${captionReadPs(mirrorGuardPs(name))}try {
 $all = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
-    if ((${nameFilter}) -and (${idFilter}) -and -not (${MIRRORS_THE_WINDOW})) { $found = $el; break }
+    if ((${nameFilter}) -and (${idFilter})${mirrorGuardPs(name)}) { $found = $el; break }
 }
 ${lookupCatchPs}
 if (-not $found) { Write-Output '{"ok":false,"code":"ElementNotFound"}'; exit }
@@ -1900,7 +1925,7 @@ $desc   = [System.Windows.Automation.TreeScope]::Descendants
 
 ${makeResolveWindowByTitlePs(safeTitle, `{"error":"Window not found"}`)}
 
-${makeFindDescendantPs(`(${nameFilter}) -and (${idFilter}) -and (${typeFilter})`, 12)}
+${makeFindDescendantPs(`(${nameFilter}) -and (${idFilter}) -and (${typeFilter})`, 12, mirrorGuardPs(name, controlType))}
 if (-not $found) { Write-Output '{"error":"Element not found"}'; exit }
 
 $results = [System.Collections.Generic.List[object]]::new()
@@ -2292,7 +2317,7 @@ $desc  = [System.Windows.Automation.TreeScope]::Descendants
 
 ${makeResolveWindowByTitlePs(safeTitle, `{"error":"Window not found"}`)}
 
-${makeFindDescendantPs(`(${nameFilter}) -and (${idFilter}) -and (${typeFilter})`, 12)}
+${makeFindDescendantPs(`(${nameFilter}) -and (${idFilter}) -and (${typeFilter})`, 12, mirrorGuardPs(name, controlType))}
 if (-not $found) { Write-Output '{"error":"Element not found"}'; exit }
 
 $c = $found.Current
@@ -2364,7 +2389,7 @@ $trueC = [System.Windows.Automation.Condition]::TrueCondition
 
 ${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"scrolled":false,"error":"Window not found"}`)}
 
-${makeFindDescendantPs(`(${nameFilter}) -and (${idFilter})`, 12)}
+${makeFindDescendantPs(`(${nameFilter}) -and (${idFilter})`, 12, mirrorGuardPs(name))}
 if (-not $script:found) { Write-Output '{"ok":false,"scrolled":false,"error":"Element not found"}'; exit }
 
 try {
@@ -2436,7 +2461,7 @@ $ScrollPat = [System.Windows.Automation.ScrollPattern]::Pattern
 
 ${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"error":"Window not found","ancestors":[]}`)}
 
-${makeFindDescendantPs(`$c.Name -like '*${safeName}*'`, 14)}
+${makeFindDescendantPs(`$c.Name -like '*${safeName}*'`, 14, mirrorGuardPs(elementName))}
 
 $ancestors = @()
 if ($script:found) {
@@ -2521,7 +2546,7 @@ $ScrollPat = [System.Windows.Automation.ScrollPattern]::Pattern
 
 ${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"scrolled":false,"error":"Window not found"}`)}
 
-${makeFindDescendantPs(`$c.Name -like '*${safeName}*'`, 14)}
+${makeFindDescendantPs(`$c.Name -like '*${safeName}*'`, 14, mirrorGuardPs(elementName))}
 if (-not $script:found) { Write-Output '{"ok":false,"scrolled":false,"error":"Element not found"}'; exit }
 
 $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker

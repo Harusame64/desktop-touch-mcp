@@ -274,16 +274,26 @@ describe("the frame it can now see does not answer for the window", () => {
   /**
    * GATE 2, and the reason this change is not just an addition.
    *
-   * Registering puts a synthesised `TitleBar` into every one of these walks as a depth-1 child,
-   * ahead of the client area in MSAA order, and its `Name` is the window's caption. Every search
-   * here takes the FIRST match of `-like '*needle*'`. So on a window called `Save As`, a search
-   * for `Save` stopped at the title bar — a thirty-pixel strip across the top — and `wait_until`
-   * would answer `ok:true` with that rect, the mouse's tier-3 re-query would aim a click at the
-   * caption, and `scope_element` would screenshot it.
+   * Registering puts a synthesised `TitleBar` into every one of these walks as a depth-1 child
+   * whose `Name` is the window's caption, and every search here takes the FIRST match of
+   * `-like '*needle*'`.
    *
-   * That is internal #134's defect one element deeper: the fix for "a window answers for its
-   * contents" failing into "the window's own title bar answers instead". The guard is the same
-   * shape as #134's and lives in one constant.
+   * MEASURED 2026-09-20 win2 (internal `e105936`), on three builds with one fixture and one
+   * instrument — and it narrowed the claim these cells were written for. The frame is NOT ahead of
+   * the client area: the children come back `MenuBar, Button, TitleBar, MenuItem, …`. So the cell
+   * that puts the needle in BOTH the caption and a control finds the control on every build and
+   * shows nothing. The regression is one cell over: a needle that occurs ONLY in the caption.
+   * `getElementBounds(window, "SAVEQ")` on a window called `RCD136-SAVEQ-…` answered a 23-pixel
+   * strip across the top, and `wait_until` answered `ok:true` with it, where both used to say not
+   * found.
+   *
+   * **Those are two different questions and only one of them is this defect**: the needle in both
+   * places asks which match comes first; the needle in one place asks what a miss lands on. The
+   * first arm was the one asked for and it would have passed on a broken build.
+   *
+   * That is internal #134's defect one element deeper: a search that found nothing used to say so,
+   * and came to answer with the window instead. The guard is the same shape as #134's and lives in
+   * one constant.
    */
   const GUARD = "$c.ControlType.ProgrammaticName -eq 'ControlType.TitleBar'";
 
@@ -340,6 +350,32 @@ describe("the frame it can now see does not answer for the window", () => {
       if (script.includes("function FindElement(")) {
         expect(script).toContain("foreach ($k in $kids) { FindElement $k ($depth+1) }");
       }
+    }
+  });
+
+  it("leaves the title bar addressable, by type and by a name that is not the caption", async () => {
+    // MEASURED 2026-09-20 win2 (internal `e105936`, arm D4): the first version of this guard was
+    // in every search unconditionally, and it took the title bar away from the one call that
+    // unambiguously wants it. `getElementBounds(window, name: undefined, controlType: "TitleBar")`
+    // answered the title bar's rectangle before the guard and `null` after — because with no name
+    // given the name filter is `$true`, so a guard about a NAME landing on the wrong element fired
+    // on a caller who had named nothing. Dragging a window by its caption is a real call, and this
+    // road was the only way to find what to drag.
+    //
+    // A guard that removes the thing it is guarding is the same defect one turn later: #134 made a
+    // search stop answering with the window, and this nearly made it stop answering with the
+    // window's title bar to anyone at all.
+    for (const [label, call] of [
+      ["by control type alone", () => getElementBounds("Save As", undefined, undefined, "TitleBar")],
+      ["by name AND control type", () => getElementBounds("Save As", "Save", undefined, "TitleBar")],
+      ["by automationId alone", () => getElementBounds("Save As", undefined, "TitleBar")],
+    ] as [string, () => Promise<unknown>][]) {
+      scripts.length = 0;
+      const script = await scriptOf(call);
+      expect(script, label).not.toContain(GUARD);
+      // …and the caption read goes with it: a search that does not need the guard does not pay
+      // for it either.
+      expect(script, label).not.toContain("$targetName = $target.Current.Name");
     }
   });
 
