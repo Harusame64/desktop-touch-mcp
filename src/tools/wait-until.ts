@@ -117,16 +117,42 @@ function probeFocusChanges(fromHwnd?: string): () => Promise<{ from: string | nu
   };
 }
 
-function probeElementAppears(windowTitle: string, elementName?: string): () => Promise<{ name: string; rect: unknown } | null> {
+/**
+ * internal #137 — what the last look saw, for a wait that ends in a timeout.
+ *
+ * A probe answers `null` for every reason it has: the element was not found, the read failed, the
+ * element was found and the thing being waited for did not happen. The envelope then says
+ * `WaitTimeout` and those are one answer, so a caller cannot tell "I watched the wrong thing" from
+ * "I watched the right thing and it did not move" — MEASURED 2026-09-20 win2 (internal `bdef099`):
+ * `value_changes` answered `WaitTimeout` at 3065 ms against a control arm's 3064 ms, and the two
+ * were the same envelope.
+ *
+ * The probe writes what it last saw here; the timeout carries it. Nothing routes on it.
+ */
+type LastLook = Record<string, unknown>;
+
+function probeElementAppears(windowTitle: string, elementName: string | undefined, look: LastLook): () => Promise<{ name: string; controlType?: string; automationId?: string; rect: unknown } | null> {
   return async () => {
     if (!elementName) return null;
     try {
       const bounds = await getElementBounds(windowTitle, elementName);
       if (bounds && bounds.boundingRect) {
-        return { name: bounds.name, rect: bounds.boundingRect };
+        // What it RESOLVED, not only that it did: the same read already carries the type and the
+        // AutomationId, and a caller that got the wrong element has no other way to see it.
+        return {
+          name: bounds.name,
+          ...(bounds.controlType !== undefined && { controlType: bounds.controlType }),
+          ...(bounds.automationId ? { automationId: bounds.automationId } : {}),
+          rect: bounds.boundingRect,
+        };
       }
+      look["resolved"] = false;
+      look["why"] = bounds ? "no_rectangle" : "element_not_found";
       return null;
-    } catch {
+    } catch (e) {
+      look["resolved"] = false;
+      look["why"] = "read_failed";
+      look["error"] = e instanceof Error ? e.message : String(e);
       return null;
     }
   };
@@ -143,22 +169,32 @@ function probeReadyState(_windowTitle?: string): () => Promise<{ ready: true } |
   };
 }
 
-function probeValueChanges(windowTitle: string, elementName?: string): () => Promise<{ before: string; after: string } | null> {
+function probeValueChanges(windowTitle: string, elementName: string | undefined, look: LastLook): () => Promise<{ before: string; after: string } | null> {
   let baseline: string | null = null;
   return async () => {
     if (!elementName) return null;
     try {
       const bounds = await getElementBounds(windowTitle, elementName);
+      // THE DISTINCTION THIS CONDITION COULD NOT MAKE: no element at all, and an element whose
+      // value never moved, both ended as `value ?? ""` and then as the same timeout. A missing
+      // element is not a value of "" — `resolved` says which, and the baseline says what was being
+      // compared against, which the probe has held all along and never returned.
+      look["resolved"] = bounds !== null && bounds !== undefined;
       const cur = bounds?.value ?? "";
       if (baseline === null) {
         baseline = cur;
+        look["baseline"] = cur;
         return null;
       }
+      look["latest"] = cur;
       if (cur !== baseline) {
         return { before: baseline, after: cur };
       }
       return null;
-    } catch {
+    } catch (e) {
+      look["resolved"] = false;
+      look["why"] = "read_failed";
+      look["error"] = e instanceof Error ? e.message : String(e);
       return null;
     }
   };
@@ -282,6 +318,8 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
   try {
     let probe: () => Promise<unknown | null>;
     let interval = intervalMs;
+    /** internal #137 — what the probe last saw, read only when the wait times out. */
+    const lastLook: LastLook = {};
 
     switch (condition) {
       case "window_appears":
@@ -303,7 +341,7 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
         if (!target.windowTitle || !target.elementName) {
           return failWith("target.windowTitle and target.elementName are required for element_appears", "wait_until");
         }
-        probe = probeElementAppears(target.windowTitle, target.elementName);
+        probe = probeElementAppears(target.windowTitle, target.elementName, lastLook);
         // UIA probe spawns PS (~300ms each) — clamp interval to 500ms to avoid
         // saturating PowerShell startup cost with rapid polls.
         interval = Math.max(intervalMs, 500);
@@ -312,7 +350,7 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
         if (!target.windowTitle || !target.elementName) {
           return failWith("target.windowTitle and target.elementName are required for value_changes", "wait_until");
         }
-        probe = probeValueChanges(target.windowTitle, target.elementName);
+        probe = probeValueChanges(target.windowTitle, target.elementName, lastLook);
         interval = Math.max(intervalMs, 500);
         break;
       case "ready_state":
@@ -368,12 +406,24 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
       "WaitTimeout",
       `wait_until(${condition}) timed out after ${r.elapsedMs}ms`,
       {
+        // internal #137 — the first suggestion is the one the last look earned. "Increase timeoutMs"
+        // is the right advice for a thing that has not happened YET, and the wrong advice for a
+        // name that matched nothing: waiting longer for an element that was never there is the
+        // recovery a caller would otherwise try three times.
         suggest: [
+          ...(lastLook["resolved"] === false
+            ? [`The ${condition === "value_changes" ? "value" : "element"} was never resolved — check target.elementName against desktop_discover / get_ui_elements before waiting longer`]
+            : []),
           "Increase timeoutMs",
           "Verify the target is correct",
           "Inspect intermediate state with screenshot(detail='meta')",
         ],
-        context: { condition, target, timeoutMs },
+        context: {
+          condition, target, timeoutMs,
+          // What the last poll saw. Absent when the probe had nothing to say (a condition that does
+          // not look at an element), rather than an empty object that reads as "it saw nothing".
+          ...(Object.keys(lastLook).length > 0 ? { lastLook } : {}),
+        },
       },
     );
   } catch (err) {

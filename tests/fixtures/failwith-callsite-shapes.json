@@ -356,56 +356,56 @@
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 466,
+      "line": 477,
       "tool": "mouse_move",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 584,
+      "line": 595,
       "tool": "mouse_click",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 758,
+      "line": 769,
       "tool": "mouse_click",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 807,
+      "line": 818,
       "tool": "mouse_drag",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 986,
+      "line": 997,
       "tool": "mouse_drag",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1816,
+      "line": 1827,
       "tool": "scroll",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1967,
+      "line": 1978,
       "tool": "scroll",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1976,
+      "line": 1987,
       "tool": "get_cursor_position",
       "errKind": "identifier",
       "contextShape": "none"
@@ -601,14 +601,14 @@
     },
     {
       "file": "src/tools/wait-until.ts",
-      "line": 349,
+      "line": 387,
       "tool": "wait_until",
       "errKind": "string-literal",
       "contextShape": "none"
     },
     {
       "file": "src/tools/wait-until.ts",
-      "line": 380,
+      "line": 430,
       "tool": "wait_until",
       "errKind": "identifier",
       "contextShape": "object-plain"

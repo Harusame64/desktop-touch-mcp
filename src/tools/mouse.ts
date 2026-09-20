@@ -261,9 +261,20 @@ async function applyHoming(
     if (bounds?.boundingRect) {
       const nx = Math.round(bounds.boundingRect.x + bounds.boundingRect.width / 2);
       const ny = Math.round(bounds.boundingRect.y + bounds.boundingRect.height / 2);
-      notes.push(`re-queried "${elementName ?? elementId}" via UIA, window ${delta.sizeChanged ? "resized" : "moved far"}`);
+      // internal #137 — what it RESOLVED, not only that it asked. The note used to name the query
+      // and stop there, so a re-query that landed on the wrong element and one that landed on the
+      // right one read the same, and the coordinates that followed looked equally trustworthy. The
+      // read already carries the name and the type; the name is repeated on purpose, because it is
+      // the one that differs when the query matched something else.
+      notes.push(
+        `re-queried "${elementName ?? elementId}" via UIA, window ${delta.sizeChanged ? "resized" : "moved far"}` +
+        ` → ${bounds.controlType ?? "?"} "${bounds.name}"`,
+      );
       return { x: nx, y: ny, notes };
     }
+    // And a re-query that resolved NOTHING said nothing at all: the point below is the plain
+    // offset correction, which is a different claim about where the element is.
+    notes.push(`re-query for "${elementName ?? elementId}" via UIA found no element; kept the offset correction`);
   }
 
   // Simple offset correction
