@@ -163,31 +163,37 @@ function provenance(answer: { via: string; nativeFailed?: string }): Record<stri
 function earnedAdvice(look: LastLook): string[] {
   const why = look["why"];
   const fellBack = look["nativeFailed"] !== undefined;
+  const answered = look["via"];
   const lines: string[] = [];
 
   // Said FIRST only where it is the thing to fix: a name that missed on a road the caller did not
   // choose. The two clients name some controls differently (internal #136).
   const vocabulary =
     "This read fell back to the PowerShell UIA client, which names some controls differently from the native engine ('Minimize' against '最小化', and twenty of Notepad's twenty-six elements differ). The name you passed may be the native engine's — check WHICH client's name you are using before changing it; context.lastLook.nativeFailed says why the road changed";
-  if (fellBack && why === "element_not_found") lines.push(vocabulary);
+  if (fellBack && answered === "powershell" && why === "element_not_found") lines.push(vocabulary);
 
   if (why === "window_not_found") {
-    lines.push("No window matched target.windowTitle while waiting — the element was never looked for. Check the title (list_windows) before waiting longer or re-checking the element name");
+    lines.push("No window matched target.windowTitle while waiting — the element was never looked for. Check the title with {tool:list_window_titles} before waiting longer or re-checking the element name");
   } else if (why === "element_not_found") {
     lines.push("No element by that name was found while waiting — check target.elementName against what {tool:reidentify_element} returns before waiting longer");
   } else if (why === "no_rectangle") {
     lines.push("The element was found but has no rectangle — it is collapsed, zero-size or offscreen. Bring it into view (scroll it, or expand the panel holding it) rather than waiting longer");
   } else if (why === "unreadable") {
-    lines.push("The read answered 'not there' without saying whether the WINDOW or the ELEMENT was missing. Check the window title first (list_windows), then the element name — this build's UIA engine cannot tell the two apart");
+    lines.push("The read answered 'not there' without saying whether the WINDOW or the ELEMENT was missing. Check the window title first with {tool:list_window_titles}, then the element name — this build's UIA engine cannot tell the two apart");
   } else if (why === "read_unfinished") {
-    lines.push("The read ran out of its own budget before answering — nothing was learned about either the window or the element, and this is the only silence a longer wait can turn into an answer. Some window on this desktop is answering slowly, not necessarily the one you named: raise timeoutMs rather than changing the target");
+    lines.push("The read ran out of its own budget before answering, so nothing was observed at all — unlike the other silences, this one is not a statement about the window or the element. Some window on this desktop is answering slowly, not necessarily the one you named. The read's own budget is fixed and a longer timeoutMs buys more attempts rather than a longer look, so this helps only if the slowness passes");
   } else if (why === "read_failed") {
     lines.push("The read itself failed, so nothing was learned about the window or the element — the error is in context.lastLook.error. Retry before changing the target");
   }
 
   // …and on every other silence the same fact is said after, because there it changes what a name
   // MEANS without being the thing to fix first.
-  if (fellBack && why !== "element_not_found") lines.push(vocabulary);
+  //
+  // GATED ON WHO ANSWERED, not on whether the engine failed (gate 2). When the fall-back was also
+  // cut off, `via` is `none` and no client spoke — and this sentence would assert exactly what
+  // `UiaVia`'s own doc says `none` exists to prevent, one file over. A read that reached nobody
+  // says nothing about anybody's vocabulary.
+  if (fellBack && answered === "powershell" && why !== "element_not_found") lines.push(vocabulary);
   return lines;
 }
 
@@ -241,7 +247,7 @@ function probeElementAppears(windowTitle: string, elementName: string | undefine
       // Defensive, not a live road: `getElementBounds` catches everything internally on both
       // clients, so with the exclusion rethrown above nothing else throws here today. It stands for
       // a future producer that does (gate 2).
-      write(look, { resolved: false, why: "read_failed", error: e instanceof Error ? e.message : String(e) });
+      write(look, { resolved: false, why: "read_failed", via: "none", error: e instanceof Error ? e.message : String(e) });
       return null;
     }
   };
@@ -297,7 +303,7 @@ function probeValueChanges(windowTitle: string, elementName: string | undefined,
       // Defensive, not a live road: `getElementBounds` catches everything internally on both
       // clients, so with the exclusion rethrown above nothing else throws here today. It stands for
       // a future producer that does (gate 2).
-      write(look, { resolved: false, why: "read_failed", error: e instanceof Error ? e.message : String(e) });
+      write(look, { resolved: false, why: "read_failed", via: "none", error: e instanceof Error ? e.message : String(e) });
       return null;
     }
   };

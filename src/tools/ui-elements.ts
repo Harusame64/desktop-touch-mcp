@@ -953,10 +953,21 @@ export const scopeElementHandler = async ({
     const answer = await getElementBounds(effectiveTitle, name, automationId, controlType);
     const bounds = answer.found;
     if (!bounds) {
-      // internal #142 — the read says which silence it was and which client said it; the refusal
-      // carries both rather than one sentence for four different answers. `window_not_found` in
-      // particular is not something a different element name can fix.
-      return failWith("Element not found", "scope_element", {
+      // internal #142 — the read says which silence it was and which client said it, and the
+      // REFUSAL is built from that rather than answering four different questions with one
+      // sentence. Carrying `why` in the context alone was not enough (gate 2): a window that does
+      // not exist still came back `ElementNotFound`, whose five suggestions tell the caller to
+      // shorten the element name, re-discover the element, and consider that their target might be
+      // a CSS selector. `why` is data; the advice is what a caller acts on.
+      //
+      // The code is spelled into the MESSAGE, which is how this product carries a declared code
+      // out through `failWith` — `classify` reads the message and never the class (`_errors.ts`).
+      const msg = answer.why === "window_not_found"
+        ? `WindowNotFound: no window matched "${effectiveTitle}"`
+        : answer.why === "read_unfinished"
+          ? `UiaTimeout: the bounds read did not finish for "${effectiveTitle}"`
+          : "Element not found";
+      return failWith(new Error(msg), "scope_element", {
         windowTitle, name, automationId, controlType,
         why: answer.why, via: answer.via,
         ...(answer.nativeFailed !== undefined && { nativeFailed: answer.nativeFailed }),

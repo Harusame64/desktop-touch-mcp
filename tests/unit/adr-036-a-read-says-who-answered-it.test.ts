@@ -43,7 +43,12 @@ vi.mock("node:child_process", () => ({
     cb: (e: Error | null, r: { stdout: string; stderr: string }) => void,
   ) => {
     if (psThrows) { cb(psThrows, { stdout: "", stderr: "" }); return; }
-    cb(null, { stdout: psOutputs.shift() ?? "{}", stderr: "" });
+    // An unplanned fall-back is LOUD. `?? "{}"` used to answer a script nobody queued with an
+    // empty object, which reads downstream as a found element with no fields — so a cell that
+    // meant "the native road did not fall back" passed whether it fell back or not (gate 2).
+    const queued = psOutputs.shift();
+    if (queued === undefined) { cb(new Error("a script ran that this cell did not queue"), { stdout: "", stderr: "" }); return; }
+    cb(null, { stdout: queued, stderr: "" });
   },
 }));
 
@@ -137,6 +142,48 @@ describe("the bridge says which silence the read was", () => {
     expect(answer.error).toMatch(/ENOENT/);
   });
 
+  it("does not call an outside kill our own budget, because only one of them means 'wait'", async () => {
+    // FOUND BY MUTATION (gate 2): `killed === true` → `signal !== undefined` survives every cell.
+    // It is not equivalent — measured on node, a process killed by SOMEONE ELSE arrives as
+    // `{killed:false, signal:"SIGTERM"}`. Under the mutant that becomes `read_unfinished`, whose
+    // advice is "wait, the slowness may pass"; nothing will change, because nothing timed out.
+    nativeAnswer = () => { throw new Error("engine unavailable"); };
+    psThrows = Object.assign(new Error("Command failed"), { killed: false, signal: "SIGTERM" });
+    expect(await getElementBounds("App", "Save")).toMatchObject({ found: null, why: "read_failed" });
+  });
+
+  it("keeps what the script said when it said something this road does not recognise", async () => {
+    // FOUND BY MUTATION (gate 2): the third-string arm mapping to `element_not_found` survives,
+    // because no cell drives an error outside the two known strings. And `unreadable` here does
+    // NOT mean what it means on the native road: the script said something specific, and only
+    // this file failed to recognise it — so it carries the words rather than shrugging.
+    nativeAnswer = () => { throw new Error("engine unavailable"); };
+    psOutputs.push('{"error":"Access is denied. (0x80070005)"}');
+    const answer = await getElementBounds("App", "Save");
+    expect(answer).toMatchObject({ found: null, why: "unreadable", via: "powershell" });
+    expect((answer as { error?: string }).error).toMatch(/Access is denied/);
+  });
+
+  it("uses an answer the script printed before it was killed", async () => {
+    // Measured on node (gate 2): a child that prints a complete answer and is THEN killed at the
+    // timeout arrives as `{killed:true, signal:"SIGTERM", stdout:'…'}`. Answering "nothing was
+    // learned" would throw away the one thing that was.
+    nativeAnswer = () => { throw new Error("engine unavailable"); };
+    psThrows = Object.assign(new Error("Command failed: powershell.exe"), {
+      killed: true, stdout: '{"error":"Window not found"}',
+    });
+    expect(await getElementBounds("Nothing", "Save")).toMatchObject({ found: null, why: "window_not_found", via: "powershell" });
+  });
+
+  it("names PowerShell, not nobody, when PowerShell answered with something unreadable", async () => {
+    // A client spoke; it spoke nonsense. `via: "none"` would be a claim the code cannot support.
+    nativeAnswer = () => { throw new Error("engine unavailable"); };
+    psOutputs.push("not json at all");
+    const answer = await getElementBounds("App", "Save");
+    expect(answer).toMatchObject({ found: null, why: "read_failed", via: "powershell" });
+    expect((answer as { error?: string }).error).toMatch(/not JSON/);
+  });
+
   it("credits no client when no client answered", async () => {
     // "If the native client fails, the PowerShell road answers" is false when the cause of the
     // failure is SLOWNESS — both budgets are 8000 ms and they are spent serially (win2,
@@ -153,8 +200,9 @@ describe("the bridge says which silence the read was", () => {
     nativeAnswer = () => null;
     const answer = await getElementBounds("App", "Save");
     expect(answer).toMatchObject({ found: null, why: "unreadable", via: "native" });
-    // …and it did NOT fall back: a "no" is an answer, only a throw is a failure.
-    expect(psOutputs).toHaveLength(0);
+    // …and it did NOT fall back: a "no" is an answer, only a throw is a failure. The proof is
+    // `via: "native"` above plus a mock that now THROWS on an unqueued script — the old
+    // `expect(psOutputs).toHaveLength(0)` was true whether or not the road ran (gate 2).
   });
 });
 

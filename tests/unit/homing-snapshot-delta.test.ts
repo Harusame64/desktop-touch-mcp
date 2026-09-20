@@ -192,6 +192,32 @@ describe("issue #443: homing delta uses screenshot-time position", () => {
     expect(mockMove).toHaveBeenCalledWith(300, 400, 0);
   });
 
+  it("says which client resolved the tier-3 re-query it is about to press", async () => {
+    // FOUND BY MUTATION (gate 2): deleting the `[via…]` suffix from the tier-3 note kills nothing,
+    // because the FOUND branch of that re-query has no cell anywhere — every mouse and homing mock
+    // in this suite answers `found: null`. So the one place a caller could see that a press was
+    // aimed by a different UIA client than the one that named the element was unpinned.
+    //
+    // Why it matters (internal #136, measured): the two clients name some controls differently, so
+    // a re-query that fell back resolved a name in the other one's vocabulary — and then a click
+    // goes to whatever it resolved.
+    const { getElementBounds } = await import("../../src/engine/uia-bridge.js");
+    vi.mocked(getElementBounds).mockResolvedValue({
+      found: { name: "Save", controlType: "Button", automationId: "", boundingRect: { x: 700, y: 300, width: 100, height: 40 }, value: null },
+      via: "powershell",
+      nativeFailed: "UIA operation timed out after 8000ms",
+    } as Awaited<ReturnType<typeof getElementBounds>>);
+    // The window moved far since the screenshot, which is what sends the ladder to its third tier.
+    mockGetSnapshot.mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
+    mockGetCachedByTitle.mockReturnValue(cachedEntry({ x: 0, y: 0, width: 800, height: 600 }, Date.now()));
+    mockGetRect.mockReturnValue({ x: 600, y: 400, width: 800, height: 600 });
+
+    const result = await mouseClickHandler({ ...BASE_ARGS, x: 300, y: 400, elementName: "Save" });
+    const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "";
+    expect(text).toMatch(/re-queried \\"Save\\" via UIA/);
+    expect(text).toMatch(/\[powershell, after native failed: UIA operation timed out after 8000ms\]/);
+  });
+
   it("ignores a stale main-cache entry (TTL guard) instead of applying a bogus offset", async () => {
     mockGetSnapshot.mockReturnValue(null);
     // Stale entry (older than the 60s cache TTL) — must NOT seed screenshotRegion.

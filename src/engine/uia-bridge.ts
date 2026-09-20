@@ -1946,8 +1946,10 @@ export type BoundsMiss =
    * road answers nothing in 16 seconds — 8000 ms of native timeout, then 8000 ms of `runPS`
    * timeout, spent one after the other. The script is killed with empty stdout.
    *
-   * **It is the only silence where waiting longer can change the answer**, and it looked exactly
-   * like the three above, so a caller gave up on a read that had not finished. `runPS` passes a
+   * **It is the only one of these that is not a statement about the window or the element** —
+   * nothing was observed at all. (Not "the only silence a longer wait can change": an element that
+   * is not there YET is exactly what `wait_until` exists for, and gate 2 caught that sentence.) It
+   * looked exactly like the three above, so a caller gave up on a read that had not finished. `runPS` passes a
    * fixed 8000 ms here where `getUiElements` takes the caller's own budget, which is why the same
    * hung window can be read by one road and not the other (internal #144).
    *
@@ -2472,36 +2474,70 @@ try {
 } | ConvertTo-Json -Compress
 `;
 
+  // The read is in two stages on purpose: RUNNING the script and READING what it printed are
+  // different failures with different answers, and one `try` around both reported a client that
+  // answered garbage as a client that never spoke (gate 2).
+  let output: string;
   try {
-    const output = await runPS(script, 8000);
-    const parsed = JSON.parse(output);
-    // The script already tells the two apart — it prints one or the other and exits. Collapsing
-    // them with `if (parsed.error) return null` is what made a wait against a window that does not
-    // exist advise the caller to check the ELEMENT name (internal #142, measured).
-    if (parsed.error) {
-      const why: BoundsMiss = parsed.error === "Window not found" ? "window_not_found"
-        : parsed.error === "Element not found" ? "element_not_found"
-        // A third thing this road can print one day. Named as unreadable rather than folded into
-        // either of the two above, which is the mistake this change is undoing.
-        : "unreadable";
-      return { found: null, why, via: "powershell", ...(nativeFailed !== undefined && { nativeFailed }) };
-    }
-    return { found: parsed as ElementBounds, via: "powershell", ...(nativeFailed !== undefined && { nativeFailed }) };
+    output = await runPS(script, 8000);
   } catch (e) {
-    // Nothing looked, so nothing can be concluded about the window or the element — and NOBODY
-    // answered, so `via` says so rather than crediting the road that was cut off.
+    // Nothing was observed — and NOBODY answered, so `via` says so rather than crediting the road
+    // that was cut off.
     //
-    // The two are kept apart because only one of them can change with time: `execFile` sets
-    // `killed` when it is the one that ended the process, which is this module's own 8000 ms
-    // budget expiring, not the script deciding anything (win2, `0c5547d`: 16 s against a hung
-    // window, 8000 native + 8000 here, stdout empty).
+    // The two silences are kept apart because only one of them can change with time: `execFile`
+    // sets `killed` when IT ended the process, which is this module's own 8000 ms budget expiring
+    // rather than the script deciding anything (win2, `0c5547d`: 16 s against a hung window, 8000
+    // native plus 8000 here, stdout empty). `signal` would be the wrong test — a process killed by
+    // someone else arrives as `{killed:false, signal:"SIGTERM"}`, and that is not our budget.
     const killed = typeof e === "object" && e !== null && (e as { killed?: boolean }).killed === true;
+    // …but a killed process may have printed a complete answer before it was killed. Discarding it
+    // to say "nothing was learned" would throw away the one thing that WAS learned (gate 2).
+    const salvaged = (e as { stdout?: string })?.stdout?.trim();
+    if (salvaged) {
+      try { return answerFromPs(JSON.parse(salvaged), nativeFailed); } catch { /* not an answer */ }
+    }
     return {
       found: null, why: killed ? "read_unfinished" : "read_failed", via: "none",
       error: shortPsFailure(e, killed),
       ...(nativeFailed !== undefined && { nativeFailed }),
     };
   }
+
+  try {
+    return answerFromPs(JSON.parse(output), nativeFailed);
+  } catch (e) {
+    // PowerShell DID answer, with something this road cannot read. A client spoke, so `via` names
+    // it; `via: "none"` here was a claim the code could not support.
+    return {
+      found: null, why: "read_failed", via: "powershell",
+      error: `PowerShell answered with something that is not JSON: ${e instanceof Error ? e.message : String(e)}`,
+      ...(nativeFailed !== undefined && { nativeFailed }),
+    };
+  }
+}
+
+/**
+ * What the PowerShell road printed, read as an answer.
+ *
+ * The script already tells the two misses apart — it prints one or the other and exits.
+ * Collapsing them with `if (parsed.error) return null` is what made a wait against a window that
+ * does not exist advise the caller to check the ELEMENT name (internal #142, measured).
+ */
+function answerFromPs(parsed: { error?: string } & Partial<ElementBounds>, nativeFailed?: string): BoundsAnswer {
+  const carry = nativeFailed !== undefined ? { nativeFailed } : {};
+  if (parsed.error === undefined) return { found: parsed as ElementBounds, via: "powershell", ...carry };
+  const known: BoundsMiss | undefined = parsed.error === "Window not found" ? "window_not_found"
+    : parsed.error === "Element not found" ? "element_not_found"
+    : undefined;
+  // A third thing this road can print one day. Named `unreadable` rather than folded into either
+  // of the two above — that folding is the mistake this change undoes — and it CARRIES what the
+  // script said, because here `unreadable` does not mean "the engine cannot tell the two apart":
+  // the script said something specific and only this file failed to recognise it (gate 2).
+  return {
+    found: null, why: known ?? "unreadable", via: "powershell",
+    ...(known === undefined && { error: String(parsed.error) }),
+    ...carry,
+  };
 }
 
 /**

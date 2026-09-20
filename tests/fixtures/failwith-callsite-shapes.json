@@ -356,56 +356,56 @@
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 489,
+      "line": 495,
       "tool": "mouse_move",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 607,
+      "line": 613,
       "tool": "mouse_click",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 781,
+      "line": 787,
       "tool": "mouse_click",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 830,
+      "line": 836,
       "tool": "mouse_drag",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1009,
+      "line": 1015,
       "tool": "mouse_drag",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1839,
+      "line": 1845,
       "tool": "scroll",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1990,
+      "line": 1996,
       "tool": "scroll",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1999,
+      "line": 2005,
       "tool": "get_cursor_position",
       "errKind": "identifier",
       "contextShape": "none"
@@ -587,28 +587,28 @@
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 959,
+      "line": 970,
       "tool": "scope_element",
-      "errKind": "string-literal",
+      "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 1008,
+      "line": 1019,
       "tool": "scope_element",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/wait-until.ts",
-      "line": 490,
+      "line": 496,
       "tool": "wait_until",
       "errKind": "string-literal",
       "contextShape": "none"
     },
     {
       "file": "src/tools/wait-until.ts",
-      "line": 547,
+      "line": 553,
       "tool": "wait_until",
       "errKind": "identifier",
       "contextShape": "object-plain"

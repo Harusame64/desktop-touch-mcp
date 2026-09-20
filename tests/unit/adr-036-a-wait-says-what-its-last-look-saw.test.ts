@@ -230,10 +230,14 @@ describe("a timed-out wait says which silence it was", () => {
     expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: false, why: "read_unfinished", via: "none" });
     expect(suggestOf(envelope)[0]).toMatch(/ran out of its own budget/);
     expect(suggestOf(envelope)[0]).toMatch(/not necessarily the one you named/);
-    // …it tells them to wait rather than to re-aim…
-    expect(suggestOf(envelope)[0]).toMatch(/raise timeoutMs/);
+    // …it says what a longer timeout actually buys, which is not what it sounds like (gate 2):
+    // `getElementBounds` hard-codes its own 8000 ms and takes nothing from the caller, so a bigger
+    // `timeoutMs` buys more 16-second attempts rather than one longer look (#144).
+    expect(suggestOf(envelope)[0]).toMatch(/more attempts rather than a longer look/);
     // …and it does NOT send them to re-check either name.
     expect(suggestOf(envelope)[0]).not.toMatch(/target\.elementName|target\.windowTitle/);
+    // …and it does not claim a client answered, because on this silence none did.
+    expect(suggestOf(envelope).join(" ")).not.toMatch(/fell back to the PowerShell/);
   });
 
   it("says a read that failed learned nothing, instead of reporting an absence", async () => {
@@ -292,6 +296,22 @@ describe("a timed-out wait says which silence it was", () => {
     foundVia = "native";
     const envelope = await waitFor("value_changes");
     expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: true, baseline: "draft", via: "native" });
+  });
+
+  it("routes the read's reason on the value road too, not only on the element road", async () => {
+    // FOUND BY MUTATION (gate 2): hard-coding `element_not_found` in `probeValueChanges` survives,
+    // because every envelope cell above drives `element_appears`. Two probes, one claim, one of
+    // them unswept — which is the shape this whole file exists to stop.
+    miss = { why: "window_not_found", via: "powershell" };
+    const envelope = await waitFor("value_changes");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: false, why: "window_not_found", via: "powershell" });
+    expect(suggestOf(envelope)[0]).toMatch(/No window matched target\.windowTitle/);
+  });
+
+  it("carries the read's error on the value road as well", async () => {
+    miss = { why: "read_failed", via: "powershell", error: "PowerShell answered with something that is not JSON" };
+    const envelope = await waitFor("value_changes");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({ why: "read_failed", error: "PowerShell answered with something that is not JSON" });
   });
 
   it("carries no last look for a condition that looks at no element", async () => {
