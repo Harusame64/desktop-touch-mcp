@@ -125,6 +125,7 @@
     "TerminalTextPatternUnavailable",
     "TerminalWindowNotFound",
     "ToolError",
+    "UiaTimeout",
     "V1FallbackUnavailable",
     "WaitTimeout"
   ],
