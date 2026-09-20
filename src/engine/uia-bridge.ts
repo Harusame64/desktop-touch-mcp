@@ -693,7 +693,13 @@ const MIRRORS_THE_WINDOW =
  * discriminates then, and for any type but a bar it excludes the title bar outright.
  *
  * Decided in TypeScript rather than tested in PowerShell, so a search that does not need the guard
- * does not carry it and does not pay the property read it needs either.
+ * does not carry it and does not pay the property read it needs either. What is saved is the
+ * `$target.Current.Name` READ — not a search. `FindAll` is called the same number of times either
+ * way, which is worth saying because the count of those is what the next reader will reach for.
+ *
+ * MEASURED 2026-09-20 win2 (internal `dc652ad`), off the scripts the product generated: a search
+ * by name is 195 characters longer than the same search by type, and the 195 are the two caption
+ * lines and this clause. The version before this one paid them on every call.
  */
 function mirrorGuardPs(name: string | undefined, controlType?: string | undefined): string {
   return name && !controlType ? ` -and -not (${MIRRORS_THE_WINDOW})` : "";

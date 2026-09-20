@@ -291,6 +291,11 @@ describe("the frame it can now see does not answer for the window", () => {
    * places asks which match comes first; the needle in one place asks what a miss lands on. The
    * first arm was the one asked for and it would have passed on a broken build.
    *
+   * Both are worth keeping, and the reason is worth writing down rather than inferring: the order
+   * above is a property of THAT FIXTURE, not of legacy windows. Nobody has checked whether a
+   * window exists whose synthesised title bar comes first — and on such a window the defect shows
+   * up in the first arm as well. "The frame is third" is a measurement of one window.
+   *
    * That is internal #134's defect one element deeper: a search that found nothing used to say so,
    * and came to answer with the window instead. The guard is the same shape as #134's and lives in
    * one constant.
