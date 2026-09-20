@@ -235,6 +235,20 @@ export interface ExecutorDeps {
    * loses only this rung rather than the whole press.
    */
   pointOwner?(aimHwnd: bigint, x: number, y: number): PointOwner | undefined;
+  /**
+   * internal #135 — what UIA says is AT a point, for the last question before a coordinate press.
+   *
+   * `null` is "nothing readable there", and an absent dep is "this build cannot ask" — the rung
+   * treats both as unable to say, and says which in its row.
+   */
+  elementAtPoint?(x: number, y: number): Promise<ElementAtPoint | null> | ElementAtPoint | null;
+}
+
+/** internal #135 — the three fields a point read can carry back. `name` is the only comparable one. */
+export interface ElementAtPoint {
+  name: string;
+  controlType: string;
+  automationId?: string;
 }
 
 // ── G2: Background terminal send — injectable for testing ─────────────────────
@@ -421,6 +435,97 @@ async function resolvePressPoint(
   // 2026-09-11, a reading of this code that the next round measures). `refused` is spelled the way
   // `guarded-touch.ts` spells the reason, so one search finds every refusal in a record, the
   // `aim_check` row's included. Called at the throw, so `point` is the one the rung judged.
+  /**
+   * internal #135 — the last question before a coordinate press: WHAT IS AT THAT POINT NOW?
+   *
+   * Every rung above asks about the WINDOW — has it moved, has it resized, is it minimised, is a
+   * stranger drawn over the point, does the point still fall inside. None asks whether the thing at
+   * the point is the thing the act named, and the row said so out loud (`identityBaseline`). So a
+   * press could land on a different control in the right window and answer `ok:true`: MEASURED
+   * 2026-09-20 win2 (internal `750a5f3`, arm G1r) — a fixture's button RENAMED in place after
+   * discover took the downgraded press, and the fixture logged `PRESS OTHERQ` for an act that named
+   * `BTNW`.
+   *
+   * **The comparison is the NAME, and only the name** (win2's spike, internal `0a368f8`):
+   *   - `controlType` always disagrees — the click road reads a WPF `Button`, the point read
+   *     normalises to the `Text` inside it. Comparing it would refuse every press.
+   *   - `automationId` is empty on both sides for the measured fixtures, and two empties agree
+   *     about nothing.
+   *   - the test is the act's OWN predicate — a case-insensitive substring, which is how both
+   *     clients find an element by name in the first place — so an inner `Text` carrying the
+   *     button's name reads as the same thing, because to the search it IS.
+   *
+   * **It refuses on one ground only, and says nothing on the rest.** Saying nothing has two shapes,
+   * and the round that measured them corrected the prediction (win2, internal `4fd61b6`): a control
+   * with NO NAME gives `unreadable` — the row is read and then dropped for having an empty Name —
+   * while a region with no control of its own gives `window_answered`, the window's own title and
+   * `controlType:"Window"`. The second is byte for byte what a REMOVED control answers, which is why
+   * "the element is gone" cannot be read out of it. Both press.
+   *
+   * **What is left to guard is narrower than the case that motivated it**, because #133 and #134
+   * moved first: an element that was renamed or removed is no longer FOUND by the UIA search, so
+   * item 16 refuses it before the ladder reaches a coordinate at all (measured — all four of the
+   * first arms of this round ended there, and the fixture had to grow a control that is found by
+   * name and cannot be invoked to reach this rung). What reaches here is an element the search
+   * still matches and cannot act on, over a point something else now holds.
+   *
+   * **And it does not replace the occlusion rung**: with another window over the point, the read
+   * answers that window's control — same name, different window (measured, S6). Only the OS's hit
+   * test knows whose window it is, which is `pointOwner`'s question, asked above. Measured from the
+   * other side too (win2, internal `4fd61b6`): over a click-through overlay the OS hit test named
+   * the fixture while this read named the overlay's window, so the verdict was `window_answered`
+   * and the press went out — correctly, and only because this rung does not refuse on that answer.
+   *
+   * Asked only for an entity UIA named, because the comparison is against a UIA name: an OCR label
+   * that misreads one character would refuse a press that is perfectly good.
+   *
+   * The refusal is `entity_not_found` — the reason a renamed control already gets on the UIA road
+   * (item 16), with the same recovery — rather than a new one. Two reasons with one recovery is one
+   * more thing to keep in step, and the sentence a caller needs is identical.
+   *
+   * Cost, measured: 4 ms on the native road, 361 ms through PowerShell (which today answers null for
+   * everything — internal #138 — so on that build this rung says `unreadable` and presses).
+   */
+  const allow = async (): Promise<{ x: number; y: number }> => {
+    const named = entity.locator?.uia?.name?.trim() ?? "";
+    const at = named === "" ? undefined : await deps.elementAtPoint?.(x, y);
+    const atName = at?.name?.trim() ?? "";
+    const windowShaped = at !== undefined && at !== null
+      && (at.controlType === "Window" || at.controlType === "Pane");
+    const verdict = named === "" ? "not_asked"
+      : deps.elementAtPoint === undefined ? "not_asked"
+      : at === null || at === undefined ? "unreadable"
+      : atName === "" ? "unnamed"
+      : windowShaped ? "window_answered"
+      : atName.toLowerCase().includes(named.toLowerCase()) ? "same"
+      : "different";
+    probeAim("act.route", {
+      route: "element_check",
+      verdict,
+      why: named === "" ? "entity_not_named_by_uia"
+        : deps.elementAtPoint === undefined ? "no_element_at_point_dep"
+        : null,
+      coordHwnd: String(aimHwnd),
+      coordHwndFrom: handleFrom,
+      point: { x, y },
+      named: named === "" ? null : named,
+      atPoint: at ? { name: at.name, controlType: at.controlType, automationId: at.automationId ?? null } : null,
+      label,
+    });
+    if (verdict === "different") {
+      throw refusal("element_at_point_differs", "entity_not_found", new TargetGoneError(
+        `Refusing to click (${x}, ${y}) for "${label}": UIA says the element at that point is ` +
+        `"${atName}" (${at?.controlType}), and this act named "${named}". The coordinates come from ` +
+        `a rectangle remembered at discover time, and something else holds it now — a control that ` +
+        `was renamed in place, or a list that moved under it. Nothing was clicked. Re-run ` +
+        `desktop_discover and act on the new lease.`,
+        because,
+        `The element at those coordinates is "${atName}" and this act named "${label}", so the ` +
+        `press was not made: re-run desktop_discover and act on what it returns.`,
+      ));
+    }
+    return { x, y };
+  };
   const refusal = (rung: string, refused: string, err: Error): Error => {
     probeAim("act.route", {
       route: "refusal",
@@ -724,7 +829,7 @@ async function resolvePressPoint(
   if (owner?.kind === "owned") {
     // Absence is not evidence: an entity that recorded no origin keeps the allowance it always had.
     if (capturedIn === undefined || owner.hwnd === capturedIn || owner.via !== "os_hit_test") {
-      return { x, y };
+      return allow();
     }
     throw refusal("owned_window_not_origin", "aim_point_outside_window", new AimedPointOutsideWindowError(
       `Refusing to click (${x}, ${y}) for "${label}": these coordinates were measured in window ` +
@@ -778,7 +883,7 @@ async function resolvePressPoint(
       because,
     ));
   }
-  return { x, y };
+  return allow();
 }
 
 /**
@@ -2385,6 +2490,16 @@ function getSharedRealDeps(): ExecutorDeps {
       // Synchronous on purpose: it reads one enumeration snapshot, and an await here would let the
       // screen change between the question and the press it is protecting.
       return whoIsUnderPoint(aimHwnd, x, y);
+    },
+
+    async elementAtPoint(x, y) {
+      // internal #135 — the read the rung compares against. `includeUnnamed` is left off: an
+      // element with no name cannot be compared to one, and the rung's `unnamed` and `unreadable`
+      // verdicts both press. The short timeout is deliberate — this sits between the decision and
+      // the press, and a slow answer is worth less than a prompt one (4 ms native, measured).
+      const { getFocusedAndPointInfo } = await import("../engine/uia-bridge.js");
+      const { atPoint } = await getFocusedAndPointInfo(x, y, true, 2000);
+      return atPoint === null ? null : { name: atPoint.name, controlType: atPoint.controlType, ...(atPoint.automationId !== undefined && { automationId: atPoint.automationId }) };
     },
 
     async aimIdentity(hwnd) {
