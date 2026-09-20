@@ -526,9 +526,18 @@ async function resolvePressPoint(
      * refused identically. A refusal whose own recovery cannot clear it is worse than the press it
      * withholds.
      *
-     * What that gives up, said plainly: a short name inside a longer unrelated one reads as the
-     * same thing — `"OK"` in `"Lookup"`, `"X"` in almost anything. This rung refuses only on clear
-     * grounds, and a two-letter name over an unknown control is not one.
+     * **What it gives up, and it is not what an earlier draft of this comment said.** The boundary
+     * closed the short-name hole as a side effect — `"OK"` in `"Lookup"` and `"X"` in almost
+     * anything are both `different` now (measured). What remains is that the boundary is ASCII:
+     * `/[a-z0-9]/` calls every kana and kanji a boundary, so `保存` over a point holding `保存しない`
+     * reads as the same thing and the press goes out. That is the ordinary unsaved-changes dialog
+     * on the locale this product is measured on, and it is the mispress that destroys something.
+     * It is pre-existing — plain containment did the same — but the rule added here to stop "the
+     * row next door" does not stop it in Japanese. `/[\p{L}\p{N}]/u` flips exactly that pair and
+     * no measured arm (gate 2 ran the table both ways); it is not taken here because tightening has
+     * the other trap — an outer `保存` whose inner `Text` reads `保存ボタン` would then be refused
+     * with an `entity_not_found` that re-discovery cannot clear, which is what this rung spent two
+     * rounds removing. It needs a measured CJK arm first: internal #140.
      */
     const sameName = (a: string, b: string): boolean => {
       const fold = (t: string) => t.toLowerCase().replace(/&/g, "").replace(/\s+/g, " ").trim();
