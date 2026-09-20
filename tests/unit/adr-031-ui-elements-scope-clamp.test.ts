@@ -124,10 +124,8 @@ const ARGS = {
 
 const scopeWith = async (boundingRect: { x: number; y: number; width: number; height: number }) => {
   vi.mocked(getElementBounds).mockResolvedValue({
-    name: "Save",
-    controlType: "Button",
-    automationId: "",
-    boundingRect,
+    found: { name: "Save", controlType: "Button", automationId: "", boundingRect, value: null },
+    via: "native",
   } as Awaited<ReturnType<typeof getElementBounds>>);
   return scopeElementHandler(ARGS);
 };

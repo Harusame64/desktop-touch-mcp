@@ -1912,6 +1912,57 @@ export interface ElementBounds {
 }
 
 /**
+ * Why a bounds read came back with nothing — internal #142.
+ *
+ * `null` used to mean all of these at once, and the caller that has to explain a timeout
+ * (`wait_until`) picked one and said it: MEASURED 2026-09-20 win2, a wait against a window title
+ * matching no window at all answers `why: "element_not_found"` and advises checking the ELEMENT
+ * name against `desktop_discover`. The element name was never the problem.
+ *
+ * Both clients know the difference and both roads threw it away, in two different places:
+ * `get_element_bounds_impl` (`src/uia/tree.rs`) turns a failed `find_window` and a failed
+ * `find_element_in_window` into the same `Ok(None)`, and the PowerShell script prints
+ * `{"error":"Window not found"}` and `{"error":"Element not found"}` as distinct answers which
+ * this file then collapsed with `if (parsed.error) return null`.
+ *
+ * This change stops the collapse on the road that still has the information. The native road
+ * cannot say yet: `unreadable` is what it answers, and that is the honest value rather than a
+ * guess, because the field does not exist in the addon. Closing it is a Rust change and a rebuilt
+ * addon — and a build without that field must not be read as if it had one.
+ */
+export type BoundsMiss =
+  /** The title matched no top-level window. Checking the element's name cannot help. */
+  | "window_not_found"
+  /** The window was there and nothing in it matched. */
+  | "element_not_found"
+  /** The client that answered says "no" without saying which of the two. Today: the native road. */
+  | "unreadable"
+  /** The read itself failed, and no other client answered either. */
+  | "read_failed";
+
+/** Which UIA client produced an answer. */
+export type UiaVia = "native" | "powershell";
+
+/**
+ * A bounds read, and the provenance of its answer — internal #142.
+ *
+ * `via` is WHO ANSWERED, not who was asked. That matters because the two clients do not name the
+ * same control the same way (internal #136: `Minimize` here, `最小化` there; twenty of Notepad's
+ * twenty-six elements differ, control types included). So a read that fell back from one client to
+ * the other answered a different question than the caller asked, and the old shape had nowhere to
+ * say so.
+ *
+ * `nativeFailed` is present only when the native client was asked, threw, and the PowerShell road
+ * answered instead. MEASURED 2026-09-20 win2 (internal `25da27f`): hanging the target window's UI
+ * thread makes the native call throw `UIA operation timed out after 8000ms` while the PowerShell
+ * road answers normally in 3.6 s — same call, same window, same moment. The caller got an ordinary
+ * answer, and the only trace was a `console.warn` on the server's stderr.
+ */
+export type BoundsAnswer =
+  | { found: ElementBounds; via: UiaVia; nativeFailed?: string }
+  | { found: null; why: BoundsMiss; via: UiaVia; nativeFailed?: string; error?: string };
+
+/**
  * Get the UI element subtree rooted at a specific element (not the whole window tree).
  * Used by scope_element to return children of only the matched element.
  */
@@ -2290,8 +2341,14 @@ export async function getElementBounds(
   name?: string,
   automationId?: string,
   controlType?: string
-): Promise<ElementBounds | null> {
+): Promise<BoundsAnswer> {
   refuseUiaTitleIfExcluded(windowTitle);
+  /**
+   * What the native client threw, if it was asked and it did. Carried onto whatever the PowerShell
+   * road then answers, because the fall-back is the part the caller cannot otherwise see and the
+   * two clients do not speak the same names (internal #136, #142).
+   */
+  let nativeFailed: string | undefined;
   // ★ Rust native path (Phase C)
   if (nativeUia?.uiaGetElementBounds) {
     try {
@@ -2301,15 +2358,21 @@ export async function getElementBounds(
         automationId: automationId ?? undefined,
         controlType: controlType ?? undefined,
       });
-      if (!result) return null;
+      // `Ok(None)` from the engine is "no", with the reason discarded in Rust: `find_window` and
+      // `find_element_in_window` both land here. `unreadable` says that, rather than picking one.
+      if (!result) return { found: null, why: "unreadable", via: "native" };
       return {
-        name: result.name,
-        controlType: result.controlType,
-        automationId: result.automationId,
-        boundingRect: result.boundingRect ?? null,
-        value: result.value ?? null,
+        found: {
+          name: result.name,
+          controlType: result.controlType,
+          automationId: result.automationId,
+          boundingRect: result.boundingRect ?? null,
+          value: result.value ?? null,
+        },
+        via: "native",
       };
     } catch (e) {
+      nativeFailed = e instanceof Error ? e.message : String(e);
       console.warn("[uia-bridge] Native uiaGetElementBounds failed, falling back to PowerShell:", e);
     }
   }
@@ -2359,10 +2422,27 @@ try {
   try {
     const output = await runPS(script, 8000);
     const parsed = JSON.parse(output);
-    if (parsed.error) return null;
-    return parsed as ElementBounds;
-  } catch {
-    return null;
+    // The script already tells the two apart — it prints one or the other and exits. Collapsing
+    // them with `if (parsed.error) return null` is what made a wait against a window that does not
+    // exist advise the caller to check the ELEMENT name (internal #142, measured).
+    if (parsed.error) {
+      const why: BoundsMiss = parsed.error === "Window not found" ? "window_not_found"
+        : parsed.error === "Element not found" ? "element_not_found"
+        // A third thing this road can print one day. Named as unreadable rather than folded into
+        // either of the two above, which is the mistake this change is undoing.
+        : "unreadable";
+      return { found: null, why, via: "powershell", ...(nativeFailed !== undefined && { nativeFailed }) };
+    }
+    return { found: parsed as ElementBounds, via: "powershell", ...(nativeFailed !== undefined && { nativeFailed }) };
+  } catch (e) {
+    // The read itself failed: the script did not run, timed out, or did not produce JSON. Distinct
+    // from both misses above — nothing looked, so nothing can be concluded about the window or the
+    // element.
+    return {
+      found: null, why: "read_failed", via: "powershell",
+      error: e instanceof Error ? e.message : String(e),
+      ...(nativeFailed !== undefined && { nativeFailed }),
+    };
   }
 }
 

@@ -950,9 +950,17 @@ export const scopeElementHandler = async ({
     // element metadata and the screenshot came from another. Being uniformly
     // wrong is recoverable; being inconsistent with yourself is not.
     const hintsBlock = buildHintsForTitle(effectiveTitle);
-    const bounds = await getElementBounds(effectiveTitle, name, automationId, controlType);
+    const answer = await getElementBounds(effectiveTitle, name, automationId, controlType);
+    const bounds = answer.found;
     if (!bounds) {
-      return failWith("Element not found", "scope_element", { windowTitle, name, automationId, controlType });
+      // internal #142 — the read says which silence it was and which client said it; the refusal
+      // carries both rather than one sentence for four different answers. `window_not_found` in
+      // particular is not something a different element name can fix.
+      return failWith("Element not found", "scope_element", {
+        windowTitle, name, automationId, controlType,
+        why: answer.why, via: answer.via,
+        ...(answer.nativeFailed !== undefined && { nativeFailed: answer.nativeFailed }),
+      });
     }
 
     const content: ToolResult["content"] = [];

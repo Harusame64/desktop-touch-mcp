@@ -21,10 +21,19 @@ type Bounds = { name: string; controlType?: string; automationId?: string; value
 let bounds: Bounds = null;
 let readThrows: Error | null = null;
 
+/**
+ * The stand-in speaks the shape the bridge speaks — internal #142. `miss` is what the read says
+ * when it answers nothing, and the default is the one this file was written around: an element
+ * that was not there, said by the PowerShell client.
+ */
+let miss: { why: string; via: string; nativeFailed?: string; error?: string } =
+  { why: "element_not_found", via: "powershell" };
+let foundVia: "native" | "powershell" = "powershell";
+
 vi.mock("../../src/engine/uia-bridge.js", () => ({
   getElementBounds: async () => {
     if (readThrows) throw readThrows;
-    return bounds;
+    return bounds ? { found: bounds, via: foundVia } : { found: null, ...miss };
   },
 }));
 vi.mock("../../src/engine/win32.js", () => ({
@@ -40,7 +49,10 @@ vi.mock("../../src/utils/desktop-config.js", () => ({ getCdpPort: () => 9222 }))
 
 const { waitUntilHandler } = await import("../../src/tools/wait-until.js");
 
-beforeEach(() => { bounds = null; readThrows = null; });
+beforeEach(() => {
+  bounds = null; readThrows = null; foundVia = "powershell";
+  miss = { why: "element_not_found", via: "powershell" };
+});
 
 /** The envelope a timed-out wait produces, parsed. */
 async function waitFor(condition: string, timeoutMs = 600): Promise<Record<string, unknown>> {
@@ -140,7 +152,7 @@ describe("a timed-out wait says which silence it was", () => {
     const spy = vi.spyOn(uia, "getElementBounds").mockImplementation(async () => {
       polls += 1;
       if (polls === 1) throw original;
-      return bounds as never;
+      return { found: bounds, via: "powershell" } as never;
     });
     const envelope = await waitFor("value_changes");
     spy.mockRestore();
@@ -178,6 +190,70 @@ describe("a timed-out wait says which silence it was", () => {
         condition, target: { windowTitle: "App", elementName: "Save" },
       });
     }
+  });
+
+  it("does not blame the element name when no window matched at all", async () => {
+    // THE DEFECT internal #142 CLOSES, measured on Windows before it was fixed: a wait against a
+    // title that matches no window answered `why: "element_not_found"` and advised checking
+    // `target.elementName` against a discovery tool. Nothing was ever looked for — there was
+    // nowhere to look — and re-reading the element name could not have helped.
+    miss = { why: "window_not_found", via: "powershell" };
+    const envelope = await waitFor("element_appears");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: false, why: "window_not_found" });
+    expect(suggestOf(envelope)[0]).toMatch(/No window matched target\.windowTitle/);
+    // …and it does NOT open with the element-name line, which is the whole point.
+    expect(suggestOf(envelope)[0]).not.toMatch(/target\.elementName/);
+  });
+
+  it("says it could not tell the two apart, rather than picking one", async () => {
+    // The native road's honest answer on a build whose engine discards the reason. Advice that
+    // names BOTH checks in order is worth more than a confident wrong one.
+    miss = { why: "unreadable", via: "native" };
+    const envelope = await waitFor("element_appears");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: false, why: "unreadable", via: "native" });
+    expect(suggestOf(envelope)[0]).toMatch(/without saying whether the WINDOW or the ELEMENT/);
+  });
+
+  it("says a read that failed learned nothing, instead of reporting an absence", async () => {
+    miss = { why: "read_failed", via: "powershell", error: "powershell.exe: timed out" };
+    const envelope = await waitFor("element_appears");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: false, why: "read_failed", error: "powershell.exe: timed out" });
+    expect(suggestOf(envelope)[0]).toMatch(/nothing was learned about the window or the element/);
+  });
+
+  it("says the road changed under the wait, because that changes what a name means", async () => {
+    // MEASURED 2026-09-20 win2 (internal `25da27f`): hanging a window's UI thread makes the native
+    // call throw and the PowerShell road answer. The two clients name some controls differently
+    // (internal #136), so the SAME wait on the SAME live element becomes a timeout — and the old
+    // envelope said `element_not_found` with no hint that anything had changed.
+    miss = { why: "element_not_found", via: "powershell", nativeFailed: "UIA operation timed out after 8000ms" };
+    const envelope = await waitFor("element_appears");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({
+      resolved: false, why: "element_not_found", via: "powershell",
+      nativeFailed: "UIA operation timed out after 8000ms",
+    });
+    // Said SECOND: the first line is still the one the silence earned, and this one explains what
+    // a name means on the road that answered.
+    expect(suggestOf(envelope)[0]).toMatch(/No element by that name/);
+    expect(suggestOf(envelope)[1]).toMatch(/fell back to the PowerShell UIA client/);
+  });
+
+  it("stays quiet about the road when the road did not change", async () => {
+    // An advice line that appears on every answer says nothing. This one is evidence that a
+    // fall-back HAPPENED, so it has to be absent when it did not.
+    miss = { why: "element_not_found", via: "powershell" };
+    const envelope = await waitFor("element_appears");
+    expect(suggestOf(envelope).join(" ")).not.toMatch(/fell back/);
+    expect(contextOf(envelope)["lastLook"]).not.toHaveProperty("nativeFailed");
+  });
+
+  it("names the client on a look that SUCCEEDED too, not only on a miss", async () => {
+    // Which client read a value is part of what the value means, and `value_changes` compares two
+    // readings: two clients over one wait is a comparison across vocabularies.
+    bounds = { name: "Save", value: "draft" };
+    foundVia = "native";
+    const envelope = await waitFor("value_changes");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: true, baseline: "draft", via: "native" });
   });
 
   it("carries no last look for a condition that looks at no element", async () => {

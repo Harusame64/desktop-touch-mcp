@@ -257,7 +257,8 @@ async function applyHoming(
     windowTitle &&
     (delta.sizeChanged || Math.abs(delta.dx) > LARGE_DELTA_PX || Math.abs(delta.dy) > LARGE_DELTA_PX)
   ) {
-    const bounds = await getElementBounds(windowTitle, elementName, elementId);
+    const answer = await getElementBounds(windowTitle, elementName, elementId);
+    const bounds = answer.found;
     if (bounds?.boundingRect) {
       const nx = Math.round(bounds.boundingRect.x + bounds.boundingRect.width / 2);
       const ny = Math.round(bounds.boundingRect.y + bounds.boundingRect.height / 2);
@@ -268,7 +269,12 @@ async function applyHoming(
       // the one that differs when the query matched something else.
       notes.push(
         `re-queried "${elementName ?? elementId}" via UIA, window ${delta.sizeChanged ? "resized" : "moved far"}` +
-        ` → ${bounds.controlType ?? "?"} "${bounds.name}"`,
+        ` → ${bounds.controlType ?? "?"} "${bounds.name}"` +
+        // internal #142 — WHICH client resolved it, and whether it had to. The two clients do not
+        // name the same control the same way (#136), so a re-query that fell back answered with a
+        // different vocabulary than the caller's name came from, and this note is the only place a
+        // caller could ever see that the road changed under a press.
+        ` [${answer.via}${answer.nativeFailed ? `, after native failed: ${answer.nativeFailed}` : ""}]`,
       );
       return { x: nx, y: ny, notes };
     }

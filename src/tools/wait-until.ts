@@ -139,6 +139,19 @@ type LastLook = Record<string, unknown>;
  * earlier poll standing beside a later poll's `resolved: true`, so the "last look" was a composite
  * of two polls that contradicted each other (gate 2).
  */
+/**
+ * Which client answered, and whether the other one was asked first and threw — internal #142.
+ *
+ * `via` goes on every look, found or not, because the two clients do not name the same control the
+ * same way (internal #136), so WHICH of them answered is part of what the answer means.
+ * `nativeFailed` appears only when a read fell back mid-call: MEASURED 2026-09-20 win2 (internal
+ * `25da27f`), hanging a window's UI thread makes the native call throw while the PowerShell road
+ * answers normally, and before this the only trace was a line on the server's stderr.
+ */
+function provenance(answer: { via: string; nativeFailed?: string }): Record<string, unknown> {
+  return { via: answer.via, ...(answer.nativeFailed !== undefined && { nativeFailed: answer.nativeFailed }) };
+}
+
 function write(look: LastLook, seen: Record<string, unknown>): void {
   for (const key of Object.keys(look)) delete look[key];
   Object.assign(look, seen);
@@ -148,7 +161,8 @@ function probeElementAppears(windowTitle: string, elementName: string | undefine
   return async () => {
     if (!elementName) return null;
     try {
-      const bounds = await getElementBounds(windowTitle, elementName);
+      const answer = await getElementBounds(windowTitle, elementName);
+      const bounds = answer.found;
       if (bounds && bounds.boundingRect) {
         // What it RESOLVED, not only that it did: the same read already carries the type and the
         // AutomationId, and a caller that got the wrong element has no other way to see it.
@@ -163,7 +177,13 @@ function probeElementAppears(windowTitle: string, elementName: string | undefine
       // when `bounds` is set — it simply has no rectangle (a collapsed panel, an offscreen control;
       // `uia-bridge.ts` nulls the rect for an empty or infinite one). Calling that "never resolved"
       // put the wrong advice first, which is this change's own defect shape (gate 2).
-      write(look, { resolved: bounds !== null && bounds !== undefined, why: bounds ? "no_rectangle" : "element_not_found" });
+      // The read's own account of the silence, not this probe's guess at it. `element_not_found`
+      // used to be written here for every empty answer, including a window title that matched no
+      // window at all (internal #142, measured) — the caller was then told to check a name that
+      // was never the problem.
+      write(look, bounds
+        ? { resolved: true, why: "no_rectangle", ...provenance(answer) }
+        : { resolved: false, why: answer.why, ...provenance(answer), ...(answer.error ? { error: answer.error } : {}) });
       return null;
     } catch (e) {
       // A window this server may not act through is a REFUSAL, not a thing that has not happened
@@ -204,7 +224,8 @@ function probeValueChanges(windowTitle: string, elementName: string | undefined,
   return async () => {
     if (!elementName) return null;
     try {
-      const bounds = await getElementBounds(windowTitle, elementName);
+      const answer = await getElementBounds(windowTitle, elementName);
+      const bounds = answer.found;
       // THE DISTINCTION THIS CONDITION COULD NOT MAKE: no element at all, and an element whose
       // value never moved, both ended as `value ?? ""` and then as the same timeout. A missing
       // element is not a value of "" — `resolved` says which, and the baseline says what was being
@@ -224,8 +245,8 @@ function probeValueChanges(windowTitle: string, elementName: string | undefined,
       // `resolved: false` asserts an observation that never happened, and "" is exactly the value a
       // missing element is not (gate 2, the same shape one level down).
       write(look, resolved
-        ? { resolved, baseline, latest: cur }
-        : { resolved, why: "element_not_found" });
+        ? { resolved, baseline, latest: cur, ...provenance(answer) }
+        : { resolved, why: answer.why, ...provenance(answer), ...(answer.error ? { error: answer.error } : {}) });
       if (!first && baseline !== null && cur !== baseline) {
         return { before: baseline, after: cur };
       }
@@ -458,11 +479,28 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
           // resolved, and telling its caller to re-check the name sends them to a tool that does not
           // list it either (gate 2). The tool is named by capability, so the sentence says
           // `get_ui_elements` at the kill-switch corner where `desktop_discover` is not registered.
-          ...(lastLook["why"] === "element_not_found"
+          //
+          // internal #142 — `window_not_found` and `unreadable` used to arrive here spelled
+          // `element_not_found`, so a wait against a title that matches NO WINDOW was answered
+          // with "check target.elementName" (measured 2026-09-20 win2). The element name was never
+          // the problem, and no amount of re-reading it would have been.
+          ...(lastLook["why"] === "window_not_found"
+            ? ["No window matched target.windowTitle while waiting — the element was never looked for. Check the title (list_windows) before waiting longer or re-checking the element name"]
+            : lastLook["why"] === "element_not_found"
             ? [`No element by that name was found while waiting — check target.elementName against what {tool:reidentify_element} returns before waiting longer`]
             : lastLook["why"] === "no_rectangle"
               ? ["The element was found but has no rectangle — it is collapsed, zero-size or offscreen. Bring it into view (scroll it, or expand the panel holding it) rather than waiting longer"]
-              : []),
+              : lastLook["why"] === "unreadable"
+                ? ["The read answered 'not there' without saying whether the WINDOW or the ELEMENT was missing. Check the window title first (list_windows), then the element name — this build's UIA engine cannot tell the two apart"]
+                : lastLook["why"] === "read_failed"
+                  ? ["The read itself failed, so nothing was learned about the window or the element — the error is in context.lastLook.error. Retry before changing the target"]
+                  : []),
+          // Said second and only when it happened, because it changes what a NAME means rather
+          // than what to do next: the two UIA clients do not name the same control the same way
+          // (internal #136), so a read that fell back answered in the other one's vocabulary.
+          ...(lastLook["nativeFailed"] !== undefined
+            ? ["This read fell back to the PowerShell UIA client mid-wait, which names some controls differently from the native engine (a caption button is 'Minimize' on one and '最小化' on the other). A name that came from desktop_discover may not match on this road — context.lastLook.nativeFailed says why it fell back"]
+            : []),
           "Increase timeoutMs",
           "Verify the target is correct",
           "Inspect intermediate state with screenshot(detail='meta')",

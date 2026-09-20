@@ -35,7 +35,7 @@ vi.mock("../../src/engine/win32.js", () => ({
   getWindowProcessId: () => 0,
 }));
 vi.mock("../../src/engine/uia-bridge.js", () => ({
-  getElementBounds: async () => null,
+  getElementBounds: async () => ({ found: null, why: "element_not_found", via: "powershell" }),
 }));
 
 import { waitUntilHandler } from "../../src/tools/wait-until.js";
