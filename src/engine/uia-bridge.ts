@@ -1023,7 +1023,17 @@ $result | ConvertTo-Json -Compress
       if (obj.value != null) info.value = obj.value;
       return info;
     };
-    return { focused: toInfo(parsed.focused), atPoint: toInfo(parsed.atPoint) };
+    const atPoint = toInfo(parsed.atPoint);
+    // internal #138, gate 2 — the OTHER way this answer becomes nothing, and after the fix it is the
+    // likelier one: the read found an element and `dropFocusRow` dropped it for having no Name. The
+    // element under a cursor is unnamed far more often than the focused one is (a Pane, a Document,
+    // a Chromium sub-tree), and without this line that lands on `atPoint: null` with no reason — the
+    // shape `atPointWhy` exists to end. It is also the measurement internal #139 needs: how often
+    // the channel is empty because nothing is named, rather than because nothing could be read.
+    if (atPoint === null && parsed.atPoint != null) {
+      console.warn("[uia-bridge] PowerShell point read answered nothing: dropped_unnamed");
+    }
+    return { focused: toInfo(parsed.focused), atPoint };
   } catch {
     return { focused: null, atPoint: null };
   }

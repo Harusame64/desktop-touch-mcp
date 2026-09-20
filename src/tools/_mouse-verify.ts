@@ -162,7 +162,8 @@ function elementsDiffer(a: UiaFocusInfo | null, b: UiaFocusInfo | null): boolean
  *   - pre.elementAtPoint === null AND pre.focusedElement === null
  *     → "unverifiable" (no observation channel — UIA absent on this host)
  *   - any of (elementAtPoint, focusedElement, verticalScrollPos) changed
- *     → "delivered"
+ *     → "delivered" — for elementAtPoint, only when BOTH reads returned a row
+ *       (internal #138: one side missing is the reader's state, not a change)
  *   - foregroundHwnd unchanged AND no other change
  *     → "focus_only" (matrix doc §4.4: "focus held but consumption unconfirmed")
  *   - foregroundHwnd changed but nothing else moved (rare — focus thief)

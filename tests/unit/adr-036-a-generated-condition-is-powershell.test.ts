@@ -11,8 +11,10 @@
  * stderr, and well-formed JSON — `{"focused":{…},"atPoint":null}`. Nothing upstream could tell that
  * answer from "there is nothing at that point". The at-point half of the click-verification channel
  * was therefore dead on every build without the native addon: `_mouse-verify.ts` compares a pre and
- * a post read, and where the FOCUSED half was empty too — which is how it was measured — the verdict
- * was `unverifiable`, with the words "no observation channel available on this host". That sentence
+ * a post read, and where the FOCUSED half was empty too AND nothing else had moved — which is how
+ * it was measured — the verdict was `unverifiable`, with the words "no observation channel
+ * available on this host" (a click that brings a window forward answers `delivered` on the
+ * foreground change alone, whatever UIA said). That sentence
  * names the host for a defect in this file. `desktop_state.cursorOverElement` was permanently null
  * on the same builds, for the same reason.
  *
@@ -56,6 +58,7 @@ const {
   getFocusedAndPointInfo, getElementBounds, getElementChildren, getUiElements, getTextViaTextPattern,
   clickElement, setElementValue, insertTextViaTextPattern2,
   scrollElementIntoView, getScrollAncestors, scrollByPercent,
+  getTextViaValuePattern, getVirtualDesktopStatus,
 } = await import("../../src/engine/uia-bridge.js");
 
 beforeEach(() => { scripts.length = 0; });
@@ -84,15 +87,27 @@ describe("the point read runs at all", () => {
 });
 
 describe("no generated condition is written in JavaScript", () => {
-  // The class, not the one line. The first version of this recogniser matched `if (true)` and
-  // `-eq true` and nothing else, and gate 2 wrote the mutations it let through: the absent-filter
-  // defaults in this same file are `"$true"` strings, and spelling one of them `"true"` emits
-  // `if ((true) -and …)` — same defect, not matched, on a road this file sweeps. So the rule is
-  // the TOKEN: a bare `true` / `false` in generated PowerShell is a command name, never a boolean.
-  // Quoted occurrences are exempt, because a script may legitimately carry the word in a string
-  // (`'true'` as JSON, a `-like` pattern); `$true` is the correct spelling and never matches.
+  // The class, not the one line, and narrowed TWICE by gate 2.
+  //
+  // The first version read `if (true)` and `-eq true` and nothing else, and let through the nearest
+  // sibling: this file's absent-filter defaults are `"$true"` strings, and spelling one `"true"`
+  // emits `if ((true) -and …)`, the same defect on a road this cell sweeps.
+  //
+  // The second version read any bare `true` anywhere inside a condition — and **a window whose
+  // TITLE contains the word would have reddened a correct script**, because every title search
+  // emits `if ($w.Current.Name -like '*<title>*')` and `escapeLike` passes letters through. A cell
+  // that fails on the user's data is worse than the defect it looks for. So the condition arm is
+  // anchored to the START of the condition, where a literal would sit (`if (true)`, `if ((true)`,
+  // `if (-not true)`), and the other two arms are an assignment and a PowerShell operator.
+  //
+  // Case-insensitive, because PowerShell is: `If (True)` and `-EQ true` are the same defect, and
+  // the flagless version passed them (gate 2 again). The operator arm takes any `-word` rather
+  // than a list of five, so `-ceq` / `-ieq` / `-contains` are not four more escapes.
+  //
+  // `$true` is the correct spelling and never matches; a quoted word only escapes where it is not
+  // in one of the three positions — which is the honest scope, not "quoted is exempt".
   const JS_BOOLEAN_TOKEN =
-    /(?:\b(?:if|elseif|while)\s*\([^{]*?(?<!['"$\w-])(?:true|false)(?!['"\w]))|(?:=\s*(?:true|false)(?!['"\w]))|(?:-(?:eq|ne|and|or|not)\s+(?:true|false)(?!['"\w]))/;
+    /(?:\b(?:if|elseif|while)\s*\(\s*[(!-]*\s*(?:true|false)\b)|(?:\(\s*(?:true|false)\s*\))|(?:=\s*(?:true|false)(?!['"\w]))|(?:-[a-z]+\s+(?:true|false)(?!['"\w]))/i;
 
   // Every PowerShell road this module builds that a test can reach without a machine. Gate 2's
   // other half: "the class" was claimed over three roads out of a dozen.
@@ -110,6 +125,12 @@ describe("no generated condition is written in JavaScript", () => {
     ["scrollElementIntoView", () => scrollElementIntoView("App", "Save")],
     ["getScrollAncestors", () => getScrollAncestors("App", "Save")],
     ["scrollByPercent", () => scrollByPercent("App", "Save", 50, -1)],
+    // The three gate 2 found unswept while the sentence said "every road": the by-handle value
+    // write has its own filters — the exact site this recogniser was rebuilt for — and the other
+    // two are exported builders with scripts of their own.
+    ["setElementValue (by handle)", () => setElementValue("App", "x", "Save", undefined, { hwnd: 42n })],
+    ["getTextViaValuePattern", () => getTextViaValuePattern("App")],
+    ["getVirtualDesktopStatus", () => getVirtualDesktopStatus(["42"])],
   ];
 
   for (const [label, call] of roads) {
@@ -129,11 +150,25 @@ describe("no generated condition is written in JavaScript", () => {
     expect("$includePoint = true").toMatch(JS_BOOLEAN_TOKEN);          // the flag-variable form
     expect("while (true) { }").toMatch(JS_BOOLEAN_TOKEN);
     expect("if (-not true) { }").toMatch(JS_BOOLEAN_TOKEN);
+    // A bare literal as an OPERAND rather than the whole condition — the shape a wrongly spelled
+    // absent filter takes when another filter comes first, which escaped the anchored version
+    // (measured on `makeSetValueScriptByHwnd` with `idFilter` spelled `"true"`).
+    expect("if (($c.Name -like '*x*') -and (true)) { }").toMatch(JS_BOOLEAN_TOKEN);
     // …and it does not fire on the correct spelling, or on the word inside a string, or it would
     // pin nothing and redden on scripts that are right.
     expect("if ($true) {").not.toMatch(JS_BOOLEAN_TOKEN);
     expect("$a -eq $false").not.toMatch(JS_BOOLEAN_TOKEN);
     expect("$j = '{\"ok\":true}'").not.toMatch(JS_BOOLEAN_TOKEN);
+    // THE FALSE POSITIVE THIS CELL MUST NOT HAVE, in the shape the product emits it (gate 2): a
+    // window titled `truestore.json — Notepad` goes through `escapeLike` unchanged and lands in
+    // every title search's condition. The earlier recogniser reddened on it.
+    expect("if ($w.Current.Name -like '*truestore.json*') { $target = $w; break }").not.toMatch(JS_BOOLEAN_TOKEN);
     expect("$c.Name -like '*true*'").not.toMatch(JS_BOOLEAN_TOKEN);
+    // PowerShell does not care about case, and neither does the defect.
+    expect("If (True) { }").toMatch(JS_BOOLEAN_TOKEN);
+    expect("WHILE (true) { }").toMatch(JS_BOOLEAN_TOKEN);
+    expect("$a -EQ true").toMatch(JS_BOOLEAN_TOKEN);
+    expect("$a -ceq true").toMatch(JS_BOOLEAN_TOKEN);
+    expect("if ($True) { }").not.toMatch(JS_BOOLEAN_TOKEN);
   });
 });
