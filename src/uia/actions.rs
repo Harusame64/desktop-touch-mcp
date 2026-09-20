@@ -113,7 +113,7 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
         }
     };
 
-    let elem = match find_element_for_action(
+    let elem = match find_element_in_window(
         ctx,
         &window,
         opts.name.as_deref(),
@@ -208,7 +208,7 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
         }
     };
 
-    let elem = match find_element_for_action(
+    let elem = match find_element_in_window(
         ctx,
         &window,
         opts.name.as_deref(),
@@ -292,7 +292,7 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
         }
     };
 
-    let elem = match find_element_for_action(
+    let elem = match find_element_in_window(
         ctx,
         &window,
         opts.name.as_deref(),
@@ -354,10 +354,11 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Find the element an ACT names: the first DESCENDANT of `window`, depth-first, parent before
-/// child, that matches every criterion given (`matches_with_ct`). Click, value and insert use this.
+/// Find the element a call names inside `window`: the first DESCENDANT, depth-first, parent before
+/// child, that matches every criterion given (`matches_with_ct`). Every road uses this one — the
+/// three acts (click, value, insert), the two reads in `tree.rs`, and the three scroll roads.
 ///
-/// **Never the window itself** (internal #133). This used to test the window before its children,
+/// **Never the window itself** (internal #133 for the acts, #134 for the reads). This used to test the window before its children,
 /// by the same case-insensitive name substring — and a window whose title contains the name of one
 /// of its own elements is ordinary ("Save" in "Save As"). MEASURED 2026-09-19 win2 (internal
 /// `c0f9364`): a WPF window titled `RCX-title-BTNW-…` holding a Button `BTNW`; a name-only click
@@ -383,7 +384,7 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
 /// twins still take their first descendant (their filters become `$true`); no shipped call reaches
 /// either: discover drops nameless elements (`uia-provider.ts`), and the V1 tools refuse a call with
 /// neither a name nor an AutomationId.
-pub(crate) fn find_element_for_action(
+pub(crate) fn find_element_in_window(
     ctx: &UiaContext,
     window: &IUIAutomationElement,
     name: Option<&str>,
@@ -397,43 +398,20 @@ pub(crate) fn find_element_for_action(
     find_among_descendants(ctx, window, name, automation_id, control_type)
 }
 
-/// Find the element a READ names — the bounds and children reads in `tree.rs` — testing the window
-/// itself first, then its descendants as `find_element_for_action` does.
+/// **The reads moved here too** (internal #134). They tested the window first, as their PowerShell
+/// twins did (`FindElement $target 0`), so the two clients agreed and neither half could move
+/// alone — both moved in the same change. MEASURED 2026-09-20 win2 (internal `bdef099`, 27 arms):
+/// with a name only the TITLE carried, `wait_until` `element_appears` answered `ok:true` at once
+/// with the window's own rect, the `mouse_click` tier-3 re-query aimed at the window's centre
+/// `(1080,660)` where the button's was `(1080,621)`, and `scope_element`'s remaining code returned
+/// the window and a screenshot of all of it (44,220 bytes against a control's 1,548). Worse, two
+/// entries hid it: `value_changes` and `scroll(action='to_element')` answered byte-for-byte what
+/// they answer when nothing matched at all, so no caller could tell a wrong target from no target.
 ///
-/// **These keep the window** — #133 moved the acts and left the reads where they were — because
-/// their PowerShell twins start their search AT the window (`FindElement $target 0` in
-/// `getElementBounds` and
-/// `makeGetChildrenScript` — win2 read it, correcting the first version of this change, which moved
-/// them with the acts and would have split two clients that agree). So does `find_element` in
-/// `scroll.rs`, with its scroll twins. The same defect is there all the same — a read by a name the
-/// title contains answers with the window, on both clients — and it is a read's, with the reads'
-/// callers (`wait_until`, `scope_element`, the mouse re-query), so it is changed on both clients
-/// together or not at all — internal #134.
+/// None of the reads' callers can mean the window: `wait_until` has `window_appears` for a window,
+/// the mouse re-query is about a control's rect, and a window matched by `get_scroll_ancestors`
+/// walks up to the root and yields an empty list anyway.
 ///
-/// **One thing about the reads DID change: `given` applies here too** (gate 2, which found this
-/// paragraph claiming otherwise). An empty `automationId` used to EXCLUDE every element that has
-/// one, so it accidentally pushed the search past a window with an AutomationId; now it is dropped,
-/// as the PowerShell read scripts have always dropped it (`automationId ? … : "$true"`). It is a
-/// convergence, and it widens the read defect above by one arm: `scope_element(name: "Save",
-/// automationId: "")` on a window whose title contains "Save" and whose AutomationId is set now
-/// answers with the WINDOW, where before the empty id filtered the window out. Recorded on #134
-/// rather than patched here, because patching it here would put the two clients back at odds.
-pub(crate) fn find_element_or_window(
-    ctx: &UiaContext,
-    window: &IUIAutomationElement,
-    name: Option<&str>,
-    automation_id: Option<&str>,
-    control_type: Option<&str>,
-) -> napi::Result<IUIAutomationElement> {
-    let (name, automation_id, control_type) = given(name, automation_id, control_type);
-    let name_lower = name.map(|n| n.to_lowercase());
-    let ct_lower = control_type.map(|c| c.to_lowercase());
-    if matches_with_ct(window, &name_lower, automation_id, &ct_lower) {
-        return Ok(window.clone());
-    }
-    find_among_descendants(ctx, window, name, automation_id, control_type)
-}
-
 /// Which criteria the call actually gave: an empty string is not one.
 ///
 /// It read as two different things ten lines apart, and gate 2 on this change named it. An empty

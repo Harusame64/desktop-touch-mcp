@@ -381,7 +381,7 @@ fn get_element_bounds_impl(
         Err(_) => return Ok(None),
     };
 
-    let elem = match super::actions::find_element_or_window(
+    let elem = match super::actions::find_element_in_window(
         ctx,
         &window,
         opts.name.as_deref(),
@@ -392,7 +392,7 @@ fn get_element_bounds_impl(
         Err(_) => return Ok(None),
     };
 
-    // Read live properties (not cached — the element came from `find_element_or_window`, which may
+    // Read live properties (not cached — the element came from `find_element_in_window`, which may
     // have fetched it with cache, but we need current state for bounds).
     unsafe {
         let name = elem
@@ -468,7 +468,7 @@ fn get_element_children_impl(
 ) -> napi::Result<Vec<UiElement>> {
     let window = find_window(ctx, &opts.window_title)?;
 
-    let target = super::actions::find_element_or_window(
+    let target = super::actions::find_element_in_window(
         ctx,
         &window,
         opts.name.as_deref(),

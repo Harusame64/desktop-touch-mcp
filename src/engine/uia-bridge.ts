@@ -570,6 +570,37 @@ try {
  * which fixes WindowNotFound for common dialogs whose title is not visible
  * in the root children list (e.g. Save As on Windows 11 Notepad).
  */
+/**
+ * The search every PowerShell READ shares: the first DESCENDANT of `$target`, depth-first, parent
+ * before child, that matches `match` — and **never `$target` itself**.
+ *
+ * internal #134. All five of these started at the window (`FindElement $target 0` with the match
+ * test at depth 0), so a name the window's TITLE contains answered with the window: MEASURED
+ * 2026-09-20 win2 (internal `bdef099`) — `wait_until` `element_appears` returned `ok:true` at once
+ * with the window's rect, the `mouse_click` tier-3 re-query aimed at the window's centre, and two
+ * entries (`value_changes`, `scroll(action='to_element')`) answered byte-for-byte what they answer
+ * when nothing matched, hiding it. The native half tested the window too, which is why this moved
+ * with it rather than after it (internal #133 moved the acts; both clients move together or the
+ * roads split).
+ *
+ * `$trueC` and `$target` are the caller's; `$script:found` is what it reads afterwards. The depth
+ * cap counts descendants, so `maxDepth` keeps the reach each road had.
+ */
+function makeFindDescendantPs(match: string, maxDepth: number): string {
+  return `$found = $null
+function FindElement($el, $depth) {
+    if ($script:found) { return }
+    if ($depth -gt 0) {
+        $c = $el.Current
+        if (${match}) { $script:found = $el; return }
+    }
+    if ($depth -gt ${maxDepth}) { return }
+    $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
+    foreach ($k in $kids) { FindElement $k ($depth+1) }
+}
+FindElement $target 0`;
+}
+
 function makeClickElementScriptByHwnd(
   hwnd: bigint,
   name: string | undefined,
@@ -1710,16 +1741,7 @@ foreach ($w in $allWins) {
 }
 if (-not $target) { Write-Output '{"error":"Window not found"}'; exit }
 
-$found = $null
-function FindElement($el, $depth) {
-    if ($script:found) { return }
-    $c = $el.Current
-    if ((${nameFilter}) -and (${idFilter}) -and (${typeFilter})) { $script:found = $el; return }
-    if ($depth -gt 12) { return }
-    $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-    foreach ($k in $kids) { FindElement $k ($depth+1) }
-}
-FindElement $target 0
+${makeFindDescendantPs(`(${nameFilter}) -and (${idFilter}) -and (${typeFilter})`, 12)}
 if (-not $found) { Write-Output '{"error":"Element not found"}'; exit }
 
 $results = [System.Collections.Generic.List[object]]::new()
@@ -2125,16 +2147,7 @@ foreach ($w in $allWins) {
 }
 if (-not $target) { Write-Output '{"error":"Window not found"}'; exit }
 
-$found = $null
-function FindElement($el, $depth) {
-    if ($script:found) { return }
-    $c = $el.Current
-    if ((${nameFilter}) -and (${idFilter}) -and (${typeFilter})) { $script:found = $el; return }
-    if ($depth -gt 12) { return }
-    $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-    foreach ($k in $kids) { FindElement $k ($depth+1) }
-}
-FindElement $target 0
+${makeFindDescendantPs(`(${nameFilter}) -and (${idFilter}) -and (${typeFilter})`, 12)}
 if (-not $found) { Write-Output '{"error":"Element not found"}'; exit }
 
 $c = $found.Current
@@ -2211,16 +2224,7 @@ foreach ($w in $allWins) {
 }
 if (-not $target) { Write-Output '{"ok":false,"scrolled":false,"error":"Window not found"}'; exit }
 
-$found = $null
-function FindElement($el, $depth) {
-    if ($script:found) { return }
-    $c = $el.Current
-    if ((${nameFilter}) -and (${idFilter})) { $script:found = $el; return }
-    if ($depth -gt 12) { return }
-    $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-    foreach ($k in $kids) { FindElement $k ($depth+1) }
-}
-FindElement $target 0
+${makeFindDescendantPs(`(${nameFilter}) -and (${idFilter})`, 12)}
 if (-not $script:found) { Write-Output '{"ok":false,"scrolled":false,"error":"Element not found"}'; exit }
 
 try {
@@ -2297,16 +2301,7 @@ foreach ($w in $allWins) {
 }
 if (-not $target) { Write-Output '{"ok":false,"error":"Window not found","ancestors":[]}'; exit }
 
-$found = $null
-function FindElement($el, $depth) {
-    if ($script:found) { return }
-    $c = $el.Current
-    if ($c.Name -like '*${safeName}*') { $script:found = $el; return }
-    if ($depth -gt 14) { return }
-    $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-    foreach ($k in $kids) { FindElement $k ($depth+1) }
-}
-FindElement $target 0
+${makeFindDescendantPs(`$c.Name -like '*${safeName}*'`, 14)}
 
 $ancestors = @()
 if ($script:found) {
@@ -2396,15 +2391,7 @@ foreach ($w in $allWins) {
 }
 if (-not $target) { Write-Output '{"ok":false,"scrolled":false,"error":"Window not found"}'; exit }
 
-$found = $null
-function FindElement($el, $depth) {
-    if ($script:found) { return }
-    if ($el.Current.Name -like '*${safeName}*') { $script:found = $el; return }
-    if ($depth -gt 14) { return }
-    $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-    foreach ($k in $kids) { FindElement $k ($depth+1) }
-}
-FindElement $target 0
+${makeFindDescendantPs(`$c.Name -like '*${safeName}*'`, 14)}
 if (-not $script:found) { Write-Output '{"ok":false,"scrolled":false,"error":"Element not found"}'; exit }
 
 $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker

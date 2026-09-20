@@ -147,8 +147,9 @@ fn scroll_into_view_impl(
         }
     };
 
-    let elem = match find_element(ctx, &window, opts.name.as_deref(), opts.automation_id.as_deref())
-    {
+    let elem = match super::actions::find_element_in_window(
+        ctx, &window, opts.name.as_deref(), opts.automation_id.as_deref(), None,
+    ) {
         Ok(e) => e,
         Err(e) => {
             return Ok(ScrollResult {
@@ -198,7 +199,9 @@ fn get_scroll_ancestors_impl(
         Err(_) => return Ok(Vec::new()),
     };
 
-    let elem = match find_element(ctx, &window, Some(&opts.element_name), None) {
+    let elem = match super::actions::find_element_in_window(
+        ctx, &window, Some(&opts.element_name), None, None,
+    ) {
         Ok(e) => e,
         Err(_) => return Ok(Vec::new()),
     };
@@ -221,7 +224,9 @@ fn scroll_by_percent_impl(
         }
     };
 
-    let elem = match find_element(ctx, &window, Some(&opts.element_name), None) {
+    let elem = match super::actions::find_element_in_window(
+        ctx, &window, Some(&opts.element_name), None, None,
+    ) {
         Ok(e) => e,
         Err(e) => {
             return Ok(ScrollResult {
@@ -795,83 +800,13 @@ fn find_scroll_pattern_in_subtree(
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/// DFS search for an element by name (case-insensitive substring) and/or
-/// automationId (exact match). Uses CacheRequest to batch property fetches.
-pub(crate) fn find_element(
-    ctx: &UiaContext,
-    window: &IUIAutomationElement,
-    name: Option<&str>,
-    automation_id: Option<&str>,
-) -> napi::Result<IUIAutomationElement> {
-    let name_lower = name.map(|n| n.to_lowercase());
-
-    // Check the window element itself.
-    if matches_element(window, &name_lower, automation_id) {
-        return Ok(window.clone());
-    }
-
-    let mut stack: Vec<(IUIAutomationElement, u32)> = Vec::with_capacity(64);
-
-    if let Ok(child) = unsafe {
-        ctx.walker
-            .GetFirstChildElementBuildCache(window, &ctx.cache_request)
-    } {
-        stack.push((child, 1));
-    }
-
-    while let Some((elem, depth)) = stack.pop() {
-        // Push sibling before match check so siblings are always visited.
-        if let Ok(sib) = unsafe {
-            ctx.walker
-                .GetNextSiblingElementBuildCache(&elem, &ctx.cache_request)
-        } {
-            stack.push((sib, depth));
-        }
-
-        if matches_element(&elem, &name_lower, automation_id) {
-            return Ok(elem);
-        }
-
-        if depth < MAX_SEARCH_DEPTH
-            && let Ok(child) = unsafe {
-                ctx.walker
-                    .GetFirstChildElementBuildCache(&elem, &ctx.cache_request)
-            }
-        {
-            stack.push((child, depth + 1));
-        }
-    }
-
-    Err(napi::Error::from_reason("Element not found"))
-}
-
-/// Check if an element matches by name (case-insensitive substring)
-/// and/or automationId (exact). Both must pass when specified.
-fn matches_element(
-    elem: &IUIAutomationElement,
-    name_lower: &Option<String>,
-    automation_id: Option<&str>,
-) -> bool {
-    let name_ok = match name_lower {
-        Some(target) => unsafe {
-            elem.CachedName()
-                .map(|n| n.to_string().to_lowercase().contains(target.as_str()))
-                .unwrap_or(false)
-        },
-        None => true,
-    };
-
-    let id_ok = match automation_id {
-        Some(target) => unsafe {
-            elem.CachedAutomationId()
-                .is_ok_and(|id| id == target)
-        },
-        None => true,
-    };
-
-    name_ok && id_ok
-}
-
+/// The scroll roads search with `actions::find_element_in_window` — one search for every road.
+///
+/// They had their own copy, and it was the ORIGINAL: the acts' search delegated to it, which is how
+/// the window-first test reached them (internal #133). The reads and the scroll roads kept it until
+/// #134 moved every road to descendants-only, on both clients at once. A window matched by name was
+/// never an answer here either — `walk_scroll_ancestors` walks UP from what it found, so a window
+/// yields an empty list, and `ScrollItemPattern` is not on a top-level window.
 /// Walk from element upward, collecting ancestors that expose ScrollPattern.
 /// Returns outer→inner order (reversed from walk order, matching TS behaviour).
 fn walk_scroll_ancestors(
