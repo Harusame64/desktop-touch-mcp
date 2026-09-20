@@ -218,6 +218,26 @@ describe("issue #443: homing delta uses screenshot-time position", () => {
     expect(text).toMatch(/\[powershell, after native failed: UIA operation timed out after 8000ms\]/);
   });
 
+  it("says why a tier-3 re-query answered nothing, and who said so", async () => {
+    // FOUND BY MUTATION (gate 2): the MISS branch printed "found no element" for all five
+    // silences, including a read that never finished and a window that was not there — and a
+    // re-query that fell back AND missed is the vocabulary trap (#136), which left no trace here
+    // at all while the found branch names its client.
+    const { getElementBounds } = await import("../../src/engine/uia-bridge.js");
+    vi.mocked(getElementBounds).mockResolvedValue({
+      found: null, why: "read_unfinished", via: "none",
+      nativeFailed: "UIA operation timed out after 8000ms",
+    } as Awaited<ReturnType<typeof getElementBounds>>);
+    mockGetSnapshot.mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
+    mockGetCachedByTitle.mockReturnValue(cachedEntry({ x: 0, y: 0, width: 800, height: 600 }, Date.now()));
+    mockGetRect.mockReturnValue({ x: 600, y: 400, width: 800, height: 600 });
+
+    const result = await mouseClickHandler({ ...BASE_ARGS, x: 300, y: 400, elementName: "Save" });
+    const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "";
+    expect(text).toMatch(/answered nothing \(read_unfinished\)/);
+    expect(text).toMatch(/\[none, after native failed: UIA operation timed out after 8000ms\]/);
+  });
+
   it("ignores a stale main-cache entry (TTL guard) instead of applying a bogus offset", async () => {
     mockGetSnapshot.mockReturnValue(null);
     // Stale entry (older than the 60s cache TTL) — must NOT seed screenshotRegion.

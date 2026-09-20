@@ -122,6 +122,14 @@ const ARGS = {
   padding: 20,
 };
 
+/** A read that answered nothing, with the reason the refusal is supposed to be built from. */
+const scopeMissing = async (why: string, via = "powershell") => {
+  vi.mocked(getElementBounds).mockResolvedValue({ found: null, why, via } as Awaited<ReturnType<typeof getElementBounds>>);
+  const result = await scopeElementHandler(ARGS);
+  const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "{}";
+  return JSON.parse(text) as { code?: string; error?: string; suggest?: string[]; context?: Record<string, unknown> };
+};
+
 const scopeWith = async (boundingRect: { x: number; y: number; width: number; height: number }) => {
   vi.mocked(getElementBounds).mockResolvedValue({
     found: { name: "Save", controlType: "Button", automationId: "", boundingRect, value: null },
@@ -166,5 +174,31 @@ describe("scope_element capture region (ADR-031 §2(d))", () => {
     const result = await scopeWith({ x: -1500, y: 400, width: 120, height: 40 });
     expect(result.content.some((c) => c.type === "image")).toBe(false);
     expect(result.content.some((c) => c.type === "text")).toBe(true);
+  });
+});
+
+describe("internal #142 — the refusal is built from which silence it was", () => {
+  // FOUND BY MUTATION (gate 2): `why` was added to the CONTEXT and the refusal itself was left
+  // alone, so a window that does not exist still answered `ElementNotFound` with five suggestions
+  // telling the caller to shorten the element name, re-discover the element, and consider that
+  // their target might be a CSS selector. `why` is data; the advice is what a caller acts on.
+  it("says the WINDOW was not found, rather than blaming the element name", async () => {
+    const envelope = await scopeMissing("window_not_found");
+    expect(envelope.code).toBe("WindowNotFound");
+    expect(envelope.context).toMatchObject({ why: "window_not_found", via: "powershell" });
+    expect((envelope.suggest ?? []).join(" ")).not.toMatch(/shorter partial name|candidate names/);
+  });
+
+  it("says the read did not finish, rather than that the element may not be visible yet", async () => {
+    const envelope = await scopeMissing("read_unfinished", "none");
+    expect(envelope.code).toBe("UiaTimeout");
+    expect(envelope.context).toMatchObject({ why: "read_unfinished", via: "none" });
+  });
+
+  it("still says ElementNotFound when the element really was not found", async () => {
+    // The control: the refusal that was always right must not move.
+    const envelope = await scopeMissing("element_not_found");
+    expect(envelope.code).toBe("ElementNotFound");
+    expect((envelope.suggest ?? []).join(" ")).toMatch(/candidate names/);
   });
 });
