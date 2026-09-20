@@ -547,13 +547,20 @@ if ($clientProviders -eq 'registered' -and $preRegisterChildren -ge 0 -and $firs
  * The warm-up before the registration is not a spare RPC: registering first does nothing at all,
  * silently (measured four ways).
  */
-const PS_REGISTER_CLIENTSIDE_PROVIDERS = `
-# Guarded: this is injected between FromHandle and the walk, inside the stretch a window can
-# vanish in, and a bare FindAll there threw ElementNotAvailableException straight out of the
-# script — so the caller got an exec failure instead of the aim_window_gone code the surrounding
-# try/catch prints (2ゲート目の指摘). A warm-up that could not run is not fatal on its own; the
-# registration below is already best-effort, and the walk that follows raises the real refusal.
-try { $null = $target.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Automation]::ControlViewCondition) } catch {}
+/**
+ * The registration on its own, for the roads that have already touched UIA by the time they get
+ * here.
+ *
+ * What the call needs is not a warm-up on `$target` — it is that the process has made ANY UIA
+ * call first. MEASURED 2026-09-20 win2 (internal `f3ce315`): a title search alone is enough, and a
+ * road that registers straight after `Add-Type`, with no UIA call before it at all, does not
+ * quietly do nothing — it throws `NullReferenceException`, on both fixtures. The note on the
+ * snippet below said "nothing throws in the case that does not work"; on this machine that
+ * sentence is about a DIFFERENT case, the one where the window class has no clientside provider
+ * to register (see `clientProviders: "noop"` on the discover read), and there the call does
+ * succeed and change nothing.
+ */
+const PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL = `
 try {
     $regMethod = [System.Windows.Automation.ClientSettings].GetMethod('RegisterClientSideProviderAssembly')
     if ($null -ne $regMethod) {
@@ -563,6 +570,21 @@ try {
     }
 } catch {}
 `;
+
+const PS_REGISTER_CLIENTSIDE_PROVIDERS = `
+# Guarded: this runs between resolving the window and the walk, inside the stretch a window can
+# vanish in, and a bare FindAll there threw ElementNotAvailableException straight out of the
+# script — so the caller got an exec failure instead of the gone code the surrounding try/catch
+# prints (2ゲート目の指摘). A warm-up that could not run is not fatal on its own; the registration
+# below is already best-effort, and the walk that follows raises the real refusal.
+#
+# This text IS part of the script, and the title road must not so much as mention the handle
+# road's gone code: a cell reads these scripts for that word, because a title search that stops
+# matching is a search that found nothing rather than a window that left. Spelling it here
+# reddened that cell the moment this snippet reached the roads that resolve by title (internal
+# #136) — the comment was making a claim about the road it had been pasted into.
+try { $null = $target.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Automation]::ControlViewCondition) } catch {}
+${PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL}`;
 
 /**
  * ADR-036 internal #136 — find a window by its title, and leave this client able to SEE it.
@@ -587,9 +609,21 @@ try {
  * end. ADR-036 item 16 weighs "the element was not found" by WHICH client answered — a rule that
  * assumes the two clients see the same tree, which here they demonstrably did not.
  *
+ * What this does NOT fix, so the next reader does not have to measure it again: after the
+ * registration the two clients still disagree about what the same control is CALLED. The same
+ * WinForms caption button is `最小化` to the engine's COM client and `Minimize` to this one; the
+ * title bar's name is empty on one road and the window's title on the other; and one button came
+ * back `Button` with one AutomationId here and `Pane` with another there — registering changes the
+ * type as well as the membership. A caller that read a name from `desktop_discover` and hands it
+ * to one of these scripts still misses. MEASURED 2026-09-20 win2 (internal `f3ce315`), and it is
+ * why #136 does not close on this change.
+ *
  * Every caller has `$root` and `$trueC` in scope before this, and reads `$target` after it. The
- * registration goes last, so the warm-up it needs has a `$target` to run against — the order the
- * const above documents, and the one that is silent when it is wrong.
+ * registration goes last and needs no warm-up of its own: what it requires is that the process
+ * has made SOME UIA call first, and the search above is one — measured the same day, against the
+ * spelled-out warm-up, with the same ten elements either way. Registering with nothing before it
+ * throws rather than doing nothing quietly, which is the case the snippet above guards for the
+ * roads that resolve by handle.
  */
 function makeResolveWindowByTitlePs(safeTitle: string, notFoundJson: string): string {
   return `$target = $null
@@ -598,7 +632,7 @@ foreach ($w in $allWins) {
     if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
 }
 if (-not $target) { Write-Output '${notFoundJson}'; exit }
-${PS_REGISTER_CLIENTSIDE_PROVIDERS}`;
+${PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL}`;
 }
 
 /**

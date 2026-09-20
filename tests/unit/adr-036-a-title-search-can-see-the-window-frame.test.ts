@@ -78,18 +78,21 @@ const WARM_UP =
   "$null = $target.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Automation]::ControlViewCondition)";
 
 /**
- * The mechanism, not one spelling of it: SOME `FindAll` on the window has to run before the
- * registration, or the registration does nothing and says nothing.
+ * The mechanism, not one spelling of it: SOME UIA call has to run before the registration.
  *
- * The discover read does not use the shared snippet — its warm-up is
- * `$preRegisterChildren = $target.FindAll($children, $cvCond).Count`, the same RPC doing double
- * duty as the count that REPORTS whether the registration took. Pinning the literal line would
- * have made this cell demand that one road throw its measurement away, which is the cell being
- * wrong about the product rather than the other way round.
+ * MEASURED 2026-09-20 win2 (internal `f3ce315`): a script that registers straight after
+ * `Add-Type`, with nothing before it, throws `NullReferenceException` — it does not fail quietly.
+ * A title search is enough on its own, and the ten elements it then finds are the same ten a
+ * spelled-out warm-up produces, so the title roads pay no extra round trip for it.
+ *
+ * Hence `$root.FindAll` counts as well as `$target.FindAll`. The discover read is a third
+ * spelling again: its warm-up is `$preRegisterChildren = $target.FindAll($children, $cvCond).Count`,
+ * one RPC doing double duty as the count that REPORTS whether the registration took. Pinning any
+ * one line would make this cell demand that a road throw something away.
  */
 const warmsUpBeforeRegistering = (script: string): boolean => {
   const reg = script.indexOf(REGISTER);
-  return reg >= 0 && /\$target\.FindAll\(/.test(script.slice(0, reg));
+  return reg >= 0 && /\$(?:root|target)\.FindAll\(/.test(script.slice(0, reg));
 };
 
 /**
@@ -152,14 +155,24 @@ describe("a script that finds a window by title can see its frame", () => {
     }
   });
 
-  it("the shared snippet still spells its own warm-up, and spells it first", async () => {
-    // The arm above reads the mechanism, so it stays green if the snippet's warm-up is deleted
-    // while the discover read keeps its own. This one holds the line the other twelve roads
-    // depend on — there is nothing else in those scripts to fall back on.
-    const script = await scriptOf(() => getElementBounds("App", "Save"));
+  it("the roads that resolve by handle still spell their own warm-up, and spell it first", async () => {
+    // `FromHandle` is not a search, so those scripts have nothing else before the registration —
+    // and whether `FromHandle` alone satisfies the client was NOT measured (the round that
+    // settled the title roads left it open). The warm-up stays there until it is.
+    const script = await scriptOf(() => clickElement("App", "Save", undefined, undefined, { hwnd: 42n }));
     const warm = script.indexOf(WARM_UP);
     expect(warm).toBeGreaterThanOrEqual(0);
     expect(warm).toBeLessThan(script.indexOf(REGISTER));
+  });
+
+  it("the title roads pay no warm-up of their own, because the search is one", async () => {
+    // Not a saving worth a cell on its own — it is here because the spelled-out warm-up came out
+    // of this file once already, and a future reader adding it back to `makeResolveWindowByTitlePs`
+    // should have to read why it is not needed rather than measure it again (win2, `f3ce315`:
+    // same ten elements with and without, on the fixture where registration does anything at all).
+    const script = await scriptOf(() => getElementBounds("App", "Save"));
+    expect(script).not.toContain(WARM_UP);
+    expect(warmsUpBeforeRegistering(script)).toBe(true);
   });
 
   it("registers for every shape of title a caller can send, not just the convenient one", async () => {
@@ -189,12 +202,12 @@ describe("a script that finds a window by title can see its frame", () => {
     );
   });
 
-  it("registers after the window is found, not before — the warm-up has nothing to run on otherwise", async () => {
-    // `$target` is the warm-up's receiver. Hoisting the registration above the search would make
-    // `$null = $target.FindAll(…)` throw into its own catch, and the registration would then run
-    // in the state measured to do nothing.
+  it("registers after the window is found, not before — there is nothing else to warm it up", async () => {
+    // On a title road the search IS the warm-up, so hoisting the registration above it leaves the
+    // registration as the process's first UIA call — the state measured to throw
+    // `NullReferenceException` rather than to fail quietly.
     const script = await scriptOf(() => getElementBounds("App", "Save"));
-    expect(script.indexOf(TITLE_SEARCH)).toBeLessThan(script.indexOf(WARM_UP));
+    expect(script.indexOf(TITLE_SEARCH)).toBeLessThan(script.indexOf(REGISTER));
   });
 });
 
