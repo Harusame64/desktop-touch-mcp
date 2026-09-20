@@ -948,7 +948,14 @@ export async function getFocusedAndPointInfo(
   // PowerShell fallback
   const safeX = Number.isFinite(x) ? Math.trunc(x) : 0;
   const safeY = Number.isFinite(y) ? Math.trunc(y) : 0;
-  const includePointPS = includePoint ? "true" : "false";
+  // `$true` / `$false`, not JavaScript's spelling. internal #138: this read `"true"`, and
+  // PowerShell has no such literal — a bare `true` in a condition is an unresolved command name,
+  // which `if ()` takes as FALSE. So `if (true) { … }` around the point read never ran, on every
+  // call, since the road was written. MEASURED 2026-09-20 win2 (internal `cadc06f`): the product's
+  // own generated script, run as the product runs it, printed `{"focused":{…},"atPoint":null}` with
+  // an EMPTY stderr and exit code 0 — the block was skipped in silence, and `if (true) { "YES" }
+  // else { "NO" }` printed `NO` on the same host.
+  const includePointPS = includePoint ? "$true" : "$false";
   const script = `
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient
