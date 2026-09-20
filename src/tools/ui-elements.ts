@@ -987,9 +987,14 @@ export const scopeElementHandler = async ({
       // recovery ORDER — you cannot find an element inside a window that is not there. On the
       // PowerShell road it means the script said something this server does not recognise, which
       // is a failed read rather than an ambiguous answer, and the words are in `context.error`.
-      const context = {
-        windowTitle, name, automationId, controlType,
-        why: answer.why, via: answer.via,
+      // WHY THE KEYS ARE SPELLED AT EVERY CALL rather than hoisted into one `context` object: the
+      // codemod shape gate (`check:failwith-fixtures`) classifies a `failWith` context argument by
+      // reading its TOP-LEVEL KEYS, and it exists to notice a root-hoisted key
+      // (`_perceptionForPost`, `_richForPost`, `hints`) arriving in a context. Passing a variable
+      // classifies as `dynamic`, which is not a shape — it is the gate saying it can no longer see.
+      // The first version of this change did that and CI caught it. Only the evidence pair, whose
+      // presence varies, is shared.
+      const readEvidence = {
         // The only evidence a failed read has. Dropping it left `via: "none"` sitting beside
         // "Element not found" with nothing to explain either.
         ...(answer.error !== undefined && { error: answer.error }),
@@ -1005,7 +1010,7 @@ export const scopeElementHandler = async ({
               "Some window on this desktop is answering slowly and it is not necessarily the one you named — resolving a title reads every top-level window's name",
               "This read's budget is fixed, so retrying buys more attempts rather than a longer look: it helps only if the slowness passes",
             ],
-            context,
+            context: { windowTitle, name, automationId, controlType, why: answer.why, via: answer.via, ...readEvidence },
           }
         );
       }
@@ -1018,7 +1023,7 @@ export const scopeElementHandler = async ({
               "Read context.error — it carries what the UIA client actually said, and it is the only evidence this refusal has",
               "Retry before changing the target: a read that failed has not disagreed with you about the name",
             ],
-            context,
+            context: { windowTitle, name, automationId, controlType, why: answer.why, via: answer.via, ...readEvidence },
           }
         );
       }
@@ -1027,7 +1032,7 @@ export const scopeElementHandler = async ({
         : answer.why === "unreadable"
           ? `WindowNotFound: Element not found — or no window matched "${effectiveTitle}"; the native client cannot tell the two apart`
           : "Element not found";
-      return failWith(new Error(msg), "scope_element", context);
+      return failWith(new Error(msg), "scope_element", { windowTitle, name, automationId, controlType, why: answer.why, via: answer.via, ...readEvidence });
     }
 
     const content: ToolResult["content"] = [];
