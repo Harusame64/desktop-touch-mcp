@@ -451,8 +451,9 @@ describe("a dead handle is said out loud, not parsed as a crash", () => {
     // that registered and an act that did not are two views of one window. Measured: discover
     // returned Notepad's `Close`, the act could not find it, and the executor pressed the
     // entity's rect with the mouse — `ok:true`, the truth only in `downgrade`, and `Minimize`'s
-    // rect already at -32000,-32000. Warm-up first: registering before UIA is up does nothing,
-    // silently.
+    // rect already at -32000,-32000. Warm-up first: registering before UIA is up does not take —
+    // whether it also fails quietly is disputed between two rounds, and the account of that is on
+    // `PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL` rather than repeated here (internal #136).
     h.native.engineThrows = true;
     ambiguous();
     h.psOutput = '{"ok":true}';

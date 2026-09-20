@@ -142,7 +142,18 @@ describe("the reads walk from the window's children, not from the window", () =>
     // THE MUTATION THIS EXISTS FOR (gate 2): the defect can come back one line BELOW the walk —
     // `if (-not $script:found) { $c = $target.Current; if (<match>) { $script:found = $target } }` —
     // and every assertion above still passes, because they read the walk only. Two properties kill
-    // it: the script accepts a candidate once, and nothing reads `$target`'s own properties at all.
+    // it: the script accepts a candidate once, and it touches `$target`'s own properties once.
+    //
+    // RE-PINNED, internal #136. This used to read `not.toContain("$target.Current")` — nothing may
+    // read the window's own properties at all — and that arm went red on a change that reads the
+    // window's CAPTION, once, before the walk, in order to REFUSE a title bar that is only
+    // repeating it (the synthesised frame the clientside providers add). An absence was standing in
+    // for "the window is never accepted"; it is now a count, which is the thing itself. The
+    // mutation above still dies on both arms: it adds a second `$script:found = ` and a second
+    // `$target.Current`.
+    //
+    // Narrowing this would have been the silent direction, so the mutation was re-shot after the
+    // change rather than assumed to still fire.
     for (const call of [
       () => getElementBounds(TITLE, NAME),
       () => getElementChildren(TITLE, NAME, undefined, undefined, 2, 50, 5000),
@@ -153,7 +164,10 @@ describe("the reads walk from the window's children, not from the window", () =>
       scripts.length = 0;
       const script = await scriptOf(call);
       expect(script.match(/\$script:found = /g) ?? []).toHaveLength(1);
-      expect(script).not.toContain("$target.Current");
+      expect(script.match(/\$target\.Current/g) ?? []).toHaveLength(1);
+      // …and that one read is the caption, taken before the walk and never used to accept.
+      expect(script).toContain("try { $targetName = $target.Current.Name } catch {}");
+      expect(script).not.toContain("$script:found = $target");
     }
   });
 
