@@ -599,24 +599,38 @@ ${PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL}`;
  * What that costs is not a count. Without the registration this client reaches a legacy window's
  * title bar, menu bar and close button through nothing at all — they are synthesised from MSAA by
  * an assembly registered per process — so a caller that NAMED its window got a tree with no frame
- * in it, while the same caller holding a handle got the frame. MEASURED 2026-09-20 win2 (internal
- * `bdef099`, arm R6): the same fixture window answered 8 children through the COM client the Rust
- * engine uses and 2 through this one, the missing six being the title bar, the menu bar, the three
- * caption buttons and a menu item. The same window was 2 against 26 on Notepad (2026-09-09).
+ * in it, while the same caller holding a handle got the frame. The frameless side is measured and
+ * stands on its own: 2 descendants on a WinForms fixture before registering and 10 after, and 2 on
+ * Notepad where the engine returned 26 (2026-09-09). A second comparison against the engine, taken
+ * 2026-09-20 (win2, internal `bdef099`, arm R6, 8 against 2), is NOT cited here: its native half
+ * was taken with a stale addon, and whether that particular round was affected has not been
+ * established.
  *
  * So this is not only the discover read's problem. `getElementBounds` is what `wait_until` polls
  * and what the mouse's tier-3 re-query asks, and on this client a wait for `Close` could never
  * end. ADR-036 item 16 weighs "the element was not found" by WHICH client answered — a rule that
  * assumes the two clients see the same tree, which here they demonstrably did not.
  *
- * What this does NOT fix, so the next reader does not have to measure it again: after the
- * registration the two clients still disagree about what the same control is CALLED. The same
- * WinForms caption button is `最小化` to the engine's COM client and `Minimize` to this one; the
- * title bar's name is empty on one road and the window's title on the other; and one button came
- * back `Button` with one AutomationId here and `Pane` with another there — registering changes the
- * type as well as the membership. A caller that read a name from `desktop_discover` and hands it
- * to one of these scripts still misses. MEASURED 2026-09-20 win2 (internal `f3ce315`), and it is
+ * What this does NOT fix: registering makes this client see the frame, and does not make it agree
+ * with the engine about what is in it. On the managed side, measured: a WinForms window goes from
+ * 2 descendants to 10, the six new ones being the title bar, the menu bar and the caption buttons,
+ * and one of those controls is reported as a `Pane` before registering and a `Button` after — so
+ * registering changes the control TYPE as well as the membership, and the two readings of one
+ * control differ by more than whether it is there.
+ *
+ * And it does not make the two clients speak the same names. That is not new and is not this
+ * change's to fix — it is written out on `clientProviders` in the read's own types, from the round
+ * that added the field: the same Notepad returns 26 elements on both roads and twenty of them
+ * differ, `Button:Close` here against `Button:閉じる` there, control types included. So a caller
+ * that read a name from the engine and hands it to one of these scripts can still miss, and
+ * registering moves which vocabulary this road speaks rather than removing the second one. That is
  * why #136 does not close on this change.
+ *
+ * A second, fresher comparison (win2, 2026-09-20) said the same thing about a WinForms window, and
+ * it is NOT cited here: its native half was taken with an addon built on 2026-08-29, behind the
+ * tree it was compared against. It agreed with the record above, which is the only reason this
+ * paragraph still says what it says — an agreeing measurement taken on the wrong build is not
+ * evidence, it is a coincidence until re-shot.
  *
  * Every caller has `$root` and `$trueC` in scope before this, and reads `$target` after it. The
  * registration goes last and needs no warm-up of its own: what it requires is that the process
