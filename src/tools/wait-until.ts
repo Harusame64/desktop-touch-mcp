@@ -12,6 +12,7 @@ import {
   type WindowZInfo,
 } from "../engine/win32.js";
 import { getElementBounds } from "../engine/uia-bridge.js";
+import { WindowExcludedError } from "../engine/tool-exclusion.js";
 import { evaluateInTab } from "../engine/cdp-bridge.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 
@@ -117,16 +118,71 @@ function probeFocusChanges(fromHwnd?: string): () => Promise<{ from: string | nu
   };
 }
 
-function probeElementAppears(windowTitle: string, elementName?: string): () => Promise<{ name: string; rect: unknown } | null> {
+/**
+ * internal #137 — what the last look saw, for a wait that ends in a timeout.
+ *
+ * A probe answers `null` for every reason it has: the element was not found, the read failed, the
+ * element was found and the thing being waited for did not happen. The envelope then says
+ * `WaitTimeout` and those are one answer, so a caller cannot tell "I watched the wrong thing" from
+ * "I watched the right thing and it did not move" — MEASURED 2026-09-20 win2 (internal `bdef099`):
+ * `value_changes` answered `WaitTimeout` at 3065 ms against a control arm's 3064 ms, and the two
+ * were the same envelope.
+ *
+ * The probe writes what it last saw here, and the timeout carries it. The FIRST suggestion branches
+ * on it — the only thing that does — because "wait longer" is the wrong first word for a name that
+ * matched nothing.
+ */
+type LastLook = Record<string, unknown>;
+
+/**
+ * Replace the record, never merge into it. Writing key by key left a `why` and an `error` from an
+ * earlier poll standing beside a later poll's `resolved: true`, so the "last look" was a composite
+ * of two polls that contradicted each other (gate 2).
+ */
+function write(look: LastLook, seen: Record<string, unknown>): void {
+  for (const key of Object.keys(look)) delete look[key];
+  Object.assign(look, seen);
+}
+
+function probeElementAppears(windowTitle: string, elementName: string | undefined, look: LastLook): () => Promise<{ name: string; controlType?: string; automationId?: string; rect: unknown } | null> {
   return async () => {
     if (!elementName) return null;
     try {
       const bounds = await getElementBounds(windowTitle, elementName);
       if (bounds && bounds.boundingRect) {
-        return { name: bounds.name, rect: bounds.boundingRect };
+        // What it RESOLVED, not only that it did: the same read already carries the type and the
+        // AutomationId, and a caller that got the wrong element has no other way to see it.
+        return {
+          name: bounds.name,
+          ...(bounds.controlType !== undefined && { controlType: bounds.controlType }),
+          ...(bounds.automationId ? { automationId: bounds.automationId } : {}),
+          rect: bounds.boundingRect,
+        };
       }
+      // `resolved` is about the ELEMENT, and the ternary above proves one came back by that name
+      // when `bounds` is set — it simply has no rectangle (a collapsed panel, an offscreen control;
+      // `uia-bridge.ts` nulls the rect for an empty or infinite one). Calling that "never resolved"
+      // put the wrong advice first, which is this change's own defect shape (gate 2).
+      write(look, { resolved: bounds !== null && bounds !== undefined, why: bounds ? "no_rectangle" : "element_not_found" });
       return null;
-    } catch {
+    } catch (e) {
+      // A window this server may not act through is a REFUSAL, not a thing that has not happened
+      // yet: swallowing it polled the key locker for the whole timeout and answered `WaitTimeout`,
+      // while the product has a `WindowExcluded` code that says nothing was done and why.
+      //
+      // **Rethrown with the code SPELLED INTO THE MESSAGE**, which is how this product carries a
+      // declared code out through `failWith`: `classify` reads the message, never the class or the
+      // name (`_errors.ts`), so the first version of this rethrow arrived as a bare `ToolError`
+      // with no advice at all — the four hand-written `WindowExcluded` lines never fired, and the
+      // description had just been corrected to say `ToolError` means a validation error (gate 2).
+      // `probeUrlMatches` below does the same with `BrowserNotConnected:`.
+      if (e instanceof WindowExcludedError) {
+        throw new Error(`WindowExcluded: ${e.message}`, { cause: e });
+      }
+      // Defensive, not a live road: `getElementBounds` catches everything internally on both
+      // clients, so with the exclusion rethrown above nothing else throws here today. It stands for
+      // a future producer that does (gate 2).
+      write(look, { resolved: false, why: "read_failed", error: e instanceof Error ? e.message : String(e) });
       return null;
     }
   };
@@ -143,22 +199,45 @@ function probeReadyState(_windowTitle?: string): () => Promise<{ ready: true } |
   };
 }
 
-function probeValueChanges(windowTitle: string, elementName?: string): () => Promise<{ before: string; after: string } | null> {
+function probeValueChanges(windowTitle: string, elementName: string | undefined, look: LastLook): () => Promise<{ before: string; after: string } | null> {
   let baseline: string | null = null;
   return async () => {
     if (!elementName) return null;
     try {
       const bounds = await getElementBounds(windowTitle, elementName);
+      // THE DISTINCTION THIS CONDITION COULD NOT MAKE: no element at all, and an element whose
+      // value never moved, both ended as `value ?? ""` and then as the same timeout. A missing
+      // element is not a value of "" — `resolved` says which, and the baseline says what was being
+      // compared against, which the probe has held all along and never returned.
+      //
+      // ON THE TIMEOUT ROAD ONLY, and the success road keeps a defect of its own that this does not
+      // touch (gate 2): a baseline read from a live element, then a window that closes, still reads
+      // as `"" !== "draft"` and answers `ok:true` with a change that never happened. `first` is the
+      // old `baseline === null` guard renamed, not a fix for it — the first poll never produced
+      // that answer either. Filed, not fixed here: saying it costs a shape this change does not
+      // carry.
+      const resolved = bounds !== null && bounds !== undefined;
       const cur = bounds?.value ?? "";
-      if (baseline === null) {
-        baseline = cur;
-        return null;
-      }
-      if (cur !== baseline) {
+      const first = baseline === null;
+      if (first) baseline = cur;
+      // The readings are printed only where there was something to read. `baseline: ""` beside
+      // `resolved: false` asserts an observation that never happened, and "" is exactly the value a
+      // missing element is not (gate 2, the same shape one level down).
+      write(look, resolved
+        ? { resolved, baseline, latest: cur }
+        : { resolved, why: "element_not_found" });
+      if (!first && baseline !== null && cur !== baseline) {
         return { before: baseline, after: cur };
       }
       return null;
-    } catch {
+    } catch (e) {
+      if (e instanceof WindowExcludedError) {
+        throw new Error(`WindowExcluded: ${e.message}`, { cause: e });
+      }
+      // Defensive, not a live road: `getElementBounds` catches everything internally on both
+      // clients, so with the exclusion rethrown above nothing else throws here today. It stands for
+      // a future producer that does (gate 2).
+      write(look, { resolved: false, why: "read_failed", error: e instanceof Error ? e.message : String(e) });
       return null;
     }
   };
@@ -282,6 +361,8 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
   try {
     let probe: () => Promise<unknown | null>;
     let interval = intervalMs;
+    /** internal #137 — what the probe last saw, read only when the wait times out. */
+    const lastLook: LastLook = {};
 
     switch (condition) {
       case "window_appears":
@@ -303,7 +384,7 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
         if (!target.windowTitle || !target.elementName) {
           return failWith("target.windowTitle and target.elementName are required for element_appears", "wait_until");
         }
-        probe = probeElementAppears(target.windowTitle, target.elementName);
+        probe = probeElementAppears(target.windowTitle, target.elementName, lastLook);
         // UIA probe spawns PS (~300ms each) — clamp interval to 500ms to avoid
         // saturating PowerShell startup cost with rapid polls.
         interval = Math.max(intervalMs, 500);
@@ -312,7 +393,7 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
         if (!target.windowTitle || !target.elementName) {
           return failWith("target.windowTitle and target.elementName are required for value_changes", "wait_until");
         }
-        probe = probeValueChanges(target.windowTitle, target.elementName);
+        probe = probeValueChanges(target.windowTitle, target.elementName, lastLook);
         interval = Math.max(intervalMs, 500);
         break;
       case "ready_state":
@@ -368,12 +449,30 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
       "WaitTimeout",
       `wait_until(${condition}) timed out after ${r.elapsedMs}ms`,
       {
+        // internal #137 — the first suggestion is the one the last look earned. "Increase timeoutMs"
+        // is the right advice for a thing that has not happened YET, and the wrong advice for a
+        // name that matched nothing: waiting longer for an element that was never there is the
+        // recovery a caller would otherwise try three times.
         suggest: [
+          // The ground is `why`, not `resolved`: an element that was found and has no rectangle IS
+          // resolved, and telling its caller to re-check the name sends them to a tool that does not
+          // list it either (gate 2). The tool is named by capability, so the sentence says
+          // `get_ui_elements` at the kill-switch corner where `desktop_discover` is not registered.
+          ...(lastLook["why"] === "element_not_found"
+            ? [`No element by that name was found while waiting — check target.elementName against what {tool:reidentify_element} returns before waiting longer`]
+            : lastLook["why"] === "no_rectangle"
+              ? ["The element was found but has no rectangle — it is collapsed, zero-size or offscreen. Bring it into view (scroll it, or expand the panel holding it) rather than waiting longer"]
+              : []),
           "Increase timeoutMs",
           "Verify the target is correct",
           "Inspect intermediate state with screenshot(detail='meta')",
         ],
-        context: { condition, target, timeoutMs },
+        context: {
+          condition, target, timeoutMs,
+          // What the last poll saw. Absent when the probe had nothing to say (a condition that does
+          // not look at an element), rather than an empty object that reads as "it saw nothing".
+          ...(Object.keys(lastLook).length > 0 ? { lastLook } : {}),
+        },
       },
     );
   } catch (err) {
@@ -409,7 +508,7 @@ export function registerWaitUntilTool(server: McpServer): void {
       purpose: "Server-side poll for an observable condition — eliminates screenshot-polling loops when waiting for state changes.",
       details: "condition selects what to watch: window_appears/window_disappears (target.windowTitle required), focus_changes (optional target.fromHwnd), element_appears/value_changes (target.windowTitle + target.elementName required, UIA; min 500ms interval), ready_state (target.windowTitle; visible + not minimized), terminal_output_contains (target.windowTitle + target.pattern required [+target.regex:true], needs terminal tools loaded), element_matches (target.by + target.pattern required, needs browser tools loaded), url_matches (target.pattern required [+target.regex:true]; matches the active tab's location.href via CDP — use for SPA route changes, redirects, OAuth flows). Returns {ok:true, elapsedMs, observed} on success, or WaitTimeout error with suggest hints. timeoutMs default 5000 (max 60000).",
       prefer: "Use instead of run_macro({sleep:N}) + screenshot loops. Use terminal_output_contains to detect CLI command completion. Use element_matches for browser DOM readiness after navigation. Use url_matches when the URL is the most reliable signal (SPA routing / redirect cascades).",
-      caveats: "terminal_output_contains, element_matches, and url_matches require a browser CDP connection (open --remote-debugging-port=9222 first). element_appears/value_changes spawn a UIA process per poll — interval clamped to 500ms minimum. On elapsed-timeout the response is {ok:false, code:'WaitTimeout', error, suggest:[...]}; the suggest[] array lists three fixed actions: 'Increase timeoutMs', 'Verify the target is correct', 'Inspect intermediate state with screenshot(detail=\\'meta\\')'. Non-timeout failures also occur — pre-poll validation and missing-hook errors classify as code:'ToolError' (read the descriptive error message), and CDP probe errors (url_matches / element_matches conditions) surface as code:'BrowserNotConnected' (re-attach via browser_open). Branch on code rather than assume WaitTimeout.",
+      caveats: "terminal_output_contains/element_matches/url_matches need a browser CDP connection (open --remote-debugging-port=9222 first). element_appears/value_changes spawn a UIA process per poll (interval floor 500ms). On timeout: {ok:false, code:'WaitTimeout', error, suggest:[...]}; suggest[] may open with a line earned by the last poll — read it, do not index. Those two also return context.lastLook: did the element resolve, why not, and for value_changes baseline/latest — the field's VALUE, so a masked credential arrives as mask characters. Other codes: 'ToolError' (validation / missing hook — read the message), 'BrowserNotConnected' (re-attach via browser_open), and 'WindowExcluded' for a target this server may not act through, answered at once rather than polled. Branch on code.",
       examples: [
         "wait_until({condition:'window_appears', target:{windowTitle:'Save As'}, timeoutMs:10000})",
         "wait_until({condition:'terminal_output_contains', target:{windowTitle:'Terminal', pattern:'$ '}, timeoutMs:30000})",

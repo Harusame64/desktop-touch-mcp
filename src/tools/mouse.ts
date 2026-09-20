@@ -261,9 +261,26 @@ async function applyHoming(
     if (bounds?.boundingRect) {
       const nx = Math.round(bounds.boundingRect.x + bounds.boundingRect.width / 2);
       const ny = Math.round(bounds.boundingRect.y + bounds.boundingRect.height / 2);
-      notes.push(`re-queried "${elementName ?? elementId}" via UIA, window ${delta.sizeChanged ? "resized" : "moved far"}`);
+      // internal #137 — what it RESOLVED, not only that it asked. The note used to name the query
+      // and stop there, so a re-query that landed on the wrong element and one that landed on the
+      // right one read the same, and the coordinates that followed looked equally trustworthy. The
+      // read already carries the name and the type; the name is repeated on purpose, because it is
+      // the one that differs when the query matched something else.
+      notes.push(
+        `re-queried "${elementName ?? elementId}" via UIA, window ${delta.sizeChanged ? "resized" : "moved far"}` +
+        ` → ${bounds.controlType ?? "?"} "${bounds.name}"`,
+      );
       return { x: nx, y: ny, notes };
     }
+    // And a re-query that did not produce a POINT said nothing at all: the correction below is the
+    // plain offset, which is a different claim about where the element is. The two reasons are not
+    // the same thing — an element that was found and has no rectangle is not a missing element
+    // (gate 2), and only one of them means the name was wrong.
+    notes.push(
+      bounds
+        ? `re-query for "${elementName ?? elementId}" via UIA found ${bounds.controlType ?? "?"} "${bounds.name ?? ""}" with no rectangle; kept the offset correction`
+        : `re-query for "${elementName ?? elementId}" via UIA found no element; kept the offset correction`,
+    );
   }
 
   // Simple offset correction
