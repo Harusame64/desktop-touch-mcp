@@ -110,7 +110,7 @@ describe("a coordinate press asks what is at the point", () => {
     expect(String(outcome.ok === false ? outcome.e : "")).toMatch(/OTHERQ/);
     expect((outcome as { e: Error }).e.name).toBe("TargetGoneError");
     expect(elementRows()).toEqual([expect.objectContaining({
-      verdict: "different",
+      atPointVerdict: "different",
       named: "Save",
       atPoint: { name: "OTHERQ", controlType: "Text", automationId: null },
     })]);
@@ -126,20 +126,72 @@ describe("a coordinate press asks what is at the point", () => {
     const { outcome, deps } = await press({ elementAtPoint: () => AT({ controlType: "Text" }) });
     expect(outcome.ok).toBe(true);
     expect(deps.mouseClick).toHaveBeenCalledWith(140, 215);
-    expect(elementRows()[0]).toMatchObject({ verdict: "same" });
+    expect(elementRows()[0]).toMatchObject({ atPointVerdict: "same" });
   });
 
-  it("compares the way the search does — a case-insensitive substring", async () => {
-    // Not equality: this is the predicate both UIA clients use to FIND an element by name, so an
-    // element that answers to the act's name is the same thing to the road that would have clicked
-    // it. `&`-mnemonics and a longer accessible name are the everyday cases.
-    for (const name of ["Save", "save", "Save As…", "SAVE ALL"]) {
+  it("counts either name carrying the other, folding case, mnemonics and whitespace", async () => {
+    // The predicate both UIA clients use to FIND an element by name is a case-insensitive
+    // substring, so an element that answers to the act's name is the same thing to the road that
+    // would have clicked it.
+    for (const name of ["Save", "save", "Save As…", "SAVE ALL", "&Save", "Save  document"]) {
       const { outcome } = await press({ elementAtPoint: () => AT({ name }) });
       expect(outcome.ok, name).toBe(true);
     }
-    // …and the other direction is not the same thing: "Sav" does not carry "Save".
-    const { outcome } = await press({ elementAtPoint: () => AT({ name: "Sav" }) });
+  });
+
+  it("does not refuse a press whose own recovery could never clear it", async () => {
+    // THE DIRECTION GATE 2 CAUGHT. The measured fixture had the point read's name as the longer of
+    // the two (a caption on the `Text` inside the button), and a one-way test passes there. The
+    // other orientation is ordinary — discover records `"Save document (Ctrl+S)"` and the point read
+    // normalises to a `Text` reading `"Save"` — and one-way it refuses with `entity_not_found`,
+    // which tells the caller to re-discover. Re-discovery reads the same augmented name, and the
+    // next act is refused identically: a refusal its own advice cannot clear.
+    const augmented = entity({ locator: { uia: { name: "Save document (Ctrl+S)" } } } as Partial<UiEntity>);
+    const { outcome, deps } = await press({ elementAtPoint: () => AT({ name: "Save" }) }, augmented);
+    expect(outcome.ok).toBe(true);
+    expect(deps.mouseClick).toHaveBeenCalled();
+    expect(elementRows()[0]).toMatchObject({ atPointVerdict: "same" });
+  });
+
+  it("still refuses a name with nothing to do with the one this act carries", async () => {
+    // The widening has a floor: neither string carries the other.
+    const { outcome } = await press({ elementAtPoint: () => AT({ name: "OTHERQ" }) });
     expect(outcome.ok).toBe(false);
+  });
+
+  it("presses when the check itself throws, rather than handing back the blind press", async () => {
+    // The dep is the last thing asked before the press, and its own failure must not become the
+    // press's. Uncaught, a throw leaves the ladder, matches no named refusal class, and arrives as
+    // `executor_failed` — whose published first suggestion is a coordinate click at the entity's
+    // rect, which is the blind press this ladder exists to refuse (gate 2). So a check that could
+    // not be made reads as `unreadable`: the press goes out, and the row says the check failed.
+    const { outcome, deps } = await press({
+      elementAtPoint: () => { throw new Error("RPC_E_DISCONNECTED"); },
+    });
+    expect(outcome.ok).toBe(true);
+    expect(deps.mouseClick).toHaveBeenCalled();
+    expect(elementRows()[0]).toMatchObject({ atPointVerdict: "unreadable", atPoint: null });
+  });
+
+  it("presses when the check rejects, for the same reason", async () => {
+    const { outcome, deps } = await press({
+      elementAtPoint: () => Promise.reject(new Error("timed out")),
+    });
+    expect(outcome.ok).toBe(true);
+    expect(deps.mouseClick).toHaveBeenCalled();
+    expect(elementRows()[0]).toMatchObject({ atPointVerdict: "unreadable" });
+  });
+
+  it("asks about the point the press will use, not the one it was handed", async () => {
+    // A rung that reads the wrong pixel is indistinguishable from a working one unless a cell says
+    // which pixel (gate 2: swapping `(x, y)` for `(y, x)` left every other cell green). The rect
+    // here is 100,200 80x30, so the press point is its centre.
+    const seen: [number, number][] = [];
+    const { outcome } = await press({
+      elementAtPoint: (x: number, y: number) => { seen.push([x, y]); return AT(); },
+    });
+    expect(outcome.ok).toBe(true);
+    expect(seen).toEqual([[140, 215]]);
   });
 
   it("presses when the WINDOW answers, because that is also what an unnamed control looks like", async () => {
@@ -152,7 +204,7 @@ describe("a coordinate press asks what is at the point", () => {
       const { outcome, deps } = await press({ elementAtPoint: () => AT({ name: "App — Fixture", controlType }) });
       expect(outcome.ok, controlType).toBe(true);
       expect(deps.mouseClick).toHaveBeenCalled();
-      expect(elementRows()[0]).toMatchObject({ verdict: "window_answered", atPoint: { controlType } });
+      expect(elementRows()[0]).toMatchObject({ atPointVerdict: "window_answered", atPoint: { controlType } });
     }
   });
 
@@ -160,20 +212,21 @@ describe("a coordinate press asks what is at the point", () => {
     const cases: [string, Partial<ExecutorDeps>, UiEntity, Record<string, unknown>][] = [
       // The read failed or found nothing there. On a build without the native addon this is every
       // call (internal #138), so the rung must not turn that into a refusal.
-      ["unreadable", { elementAtPoint: () => null }, entity(), { verdict: "unreadable", atPoint: null }],
+      ["unreadable", { elementAtPoint: () => null }, entity(), { atPointVerdict: "unreadable", atPoint: null }],
       // An element with a name of nothing cannot be compared to a name. The production dep does not
       // produce this row — `dropFocusRow` drops an unnamed one, so a nameless control arrives as
       // `unreadable` above (measured, win2 `4fd61b6`, where the prediction had been
-      // `window_answered`) — but the dep's contract allows it, and a build that asked for unnamed
-      // rows would send it. Pressing is the same answer either way.
-      ["unnamed", { elementAtPoint: () => AT({ name: "" }) }, entity(), { verdict: "unnamed" }],
+      // `window_answered`). A name of a single SPACE does reach it — `dropFocusRow` drops on `!name`,
+      // so whitespace survives the read and `trim()` empties it here — and so would a build that
+      // asked for unnamed rows. Pressing is the same answer either way.
+      ["unnamed", { elementAtPoint: () => AT({ name: "" }) }, entity(), { atPointVerdict: "unnamed" }],
       // No dep at all: an older build, or a test double. The press is what it was before the rung.
-      ["no dep", {}, entity(), { verdict: "not_asked_no_dep" }],
+      ["no dep", {}, entity(), { atPointVerdict: "not_asked_no_dep" }],
       // A vision entity carries an OCR label, not a UIA name. One misread character would refuse a
       // press that is perfectly good, so it is not asked.
       ["vision entity", { elementAtPoint: () => AT({ name: "OTHERQ" }) },
         entity({ sources: ["visual_gpu"], locator: undefined }),
-        { verdict: "not_asked_entity_unnamed", named: null }],
+        { atPointVerdict: "not_asked_entity_unnamed", named: null }],
     ];
     for (const [label, over, ent, row] of cases) {
       rmSync(logPath, { force: true });
@@ -196,7 +249,7 @@ describe("a coordinate press asks what is at the point", () => {
     const { outcome, deps } = await press(d);
     expect(outcome.ok).toBe(false);
     expect(deps.mouseClick).not.toHaveBeenCalled();
-    expect(elementRows()[0]).toMatchObject({ verdict: "different" });
+    expect(elementRows()[0]).toMatchObject({ atPointVerdict: "different" });
   });
 
   it("does not run where the ladder itself does not — no aim handle, no rung", async () => {

@@ -483,15 +483,54 @@ async function resolvePressPoint(
    * (item 16), with the same recovery — rather than a new one. Two reasons with one recovery is one
    * more thing to keep in step, and the sentence a caller needs is identical.
    *
-   * Cost, measured: 4 ms on the native road, 361 ms through PowerShell (which today answers null for
-   * everything — internal #138 — so on that build this rung says `unreadable` and presses).
+   * Cost, measured: 4 ms on the native road, 384 ms through PowerShell — which answers at all only
+   * since internal #138 (its parent commit); before that this rung said `unreadable` and pressed on
+   * every PowerShell build, which is why the two changes go in this order.
+   *
+   * **The await is the one thing this rung adds to the window it is closing.** `pointOwner` above is
+   * synchronous on purpose — "an await here would let the screen change between the question and the
+   * press it is protecting" — and this one sits after it, so the occlusion and containment verdicts
+   * are that much older when the press goes out. Bounded at 2000 ms on the PowerShell road by
+   * `runPS`; the native call has no timeout of its own (internal #139).
    */
   const allow = async (): Promise<{ x: number; y: number }> => {
     const named = entity.locator?.uia?.name?.trim() ?? "";
-    const at = named === "" ? undefined : await deps.elementAtPoint?.(x, y);
+    // The dep is the LAST thing asked before the press, and its own failure must not become the
+    // press's. Without this catch a throw leaves `resolvePressPoint`, matches no named class, and
+    // arrives as `executor_failed` — whose published first suggestion is a coordinate click at the
+    // entity's rect, the blind press this whole ladder exists to refuse (gate 2). A check that
+    // cannot be made is `unreadable`, which presses, and says so in its row.
+    let at: ElementAtPoint | null | undefined;
+    if (named !== "") {
+      // The CALL is inside the try, not only its promise: a dep that throws synchronously (a
+      // binding that is not there, a module that fails to load) escapes a `.catch()` on the result.
+      try { at = await deps.elementAtPoint?.(x, y); } catch { at = null; }
+    }
     const atName = at?.name?.trim() ?? "";
     const windowShaped = at !== undefined && at !== null
       && (at.controlType === "Window" || at.controlType === "Pane");
+    /**
+     * The same name, in the sense the roads that FIND an element by name use — either string
+     * carrying the other, once case, the `&` mnemonic and runs of whitespace are out of the way.
+     *
+     * **Both directions, because one of them refuses a press that cannot recover** (gate 2). The
+     * measured fixture had the point read's name as the longer one (a button's caption on the
+     * `Text` inside it), and a one-way test passes there — but the other orientation is ordinary:
+     * discover records an accessible name like `"Save document (Ctrl+S)"` while the point read
+     * normalises to a `Text` reading `"Save"`. One-way, that is `different`, so the act is refused
+     * and told to re-discover; re-discovering reads the same augmented name and the next act is
+     * refused identically. A refusal whose own recovery cannot clear it is worse than the press it
+     * withholds.
+     *
+     * What that gives up, said plainly: a short name inside a longer unrelated one reads as the
+     * same thing — `"OK"` in `"Lookup"`, `"X"` in almost anything. This rung refuses only on clear
+     * grounds, and a two-letter name over an unknown control is not one.
+     */
+    const sameName = (a: string, b: string): boolean => {
+      const fold = (t: string) => t.toLowerCase().replace(/&/g, "").replace(/\s+/g, " ").trim();
+      const [x1, y1] = [fold(a), fold(b)];
+      return x1 !== "" && y1 !== "" && (x1.includes(y1) || y1.includes(x1));
+    };
     // The two "not asked" cases say WHICH in the verdict rather than in a `why`: the vocabulary
     // extractor reads a `why` only where it is a literal at the call site (it is the grid's
     // denominator, and a value it cannot read is a slot nobody counted), and a row that is not a
@@ -501,11 +540,16 @@ async function resolvePressPoint(
       : at === null || at === undefined ? "unreadable"
       : atName === "" ? "unnamed"
       : windowShaped ? "window_answered"
-      : atName.toLowerCase().includes(named.toLowerCase()) ? "same"
+      : sameName(atName, named) ? "same"
       : "different";
     probeAim("act.route", {
       route: "element_check",
-      verdict,
+      // NOT `verdict`: the keyboard rows already write that field for a different axis
+      // (`unchecked`, `unconfirmed:receiver_unknown`), and one name carrying two axes is what a
+      // reader selecting rows cannot undo (gate 2). The values live outside the vocabulary gate's
+      // denominator either way — the gate reads `route` / `rung` / `why` / `refused` — which is
+      // recorded in internal #139 rather than left for the next reader to discover.
+      atPointVerdict: verdict,
       coordHwnd: String(aimHwnd),
       coordHwndFrom: handleFrom,
       point: { x, y },
@@ -521,7 +565,7 @@ async function resolvePressPoint(
         `was renamed in place, or a list that moved under it. Nothing was clicked. Re-run ` +
         `desktop_discover and act on the new lease.`,
         because,
-        `The element at those coordinates is "${atName}" and this act named "${label}", so the ` +
+        `The element at those coordinates is "${atName}" and this act named "${named}", so the ` +
         `press was not made: re-run desktop_discover and act on what it returns.`,
       ));
     }
@@ -547,6 +591,10 @@ async function resolvePressPoint(
     // written to prevent, one level up.
     probeAim("act.route", { route: "homing", checked: false, why: "no_aim_rect_dep", coordHwnd: aimHwnd.toString(), coordHwndFrom: handleFrom, from: { x, y }, label });
     probeAim("act.route", { route: "containment_check", checked: false, why: "no_aim_rect_dep", coordHwnd: aimHwnd.toString(), coordHwndFrom: handleFrom, point: { x, y }, label });
+    // internal #135 — and the element check did not run either. A skipped check writes a row saying
+    // so, or a reader counting `element_check` per press cannot tell an old build from a skipped
+    // rung (gate 2).
+    probeAim("act.route", { route: "element_check", atPointVerdict: "not_asked_no_rect_dep", coordHwnd: aimHwnd.toString(), coordHwndFrom: handleFrom, point: { x, y }, label });
     return { x, y };
   }
   const rect = await deps.aimRect(aimHwnd);
@@ -583,6 +631,9 @@ async function resolvePressPoint(
     }
     probeAim("act.route", { route: "homing", checked: false, why: "no_rectangle_and_not_gone", coordHwnd: aimHwnd.toString(), coordHwndFrom: handleFrom, from: { x, y }, label });
     probeAim("act.route", { route: "containment_check", checked: false, why: "no_rectangle_and_not_gone", coordHwnd: aimHwnd.toString(), coordHwndFrom: handleFrom, point: { x, y }, label });
+    // As above: the press below goes out with no element check, and the row says which rung was
+    // skipped rather than leaving its absence to be read as a build without the rung.
+    probeAim("act.route", { route: "element_check", atPointVerdict: "not_asked_no_window_rect", coordHwnd: aimHwnd.toString(), coordHwndFrom: handleFrom, point: { x, y }, label });
     return { x, y };
   }
 
@@ -2496,8 +2547,9 @@ function getSharedRealDeps(): ExecutorDeps {
     async elementAtPoint(x, y) {
       // internal #135 — the read the rung compares against. `includeUnnamed` is left off: an
       // element with no name cannot be compared to one, and the rung's `unnamed` and `unreadable`
-      // verdicts both press. The short timeout is deliberate — this sits between the decision and
-      // the press, and a slow answer is worth less than a prompt one (4 ms native, measured).
+      // verdicts both press. The 2000 ms binds the PowerShell road only (`runPS`); the native call
+      // has none, and at 4 ms measured it has not needed one — recorded in internal #139 rather
+      // than asserted here (gate 2).
       const { getFocusedAndPointInfo } = await import("../engine/uia-bridge.js");
       const { atPoint } = await getFocusedAndPointInfo(x, y, true, 2000);
       return atPoint === null ? null : { name: atPoint.name, controlType: atPoint.controlType, ...(atPoint.automationId !== undefined && { automationId: atPoint.automationId }) };
