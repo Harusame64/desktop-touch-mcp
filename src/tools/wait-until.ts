@@ -412,7 +412,7 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
         // recovery a caller would otherwise try three times.
         suggest: [
           ...(lastLook["resolved"] === false
-            ? [`The ${condition === "value_changes" ? "value" : "element"} was never resolved — check target.elementName against desktop_discover / get_ui_elements before waiting longer`]
+            ? [`The ${condition === "value_changes" ? "value" : "element"} was never resolved — check target.elementName against what desktop_discover returns before waiting longer`]
             : []),
           "Increase timeoutMs",
           "Verify the target is correct",
