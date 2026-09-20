@@ -21,7 +21,7 @@
  * addon being absent, which is true here and false on win2, where every cell would have gone red for
  * a reason that is not the defect).
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const scripts: string[] = [];
 
@@ -71,6 +71,11 @@ const {
 } = await import("../../src/engine/uia-bridge.js");
 
 beforeEach(() => { scripts.length = 0; });
+// The switch is this file's, not the worker's: `vitest.config.ts` sets neither `unstubEnvs` nor
+// `restoreMocks`, and it discusses turning `isolate` off — the day that happens, a file that left
+// the switch set would send every later unit file down the PowerShell road and the suite would go
+// green having measured the other configuration (gate 2).
+afterEach(() => { vi.unstubAllEnvs(); });
 
 /** The one script that call produced. */
 async function scriptOf(call: () => Promise<unknown>): Promise<string> {
@@ -122,6 +127,14 @@ describe("the reads walk from the window's children, not from the window", () =>
       // First match wins — parent before child. Without this the walk keeps going and answers with
       // the LAST match, which the doc above the generator promises it does not.
       expect(block).toContain("if ($script:found) { return }");
+      // AND the walk starts at the window the TITLE chose. Asserted per road, not once, because the
+      // third way to bring the defect back is to leave the walk alone and move its ROOT: start at
+      // `$root` and the window becomes an ordinary depth-1 candidate that the guard happily accepts
+      // (gate 2 — and "search from the root instead" is a real story here, it is how H3 reached the
+      // common dialogs). Every assertion above passes under that mutation; this one does not.
+      const script = scripts[0];
+      expect(script).toContain(`$w.Current.Name -like '*${TITLE}*'`);
+      expect(script).toContain("$target = $w");
     });
   }
 
@@ -144,13 +157,6 @@ describe("the reads walk from the window's children, not from the window", () =>
     }
   });
 
-  it("names the window's own title as the shape that used to answer", async () => {
-    // Not a tautology: it pins that the window IS reachable as `$target` — the search has something
-    // to refuse — and that the title is what put it there.
-    const script = await scriptOf(() => getElementBounds(TITLE, NAME));
-    expect(script).toContain(`$w.Current.Name -like '*${TITLE}*'`);
-    expect(script).toContain("$target = $w");
-  });
 });
 
 describe("the acts search descendants, which never includes the window", () => {
