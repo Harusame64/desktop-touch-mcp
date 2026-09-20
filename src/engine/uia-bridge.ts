@@ -365,10 +365,14 @@ $children = [System.Windows.Automation.TreeScope]::Children
 # close button, not even the text editor. The COM client the Rust engine uses needs none of this,
 # which is why the same window was 2 elements here and 26 there (measured 2026-09-09).
 #
-# ORDER MATTERS, and getting it wrong is silent. Registering straight after Add-Type does
-# nothing at all — measured, four ways: no registration 2 elements, registration alone 2,
-# warm-up alone 2, warm-up THEN registration 26. So the warm-up call below is not a spare RPC;
-# it is what makes the next line take effect. Nothing throws in the case that does not work.
+# ORDER MATTERS. Registering straight after Add-Type does not take — measured, four ways: no
+# registration 2 elements, registration alone 2, warm-up alone 2, warm-up THEN registration 26.
+# So the warm-up call below is not a spare RPC; it is what makes the next line take effect.
+#
+# Whether the failed case is SILENT is an open contradiction, and the account of it lives on
+# PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL in this file, not here. This arm ran the registration
+# inside a try/catch, so a throw would have been swallowed and the script would have gone on to
+# return 2 — which is what it recorded either way.
 #
 # So the result reports what happened, because the failure is invisible otherwise: the count
 # before registering is kept, and the walk's own first level is compared against it at the end.
@@ -544,21 +548,38 @@ if ($clientProviders -eq 'registered' -and $preRegisterChildren -ge 0 -and $firs
  * `-32000,-32000`. So the frame this branch made VISIBLE was only ever pressable through the
  * blind fallback this ADR exists to remove.
  *
- * The warm-up before the registration is not a spare RPC: registering first does nothing at all,
- * silently (measured four ways).
+ * The warm-up before the registration is not a spare RPC: registering first does not take. What
+ * ELSE it does — whether it also fails quietly — is the disputed part, and the account of that is
+ * on PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL below, where the call itself lives.
+ *
+ * This doc belongs to PS_REGISTER_CLIENTSIDE_PROVIDERS, further down; it is written here because
+ * the call it wraps has to be declared first. Gate 2 found the two docs stacked on one const,
+ * which is how an IDE comes to show a sentence for the wrong symbol.
  */
 /**
  * The registration on its own, for the roads that have already touched UIA by the time they get
  * here.
  *
  * What the call needs is not a warm-up on `$target` — it is that the process has made ANY UIA
- * call first. MEASURED 2026-09-20 win2 (internal `f3ce315`): a title search alone is enough, and a
- * road that registers straight after `Add-Type`, with no UIA call before it at all, does not
- * quietly do nothing — it throws `NullReferenceException`, on both fixtures. The note on the
- * snippet below said "nothing throws in the case that does not work"; on this machine that
- * sentence is about a DIFFERENT case, the one where the window class has no clientside provider
- * to register (see `clientProviders: "noop"` on the discover read), and there the call does
- * succeed and change nothing.
+ * call first. MEASURED 2026-09-20 win2 (internal `f3ce315`): a title search alone is enough.
+ *
+ * **THE ONE ACCOUNT of what a too-early registration does, because two rounds disagree and the
+ * disagreement was shipped in four places before anyone noticed.** Both observations, dated:
+ *
+ * - 2026-09-09, inside `makeGetElementsScript`: registering straight after `Add-Type` left the
+ *   read at 2 elements and the script ran to the end. Recorded as "nothing throws".
+ * - 2026-09-20, win2, a bare probe: the same call threw `NullReferenceException`, on both
+ *   fixtures.
+ *
+ * They reconcile if the 2026-09-09 arm swallowed the throw — it ran inside `try { … } catch {}`,
+ * so a script that threw and a script that quietly did nothing both end at 2 elements and both
+ * run to the end. **That is a hypothesis and nobody has measured it**; it is written here so the
+ * next reader inherits the question rather than one of the two answers. What is not in doubt is
+ * the instruction: register after some UIA call, never as the first one.
+ *
+ * A THIRD case is separate from both and is measured: a window class that publishes its own UIA
+ * (a WPF window) registers successfully and gains nothing. The discover read reports it as
+ * `clientProviders: "noop"`, and that is the case where silence is real.
  */
 const PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL = `
 try {
@@ -571,6 +592,12 @@ try {
 } catch {}
 `;
 
+/**
+ * The warm-up AND the registration, for the roads whose only door to the window is `FromHandle`.
+ * See the doc above PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL for what the warm-up is for and for the
+ * one thing about it that two rounds disagree on. A title road needs no warm-up of its own; a
+ * handle road was never measured without one, so it keeps it.
+ */
 const PS_REGISTER_CLIENTSIDE_PROVIDERS = `
 # Guarded: this runs between resolving the window and the walk, inside the stretch a window can
 # vanish in, and a bare FindAll there threw ElementNotAvailableException straight out of the
@@ -639,6 +666,17 @@ ${PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL}`;
  * throws rather than doing nothing quietly, which is the case the snippet above guards for the
  * roads that resolve by handle.
  */
+/**
+ * The element that is the window wearing another name: the synthesised title bar whose `Name` is
+ * the window's own caption. Written once and used by all four searches in this file, because a
+ * guard spelled separately in four places is a guard that will be three places next month.
+ *
+ * Needs `$c` (the element under test) and `$targetName` (the window's caption, read once before
+ * the walk) in scope. Internal #136.
+ */
+const MIRRORS_THE_WINDOW =
+  `$c.ControlType.ProgrammaticName -eq 'ControlType.TitleBar' -and $targetName -ne '' -and $c.Name -eq $targetName`;
+
 function makeResolveWindowByTitlePs(safeTitle: string, notFoundJson: string): string {
   return `$target = $null
 $allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
@@ -668,16 +706,34 @@ ${PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL}`;
  * with it rather than after it (internal #133 moved the acts; both clients move together or the
  * roads split).
  *
+ * …and **never the title bar that merely repeats `$target`'s name** — internal #136, gate 2.
+ * Registering the clientside providers puts a synthesised `TitleBar` in this walk as a depth-1
+ * child, ahead of the client area in MSAA order, and its `Name` is the window's caption. Without
+ * the second guard, `getElementBounds("Save As", "Save")` stops at a thirty-pixel strip across the
+ * top of the window: `wait_until` answers `ok:true` with that rect, the mouse's tier-3 re-query
+ * aims a click at the caption, and `scope_element` screenshots it. That is #134's defect one
+ * element deeper — the fix for a window answering for its contents, failing into the window's own
+ * title bar answering instead.
+ *
+ * Narrow on purpose: a title bar whose name is NOT the window's caption still matches, and so does
+ * one asked for by control type. What is refused is the element that is the window under another
+ * name. The caption is read once, before the walk, rather than per element.
+ *
+ * The frame stays REACHABLE — the walk descends through the title bar as before, so `Close` and
+ * `Minimize` are found as its children, which is what the registration was added for.
+ *
  * `$trueC` and `$target` are the caller's; `$script:found` is what it reads afterwards. The depth
  * cap counts descendants, so `maxDepth` keeps the reach each road had.
  */
 function makeFindDescendantPs(match: string, maxDepth: number): string {
   return `$found = $null
+$targetName = ''
+try { $targetName = $target.Current.Name } catch {}
 function FindElement($el, $depth) {
     if ($script:found) { return }
     if ($depth -gt 0) {
         $c = $el.Current
-        if (${match}) { $script:found = $el; return }
+        if ((${match}) -and -not (${MIRRORS_THE_WINDOW})) { $script:found = $el; return }
     }
     if ($depth -gt ${maxDepth}) { return }
     $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
@@ -722,11 +778,13 @@ $found = $null
 # Only FromHandle was caught, so a window closing here died with a PowerShell exception, reached
 # the caller as a JSON parse error, and the executor read that as an ordinary UIA failure — the
 # route that used to end at a blind press of the remembered rect (PR 側 codex の P1).
+$targetName = ''
+try { $targetName = $target.Current.Name } catch {}
 try {
 $all   = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
-    if ((${nameFilter}) -and (${idFilter}) -and (${typeFilter})) { $found = $el; break }
+    if ((${nameFilter}) -and (${idFilter}) -and (${typeFilter}) -and -not (${MIRRORS_THE_WINDOW})) { $found = $el; break }
 }
 } catch { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
 if (-not $found) { Write-Output '{"ok":false,"error":"Element not found"}'; exit }
@@ -793,11 +851,13 @@ $desc  = [System.Windows.Automation.TreeScope]::Descendants
 $trueC = [System.Windows.Automation.Condition]::TrueCondition
 $found = $null
 # The same catch as the click script's — see there.
+$targetName = ''
+try { $targetName = $target.Current.Name } catch {}
 try {
 $all   = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
-    if ((${nameFilter}) -and (${idFilter})) { $found = $el; break }
+    if ((${nameFilter}) -and (${idFilter}) -and -not (${MIRRORS_THE_WINDOW})) { $found = $el; break }
 }
 } catch { Write-Output '{"ok":false,"error":"Window not found by hwnd","code":"${AIM_WINDOW_GONE}"}'; exit }
 if (-not $found) { Write-Output '{"ok":false,"error":"Element not found"}'; exit }
@@ -840,10 +900,12 @@ $desc  = [System.Windows.Automation.TreeScope]::Descendants
 ${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"error":"Window not found"}`)}
 
 $found = $null
+$targetName = ''
+try { $targetName = $target.Current.Name } catch {}
 $all = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
-    if ((${nameFilter}) -and (${idFilter}) -and (${typeFilter})) {
+    if ((${nameFilter}) -and (${idFilter}) -and (${typeFilter}) -and -not (${MIRRORS_THE_WINDOW})) {
         $found = $el; break
     }
 }
@@ -893,10 +955,12 @@ $desc  = [System.Windows.Automation.TreeScope]::Descendants
 ${makeResolveWindowByTitlePs(safeTitle, `{"ok":false,"error":"Window not found"}`)}
 
 $found = $null
+$targetName = ''
+try { $targetName = $target.Current.Name } catch {}
 $all = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
-    if ((${nameFilter}) -and (${idFilter})) { $found = $el; break }
+    if ((${nameFilter}) -and (${idFilter}) -and -not (${MIRRORS_THE_WINDOW})) { $found = $el; break }
 }
 if (-not $found) { Write-Output '{"ok":false,"error":"Element not found"}'; exit }
 
@@ -1705,11 +1769,13 @@ $desc  = [System.Windows.Automation.TreeScope]::Descendants
 ${resolveTargetPs}
 
 $found = $null
+$targetName = ''
+try { $targetName = $target.Current.Name } catch {}
 try {
 $all = $target.FindAll($desc, $trueC)
 foreach ($el in $all) {
     $c = $el.Current
-    if ((${nameFilter}) -and (${idFilter})) { $found = $el; break }
+    if ((${nameFilter}) -and (${idFilter}) -and -not (${MIRRORS_THE_WINDOW})) { $found = $el; break }
 }
 ${lookupCatchPs}
 if (-not $found) { Write-Output '{"ok":false,"code":"ElementNotFound"}'; exit }

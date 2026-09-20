@@ -7,10 +7,16 @@
  * the registration is not something one road can do on another's behalf: a script that does not
  * run it sees a window with no frame in it.
  *
- * MEASURED 2026-09-20 win2 (internal `bdef099`, arm R6): one fixture window answered **8**
- * children through the COM client the Rust engine uses and **2** through this one — the six
- * missing being the title bar, the menu bar, the three caption buttons and a menu item. Notepad
- * was 26 against 2 on 2026-09-09, and the registration closed it.
+ * MEASURED on the managed side, which is the side this change moves: a WinForms window answers
+ * **2** descendants before registering and **10** after, the six new ones being the title bar, the
+ * menu bar and the caption buttons; Notepad answered 2 here where the engine answered 26
+ * (2026-09-09).
+ *
+ * A second comparison against the engine (win2, 2026-09-20, internal `bdef099`, arm R6, 8 against
+ * 2) was withdrawn the same day and is NOT cited: its native half came from an addon built
+ * 2026-08-29. The withdrawal reached the source comment first and this header second, which is the
+ * shape of the defect it is about — a number copied out of a measurement carries none of the
+ * measurement's conditions with it, and a reader opens the cells to find out why a rule exists.
  *
  * Four scripts out of fourteen carried it, and the split ran THROUGH three functions rather than
  * between them: `makeClickElementScriptByHwnd` registered, `makeClickElementScript` did not; the
@@ -71,6 +77,17 @@ async function scriptOf(call: () => Promise<unknown>): Promise<string> {
 
 /** The line a script emits when it looks for a window by name among the root's children. */
 const TITLE_SEARCH = "$w.Current.Name -like '*";
+/** The other door to a window: a handle the caller already holds. */
+const FROM_HANDLE = "[System.Windows.Automation.AutomationElement]::FromHandle(";
+/**
+ * The roads that resolve no window at all, listed rather than inferred.
+ *
+ * `getFocusedAndPointInfo` asks the desktop what is focused and what is under a point;
+ * `getVirtualDesktopStatus` asks about handles it is given. Neither has a window to register
+ * against, and both are named here so that a road which STOPS resolving a window has to be added
+ * deliberately instead of falling silently out of the sweep.
+ */
+const EXEMPT = ["getFocusedAndPointInfo", "getVirtualDesktopStatus"];
 /** The call that makes the frame visible. */
 const REGISTER = "RegisterClientSideProviderAssembly";
 /** The warm-up the shared snippet spells, verbatim. */
@@ -123,9 +140,22 @@ const roads: [string, () => Promise<unknown>][] = [
 
 describe("a script that finds a window by title can see its frame", () => {
   for (const [label, call] of roads) {
-    it(`${label}: if it searches by title, it registers the clientside providers`, async () => {
+    it(`${label}: if it resolves a window, it registers the clientside providers`, async () => {
       const script = await scriptOf(call);
-      if (!script.includes(TITLE_SEARCH)) return;   // no window search here; nothing to register for
+      // The rule is about resolving a WINDOW, by either door — the by-handle roads search no
+      // title and must register all the same, which is where this whole thing started. A road
+      // that resolves no window is exempt, and naming which ones out loud is the difference
+      // between an exemption and a cell that quietly asserts nothing (gate 2 found two roads
+      // returning early here, covered by no other cell).
+      if (!script.includes(TITLE_SEARCH) && !script.includes(FROM_HANDLE)) {
+        expect(EXEMPT, `${label} resolves no window — name it exempt, or give it the rule`)
+          .toContain(label);
+        // …and today it does not register. Not an endorsement: whether the element-at-point read
+        // should see the frame is open — a point over a title bar answers differently on a client
+        // that cannot see one — and this line is what reddens when someone decides it.
+        expect(script).not.toContain(REGISTER);
+        return;
+      }
       expect(script).toContain(REGISTER);
     });
   }
@@ -137,16 +167,36 @@ describe("a script that finds a window by title can see its frame", () => {
       scripts.length = 0;
       if ((await scriptOf(call)).includes(TITLE_SEARCH)) searched += 1;
     }
-    // Ten roads resolve by title today. Pinned to a floor rather than an equality, so adding a
-    // road does not redden this cell while the arm above already covers it.
-    expect(searched).toBeGreaterThanOrEqual(10);
+    // ELEVEN roads resolve by title today: the ten on the generator plus `makeGetElementsScript`'s
+    // own inline branch. The floor was pinned at ten and the comment said ten (gate 2), which left
+    // room for a road to lose its title search with every cell green — the per-road arm above
+    // exempts exactly the roads that do not search. Pinned to a floor rather than an equality so
+    // that ADDING a road does not redden a cell that already covers it.
+    expect(searched).toBeGreaterThanOrEqual(11);
+  });
+
+  it("the miss is still a one-line exit, and the registration is on the other side of it", async () => {
+    // FOUND BY MUTATION (gate 2): moving the registration INSIDE the not-found branch —
+    //   if (-not $target) { Write-Output '…'; <register>; exit }
+    // left all 31 cells green. The script still contains the registration, still has a `FindAll`
+    // before it, still has the title search before that, still lacks the spelled-out warm-up. The
+    // mutant registers only when the window was NOT found: it ships precisely the frameless tree
+    // this change exists to remove, with the suite green.
+    //
+    // Pinned as the verbatim guard line, because what the mutation destroys is the line, not an
+    // ordering: in the mutant the one-line `if (-not $target) { … ; exit }` no longer exists.
+    const miss = `if (-not $target) { Write-Output '{"error":"Window not found"}'; exit }`;
+    const script = await scriptOf(() => getElementBounds("App", "Save"));
+    expect(script.indexOf(miss)).toBeGreaterThanOrEqual(0);
+    expect(script.indexOf(miss)).toBeLessThan(script.indexOf(REGISTER));
   });
 
   it("warms up first, on every road that registers at all", async () => {
-    // ORDER IS THE WHOLE MECHANISM and getting it wrong is silent: registering straight after
-    // `Add-Type` does nothing, and nothing throws (measured four ways, 2026-09-09). A mutation
-    // that moves the warm-up below the registration leaves a script that runs, exits 0 and
-    // returns a window without a frame — so the cell reads the two positions, not the presence.
+    // ORDER IS THE WHOLE MECHANISM: registering straight after `Add-Type` does not take. Whether
+    // it also fails QUIETLY is an open contradiction between two rounds, and the account of it is
+    // on `PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL` — not restated here, because restating a disputed
+    // finding in a second place is how it came to be shipped in four. Either way the mutation this
+    // cell is for survives the script, so the cell reads the two positions, not the presence.
     for (const [label, call] of roads) {
       scripts.length = 0;
       const script = await scriptOf(call);
@@ -177,7 +227,7 @@ describe("a script that finds a window by title can see its frame", () => {
 
   it("registers for every shape of title a caller can send, not just the convenient one", async () => {
     // FOUND BY MUTATION: making the registration conditional on the title being non-empty —
-    // `${safeTitle ? PS_REGISTER_CLIENTSIDE_PROVIDERS : ""}` — killed nothing, because every road
+    // `${safeTitle ? PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL : ""}` — killed nothing, because every road
     // above is driven with the one title `"App"`. An empty title is not hypothetical: it survives
     // `escapeLike`, emits `-like '**'`, and matches the first root child, so that mutation would
     // ship a frameless tree to a real caller while the suite stayed green.
@@ -191,6 +241,15 @@ describe("a script that finds a window by title can see its frame", () => {
       expect(script, JSON.stringify(title)).toContain(REGISTER);
       expect(warmsUpBeforeRegistering(script), JSON.stringify(title)).toBe(true);
     }
+  });
+
+  it("keeps the reflection lookup out of the pipeline", async () => {
+    // FOUND BY MUTATION (gate 2): dropping `$regMethod = ` is a plausible tidy-up, and it is not
+    // cosmetic — a bare `[…].GetMethod(…)` writes the MethodInfo to stdout, which is the channel
+    // every one of these roads parses as JSON. All ten title roads would start failing at
+    // `JSON.parse`, and no cell noticed.
+    const script = await scriptOf(() => getElementBounds("App", "Save"));
+    expect(script).toMatch(/\$regMethod = \[System\.Windows\.Automation\.ClientSettings\]\.GetMethod\(/);
   });
 
   it("names the assembly exactly, because a typo would be caught and swallowed", async () => {
@@ -208,6 +267,92 @@ describe("a script that finds a window by title can see its frame", () => {
     // `NullReferenceException` rather than to fail quietly.
     const script = await scriptOf(() => getElementBounds("App", "Save"));
     expect(script.indexOf(TITLE_SEARCH)).toBeLessThan(script.indexOf(REGISTER));
+  });
+});
+
+describe("the frame it can now see does not answer for the window", () => {
+  /**
+   * GATE 2, and the reason this change is not just an addition.
+   *
+   * Registering puts a synthesised `TitleBar` into every one of these walks as a depth-1 child,
+   * ahead of the client area in MSAA order, and its `Name` is the window's caption. Every search
+   * here takes the FIRST match of `-like '*needle*'`. So on a window called `Save As`, a search
+   * for `Save` stopped at the title bar — a thirty-pixel strip across the top — and `wait_until`
+   * would answer `ok:true` with that rect, the mouse's tier-3 re-query would aim a click at the
+   * caption, and `scope_element` would screenshot it.
+   *
+   * That is internal #134's defect one element deeper: the fix for "a window answers for its
+   * contents" failing into "the window's own title bar answers instead". The guard is the same
+   * shape as #134's and lives in one constant.
+   */
+  const GUARD = "$c.ControlType.ProgrammaticName -eq 'ControlType.TitleBar'";
+
+  const searching: [string, () => Promise<unknown>][] = [
+    ["getElementBounds", () => getElementBounds("Save As", "Save")],
+    ["getElementChildren", () => getElementChildren("Save As", "Save", undefined, undefined, 2, 50, 5000)],
+    ["clickElement (by title)", () => clickElement("Save As", "Save")],
+    ["clickElement (by handle)", () => clickElement("Save As", "Save", undefined, undefined, { hwnd: 42n })],
+    ["setElementValue (by title)", () => setElementValue("Save As", "x", "Save")],
+    ["setElementValue (by handle)", () => setElementValue("Save As", "x", "Save", undefined, { hwnd: 42n })],
+    ["insertTextViaTextPattern2", () => insertTextViaTextPattern2("Save As", "x", "Save")],
+    ["scrollElementIntoView", () => scrollElementIntoView("Save As", "Save")],
+    ["getScrollAncestors", () => getScrollAncestors("Save As", "Save")],
+    ["scrollByPercent", () => scrollByPercent("Save As", "Save", 50, -1)],
+  ];
+
+  for (const [label, call] of searching) {
+    it(`${label}: refuses a title bar that is only repeating the window's name`, async () => {
+      scripts.length = 0;
+      const script = await scriptOf(call);
+      expect(script).toContain(GUARD);
+      // The caption is read ONCE, before the walk — not per element, which on a 26-element tree
+      // is 26 cross-process property reads per search.
+      expect(script).toContain("try { $targetName = $target.Current.Name } catch {}");
+      expect(script.indexOf("$targetName = $target.Current.Name")).toBeLessThan(script.indexOf(GUARD));
+    });
+  }
+
+  it("refuses the match and never the subtree, or the frame this change unlocked stays locked", async () => {
+    // The guard refuses the MATCH. `Close` and `Minimize` are the title bar's CHILDREN and they
+    // are the whole point of registering, so a guard written as an early `return` — prune the
+    // subtree rather than decline the candidate — hands back exactly the defect this change set
+    // out to fix.
+    //
+    // FOUND BY MUTATION: the first version of this cell compared the guard's POSITION against the
+    // recursion's, and the pruning mutation sits before the recursion too, so all 56 cells stayed
+    // green while `Close` became unreachable again. Position was standing in for structure.
+    //
+    // So: every occurrence of the guard, on every road, is an `-and -not (…)` clause of a match
+    // condition. There is no other legal place for it.
+    for (const [label, call] of searching) {
+      scripts.length = 0;
+      const script = await scriptOf(call);
+      let at = script.indexOf(GUARD);
+      let found = 0;
+      while (at >= 0) {
+        found += 1;
+        expect(script.slice(Math.max(0, at - 11), at), `${label}: the guard is not part of a match test`)
+          .toBe("-and -not (");
+        at = script.indexOf(GUARD, at + 1);
+      }
+      expect(found, `${label}: no guard at all`).toBeGreaterThan(0);
+      // …and the walk still recurses into whatever it declined.
+      if (script.includes("function FindElement(")) {
+        expect(script).toContain("foreach ($k in $kids) { FindElement $k ($depth+1) }");
+      }
+    }
+  });
+
+  it("refuses only the mirror, not every title bar and not an unnamed window", async () => {
+    // Narrow on purpose, and the narrowness is the part a later reader would file off: a title bar
+    // whose name is NOT the caption still matches, and a window whose own name could not be read
+    // refuses nothing (`$targetName -ne ''`) rather than refusing everything.
+    const script = await scriptOf(() => getElementBounds("Save As", "Save"));
+    expect(script).toContain("$targetName -ne ''");
+    expect(script).toContain("$c.Name -eq $targetName");
+    // …and it is an AND with the control type, not a bare name compare, so a Button called the
+    // same as its window is still findable.
+    expect(script).toMatch(/ControlType\.TitleBar' -and \$targetName -ne '' -and \$c\.Name -eq \$targetName/);
   });
 });
 
