@@ -27,6 +27,41 @@ const snap = (over: Partial<MouseVerifySnapshot> = {}): MouseVerifySnapshot => (
   ...over,
 });
 
+describe("internal #138 — a side that could not be read is not a change", () => {
+  // The point read used to answer null on every PowerShell build, because the block that performs
+  // it never ran (`if (true)` is false in PowerShell). Both sides were null, so `elementsDiffer`'s
+  // null-vs-value branch never decided anything. With the read fixed, one side missing is ordinary:
+  // an unnamed element under the cursor (a Pane, a Chromium sub-tree) is dropped, and a repaint can
+  // put a named one there a moment later.
+  it("does not call a press delivered because the point became readable", () => {
+    const r = classifyDelivery(snap(), snap({ elementAtPoint: elemB }), "send_input");
+    // Nothing was observed to move: the only difference is that the second read could see.
+    expect(r.status).not.toBe("delivered");
+  });
+
+  it("does not call it delivered the other way round either", () => {
+    const r = classifyDelivery(snap({ elementAtPoint: elemB }), snap(), "send_input");
+    expect(r.status).not.toBe("delivered");
+  });
+
+  it("still calls it delivered when both sides were read and they differ", () => {
+    const r = classifyDelivery(
+      snap({ elementAtPoint: elemA }),
+      snap({ elementAtPoint: elemB }),
+      "send_input",
+    );
+    expect(r.status).toBe("delivered");
+  });
+
+  it("keeps the focus pair as it was: focus arriving IS a consequence of a press", () => {
+    // Deliberately NOT symmetrical with the point pair. Nothing focused before and a control
+    // focused after is what a click on a focusable control does; what is under the cursor going
+    // from unreadable to readable is not something the press did.
+    const r = classifyDelivery(snap(), snap({ focusedElement: elemA }), "send_input");
+    expect(r.status).toBe("delivered");
+  });
+});
+
 describe("classifyDelivery — issue #178 truth table", () => {
   it("returns 'unverifiable' when both pre and post lack any UIA observation", () => {
     const r = classifyDelivery(snap(), snap(), "send_input");

@@ -9,15 +9,17 @@
  * **It failed in the quietest way available.** MEASURED 2026-09-20 win2 (internal `cadc06f`),
  * running the product's own generated script the way the product runs it: exit code 0, EMPTY
  * stderr, and well-formed JSON — `{"focused":{…},"atPoint":null}`. Nothing upstream could tell that
- * answer from "there is nothing at that point": `_mouse-verify.ts` reads the null pair and reports
- * `unverifiable` with the words "no observation channel available on this host", which names the
- * host for a defect in this file. A whole configuration — every build without the native addon —
- * has never had click verification, and the product said so in a way that read as the machine's
- * fault.
+ * answer from "there is nothing at that point". The at-point half of the click-verification channel
+ * was therefore dead on every build without the native addon: `_mouse-verify.ts` compares a pre and
+ * a post read, and where the FOCUSED half was empty too — which is how it was measured — the verdict
+ * was `unverifiable`, with the words "no observation channel available on this host". That sentence
+ * names the host for a defect in this file. `desktop_state.cursorOverElement` was permanently null
+ * on the same builds, for the same reason.
  *
  * The spike that found it went looking outside first (the call, the parse, the assembly load), and
  * what settled it was running the generated string verbatim: the script ran to the end, and a
- * branch inside it was silently false. This cell reads the same strings the product builds.
+ * branch inside it was silently false. These cells read the same strings the product builds — every
+ * PowerShell road in that module a test can reach without a machine.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
@@ -50,7 +52,11 @@ vi.mock("../../index.js", () => ({
 
 vi.stubEnv("DESKTOP_TOUCH_DISABLE_NATIVE_UIA", "1");
 vi.resetModules();
-const { getFocusedAndPointInfo, getElementBounds, getUiElements } = await import("../../src/engine/uia-bridge.js");
+const {
+  getFocusedAndPointInfo, getElementBounds, getElementChildren, getUiElements, getTextViaTextPattern,
+  clickElement, setElementValue, insertTextViaTextPattern2,
+  scrollElementIntoView, getScrollAncestors, scrollByPercent,
+} = await import("../../src/engine/uia-bridge.js");
 
 beforeEach(() => { scripts.length = 0; });
 afterEach(() => { vi.unstubAllEnvs(); });
@@ -78,31 +84,56 @@ describe("the point read runs at all", () => {
 });
 
 describe("no generated condition is written in JavaScript", () => {
-  // The class, not the one line: any `if (true)` / `if (false)` / `-eq true` reaching PowerShell is
-  // a branch that silently never runs (or always does), with a zero exit and an empty stderr.
-  const JS_BOOLEAN_CONDITION = /(?:if\s*\(\s*(?:true|false)\s*\)|-(?:eq|ne)\s+(?:true|false)\b)/;
+  // The class, not the one line. The first version of this recogniser matched `if (true)` and
+  // `-eq true` and nothing else, and gate 2 wrote the mutations it let through: the absent-filter
+  // defaults in this same file are `"$true"` strings, and spelling one of them `"true"` emits
+  // `if ((true) -and …)` — same defect, not matched, on a road this file sweeps. So the rule is
+  // the TOKEN: a bare `true` / `false` in generated PowerShell is a command name, never a boolean.
+  // Quoted occurrences are exempt, because a script may legitimately carry the word in a string
+  // (`'true'` as JSON, a `-like` pattern); `$true` is the correct spelling and never matches.
+  const JS_BOOLEAN_TOKEN =
+    /(?:\b(?:if|elseif|while)\s*\([^{]*?(?<!['"$\w-])(?:true|false)(?!['"\w]))|(?:=\s*(?:true|false)(?!['"\w]))|(?:-(?:eq|ne|and|or|not)\s+(?:true|false)(?!['"\w]))/;
 
+  // Every PowerShell road this module builds that a test can reach without a machine. Gate 2's
+  // other half: "the class" was claimed over three roads out of a dozen.
   const roads: [string, () => Promise<unknown>][] = [
     ["getFocusedAndPointInfo (with the point)", () => getFocusedAndPointInfo(1, 2)],
     ["getFocusedAndPointInfo (without it)", () => getFocusedAndPointInfo(0, 0, false)],
     ["getElementBounds", () => getElementBounds("App", "Save")],
+    ["getElementChildren", () => getElementChildren("App", "Save", undefined, undefined, 2, 50, 5000)],
     ["getUiElements", () => getUiElements("App")],
+    ["getTextViaTextPattern", () => getTextViaTextPattern("App")],
+    ["clickElement (by title)", () => clickElement("App", "Save")],
+    ["clickElement (by handle)", () => clickElement("App", "Save", undefined, undefined, { hwnd: 42n })],
+    ["setElementValue", () => setElementValue("App", "x", "Save")],
+    ["insertTextViaTextPattern2", () => insertTextViaTextPattern2("App", "x", "Save")],
+    ["scrollElementIntoView", () => scrollElementIntoView("App", "Save")],
+    ["getScrollAncestors", () => getScrollAncestors("App", "Save")],
+    ["scrollByPercent", () => scrollByPercent("App", "Save", 50, -1)],
   ];
 
   for (const [label, call] of roads) {
     it(`${label} writes no JavaScript boolean into a condition`, async () => {
       const script = await scriptOf(call);
-      expect(script).not.toMatch(JS_BOOLEAN_CONDITION);
+      expect(script).not.toMatch(JS_BOOLEAN_TOKEN);
     });
   }
 
   it("the recogniser fires — it is not a regex that matches nothing", async () => {
     // The control this cell needs: the shape it looks for, in the spelling the defect had.
-    expect('if (true) {\n  $x = 1\n}').toMatch(JS_BOOLEAN_CONDITION);
-    expect("if ( false )").toMatch(JS_BOOLEAN_CONDITION);
-    expect("$a -eq true").toMatch(JS_BOOLEAN_CONDITION);
-    // …and it does not fire on the correct spelling, or it would pin nothing.
-    expect("if ($true) {").not.toMatch(JS_BOOLEAN_CONDITION);
-    expect("$a -eq $false").not.toMatch(JS_BOOLEAN_CONDITION);
+    expect("if (true) {\n  $x = 1\n}").toMatch(JS_BOOLEAN_TOKEN);
+    expect("if ( false )").toMatch(JS_BOOLEAN_TOKEN);
+    expect("$a -eq true").toMatch(JS_BOOLEAN_TOKEN);
+    // The mutations gate 2 wrote, which the first recogniser let through:
+    expect("if ((true) -and (true)) { }").toMatch(JS_BOOLEAN_TOKEN);   // an absent filter spelled wrong
+    expect("$includePoint = true").toMatch(JS_BOOLEAN_TOKEN);          // the flag-variable form
+    expect("while (true) { }").toMatch(JS_BOOLEAN_TOKEN);
+    expect("if (-not true) { }").toMatch(JS_BOOLEAN_TOKEN);
+    // …and it does not fire on the correct spelling, or on the word inside a string, or it would
+    // pin nothing and redden on scripts that are right.
+    expect("if ($true) {").not.toMatch(JS_BOOLEAN_TOKEN);
+    expect("$a -eq $false").not.toMatch(JS_BOOLEAN_TOKEN);
+    expect("$j = '{\"ok\":true}'").not.toMatch(JS_BOOLEAN_TOKEN);
+    expect("$c.Name -like '*true*'").not.toMatch(JS_BOOLEAN_TOKEN);
   });
 });

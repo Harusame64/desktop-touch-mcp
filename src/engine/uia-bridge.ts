@@ -993,8 +993,8 @@ if (${includePointPS}) {
             $ec = ''; try { $ec = $ep.Current.ControlType.ProgrammaticName -replace 'ControlType\\.',''; } catch {}
             $ea = ''; try { $ea = $ep.Current.AutomationId } catch {}
             $result.atPoint = @{ name=$en; controlType=$ec; automationId=$ea }
-        }
-    } catch {}
+        } else { $result.atPointWhy = 'from_point_empty' }
+    } catch { $result.atPointWhy = "threw: $($_.Exception.GetType().Name)" }
 }
 
 $result | ConvertTo-Json -Compress
@@ -1004,7 +1004,18 @@ $result | ConvertTo-Json -Compress
     const parsed = JSON.parse(output) as {
       focused?: Record<string, string | undefined> | null;
       atPoint?: Record<string, string | undefined> | null;
+      /**
+       * internal #138 — why the point read has nothing, when it has nothing. Every failure inside
+       * that block used to collapse into `atPoint: null`, which is also what "the point is over
+       * nothing" answers, and that is how a branch that never ran survived unnoticed for the life
+       * of the road. The name is not routed on; it is printed so the next silence has a reason
+       * beside it.
+       */
+      atPointWhy?: string;
     };
+    if (parsed.atPointWhy !== undefined) {
+      console.warn(`[uia-bridge] PowerShell point read answered nothing: ${parsed.atPointWhy}`);
+    }
     const toInfo = (obj: Record<string, string | undefined> | null | undefined): UiaFocusInfo | null => {
       if (!obj || dropFocusRow(obj.name, obj.controlType, includeUnnamed)) return null;
       const info: UiaFocusInfo = { name: obj.name ?? "", controlType: obj.controlType ?? "" };
