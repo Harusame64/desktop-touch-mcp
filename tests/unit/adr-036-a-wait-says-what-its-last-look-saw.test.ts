@@ -157,15 +157,27 @@ describe("a timed-out wait says which silence it was", () => {
     // no advice at all, because `classify` reads the MESSAGE and not the class (gate 2 found both,
     // one round apart). The code is spelled into the message, which is how this product carries a
     // declared code out through `failWith`.
-    readThrows = new WindowExcludedError('UIA target window "Key Locker" belongs to the desktop-touch key locker and is excluded');
-    const started = Date.now();
-    const envelope = await waitFor("element_appears", 5000);
-    expect(envelope["code"]).toBe("WindowExcluded");
-    // It did not wait out the timeout to say so.
-    expect(Date.now() - started).toBeLessThan(2000);
-    // …and the advice for that code is the four lines the product already wrote, not silence.
-    expect(suggestOf(envelope).length).toBeGreaterThan(0);
-    expect(contextOf(envelope)).not.toHaveProperty("lastLook");
+    // BOTH probes, not one: the two were kept symmetric by this change, and deleting the rethrow
+    // from `value_changes` alone left every cell green while that condition went on polling the
+    // locker for its whole timeout (gate 2 wrote the mutation).
+    for (const condition of ["element_appears", "value_changes"]) {
+      readThrows = new WindowExcludedError('UIA target window "Key Locker" belongs to the desktop-touch key locker and is excluded');
+      const started = Date.now();
+      const envelope = await waitFor(condition, 5000);
+      expect(envelope["code"], condition).toBe("WindowExcluded");
+      // It did not wait out the timeout to say so.
+      expect(Date.now() - started, condition).toBeLessThan(2000);
+      // …the advice for that code is the four lines the product already wrote, not silence…
+      expect(suggestOf(envelope).length, condition).toBeGreaterThan(0);
+      // …and it still says WHICH window was refused, which is the detail a caller acts on.
+      expect(String(envelope["error"]), condition).toMatch(/Key Locker/);
+      // The context is the refusal's, not the timeout's. Asserted as an equality rather than as an
+      // absence: `lastLook` cannot appear on this road under any mutation of the probes, so
+      // `not.toHaveProperty` would have been a cell that cannot fail (gate 2).
+      expect(contextOf(envelope), condition).toEqual({
+        condition, target: { windowTitle: "App", elementName: "Save" },
+      });
+    }
   });
 
   it("carries no last look for a condition that looks at no element", async () => {
