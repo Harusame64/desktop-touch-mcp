@@ -92,6 +92,24 @@ const CLI_PID = 5000;
 const WT_PID = 4000;
 
 /**
+ * When THIS process started, in the fixture's clock.
+ *
+ * **IT IS SEEDED, and leaving it to the `1000 + pid` fallback is what made this file flaky for
+ * months** (internal #153, measured 2026-09-21). `SELF` is the real `process.pid`, so the fallback
+ * makes this process's start time depend on a number the OS hands out. The walk in `_resolve-log.ts`
+ * refuses a parent that started AFTER its child — the recycled-pid guard — and the CLI's fallback
+ * start is `1000 + 5000`. So the chain survived only when the machine happened to give the test
+ * runner **a pid above 5000**:
+ *
+ *   morning run, pid 4513 → the chain truncates to one entry, 11 of 47 cells red
+ *   evening run, pid 84757 → 47 of 47 green
+ *
+ * Same command, same commit, two answers. It read as "adding a test file breaks it" and as an
+ * order dependence, because spawning more processes first nudges the pid up. Neither was the cause.
+ */
+const SELF_STARTED_MS = 1000 + CLI_PID + 1;
+
+/**
  * The reported launch chain: this server under the Claude CLI under a Windows
  * Terminal. `wtHwnd` is the session's own WT window; `otherHwnd` is an
  * unrelated terminal owned by a process that is not in the chain.
@@ -119,7 +137,11 @@ function seedSessionTopology(): void {
     [OTHER_TERM_HWND, 9001],
     [NOTEPAD_HWND, 7777],
   ]);
-  processStartTimes = new Map();
+  // The chain models a real launch, so the times have to run in that order: the terminal first,
+  // then the CLI it hosts, then this process. Only SELF needs seeding — every other pid's
+  // `1000 + pid` fallback already satisfies it — and `everyChainRunsParentFirst` below is what
+  // notices if that stops being true.
+  processStartTimes = new Map([[SELF, SELF_STARTED_MS]]);
   consoleWindow = null;
   consoleWindowReadable = true;
 }
@@ -158,6 +180,64 @@ beforeEach(() => {
 
 // ─── Startup snapshot ────────────────────────────────────────────────────────
 
+describe("the fixture itself", () => {
+  it("seeds every chain so a parent starts before its child — the flake this file had for months", () => {
+    // **internal #153.** The walk in `_resolve-log.ts` refuses a parent that started AFTER its
+    // child (the recycled-pid guard) and TRUNCATES the chain there. So a topology whose times run
+    // the wrong way does not fail loudly — it silently returns a shorter chain, and the cells that
+    // assert on it fail with a diff about pids, which reads like a product defect.
+    //
+    // That is what happened: `SELF` is the real `process.pid`, its start time fell through to the
+    // `1000 + pid` fallback, and the CLI's fallback start is 6000 — so **the chain survived only
+    // when the machine handed the test runner a pid above 5000.** Measured the same day on the same
+    // commit: pid 4513 → 11 of 47 red; pid 84757 → 47 of 47 green. It was read as "adding a test
+    // file breaks it" and as an order dependence, because spawning processes first nudges the pid
+    // up; neither was the cause.
+    //
+    // **This cell is the part that makes it not happen again.** Picking better numbers fixes today;
+    // checking the ORDER fixes the class. It walks the seeded topology rather than the product, so
+    // it says "the fixture is wrong" instead of letting the product's cells say it for it.
+    seedSessionTopology();
+
+    // **FIRST, AND IT IS THE ONE THAT CATCHES THE ORIGINAL BUG.** The order check below computes
+    // `SELF`'s start the same way the fixture does, so on a machine that happened to hand out a
+    // high pid it agrees with the fallback and both stay green — measured: reverting the seed and
+    // re-running here left this cell passing, because this runner's pid was 84,859. So the property
+    // that has to be asserted is not "the times are ordered" but **"this process's start time does
+    // not come from its pid"**. That one is deterministic on every machine.
+    expect(
+      processStartTimes.has(SELF),
+      "SELF's start time is back on the `1000 + pid` fallback — it then depends on the pid the OS " +
+        "hands the runner, and the chain silently truncates below ~5000 (internal #153)",
+    ).toBe(true);
+
+    const startOf = (pid: number) => processStartTimes.get(pid) ?? 1000 + pid;
+
+    let pid = SELF;
+    const seen = new Set<number>();
+    const walked: number[] = [];
+    while (!seen.has(pid)) {
+      seen.add(pid);
+      walked.push(pid);
+      const parent = parentMap.get(pid);
+      if (parent === undefined || parent === 0) break;
+      expect(
+        startOf(parent),
+        `the fixture has ${parent} (parent) starting after ${pid} (child) — the walk truncates there, ` +
+          `and every chain assertion below reads the truncation as a product defect`,
+      ).toBeLessThan(startOf(pid));
+      pid = parent;
+    }
+
+    // CONTROLS: the walk really walked, and the guard it models can really fire — otherwise an
+    // empty loop would pass as "every parent starts first".
+    expect(walked, "the seeded chain is not the three-deep launch this file describes").toEqual([
+      SELF, CLI_PID, WT_PID,
+    ]);
+    expect(startOf(CLI_PID)).toBeGreaterThan(startOf(WT_PID) - 1001);
+  });
+});
+
 describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
   it("records the launch chain, the console window, and the own console host", () => {
     consoleWindow = 0xabc0n;
@@ -176,7 +256,7 @@ describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
     });
     // Self first, then up the chain, image names included.
     expect(snap[0].ancestry).toEqual([
-      { pid: SELF, processName: "node.exe", startTimeMs: 1000 + SELF },
+      { pid: SELF, processName: "node.exe", startTimeMs: SELF_STARTED_MS },
       { pid: CLI_PID, processName: "node.exe", startTimeMs: 1000 + CLI_PID },
       { pid: WT_PID, processName: "WindowsTerminal.exe", startTimeMs: 1000 + WT_PID },
     ]);
@@ -252,7 +332,7 @@ describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
     const snap = events("topology_snapshot")[0];
     expect(snap.processSnapshotUnavailable).toBe(true);
     expect(snap.ancestry).toEqual([
-      { pid: SELF, processName: "node.exe", startTimeMs: 1000 + SELF },
+      { pid: SELF, processName: "node.exe", startTimeMs: SELF_STARTED_MS },
     ]);
   });
 
