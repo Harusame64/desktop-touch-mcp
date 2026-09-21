@@ -78,13 +78,60 @@ export function escapeLike(s: string): string {
 }
 
 /** Execute a PowerShell script string and return stdout */
+/**
+ * A PowerShell failure with the SCRIPT taken out of it — internal #148.
+ *
+ * `execFile` builds its message as `Command failed: <the whole command line>`, and the command line
+ * here is a thirty-line script. Every road that lets that error escape hands the caller a few
+ * kilobytes of PowerShell — and worse than the tokens, **the script decides the error code**:
+ * `classify` matches by substring, and the discover script contains
+ * `$wantedPats.Add('InvokePattern')`.
+ *
+ * MEASURED 2026-09-21 win2 (internal `c6d5e00`): with a window's UI thread hung,
+ * `get_ui_elements` answered **`InvokePatternNotSupported`** after 18 s — five suggestions about
+ * invoke patterns, for a window that was merely not answering, about an element that supports
+ * invoke perfectly well. Nothing in this product chose that code. A line of the script did.
+ *
+ * #697 clamped this at ONE road (`getElementBounds`). The clamp lives on the PRODUCER now, so a
+ * road cannot lose it by being written later. The fields the roads read are carried across:
+ * `killed` separates this module's own budget from someone else's kill, `stdout` is the answer a
+ * killed process may already have printed, `stderr` is what the client actually said.
+ */
+function clampPsFailure(e: unknown): Error {
+  const killed = typeof e === "object" && e !== null && (e as { killed?: boolean }).killed === true;
+  // `cause` keeps the spawn/exec site reachable from a stack that otherwise ends here (gate 2).
+  const clamped = new Error(shortPsFailure(e, killed), { cause: e });
+  // RECOGNISED BY `name`, deliberately: a subclass would not survive the shapes this error takes
+  // on its way out either, and nothing in `src` clones or serialises it today (swept: no
+  // `worker_threads`, no `structuredClone`). A JSON or structured-clone hop WOULD drop both this
+  // name and every carried field, and `isPowerShellFailure` would then answer false with no sign.
+  clamped.name = "PowerShellFailure";
+  // Only the three a road actually reads. `code` and `signal` were carried by the first version of
+  // this change and nothing anywhere reads them off this producer — and `code` arrives as a NUMBER
+  // here (the exit status), a shape that reads like a string error code to any later inspector.
+  for (const key of ["killed", "stdout", "stderr"] as const) {
+    const v = (e as Record<string, unknown> | null)?.[key];
+    if (v !== undefined) (clamped as unknown as Record<string, unknown>)[key] = v;
+  }
+  return clamped;
+}
+
+/** Whether a thrown value is a PowerShell road's failure, with its message already clamped. */
+export function isPowerShellFailure(e: unknown): e is Error & { killed?: boolean; stdout?: string; stderr?: string } {
+  return e instanceof Error && e.name === "PowerShellFailure";
+}
+
 export async function runPS(script: string, timeoutMs = 8000): Promise<string> {
-  const { stdout } = await execFileAsync(
-    "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", script],
-    { timeout: timeoutMs, windowsHide: true }
-  );
-  return stdout.trim();
+  try {
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { timeout: timeoutMs, windowsHide: true }
+    );
+    return stdout.trim();
+  } catch (e) {
+    throw clampPsFailure(e);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1458,7 +1505,29 @@ export async function getUiElements(
   // own start rather than being told what it cost. Before that it walked to a fixed 8 s while the
   // wait was also 8 s, so a saturated walk produced nothing at all rather than a truncated
   // answer (2ゲート目の指摘).
-  const output = await runPS(script, timeoutMs);
+  // A KILLED PROCESS MAY HAVE ALREADY ANSWERED — internal #148, gate 2. `execFile` kills at the
+  // budget, and the walk prints its tree before `powershell.exe` finishes tearing COM down, so the
+  // answer can be complete while the process is not. `getElementBounds` has salvaged this since
+  // #697; this road threw it away and then published "nothing was observed", which is a claim
+  // about a tree that was sitting in `err.stdout`.
+  //
+  // Only a parseable answer is salvaged, and only one without an `error` key: a half-printed tree
+  // is not an answer, and the catch below is where a partial JSON lands.
+  let output: string;
+  try {
+    output = await runPS(script, timeoutMs);
+  } catch (e) {
+    const salvaged = (e as { stdout?: string })?.stdout?.trim();
+    if (salvaged) {
+      try {
+        const early = JSON.parse(salvaged);
+        if (early && typeof early === "object" && early.error === undefined) {
+          return { ...(early as UiElementsResult), via: "powershell" };
+        }
+      } catch { /* not an answer — fall through to the failure that is */ }
+    }
+    throw e;
+  }
   const result = JSON.parse(output);
   if (result.error) throw new Error(result.error);
 
@@ -2414,7 +2483,29 @@ function shortPsFailure(e: unknown, killed: boolean): string {
   const head = killed
     ? "PowerShell read was cut off at its own budget before it answered"
     : "PowerShell read failed";
-  const said = (e as { stderr?: string } | null)?.stderr?.trim().slice(0, 300);
+  // THE FIRST LINE OF STDERR, NOT 300 CHARACTERS OF IT (internal #148, gate 2). PowerShell's
+  // NormalView error record is the message, then `At line:N char:M`, then **the offending source
+  // line itself**, then CategoryInfo. The source line is the script — so keeping the tail put the
+  // script back into the answer through the other door, and with it the two things this product
+  // spends effort removing: a code-deciding token (`$wantedPats.Add('InvokePattern')`) and, on the
+  // write roads, the caller's own typed text (`$vp.SetValue('…')`, ADR-036 item 13's leak).
+  //
+  // MEASURED 2026-09-21 win2 (internal `49bcc42`), `powershell.exe -NoProfile -NonInteractive
+  // -Command "1/0"`, exit 1, stdout empty:
+  //
+  //     Attempted to divide by zero.
+  //     At line:1 char:1
+  //     + 1/0
+  //     + ~~~
+  //         + CategoryInfo          : NotSpecified: (:) [], RuntimeException
+  //         + FullyQualifiedErrorId : RuntimeException
+  //
+  // ONE example, and the limit is worth as much as the confirmation: an error whose MESSAGE is
+  // itself multi-line has not been measured, and there "the first line" would clamp away part of
+  // the finding. The trade is deliberate — being wrong in that direction loses a sentence, and
+  // being wrong in the other direction publishes a caller's password.
+  const firstLine = (e as { stderr?: string } | null)?.stderr?.trim().split(/\r?\n/, 1)[0]?.trim();
+  const said = firstLine?.slice(0, 300);
   if (said) return `${head}: ${said}`;
   // No `stderr` field at all means this did not come from `execFile` — a spawn failure, a
   // programming error — and there the message IS the finding, so it is kept rather than clamped
@@ -2530,7 +2621,9 @@ try {
     }
     return {
       found: null, why: killed ? "read_unfinished" : "read_failed", via: "none",
-      error: shortPsFailure(e, killed),
+      // Already clamped, on the producer (internal #148): clamping it twice would spell the
+      // heading into its own detail.
+      error: e instanceof Error ? e.message : String(e),
       ...(nativeFailed !== undefined && { nativeFailed }),
     };
   }
