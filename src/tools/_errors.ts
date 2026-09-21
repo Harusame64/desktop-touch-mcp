@@ -1131,6 +1131,24 @@ const SUGGESTS: Record<string, string[]> = {
   // throw can land AFTER the side effect, so a blind repeat can apply the act twice. A vague
   // permission reads as permission.
   //
+  // **IT ALSO WIDENS `classify`'s REGISTRY, which is a second road this entry now speaks on**
+  // (gate 2, F2). The declared-code arm below matches a PascalCase token followed by a colon
+  // against `Object.hasOwn(SUGGESTS, …)`, so making this a key means a message whose first token is
+  // this code, followed by a colon, is now classified as it on the FLAT road (`failWith`) and ships
+  // these lines. Measured: on this branch such a message answers with this code and seven
+  // suggestions, where before it answered `code:"ToolError"` with none.
+  //
+  // **No producer in `src` writes that prefix today** — swept, zero — and a cell in
+  // `adr-036-a-thrown-handler-says-what-to-do-next.test.ts` is the tripwire for the day one does,
+  // because the first line here says the handler threw, which would be false about a refusal a
+  // producer decided. The arm's own comment records the same accident from the other direction
+  // (`WindowNotFound: hwnd "timeout"` poached by the UiaTimeout arm).
+  //
+  // **THE PREFIX IS DESCRIBED IN WORDS ABOVE, NOT QUOTED.** That cell sweeps `src`, and this file
+  // is in `src` — the first run went red on this very comment. A needle written into its own
+  // haystack is a cell that fails on its own documentation, and the tempting repair (teach the
+  // sweep to skip comments) is a hand-written parser for a grammar it cannot parse.
+  //
   // WHY THE LINES ARE SPLIT BY FAMILY. All 21 tools behind that wrapper are COMMIT tools, and they
   // span desktop, browser, terminal, clipboard and excel. No single instrument re-observes for all
   // of them, so sending every caller to a UIA tree would repeat the split `ElementNotFound` above
@@ -1139,16 +1157,51 @@ const SUGGESTS: Record<string, string[]> = {
   // ONE PLACEHOLDER PER LINE, AND NOTHING ELSE LOAD-BEARING ON IT. A line whose `{tool:…}` cannot
   // be provided by this configuration is dropped WHOLE, taking any configuration-independent half
   // with it (`_advice-capability.ts`, numbered hazard 2 — still live). So the two sentences that
-  // are true in every configuration carry no placeholder at all, and survive every corner.
+  // are true in every configuration carry no placeholder at all.
+  //
+  // **AND THAT RULE IS NOT PROVEN BY THIS ENTRY SURVIVING EVERY CORNER, because nothing here can
+  // drop** (gate 2, F1). The one capability used below, `reidentify_element`, has a provider at all
+  // four corners (v2 → `desktop_discover`, kill switch → `get_ui_elements`); measured, 6 kept and 0
+  // dropped everywhere. Only `disambiguate_window_by_handle` and `credential_store` ever resolve to
+  // null, and neither appears here. So a corner sweep over THIS entry draws the same picture four
+  // times — it is not evidence. The rule is enforced structurally instead, by a cell that reads
+  // this table and fails if any `{tool:`-bearing line also carries one of the unconditional
+  // claims. **mac's own mutation round missed this**: it merged the claim into a line carrying
+  // `{tool:credential_store}`, which does drop — a mutation chosen to fit the cell rather than to
+  // fit the edit a person would actually make.
+  //
+  // THREE FAMILIES GET AN INSTRUMENT AND TWO DO NOT, deliberately (gate 2, F4). The 21 tools behind
+  // the wrapper are browser 6, terminal 1, clipboard 1, excel 1, desktop 13. `clipboard` has a read
+  // action, so it is named. `excel` has none — its actions are `run_vba` and `check_access_vbom` —
+  // so an excel caller is carried by the second line alone, and that is stated here rather than
+  // covered by a line naming an instrument that does not exist.
+  //
+  // NO LINE POINTS AT ANOTHER LINE (gate 2, F5). An earlier draft said "the desktop instrument
+  // above", which is a back-reference to the one line that can, in principle, be dropped whole —
+  // the exact hazard this entry's layout exists to avoid, reintroduced as a dangling pronoun.
   Unknown: [
     "The tool's handler threw before any road could name a cause. This is not a refusal the tool decided, so it does NOT say the act was skipped — the act may have taken effect before the throw.",
     "Observe the target again before acting, and do not repeat this call as a retry until you have: a throw can land after the side effect, so a blind repeat can apply it twice.",
     "For a native desktop target, take the view again with {tool:reidentify_element} — the identifiers you were holding belong to the view that just failed.",
-    "For a browser target, re-read the page with browser_overview or browser_search — a DOM node is not in the UIA tree, so the desktop instrument above cannot see it.",
+    "For a browser target, re-read the page with browser_overview or browser_search — a DOM node is not in the UIA tree, so a native UIA reader cannot see it.",
     "For a terminal target, read the pane back with terminal(action='read') before sending anything again.",
+    "For a clipboard write, read it back with clipboard(action='read') — the write may have landed before the throw.",
     "If it repeats, report it rather than working around it: every road this product designed answers under its own name, so 'Unknown' means one was missed.",
   ],
 };
+
+/**
+ * The claims in `SUGGESTS.Unknown` that must reach EVERY caller, quoted as substrings.
+ *
+ * Exported for the cells rather than duplicated into them: the property they check is "no line that
+ * can be dropped carries one of these", and a private copy of the list in the test would go stale
+ * against the table it is describing (gate 2, F1). Substrings, not whole lines, so rewording around
+ * a claim does not turn into a red cell while the claim is still there.
+ */
+export const UNKNOWN_UNCONDITIONAL_CLAIMS = [
+  "does NOT say the act was skipped",
+  "do not repeat this call as a retry",
+] as const;
 
 /**
  * @internal Read-only access to the SUGGESTS dictionary for typed-error

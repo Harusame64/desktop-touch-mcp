@@ -29,6 +29,7 @@
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { stripComments } from "../../scripts/lib/config-vocabulary.mjs";
 import { failWith } from "../../src/tools/_errors.js";
 
 const render = (message: string, context?: Record<string, unknown>) =>
@@ -213,21 +214,39 @@ const suggestsKeys = (): string[] => {
     join(import.meta.dirname, "..", "..", "src", "tools", "_errors.ts"),
     "utf8",
   );
-  const start = src.indexOf("const SUGGESTS");
+  // **COMMENTS COME OUT FIRST, and that is not tidiness** (internal #121, 2026-09-21). This scan
+  // counts braces in the raw text, so ONE unbalanced `{` inside a comment raises the depth, the
+  // scan runs past the dictionary's own `};`, and the two-space regex below starts harvesting the
+  // parameter names of whatever follows — `err`, `toolName`, `code`, `error`, `message` were what
+  // it took. The text that did it was a comment describing the advice placeholder syntax, where
+  // the opening brace is part of the thing being named and has no partner.
+  //
+  // It failed LOUDLY here only because those names misroute through `classify`. A swallowed region
+  // with no `^  ident:` line would have widened the key set in silence, and the sanity floor below
+  // only catches a drop.
+  //
+  // The comment further down used to say "nested advice strings never match the `<ident>:` shape at
+  // that indent" — true, and about the wrong hazard: what broke it was not an advice string.
+  // `stripComments` is the helper the vocabulary gates' own extractor already uses; a hand-written
+  // scanner will not parse the grammar, so it should not be asked to.
+  const text = stripComments(src);
+  const start = text.indexOf("const SUGGESTS");
   expect(start).toBeGreaterThan(-1);
-  let i = src.indexOf("{", start);
+  let i = text.indexOf("{", start);
   expect(i).toBeGreaterThan(-1);
   let depth = 1;
   i++;
   const bodyStart = i;
-  while (i < src.length && depth > 0) {
-    if (src[i] === "{") depth++;
-    else if (src[i] === "}") depth--;
+  while (i < text.length && depth > 0) {
+    if (text[i] === "{") depth++;
+    else if (text[i] === "}") depth--;
     i++;
   }
-  const body = src.slice(bodyStart, i - 1);
-  // Top-level keys sit at exactly two spaces of indentation; nested advice
-  // strings never match the `<ident>:` shape at that indent.
+  // CONTROL: the object closed. Running off the end of the file used to be indistinguishable from
+  // reading it correctly.
+  expect(depth, "the SUGGESTS object never closed — the scan ran past the end of the file").toBe(0);
+  const body = text.slice(bodyStart, i - 1);
+  // Top-level keys sit at exactly two spaces of indentation.
   return [...body.matchAll(/^ {2}([A-Za-z_][A-Za-z0-9_]*):/gm)].map((m) => m[1]!);
 };
 

@@ -271,12 +271,25 @@ for (const name of typed) {
 //
 // SO THE LINE IS TURNED AROUND RATHER THAN DELETED. An invariant that has become false is not the
 // same as an invariant that has become uninteresting: what made it worth pinning — that the ONE
-// reason a caller cannot interpret is also the one whose advice list is decided somewhere far from
-// the callsite — is exactly as true pointing this way. Deleting it would leave the axis with no
-// line to go red when the advice is suppressed again, and suppressing it is a one-argument edit
-// (`tryNext: []` at the callsite is what shipped for months).
+// reason a caller cannot interpret has its advice decided somewhere far from the callsite — is
+// exactly as true pointing this way. Deleting it would leave the axis with no line to go red when
+// the entry is removed again.
+//
+// **WHAT THIS LINE WATCHES, AND WHAT IT DOES NOT** (gate 2, F3 — the first wording claimed both).
+// `fallbackCause` is read from `compatFailureRaw`'s default (`_envelope.ts`), NOT from the
+// handler-throw callsite. Membership in `SUGGESTS` is shared by both roads, so this is a proxy:
+// it fires when the NAME leaves the dictionary, and it is blind to a callsite that overrides
+// `tryNext` with an explicit `[]`. Measured: restoring that override leaves this gate green and
+// its summary byte-identical. That road is held by cells, and the cells are named here so the
+// next reader does not mistake a green gate for a checked road.
+//
+// And the consequence it should name is not "advice-less". `toFailureEnvelope` substitutes its own
+// generic line when a code has no entry, so removing the entry ships "inspect the underlying error
+// and retry with adjusted args" — the one sentence internal #121 established must never appear on
+// this road, because the error is deliberately unpublished and a throw can land after the side
+// effect. The summary below already words it that way; only this message disagreed with it.
 if (fallbackCause !== null && !suggestsKeys.includes(fallbackCause)) {
-  problems.push(`the if_unexpected fallback "${fallbackCause}" is no longer a SUGGESTS key — the one reason a caller cannot interpret is advice-less again (internal #121)`);
+  problems.push(`the if_unexpected fallback "${fallbackCause}" is no longer a SUGGESTS key — the shared dictionary entry is gone, so every road that derives advice from this name now ships the converter's generic "inspect the underlying error and retry" line (internal #121). This line does not watch the handler-throw callsite's own \`tryNext\` override; cells do.`);
 }
 
 // **Every produced name should be a key, or the caller gets generic advice.** Not failed on — five

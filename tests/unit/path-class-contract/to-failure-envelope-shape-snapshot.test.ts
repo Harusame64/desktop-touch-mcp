@@ -386,8 +386,9 @@ describe("PR-P1-1 site 6: handler throw fallback (a next step at last — intern
     { action: "The tool's handler threw before any road could name a cause. This is not a refusal the tool decided, so it does NOT say the act was skipped — the act may have taken effect before the throw." },
     { action: "Observe the target again before acting, and do not repeat this call as a retry until you have: a throw can land after the side effect, so a blind repeat can apply it twice." },
     { action: "For a native desktop target, take the view again with desktop_discover — the identifiers you were holding belong to the view that just failed." },
-    { action: "For a browser target, re-read the page with browser_overview or browser_search — a DOM node is not in the UIA tree, so the desktop instrument above cannot see it." },
+    { action: "For a browser target, re-read the page with browser_overview or browser_search — a DOM node is not in the UIA tree, so a native UIA reader cannot see it." },
     { action: "For a terminal target, read the pane back with terminal(action='read') before sending anything again." },
+    { action: "For a clipboard write, read it back with clipboard(action='read') — the write may have landed before the throw." },
     { action: "If it repeats, report it rather than working around it: every road this product designed answers under its own name, so 'Unknown' means one was missed." },
   ];
 

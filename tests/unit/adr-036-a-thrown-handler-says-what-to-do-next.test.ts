@@ -26,9 +26,12 @@
  *   4. pointing every caller at the UIA tree                   → a browser caller is sent to an
  *                                                               instrument that cannot see its node
  */
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { makeCommitWrapper, type CommitL1Emitter } from "../../src/tools/_envelope.js";
-import { getSuggestsForCode } from "../../src/tools/_errors.js";
+import { getSuggestsForCode, UNKNOWN_UNCONDITIONAL_CLAIMS } from "../../src/tools/_errors.js";
 import {
   renderAdviceWith,
   captureAdviceConfiguration,
@@ -48,13 +51,11 @@ const CORNERS: Record<string, AdviceConfiguration> = {
 };
 
 /**
- * The two sentences that must reach EVERY caller, quoted as substrings rather than whole lines so
- * that rewording around them does not fail this cell — what is pinned is the claim, not the prose.
+ * The two sentences that must reach EVERY caller. **Read from the producer, not copied here** —
+ * a private copy would go stale against the table it describes, which is the same shape as a
+ * frozen expectation nobody re-reads (gate 2, F1).
  */
-const UNCONDITIONAL = [
-  "does NOT say the act was skipped",
-  "do not repeat this call as a retry",
-] as const;
+const UNCONDITIONAL = UNKNOWN_UNCONDITIONAL_CLAIMS;
 
 function wrapThrowing(throwValue: unknown = new Error("induced handler throw")) {
   return makeCommitWrapper(
@@ -64,6 +65,16 @@ function wrapThrowing(throwValue: unknown = new Error("induced handler throw")) 
     "thrown_handler_probe",
     { getEnvValue: () => undefined, l1Emitter: NOOP_L1, getSessionId: () => "probe" },
   );
+}
+
+/** Every `.ts` under a root, read once — the producer sweep's own instrument. */
+function walkTs(dir: string, out: { file: string; text: string }[] = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) walkTs(full, out);
+    else if (entry.name.endsWith(".ts")) out.push({ file: full, text: readFileSync(full, "utf8") });
+  }
+  return out;
 }
 
 function parse(content: ReadonlyArray<{ type: string; text?: string }>): Record<string, unknown> {
@@ -113,20 +124,80 @@ describe("internal #121 — a thrown handler tells the caller where to go", () =
     expect(advice.length).toBeGreaterThan(1);
   });
 
-  it("keeps the two unconditional claims at every corner, because a {tool:} line drops WHOLE", async () => {
-    // MUTATION 3: merging a placeholder-free sentence into a line that carries `{tool:…}`. The
-    // resolver drops such a line entirely when this configuration cannot provide the tool
-    // (`_advice-capability.ts`, numbered hazard 2 — still live), and it takes the
-    // configuration-independent half with it. Nothing else in the tree would go red: the v2 corner
-    // renders both halves and that is the corner the freeze is pinned to.
+  it("never puts an unconditional claim on a line that can be dropped", async () => {
+    // **MUTATION 3, AND THE CELL THAT ACTUALLY KILLS IT** (gate 2, F1). The property is structural,
+    // not observational: the resolver drops a `{tool:…}` line WHOLE when the configuration cannot
+    // provide that tool (`_advice-capability.ts`, numbered hazard 2 — still live), so a sentence
+    // that must reach everyone may not ride on one.
+    //
+    // The first version of this cell swept the four corners instead, and **gate 2 measured that it
+    // could not fail**: every line in this entry survives every corner, because the only capability
+    // it uses has a provider everywhere. The sweep drew the same picture four times. mac's own
+    // mutation round had "killed" it only by merging the claim into a `{tool:credential_store}`
+    // line — a mutation chosen to fit the cell, not to fit the edit a person makes, which is to
+    // fold the sentence into the line already sitting next to it.
+    const lines = getSuggestsForCode("Unknown");
+    expect(lines.length, "the entry must exist for this to mean anything").toBeGreaterThanOrEqual(4);
+    for (const line of lines) {
+      if (!line.includes("{tool:")) continue;
+      for (const claim of UNCONDITIONAL) {
+        expect(line, `an unconditional claim rides on a droppable line: ${line}`).not.toContain(claim);
+      }
+    }
+    // And each claim is somewhere, on a line that cannot be dropped.
+    const undroppable = lines.filter((l) => !l.includes("{tool:")).join("\n");
+    for (const claim of UNCONDITIONAL) {
+      expect(undroppable, `${claim} is not on any undroppable line`).toContain(claim);
+    }
+  });
+
+  it("CONTROL: the drop mechanism is real, and this entry simply never triggers it", async () => {
+    // **The negative control the corner sweep was missing.** Without it, "all four corners keep
+    // every line" reads as "the layout protects them", when the measured reason is that nothing
+    // here is droppable at all: 6 kept, 0 dropped, at every corner. Only
+    // `disambiguate_window_by_handle` and `credential_store` ever resolve to null.
+    //
+    // So the mechanism is shown on a synthetic line instead. If this stops dropping, the cell above
+    // is guarding against something that no longer happens, and the reasoning in `_errors.ts`
+    // should be revisited rather than trusted.
+    const synthetic = ["Save it with {tool:credential_store}", "A line with no placeholder"];
+    expect(renderAdviceWith(synthetic, CORNERS["v2_default"]!)).toHaveLength(2);
+    const dropped = renderAdviceWith(synthetic, CORNERS["v2_noLocker"]!);
+    expect(dropped, "the whole line goes, not just the placeholder").toEqual([
+      "A line with no placeholder",
+    ]);
+
+    // With that established, the corner sweep is still worth running — as the statement that THIS
+    // entry is not configuration-dependent, which is a fact about it rather than a guarantee.
     for (const [corner, cfg] of Object.entries(CORNERS)) {
       const rendered = renderAdviceWith(getSuggestsForCode("Unknown"), cfg);
-      for (const claim of UNCONDITIONAL) {
-        expect(rendered.join("\n"), `${claim} — lost at ${corner}`).toContain(claim);
-      }
       expect(rendered, `the floor was reached at ${corner}`).not.toContain(ADVICE_WITHHELD_FLOOR);
-      expect(rendered.length, `advice emptied out at ${corner}`).toBeGreaterThanOrEqual(4);
+      expect(rendered.length, `advice emptied out at ${corner}`).toBe(getSuggestsForCode("Unknown").length);
     }
+  });
+
+  it("no producer smuggles this code through a message, because the advice would then be false", async () => {
+    // **Gate 2, F2.** `SUGGESTS` is also the registry `classify`'s declared-code arm matches
+    // `<PascalCase>:` against, so making `Unknown` a key opened a second road: a message spelled
+    // `"Unknown: <detail>"` now classifies as this code on the FLAT road and ships these lines.
+    // Measured on this branch: `failWith(new Error("Unknown: the widget refused"))` answers
+    // `code:"Unknown"` with six suggestions, where before it answered `code:"ToolError"` with none.
+    //
+    // That is wrong advice for a producer's own refusal — the first line says the handler threw.
+    // No producer spells it today; this cell is the tripwire for the day one does, and it is a
+    // sweep of the PRODUCERS rather than a claim in a comment.
+    // Swept in-process rather than through `grep`: a shelled-out grep exits 1 when it finds
+    // nothing, so "the sweep was clean" and "the sweep never ran" arrive as the same throw.
+    const SMUGGLED = /["`]Unknown: /;
+    const files = walkTs(fileURLToPath(new URL("../../src", import.meta.url)));
+    // CONTROLS, both directions: the sweep really read the tree, and the pattern really matches.
+    expect(files.length, "the sweep read no files").toBeGreaterThan(50);
+    expect(SMUGGLED.test('throw new Error("Unknown: something");')).toBe(true);
+
+    const hits = files
+      .filter(({ text }) => SMUGGLED.test(text))
+      .map(({ file }) => file);
+    expect(hits, "a producer now spells `Unknown:` — classify will hand it the handler-threw advice").toEqual([]);
   });
 
   it("names an instrument per family, so a browser caller is not sent to the UIA tree", async () => {
@@ -138,6 +209,13 @@ describe("internal #121 — a thrown handler tells the caller where to go", () =
     const joined = advice.join("\n");
     expect(joined, "no browser instrument").toMatch(/browser_overview|browser_search/);
     expect(joined, "no terminal instrument").toMatch(/terminal\(action='read'\)/);
+    // **clipboard was missing from both the lines and this cell** (gate 2, F4): the comment named
+    // five families as the reason for splitting and only three had a line, so a clipboard caller
+    // was told to observe with nothing named. `excel` deliberately has none — its actions are
+    // `run_vba` and `check_access_vbom`, so there is no read to point at, and it rides the second
+    // line. That is asserted too, so the claim and the check cannot drift apart.
+    expect(joined, "no clipboard instrument").toMatch(/clipboard\(action='read'\)/);
+    expect(joined, "excel has no read action — naming one would be advice that cannot be called").not.toMatch(/excel\(/);
     // The desktop line comes from the capability, so it is the PROVIDER's name that must appear,
     // not the placeholder — that is what says the line went through the resolver on its way out.
     expect(joined).toContain("desktop_discover");
