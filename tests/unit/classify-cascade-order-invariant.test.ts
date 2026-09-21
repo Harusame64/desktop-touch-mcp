@@ -354,7 +354,32 @@ function singleConstNamed(s: ts.Statement | undefined, name: string): ts.Variabl
 function expectSuggestsGuardArm(s: ts.Statement | undefined, name: string, sf: ts.SourceFile): void {
   const shapeOk = ((): boolean => {
     if (s === undefined || !ts.isIfStatement(s) || s.elseStatement !== undefined) return false;
-    const c = s.expression;
+    // **THREE CONJUNCTS SINCE internal #121** (2026-09-21): `<name> && Object.hasOwn(SUGGESTS, <name>)
+    // && !RESERVED_CODES.has(<name>)`. `&&` is left-associative, so the outer node's LEFT is the
+    // first two and its RIGHT is the reserved guard. The guard is pinned by SHAPE here, and by
+    // BEHAVIOUR in oq8 (`claimableKeys` proves each reserved name is actually refused in both
+    // spellings) — a reserved set that grew to cover a code producers rely on would pass this
+    // function and fail there.
+    //
+    // It is pinned rather than tolerated because this arm is the frame the whole cascade model
+    // rests on: a condition nobody modelled could refuse a message for a reason the model does not
+    // know about, and every pairwise ordering claim below would be about a different function.
+    const outer = s.expression;
+    if (!ts.isBinaryExpression(outer) || outer.operatorToken.kind !== ts.SyntaxKind.AmpersandAmpersandToken) {
+      return false;
+    }
+    const reservedGuard = outer.right;
+    if (!ts.isPrefixUnaryExpression(reservedGuard) || reservedGuard.operator !== ts.SyntaxKind.ExclamationToken) return false;
+    const has = reservedGuard.operand;
+    if (!ts.isCallExpression(has) || has.arguments.length !== 1) return false;
+    const hasCallee = has.expression;
+    if (!ts.isPropertyAccessExpression(hasCallee)) return false;
+    if (!ts.isIdentifier(hasCallee.expression) || hasCallee.expression.text !== "RESERVED_CODES") return false;
+    if (hasCallee.name.text !== "has") return false;
+    const reservedArg = has.arguments[0]!;
+    if (!ts.isIdentifier(reservedArg) || reservedArg.text !== name) return false;
+
+    const c = outer.left;
     if (!ts.isBinaryExpression(c) || c.operatorToken.kind !== ts.SyntaxKind.AmpersandAmpersandToken) {
       return false;
     }

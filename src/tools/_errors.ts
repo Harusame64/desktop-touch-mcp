@@ -1107,7 +1107,156 @@ const SUGGESTS: Record<string, string[]> = {
   BadPort: [
     "The port must be an integer between 1 and 65535.",
   ],
+
+  // ── The catch-all, and the only code here that does not name a cause ────────
+  //
+  // internal #121. `Unknown` is what the commit wrapper answers when a HANDLER THREW —
+  // `_envelope.ts`'s `makeCommitWrapper`, the `handlerThrew` branch (site 6). It reached callers
+  // as `{"ok":false,"reason":"unknown","if_unexpected":{"most_likely_cause":"Unknown",
+  // "try_next":[]}}`: the one response a caller cannot interpret was also the one offering no next
+  // step.
+  //
+  // THE EMPTY LIST WAS DELIBERATE AND TEMPORARY, and this entry is the follow-up it named.
+  // ADR-021's migration plan (internal `adr-021-result-migration-drift-prevention-plan.md:147`,
+  // hazard B) kept site 6 bit-equal through the converter migration on purpose — "handler crash に
+  // generic hint を付ける改善は deliberate な follow-up に分離 (本 Phase では non-goal)". The
+  // suppression was an explicit `tryNext: []` override; removing it makes that site read this table
+  // instead, which is the same "the table is READ, not described" move
+  // `LEASE_REASON_TO_TYPED_CODE` got in internal #125.
+  //
+  // WHY NOT THE CONVERTER'S OWN GENERIC LINE. Dropping the override alone would have shipped
+  // `toFailureEnvelope`'s fallback, "Inspect the underlying error and retry with adjusted args".
+  // Both halves are wrong HERE: the caller cannot inspect an error this road deliberately does not
+  // publish (#121 §3 is about what those messages carry), and "retry" is the forbidden road — a
+  // throw can land AFTER the side effect, so a blind repeat can apply the act twice. A vague
+  // permission reads as permission.
+  //
+  // **IT ALSO WIDENS `classify`'s REGISTRY, which is a second road this entry now speaks on**
+  // (gate 2, F2). The declared-code arm below matches a PascalCase token followed by a colon
+  // against `Object.hasOwn(SUGGESTS, …)`, so making this a key means a message whose first token is
+  // this code, followed by a colon, is now classified as it on the FLAT road (`failWith`) and ships
+  // these lines. Measured: on this branch such a message answers with this code and seven
+  // suggestions, where before it answered `code:"ToolError"` with none.
+  //
+  // **No producer in `src` writes that prefix today** — swept, zero — and a cell in
+  // `adr-036-a-thrown-handler-says-what-to-do-next.test.ts` is the tripwire for the day one does,
+  // because the first line here says the handler threw, which would be false about a refusal a
+  // producer decided. The arm's own comment records the same accident from the other direction
+  // (`WindowNotFound: hwnd "timeout"` poached by the UiaTimeout arm).
+  //
+  // **THE PREFIX IS DESCRIBED IN WORDS ABOVE, NOT QUOTED.** That cell sweeps `src`, and this file
+  // is in `src` — the first run went red on this very comment. A needle written into its own
+  // haystack is a cell that fails on its own documentation, and the tempting repair (teach the
+  // sweep to skip comments) is a hand-written parser for a grammar it cannot parse.
+  //
+  // WHY THE LINES ARE SPLIT BY FAMILY. All 21 tools behind that wrapper are COMMIT tools, and they
+  // span desktop, browser, terminal, clipboard and excel. No single instrument re-observes for all
+  // of them, so sending every caller to a UIA tree would repeat the split `ElementNotFound` above
+  // already had to be given — a true reason applied where it does not hold.
+  //
+  // ONE PLACEHOLDER PER LINE, AND NOTHING ELSE LOAD-BEARING ON IT. A line whose `{tool:…}` cannot
+  // be provided by this configuration is dropped WHOLE, taking any configuration-independent half
+  // with it (`_advice-capability.ts`, numbered hazard 2 — still live). So the two sentences that
+  // are true in every configuration carry no placeholder at all.
+  //
+  // **AND THAT RULE IS NOT PROVEN BY THIS ENTRY SURVIVING EVERY CORNER, because nothing here can
+  // drop** (gate 2, F1). The one capability used below, `reidentify_element`, has a provider at all
+  // four corners (v2 → `desktop_discover`, kill switch → `get_ui_elements`); measured, 6 kept and 0
+  // dropped everywhere. Only `disambiguate_window_by_handle` and `credential_store` ever resolve to
+  // null, and neither appears here. So a corner sweep over THIS entry draws the same picture four
+  // times — it is not evidence. The rule is enforced structurally instead, by a cell that reads
+  // this table and fails if any `{tool:`-bearing line also carries one of the unconditional
+  // claims. **mac's own mutation round missed this**: it merged the claim into a line carrying
+  // `{tool:credential_store}`, which does drop — a mutation chosen to fit the cell rather than to
+  // fit the edit a person would actually make.
+  //
+  // THREE FAMILIES GET AN INSTRUMENT AND TWO DO NOT, deliberately (gate 2, F4). The 21 tools behind
+  // the wrapper are browser 6, terminal 1, clipboard 1, excel 1, desktop 12 — **and that sum is a
+  // cell now, not a sentence** (gate 2 round 2, P3: the first version said 13 and added to 22,
+  // which is the same defect F4 had just found one paragraph up — a number in prose that nothing
+  // checks). `clipboard` has a read
+  // action, so it is named. `excel` has none — its actions are `run_vba` and `check_access_vbom` —
+  // so an excel caller is carried by the second line alone, and that is stated here rather than
+  // covered by a line naming an instrument that does not exist.
+  //
+  // NO LINE POINTS AT ANOTHER LINE (gate 2, F5). An earlier draft said "the desktop instrument
+  // above", which is a back-reference to the one line that can, in principle, be dropped whole —
+  // the exact hazard this entry's layout exists to avoid, reintroduced as a dangling pronoun.
+  Unknown: [
+    "The tool's handler threw before any road could name a cause. This is not a refusal the tool decided, so it does NOT say the act was skipped — the act may have taken effect before the throw.",
+    "Observe the target again before acting, and do not repeat this call as a retry until you have: a throw can land after the side effect, so a blind repeat can apply it twice.",
+    "For a native desktop target, take the view again with {tool:reidentify_element} — the identifiers you were holding belong to the view that just failed.",
+    "For a browser target, re-read the page with browser_overview or browser_search — a DOM node is not in the UIA tree, so a native UIA reader cannot see it.",
+    "For a terminal target, read the pane back with terminal(action='read') before sending anything again.",
+    "For a clipboard write, read it back with clipboard(action='read') — the write may have landed before the throw.",
+    "If it repeats, report it rather than working around it: every road this product designed answers under its own name, so 'Unknown' means one was missed.",
+  ],
 };
+
+/**
+ * The claims in `SUGGESTS.Unknown` that must reach EVERY caller, quoted as substrings.
+ *
+ * Exported for the cells rather than duplicated into them: the property they check is "no line that
+ * can be dropped carries one of these", and a private copy of the list in the test would go stale
+ * against the table it is describing (gate 2, F1). Substrings, not whole lines, so rewording around
+ * a claim does not turn into a red cell while the claim is still there.
+ */
+export const UNKNOWN_UNCONDITIONAL_CLAIMS = [
+  "does NOT say the act was skipped",
+  "do not repeat this call as a retry",
+] as const;
+
+/**
+ * Codes a PRODUCER'S MESSAGE may not claim, however it spells them.
+ *
+ * `classify` has two arms that take a code out of a message — the declared arm (`<Code>:`) and the
+ * leading arm at the end of the cascade (`<Code>` followed by whitespace or end). Both gate on
+ * membership in `SUGGESTS`, so **adding a key is also granting producers a name**, and a key that is
+ * an ordinary English word grants it to sentences nobody wrote on purpose.
+ *
+ * **MEASURED, and it was a regression this branch shipped** (gate 2 round 2, 2026-09-21). With
+ * `Unknown` added as a key and no guard: `"Unknown error"` → `code:"Unknown"` with seven
+ * suggestions, and `src/tools/ui-elements.ts` passes exactly that string at two `failWith` sites
+ * (`?? "Unknown error"`, the click and set-value roads). Node's own errors reach it too —
+ * `Buffer.from("x","not-an-encoding")` throws `"Unknown encoding: not-an-encoding"`, and `src` has
+ * ~30 `failWith(err, …)` sites inside `catch` blocks. On `main` all of these answered `ToolError`
+ * with no advice.
+ *
+ * What shipped in that window was not merely a different code: the advice's first line says the
+ * handler threw and the act may have taken effect. **On a producer's own refusal that is false** —
+ * a caught error, classified, with the road naming its cause. The fix for "advice must be true on
+ * the road it rides" had begun shipping untrue advice one road over, which is the shape internal
+ * #121 exists to remove.
+ *
+ * So the name is reserved rather than the sweep widened. A sweep is a list of spellings and the
+ * list does not end; the property wanted is **this code is minted by the wrapper and by nothing
+ * else**, and that is one condition in the two places a code can be minted from text.
+ */
+const RESERVED_CODES: ReadonlySet<string> = new Set(["Unknown"]);
+
+/**
+ * Every key of the advice dictionary, taken from the object itself.
+ *
+ * **Exported so that nothing has to parse this file for them** (gate 2 round 2, P2).
+ * `oq8-failwith-suggest-routing` used to find them by walking this file and counting braces. A
+ * comment with an unbalanced `{` ran that scan past the dictionary's end; a single extra `}` inside
+ * an ADVICE STRING ends it early instead — measured, it dropped the last two keys (97 → 95,
+ * `Unknown` among them) while the scan's depth still returned to zero, so neither the
+ * end-of-object control nor the `>= 75` floor said anything. `stripComments` deliberately leaves
+ * string literals alone, so that door cannot be shut from the comment side.
+ *
+ * A hand-written scanner cannot parse the grammar, and the object is right here, so it does not
+ * have to try. Readers that must inspect the SOURCE keep their own extractor on purpose —
+ * `check:result-vocabulary` counts what producers can emit, which is a different question from what
+ * the dictionary holds at run time.
+ */
+export const SUGGESTS_CODES: readonly string[] = Object.freeze(Object.keys(SUGGESTS));
+
+/**
+ * The codes a producer's message may not claim, for the cells that pin that rule.
+ * @see RESERVED_CODES
+ */
+export const RESERVED_CODE_NAMES: readonly string[] = Object.freeze([...RESERVED_CODES]);
 
 /**
  * @internal Read-only access to the SUGGESTS dictionary for typed-error
@@ -1158,7 +1307,7 @@ function classify(message: string): { code: string; suggest: string[] } {
   // the END of the cascade — it carries no detail to poach, so it still lets
   // every specific arm decide first (round-6 rationale, unchanged).
   const declared = /^\s*([A-Z][A-Za-z0-9]*):/.exec(message)?.[1];
-  if (declared && Object.hasOwn(SUGGESTS, declared)) {
+  if (declared && Object.hasOwn(SUGGESTS, declared) && !RESERVED_CODES.has(declared)) {
     return { code: declared, suggest: SUGGESTS[declared] ?? [] };
   }
 
@@ -1530,7 +1679,7 @@ function classify(message: string): { code: string; suggest: string[] } {
   // be unreachable — the regex is deliberately bare/whitespace-only so it
   // states exactly what this arm decides (Opus round 9 P3-1).
   const leadingCode = /^([A-Z][A-Za-z0-9]*)(?:\s|$)/.exec(message.trim())?.[1];
-  if (leadingCode && Object.hasOwn(SUGGESTS, leadingCode)) {
+  if (leadingCode && Object.hasOwn(SUGGESTS, leadingCode) && !RESERVED_CODES.has(leadingCode)) {
     return { code: leadingCode, suggest: SUGGESTS[leadingCode] ?? [] };
   }
 

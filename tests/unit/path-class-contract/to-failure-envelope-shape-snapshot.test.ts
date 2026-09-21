@@ -77,6 +77,7 @@ import { Err } from "../../../src/types/result.js";
 import {
   captureAdviceConfiguration,
   resetAdviceConfiguration,
+  renderAdviceForCaller,
   ADVICE_WITHHELD_FLOOR,
 } from "../../../src/tools/_advice-capability.js";
 import { getSuggestsForCode } from "../../../src/tools/_errors.js";
@@ -357,9 +358,40 @@ describe("PR-P1-1 site 5c: lease validation 'entity_not_found' (ADR-036 item 16)
   });
 });
 
-// ── Site 6: handler throw fallback (buildFailureEnvelope("Unknown", [], ...)) ──
+// ── Site 6: handler throw fallback (buildFailureEnvelope("Unknown", …) — hazard B DONE) ──
 
-describe("PR-P1-1 site 6: handler throw fallback (empty try_next — hazard B)", () => {
+describe("PR-P1-1 site 6: handler throw fallback (a next step at last — internal #121)", () => {
+  // **THE SAME TREATMENT SITE 5b GOT, one site over.** This block used to freeze `try_next: []`,
+  // and the freeze agreed with itself while the one response a caller cannot interpret was also
+  // the only one offering no next step (#121 §1). The empty list was never a finding — ADR-021's
+  // plan installed it to keep the converter migration bit-equal and named the follow-up in the
+  // same line (hazard B: "handler crash に generic hint を付ける改善は deliberate な follow-up に
+  // 分離"). internal #121 is that follow-up.
+  //
+  // The freeze is KEPT and pointed at the shape the caller should receive: `try_next` is now
+  // whatever `SUGGESTS.Unknown` renders to in this configuration, because the site stopped
+  // describing its own answer and started reading the table.
+  //
+  // **THE FREEZE IS A LITERAL, per this file's own rule** (header, `FROZEN_TRY_NEXT`): a
+  // safety-net expectation computed from the thing it guards is a cell that cannot fail — empty
+  // the dictionary and both sides go empty together, green. The first draft of this block did
+  // exactly that, comparing against `getSuggestsForCode("Unknown")`, and it would have passed
+  // through the mutation that deletes the entry. The strings below are the V2-CORNER rendering
+  // (the corner is pinned in `beforeEach`), so `{tool:reidentify_element}` appears here already
+  // resolved to `desktop_discover` — the same treatment the rest of this file's literals get.
+  //
+  // The corner-by-corner survival of the two placeholder-free lines, and the retry this advice
+  // must not invite, are in `adr-036-a-thrown-handler-says-what-to-do-next.test.ts`.
+  const SITE6_ADVICE: ReadonlyArray<{ action: string }> = [
+    { action: "The tool's handler threw before any road could name a cause. This is not a refusal the tool decided, so it does NOT say the act was skipped — the act may have taken effect before the throw." },
+    { action: "Observe the target again before acting, and do not repeat this call as a retry until you have: a throw can land after the side effect, so a blind repeat can apply it twice." },
+    { action: "For a native desktop target, take the view again with desktop_discover — the identifiers you were holding belong to the view that just failed." },
+    { action: "For a browser target, re-read the page with browser_overview or browser_search — a DOM node is not in the UIA tree, so a native UIA reader cannot see it." },
+    { action: "For a terminal target, read the pane back with terminal(action='read') before sending anything again." },
+    { action: "For a clipboard write, read it back with clipboard(action='read') — the write may have landed before the throw." },
+    { action: "If it repeats, report it rather than working around it: every road this product designed answers under its own name, so 'Unknown' means one was missed." },
+  ];
+
   function wrapThrowing() {
     return makeCommitWrapper(
       async () => {
@@ -370,13 +402,13 @@ describe("PR-P1-1 site 6: handler throw fallback (empty try_next — hazard B)",
     );
   }
 
-  it("raw-compat shape frozen", async () => {
+  it("raw-compat shape frozen — the compat projection did not move, only try_next filled", async () => {
     const result = await wrapThrowing()({} as Record<string, unknown>);
     expect(parseContent(result.content)).toEqual({
       ok: false,
       reason: "unknown",
       diff: [],
-      if_unexpected: { most_likely_cause: "Unknown", try_next: [] },
+      if_unexpected: { most_likely_cause: "Unknown", try_next: SITE6_ADVICE },
     });
   });
 
@@ -387,8 +419,36 @@ describe("PR-P1-1 site 6: handler throw fallback (empty try_next — hazard B)",
       data: null,
       as_of: ANY_WALLCLOCK,
       confidence: "stale",
-      if_unexpected: { most_likely_cause: "Unknown", try_next: [] },
+      if_unexpected: { most_likely_cause: "Unknown", try_next: SITE6_ADVICE },
     });
+  });
+
+  it("the site READS the dictionary — the literal above is a freeze, not a second source", async () => {
+    // The pair the literal needs. Frozen literals catch a drifting producer; they also go stale
+    // silently, and a stale freeze that nobody notices is how this very block spent months
+    // agreeing that the caller gets nothing. This cell says the two are the same thing today, so
+    // a dictionary edit lands as a RED freeze above rather than as two records disagreeing.
+    expect(SITE6_ADVICE.map((row) => row.action)).toEqual(
+      renderAdviceForCaller(getSuggestsForCode("Unknown")),
+    );
+    // And that the reading is real: the placeholder was resolved on the way out, not shipped raw.
+    expect(SITE6_ADVICE.some((row) => row.action.includes("{tool:"))).toBe(false);
+    expect(getSuggestsForCode("Unknown").some((line) => line.includes("{tool:"))).toBe(true);
+  });
+
+  it("ships real advice, not the floor and not nothing", async () => {
+    // The control a shape freeze cannot be. `ADVICE_WITHHELD_FLOOR` is what a wholly-dropped list
+    // ships instead of `[]`, so its presence here would mean this code has no recovery THIS
+    // configuration can offer — true of some codes, and not of this one, whose first two lines
+    // carry no placeholder at all and therefore survive every corner.
+    const result = await wrapThrowing()({} as Record<string, unknown>);
+    const parsed = parseContent(result.content) as {
+      if_unexpected: { try_next: { action: string }[] };
+    };
+    expect(parsed.if_unexpected.try_next.length).toBeGreaterThanOrEqual(4);
+    expect(parsed.if_unexpected.try_next.map((row) => row.action)).not.toContain(
+      ADVICE_WITHHELD_FLOOR,
+    );
   });
 });
 

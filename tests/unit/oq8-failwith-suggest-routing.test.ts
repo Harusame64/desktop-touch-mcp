@@ -29,7 +29,7 @@
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { failWith } from "../../src/tools/_errors.js";
+import { failWith, SUGGESTS_CODES, RESERVED_CODE_NAMES } from "../../src/tools/_errors.js";
 
 const render = (message: string, context?: Record<string, unknown>) =>
   JSON.parse(failWith(new Error(message), "t", context).content[0]!.text);
@@ -207,36 +207,56 @@ describe("OQ8 — a message that is only the code still gets that code's advice"
 // such keys out of 81: BrowserSearchTimeout (⊃ "timeout", poached by
 // UiaTimeout) and KeyLockerSpawnFailed (⊃ "spawnfailed", poached by
 // SpawnFailed) — both now have their own arms ahead of the generic ones.
-/** SUGGESTS keys, derived from the source (a hand-kept list would rot). */
+/**
+ * SUGGESTS keys — **read from the dictionary, not parsed out of the file** (internal #121,
+ * 2026-09-21, gate 2 round 2).
+ *
+ * What stood here walked `_errors.ts` counting braces. Two measured ways it went wrong: an
+ * unbalanced `{` in a COMMENT ran it past the object's `};` and it began harvesting parameter names
+ * (`err`, `toolName`, `code`) as keys — loud, because those misroute; and one extra `}` inside an
+ * ADVICE STRING ended it early, dropping the last two keys (97 → 95) with the depth still back at
+ * zero and the `>= 75` floor 22 keys away from noticing. **Silent, and it removes keys from the
+ * very invariant this file exists to run.**
+ *
+ * Stripping comments closed the first door and cannot close the second — `stripComments` leaves
+ * string literals alone by design. So the scanner is gone. A hand-written scanner cannot parse the
+ * grammar; the dictionary exports its own keys now.
+ */
 const suggestsKeys = (): string[] => {
-  const src = readFileSync(
-    join(import.meta.dirname, "..", "..", "src", "tools", "_errors.ts"),
-    "utf8",
-  );
-  const start = src.indexOf("const SUGGESTS");
-  expect(start).toBeGreaterThan(-1);
-  let i = src.indexOf("{", start);
-  expect(i).toBeGreaterThan(-1);
-  let depth = 1;
-  i++;
-  const bodyStart = i;
-  while (i < src.length && depth > 0) {
-    if (src[i] === "{") depth++;
-    else if (src[i] === "}") depth--;
-    i++;
+  // The floor stays, pointed at what it can actually catch: the export vanishing or being emptied.
+  expect(SUGGESTS_CODES.length, "the advice dictionary came back empty or tiny").toBeGreaterThanOrEqual(75);
+  return [...SUGGESTS_CODES];
+};
+
+/**
+ * The keys a PRODUCER'S MESSAGE is allowed to claim — every key except the reserved ones.
+ *
+ * The round-trip invariant below says "a SUGGESTS key must classify to itself". **That is a
+ * statement about codes a producer may declare**, and internal #121 added one that no producer may:
+ * `Unknown` is minted by the commit wrapper when a handler threw, and the advice under it says so,
+ * so a message claiming the name would ship a sentence that is false about its own road. `classify`
+ * refuses both spellings for it.
+ *
+ * The exclusion is READ from the producer and then CHECKED, rather than listed here: an exemption
+ * list in a test is the thing that quietly grows.
+ */
+const claimableKeys = (): string[] => {
+  const all = suggestsKeys();
+  expect(RESERVED_CODE_NAMES.length, "the reserved set emptied — the exclusion below is then a no-op").toBeGreaterThan(0);
+  for (const name of RESERVED_CODE_NAMES) {
+    expect(all, `${name} is reserved but is not a dictionary key — the exclusion targets nothing`).toContain(name);
+    // And it really is refused, in both shapes. Without this the exclusion could hide a key that
+    // DOES round-trip, which is the opposite of what reserving it means.
+    for (const message of [name, `${name}: detail tail`]) {
+      expect(render(message).code, `${name} still classifies to itself from a message`).not.toBe(name);
+    }
   }
-  const body = src.slice(bodyStart, i - 1);
-  // Top-level keys sit at exactly two spaces of indentation; nested advice
-  // strings never match the `<ident>:` shape at that indent.
-  return [...body.matchAll(/^ {2}([A-Za-z_][A-Za-z0-9_]*):/gm)].map((m) => m[1]!);
+  return all.filter((k) => !RESERVED_CODE_NAMES.includes(k));
 };
 
 describe("OQ8 — every SUGGESTS key round-trips through classify to itself", () => {
   it("bare and `<Code>: tail` messages both classify to the key itself", () => {
-    const keys = suggestsKeys();
-    // Sanity floor: 81 keys when this was written; a drastic drop means the
-    // extraction regex stopped matching the dictionary shape.
-    expect(keys.length).toBeGreaterThanOrEqual(75);
+    const keys = claimableKeys();
 
     const misrouted = keys.flatMap((key) =>
       [key, `${key}: detail tail`].flatMap((message) => {
@@ -286,8 +306,7 @@ describe("OQ8 — an explicit `<Code>:` prefix beats generic keywords in the det
   // future producer that does gets the same protection, and this loop covers
   // future SUGGESTS keys automatically.
   it("every SUGGESTS key keeps its code when the detail is nothing but generic keywords", () => {
-    const keys = suggestsKeys();
-    expect(keys.length).toBeGreaterThanOrEqual(75);
+    const keys = claimableKeys();
 
     const adversarialTail =
       "timeout timed out window not found no window element not found " +

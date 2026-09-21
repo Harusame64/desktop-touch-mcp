@@ -3309,15 +3309,27 @@ export function makeCommitWrapper<TArgs extends Record<string, unknown>>(
           toolCallId,
         });
       }
-      // ADR-021 P1-2: unify through `toFailureEnvelope` (north star 1). An
-      // explicit empty `tryNext` preserves the pre-migration shape bit-equal —
-      // the handler-throw fallback emits no recovery hint today (most_likely_cause
-      // "Unknown", try_next []). Adding a generic hint is the deferred hazard-B
-      // improvement (plan §3.2.1); doing it here would change the snapshot.
-      // The same legacy-compat raw projection now lives inside the converter.
+      // ADR-021 P1-2 unified this through `toFailureEnvelope` (north star 1) and kept an explicit
+      // `tryNext: []` override so the migration stayed bit-equal — the deferred hazard-B item,
+      // which named its own follow-up: "handler crash に generic hint を付ける改善は deliberate な
+      // follow-up に分離". **internal #121 IS that follow-up, and the override is gone.**
+      //
+      // NO ARGUMENT IS THE POINT, not a shorter way of writing the same thing. Omitting `tryNext`
+      // makes this site READ `SUGGESTS.Unknown` (`_errors.ts`, where the wording and its
+      // constraints live) instead of describing its own answer — the move internal #125 made for
+      // `LEASE_REASON_TO_TYPED_CODE`. Passing `[]` here again would silently re-suppress the advice
+      // with nothing going red except the cells that name this behaviour.
+      //
+      // It is NOT the converter's generic fallback either: that line says "inspect the underlying
+      // error and retry", and this road publishes no error to inspect and must not invite a retry
+      // (a throw can land after the side effect). `_errors.ts` carries the reasoning next to the
+      // sentences it governs.
+      //
+      // The legacy-compat raw projection still lives inside the converter, so `reason` stays
+      // `"unknown"` and the shape a pre-S4 caller reads is unchanged — only `try_next` fills.
       const finalShape = toFailureEnvelope(
         Err(new CodedHandlerError("Unknown")),
-        { optIn, envelopeOptions, tryNext: [] },
+        { optIn, envelopeOptions },
       );
       return {
         content: [{ type: "text", text: JSON.stringify(finalShape) }],
