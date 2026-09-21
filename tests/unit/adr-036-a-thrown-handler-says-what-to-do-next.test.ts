@@ -31,7 +31,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { makeCommitWrapper, type CommitL1Emitter } from "../../src/tools/_envelope.js";
-import { getSuggestsForCode, UNKNOWN_UNCONDITIONAL_CLAIMS } from "../../src/tools/_errors.js";
+import { failWith, getSuggestsForCode, UNKNOWN_UNCONDITIONAL_CLAIMS } from "../../src/tools/_errors.js";
 import {
   renderAdviceWith,
   captureAdviceConfiguration,
@@ -176,28 +176,79 @@ describe("internal #121 — a thrown handler tells the caller where to go", () =
     }
   });
 
-  it("no producer smuggles this code through a message, because the advice would then be false", async () => {
-    // **Gate 2, F2.** `SUGGESTS` is also the registry `classify`'s declared-code arm matches
-    // `<PascalCase>:` against, so making `Unknown` a key opened a second road: a message spelled
-    // `"Unknown: <detail>"` now classifies as this code on the FLAT road and ships these lines.
-    // Measured on this branch: `failWith(new Error("Unknown: the widget refused"))` answers
-    // `code:"Unknown"` with six suggestions, where before it answered `code:"ToolError"` with none.
+  it("a producer cannot claim this code from a message, whatever the spelling", async () => {
+    // **Gate 2 round 2's P1, and it was a REGRESSION this branch had shipped.** `SUGGESTS` is also
+    // the registry `classify`'s two code-taking arms match against, so adding a key granted
+    // producers the name — and `Unknown` is an ordinary English word. The first fix watched only
+    // the colon form; the arm at the END of the cascade needs no colon, so `"Unknown error"` took
+    // the key and shipped advice whose first line says the handler threw.
     //
-    // That is wrong advice for a producer's own refusal — the first line says the handler threw.
-    // No producer spells it today; this cell is the tripwire for the day one does, and it is a
-    // sweep of the PRODUCERS rather than a claim in a comment.
-    // Swept in-process rather than through `grep`: a shelled-out grep exits 1 when it finds
-    // nothing, so "the sweep was clean" and "the sweep never ran" arrive as the same throw.
-    const SMUGGLED = /["`]Unknown: /;
-    const files = walkTs(fileURLToPath(new URL("../../src", import.meta.url)));
-    // CONTROLS, both directions: the sweep really read the tree, and the pattern really matches.
-    expect(files.length, "the sweep read no files").toBeGreaterThan(50);
-    expect(SMUGGLED.test('throw new Error("Unknown: something");')).toBe(true);
+    // Not hypothetical: `src/tools/ui-elements.ts` passes that exact string at two `failWith`
+    // sites, and Node's own `Unknown encoding: …` reaches the ~30 `failWith(err, …)` sites inside
+    // catch blocks. On `main` every one of these answered `ToolError` with no advice.
+    //
+    // **This cell is the behaviour, not the spelling.** The previous version swept `src` for one
+    // literal — a list of spellings, which does not end, and which missed the whitespace form
+    // entirely. What must hold is that this code is minted by the wrapper and by nothing else.
+    for (const message of [
+      "Unknown error",                      // src/tools/ui-elements.ts, two sites
+      "Unknown encoding: not-an-encoding",  // Node, ERR_UNKNOWN_ENCODING
+      "Unknown: the widget refused",        // the colon form the first fix watched
+      "Unknown",                            // bare
+      "  Unknown: leading space",
+    ]) {
+      const body = JSON.parse(failWith(new Error(message), "probe").content[0]!.text) as {
+        code: string; suggest?: string[];
+      };
+      expect(body.code, `a message claimed the reserved code: ${message}`).not.toBe("Unknown");
+      expect(
+        (body.suggest ?? []).join("\n"),
+        `handler-threw advice reached a producer's own refusal: ${message}`,
+      ).not.toContain(UNKNOWN_UNCONDITIONAL_CLAIMS[0]);
+    }
 
-    const hits = files
-      .filter(({ text }) => SMUGGLED.test(text))
-      .map(({ file }) => file);
-    expect(hits, "a producer now spells `Unknown:` — classify will hand it the handler-threw advice").toEqual([]);
+    // CONTROL, and it is the whole reason this is a reserved-name guard rather than two dead arms:
+    // a NON-reserved key must still be claimable from a message, in both shapes.
+    const colon = JSON.parse(failWith(new Error("WindowNotFound: no such window"), "probe").content[0]!.text) as { code: string };
+    expect(colon.code, "the declared-code arm stopped working").toBe("WindowNotFound");
+    const bare = JSON.parse(failWith(new Error("ForegroundFlashUnsupported"), "probe").content[0]!.text) as { code: string };
+    expect(bare.code, "the leading-code arm stopped working").toBe("ForegroundFlashUnsupported");
+
+    // And the wrapper's own road still mints it — otherwise the guard would have removed the code.
+    const thrown = parse((await wrapThrowing()({} as Record<string, unknown>)).content);
+    expect((thrown["if_unexpected"] as { most_likely_cause: string }).most_likely_cause).toBe("Unknown");
+  });
+
+  it("the claims this file checks against are the whole list, not a shrunk one", () => {
+    // **Gate 2 round 2's P2.** Reading the claims from the producer removed one duplicate and
+    // created another hazard: drop ONE element from the exported constant and every cell above
+    // still passes, because each only asserts what remains. Measured — the dictionary untouched,
+    // the oracle one shorter, all green.
+    expect(UNKNOWN_UNCONDITIONAL_CLAIMS.length).toBe(2);
+    // …and each is a real substring of the shipped table, so the constant cannot drift into
+    // describing sentences the product does not say.
+    const table = getSuggestsForCode("Unknown").join("\n");
+    for (const claim of UNKNOWN_UNCONDITIONAL_CLAIMS) {
+      expect(table, `the oracle names a claim the table does not make: ${claim}`).toContain(claim);
+    }
+  });
+
+  it("the family breakdown in the comment adds up to the wrapper's real call sites", () => {
+    // **Gate 2 round 2's P3**, and it is the shape F4 found, one paragraph over: a number written
+    // in prose that nothing checks. The comment said "browser 6, terminal 1, clipboard 1, excel 1,
+    // desktop 13" — which sums to 22, while `makeCommitWrapper(` has 21 call sites.
+    const files = walkTs(fileURLToPath(new URL("../../src", import.meta.url)));
+    const sites = files.flatMap(({ file, text }) =>
+      [...text.matchAll(/makeCommitWrapper\(/g)].map(() => file),
+    ).filter((f) => !f.endsWith("_envelope.ts"));
+    expect(sites.length, "the wrapper's call-site count moved — the comment in _errors.ts states it").toBe(21);
+    const count = (needle: string) => sites.filter((f) => f.includes(needle)).length;
+    expect(count("browser.ts")).toBe(6);
+    expect(count("terminal.ts")).toBe(1);
+    expect(count("clipboard.ts")).toBe(1);
+    expect(count("excel.ts")).toBe(1);
+    // Everything else is the desktop family — named as a remainder so it cannot be miscounted.
+    expect(sites.length - count("browser.ts") - count("terminal.ts") - count("clipboard.ts") - count("excel.ts")).toBe(12);
   });
 
   it("names an instrument per family, so a browser caller is not sent to the UIA tree", async () => {

@@ -1171,7 +1171,10 @@ const SUGGESTS: Record<string, string[]> = {
   // fit the edit a person would actually make.
   //
   // THREE FAMILIES GET AN INSTRUMENT AND TWO DO NOT, deliberately (gate 2, F4). The 21 tools behind
-  // the wrapper are browser 6, terminal 1, clipboard 1, excel 1, desktop 13. `clipboard` has a read
+  // the wrapper are browser 6, terminal 1, clipboard 1, excel 1, desktop 12 — **and that sum is a
+  // cell now, not a sentence** (gate 2 round 2, P3: the first version said 13 and added to 22,
+  // which is the same defect F4 had just found one paragraph up — a number in prose that nothing
+  // checks). `clipboard` has a read
   // action, so it is named. `excel` has none — its actions are `run_vba` and `check_access_vbom` —
   // so an excel caller is carried by the second line alone, and that is stated here rather than
   // covered by a line naming an instrument that does not exist.
@@ -1202,6 +1205,58 @@ export const UNKNOWN_UNCONDITIONAL_CLAIMS = [
   "does NOT say the act was skipped",
   "do not repeat this call as a retry",
 ] as const;
+
+/**
+ * Codes a PRODUCER'S MESSAGE may not claim, however it spells them.
+ *
+ * `classify` has two arms that take a code out of a message — the declared arm (`<Code>:`) and the
+ * leading arm at the end of the cascade (`<Code>` followed by whitespace or end). Both gate on
+ * membership in `SUGGESTS`, so **adding a key is also granting producers a name**, and a key that is
+ * an ordinary English word grants it to sentences nobody wrote on purpose.
+ *
+ * **MEASURED, and it was a regression this branch shipped** (gate 2 round 2, 2026-09-21). With
+ * `Unknown` added as a key and no guard: `"Unknown error"` → `code:"Unknown"` with seven
+ * suggestions, and `src/tools/ui-elements.ts` passes exactly that string at two `failWith` sites
+ * (`?? "Unknown error"`, the click and set-value roads). Node's own errors reach it too —
+ * `Buffer.from("x","not-an-encoding")` throws `"Unknown encoding: not-an-encoding"`, and `src` has
+ * ~30 `failWith(err, …)` sites inside `catch` blocks. On `main` all of these answered `ToolError`
+ * with no advice.
+ *
+ * What shipped in that window was not merely a different code: the advice's first line says the
+ * handler threw and the act may have taken effect. **On a producer's own refusal that is false** —
+ * a caught error, classified, with the road naming its cause. The fix for "advice must be true on
+ * the road it rides" had begun shipping untrue advice one road over, which is the shape internal
+ * #121 exists to remove.
+ *
+ * So the name is reserved rather than the sweep widened. A sweep is a list of spellings and the
+ * list does not end; the property wanted is **this code is minted by the wrapper and by nothing
+ * else**, and that is one condition in the two places a code can be minted from text.
+ */
+const RESERVED_CODES: ReadonlySet<string> = new Set(["Unknown"]);
+
+/**
+ * Every key of the advice dictionary, taken from the object itself.
+ *
+ * **Exported so that nothing has to parse this file for them** (gate 2 round 2, P2).
+ * `oq8-failwith-suggest-routing` used to find them by walking this file and counting braces. A
+ * comment with an unbalanced `{` ran that scan past the dictionary's end; a single extra `}` inside
+ * an ADVICE STRING ends it early instead — measured, it dropped the last two keys (97 → 95,
+ * `Unknown` among them) while the scan's depth still returned to zero, so neither the
+ * end-of-object control nor the `>= 75` floor said anything. `stripComments` deliberately leaves
+ * string literals alone, so that door cannot be shut from the comment side.
+ *
+ * A hand-written scanner cannot parse the grammar, and the object is right here, so it does not
+ * have to try. Readers that must inspect the SOURCE keep their own extractor on purpose —
+ * `check:result-vocabulary` counts what producers can emit, which is a different question from what
+ * the dictionary holds at run time.
+ */
+export const SUGGESTS_CODES: readonly string[] = Object.freeze(Object.keys(SUGGESTS));
+
+/**
+ * The codes a producer's message may not claim, for the cells that pin that rule.
+ * @see RESERVED_CODES
+ */
+export const RESERVED_CODE_NAMES: readonly string[] = Object.freeze([...RESERVED_CODES]);
 
 /**
  * @internal Read-only access to the SUGGESTS dictionary for typed-error
@@ -1252,7 +1307,7 @@ function classify(message: string): { code: string; suggest: string[] } {
   // the END of the cascade — it carries no detail to poach, so it still lets
   // every specific arm decide first (round-6 rationale, unchanged).
   const declared = /^\s*([A-Z][A-Za-z0-9]*):/.exec(message)?.[1];
-  if (declared && Object.hasOwn(SUGGESTS, declared)) {
+  if (declared && Object.hasOwn(SUGGESTS, declared) && !RESERVED_CODES.has(declared)) {
     return { code: declared, suggest: SUGGESTS[declared] ?? [] };
   }
 
@@ -1624,7 +1679,7 @@ function classify(message: string): { code: string; suggest: string[] } {
   // be unreachable — the regex is deliberately bare/whitespace-only so it
   // states exactly what this arm decides (Opus round 9 P3-1).
   const leadingCode = /^([A-Z][A-Za-z0-9]*)(?:\s|$)/.exec(message.trim())?.[1];
-  if (leadingCode && Object.hasOwn(SUGGESTS, leadingCode)) {
+  if (leadingCode && Object.hasOwn(SUGGESTS, leadingCode) && !RESERVED_CODES.has(leadingCode)) {
     return { code: leadingCode, suggest: SUGGESTS[leadingCode] ?? [] };
   }
 
