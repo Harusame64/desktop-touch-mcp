@@ -298,6 +298,22 @@ export class WindowExcludedRefusalError extends HandlerError {
 }
 
 /**
+ * internal #154 — the caller named an action the target does not offer, and nothing was done.
+ *
+ * **Separate from `ExecutorFailed`, and the distinction is the point.** `executor_failed` says a
+ * road was taken and did not work; this says **no road was taken**. Before this refusal existed,
+ * `desktop_act(action:"select")` on a button fell through to a UIA invoke and answered `ok:true`
+ * with bytes identical to `click` — an act the caller did not ask for, performed on the world.
+ * Reporting that as a failed executor would have replaced one false sentence with another.
+ */
+export class ActionNotOfferedError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ActionNotOffered";
+  }
+}
+
+/**
  * ADR-031 — a screen rectangle the current capture backend cannot read.
  *
  * Which rectangle counts as capturable is decided by the backend the process

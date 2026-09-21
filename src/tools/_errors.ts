@@ -576,6 +576,21 @@ const SUGGESTS: Record<string, string[]> = {
     "Or wait for the point to clear and act again — a window that covers it now need not cover it in a moment. Re-running {tool:reidentify_element} does not help by itself: the entity's coordinates are correct; what is wrong is what is drawn over them.",
     "Nothing in this response describes the window in the way, by design.",
   ],
+  // internal #154. The caller named an action the target does not advertise, and **nothing was
+  // done** — which is what separates this from `ExecutorFailed`, where a road was taken and failed.
+  //
+  // The line that has to be here is the one about the SUBSTITUTION, because the caller's next move
+  // depends on which they meant. Measured: `select` on a button used to answer `ok:true` with bytes
+  // identical to `click`'s, so "it pressed it for me" was indistinguishable from "it did what I
+  // asked" — and on this product NO provider advertises `select` at all (`uiaActionability` and
+  // `cdpActionability` both return only click / invoke / type / read), so every `select` the schema
+  // invites took that substitution.
+  ActionNotOffered: [
+    "The target does not advertise this action, and nothing was done — this is not a road that was tried and failed.",
+    "If you meant to press it, ask for it: desktop_act(action='click') or action='invoke'. Do NOT assume the two are interchangeable — before this refusal existed, a substituted press answered ok:true and looked exactly like a requested one.",
+    "The entity's affordances in the desktop_discover response say which actions it offers; action='auto' picks one of them for you.",
+    "No provider in this product advertises 'select' today, so a select on any target is this refusal. A list or combo box is reached by clicking the item you want.",
+  ],
   WindowExcluded: [
     "This window is excluded from every tool surface of this server, by design: the key locker's own windows are excluded so a secret being typed cannot be read or driven by the same session. Nothing was done to it.",
     "Do NOT retry by coordinate. mouse_click / keyboard at the window's rectangle would reach it through a route that does not check the exclusion — which is the press the exclusion exists to prevent.",

@@ -60,6 +60,7 @@ export type TouchFailReason =
   | "aim_route_failed"
   | "keyboard_target_unsafe"
   | "window_excluded"
+  | "action_not_offered"
   | "executor_failed";
 
 /**
@@ -363,6 +364,42 @@ function resolveAction(entity: UiEntity, requested: TouchAction): TouchAction {
   return AUTO_PRIORITY.find((v) => verbs.has(v)) ?? "click";
 }
 
+/**
+ * **An action the target does not offer must not become a different action** (internal #154).
+ *
+ * MEASURED, win2, 2026-09-21, on `main` `c8f87c4f`, one act per arm with the fixture's own log read
+ * before and after: `desktop_act(action:"select")` on a WinForms **Button** answered
+ * `{"ok":true,"executor":"uia","diff":[],"next":"none"}` — **and pressed the button**. The reply is
+ * BYTE-IDENTICAL to the one `click` and `invoke` give, so a caller cannot tell "I pressed it because
+ * you asked" from "I pressed it because there was nothing else to do with `select`".
+ *
+ * That is not the forbidden road of 2026-09-11 (a success reported for an act that did not happen).
+ * It is one step past it: **an act the caller did not ask for, performed on the world.** Whatever
+ * the button does — submit, delete, send — happened.
+ *
+ * **AND IT IS NOT ABOUT BUTTONS.** Reading the producers: `uiaActionability` returns
+ * `["invoke","click"]`, `["type","click"]` or `["read"]`, and `cdpActionability` the same three
+ * shapes. Their return type is `Array<"click" | "invoke" | "type" | "read">` — **`"select"` is not
+ * in it.** No provider in this product emits that verb, so **no entity can satisfy `select`**, and
+ * every `select` the schema invites has been falling through to a press. win2 measured one button;
+ * the cause is the whole road.
+ *
+ * The guard is written as "not among the entity's affordances" rather than "always refuse", so a
+ * provider that later advertises `select` is served rather than blocked, and the positive arm can be
+ * proven with an entity that offers it.
+ *
+ * **WHY ONLY `select`.** The general rule — refuse any explicit action the affordances do not list —
+ * refuses `setValue` everywhere, because entities advertise the UIA ValuePattern / CDP fill road as
+ * the `type` verb (see `AUTO_PRIORITY`'s note). It would also refuse `click` on a `read`-only entity,
+ * which nobody has measured. Both need a verb→affordance mapping and a round to measure it; this
+ * one condition is what was measured, and it is the shape `validateDesktopTouchTextRequirement`
+ * already uses — one action, one condition, at the door.
+ */
+function offersAction(entity: UiEntity, action: TouchAction): boolean {
+  if (action !== "select") return true;
+  return entity.affordances.some((a: UiAffordance) => a.verb === "select");
+}
+
 // ── Lease → fail reason mapping ───────────────────────────────────────────────
 
 const LEASE_TO_TOUCH_REASON: Record<string, TouchFailReason> = {
@@ -580,6 +617,14 @@ export class GuardedTouchLoop {
 
     // 2. Resolve "auto" to a concrete verb.
     const concreteAction = resolveAction(entity, action);
+
+    // 2b. **An action the target does not offer is refused here, before anything touches the world**
+    // (internal #154 — see `offersAction`). It comes BEFORE the environment checks on purpose: no
+    // change to the environment can make this one succeed, and a caller told `modal_blocking` would
+    // dismiss the modal, retry, and get the press this refusal exists to stop.
+    if (!offersAction(entity, concreteAction)) {
+      return { ok: false, reason: "action_not_offered", diff: [] };
+    }
 
     // 3. Pre-touch environment checks.
     // The OS first: a window disabled by a dialog it owns is a clear ground to refuse — the user's
