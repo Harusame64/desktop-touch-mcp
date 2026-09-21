@@ -78,6 +78,7 @@
     "window_resized"
   ],
   "touchFailReason": [
+    "action_not_offered",
     "aim_blocked_by_excluded_window",
     "aim_identity_changed",
     "aim_occluded",

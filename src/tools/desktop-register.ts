@@ -52,6 +52,7 @@ import {
   AimOccludedError,
   AimIdentityChangedError,
   AimRouteFailedError,
+  ActionNotOfferedError,
   WindowExcludedRefusalError,
   AimBlockedByExcludedRefusalError,
   EntityNotFoundRefusalError,
@@ -822,6 +823,7 @@ export const desktopSeeSchema = {
 export const desktopTouchSchema = {
   lease:  leaseSchema.describe("Lease returned by desktop_discover. Expires after TTL; re-call desktop_discover if desktop_act fails with lease_expired."),
   action: z.enum(["auto", "invoke", "click", "type", "setValue", "select"]).optional().describe(
+    "NOTE: action='select' is REFUSED on every target (action_not_offered) — nothing here offers it and no road performs it; click the item instead. " +
     "Action to perform. 'auto' selects the best affordance from the entity. " +
     "'setValue' (Phase 4: absorbs former set_element_value) sets a UIA ValuePattern value or fills a CDP controlled input — pass the new value via text."
   ),
@@ -1296,6 +1298,24 @@ export const desktopActRawHandler = async (
       Err(new KeyboardTargetUnsafeRefusalError(
         "KeyboardTargetUnsafe: the characters would not have reached the field this act named — nothing was typed. " +
         "if_unexpected.detail names the ground"
+      )),
+      { optIn: false, detail: result.detail },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
+  // internal #154 — **nothing was done, and that is the part a caller must be able to read.** An
+  // envelope is built here rather than letting the raw `{ok:false, reason}` through, because the
+  // road this refusal replaces answered `ok:true`: a caller who never sees advice has no way to
+  // learn that `select` was never going to do what they meant. (#121 §2 lists the three reasons
+  // that still reach a caller with no `if_unexpected`; this one does not join them.)
+  if (!result.ok && result.reason === "action_not_offered") {
+    const failure = toFailureEnvelope(
+      Err(new ActionNotOfferedError(
+        "ActionNotOffered: the target does not offer this action, and nothing was done. " +
+        "Ask for the action you mean — desktop_act(action='click') or action='invoke' presses it"
       )),
       { optIn: false, detail: result.detail },
     );
@@ -1824,6 +1844,7 @@ export function registerDesktopTools(server: McpServer): void {
       "  aim_route_failed → the route to the window this act named failed (UIA for a click, UIA setValue + background write for type), and the act was NOT finished as a coordinate press; nothing was clicked or typed. if_unexpected.detail names the failure when this server recognises it (not found, no pattern, disabled, read-only). When it says not found or names none: re-call desktop_discover, or try V1 click_element(name=…) on the same entity; when the route may have matched another element by the same text, click_element with controlType narrows it. When it says disabled, the element the route matched — or its whole window — does not take input now: answer or wait out whatever disabled it, then re-call desktop_discover; if it is refused the same way after that, the route may be matching another element by the same text, which click_element(name=…, controlType=…) narrows;",
       "  keyboard_target_unsafe → the background write would not have reached the field this act named (the focus is on a different control or in a different window, the receiving control does not take typed text, or the field — or its window — is disabled); nothing was typed. if_unexpected.detail names which. For disabled, answer or wait out whatever disabled it, then re-call desktop_discover — it does not list a disabled field, so missing there means still disabled; clicking it does not help. Otherwise put the focus on the field you named, then type again — if_unexpected.detail names the way back for the road this act took: on a window named by title, desktop_act(action='click') on the same entity does it; on a window named by handle no route here focuses a text field yet, so re-call desktop_discover by the window's title and click it from there (a common dialog's title resolves to a handle too, so that road does not open there). For other_window, V1 focus_window on the field's window first — it comes forward with the focus it last had, and a window over the field makes a click answer aim_occluded — do NOT type through the foreground instead;",
       "  aim_blocked_by_excluded_window → a window this server may not act through is over the point, so nothing was done; the window you named is NOT the excluded one and is still actionable. Use V1 click_element, which does not use coordinates, or retry once the point is clear — do NOT retry by coordinate, and note that nothing in the response describes the window in the way;",
+      "  action_not_offered → the target does not offer this action and NOTHING WAS DONE — no road was taken, so it is not a failed executor. Ask for what you mean: action='click' / 'invoke' presses it; the entity's affordances say which actions it offers. No provider advertises 'select', so a select on any target is this refusal;",
       "  window_excluded → this window is excluded from every tool surface of this server (the key locker's own windows are); nothing was clicked and no route here can click it. Act on another window;",
       "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",
       "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead;",

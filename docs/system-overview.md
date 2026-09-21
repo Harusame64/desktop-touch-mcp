@@ -207,8 +207,10 @@ capped at 60 s. Warnings (`visual_provider_unavailable`, `visual_provider_warmin
 `cdp_provider_failed`, …) tell the caller when a lane is degraded.
 
 #### `desktop_act`
-Act on an entity returned by `desktop_discover` (`click` / `type` / `drag` /
-`select`, …). The lease is validated before execution, and the response carries a
+Act on an entity returned by `desktop_discover` (`click` / `type` / `drag`, …).
+`select` is accepted by the schema and **refused on every target** — `action_not_offered`,
+internal #154: nothing here offers that verb and no road performs it, so it used to fall
+through to a press. Click the item instead. The lease is validated before execution, and the response carries a
 semantic diff (`entity_disappeared`, `modal_appeared`, `focus_shifted`, …) plus
 the `attention` signal — so the caller can decide the next step without another
 screenshot. On `ok:false` read `reason` and follow the recovery path:

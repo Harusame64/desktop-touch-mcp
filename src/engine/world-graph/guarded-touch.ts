@@ -60,6 +60,7 @@ export type TouchFailReason =
   | "aim_route_failed"
   | "keyboard_target_unsafe"
   | "window_excluded"
+  | "action_not_offered"
   | "executor_failed";
 
 /**
@@ -363,6 +364,68 @@ function resolveAction(entity: UiEntity, requested: TouchAction): TouchAction {
   return AUTO_PRIORITY.find((v) => verbs.has(v)) ?? "click";
 }
 
+/**
+ * **An action this product cannot perform must not become a different action** (internal #154).
+ *
+ * MEASURED, win2, 2026-09-21, on `main` `c8f87c4f`, one act per arm with a WinForms fixture's own
+ * click log read before and after: `desktop_act(action:"select")` on a Button answered
+ * `{"ok":true,"executor":"uia","diff":[],"next":"none"}` — **and pressed it**. The reply is
+ * BYTE-IDENTICAL to `click`'s and `invoke`'s, so a caller cannot tell "I pressed it because you
+ * asked" from "I pressed it because there was nothing else to do with `select`". Whatever the button
+ * does — submit, delete, send — happened. That is one step past the road the user closed on
+ * 2026-09-11: not a success reported for an act that did not happen, but **an act the caller did not
+ * ask for, performed on the world.**
+ *
+ * ── WHY THIS REFUSES `select` OUTRIGHT, rather than "when the entity does not offer it" ─────────
+ *
+ * **The first version did the forward-compatible thing and it was a trap** (gate 2). It asked the
+ * ENTITY — refuse unless the affordances list the verb — which expresses one of the two independent
+ * reasons `select` cannot work here and silently leans on the other:
+ *
+ *   1. **No producer can advertise it.** The field is typed at one place,
+ *      `vision-gpu/types.ts` → `actionability: Array<"click" | "invoke" | "type" | "read">`, and
+ *      `"select"` is not in that union. Six writers fill it; none can.
+ *   2. **No executor road takes it.** `desktop-executor.ts` branches on
+ *      `(action === "type" || action === "setValue") && text !== undefined` on the UIA road and the
+ *      same shape on the CDP road; **everything else falls to `uiaClick` / `cdpClick`.** There is no
+ *      `select` arm anywhere.
+ *
+ * So an entity-shaped guard approves the verb the day (1) changes, and (2) presses the target. Gate
+ * 2 measured exactly that: teach a provider to advertise `select`, and `tsc`, `eslint`, all four
+ * vocabulary gates, every cell in this file and the whole unit suite stay green **while the press
+ * comes back with this guard's blessing.**
+ *
+ * **TO SUPPORT `select`, BOTH HALVES HAVE TO EXIST**, and this refusal is where you come to remove
+ * it. The two cells in `adr-036-an-action-the-target-does-not-offer.test.ts` name what must be true
+ * first — one on the producing TYPE, one on the executor's dispatch — so neither half can be built
+ * quietly. Until then a caller asking to select is told nothing happened, which is the truth.
+ */
+function offersAction(_entity: UiEntity, action: TouchAction): boolean {
+  switch (action) {
+    // **NOT SUPPORTED BY THIS PRODUCT** — see above. Refused before anything touches the world.
+    case "select":
+      return false;
+    // The rest are performed today. `setValue` is here rather than checked against the affordances
+    // because entities advertise the UIA ValuePattern / CDP fill road under the `type` verb (see
+    // `AUTO_PRIORITY`'s note), so an affordance check would refuse it everywhere.
+    case "auto":
+    case "invoke":
+    case "click":
+    case "type":
+    case "setValue":
+      return true;
+    default: {
+      // **A NEW VERB HAS TO BE DECIDED HERE, at compile time** (gate 2). The previous version was a
+      // single `if (action !== "select")`, and adding a verb to `TouchAction` sailed past it into
+      // the same fall-through — measured: `tsc`, `eslint`, the four gates and the whole unit suite
+      // green, with the new verb pressing whatever it was aimed at.
+      const _exhaustive: never = action;
+      void _exhaustive;
+      return true;
+    }
+  }
+}
+
 // ── Lease → fail reason mapping ───────────────────────────────────────────────
 
 const LEASE_TO_TOUCH_REASON: Record<string, TouchFailReason> = {
@@ -580,6 +643,26 @@ export class GuardedTouchLoop {
 
     // 2. Resolve "auto" to a concrete verb.
     const concreteAction = resolveAction(entity, action);
+
+    // 2b. **An action the target does not offer is refused here, before anything touches the world**
+    // (internal #154 — see `offersAction`). It comes BEFORE the environment checks on purpose: no
+    // change to the environment can make this one succeed, and a caller told `modal_blocking` would
+    // dismiss the modal, retry, and get the press this refusal exists to stop.
+    if (!offersAction(entity, concreteAction)) {
+      // **THE LOOP ALREADY HOLDS THE ANSWER THE CALLER NEEDS** — which verbs this target does take
+      // — so it is carried rather than left to be re-derived (ADR-036 item 13). Without it the
+      // advice's "read the affordances in the desktop_discover response" asks the caller to go back
+      // to a reply they may no longer have, to learn something this refusal knew when it fired.
+      const offered = [...new Set(entity.affordances.map((a: UiAffordance) => a.verb))].sort();
+      return {
+        ok: false,
+        reason: "action_not_offered",
+        diff: [],
+        detail: offered.length > 0
+          ? `this target offers: ${offered.join(", ")}`
+          : "this target offers no actions",
+      };
+    }
 
     // 3. Pre-touch environment checks.
     // The OS first: a window disabled by a dialog it owns is a clear ground to refuse — the user's

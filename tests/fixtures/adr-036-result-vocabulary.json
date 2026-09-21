@@ -1,5 +1,6 @@
 {
   "typed": [
+    "action_not_offered",
     "aim_blocked_by_excluded_window",
     "aim_identity_changed",
     "aim_occluded",
@@ -20,6 +21,7 @@
     "window_excluded"
   ],
   "producedNames": [
+    "ActionNotOffered",
     "AimBlockedByExcludedWindow",
     "AimIdentityChanged",
     "AimOccluded",
@@ -50,6 +52,7 @@
   ],
   "fallbackReason": "unknown",
   "serverCatalogue": [
+    "action_not_offered",
     "aim_blocked_by_excluded_window",
     "aim_identity_changed",
     "aim_occluded",
@@ -71,6 +74,7 @@
     "window_excluded"
   ],
   "toolCatalogue": [
+    "action_not_offered",
     "aim_blocked_by_excluded_window",
     "aim_identity_changed",
     "aim_occluded",

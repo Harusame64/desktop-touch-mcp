@@ -75,6 +75,7 @@
     "leadingCode"
   ],
   "dictionaryOnly": [
+    "ActionNotOffered",
     "AimBlockedByExcludedWindow",
     "AimIdentityChanged",
     "AimOccluded",
@@ -161,6 +162,7 @@
     "V1FallbackUnavailable"
   ],
   "envelopeWithinFlatCeiling": [
+    "ActionNotOffered",
     "AimBlockedByExcludedWindow",
     "AimIdentityChanged",
     "AimOccluded",
