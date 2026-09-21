@@ -556,10 +556,26 @@ class Dup extends HandlerError { constructor() { super(); this.name = "DupLong";
       expect(pinned.producedNames, gone).not.toContain(gone);
     }
     expect(out).toContain("read at the presenter's own call sites");
-    // The catalogues differ by exactly one name, and the tool description is the longer one.
-    expect(pinned.cataloguesDifferBy).toEqual(["aim_blocked_by_excluded_window"]);
-    expect(pinned.toolCatalogue).toContain("aim_blocked_by_excluded_window");
-    expect(pinned.serverCatalogue).not.toContain("aim_blocked_by_excluded_window");
+    // **The catalogues agree now** (internal #121, 2026-09-21). This read
+    // `toEqual(["aim_blocked_by_excluded_window"])` until that day — the server instructions
+    // omitted a recovery the tool description offered, pinned as a known difference because a gate
+    // red on landing is a gate somebody turns off. The row was written for the server surface and
+    // `unknown` was added to both, so the set is empty and the gate FAILS on any difference now.
+    expect(pinned.cataloguesDifferBy).toEqual([]);
+    for (const name of ["aim_blocked_by_excluded_window", "unknown"]) {
+      expect(pinned.toolCatalogue, name).toContain(name);
+      expect(pinned.serverCatalogue, name).toContain(name);
+    }
+    // **The vocabulary is what agrees; the WORDING is not, and must not be read as drift.** Both
+    // surfaces carry 16 rows, ONE is byte-identical and 15 differ (a row = one `"  name → …"`
+    // element; the lease line naming four reasons counts once). **An earlier version of this note
+    // said 13 / 1 / 12, which was true of no tree** — it came from a scan over a fixed line range
+    // that missed the row spanning two lines, and the instrument's scope got written down as the
+    // code's (gate 2). The tool description says "V1" beside the v2 surface and the instructions do
+    // not; the description is kept short because the landing paragraph's long form was measured at
+    // ~667 tokens per session. A later round that "tidies" them into one text would hand every
+    // session that back.
+    expect(pinned.serverCatalogue.slice().sort()).toEqual(pinned.toolCatalogue.slice().sort());
     // Five produced names have no advice entry, so the caller gets the generic line.
     // **Three, not five.** `LeaseGenerationMismatch` and `LeaseDigestMismatch` were pinned here
     // and nothing produced either: they live in the reservation table, and the mapping that
@@ -825,9 +841,29 @@ function pascalToSnake(s: string): string {
     expect(out).toMatch(/silently_added is a TouchFailReason no catalogue mentions/);
   });
 
-  it("is 1 when the two catalogues stop differing in the way they differ today", () => {
-    // Pinned as a KNOWN difference rather than failed on — a gate that is red the day it lands is a
-    // gate somebody turns off (#670). What is checked is that the difference does not MOVE.
+  it("is 1 when one catalogue names a reason the other omits", () => {
+    // **Promoted from a pin to a failure on 2026-09-21** (internal #121), which could only be done
+    // on the day the difference reached zero. Before that, the set held one name and a hard failure
+    // would have landed red — #670's reason for pinning instead.
+    fixture();
+    pin();
+    write("src/server-windows.ts", `const instructions = [\n  "  executor_failed → fall back;",\n];`);
+    const { status, out } = run();
+    expect(status).toBe(1);
+    expect(out).toMatch(/the two catalogues no longer name the same reasons/);
+  });
+
+  it("is 1 when a pinned set moves, which is a different question from the two agreeing", () => {
+    // **RENAMED AND REWRITTEN 2026-09-21** (internal #121, gate 2). It read "is 1 when the two
+    // catalogues stop differing in the way they differ today", and its comment explained that the
+    // difference was PINNED rather than failed on. Both statements became false one cell earlier in
+    // the same file: the difference is zero and the gate fails on any. A reader met the superseded
+    // design and the new one side by side, with the older one wearing the title that looks like the
+    // subject — and nothing was red, because the cell still passes.
+    //
+    // What it actually measures, and still worth keeping: the pin loop notices when a SET moves.
+    // The agreement check above is symmetric and says nothing about a name leaving both surfaces;
+    // this one does, because `toolCatalogue` is pinned as a set of its own.
     fixture();
     pin();
     write("src/tools/desktop-register.ts", `const description = [\n  "  executor_failed → fall back;",\n];`);
