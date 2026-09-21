@@ -69,6 +69,46 @@ export const scopeElementSchema = {
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * What a PowerShell road's failure tells the caller — internal #148, one place for four roads.
+ *
+ * The clamp on `runPS` stops the script from choosing the code, and a clamped message then matches
+ * no arm in `classify`, so the fallback is `ToolError` with NO advice at all. Saying nothing is not
+ * better than saying the wrong thing; it is the same caller, stuck. Gate 2 found the first version
+ * of this change giving `get_ui_elements` its advice and leaving `click_element`,
+ * `set_element_value` and `scope_element` silent — the three roads that PUBLISH this throw.
+ *
+ * THREE ARMS, because `killed` has three states and only two of them are a statement about us.
+ * Node sets `killed` when IT ended the process at our budget; on the `maxBuffer` path it kills the
+ * child and leaves `killed` undefined, so the read ended without anyone saying why — and there the
+ * words in `context.error` are node's, not the client's, and retrying reproduces it exactly.
+ */
+function failPowerShellRoad(
+  tool: string,
+  err: Error & { killed?: boolean; stdout?: string; stderr?: string },
+  context: Record<string, unknown>,
+): ToolResult {
+  const suggest = err.killed === true
+    ? [
+        "The read was cut off at its own budget before it answered — nothing was observed, so this says NOTHING about whether the window or its elements exist",
+        "Some window on this desktop is answering slowly, and it is not necessarily the one you named: resolving a title reads every top-level window's name",
+        "Retry — and if the same call is cut off again, use screenshot(detail='image'), which does not walk the window list",
+      ]
+    : err.killed === undefined
+      ? [
+          "The read ended without the client saying why — the words in context.error are this server's, not the UIA client's",
+          "If the answer was simply too large, retrying reproduces it: narrow the read first (fewer elements, a shallower depth)",
+        ]
+      : [
+          "The UIA read failed — the client's own words are in context.error, and they are the only evidence this refusal has",
+          "Retry before changing the target: a read that failed has not disagreed with you about the window or the element",
+        ];
+  return failCode("ToolError", `${tool}: ${err.message}`, {
+    suggest,
+    context: { ...context, ...(err.killed !== undefined && { readCutOff: err.killed }), error: err.message },
+  });
+}
+
 export const getUiElementsHandler = async ({
   windowTitle, hwnd: hwndParam, maxDepth, maxElements,
 }: { windowTitle: string; hwnd?: string; maxDepth: number; maxElements: number }): Promise<ToolResult> => {
@@ -97,31 +137,7 @@ export const getUiElementsHandler = async ({
     const enriched = Object.keys(hints).length > 0 ? { ...result, hints } : result;
     return ok(enriched, true);
   } catch (err) {
-    // internal #148 — the PowerShell road's failure used to arrive here as
-    // `Command failed: powershell.exe … <thirty lines of script>`, and `classify` reads messages by
-    // substring, so the SCRIPT picked the code: MEASURED 2026-09-21 win2, a hung window answered
-    // `InvokePatternNotSupported` after 18 s, with five suggestions about invoke patterns, because
-    // the discover script contains `$wantedPats.Add('InvokePattern')`.
-    //
-    // The clamp is on the producer now, so the message is honest — but a clamped message matches no
-    // arm either, and `classify`'s fallback ships `ToolError` with NO advice. Saying nothing is
-    // not better than saying the wrong thing; it is the same caller, stuck. The advice is written
-    // here, where the road is known.
-    if (isPowerShellFailure(err)) {
-      return failCode("ToolError", `get_ui_elements: ${err.message}`, {
-        suggest: err.killed === true
-          ? [
-              "The read was cut off at its own budget before it answered — nothing was observed, so this says NOTHING about whether the window or its elements exist",
-              "Some window on this desktop is answering slowly, and it is not necessarily the one you named: resolving a title reads every top-level window's name",
-              "Retry — and if the same call is cut off again, use screenshot(detail='image'), which does not walk the window list",
-            ]
-          : [
-              "The UIA read failed — the client's own words are in context.error, and they are the only evidence this refusal has",
-              "Retry before changing the target: a read that failed has not disagreed with you about the window or the element",
-            ],
-        context: { windowTitle, ...(err.killed !== undefined && { readCutOff: err.killed }), error: err.message },
-      });
-    }
+    if (isPowerShellFailure(err)) return failPowerShellRoad("get_ui_elements", err, { windowTitle });
     return failWith(err, "get_ui_elements", { windowTitle });
   }
 };
@@ -220,6 +236,7 @@ export const clickElementHandler = async ({
     const enriched = Object.keys(hints).length > 0 ? { ...result, hints } : result;
     return ok({ ...enriched, ...(perceptionEnv && { _perceptionForPost: perceptionEnv }) });
   } catch (err) {
+    if (isPowerShellFailure(err)) return failPowerShellRoad("click_element", err, { windowTitle: effectiveWindowTitle, name: effectiveName, automationId: effectiveAutomationId });
     return failWith(err, "click_element", { windowTitle: effectiveWindowTitle, name: effectiveName, automationId: effectiveAutomationId });
   }
 };
@@ -945,6 +962,7 @@ export const setElementValueHandler = async ({
     }
     // The resolved title, when there is one — the two failure reports inside
     // the try already use it, and a call that named a handle knows it here.
+    if (isPowerShellFailure(err)) return failPowerShellRoad("set_element_value", err, { windowTitle: reportTitle, name, automationId });
     return failWith(err, "set_element_value", { windowTitle: reportTitle, name, automationId });
   }
 };
@@ -1133,6 +1151,7 @@ export const scopeElementHandler = async ({
     content.push({ type: "text" as const, text: JSON.stringify(payload, null, 2) });
     return { content };
   } catch (err) {
+    if (isPowerShellFailure(err)) return failPowerShellRoad("scope_element", err, { windowTitle, name, automationId });
     return failWith(err, "scope_element", { windowTitle, name, automationId });
   }
 };

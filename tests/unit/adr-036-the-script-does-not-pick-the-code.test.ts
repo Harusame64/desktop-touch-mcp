@@ -37,7 +37,7 @@ vi.mock("node:child_process", () => ({
 vi.mock("../../index.js", () => ({ default: {} }));
 
 vi.resetModules();
-const { runPS, isPowerShellFailure, getElementBounds } = await import("../../src/engine/uia-bridge.js");
+const { runPS, isPowerShellFailure, getElementBounds, getUiElements } = await import("../../src/engine/uia-bridge.js");
 
 beforeEach(() => { psError = null; });
 
@@ -86,10 +86,63 @@ describe("internal #148 — the script leaves the failure at the producer", () =
   });
 
   it("does not clamp away a message that is NOT the command line, because there it is the finding", async () => {
-    // A spawn failure has no `stderr` field at all and its message is the whole evidence.
-    psError = Object.assign(new Error("spawn powershell.exe ENOENT"), {}) as Error & Record<string, unknown>;
+    // A spawn failure's message is the whole evidence, and node's `Command failed:` prefix is the
+    // boundary (hardcoded and unlocalised in node, so the test is on the string it really emits).
+    //
+    // THE FIXTURE SAID SOMETHING THE PRODUCER DOES NOT DO (gate 2): it claimed a spawn failure has
+    // no `stderr` field at all. Promisified `execFile` attaches `stdout`/`stderr` as `""` to EVERY
+    // rejection, spawn errors included — so the cell passed because `""` is falsy after `.trim()`,
+    // not because the field was absent. Same fixture-versus-producer mismatch `shortPsFailure`'s
+    // own doc records from an earlier round; the shape is the producer's now.
+    psError = Object.assign(new Error("spawn powershell.exe ENOENT"), { stdout: "", stderr: "", code: "ENOENT" }) as Error & Record<string, unknown>;
     const err = await runPS("$x = 1").catch((e: unknown) => e as Error);
     expect(err.message).toMatch(/spawn powershell\.exe ENOENT/);
+  });
+
+  it("keeps the first line of stderr and not the source line under it", async () => {
+    // GATE 2: PowerShell's NormalView error record is the message, then `At line:N char:M`, then
+    // THE OFFENDING SOURCE LINE — which is the script. Keeping 300 characters of stderr put the
+    // script back through the other door, carrying both a code-deciding token and, on the write
+    // roads, the caller's own typed text (`$vp.SetValue('…')`).
+    psError = execFileFailure({
+      killed: false,
+      stderr: [
+        "Exception calling \"SetValue\" with \"1\" argument(s): \"Value does not fall within the expected range.\"",
+        "At line:12 char:5",
+        "+     $vp.SetValue('hunter2')",
+        "+     ~~~~~~~~~~~~~~~~~~~~~~~",
+        "    + CategoryInfo          : NotSpecified: (:) [], MethodInvocationException",
+      ].join("\r\n"),
+    });
+    const err = await runPS("$x = 1").catch((e: unknown) => e as Error);
+    expect(err.message).toMatch(/Value does not fall within the expected range/);
+    expect(err.message).not.toMatch(/hunter2/);
+    expect(err.message).not.toMatch(/At line:/);
+    expect(err.message).not.toMatch(/CategoryInfo/);
+  });
+
+  it("uses a tree the killed process had already printed, instead of saying nothing was observed", async () => {
+    // GATE 2's P1. The clamp carries `stdout` BECAUSE a killed process may have answered first —
+    // and the discover road threw it away, then published "nothing was observed" about a complete
+    // tree sitting in `err.stdout`. `getElementBounds` has salvaged this since #697; this is the
+    // same shape one road over.
+    psError = execFileFailure({
+      killed: true,
+      stdout: '{"windowTitle":"App","elementCount":1,"elements":[{"name":"Save","type":"Button"}]}',
+      stderr: "",
+    });
+    const answer = await getUiElements("App", 3, 50, 10000);
+    expect(answer).toMatchObject({ windowTitle: "App", via: "powershell" });
+    expect(answer.elements).toHaveLength(1);
+  });
+
+  it("does not salvage a half-printed tree, or one that carries an error", async () => {
+    // The control for the arm above: only a parseable answer WITHOUT an `error` key is an answer.
+    psError = execFileFailure({ killed: true, stdout: '{"windowTitle":"App","elem', stderr: "" });
+    await expect(getUiElements("App", 3, 50, 10000)).rejects.toThrow(/cut off at its own budget/);
+
+    psError = execFileFailure({ killed: true, stdout: '{"error":"Window not found"}', stderr: "" });
+    await expect(getUiElements("App", 3, 50, 10000)).rejects.toThrow(/cut off at its own budget/);
   });
 
   it("still separates a read that was cut off from one that failed, on the road #697 built", async () => {
