@@ -712,7 +712,17 @@ export function readUnexpectedFallback(source, problems = []) {
  * reading says they disagree. Comparing them to each other, and both to what the code produces, is
  * the same check that found a documented-but-unread switch on the configuration axis.
  */
-export function readReasonCatalogue(source) {
+/**
+ * @param {string} source
+ * @param {string[]} [problems] collector; an empty read is PUSHED, not returned quietly
+ * @param {string} [label] which surface, for the message
+ *
+ * **IT TAKES `problems` SINCE internal #121** (2026-09-21, gate 2). It was the only reader in this
+ * file that did not, and the consequence reached the gate: `cataloguesDifferBy` is a symmetric
+ * difference, so two catalogues that could not be READ are empty, equal, and agree. "The two
+ * surfaces name the same reasons" and "neither surface was parsed" arrived as the same green.
+ */
+export function readReasonCatalogue(source, problems, label = "a reason catalogue") {
   const names = new Set();
   for (const line of source.replace(/\r\n/g, "\n").split("\n")) {
     // A catalogue entry is `"  a / b / c → …"` inside a quoted instruction line.
@@ -729,6 +739,9 @@ export function readReasonCatalogue(source) {
       const name = segment.trim().match(/^[a-z_][a-z0-9_]*/);
       if (name) names.add(name[0]);
     }
+  }
+  if (names.size === 0 && Array.isArray(problems)) {
+    problems.push(`${label} could not be read — the reasons it documents are unknown, not absent`);
   }
   return [...names].sort();
 }

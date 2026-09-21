@@ -157,8 +157,8 @@ const producedNames = [
 const computed = conversion.apply ? [...new Set(producedNames.map(conversion.apply))].sort() : [];
 const fallbackReason = conversion.apply && fallbackCause !== null ? conversion.apply(fallbackCause) : null;
 
-const serverCatalogue = readReasonCatalogue(read("src/server-windows.ts"));
-const toolCatalogue = readReasonCatalogue(read("src/tools/desktop-register.ts"));
+const serverCatalogue = readReasonCatalogue(read("src/server-windows.ts"), problems, "the server instructions' catalogue");
+const toolCatalogue = readReasonCatalogue(read("src/tools/desktop-register.ts"), problems, "the desktop_act description's catalogue");
 
 const receivable = [...new Set([...typed, ...computed])].sort();
 const computedOnly = computed.filter((r) => !typed.includes(r));
@@ -181,12 +181,25 @@ const derived = {
   // longer applies once the set is empty, so the promotion to a hard failure is below — and this is
   // the only moment it can be made without landing red.
   //
-  // **The wording is NOT unified and is not meant to be.** Measured on the way in: of the 13 rows
-  // both surfaces carry, ONE is byte-identical and twelve differ, because they address different
-  // readers — the tool description says "V1" beside the v2 surface and the server instructions do
-  // not, and the tool description's length is a cost decision with a measurement beside it (~667
-  // tokens per session with v2 on, ~336 under the kill switch; win2, `2406b98`). What is canonical
-  // is the VOCABULARY: which reasons a caller is told about at all. Each surface words its own row.
+  // **The wording is NOT unified and is not meant to be.** Measured on this tree: both surfaces
+  // carry **16** rows, **ONE** is byte-identical and **15** differ. (A row = one `"  name → …"`
+  // element; the lease line naming four reasons is one row. On `main` it was 14 / 1 / 13.)
+  //
+  // **THE FIRST VERSION SAID 13 / 1 / 12, WHICH WAS TRUE OF NO TREE** (gate 2). It came from a scan
+  // over a fixed LINE RANGE, which missed the `keyboard_target_unsafe` row — that one is a
+  // concatenation spanning two lines. The instrument's scope was written down as the code's. The
+  // counting method is stated above so the next reader can reproduce the number instead of
+  // trusting it.
+  //
+  // They differ because they address different readers: the tool description says "V1" beside the
+  // v2 surface and the server instructions do not. And **the description is kept short on purpose**
+  // — `desktop-register.ts` records the measurement beside it: **the landing paragraph's long form**
+  // cost ~667 tokens per session with v2 on and ~336 under the kill switch (win2, `2406b98`). That
+  // number is about THAT paragraph, not about the whole description; it is quoted here with its
+  // subject because a measurement copied without one becomes a budget somebody spends.
+  //
+  // What is canonical is the VOCABULARY: which reasons a caller is told about at all. Each surface
+  // words its own row.
   unresolvable: UNRESOLVABLE.map((u) => u.producer),
   reservedLeaseNames,
   // **Two classes are declared twice with different names**, and both are presented. Which one a
@@ -239,7 +252,15 @@ try {
 // computed set, and comparing an empty set against the pin buries the one line that matters under
 // 82 "no longer produces" entries — 96 problems where one is true and the rest are its shadow. The
 // reader then fixes the loudest thing. (The same shape as an error message that names a symptom.)
-if (conversion.apply === null || typed.length === 0 || suggestsKeys.length === 0 || producedNames.length === 0) {
+//
+// **THE CATALOGUES ARE IN THIS LIST SINCE internal #121** (2026-09-21, gate 2). They were not, and
+// the omission was load-bearing for the wrong side: `cataloguesDifferBy` is a SYMMETRIC DIFFERENCE,
+// so two unread catalogues are empty, equal, and "agree". Measured before the fix — break the
+// extraction and the new agreement check stays silent while 34 unrelated "the grid counts X, which
+// the code no longer produces" lines shout, which is exactly the drowning this bail exists to stop.
+// An empty read is now a problem in its own right, and it stops the run here.
+if (conversion.apply === null || typed.length === 0 || suggestsKeys.length === 0 || producedNames.length === 0
+    || serverCatalogue.length === 0 || toolCatalogue.length === 0) {
   console.error("\n[check-result-vocabulary] FAIL — the extraction cannot derive the axis:\n");
   for (const p of problems.sort()) console.error(`  - ${p}`);
   console.error("\n  Everything below this depends on it, so nothing below was compared.\n");
@@ -279,6 +300,13 @@ for (const name of typed) {
 //
 // It is the vocabulary that is pinned, never the prose — `cataloguesDifferBy` is derived from the
 // reason NAMES each surface documents, and the two surfaces word their rows for their own readers.
+//
+// **WHAT THIS DOES NOT HOLD, said here because the summary line does not say it** (gate 2, P3-5):
+// agreement is symmetric, so it catches a name present on one side and absent on the other — not a
+// name dropped from BOTH. `unknown` is not a `TouchFailReason`, so the typed-coverage invariant
+// below does not reach it either: what keeps it catalogued is the pinned set plus one cell naming
+// it by hand (`adr-036-the-result-cell-counts-the-reasons`). Measured: remove the row from both
+// surfaces and re-pin, and this file prints OK.
 if (derived.cataloguesDifferBy.length > 0) {
   problems.push(
     `the two catalogues no longer name the same reasons: ${derived.cataloguesDifferBy.join(", ")} — ` +
