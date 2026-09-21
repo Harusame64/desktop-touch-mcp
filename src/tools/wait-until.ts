@@ -139,6 +139,80 @@ type LastLook = Record<string, unknown>;
  * earlier poll standing beside a later poll's `resolved: true`, so the "last look" was a composite
  * of two polls that contradicted each other (gate 2).
  */
+/**
+ * Which client answered, and whether the other one was asked first and threw — internal #142.
+ *
+ * `via` goes on every look, found or not, because the two clients do not name the same control the
+ * same way (internal #136), so WHICH of them answered is part of what the answer means.
+ * `nativeFailed` appears only when a read fell back mid-call: MEASURED 2026-09-20 win2 (internal
+ * `25da27f`), hanging a window's UI thread makes the native call throw while the PowerShell road
+ * answers normally, and before this the only trace was a line on the server's stderr.
+ */
+function provenance(answer: { via: string; nativeFailed?: string }): Record<string, unknown> {
+  return { via: answer.via, ...(answer.nativeFailed !== undefined && { nativeFailed: answer.nativeFailed }) };
+}
+
+/**
+ * The suggestions the last look earned, in the order the caller can act on them.
+ *
+ * Built as a list rather than a ternary chain because two of these can be true at once: a read
+ * that fell back AND missed is about the vocabulary first and the name second, while a read that
+ * fell back and could not find the window is about the window first. The chain could only ever
+ * say one of them (internal #142, measured).
+ */
+function earnedAdvice(look: LastLook): string[] {
+  const why = look["why"];
+  const fellBack = look["nativeFailed"] !== undefined;
+  const answered = look["via"];
+  const lines: string[] = [];
+
+  // Said FIRST only where it is the thing to fix: a name that missed on a road the caller did not
+  // choose. The two clients name some controls differently (internal #136).
+  const vocabulary =
+    "This read fell back to the PowerShell UIA client, which names some controls differently from the native engine ('Minimize' against '最小化', and twenty of Notepad's twenty-six elements differ). The name you passed may be the native engine's — check WHICH client's name you are using before changing it; context.lastLook.nativeFailed says why the road changed";
+  if (fellBack && answered === "powershell" && why === "element_not_found") lines.push(vocabulary);
+
+  if (why === "window_not_found") {
+    lines.push("No window matched target.windowTitle while waiting — the element was never looked for. Check the title with {tool:list_window_titles} before waiting longer or re-checking the element name");
+  } else if (why === "element_not_found") {
+    lines.push("No element by that name was found while waiting — check target.elementName against what {tool:reidentify_element} returns before waiting longer");
+  } else if (why === "no_rectangle") {
+    lines.push("The element was found but has no rectangle — it is collapsed, zero-size or offscreen. Bring it into view (scroll it, or expand the panel holding it) rather than waiting longer");
+  } else if (why === "unreadable") {
+    // Two different things wear this name, and only one of them is about the engine (gate 2):
+    // the native road discards the distinction, while the PowerShell road reaches `unreadable`
+    // only when the script said something this server does not recognise — and then the words are
+    // in `context.lastLook.error`, which the first version of this sentence never mentioned.
+    lines.push(answered === "native"
+      ? "The read answered 'not there' without saying whether the WINDOW or the ELEMENT was missing. Check the window title first with {tool:list_window_titles}, then the element name — this build's UIA engine cannot tell the two apart"
+      : "The UIA client answered with something this server does not recognise — the words are in context.lastLook.error. Read those before changing the target");
+  } else if (why === "read_unfinished") {
+    lines.push("The read ran out of its own budget before answering, so nothing was observed at all — unlike the other silences, this one is not a statement about the window or the element. Some window on this desktop is answering slowly, not necessarily the one you named. The read's own budget is fixed and a longer timeoutMs buys more attempts rather than a longer look, so this helps only if the slowness passes");
+  } else if (why === "read_failed") {
+    lines.push("The read itself failed, so nothing was learned about the window or the element — the error is in context.lastLook.error. Retry before changing the target");
+  }
+
+  // …and NOWHERE ELSE. The same fact used to be said again after every other silence, on the
+  // reasoning that a changed road changes what a name MEANS even where the name is not the thing
+  // to fix first. Two gate-2 rounds narrowed that trailing line — first off `via: "none"` (no
+  // client spoke, so it asserted exactly what `UiaVia`'s own doc says `none` exists to prevent),
+  // then off a look that RESOLVED (a `value_changes` wait whose value was read on every poll
+  // opened with "the name you passed may be the native engine's" about a name that demonstrably
+  // worked, displacing "Increase timeoutMs") — and the third round found the remainder holds no
+  // true case at all:
+  //
+  //   `window_not_found` — the element was never looked for, and a window title is not UIA
+  //   vocabulary. `read_unfinished` — nothing was observed. `read_failed`, and `unreadable` on the
+  //   PowerShell road — the read failed, so no name missed anything. There the envelope opened
+  //   with "nothing was learned about the window or the element" and line two told the caller
+  //   their name might be wrong: the same "asserts an observation that never happened" rule this
+  //   file states a hundred lines down about `baseline: ""`, one silence over.
+  //
+  // A MISS is the only look a vocabulary can explain, and `element_not_found` is the only `why`
+  // that is one — so the line is said once, above, where it is earned.
+  return lines;
+}
+
 function write(look: LastLook, seen: Record<string, unknown>): void {
   for (const key of Object.keys(look)) delete look[key];
   Object.assign(look, seen);
@@ -148,7 +222,8 @@ function probeElementAppears(windowTitle: string, elementName: string | undefine
   return async () => {
     if (!elementName) return null;
     try {
-      const bounds = await getElementBounds(windowTitle, elementName);
+      const answer = await getElementBounds(windowTitle, elementName);
+      const bounds = answer.found;
       if (bounds && bounds.boundingRect) {
         // What it RESOLVED, not only that it did: the same read already carries the type and the
         // AutomationId, and a caller that got the wrong element has no other way to see it.
@@ -163,7 +238,13 @@ function probeElementAppears(windowTitle: string, elementName: string | undefine
       // when `bounds` is set — it simply has no rectangle (a collapsed panel, an offscreen control;
       // `uia-bridge.ts` nulls the rect for an empty or infinite one). Calling that "never resolved"
       // put the wrong advice first, which is this change's own defect shape (gate 2).
-      write(look, { resolved: bounds !== null && bounds !== undefined, why: bounds ? "no_rectangle" : "element_not_found" });
+      // The read's own account of the silence, not this probe's guess at it. `element_not_found`
+      // used to be written here for every empty answer, including a window title that matched no
+      // window at all (internal #142, measured) — the caller was then told to check a name that
+      // was never the problem.
+      write(look, bounds
+        ? { resolved: true, why: "no_rectangle", ...provenance(answer) }
+        : { resolved: false, why: answer.why, ...provenance(answer), ...(answer.error ? { error: answer.error } : {}) });
       return null;
     } catch (e) {
       // A window this server may not act through is a REFUSAL, not a thing that has not happened
@@ -182,7 +263,7 @@ function probeElementAppears(windowTitle: string, elementName: string | undefine
       // Defensive, not a live road: `getElementBounds` catches everything internally on both
       // clients, so with the exclusion rethrown above nothing else throws here today. It stands for
       // a future producer that does (gate 2).
-      write(look, { resolved: false, why: "read_failed", error: e instanceof Error ? e.message : String(e) });
+      write(look, { resolved: false, why: "read_failed", via: "none", error: e instanceof Error ? e.message : String(e) });
       return null;
     }
   };
@@ -204,7 +285,8 @@ function probeValueChanges(windowTitle: string, elementName: string | undefined,
   return async () => {
     if (!elementName) return null;
     try {
-      const bounds = await getElementBounds(windowTitle, elementName);
+      const answer = await getElementBounds(windowTitle, elementName);
+      const bounds = answer.found;
       // THE DISTINCTION THIS CONDITION COULD NOT MAKE: no element at all, and an element whose
       // value never moved, both ended as `value ?? ""` and then as the same timeout. A missing
       // element is not a value of "" — `resolved` says which, and the baseline says what was being
@@ -224,8 +306,8 @@ function probeValueChanges(windowTitle: string, elementName: string | undefined,
       // `resolved: false` asserts an observation that never happened, and "" is exactly the value a
       // missing element is not (gate 2, the same shape one level down).
       write(look, resolved
-        ? { resolved, baseline, latest: cur }
-        : { resolved, why: "element_not_found" });
+        ? { resolved, baseline, latest: cur, ...provenance(answer) }
+        : { resolved, why: answer.why, ...provenance(answer), ...(answer.error ? { error: answer.error } : {}) });
       if (!first && baseline !== null && cur !== baseline) {
         return { before: baseline, after: cur };
       }
@@ -237,7 +319,7 @@ function probeValueChanges(windowTitle: string, elementName: string | undefined,
       // Defensive, not a live road: `getElementBounds` catches everything internally on both
       // clients, so with the exclusion rethrown above nothing else throws here today. It stands for
       // a future producer that does (gate 2).
-      write(look, { resolved: false, why: "read_failed", error: e instanceof Error ? e.message : String(e) });
+      write(look, { resolved: false, why: "read_failed", via: "none", error: e instanceof Error ? e.message : String(e) });
       return null;
     }
   };
@@ -458,11 +540,19 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
           // resolved, and telling its caller to re-check the name sends them to a tool that does not
           // list it either (gate 2). The tool is named by capability, so the sentence says
           // `get_ui_elements` at the kill-switch corner where `desktop_discover` is not registered.
-          ...(lastLook["why"] === "element_not_found"
-            ? [`No element by that name was found while waiting — check target.elementName against what {tool:reidentify_element} returns before waiting longer`]
-            : lastLook["why"] === "no_rectangle"
-              ? ["The element was found but has no rectangle — it is collapsed, zero-size or offscreen. Bring it into view (scroll it, or expand the panel holding it) rather than waiting longer"]
-              : []),
+          //
+          // internal #142 — `window_not_found` and `unreadable` used to arrive here spelled
+          // `element_not_found`, so a wait against a title that matches NO WINDOW was answered
+          // with "check target.elementName" (measured 2026-09-20 win2). The element name was never
+          // the problem, and no amount of re-reading it would have been.
+          // internal #142 — one line per silence, and the ORDER decided by what the caller can
+          // act on. MEASURED 2026-09-20 win2 (internal `c4374e9`): with an unrelated window hung,
+          // the native read throws, the PowerShell road COMPLETES, and it genuinely has no element
+          // called `最小化` — it calls that control `Minimize`. So `element_not_found` is TRUE and
+          // "check target.elementName" is the wrong recovery: the name was right and the ROAD was
+          // wrong. The first round put the vocabulary line second and the machine showed an
+          // envelope opening with advice that could not work.
+          ...earnedAdvice(lastLook),
           "Increase timeoutMs",
           "Verify the target is correct",
           "Inspect intermediate state with screenshot(detail='meta')",

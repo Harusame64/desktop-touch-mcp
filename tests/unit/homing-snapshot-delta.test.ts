@@ -59,7 +59,7 @@ vi.mock("../../src/engine/perception/tab-drag-heuristic.js", () => ({
 }));
 
 vi.mock("../../src/engine/uia-bridge.js", () => ({
-  getElementBounds: vi.fn(() => null),
+  getElementBounds: vi.fn(() => ({ found: null, why: "element_not_found", via: "powershell" })),
 }));
 
 vi.mock("../../src/engine/nutjs.js", () => ({
@@ -190,6 +190,71 @@ describe("issue #443: homing delta uses screenshot-time position", () => {
     await mouseClickHandler({ ...BASE_ARGS, x: 300, y: 400 });
 
     expect(mockMove).toHaveBeenCalledWith(300, 400, 0);
+  });
+
+  it("says which client resolved the tier-3 re-query it is about to press", async () => {
+    // FOUND BY MUTATION (gate 2): deleting the `[via…]` suffix from the tier-3 note kills nothing,
+    // because the FOUND branch of that re-query has no cell anywhere — every mouse and homing mock
+    // in this suite answers `found: null`. So the one place a caller could see that a press was
+    // aimed by a different UIA client than the one that named the element was unpinned.
+    //
+    // Why it matters (internal #136, measured): the two clients name some controls differently, so
+    // a re-query that fell back resolved a name in the other one's vocabulary — and then a click
+    // goes to whatever it resolved.
+    const { getElementBounds } = await import("../../src/engine/uia-bridge.js");
+    vi.mocked(getElementBounds).mockResolvedValue({
+      found: { name: "Save", controlType: "Button", automationId: "", boundingRect: { x: 700, y: 300, width: 100, height: 40 }, value: null },
+      via: "powershell",
+      nativeFailed: "UIA operation timed out after 8000ms",
+    } as Awaited<ReturnType<typeof getElementBounds>>);
+    // The window moved far since the screenshot, which is what sends the ladder to its third tier.
+    mockGetSnapshot.mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
+    mockGetCachedByTitle.mockReturnValue(cachedEntry({ x: 0, y: 0, width: 800, height: 600 }, Date.now()));
+    mockGetRect.mockReturnValue({ x: 600, y: 400, width: 800, height: 600 });
+
+    const result = await mouseClickHandler({ ...BASE_ARGS, x: 300, y: 400, elementName: "Save" });
+    const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "";
+    expect(text).toMatch(/re-queried \\"Save\\" via UIA/);
+    expect(text).toMatch(/\[powershell, after native failed: UIA operation timed out after 8000ms\]/);
+  });
+
+  it("says why a tier-3 re-query answered nothing, and who said so", async () => {
+    // FOUND BY MUTATION (gate 2): the MISS branch printed "found no element" for all five
+    // silences, including a read that never finished and a window that was not there — and a
+    // re-query that fell back AND missed is the vocabulary trap (#136), which left no trace here
+    // at all while the found branch names its client.
+    const { getElementBounds } = await import("../../src/engine/uia-bridge.js");
+    vi.mocked(getElementBounds).mockResolvedValue({
+      found: null, why: "read_unfinished", via: "none",
+      nativeFailed: "UIA operation timed out after 8000ms",
+    } as Awaited<ReturnType<typeof getElementBounds>>);
+    mockGetSnapshot.mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
+    mockGetCachedByTitle.mockReturnValue(cachedEntry({ x: 0, y: 0, width: 800, height: 600 }, Date.now()));
+    mockGetRect.mockReturnValue({ x: 600, y: 400, width: 800, height: 600 });
+
+    const result = await mouseClickHandler({ ...BASE_ARGS, x: 300, y: 400, elementName: "Save" });
+    const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "";
+    expect(text).toMatch(/answered nothing \(read_unfinished\)/);
+    expect(text).toMatch(/\[none, after native failed: UIA operation timed out after 8000ms\]/);
+  });
+
+  it("names the client on the found-but-rectless note too, which no cell reached", async () => {
+    // FOUND BY MUTATION (gate 2): the tier-3 note has THREE shapes — found with a rectangle, found
+    // without one, and nothing at all — and only two had cells. Deleting the client from the
+    // middle one killed nothing.
+    const { getElementBounds } = await import("../../src/engine/uia-bridge.js");
+    vi.mocked(getElementBounds).mockResolvedValue({
+      found: { name: "Save", controlType: "Button", automationId: "", boundingRect: null, value: null },
+      via: "powershell",
+      nativeFailed: "UIA operation timed out after 8000ms",
+    } as Awaited<ReturnType<typeof getElementBounds>>);
+    mockGetSnapshot.mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
+    mockGetCachedByTitle.mockReturnValue(cachedEntry({ x: 0, y: 0, width: 800, height: 600 }, Date.now()));
+    mockGetRect.mockReturnValue({ x: 600, y: 400, width: 800, height: 600 });
+
+    const result = await mouseClickHandler({ ...BASE_ARGS, x: 300, y: 400, elementName: "Save" });
+    const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "";
+    expect(text).toMatch(/with no rectangle \[powershell, after native failed: UIA operation timed out after 8000ms\]/);
   });
 
   it("ignores a stale main-cache entry (TTL guard) instead of applying a bogus offset", async () => {

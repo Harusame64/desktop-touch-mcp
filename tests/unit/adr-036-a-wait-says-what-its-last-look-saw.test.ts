@@ -21,10 +21,22 @@ type Bounds = { name: string; controlType?: string; automationId?: string; value
 let bounds: Bounds = null;
 let readThrows: Error | null = null;
 
+/**
+ * The stand-in speaks the shape the bridge speaks — internal #142. `miss` is what the read says
+ * when it answers nothing, and the default is the one this file was written around: an element
+ * that was not there, said by the PowerShell client.
+ */
+let miss: { why: string; via: string; nativeFailed?: string; error?: string } =
+  { why: "element_not_found", via: "powershell" };
+let foundVia: "native" | "powershell" = "powershell";
+let foundNativeFailed: string | undefined;
+
 vi.mock("../../src/engine/uia-bridge.js", () => ({
   getElementBounds: async () => {
     if (readThrows) throw readThrows;
-    return bounds;
+    return bounds
+      ? { found: bounds, via: foundVia, ...(foundNativeFailed !== undefined && { nativeFailed: foundNativeFailed }) }
+      : { found: null, ...miss };
   },
 }));
 vi.mock("../../src/engine/win32.js", () => ({
@@ -40,7 +52,10 @@ vi.mock("../../src/utils/desktop-config.js", () => ({ getCdpPort: () => 9222 }))
 
 const { waitUntilHandler } = await import("../../src/tools/wait-until.js");
 
-beforeEach(() => { bounds = null; readThrows = null; });
+beforeEach(() => {
+  bounds = null; readThrows = null; foundVia = "powershell"; foundNativeFailed = undefined;
+  miss = { why: "element_not_found", via: "powershell" };
+});
 
 /** The envelope a timed-out wait produces, parsed. */
 async function waitFor(condition: string, timeoutMs = 600): Promise<Record<string, unknown>> {
@@ -140,7 +155,7 @@ describe("a timed-out wait says which silence it was", () => {
     const spy = vi.spyOn(uia, "getElementBounds").mockImplementation(async () => {
       polls += 1;
       if (polls === 1) throw original;
-      return bounds as never;
+      return { found: bounds, via: "powershell" } as never;
     });
     const envelope = await waitFor("value_changes");
     spy.mockRestore();
@@ -178,6 +193,236 @@ describe("a timed-out wait says which silence it was", () => {
         condition, target: { windowTitle: "App", elementName: "Save" },
       });
     }
+  });
+
+  it("does not blame the element name when no window matched at all", async () => {
+    // THE DEFECT internal #142 CLOSES, measured on Windows before it was fixed: a wait against a
+    // title that matches no window answered `why: "element_not_found"` and advised checking
+    // `target.elementName` against a discovery tool. Nothing was ever looked for — there was
+    // nowhere to look — and re-reading the element name could not have helped.
+    miss = { why: "window_not_found", via: "powershell" };
+    const envelope = await waitFor("element_appears");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: false, why: "window_not_found" });
+    expect(suggestOf(envelope)[0]).toMatch(/No window matched target\.windowTitle/);
+    // …and it does NOT open with the element-name line, which is the whole point.
+    expect(suggestOf(envelope)[0]).not.toMatch(/target\.elementName/);
+  });
+
+  it("says it could not tell the two apart, rather than picking one", async () => {
+    // The native road's honest answer on a build whose engine discards the reason. Advice that
+    // names BOTH checks in order is worth more than a confident wrong one.
+    miss = { why: "unreadable", via: "native" };
+    const envelope = await waitFor("element_appears");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: false, why: "unreadable", via: "native" });
+    expect(suggestOf(envelope)[0]).toMatch(/without saying whether the WINDOW or the ELEMENT/);
+  });
+
+  it("tells the caller to wait, for the one silence where waiting works", async () => {
+    // win2, internal `0c5547d`: a hung window makes this road answer nothing in 16 s — and the
+    // envelope said `element_not_found`, so the caller went off to re-read a name belonging to an
+    // element that was on the screen the whole time.
+    //
+    // THE SUBJECT IS THE READ, NOT THE WINDOW, and that is a correction rather than a style
+    // choice. The first draft of this line said "the window is busy, not missing". Measured the
+    // same day (win2, `30dac81`): reading a title that matches NO WINDOW AT ALL takes 16 s while
+    // an unrelated window is hung, because a title search walks the root's children and reads
+    // `Current.Name` on each. One unresponsive window is a tax on every title search, so a
+    // sentence about "the window you named" is false in exactly the case that produces it.
+    miss = { why: "read_unfinished", via: "none", nativeFailed: "UIA operation timed out after 8000ms" };
+    const envelope = await waitFor("element_appears");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: false, why: "read_unfinished", via: "none" });
+    expect(suggestOf(envelope)[0]).toMatch(/ran out of its own budget/);
+    expect(suggestOf(envelope)[0]).toMatch(/not necessarily the one you named/);
+    // …it says what a longer timeout actually buys, which is not what it sounds like (gate 2):
+    // `getElementBounds` hard-codes its own 8000 ms and takes nothing from the caller, so a bigger
+    // `timeoutMs` buys more 16-second attempts rather than one longer look (#144).
+    expect(suggestOf(envelope)[0]).toMatch(/more attempts rather than a longer look/);
+    // …and it does NOT send them to re-check either name.
+    expect(suggestOf(envelope)[0]).not.toMatch(/target\.elementName|target\.windowTitle/);
+    // …and it does not claim a client answered, because on this silence none did.
+    expect(suggestOf(envelope).join(" ")).not.toMatch(/fell back to the PowerShell/);
+  });
+
+  it("says a read that failed learned nothing, instead of reporting an absence", async () => {
+    miss = { why: "read_failed", via: "powershell", error: "powershell.exe: timed out" };
+    const envelope = await waitFor("element_appears");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: false, why: "read_failed", error: "powershell.exe: timed out" });
+    expect(suggestOf(envelope)[0]).toMatch(/nothing was learned about the window or the element/);
+  });
+
+  it("says the road changed under the wait, because that changes what a name means", async () => {
+    // MEASURED 2026-09-20 win2 (internal `25da27f`): hanging a window's UI thread makes the native
+    // call throw and the PowerShell road answer. The two clients name some controls differently
+    // (internal #136), so the SAME wait on the SAME live element becomes a timeout — and the old
+    // envelope said `element_not_found` with no hint that anything had changed.
+    miss = { why: "element_not_found", via: "powershell", nativeFailed: "UIA operation timed out after 8000ms" };
+    const envelope = await waitFor("element_appears");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({
+      resolved: false, why: "element_not_found", via: "powershell",
+      nativeFailed: "UIA operation timed out after 8000ms",
+    });
+    // SAID FIRST on this silence, and that ordering is the measurement rather than a preference.
+    // MEASURED 2026-09-20 win2 (internal `c4374e9`): with an unrelated window hung, the native
+    // read throws, the PowerShell road COMPLETES, and it genuinely has no element called `最小化`
+    // — it calls that control `Minimize`. So `element_not_found` is true and "check
+    // target.elementName" is the wrong recovery: the name was right and the ROAD was wrong. The
+    // first round of this change put the vocabulary line second and the machine showed the
+    // envelope opening with advice that could not work.
+    expect(suggestOf(envelope)[0]).toMatch(/fell back to the PowerShell UIA client/);
+    expect(suggestOf(envelope)[0]).toMatch(/WHICH client's name/);
+    // …and the name line is still there, after it: the name CAN also be wrong.
+    expect(suggestOf(envelope).join("\n")).toMatch(/No element by that name/);
+  });
+
+  it("does not question a NAME on a silence where no name was looked up", async () => {
+    // THIS CELL USED TO ASSERT THE OPPOSITE — that the vocabulary line is said second on every
+    // other silence, "because a changed road changes what a name means". Gate 2's third pass took
+    // the remainder apart: on `window_not_found` the element was never looked for, and a window
+    // title is not UIA vocabulary. There is no name here whose client could be the wrong one.
+    miss = { why: "window_not_found", via: "powershell", nativeFailed: "UIA operation timed out after 8000ms" };
+    const envelope = await waitFor("element_appears");
+    expect(suggestOf(envelope)[0]).toMatch(/No window matched target\.windowTitle/);
+    expect(suggestOf(envelope).join("\n")).not.toMatch(/fell back to the PowerShell UIA client/);
+  });
+
+  it("says nothing about vocabulary on a read that failed, which compared no name with anything", async () => {
+    // The shape gate 2 named: `read_failed` on the PowerShell road. A client spoke and the read
+    // still failed, so line one is about the failure — and a second line telling the caller their
+    // name may be the other client's asserts an observation that never happened, which is the rule
+    // this suite's own `baseline: ""` cell states one silence over.
+    miss = { why: "read_failed", via: "powershell", nativeFailed: "UIA operation timed out after 8000ms", error: "PowerShell printed JSON that is not an object" };
+    const envelope = await waitFor("element_appears");
+    expect(suggestOf(envelope)[0]).toMatch(/The read itself failed/);
+    expect(suggestOf(envelope).join("\n")).not.toMatch(/fell back to the PowerShell UIA client/);
+  });
+
+  it("says nothing about vocabulary when the read ran out of its own budget", async () => {
+    // `read_unfinished` is the one silence that is not a statement about the window or the element.
+    // `via: "none"` already kept the line off this arm; the cell holds the pair together, because
+    // the two conditions were narrowed one round apart and either one alone would let it back.
+    miss = { why: "read_unfinished", via: "none", nativeFailed: "UIA operation timed out after 8000ms" };
+    const envelope = await waitFor("element_appears");
+    expect(suggestOf(envelope)[0]).toMatch(/ran out of its own budget/);
+    expect(suggestOf(envelope).join("\n")).not.toMatch(/fell back to the PowerShell UIA client/);
+  });
+
+  it("does not question the name of an element it found and read twice", async () => {
+    // THE DEFECT GATE 2 FOUND, and it is this change's own shape one condition over. On any build
+    // with the addon, the ONLY way to reach the PowerShell road is a native throw — so every
+    // fall-back carries `nativeFailed`, and this fired on every one of them.
+    //
+    // Here the element was found and its value read on every poll; the wait timed out because the
+    // value never moved. The envelope opened with "the name you passed may be the native engine's
+    // — check WHICH client's name you are using", about a name that demonstrably worked, and it
+    // displaced "Increase timeoutMs", which is the right advice for a value that has not changed
+    // yet.
+    bounds = { name: "Save", value: "draft" };
+    foundVia = "powershell";
+    foundNativeFailed = "UIA operation timed out after 8000ms";
+    const envelope = await waitFor("value_changes");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: true, baseline: "draft", via: "powershell" });
+    expect(suggestOf(envelope)[0]).toBe("Increase timeoutMs");
+    expect(suggestOf(envelope).join(" ")).not.toMatch(/fell back/);
+  });
+
+  it("does not contradict itself about an element it found without a rectangle", async () => {
+    // The other resolved shape: line one said "found but has no rectangle" and line two said the
+    // name may be wrong. Both cannot be the thing to fix (gate 2).
+    bounds = { name: "Save", controlType: "Button" };
+    foundVia = "powershell";
+    foundNativeFailed = "UIA operation timed out after 8000ms";
+    const envelope = await waitFor("element_appears");
+    expect(suggestOf(envelope)[0]).toMatch(/no rectangle/);
+    expect(suggestOf(envelope).join(" ")).not.toMatch(/fell back/);
+  });
+
+  it("says two different things by 'unreadable', because two different roads produce it", async () => {
+    // FOUND BY MUTATION (gate 2's own finding, then a mutation nobody had written): the NATIVE
+    // road answers `unreadable` because the engine discards the distinction, while the PowerShell
+    // road answers it only when the script said something this server does not recognise — and
+    // then the words are in `context.lastLook.error`. One sentence for both told half the callers
+    // something false about their build.
+    miss = { why: "unreadable", via: "native" };
+    const native = await waitFor("element_appears");
+    expect(suggestOf(native)[0]).toMatch(/this build's UIA engine cannot tell the two apart/);
+
+    miss = { why: "unreadable", via: "powershell", error: "Access is denied. (0x80070005)" };
+    const ps = await waitFor("element_appears");
+    expect(suggestOf(ps)[0]).toMatch(/something this server does not recognise/);
+    expect(suggestOf(ps)[0]).toMatch(/context\.lastLook\.error/);
+    expect(suggestOf(ps)[0]).not.toMatch(/this build's UIA engine/);
+  });
+
+  it("says nothing about vocabulary on an unrecognised answer, even though a client did answer", async () => {
+    // THE ONE MUTATION GATE 2's FOURTH PASS COULD NOT KILL: re-adding the vocabulary line for
+    // `unreadable` + PowerShell left all 28 cells green, because the `unreadable` + PowerShell cell
+    // above never passes `nativeFailed` — and without it the line's first condition short-circuits,
+    // so nobody was looking at the combination that actually reaches the guard.
+    //
+    // It is the same rule as the two silences above: the script said something this file did not
+    // recognise, so no name was compared with anything and there is nothing a vocabulary can
+    // explain. The words are in `context.lastLook.error`, which line one already points at.
+    miss = { why: "unreadable", via: "powershell", nativeFailed: "UIA operation timed out after 8000ms", error: "Access is denied. (0x80070005)" };
+    const envelope = await waitFor("element_appears");
+    expect(suggestOf(envelope)[0]).toMatch(/something this server does not recognise/);
+    expect(suggestOf(envelope).join("\n")).not.toMatch(/fell back to the PowerShell UIA client/);
+  });
+
+  it("says the road changed once, not twice", async () => {
+    // FOUND BY MUTATION (gate 2): dropping the `why !== "element_not_found"` exclusion from the
+    // trailing push emits the vocabulary line TWICE on that silence, and every cell stayed green
+    // because they assert `suggest[0]` and a `join` containment, neither of which counts.
+    miss = { why: "element_not_found", via: "powershell", nativeFailed: "UIA operation timed out after 8000ms" };
+    const envelope = await waitFor("element_appears");
+    expect(suggestOf(envelope).filter((line) => /fell back to the PowerShell/.test(line))).toHaveLength(1);
+  });
+
+  it("names the window lister by capability, not by a name nobody registered", async () => {
+    // FOUND BY MUTATION (gate 2), and by eye before that: the first version of these two sentences
+    // said `list_windows`, which exists nowhere in this product. The source-walking gate only
+    // checks `{tool:…}` placeholders against the capability list — a BARE unregistered tool name
+    // in prose is invisible to it, which is why the regression could come back unnoticed.
+    for (const why of ["window_not_found", "unreadable"]) {
+      miss = { why, via: why === "unreadable" ? "native" : "powershell" };
+      const envelope = await waitFor("element_appears");
+      const first = suggestOf(envelope)[0];
+      expect(first, why).toMatch(/\{tool:list_window_titles\}|desktop_discover|get_windows/);
+      expect(first, why).not.toMatch(/list_windows\b/);
+    }
+  });
+
+  it("stays quiet about the road when the road did not change", async () => {
+    // An advice line that appears on every answer says nothing. This one is evidence that a
+    // fall-back HAPPENED, so it has to be absent when it did not.
+    miss = { why: "element_not_found", via: "powershell" };
+    const envelope = await waitFor("element_appears");
+    expect(suggestOf(envelope).join(" ")).not.toMatch(/fell back/);
+    expect(contextOf(envelope)["lastLook"]).not.toHaveProperty("nativeFailed");
+  });
+
+  it("names the client on a look that SUCCEEDED too, not only on a miss", async () => {
+    // Which client read a value is part of what the value means, and `value_changes` compares two
+    // readings: two clients over one wait is a comparison across vocabularies.
+    bounds = { name: "Save", value: "draft" };
+    foundVia = "native";
+    const envelope = await waitFor("value_changes");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: true, baseline: "draft", via: "native" });
+  });
+
+  it("routes the read's reason on the value road too, not only on the element road", async () => {
+    // FOUND BY MUTATION (gate 2): hard-coding `element_not_found` in `probeValueChanges` survives,
+    // because every envelope cell above drives `element_appears`. Two probes, one claim, one of
+    // them unswept — which is the shape this whole file exists to stop.
+    miss = { why: "window_not_found", via: "powershell" };
+    const envelope = await waitFor("value_changes");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({ resolved: false, why: "window_not_found", via: "powershell" });
+    expect(suggestOf(envelope)[0]).toMatch(/No window matched target\.windowTitle/);
+  });
+
+  it("carries the read's error on the value road as well", async () => {
+    miss = { why: "read_failed", via: "powershell", error: "PowerShell answered with something that is not JSON" };
+    const envelope = await waitFor("value_changes");
+    expect(contextOf(envelope)["lastLook"]).toMatchObject({ why: "read_failed", error: "PowerShell answered with something that is not JSON" });
   });
 
   it("carries no last look for a condition that looks at no element", async () => {

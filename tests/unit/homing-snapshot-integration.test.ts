@@ -54,7 +54,7 @@ vi.mock("../../src/engine/perception/tab-drag-heuristic.js", () => ({
 }));
 
 vi.mock("../../src/engine/uia-bridge.js", () => ({
-  getElementBounds: vi.fn(() => null),
+  getElementBounds: vi.fn(() => ({ found: null, why: "element_not_found", via: "powershell" })),
 }));
 
 vi.mock("../../src/engine/nutjs.js", () => ({

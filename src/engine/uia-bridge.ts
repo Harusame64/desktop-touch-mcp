@@ -1912,6 +1912,112 @@ export interface ElementBounds {
 }
 
 /**
+ * Why a bounds read came back with nothing — internal #142.
+ *
+ * `null` used to mean all of these at once, and the caller that has to explain a timeout
+ * (`wait_until`) picked one and said it: MEASURED 2026-09-20 win2, a wait against a window title
+ * matching no window at all answers `why: "element_not_found"` and advises checking the ELEMENT
+ * name against `desktop_discover`. The element name was never the problem.
+ *
+ * Both clients know the difference and both roads threw it away, in two different places:
+ * `get_element_bounds_impl` (`src/uia/tree.rs`) turns a failed `find_window` and a failed
+ * `find_element_in_window` into the same `Ok(None)`, and the PowerShell script prints
+ * `{"error":"Window not found"}` and `{"error":"Element not found"}` as distinct answers which
+ * this file then collapsed with `if (parsed.error) return null`.
+ *
+ * This change stops the collapse on the road that still has the information. The native road
+ * cannot say yet: `unreadable` is what it answers, and that is the honest value rather than a
+ * guess, because the field does not exist in the addon. Closing it is a Rust change and a rebuilt
+ * addon — and a build without that field must not be read as if it had one.
+ */
+export type BoundsMiss =
+  /** The title matched no top-level window. Checking the element's name cannot help. */
+  | "window_not_found"
+  /** The window was there and nothing in it matched. */
+  | "element_not_found"
+  /**
+   * The answer does not say which of the two it was — and the two roads reach that for OPPOSITE
+   * reasons, so read `via` before writing advice on it.
+   *
+   * On the native road the engine computed the distinction and discarded it (`Ok(None)` for both a
+   * failed `find_window` and a failed `find_element_in_window`, `src/uia/tree.rs`), so the answer
+   * really is ambiguous and the recovery order — window first — is all that can be said.
+   * On the PowerShell road the script said something SPECIFIC that this file did not recognise; the
+   * words are carried in `error`, and calling that "cannot tell the two apart" would name the wrong
+   * cause for text that is sitting in the answer.
+   */
+  | "unreadable"
+  /**
+   * The read itself failed — nothing was concluded about the window or the element.
+   *
+   * It says nothing about WHO failed: `via` does. A spawn that never started answers
+   * `via: "none"`, while a script that ran and printed something unusable answers
+   * `via: "powershell"`, because a client did speak. (This doc said "and no other client answered
+   * either" until gate 2 read it against the two arms below it, which is the sort of sentence a
+   * caller builds a wrong recovery on.)
+   */
+  | "read_failed"
+  /**
+   * The read was cut off by its own budget before it produced anything — nothing was concluded.
+   *
+   * MEASURED 2026-09-20 win2 (internal `0c5547d`): against a window whose UI thread is hung, this
+   * road answers nothing in 16 seconds — 8000 ms of native timeout, then 8000 ms of `runPS`
+   * timeout, spent one after the other. The script is killed with empty stdout.
+   *
+   * **It is the only one of these that is not a statement about the window or the element** —
+   * nothing was observed at all. (Not "the only silence a longer wait can change": an element that
+   * is not there YET is exactly what `wait_until` exists for, and gate 2 caught that sentence.) It
+   * looked exactly like the three above, so a caller gave up on a read that had not finished. `runPS` passes a
+   * fixed 8000 ms here where `getUiElements` takes the caller's own budget, which is why the same
+   * hung window can be read by one road and not the other (internal #144).
+   *
+   * **It does not mean the TARGET is busy.** Measured the same day (win2, `30dac81`): reading a
+   * title that matches no window at all takes 16 s while an unrelated window is hung, and 120 ms
+   * before and after. A title search walks the root's children and reads `Current.Name` on each
+   * one, so one unresponsive window on the desktop is a tax on every title search, whoever the
+   * caller asked about. Advice that says "the window you named is busy" is wrong in exactly that
+   * case, which is why the sentence in `wait-until.ts` is about the READ and not about the
+   * window.
+   */
+  | "read_unfinished";
+
+/**
+ * Which UIA client produced an answer — or `none`, when the question was never answered at all.
+ *
+ * `none` is not a nicety. "If the native client fails, the PowerShell road answers" does not hold
+ * when the cause of the failure is SLOWNESS: both budgets are 8000 ms and they are spent one after
+ * the other, so a window slow enough to time out the engine is slow enough to time out the
+ * fallback (win2, `0c5547d`). Writing `via: "powershell"` on that answer would claim a client
+ * spoke when none did.
+ */
+export type UiaVia = "native" | "powershell" | "none";
+
+/**
+ * A bounds read, and the provenance of its answer — internal #142.
+ *
+ * `via` is WHO ANSWERED, not who was asked. That matters because the two clients do not name the
+ * same control the same way (internal #136: `Minimize` here, `最小化` there; twenty of Notepad's
+ * twenty-six elements differ, control types included). So a read that fell back from one client to
+ * the other answered a different question than the caller asked, and the old shape had nowhere to
+ * say so.
+ *
+ * `nativeFailed` is present whenever the native client was asked and threw — which is NOT the same
+ * as "and PowerShell answered instead". It rides out on the `via: "none"` answers too, where the
+ * fall-back was cut off by its own budget and nobody spoke; a reader who takes a present
+ * `nativeFailed` as proof that PowerShell answered has the pair backwards, and the branch's own
+ * cell ("separates a read that was cut off…") asserts exactly that combination. Read `via` for who
+ * answered and `nativeFailed` for what the native road said on its way out.
+ *
+ * MEASURED 2026-09-20 win2 (internal `25da27f`): hanging the target window's UI
+ * thread makes the native call throw `UIA operation timed out after 8000ms` while the PowerShell
+ * road answers normally in 3.6 s — same call, same window, same moment. The caller got an ordinary
+ * answer, and the only trace was a `console.warn` on the server's stderr.
+ */
+export type BoundsAnswer =
+  | { found: ElementBounds; via: UiaVia; nativeFailed?: string }
+  | { found: null; why: BoundsMiss; via: UiaVia; nativeFailed?: string; error?: string };
+
+/**
  * Get the UI element subtree rooted at a specific element (not the whole window tree).
  * Used by scope_element to return children of only the matched element.
  */
@@ -2285,13 +2391,51 @@ try {
  * Find a UI element and return its bounding rectangle + basic properties.
  * Used by scope_element to know which screen region to screenshot.
  */
+/**
+ * What a failed `runPS` is worth saying, without the script.
+ *
+ * `execFile` builds its message from the whole command line, and the command line here is the
+ * generated PowerShell — MEASURED 2026-09-20 win2 (internal `c4374e9`): 2361 characters of script
+ * arrived in `error`, on a road whose answer goes back to a model that reads every word of it. The
+ * script is not evidence about the failure; it is the same string on every call.
+ *
+ * **The message is not parsed, because parsing it does not work.** The first version took "the
+ * tail after the first line", on the reasoning that line one is `Command failed: <command>` and
+ * the rest is stderr. The command here is a THIRTY-LINE script, so line one ends at the script's
+ * first newline and the tail is the script's remaining lines, with the stderr past the end of the
+ * clamp. It kept the one thing worth dropping and dropped the one thing worth keeping, and the
+ * cell for it passed because its fixture put the script on a single line — a shape this producer
+ * never emits (gate 2).
+ *
+ * `execFile`'s error carries `stderr` as a field, exactly as it carries the `stdout` the salvage
+ * path above reads. That is what the process actually said.
+ */
+function shortPsFailure(e: unknown, killed: boolean): string {
+  const head = killed
+    ? "PowerShell read was cut off at its own budget before it answered"
+    : "PowerShell read failed";
+  const said = (e as { stderr?: string } | null)?.stderr?.trim().slice(0, 300);
+  if (said) return `${head}: ${said}`;
+  // No `stderr` field at all means this did not come from `execFile` — a spawn failure, a
+  // programming error — and there the message IS the finding, so it is kept rather than clamped
+  // away to a heading.
+  const raw = e instanceof Error ? e.message : String(e);
+  return raw && !raw.startsWith("Command failed:") ? `${head}: ${raw.slice(0, 300)}` : head;
+}
+
 export async function getElementBounds(
   windowTitle: string,
   name?: string,
   automationId?: string,
   controlType?: string
-): Promise<ElementBounds | null> {
+): Promise<BoundsAnswer> {
   refuseUiaTitleIfExcluded(windowTitle);
+  /**
+   * What the native client threw, if it was asked and it did. Carried onto whatever the PowerShell
+   * road then answers, because the fall-back is the part the caller cannot otherwise see and the
+   * two clients do not speak the same names (internal #136, #142).
+   */
+  let nativeFailed: string | undefined;
   // ★ Rust native path (Phase C)
   if (nativeUia?.uiaGetElementBounds) {
     try {
@@ -2301,15 +2445,21 @@ export async function getElementBounds(
         automationId: automationId ?? undefined,
         controlType: controlType ?? undefined,
       });
-      if (!result) return null;
+      // `Ok(None)` from the engine is "no", with the reason discarded in Rust: `find_window` and
+      // `find_element_in_window` both land here. `unreadable` says that, rather than picking one.
+      if (!result) return { found: null, why: "unreadable", via: "native" };
       return {
-        name: result.name,
-        controlType: result.controlType,
-        automationId: result.automationId,
-        boundingRect: result.boundingRect ?? null,
-        value: result.value ?? null,
+        found: {
+          name: result.name,
+          controlType: result.controlType,
+          automationId: result.automationId,
+          boundingRect: result.boundingRect ?? null,
+          value: result.value ?? null,
+        },
+        via: "native",
       };
     } catch (e) {
+      nativeFailed = e instanceof Error ? e.message : String(e);
       console.warn("[uia-bridge] Native uiaGetElementBounds failed, falling back to PowerShell:", e);
     }
   }
@@ -2356,14 +2506,82 @@ try {
 } | ConvertTo-Json -Compress
 `;
 
+  // The read is in two stages on purpose: RUNNING the script and READING what it printed are
+  // different failures with different answers, and one `try` around both reported a client that
+  // answered garbage as a client that never spoke (gate 2).
+  let output: string;
   try {
-    const output = await runPS(script, 8000);
-    const parsed = JSON.parse(output);
-    if (parsed.error) return null;
-    return parsed as ElementBounds;
-  } catch {
-    return null;
+    output = await runPS(script, 8000);
+  } catch (e) {
+    // Nothing was observed — and NOBODY answered, so `via` says so rather than crediting the road
+    // that was cut off.
+    //
+    // The two silences are kept apart because only one of them can change with time: `execFile`
+    // sets `killed` when IT ended the process, which is this module's own 8000 ms budget expiring
+    // rather than the script deciding anything (win2, `0c5547d`: 16 s against a hung window, 8000
+    // native plus 8000 here, stdout empty). `signal` would be the wrong test — a process killed by
+    // someone else arrives as `{killed:false, signal:"SIGTERM"}`, and that is not our budget.
+    const killed = typeof e === "object" && e !== null && (e as { killed?: boolean }).killed === true;
+    // …but a killed process may have printed a complete answer before it was killed. Discarding it
+    // to say "nothing was learned" would throw away the one thing that WAS learned (gate 2).
+    const salvaged = (e as { stdout?: string })?.stdout?.trim();
+    if (salvaged) {
+      try { return answerFromPs(JSON.parse(salvaged), nativeFailed); } catch { /* not an answer */ }
+    }
+    return {
+      found: null, why: killed ? "read_unfinished" : "read_failed", via: "none",
+      error: shortPsFailure(e, killed),
+      ...(nativeFailed !== undefined && { nativeFailed }),
+    };
   }
+
+  try {
+    return answerFromPs(JSON.parse(output), nativeFailed);
+  } catch (e) {
+    // PowerShell DID answer, with something this road cannot read. A client spoke, so `via` names
+    // it; `via: "none"` here was a claim the code could not support.
+    return {
+      found: null, why: "read_failed", via: "powershell",
+      error: `PowerShell answered with something that is not JSON: ${e instanceof Error ? e.message : String(e)}`,
+      ...(nativeFailed !== undefined && { nativeFailed }),
+    };
+  }
+}
+
+/**
+ * What the PowerShell road printed, read as an answer.
+ *
+ * The script already tells the two misses apart — it prints one or the other and exits.
+ * Collapsing them with `if (parsed.error) return null` is what made a wait against a window that
+ * does not exist advise the caller to check the ELEMENT name (internal #142, measured).
+ */
+function answerFromPs(parsed: { error?: string } & Partial<ElementBounds>, nativeFailed?: string): BoundsAnswer {
+  const carry = nativeFailed !== undefined ? { nativeFailed } : {};
+  // `5`, `"text"`, `null` and `[]` are all valid JSON. Without this, the scalars become a truthy
+  // `found` with no fields — which downstream reads as an element that was found and has no
+  // rectangle, and advises the caller to scroll something that does not exist (gate 2). A wrong
+  // answer, not a crash, which is the worse outcome.
+  //
+  // An ARRAY is the same harm through the one hole the first version of this guard left open:
+  // `typeof [] === "object"` and it is not `null`, so `[]` walked past a check written to stop
+  // exactly this (gate 2, third pass). Today's script cannot print one; the guard is a tier, and a
+  // tier with a gap in it is the shape this whole change is about.
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { found: null, why: "read_failed", via: "powershell", error: "PowerShell printed JSON that is not an object", ...carry };
+  }
+  if (parsed.error === undefined) return { found: parsed as ElementBounds, via: "powershell", ...carry };
+  const known: BoundsMiss | undefined = parsed.error === "Window not found" ? "window_not_found"
+    : parsed.error === "Element not found" ? "element_not_found"
+    : undefined;
+  // A third thing this road can print one day. Named `unreadable` rather than folded into either
+  // of the two above — that folding is the mistake this change undoes — and it CARRIES what the
+  // script said, because here `unreadable` does not mean "the engine cannot tell the two apart":
+  // the script said something specific and only this file failed to recognise it (gate 2).
+  return {
+    found: null, why: known ?? "unreadable", via: "powershell",
+    ...(known === undefined && { error: String(parsed.error) }),
+    ...carry,
+  };
 }
 
 /**

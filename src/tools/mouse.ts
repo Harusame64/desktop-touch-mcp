@@ -257,7 +257,8 @@ async function applyHoming(
     windowTitle &&
     (delta.sizeChanged || Math.abs(delta.dx) > LARGE_DELTA_PX || Math.abs(delta.dy) > LARGE_DELTA_PX)
   ) {
-    const bounds = await getElementBounds(windowTitle, elementName, elementId);
+    const answer = await getElementBounds(windowTitle, elementName, elementId);
+    const bounds = answer.found;
     if (bounds?.boundingRect) {
       const nx = Math.round(bounds.boundingRect.x + bounds.boundingRect.width / 2);
       const ny = Math.round(bounds.boundingRect.y + bounds.boundingRect.height / 2);
@@ -268,7 +269,12 @@ async function applyHoming(
       // the one that differs when the query matched something else.
       notes.push(
         `re-queried "${elementName ?? elementId}" via UIA, window ${delta.sizeChanged ? "resized" : "moved far"}` +
-        ` → ${bounds.controlType ?? "?"} "${bounds.name}"`,
+        ` → ${bounds.controlType ?? "?"} "${bounds.name}"` +
+        // internal #142 — WHICH client resolved it, and whether it had to. The two clients do not
+        // name the same control the same way (#136), so a re-query that fell back answered with a
+        // different vocabulary than the caller's name came from, and this note is the only place a
+        // caller could ever see that the road changed under a press.
+        ` [${answer.via}${answer.nativeFailed !== undefined ? `, after native failed: ${answer.nativeFailed}` : ""}]`,
       );
       return { x: nx, y: ny, notes };
     }
@@ -276,10 +282,16 @@ async function applyHoming(
     // plain offset, which is a different claim about where the element is. The two reasons are not
     // the same thing — an element that was found and has no rectangle is not a missing element
     // (gate 2), and only one of them means the name was wrong.
+    //
+    // internal #142, gate 2 — the MISS branch said "found no element" for all five silences,
+    // including a read that never finished and a window that was not there. A re-query that fell
+    // back AND missed is the vocabulary trap (#136: the name came from the other client), and it
+    // left no trace at all here while the found branch above names its client.
+    const via = `${answer.via}${answer.nativeFailed !== undefined ? `, after native failed: ${answer.nativeFailed}` : ""}`;
     notes.push(
       bounds
-        ? `re-query for "${elementName ?? elementId}" via UIA found ${bounds.controlType ?? "?"} "${bounds.name ?? ""}" with no rectangle; kept the offset correction`
-        : `re-query for "${elementName ?? elementId}" via UIA found no element; kept the offset correction`,
+        ? `re-query for "${elementName ?? elementId}" via UIA found ${bounds.controlType ?? "?"} "${bounds.name ?? ""}" with no rectangle [${via}]; kept the offset correction`
+        : `re-query for "${elementName ?? elementId}" via UIA answered nothing (${answer.why}) [${via}]; kept the offset correction`,
     );
   }
 

@@ -125,8 +125,10 @@
     "TerminalTextPatternUnavailable",
     "TerminalWindowNotFound",
     "ToolError",
+    "UiaTimeout",
     "V1FallbackUnavailable",
-    "WaitTimeout"
+    "WaitTimeout",
+    "WindowNotFound"
   ],
   "failArgsCode": "InvalidArgs",
   "handBuilt": [

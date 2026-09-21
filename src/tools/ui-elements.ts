@@ -950,9 +950,120 @@ export const scopeElementHandler = async ({
     // element metadata and the screenshot came from another. Being uniformly
     // wrong is recoverable; being inconsistent with yourself is not.
     const hintsBlock = buildHintsForTitle(effectiveTitle);
-    const bounds = await getElementBounds(effectiveTitle, name, automationId, controlType);
+    const answer = await getElementBounds(effectiveTitle, name, automationId, controlType);
+    const bounds = answer.found;
     if (!bounds) {
-      return failWith("Element not found", "scope_element", { windowTitle, name, automationId, controlType });
+      // internal #142 — the read says which silence it was and which client said it, and the
+      // REFUSAL is built from that rather than answering four different questions with one
+      // sentence. Carrying `why` in the context alone was not enough (gate 2): a window that does
+      // not exist still came back `ElementNotFound`, whose five suggestions tell the caller to
+      // shorten the element name, re-discover the element, and consider that their target might be
+      // a CSS selector. `why` is data; the advice is what a caller acts on.
+      //
+      // All five silences, not the two that were easy (gate 2). `unreadable` is what the NATIVE
+      // road answers for both of its misses, so leaving it on the plain "Element not found" arm
+      // left a window that does not exist answering with the element-name advice on the road this
+      // product actually runs — verbatim the defect this was supposed to close.
+      //
+      // TWO ROADS OUT, and an arm takes one or the other by whether the DICTIONARY is true of it.
+      // Where it is, the code is spelled into the MESSAGE and `classify` reads it (the
+      // declared-code arm in `_errors.ts`, which also stops a caller's window title from smuggling
+      // a keyword past the prefix — a title containing "is disabled" used to reach this cascade
+      // through the one arm here that declared nothing). Where the dictionary is NOT true, the arm
+      // declares its code and carries its own advice through `failCode`, which is the road this
+      // product already takes where a literal beats the dictionary (`toToolFailure`, `WaitTimeout`).
+      //
+      // GATE 2, THIRD PASS — the two READ silences were declared `UiaTimeout:`, and
+      // `SUGGESTS.UiaTimeout` opens with "The target app may be unresponsive — wait and retry".
+      // That is the sentence this change's own measurement says is false: a title search walks the
+      // root's children and reads each name, so ONE hung window anywhere on the desktop taxes
+      // every title-resolving read (#144) and the app the caller named may be perfectly healthy.
+      // `read_failed` is not a timeout at all — it is `spawn powershell.exe ENOENT`, a non-zero
+      // exit, or output that is not JSON. `wait_until` said the true thing for the same `why` one
+      // file over, so the two callers of one field contradicted each other about the same read.
+      //
+      // `unreadable` SPLITS BY WHO ANSWERED, for the reason `wait_until` splits: on the native
+      // road the engine really did discard the distinction, and `WindowNotFound` is the deliberate
+      // recovery ORDER — you cannot find an element inside a window that is not there. On the
+      // PowerShell road it means the script said something this server does not recognise, which
+      // is a failed read rather than an ambiguous answer, and the words are in `context.error`.
+      // WHY THE KEYS ARE SPELLED AT EVERY CALL rather than hoisted into one `context` object: the
+      // codemod shape gate (`check:failwith-fixtures`) classifies a `failWith` context argument by
+      // reading its TOP-LEVEL KEYS, and it exists to notice a root-hoisted key
+      // (`_perceptionForPost`, `_richForPost`, `hints`) arriving in a context. Passing a variable
+      // classifies as `dynamic`, which is not a shape — it is the gate saying it can no longer see.
+      // The first version of this change did that and CI caught it. Only the evidence pair, whose
+      // presence varies, is shared.
+      const readEvidence = {
+        // The only evidence a failed read has. Dropping it left `via: "none"` sitting beside
+        // "Element not found" with nothing to explain either.
+        ...(answer.error !== undefined && { error: answer.error }),
+        ...(answer.nativeFailed !== undefined && { nativeFailed: answer.nativeFailed }),
+      };
+      if (answer.why === "read_unfinished") {
+        return failCode(
+          "UiaTimeout",
+          `scope_element: the bounds read for "${effectiveTitle}" ran out of its own budget before answering — nothing was observed`,
+          {
+            suggest: [
+              "Nothing was read, so this is not a statement about the window or the element",
+              "Some window on this desktop is answering slowly and it is not necessarily the one you named — resolving a title reads every top-level window's name",
+              "This read's budget is fixed, so retrying buys more attempts rather than a longer look: it helps only if the slowness passes",
+              // Kept from `SUGGESTS.UiaTimeout`, whose FIRST line is the false one. Replacing a
+              // dictionary entry wholesale takes its true lines with it, and this is the only line
+              // on this arm that moves the caller to a different instrument (gate 2, fourth pass).
+              "Try screenshot(detail='image') as a visual fallback",
+            ],
+            context: { windowTitle, name, automationId, controlType, why: answer.why, via: answer.via, ...readEvidence },
+          }
+        );
+      }
+      if (answer.why === "read_failed" || (answer.why === "unreadable" && answer.via !== "native")) {
+        return failCode(
+          "ToolError",
+          // NOT "nothing was learned about the window or the element" (gate 2, fourth pass): on this
+          // road `unreadable` means the script said something SPECIFIC and this file did not
+          // recognise it, so the words in `context.error` may well say something about the window.
+          // `wait_until`'s phrasing for the same value is the accurate one and is copied here.
+          `scope_element: the read of "${effectiveTitle}" did not produce an answer this server could use`,
+          {
+            suggest: [
+              "Read context.error — it carries what the UIA client actually said, and it is the only evidence this refusal has",
+              "Retry before changing the target: a read that failed has not disagreed with you about the name",
+            ],
+            context: { windowTitle, name, automationId, controlType, why: answer.why, via: answer.via, ...readEvidence },
+          }
+        );
+      }
+      if (answer.why === "unreadable") {
+        // NATIVE ROAD, AND THE CODE ALONE IS NOT THE ANSWER (gate 2, fourth pass). `WindowNotFound`
+        // is the right recovery ORDER, and taking the dictionary with it made the refusal say five
+        // window sentences and NOT ONE about the element — for an answer whose whole property is
+        // that it is both. The previous pass fixed exactly this defect pointing the other way (an
+        // ambiguous answer shipping the element-name advice), so keeping the code while letting the
+        // dictionary speak would be that defect with its sign flipped.
+        //
+        // The order is `wait_until`'s, for the same `why` and the same road, said as steps: you
+        // cannot find an element inside a window that is not there, so the window is checked first
+        // — but the element half is NOT dropped, because the common case is a window that is there
+        // under a name this client spells differently.
+        return failCode(
+          "WindowNotFound",
+          `scope_element: Element not found — or no window matched "${effectiveTitle}"; the native client cannot tell the two apart`,
+          {
+            suggest: [
+              "Check the window title FIRST with {tool:list_window_titles} — an element cannot be found inside a window that is not there",
+              "Then the element name with {tool:reidentify_element}: this engine gives the same answer for an element that is missing from a window that IS there",
+              "Try screenshot(detail='image') if neither settles it — it answers both halves at once",
+            ],
+            context: { windowTitle, name, automationId, controlType, why: answer.why, via: answer.via, ...readEvidence },
+          }
+        );
+      }
+      const msg = answer.why === "window_not_found"
+        ? `WindowNotFound: no window matched "${effectiveTitle}"`
+        : "Element not found";
+      return failWith(new Error(msg), "scope_element", { windowTitle, name, automationId, controlType, why: answer.why, via: answer.via, ...readEvidence });
     }
 
     const content: ToolResult["content"] = [];

@@ -109,6 +109,7 @@ vi.mock("../../src/engine/identity-tracker.js", () => ({
 
 import { scopeElementHandler } from "../../src/tools/ui-elements.js";
 import { getElementBounds } from "../../src/engine/uia-bridge.js";
+import { resolveWindowTarget } from "../../src/tools/_resolve-window.js";
 import { _resetCaptureBackendForTests } from "../../src/engine/reachable-bounds.js";
 
 const ARGS = {
@@ -122,12 +123,18 @@ const ARGS = {
   padding: 20,
 };
 
+/** A read that answered nothing, with the reason the refusal is supposed to be built from. */
+const scopeMissing = async (why: string, via = "powershell") => {
+  vi.mocked(getElementBounds).mockResolvedValue({ found: null, why, via } as Awaited<ReturnType<typeof getElementBounds>>);
+  const result = await scopeElementHandler(ARGS);
+  const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "{}";
+  return JSON.parse(text) as { code?: string; error?: string; suggest?: string[]; context?: Record<string, unknown> };
+};
+
 const scopeWith = async (boundingRect: { x: number; y: number; width: number; height: number }) => {
   vi.mocked(getElementBounds).mockResolvedValue({
-    name: "Save",
-    controlType: "Button",
-    automationId: "",
-    boundingRect,
+    found: { name: "Save", controlType: "Button", automationId: "", boundingRect, value: null },
+    via: "native",
   } as Awaited<ReturnType<typeof getElementBounds>>);
   return scopeElementHandler(ARGS);
 };
@@ -168,5 +175,148 @@ describe("scope_element capture region (ADR-031 §2(d))", () => {
     const result = await scopeWith({ x: -1500, y: 400, width: 120, height: 40 });
     expect(result.content.some((c) => c.type === "image")).toBe(false);
     expect(result.content.some((c) => c.type === "text")).toBe(true);
+  });
+});
+
+describe("internal #142 — the refusal is built from which silence it was", () => {
+  // FOUND BY MUTATION (gate 2): `why` was added to the CONTEXT and the refusal itself was left
+  // alone, so a window that does not exist still answered `ElementNotFound` with five suggestions
+  // telling the caller to shorten the element name, re-discover the element, and consider that
+  // their target might be a CSS selector. `why` is data; the advice is what a caller acts on.
+  it("says the WINDOW was not found, rather than blaming the element name", async () => {
+    const envelope = await scopeMissing("window_not_found");
+    expect(envelope.code).toBe("WindowNotFound");
+    expect(envelope.context).toMatchObject({ why: "window_not_found", via: "powershell" });
+    expect((envelope.suggest ?? []).join(" ")).not.toMatch(/shorter partial name|candidate names/);
+  });
+
+  it("says the read did not finish, rather than that the element may not be visible yet", async () => {
+    const envelope = await scopeMissing("read_unfinished", "none");
+    expect(envelope.code).toBe("UiaTimeout");
+    expect(envelope.context).toMatchObject({ why: "read_unfinished", via: "none" });
+  });
+
+  it("does not tell the caller their app is unresponsive when another window is the slow one", async () => {
+    // GATE 2, THIRD PASS. The code is honest — a budget did expire — but `SUGGESTS.UiaTimeout`
+    // opens with "The target app may be unresponsive — wait and retry", and this change's own
+    // measurement says that is false in exactly the case that produces it: resolving a title reads
+    // every top-level window's name, so ONE hung window anywhere taxes every title-resolving read
+    // and the app the caller named may be perfectly healthy. The dictionary line must not ship
+    // here, and the read's own three lines must.
+    const envelope = await scopeMissing("read_unfinished", "none");
+    expect((envelope.suggest ?? []).join(" ")).not.toMatch(/target app may be unresponsive/);
+    expect((envelope.suggest ?? [])[0]).toMatch(/not a statement about the window or the element/);
+    expect((envelope.suggest ?? []).join(" ")).toMatch(/not necessarily the one you named/);
+    expect((envelope.suggest ?? []).join(" ")).toMatch(/budget is fixed/);
+    // …AND THE TRUE LINE THE DICTIONARY ALSO HAD. `SUGGESTS.UiaTimeout` is two lines and only the
+    // first is false here; replacing the entry wholesale dropped the second, which is the only
+    // advice on this arm that moves the caller to a different instrument. Restoring it without a
+    // cell left a mutation that removed it again killing nothing — so the cell is the restoration.
+    expect((envelope.suggest ?? []).join(" ")).toMatch(/screenshot\(detail='image'\)/);
+  });
+
+  it("does not assert the window was there when the client could not tell", async () => {
+    // FOUND BY MUTATION: `unreadable` is what the NATIVE road answers for BOTH of its misses, and
+    // it is the road this product runs. Folding it into the plain "Element not found" arm is how a
+    // window that does not exist kept getting the element-name advice here.
+    const envelope = await scopeMissing("unreadable", "native");
+    expect(envelope.error).toMatch(/or no window matched/);
+    expect(envelope.error).toMatch(/cannot tell the two apart/);
+    // It routes as `WindowNotFound`, and that is a decision rather than an accident: the code has
+    // to be ONE of the two while the answer is genuinely both, so it is chosen for what the caller
+    // should do FIRST — you cannot find an element inside a window that is not there, and
+    // `WindowNotFound`'s own first suggestion is to list the window titles. The ambiguity lives in
+    // the message, which says both halves out loud; the code carries the recovery order. This is
+    // also what `wait_until` advises for the same `why`, so the two roads agree.
+    expect(envelope.code).toBe("WindowNotFound");
+    expect((envelope.suggest ?? []).join(" ")).toMatch(/list_window_titles|desktop_discover|get_windows/);
+  });
+
+  it("says BOTH halves of an ambiguous answer, in the order they can be acted on", async () => {
+    // GATE 2, FOURTH PASS — and it is the third pass's own finding with its sign flipped. Routing
+    // this arm to `WindowNotFound` took the dictionary with it: five sentences about the window,
+    // NOT ONE about the element, for an answer whose whole property is that it is both. The
+    // previous cell could not see it, because `/list_window_titles|desktop_discover|get_windows/`
+    // is an OR that "window advice only" satisfies just as well as "window advice, then element".
+    //
+    // `wait_until` says both in one sentence for the same `why` on the same road. Two callers of
+    // one field must not disagree — that is the defect this whole PR is about.
+    //
+    // ASSERTED ON THE PROSE, NOT ON THE TOOL NAMES: `{tool:…}` is resolved to whatever this
+    // server registered for that capability before the caller sees it, which is why the cell above
+    // had to list three spellings in an OR — and an OR over renderings cannot say which HALF was
+    // advised. The sentences are this file's own bytes and do not move under the resolver.
+    const envelope = await scopeMissing("unreadable", "native");
+    const lines = envelope.suggest ?? [];
+    expect(lines[0]).toMatch(/window title FIRST/);
+    expect(lines.join("\n")).toMatch(/Then the element name/);
+    // …and the element half must come AFTER the window half, because the recovery order is the
+    // whole reason the code is `WindowNotFound` rather than `ElementNotFound`.
+    expect(lines.findIndex((l) => /window title FIRST/.test(l))).toBeLessThan(
+      lines.findIndex((l) => /Then the element name/.test(l)),
+    );
+    // The instrument that answers both halves at once, for the caller whom neither check settles.
+    expect(lines.join("\n")).toMatch(/screenshot\(detail='image'\)/);
+  });
+
+  it("carries the read's own error, which on a failed read is the only evidence there is", async () => {
+    // FOUND BY MUTATION: dropping the `error` spread killed nothing — `via: "none"` then sat
+    // beside a refusal with nothing to explain either of them.
+    //
+    // THE CODE MOVED (gate 2, third pass): this asserted `UiaTimeout`, and `read_failed` is not a
+    // timeout — it is `spawn powershell.exe ENOENT`, a non-zero exit, or output that is not JSON.
+    // The caller was being advised to wait for an app to become responsive over a PowerShell that
+    // never started. `ToolError` is what `classify` itself falls back to for this class, so the
+    // vocabulary does not grow; what changes is that the arm now carries advice, and the advice
+    // points at the one thing the refusal actually knows.
+    vi.mocked(getElementBounds).mockResolvedValue({
+      found: null, why: "read_failed", via: "none", error: "PowerShell read failed: the real reason",
+    } as Awaited<ReturnType<typeof getElementBounds>>);
+    const result = await scopeElementHandler(ARGS);
+    const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "{}";
+    const envelope = JSON.parse(text) as { code?: string; error?: string; suggest?: string[]; context?: Record<string, unknown> };
+    expect(envelope.code).toBe("ToolError");
+    expect(envelope.context).toMatchObject({ why: "read_failed", via: "none", error: "PowerShell read failed: the real reason" });
+    expect((envelope.suggest ?? []).join(" ")).not.toMatch(/target app may be unresponsive/);
+    expect((envelope.suggest ?? [])[0]).toMatch(/Read context\.error/);
+  });
+
+  it("treats an unrecognised PowerShell answer as a failed read, not as an ambiguous one", async () => {
+    // GATE 2, THIRD PASS. `unreadable` wears one name for two opposite situations: on the native
+    // road the engine discarded the distinction, and on the PowerShell road the script said
+    // something SPECIFIC this server did not recognise — the words are in `context.error`. Telling
+    // that caller "the client that answered cannot tell the two apart" names the wrong cause for
+    // text sitting in the same envelope. `wait_until` splits on the same field one file over.
+    const envelope = await scopeMissing("unreadable", "powershell");
+    expect(envelope.code).toBe("ToolError");
+    expect(envelope.error).not.toMatch(/cannot tell the two apart/);
+    expect((envelope.suggest ?? [])[0]).toMatch(/Read context\.error/);
+  });
+
+  it("declares its code rather than letting the window title choose one", async () => {
+    // GATE 2, THIRD PASS. The `unreadable` arm was the only one of the five spelling no
+    // `<Code>:` prefix, so it fell into `classify`'s substring cascade WITH THE CALLER'S TITLE
+    // interpolated into it — the exact smuggling class the declared-code arm exists to close. A
+    // window whose title contains "is disabled" routed the refusal to `ElementDisabled` and
+    // shipped "The element exists but is currently disabled" for a window that was never read.
+    // `classify` tests that arm (`_errors.ts:1243`) long BEFORE the window arm (`:1309`).
+    //
+    // THE FIRST VERSION OF THIS CELL COULD NOT FAIL: it passed the dangerous title in `ARGS`,
+    // and the suite mocks `resolveWindowTarget` to answer `"TestApp"` for everything, so the
+    // title never reached the message. The mutation that removes the declared prefix survived it.
+    // The resolver is what decides `effectiveTitle`, so the resolver is what this cell must move.
+    vi.mocked(resolveWindowTarget).mockResolvedValueOnce({ title: "Printer is disabled — Settings", warnings: [] } as Awaited<ReturnType<typeof resolveWindowTarget>>);
+    vi.mocked(getElementBounds).mockResolvedValue({ found: null, why: "unreadable", via: "native" } as Awaited<ReturnType<typeof getElementBounds>>);
+    const result = await scopeElementHandler({ ...ARGS, windowTitle: "Printer is disabled — Settings" });
+    const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "{}";
+    const envelope = JSON.parse(text) as { code?: string };
+    expect(envelope.code).toBe("WindowNotFound");
+  });
+
+  it("still says ElementNotFound when the element really was not found", async () => {
+    // The control: the refusal that was always right must not move.
+    const envelope = await scopeMissing("element_not_found");
+    expect(envelope.code).toBe("ElementNotFound");
+    expect((envelope.suggest ?? []).join(" ")).toMatch(/candidate names/);
   });
 });
