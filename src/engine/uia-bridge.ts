@@ -2490,10 +2490,20 @@ function shortPsFailure(e: unknown, killed: boolean): string {
   // spends effort removing: a code-deciding token (`$wantedPats.Add('InvokePattern')`) and, on the
   // write roads, the caller's own typed text (`$vp.SetValue('…')`, ADR-036 item 13's leak).
   //
-  // NOT MEASURED on a real machine yet: the exact record shape here is read from PowerShell's
-  // documented NormalView, and the arm that produces it (an uncaught throw inside a script) is one
-  // this module's scripts guard heavily. The clamp is written for the shape anyway, because the
-  // cost of being wrong in the other direction is publishing a caller's password.
+  // MEASURED 2026-09-21 win2 (internal `49bcc42`), `powershell.exe -NoProfile -NonInteractive
+  // -Command "1/0"`, exit 1, stdout empty:
+  //
+  //     Attempted to divide by zero.
+  //     At line:1 char:1
+  //     + 1/0
+  //     + ~~~
+  //         + CategoryInfo          : NotSpecified: (:) [], RuntimeException
+  //         + FullyQualifiedErrorId : RuntimeException
+  //
+  // ONE example, and the limit is worth as much as the confirmation: an error whose MESSAGE is
+  // itself multi-line has not been measured, and there "the first line" would clamp away part of
+  // the finding. The trade is deliberate — being wrong in that direction loses a sentence, and
+  // being wrong in the other direction publishes a caller's password.
   const firstLine = (e as { stderr?: string } | null)?.stderr?.trim().split(/\r?\n/, 1)[0]?.trim();
   const said = firstLine?.slice(0, 300);
   if (said) return `${head}: ${said}`;
