@@ -107,8 +107,8 @@ vi.mock("../../src/engine/identity-tracker.js", () => ({
   buildCacheStateHints: vi.fn().mockReturnValue({}),
 }));
 
-import { scopeElementHandler } from "../../src/tools/ui-elements.js";
-import { getElementBounds } from "../../src/engine/uia-bridge.js";
+import { scopeElementHandler, getUiElementsHandler } from "../../src/tools/ui-elements.js";
+import { getElementBounds, getUiElements, WindowSearchStalledError } from "../../src/engine/uia-bridge.js";
 import { resolveWindowTarget } from "../../src/tools/_resolve-window.js";
 import { _resetCaptureBackendForTests } from "../../src/engine/reachable-bounds.js";
 
@@ -318,5 +318,39 @@ describe("internal #142 — the refusal is built from which silence it was", () 
     const envelope = await scopeMissing("element_not_found");
     expect(envelope.code).toBe("ElementNotFound");
     expect((envelope.suggest ?? []).join(" ")).toMatch(/candidate names/);
+  });
+});
+
+describe("internal #147 — the tool does not pass a stalled search off as a missing window", () => {
+  it("answers what happened to the SEARCH, with advice that does not say the window is gone", async () => {
+    // FOUND BY MUTATION: disabling this arm in the handler killed nothing — the bridge's own cells
+    // cover the verdict, and nobody was looking at what the CALLER receives. That is the half the
+    // gates kept finding on #697: a refusal is data plus the advice a caller acts on.
+    //
+    // MEASURED 2026-09-21 win2: with one hung window on the desktop this road spent 33386 ms and
+    // then answered `WindowNotFound` about a window that was on the screen, whose dictionary tells
+    // the caller to check the title and try a shorter match — for a window whose title was right.
+    vi.mocked(getUiElements).mockRejectedValueOnce(
+      new WindowSearchStalledError({ enumMs: 15022, rows: 6, slowestRowMs: 10014 }),
+    );
+    const result = await getUiElementsHandler({ windowTitle: "TestApp", maxDepth: 3, maxElements: 50 });
+    const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "{}";
+    const envelope = JSON.parse(text) as { code?: string; error?: string; suggest?: string[]; context?: Record<string, unknown> };
+
+    expect(envelope.code).not.toBe("WindowNotFound");
+    expect(envelope.code).toBe("ToolError");
+    expect((envelope.suggest ?? [])[0]).toMatch(/Do NOT conclude the window is gone/);
+    expect((envelope.suggest ?? []).join(" ")).not.toMatch(/shorter partial title/);
+    expect(envelope.context).toMatchObject({ search: { enumMs: 15022, rows: 6, slowestRowMs: 10014 } });
+  });
+
+  it("still refuses a window that really is not there", async () => {
+    // The control: a clean search that found nothing keeps the code and the advice it has always
+    // had. A fix that answers "maybe" to every miss would pass the cell above.
+    vi.mocked(getUiElements).mockRejectedValueOnce(new Error("Window not found"));
+    const result = await getUiElementsHandler({ windowTitle: "TestApp", maxDepth: 3, maxElements: 50 });
+    const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "{}";
+    const envelope = JSON.parse(text) as { code?: string };
+    expect(envelope.code).toBe("WindowNotFound");
   });
 });

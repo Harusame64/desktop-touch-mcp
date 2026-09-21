@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { getUiElements, clickElement, setElementValue, insertTextViaTextPattern2, getElementBounds, getElementChildren } from "../engine/uia-bridge.js";
+import { getUiElements, clickElement, setElementValue, insertTextViaTextPattern2, getElementBounds, getElementChildren, WindowSearchStalledError } from "../engine/uia-bridge.js";
 import { AIM_WINDOW_GONE } from "../engine/aim.js";
 import { keyboardTypeHandler } from "./keyboard.js";
 import { captureScreen } from "../engine/image.js";
@@ -97,6 +97,26 @@ export const getUiElementsHandler = async ({
     const enriched = Object.keys(hints).length > 0 ? { ...result, hints } : result;
     return ok(enriched, true);
   } catch (err) {
+    // internal #147 — a search that could not read every window must not answer `WindowNotFound`.
+    // MEASURED 2026-09-21 win2: with one hung window on the desktop, this road spent 33386 ms and
+    // then told the caller the window was not there, about a window that was on the screen. The
+    // hung row answers `ok` with an EMPTY name after ten seconds, so it matches no title and the
+    // loop walks past it — there is no exception anywhere on that path to catch.
+    //
+    // Built here rather than from the message, for the reason the `unreadable` arm below was:
+    // `classify` reads the message, and the advice that comes with a code is what a caller acts
+    // on. `ToolError` is what `classify` itself falls back to, so the result vocabulary does not
+    // grow for a case that used to be spelled as a different code's lie.
+    if (err instanceof WindowSearchStalledError) {
+      return failCode("ToolError", `get_ui_elements: ${err.callerDetail}`, {
+        suggest: [
+          "Do NOT conclude the window is gone — this answer is about the SEARCH, not about the window",
+          "Retry: a stalled window is usually transient, and the search costs what the slowest window costs",
+          "Try screenshot(detail='image') if it persists — it does not walk the window list",
+        ],
+        context: { windowTitle, search: err.search },
+      });
+    }
     return failWith(err, "get_ui_elements", { windowTitle });
   }
 };

@@ -76,8 +76,16 @@ async function scriptOf(call: () => Promise<unknown>): Promise<string> {
   return scripts[0];
 }
 
-/** The line a script emits when it looks for a window by name among the root's children. */
-const TITLE_SEARCH = "$w.Current.Name -like '*";
+/**
+ * The line a script emits when it looks for a window by name among the root's children.
+ *
+ * MOVED, NOT LOOSENED (internal #147): the loop used to test `$w.Current.Name -like '*…'` in one
+ * expression. It now reads the name into `$dtmName` first, because that read is what takes ten
+ * seconds against a hung window and the search has to report what it cost. The marker follows the
+ * READ, which is what makes a road a title search — matching on `-like` alone would also accept a
+ * road that filters a list it got from somewhere else.
+ */
+const TITLE_SEARCH = "$dtmName = $w.Current.Name";
 /** The other door to a window: a handle the caller already holds. */
 const FROM_HANDLE = "[System.Windows.Automation.AutomationElement]::FromHandle(";
 /**
@@ -186,10 +194,16 @@ describe("a script that finds a window by title can see its frame", () => {
     //
     // Pinned as the verbatim guard line, because what the mutation destroys is the line, not an
     // ordering: in the mutant the one-line `if (-not $target) { … ; exit }` no longer exists.
-    const miss = `if (-not $target) { Write-Output '{"error":"Window not found"}'; exit }`;
+    //
+    // The line grew a tail (internal #147): the miss now carries what the search COST, spliced
+    // into the caller's own not-found JSON. Still one line, still before the registration — and
+    // pinned on both halves, because the mutation this cell exists for moves the registration
+    // across it, and the new one would be dropping the cost from the miss that needs it most.
+    const missHead = `if (-not $target) { Write-Output ('{"error":"Window not found","search":{"enumMs":' + $dtmEnumMs`;
     const script = await scriptOf(() => getElementBounds("App", "Save"));
-    expect(script.indexOf(miss)).toBeGreaterThanOrEqual(0);
-    expect(script.indexOf(miss)).toBeLessThan(script.indexOf(REGISTER));
+    expect(script.indexOf(missHead)).toBeGreaterThanOrEqual(0);
+    expect(script.indexOf(missHead)).toBeLessThan(script.indexOf(REGISTER));
+    expect(script).toContain(`'{"error":"Window not found","search":{"enumMs":' + $dtmEnumMs + ',"rows":' + $allWins.Count + ',"slowestRowMs":' + $dtmSlowestRowMs + '}}'); exit }`);
   });
 
   it("warms up first, on every road that registers at all", async () => {
@@ -501,8 +515,17 @@ describe("one search, so the next road cannot forget", () => {
     const source = await import("node:fs").then((fs) =>
       fs.readFileSync(new URL("../../src/engine/uia-bridge.ts", import.meta.url), "utf8"),
     );
+    //
+    // IT IS ONE PLACE NOW, NOT TWO (internal #147). The exception above — `makeGetElementsScript`
+    // holding its own copy of the loop so it could register inline — is exactly the road that was
+    // measured telling a caller a window was not there while it was on the screen, because the
+    // copy is what a fix to the generator does not reach. The loop moved into
+    // `titleSearchLoopPs`, which reports what the search cost and appends no registration;
+    // `makeResolveWindowByTitlePs` is that loop plus the registration, and the discover road calls
+    // the loop alone and keeps its inline registration.
     const hand = source.match(/\$allWins = \$root\.FindAll\(\[System\.Windows\.Automation\.TreeScope\]::Children, \$trueC\)/g) ?? [];
-    expect(hand).toHaveLength(2);   // the generator, and the discover read that counts
+    expect(hand).toHaveLength(1);   // the one loop; every road reaches it
     expect(source).toContain("function makeResolveWindowByTitlePs(");
+    expect(source).toContain("function titleSearchLoopPs(");
   });
 });

@@ -285,12 +285,10 @@ try { $target = [System.Windows.Automation.AutomationElement]::FromHandle($hwndP
 catch { Write-Output '{"error":"Window not found by hwnd"}'; exit }
 if (-not $target) { Write-Output '{"error":"Window not found by hwnd"}'; exit }`
   : `# Find window by partial title (live query — before cache scope)
-$target = $null
-$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-foreach ($w in $allWins) {
-    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
-}
-if (-not $target) { Write-Output '{"error":"Window not found"}'; exit }`}
+# The SAME loop as every other road's: it was a second copy until internal #147, and the copy is
+# the road that was measured lying. The registration is not appended here because this script
+# runs it a few lines down on its own arm.
+${titleSearchLoopPs(safeTitle, `{"error":"Window not found"}`)}`}
 # Guarded for the same reason FromHandle is: a window closing between two calls on the same
 # handle is routine, and reading .Current throws ElementNotAvailableException when it does. Left
 # outside, that ended the script with a PowerShell error record — an exec/parse failure where the
@@ -714,13 +712,117 @@ function captionReadPs(guard: string): string {
   return guard === "" ? "" : `$targetName = ''\ntry { $targetName = $target.Current.Name } catch {}\n`;
 }
 
-function makeResolveWindowByTitlePs(safeTitle: string, notFoundJson: string): string {
-  return `$target = $null
-$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
-foreach ($w in $allWins) {
-    if ($w.Current.Name -like '*${safeTitle}*') { $target = $w; break }
+/**
+ * Where a stalled title search stops being a verdict — internal #147.
+ *
+ * Chosen from the only two populations anyone has measured, and they do not overlap: a healthy
+ * row answers in **1–4 ms** and a healthy enumeration in **12–19 ms**, while the hung row took
+ * **10014 ms** and the enumeration around it **15022 ms** (win2, 2026-09-21,
+ * `dev/route-check/pr-a/RESULTS-147-currentname.md`). Four orders of magnitude of empty space, and
+ * this number sits in it. It is not tuned to catch a slow machine — a second is already far past
+ * anything a working desktop produces here.
+ */
+const WINDOW_SEARCH_STALL_MS = 1000;
+
+/** What the title search cost, as the script reports it — never a verdict, only the numbers. */
+export interface WindowSearchCost {
+  enumMs: number;
+  rows: number;
+  slowestRowMs: number;
 }
-if (-not $target) { Write-Output '${notFoundJson}'; exit }
+
+/**
+ * A search that could not do its job, raised instead of the absence it would otherwise assert.
+ *
+ * `callerDetail` is the sentence a caller may be shown (the opt-in contract from ADR-036 item 13);
+ * it says what happened to the SEARCH and never that the window is missing, because the one case
+ * that produces this is the case where that claim is false.
+ */
+export class WindowSearchStalledError extends Error {
+  readonly callerDetail: string;
+  readonly search: WindowSearchCost;
+  constructor(search: WindowSearchCost) {
+    const detail =
+      `the window search could not read every top-level window, so "no match" is not a verdict here: ` +
+      `enumerating them took ${search.enumMs} ms and the slowest one took ${search.slowestRowMs} ms ` +
+      `(${search.rows} windows). Some window on this desktop is not answering — not necessarily the one asked about`;
+    super(detail);
+    this.name = "WindowSearchStalledError";
+    this.callerDetail = detail;
+    this.search = search;
+  }
+}
+
+/**
+ * The script's own error string, unless the search that produced it was stalled.
+ *
+ * Only "Window not found" is re-judged: every other error the script prints is about something it
+ * DID observe, and a slow search does not make those less true.
+ */
+function windowSearchVerdict(error: string, search: unknown): string {
+  if (error !== "Window not found") return error;
+  const cost = search as WindowSearchCost | undefined;
+  if (cost === undefined || typeof cost.enumMs !== "number" || typeof cost.slowestRowMs !== "number") {
+    // A build whose script does not carry the numbers cannot be read as if it had them: absence of
+    // the field is absence of evidence, and the honest answer is the one the script gave.
+    return error;
+  }
+  if (cost.enumMs >= WINDOW_SEARCH_STALL_MS || cost.slowestRowMs >= WINDOW_SEARCH_STALL_MS) {
+    throw new WindowSearchStalledError(cost);
+  }
+  return error;
+}
+
+/**
+ * The title search, and what it cost — internal #147.
+ *
+ * A search that finds nothing is not evidence that the window is not there. MEASURED 2026-09-21
+ * win2, on a desktop with ONE hung window: `FindAll` alone took **15022 ms** (19 ms before the
+ * hang, 12 ms after), and the hung window's row took **10014 ms** — and then answered `ok` with an
+ * EMPTY name, which matches no title pattern, so the loop walked past it and the script printed
+ * "Window not found" about a window that was on the screen. `getUiElements` with a 30 s budget
+ * spent 33386 ms reaching that verdict.
+ *
+ * **There is nothing to catch.** The first design for this fix wrapped the row read in try/catch
+ * and counted the failures; the machine says the count would have been ZERO. The row does not
+ * throw. It blocks and then lies quietly.
+ *
+ * **And an empty name is not the signal either**: a nameless window on the same desktop answers
+ * `ok` with an empty string in ONE millisecond, identical in value to the hung one. The two
+ * populations are separated only by time, by four orders of magnitude.
+ *
+ * So the script reports the two costs and decides nothing: `enumMs` for the enumeration (which is
+ * where 15 of the 25 seconds went — an instrument on the loop alone would explain ten) and
+ * `slowestRowMs` for the worst row. The THRESHOLD lives in TypeScript, where a cell can hold both
+ * sides of it (`WINDOW_SEARCH_STALL_MS`); a magic number inside a PowerShell string is one nobody
+ * can test.
+ */
+function titleSearchLoopPs(safeTitle: string, notFoundJson: string): string {
+  // The extra fields are spliced into the caller's own JSON rather than replacing it: ten call
+  // sites spell their own not-found shape (`ok:false`, a `code`, an empty `ancestors`), and this
+  // change is about what the verdict is WORTH, not about what it is called.
+  if (!notFoundJson.endsWith("}")) {
+    throw new Error(`titleSearchLoopPs: not-found JSON must be an object literal, got ${notFoundJson}`);
+  }
+  const head = notFoundJson.slice(0, -1);
+  return `$target = $null
+$dtmEnumT0 = [DateTime]::UtcNow
+$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
+$dtmEnumMs = [int]([DateTime]::UtcNow - $dtmEnumT0).TotalMilliseconds
+$dtmSlowestRowMs = 0
+foreach ($w in $allWins) {
+    $dtmRowT0 = [DateTime]::UtcNow
+    $dtmName = ''
+    try { $dtmName = $w.Current.Name } catch { $dtmName = '' }
+    $dtmRowMs = [int]([DateTime]::UtcNow - $dtmRowT0).TotalMilliseconds
+    if ($dtmRowMs -gt $dtmSlowestRowMs) { $dtmSlowestRowMs = $dtmRowMs }
+    if ($dtmName -like '*${safeTitle}*') { $target = $w; break }
+}
+if (-not $target) { Write-Output ('${head},"search":{"enumMs":' + $dtmEnumMs + ',"rows":' + $allWins.Count + ',"slowestRowMs":' + $dtmSlowestRowMs + '}}'); exit }`;
+}
+
+function makeResolveWindowByTitlePs(safeTitle: string, notFoundJson: string): string {
+  return `${titleSearchLoopPs(safeTitle, notFoundJson)}
 ${PS_REGISTER_CLIENTSIDE_PROVIDERS_CALL}`;
 }
 
@@ -1460,7 +1562,7 @@ export async function getUiElements(
   // answer (2ゲート目の指摘).
   const output = await runPS(script, timeoutMs);
   const result = JSON.parse(output);
-  if (result.error) throw new Error(result.error);
+  if (result.error) throw new Error(windowSearchVerdict(result.error, result.search));
 
   // A prefix of a window is not the window: caching it would serve it to `screenshot` for the
   // whole TTL as though it were complete.
@@ -2134,7 +2236,7 @@ export async function getElementChildren(
   const script = makeGetChildrenScript(windowTitle, name, automationId, controlType, maxDepth, maxElements);
   const output = await runPS(script, timeoutMs);
   const result = JSON.parse(output);
-  if (result.error) throw new Error(result.error);
+  if (result.error) throw new Error(windowSearchVerdict(result.error, result.search));
   return (result.elements ?? []) as UiElement[];
 }
 
