@@ -1107,6 +1107,47 @@ const SUGGESTS: Record<string, string[]> = {
   BadPort: [
     "The port must be an integer between 1 and 65535.",
   ],
+
+  // ── The catch-all, and the only code here that does not name a cause ────────
+  //
+  // internal #121. `Unknown` is what the commit wrapper answers when a HANDLER THREW —
+  // `_envelope.ts`'s `makeCommitWrapper`, the `handlerThrew` branch (site 6). It reached callers
+  // as `{"ok":false,"reason":"unknown","if_unexpected":{"most_likely_cause":"Unknown",
+  // "try_next":[]}}`: the one response a caller cannot interpret was also the one offering no next
+  // step.
+  //
+  // THE EMPTY LIST WAS DELIBERATE AND TEMPORARY, and this entry is the follow-up it named.
+  // ADR-021's migration plan (internal `adr-021-result-migration-drift-prevention-plan.md:147`,
+  // hazard B) kept site 6 bit-equal through the converter migration on purpose — "handler crash に
+  // generic hint を付ける改善は deliberate な follow-up に分離 (本 Phase では non-goal)". The
+  // suppression was an explicit `tryNext: []` override; removing it makes that site read this table
+  // instead, which is the same "the table is READ, not described" move
+  // `LEASE_REASON_TO_TYPED_CODE` got in internal #125.
+  //
+  // WHY NOT THE CONVERTER'S OWN GENERIC LINE. Dropping the override alone would have shipped
+  // `toFailureEnvelope`'s fallback, "Inspect the underlying error and retry with adjusted args".
+  // Both halves are wrong HERE: the caller cannot inspect an error this road deliberately does not
+  // publish (#121 §3 is about what those messages carry), and "retry" is the forbidden road — a
+  // throw can land AFTER the side effect, so a blind repeat can apply the act twice. A vague
+  // permission reads as permission.
+  //
+  // WHY THE LINES ARE SPLIT BY FAMILY. All 21 tools behind that wrapper are COMMIT tools, and they
+  // span desktop, browser, terminal, clipboard and excel. No single instrument re-observes for all
+  // of them, so sending every caller to a UIA tree would repeat the split `ElementNotFound` above
+  // already had to be given — a true reason applied where it does not hold.
+  //
+  // ONE PLACEHOLDER PER LINE, AND NOTHING ELSE LOAD-BEARING ON IT. A line whose `{tool:…}` cannot
+  // be provided by this configuration is dropped WHOLE, taking any configuration-independent half
+  // with it (`_advice-capability.ts`, numbered hazard 2 — still live). So the two sentences that
+  // are true in every configuration carry no placeholder at all, and survive every corner.
+  Unknown: [
+    "The tool's handler threw before any road could name a cause. This is not a refusal the tool decided, so it does NOT say the act was skipped — the act may have taken effect before the throw.",
+    "Observe the target again before acting, and do not repeat this call as a retry until you have: a throw can land after the side effect, so a blind repeat can apply it twice.",
+    "For a native desktop target, take the view again with {tool:reidentify_element} — the identifiers you were holding belong to the view that just failed.",
+    "For a browser target, re-read the page with browser_overview or browser_search — a DOM node is not in the UIA tree, so the desktop instrument above cannot see it.",
+    "For a terminal target, read the pane back with terminal(action='read') before sending anything again.",
+    "If it repeats, report it rather than working around it: every road this product designed answers under its own name, so 'Unknown' means one was missed.",
+  ],
 };
 
 /**

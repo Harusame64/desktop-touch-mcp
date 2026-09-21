@@ -98,6 +98,7 @@
     "MissingComponent",
     "ProceduralMemoryKUpperBoundExceeded",
     "SemanticMemoryKUpperBoundExceeded",
+    "Unknown",
     "UnknownScheme",
     "WindowExcluded",
     "WorkingMemoryNUpperBoundExceeded"
@@ -176,11 +177,11 @@
     "LeaseGenerationMismatch",
     "ProceduralMemoryKUpperBoundExceeded",
     "SemanticMemoryKUpperBoundExceeded",
+    "Unknown",
     "WindowExcluded",
     "WorkingMemoryNUpperBoundExceeded"
   ],
   "envelopeOutsideFlatCeiling": [
-    "LeaseExpired",
-    "Unknown"
+    "LeaseExpired"
   ]
 }
