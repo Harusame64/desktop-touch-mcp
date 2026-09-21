@@ -566,7 +566,16 @@ class Dup extends HandlerError { constructor() { super(); this.name = "DupLong";
     // actually returns codes never reads it (gate 2 on #672, third round).
     // **Two, not three.** `HandlerError` went with the presenter read: `toResultErr` appears at no
     // `toFailureEnvelope(` call site, so the name never arrives and there is nothing to advise on.
-    expect(pinned.withoutAdvice).toEqual(["LeaseExpired", "Unknown"]);
+    // **One, not two — 2026-09-21, internal #121, and this one moved because it was FIXED rather
+    // than re-counted.** Every correction above narrowed what the extraction had wrongly believed
+    // was produced; this one is the product changing. `Unknown` left the list when the
+    // handler-throw fallback stopped shipping `try_next: []`, which makes the remaining member the
+    // interesting one: `LeaseExpired` has no dictionary entry because its advice is built at the
+    // callsite as a rich `{action, args, confidence}` row (site 5a), so "no SUGGESTS entry" and "no
+    // advice" are not the same sentence for it. This list is now one name long and neither of the
+    // two readings applies to it in the same way — worth saying before someone reads the count as
+    // "one road still leaves the caller stranded".
+    expect(pinned.withoutAdvice).toEqual(["LeaseExpired"]);
     // **2026-09-18, internal#125 — the sentence above is kept and this is the correction.** Both
     // reserved names are produced now: `mapLeaseValidationToTypedReason` grew the two branches and
     // READS `LEASE_REASON_TO_TYPED_CODE` for them, so the reservation is a checked thing. The two
@@ -625,7 +634,10 @@ export class ExecutorFailed extends HandlerError {
 export class NotInFamily extends Error {
   constructor(m) { super(m); this.name = "NotInFamily"; }
 }`,
-      "src/tools/_errors.ts": `const SUGGESTS: Record<string, string[]> = {\n  ExecutorFailed: ["fall back"],\n  ModalBlocking: ["dismiss"],\n};`,
+      // `Unknown` carries advice since internal #121, and the baseline tree has to say so or every
+      // cell built on this fixture reports the fallback as advice-less — the gate's invariant now
+      // runs the other way.
+      "src/tools/_errors.ts": `const SUGGESTS: Record<string, string[]> = {\n  ExecutorFailed: ["fall back"],\n  ModalBlocking: ["dismiss"],\n  Unknown: ["observe before acting"],\n};`,
       "src/tools/_envelope.ts": `export const LEASE_REASON_TO_TYPED_CODE = {
   expired: "LeaseExpired",
 } as const;
@@ -824,13 +836,18 @@ function pascalToSnake(s: string): string {
     expect(out).toMatch(/cataloguesDifferBy: the code now produces "modal_blocking"/);
   });
 
-  it("is 1 when the advice-less fallback stops being advice-less", () => {
+  it("is 1 when the fallback stops carrying advice", () => {
+    // **TURNED AROUND on 2026-09-21 with the invariant it guards (internal #121).** It used to
+    // inject `Unknown: ["something"]` and expect the gate to notice the fallback had GAINED a key,
+    // because the pinned fact was that it had none. The product now says the opposite on purpose,
+    // so the mutation that matters is the one that takes the advice away again — a one-line edit,
+    // and the road it silences is the only one a caller cannot interpret.
     fixture();
     pin();
-    write("src/tools/_errors.ts", `const SUGGESTS: Record<string, string[]> = {\n  ExecutorFailed: ["fall back"],\n  SomeOtherFailure: ["try again"],\n  Unknown: ["something"],\n};`);
+    write("src/tools/_errors.ts", `const SUGGESTS: Record<string, string[]> = {\n  ExecutorFailed: ["fall back"],\n  SomeOtherFailure: ["try again"],\n};`);
     const { status, out } = run();
     expect(status).toBe(1);
-    expect(out).toMatch(/fallback "Unknown" is now a SUGGESTS key/);
+    expect(out).toMatch(/fallback "Unknown" is no longer a SUGGESTS key/);
   });
 
   it("refuses to re-pin while the extraction cannot read the tree", () => {

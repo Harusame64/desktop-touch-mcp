@@ -263,11 +263,20 @@ for (const name of typed) {
   if (!catalogued.has(name)) problems.push(`${name} is a TouchFailReason no catalogue mentions`);
 }
 
-// **The fallback carries no advice, and that is a pinned fact.** `"Unknown"` is not a `SUGGESTS`
-// key, so the reason it produces reaches the caller with an empty advice list. If it ever becomes a
-// key the axis changes shape, and this line is where that shows.
-if (fallbackCause !== null && suggestsKeys.includes(fallbackCause)) {
-  problems.push(`the if_unexpected fallback "${fallbackCause}" is now a SUGGESTS key — the reason it produces is no longer advice-less`);
+// **The fallback CARRIES advice, and that is the pinned fact now.** This line used to assert the
+// opposite — "`Unknown` is not a `SUGGESTS` key, so the reason it produces reaches the caller with
+// an empty advice list" — and ended with the prediction "if it ever becomes a key the axis changes
+// shape, and this line is where that shows". It showed, on 2026-09-21, when internal #121 gave the
+// handler-throw fallback a next step.
+//
+// SO THE LINE IS TURNED AROUND RATHER THAN DELETED. An invariant that has become false is not the
+// same as an invariant that has become uninteresting: what made it worth pinning — that the ONE
+// reason a caller cannot interpret is also the one whose advice list is decided somewhere far from
+// the callsite — is exactly as true pointing this way. Deleting it would leave the axis with no
+// line to go red when the advice is suppressed again, and suppressing it is a one-argument edit
+// (`tryNext: []` at the callsite is what shipped for months).
+if (fallbackCause !== null && !suggestsKeys.includes(fallbackCause)) {
+  problems.push(`the if_unexpected fallback "${fallbackCause}" is no longer a SUGGESTS key — the one reason a caller cannot interpret is advice-less again (internal #121)`);
 }
 
 // **Every produced name should be a key, or the caller gets generic advice.** Not failed on — five
