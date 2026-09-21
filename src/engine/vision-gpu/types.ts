@@ -80,7 +80,21 @@ export interface UiEntityCandidate {
   label?: string;
   value?: string;
   rect?: Rect;
-  /** Verbs the resolver can expand into full UiAffordance (e.g. "scrollTo"|"select" added at resolver). */
+  /**
+   * The verbs a candidate carries. `resolver.ts` maps them 1:1 into `UiAffordance`
+   * (`synthesizeAffordances([...verbSet])`) — **it does not add any.**
+   *
+   * **THIS COMMENT USED TO SAY THE OPPOSITE** (internal #154, gate 2): *"Verbs the resolver can
+   * expand into full UiAffordance (e.g. `scrollTo`|`select` added at resolver)"*. It is the first
+   * line anyone reads before deciding whether a provider may advertise `select`, and it told them
+   * the resolver already does it. Nothing in the tree does.
+   *
+   * **`"select"` IS NOT IN THIS UNION, AND `desktop_act` REFUSES THAT ACTION BECAUSE OF IT.** The
+   * refusal lives in `guarded-touch.ts` (`offersAction`), and a cell reads THIS DECLARATION rather
+   * than the six functions that fill it. Widening the union is therefore half of what supporting a
+   * new verb takes; the other half is an arm in `desktop-executor.ts`, which today lets everything
+   * that is not `type`/`setValue` fall through to a click.
+   */
   actionability: Array<"click" | "invoke" | "type" | "read">;
   /**
    * UIA control type (e.g. "Button", "ListItem", "CheckBox"). Populated only

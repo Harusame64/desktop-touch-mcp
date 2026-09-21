@@ -823,6 +823,7 @@ export const desktopSeeSchema = {
 export const desktopTouchSchema = {
   lease:  leaseSchema.describe("Lease returned by desktop_discover. Expires after TTL; re-call desktop_discover if desktop_act fails with lease_expired."),
   action: z.enum(["auto", "invoke", "click", "type", "setValue", "select"]).optional().describe(
+    "NOTE: action='select' is REFUSED on every target (action_not_offered) — nothing here offers it and no road performs it; click the item instead. " +
     "Action to perform. 'auto' selects the best affordance from the entity. " +
     "'setValue' (Phase 4: absorbs former set_element_value) sets a UIA ValuePattern value or fills a CDP controlled input — pass the new value via text."
   ),
@@ -1314,7 +1315,7 @@ export const desktopActRawHandler = async (
     const failure = toFailureEnvelope(
       Err(new ActionNotOfferedError(
         "ActionNotOffered: the target does not offer this action, and nothing was done. " +
-        "Ask for the action you mean — desktop_act(action='click') or action='invoke') presses it"
+        "Ask for the action you mean — desktop_act(action='click') or action='invoke' presses it"
       )),
       { optIn: false, detail: result.detail },
     );

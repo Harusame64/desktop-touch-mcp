@@ -582,14 +582,19 @@ const SUGGESTS: Record<string, string[]> = {
   // The line that has to be here is the one about the SUBSTITUTION, because the caller's next move
   // depends on which they meant. Measured: `select` on a button used to answer `ok:true` with bytes
   // identical to `click`'s, so "it pressed it for me" was indistinguishable from "it did what I
-  // asked" — and on this product NO provider advertises `select` at all (`uiaActionability` and
-  // `cdpActionability` both return only click / invoke / type / read), so every `select` the schema
-  // invites took that substitution.
+  // asked".
+  //
+  // **THE SUBJECT OF THE LAST LINE IS `desktop_discover`, NOT "this product"** (gate 2). An earlier
+  // wording said no provider advertises `select` anywhere — and `uia-bridge.ts`'s `deriveAction`
+  // returns exactly that word for a ListItem, which `screenshot(detail='elements')` and
+  // `workspace_snapshot` print. A caller can read `action:"select"` off one of those, ask for it
+  // here, and be told it does not exist. The recovery is still right; the reason would have
+  // contradicted what they had just read.
   ActionNotOffered: [
     "The target does not advertise this action, and nothing was done — this is not a road that was tried and failed.",
     "If you meant to press it, ask for it: desktop_act(action='click') or action='invoke'. Do NOT assume the two are interchangeable — before this refusal existed, a substituted press answered ok:true and looked exactly like a requested one.",
     "The entity's affordances in the desktop_discover response say which actions it offers; action='auto' picks one of them for you.",
-    "No provider in this product advertises 'select' today, so a select on any target is this refusal. A list or combo box is reached by clicking the item you want.",
+    "desktop_discover never offers 'select' on any target, so asking for it is always this refusal — reach a list item, combo entry or tab by clicking it. NOTE: screenshot(detail='elements') and workspace_snapshot DO print action:'select' on list items; that is a different reader's word for the same click, and desktop_act does not take it.",
   ],
   WindowExcluded: [
     "This window is excluded from every tool surface of this server, by design: the key locker's own windows are excluded so a secret being typed cannot be read or driven by the same session. Nothing was done to it.",

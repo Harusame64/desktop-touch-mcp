@@ -225,12 +225,39 @@ describe("desktop_discover / desktop_act — reliability + latency matrix (v1.0.
     console.log("\n=== desktop_discover / desktop_act capability matrix ===\n" + formatTable(rows) + "\n");
 
     // Hard assertions: every combination must
-    //   1) complete with ok:true,
+    //   1) complete with ok:true — **except `select`, see below**,
     //   2) forward the expected action to the executor (lease C / Codex
     //      PR #54 P2: ensures the matrix actually validates the action
     //      dimension, not just the source dimension),
     //   3) stay under the median-latency ceiling.
+    //
+    // ── `select` IS REFUSED, AND THIS CELL USED TO HOLD THE DEFECT GREEN ─────────────────────
+    //
+    // Until internal #154 this loop asserted `ok:true` for `(uia, select)` like every other pair,
+    // and that is what the product did: `desktop_act(action:"select")` on a button answered
+    // `{"ok":true,"executor":"uia",…}` **and pressed it** (win2 measured it on the machine with the
+    // fixture's own click log). The matrix agreed with the press, so nothing here could notice.
+    //
+    // It agreed partly because `buildCandidate` writes `actionability: [… ,"select"]` — a value the
+    // real producing type (`vision-gpu/types.ts`) does not allow. A hand-built input made the road
+    // look reachable, and the assertion over it made the substitution look correct. Both halves of
+    // that are why #154 pins the producing TYPE and the executor's dispatch instead of an entity a
+    // test built for itself.
+    //
+    // The row is kept rather than dropped: what the matrix documents is DISPATCH, and "this verb
+    // dispatches nowhere" is part of that picture.
+    const REFUSED: Partial<Record<TouchAction, string>> = { select: "action_not_offered" };
     for (const row of rows) {
+      const refusedAs = REFUSED[row.action];
+      if (refusedAs !== undefined) {
+        expect(row.ok, `(${row.source}, ${row.action}) succeeded — it must be refused`).toBe(false);
+        expect(row.reason, `(${row.source}, ${row.action}) refused as ${row.reason ?? "<none>"}`).toBe(refusedAs);
+        expect(
+          row.dispatchedAction,
+          `(${row.source}, ${row.action}) reached the executor as ${row.dispatchedAction ?? "<none>"} — a refused action must dispatch nothing`,
+        ).toBeUndefined();
+        continue;
+      }
       expect(row.ok, `(${row.source}, ${row.action}) failed: ${row.reason ?? "unknown"}`).toBe(true);
       expect(
         row.dispatchedAction,

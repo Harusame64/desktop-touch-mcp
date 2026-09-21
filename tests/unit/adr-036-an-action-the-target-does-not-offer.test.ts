@@ -45,14 +45,12 @@ const button = (): UiEntity => ({
   evidenceDigest: "d-button",
 } as unknown as UiEntity);
 
-/** The same shape as a provider that DOES advertise selection would build it. */
-const selectable = (): UiEntity => ({
-  ...button(),
-  entityId: "ent_listitem",
-  role: "listitem",
-  affordances: [{ verb: "select" }, { verb: "click" }],
-  evidenceDigest: "d-listitem",
-} as unknown as UiEntity);
+// **THERE IS NO "SELECTABLE ENTITY" FIXTURE ANY MORE, and its absence is the point** (gate 2).
+// One stood here, used by a control asserting that `select` is "served when the target offers it".
+// It asserted against the INJECTED recorder executor, so what it proved was that the loop forwards
+// the verb — while the real executor has no `select` arm and would have pressed. An entity built by
+// the test to make a road look reachable is not evidence that the road exists.
+
 
 /**
  * The real loop, with an executor that RECORDS instead of acting — so "was anything done" is
@@ -107,13 +105,42 @@ describe("internal #154 — an action the target does not offer", () => {
     }
   });
 
-  it("CONTROL: select is served when the target really offers it", async () => {
-    // The guard is written as "not among the affordances", not "always refuse", so a provider that
-    // later advertises the verb is served. If this ever goes red, the guard has become a blanket ban
-    // and the comment in `guarded-touch.ts` is describing something the code no longer does.
-    const { result, performed } = await act(selectable(), "select");
-    expect(result.ok).toBe(true);
-    expect(performed).toEqual(["select"]);
+  it("BOTH halves of \"select is not supported\" are pinned at their producers, not at a neighbour", () => {
+    // **THIS REPLACES A CONTROL THAT PROVED THE WRONG THING** (gate 2). It read
+    // `CONTROL: select is served when the target really offers it` and asserted
+    // `performed === ["select"]` against the INJECTED recorder executor — which shows the loop
+    // forwards the verb, and reads as "select is served". The real executor has no select arm at
+    // all, so the guard's forward-compatible form would have approved the verb the day a provider
+    // advertised it, and the press would have come back with the guard's blessing. Measured: every
+    // gate and every cell stayed green under exactly that change.
+    //
+    // So the two independent reasons are pinned where they are PRODUCED.
+    const read = (rel: string) =>
+      readFileSync(fileURLToPath(new URL(`../../src/${rel}`, import.meta.url)), "utf8");
+
+    // (1) THE TYPE, not the six functions that fill it. An earlier version of this cell read
+    // `uiaActionability` and `cdpActionability` — two of the six writers — and a provider taught to
+    // advertise the verb without touching either of them went unnoticed (measured, same round).
+    const types = read("engine/vision-gpu/types.ts");
+    const field = /actionability:\s*(Array<[^>]*>)/.exec(types);
+    expect(field, "the actionability field is no longer declared the way this cell reads it").not.toBeNull();
+    expect(field![1], "a candidate can now carry `select` — the refusal is no longer total").not.toContain("select");
+    // CONTROL: the same read finds the verbs that ARE carried, so a declaration this regex stopped
+    // matching could not pass as "select is absent".
+    expect(field![1]).toContain("click");
+    expect(field![1]).toContain("invoke");
+
+    // (2) THE EXECUTOR'S DISPATCH. Every road branches on `type`/`setValue` and lets everything else
+    // fall to a click; there is no `select` arm. If one appears, the refusal above has a reason to
+    // be revisited — and whoever writes it is told so here rather than discovering it from a caller.
+    const executor = read("tools/desktop-executor.ts");
+    expect(
+      /action === "select"|case "select"/.test(executor),
+      "desktop-executor now branches on `select` — revisit the refusal in guarded-touch.ts",
+    ).toBe(false);
+    // CONTROL: the roads this asserts about are the ones that exist.
+    expect(executor).toContain('action === "setValue"');
+    expect(executor).toContain("uiaClick");
   });
 
   it("refuses before EITHER environment check, because no environment change fixes it", async () => {
