@@ -50,6 +50,7 @@
   ],
   "fallbackReason": "unknown",
   "serverCatalogue": [
+    "aim_blocked_by_excluded_window",
     "aim_identity_changed",
     "aim_occluded",
     "aim_point_outside_window",
@@ -66,6 +67,7 @@
     "lease_generation_mismatch",
     "modal_blocking",
     "origin_window_not_visible",
+    "unknown",
     "window_excluded"
   ],
   "toolCatalogue": [
@@ -86,6 +88,7 @@
     "lease_generation_mismatch",
     "modal_blocking",
     "origin_window_not_visible",
+    "unknown",
     "window_excluded"
   ],
   "withoutAdvice": [
@@ -104,7 +107,5 @@
     "AimIdentityChangedError: AimIdentityChanged / AimIdentityChangedError",
     "AimOccludedError: AimOccluded / AimOccludedError"
   ],
-  "cataloguesDifferBy": [
-    "aim_blocked_by_excluded_window"
-  ]
+  "cataloguesDifferBy": []
 }

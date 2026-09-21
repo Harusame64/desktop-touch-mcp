@@ -175,9 +175,18 @@ const derived = {
   serverCatalogue,
   toolCatalogue,
   withoutAdvice,
-  // The two catalogues disagree today by exactly one name. Pinned as a KNOWN difference rather than
-  // failed on: a gate that is red the day it lands is a gate somebody turns off (#670). It fails
-  // when the difference changes, which is the property that was actually wanted.
+  // **The two catalogues agreed on 2026-09-21 (internal #121), and the set is EMPTY now.** It used
+  // to hold `aim_blocked_by_excluded_window`, pinned as a known difference rather than failed on,
+  // because a gate that is red the day it lands is a gate somebody turns off (#670). That reason no
+  // longer applies once the set is empty, so the promotion to a hard failure is below — and this is
+  // the only moment it can be made without landing red.
+  //
+  // **The wording is NOT unified and is not meant to be.** Measured on the way in: of the 13 rows
+  // both surfaces carry, ONE is byte-identical and twelve differ, because they address different
+  // readers — the tool description says "V1" beside the v2 surface and the server instructions do
+  // not, and the tool description's length is a cost decision with a measurement beside it (~667
+  // tokens per session with v2 on, ~336 under the kill switch; win2, `2406b98`). What is canonical
+  // is the VOCABULARY: which reasons a caller is told about at all. Each surface words its own row.
   unresolvable: UNRESOLVABLE.map((u) => u.producer),
   reservedLeaseNames,
   // **Two classes are declared twice with different names**, and both are presented. Which one a
@@ -261,6 +270,20 @@ for (const name of catalogued) {
 // meet; an uncatalogued one is a recovery path nobody was told about.
 for (const name of typed) {
   if (!catalogued.has(name)) problems.push(`${name} is a TouchFailReason no catalogue mentions`);
+}
+
+// **The two catalogues must name the same reasons** (internal #121, 2026-09-21). Before that day
+// this was a pinned set with one member; the pin caught a CHANGE to the difference and accepted the
+// difference itself. Now that the set is empty, the stronger statement costs nothing and says what
+// was always wanted: a caller must not be told by one artefact about a recovery the other omits.
+//
+// It is the vocabulary that is pinned, never the prose — `cataloguesDifferBy` is derived from the
+// reason NAMES each surface documents, and the two surfaces word their rows for their own readers.
+if (derived.cataloguesDifferBy.length > 0) {
+  problems.push(
+    `the two catalogues no longer name the same reasons: ${derived.cataloguesDifferBy.join(", ")} — ` +
+      "one surface tells a caller about a recovery the other omits (internal #121)",
+  );
 }
 
 // **The fallback CARRIES advice, and that is the pinned fact now.** This line used to assert the

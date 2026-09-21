@@ -556,10 +556,22 @@ class Dup extends HandlerError { constructor() { super(); this.name = "DupLong";
       expect(pinned.producedNames, gone).not.toContain(gone);
     }
     expect(out).toContain("read at the presenter's own call sites");
-    // The catalogues differ by exactly one name, and the tool description is the longer one.
-    expect(pinned.cataloguesDifferBy).toEqual(["aim_blocked_by_excluded_window"]);
-    expect(pinned.toolCatalogue).toContain("aim_blocked_by_excluded_window");
-    expect(pinned.serverCatalogue).not.toContain("aim_blocked_by_excluded_window");
+    // **The catalogues agree now** (internal #121, 2026-09-21). This read
+    // `toEqual(["aim_blocked_by_excluded_window"])` until that day — the server instructions
+    // omitted a recovery the tool description offered, pinned as a known difference because a gate
+    // red on landing is a gate somebody turns off. The row was written for the server surface and
+    // `unknown` was added to both, so the set is empty and the gate FAILS on any difference now.
+    expect(pinned.cataloguesDifferBy).toEqual([]);
+    for (const name of ["aim_blocked_by_excluded_window", "unknown"]) {
+      expect(pinned.toolCatalogue, name).toContain(name);
+      expect(pinned.serverCatalogue, name).toContain(name);
+    }
+    // **The vocabulary is what agrees; the WORDING is not, and must not be read as drift.** Of the
+    // rows both surfaces carry, one is byte-identical and twelve differ — the tool description says
+    // "V1" beside the v2 surface, the server instructions do not, and the tool description's length
+    // is a cost decision with a measurement beside it. A later round that "tidies" them into one
+    // text would give every session the long form back.
+    expect(pinned.serverCatalogue.slice().sort()).toEqual(pinned.toolCatalogue.slice().sort());
     // Five produced names have no advice entry, so the caller gets the generic line.
     // **Three, not five.** `LeaseGenerationMismatch` and `LeaseDigestMismatch` were pinned here
     // and nothing produced either: they live in the reservation table, and the mapping that
@@ -823,6 +835,18 @@ function pascalToSnake(s: string): string {
     const { status, out } = run();
     expect(status).toBe(1);
     expect(out).toMatch(/silently_added is a TouchFailReason no catalogue mentions/);
+  });
+
+  it("is 1 when one catalogue names a reason the other omits", () => {
+    // **Promoted from a pin to a failure on 2026-09-21** (internal #121), which could only be done
+    // on the day the difference reached zero. Before that, the set held one name and a hard failure
+    // would have landed red — #670's reason for pinning instead.
+    fixture();
+    pin();
+    write("src/server-windows.ts", `const instructions = [\n  "  executor_failed → fall back;",\n];`);
+    const { status, out } = run();
+    expect(status).toBe(1);
+    expect(out).toMatch(/the two catalogues no longer name the same reasons/);
   });
 
   it("is 1 when the two catalogues stop differing in the way they differ today", () => {
