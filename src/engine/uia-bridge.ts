@@ -78,13 +78,52 @@ export function escapeLike(s: string): string {
 }
 
 /** Execute a PowerShell script string and return stdout */
+/**
+ * A PowerShell failure with the SCRIPT taken out of it — internal #148.
+ *
+ * `execFile` builds its message as `Command failed: <the whole command line>`, and the command line
+ * here is a thirty-line script. Every road that lets that error escape hands the caller a few
+ * kilobytes of PowerShell — and worse than the tokens, **the script decides the error code**:
+ * `classify` matches by substring, and the discover script contains
+ * `$wantedPats.Add('InvokePattern')`.
+ *
+ * MEASURED 2026-09-21 win2 (internal `c6d5e00`): with a window's UI thread hung,
+ * `get_ui_elements` answered **`InvokePatternNotSupported`** after 18 s — five suggestions about
+ * invoke patterns, for a window that was merely not answering, about an element that supports
+ * invoke perfectly well. Nothing in this product chose that code. A line of the script did.
+ *
+ * #697 clamped this at ONE road (`getElementBounds`). The clamp lives on the PRODUCER now, so a
+ * road cannot lose it by being written later. The fields the roads read are carried across:
+ * `killed` separates this module's own budget from someone else's kill, `stdout` is the answer a
+ * killed process may already have printed, `stderr` is what the client actually said.
+ */
+function clampPsFailure(e: unknown): Error {
+  const killed = typeof e === "object" && e !== null && (e as { killed?: boolean }).killed === true;
+  const clamped = new Error(shortPsFailure(e, killed));
+  clamped.name = "PowerShellFailure";
+  for (const key of ["killed", "stdout", "stderr", "code", "signal"] as const) {
+    const v = (e as Record<string, unknown> | null)?.[key];
+    if (v !== undefined) (clamped as unknown as Record<string, unknown>)[key] = v;
+  }
+  return clamped;
+}
+
+/** Whether a thrown value is a PowerShell road's failure, with its message already clamped. */
+export function isPowerShellFailure(e: unknown): e is Error & { killed?: boolean; stdout?: string; stderr?: string } {
+  return e instanceof Error && e.name === "PowerShellFailure";
+}
+
 export async function runPS(script: string, timeoutMs = 8000): Promise<string> {
-  const { stdout } = await execFileAsync(
-    "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", script],
-    { timeout: timeoutMs, windowsHide: true }
-  );
-  return stdout.trim();
+  try {
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { timeout: timeoutMs, windowsHide: true }
+    );
+    return stdout.trim();
+  } catch (e) {
+    throw clampPsFailure(e);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2530,7 +2569,9 @@ try {
     }
     return {
       found: null, why: killed ? "read_unfinished" : "read_failed", via: "none",
-      error: shortPsFailure(e, killed),
+      // Already clamped, on the producer (internal #148): clamping it twice would spell the
+      // heading into its own detail.
+      error: e instanceof Error ? e.message : String(e),
       ...(nativeFailed !== undefined && { nativeFailed }),
     };
   }

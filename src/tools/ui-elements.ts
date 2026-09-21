@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { getUiElements, clickElement, setElementValue, insertTextViaTextPattern2, getElementBounds, getElementChildren } from "../engine/uia-bridge.js";
+import { getUiElements, clickElement, setElementValue, insertTextViaTextPattern2, getElementBounds, getElementChildren, isPowerShellFailure } from "../engine/uia-bridge.js";
 import { AIM_WINDOW_GONE } from "../engine/aim.js";
 import { keyboardTypeHandler } from "./keyboard.js";
 import { captureScreen } from "../engine/image.js";
@@ -97,6 +97,31 @@ export const getUiElementsHandler = async ({
     const enriched = Object.keys(hints).length > 0 ? { ...result, hints } : result;
     return ok(enriched, true);
   } catch (err) {
+    // internal #148 — the PowerShell road's failure used to arrive here as
+    // `Command failed: powershell.exe … <thirty lines of script>`, and `classify` reads messages by
+    // substring, so the SCRIPT picked the code: MEASURED 2026-09-21 win2, a hung window answered
+    // `InvokePatternNotSupported` after 18 s, with five suggestions about invoke patterns, because
+    // the discover script contains `$wantedPats.Add('InvokePattern')`.
+    //
+    // The clamp is on the producer now, so the message is honest — but a clamped message matches no
+    // arm either, and `classify`'s fallback ships `ToolError` with NO advice. Saying nothing is
+    // not better than saying the wrong thing; it is the same caller, stuck. The advice is written
+    // here, where the road is known.
+    if (isPowerShellFailure(err)) {
+      return failCode("ToolError", `get_ui_elements: ${err.message}`, {
+        suggest: err.killed === true
+          ? [
+              "The read was cut off at its own budget before it answered — nothing was observed, so this says NOTHING about whether the window or its elements exist",
+              "Some window on this desktop is answering slowly, and it is not necessarily the one you named: resolving a title reads every top-level window's name",
+              "Retry — and if the same call is cut off again, use screenshot(detail='image'), which does not walk the window list",
+            ]
+          : [
+              "The UIA read failed — the client's own words are in context.error, and they are the only evidence this refusal has",
+              "Retry before changing the target: a read that failed has not disagreed with you about the window or the element",
+            ],
+        context: { windowTitle, ...(err.killed !== undefined && { readCutOff: err.killed }), error: err.message },
+      });
+    }
     return failWith(err, "get_ui_elements", { windowTitle });
   }
 };

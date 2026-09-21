@@ -107,8 +107,8 @@ vi.mock("../../src/engine/identity-tracker.js", () => ({
   buildCacheStateHints: vi.fn().mockReturnValue({}),
 }));
 
-import { scopeElementHandler } from "../../src/tools/ui-elements.js";
-import { getElementBounds } from "../../src/engine/uia-bridge.js";
+import { scopeElementHandler, getUiElementsHandler } from "../../src/tools/ui-elements.js";
+import { getElementBounds, getUiElements } from "../../src/engine/uia-bridge.js";
 import { resolveWindowTarget } from "../../src/tools/_resolve-window.js";
 import { _resetCaptureBackendForTests } from "../../src/engine/reachable-bounds.js";
 
@@ -318,5 +318,51 @@ describe("internal #142 — the refusal is built from which silence it was", () 
     const envelope = await scopeMissing("element_not_found");
     expect(envelope.code).toBe("ElementNotFound");
     expect((envelope.suggest ?? []).join(" ")).toMatch(/candidate names/);
+  });
+});
+
+describe("internal #148 — the script does not pick the code a caller receives", () => {
+  /** What the bridge throws once the clamp is on the producer. */
+  const clamped = (message: string, killed: boolean) =>
+    Object.assign(new Error(message), { name: "PowerShellFailure", killed });
+
+  it("does not answer a hung window with a complaint about invoke patterns", async () => {
+    // MEASURED 2026-09-21 win2 on main `5bcd2cc3`: 18049 ms, `InvokePatternNotSupported`, five
+    // suggestions about invoke — because `execFile`'s message carried the script and the script
+    // contains `$wantedPats.Add('InvokePattern')`. The element supported invoke; the window was
+    // simply not answering.
+    vi.mocked(getUiElements).mockRejectedValueOnce(
+      clamped("PowerShell read was cut off at its own budget before it answered", true),
+    );
+    const result = await getUiElementsHandler({ windowTitle: "TestApp", maxDepth: 3, maxElements: 50 });
+    const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "{}";
+    const envelope = JSON.parse(text) as { code?: string; error?: string; suggest?: string[]; context?: Record<string, unknown> };
+
+    expect(envelope.code).not.toBe("InvokePatternNotSupported");
+    expect((envelope.suggest ?? []).join(" ")).not.toMatch(/invoke/i);
+    expect(envelope.error).not.toMatch(/InvokePattern/);
+    // …and it says what actually happened, rather than falling to a code with no advice at all.
+    expect((envelope.suggest ?? [])[0]).toMatch(/says NOTHING about whether the window/);
+    expect(envelope.context).toMatchObject({ readCutOff: true });
+  });
+
+  it("tells a read that FAILED from one that was cut off, because only one of them can change with time", async () => {
+    vi.mocked(getUiElements).mockRejectedValueOnce(
+      clamped("PowerShell read failed: Access is denied.", false),
+    );
+    const result = await getUiElementsHandler({ windowTitle: "TestApp", maxDepth: 3, maxElements: 50 });
+    const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "{}";
+    const envelope = JSON.parse(text) as { suggest?: string[]; context?: Record<string, unknown> };
+    expect((envelope.suggest ?? [])[0]).toMatch(/client's own words are in context\.error/);
+    expect((envelope.suggest ?? []).join(" ")).not.toMatch(/cut off at its own budget/);
+  });
+
+  it("leaves every other failure on the road it was already taking", async () => {
+    // The control: this arm is for PowerShell road failures only. A window that really is missing
+    // must keep the code and the advice it has always had.
+    vi.mocked(getUiElements).mockRejectedValueOnce(new Error("Window not found"));
+    const result = await getUiElementsHandler({ windowTitle: "TestApp", maxDepth: 3, maxElements: 50 });
+    const text = (result.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")?.text ?? "{}";
+    expect((JSON.parse(text) as { code?: string }).code).toBe("WindowNotFound");
   });
 });
