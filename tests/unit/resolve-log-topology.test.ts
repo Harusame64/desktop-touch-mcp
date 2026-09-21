@@ -19,6 +19,8 @@
  * moved out of `terminal.ts`.
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const mockLogDiagnostic = vi.fn();
@@ -85,11 +87,33 @@ const {
 const { TERMINAL_PROCESS_RE, isTerminalClassProcessName, isConsoleHostProcessName } =
   await import("../../src/utils/terminal-process.js");
 
+// The MOCKED provider, imported so the fixture-invariant cells read start times through the same
+// door the walk does rather than through a second copy of the mock's rule (internal #153, gate 2).
+const { getProcessIdentityByPid } = await import("../../src/engine/win32.js");
+
 // ─── Topology fixtures ───────────────────────────────────────────────────────
 
 const SELF = process.pid;
 const CLI_PID = 5000;
 const WT_PID = 4000;
+
+/**
+ * When THIS process started, in the fixture's clock.
+ *
+ * **IT IS SEEDED, and leaving it to the `1000 + pid` fallback is what made this file flaky for
+ * months** (internal #153, measured 2026-09-21). `SELF` is the real `process.pid`, so the fallback
+ * makes this process's start time depend on a number the OS hands out. The walk in `_resolve-log.ts`
+ * refuses a parent that started AFTER its child — the recycled-pid guard — and the CLI's fallback
+ * start is `1000 + 5000`. So the chain survived only when the machine happened to give the test
+ * runner **a pid above 5000**:
+ *
+ *   morning run, pid 4513 → the chain truncates to one entry, 11 of 47 cells red
+ *   evening run, pid 84757 → 47 of 47 green
+ *
+ * Same command, same commit, two answers. It read as "adding a test file breaks it" and as an
+ * order dependence, because spawning more processes first nudges the pid up. Neither was the cause.
+ */
+const SELF_STARTED_MS = 1000 + CLI_PID + 1;
 
 /**
  * The reported launch chain: this server under the Claude CLI under a Windows
@@ -119,7 +143,11 @@ function seedSessionTopology(): void {
     [OTHER_TERM_HWND, 9001],
     [NOTEPAD_HWND, 7777],
   ]);
-  processStartTimes = new Map();
+  // The chain models a real launch, so the times have to run in that order: the terminal first,
+  // then the CLI it hosts, then this process. Only SELF needs seeding — every other pid's
+  // `1000 + pid` fallback already satisfies it — and `everyChainRunsParentFirst` below is what
+  // notices if that stops being true.
+  processStartTimes = new Map([[SELF, SELF_STARTED_MS]]);
   consoleWindow = null;
   consoleWindowReadable = true;
 }
@@ -158,6 +186,111 @@ beforeEach(() => {
 
 // ─── Startup snapshot ────────────────────────────────────────────────────────
 
+// ─── Fixture invariants ──────────────────────────────────────────────────────
+
+describe("the fixture itself", () => {
+  it("does not let this process's pid decide what the fixture says", () => {
+    // **internal #153, and this cell is the part that has to outlive the fix.**
+    //
+    // The walk in `_resolve-log.ts` refuses a parent that started AFTER its child — the recycled-pid
+    // guard — and **truncates the chain** rather than failing. So a topology whose times run the
+    // wrong way returns a SHORTER chain, and the cells below fail with a diff about pids that reads
+    // like a product defect.
+    //
+    // That is what happened for months: `SELF` is the real `process.pid`, its start time fell
+    // through the mock's `1000 + pid` fallback, and the CLI's fallback start is 6000 — so the chain
+    // survived only when the machine handed the runner a pid at or above 5000. Measured the same
+    // day, same commit: **pid 4513 → 11 of 47 red; pid 84757 → 47 of 47 green.**
+    //
+    // **THE FIRST VERSION OF THIS CELL DID NOT CHECK THAT** (gate 2). It asserted
+    // `processStartTimes.has(SELF)` — that a seed EXISTS — while its own comment claimed it checked
+    // that the value is not pid-derived. Those are different properties, and the difference is the
+    // whole defect: `SELF_STARTED_MS = 1000 + SELF` is a seed, and it passes 48/48 on a machine with
+    // a high pid. A comment is a claim, not a check — written in the cell about exactly that.
+    //
+    // So the property is pinned where it can be decided without running: **the definition of
+    // `SELF_STARTED_MS` must not mention the pid at all.**
+    const source = readFileSync(fileURLToPath(import.meta.url), "utf8");
+    const definition = /^const SELF_STARTED_MS = (.*);$/m.exec(source);
+    expect(definition, "SELF_STARTED_MS is no longer declared where this cell reads it").not.toBeNull();
+    for (const forbidden of ["SELF", "process.pid"]) {
+      expect(
+        definition![1],
+        `SELF_STARTED_MS is derived from ${forbidden} — the fixture's clock then depends on a number ` +
+          "the OS hands out, and the chain truncates below ~5000 (internal #153)",
+      ).not.toContain(forbidden);
+    }
+    // CONTROL: the read found the real declaration, not an empty match that would pass anything.
+    expect(definition![1]).toMatch(/\d/);
+  });
+
+  it("seeds every chain so a parent starts at or before its child, read through the provider", () => {
+    // **READ THROUGH THE MOCKED PROVIDER, not a copy of its rule** (gate 2). The first version
+    // carried its own `?? 1000 + pid`, a second copy of the mock's fallback — and moving the mock's
+    // constant alone left this cell green while eleven product cells went red with the #153 diff.
+    // The walk reads `getProcessIdentityByPid`; so does this.
+    const startOf = (pid: number) => getProcessIdentityByPid(pid).processStartTimeMs;
+
+    let pid = SELF;
+    const seen = new Set<number>();
+    const walked: number[] = [];
+    while (!seen.has(pid)) {
+      seen.add(pid);
+      walked.push(pid);
+      const parent = parentMap.get(pid);
+      if (parent === undefined || parent === 0) break;
+      // `toBeLessThanOrEqual`, because the producer's guard is `>` — equal times are accepted there,
+      // and a cell stricter than the thing it models reports a failure the product would not have.
+      expect(
+        startOf(parent),
+        `the fixture has pid ${parent} (the parent) starting at or after pid ${pid} (its child) — ` +
+          "the walk truncates there, and every chain assertion below reads the truncation as a " +
+          "product defect",
+      ).toBeLessThanOrEqual(startOf(pid));
+      pid = parent;
+    }
+
+    // CONTROL 1: the walk really walked the three-deep launch this file describes.
+    expect(walked, "the seeded chain is not the launch this file models").toEqual([
+      SELF, CLI_PID, WT_PID,
+    ]);
+    // CONTROL 2: **the ordering assertion can fail.** The line that stood here —
+    // `expect(startOf(CLI_PID)).toBeGreaterThan(startOf(WT_PID) - 1001)` — could not: reaching it
+    // meant the loop had already proven `startOf(WT_PID) < startOf(CLI_PID)`, so it was true by
+    // construction. A dead assertion in the control position is worse than none: it reads as
+    // evidence. This one inverts a pair and checks the comparison rejects it.
+    processStartTimes.set(WT_PID, startOf(CLI_PID) + 1);
+    expect(() =>
+      expect(startOf(WT_PID)).toBeLessThanOrEqual(startOf(CLI_PID)),
+    ).toThrow();
+    processStartTimes.delete(WT_PID);
+  });
+
+  it("says so when this run's pid collides with a pid the fixture hardcodes", () => {
+    // **The time axis is fixed; the identity axis is not** (gate 2, and internal #153 carries it).
+    // `SELF` is still the real `process.pid`, and the fixture hardcodes about two dozen others. A
+    // collision makes the topology self-contradictory — measured: pid 9001 → 15 red, 4000 → 7,
+    // 5000 → 5, 7777 → 2. Roughly 0.02% of the macOS pid space, and this machine handed out 4513
+    // today, so the range is live rather than theoretical.
+    //
+    // Closing it means moving every hardcoded pid out of the OS's range, which is a wider edit than
+    // this one. Until then the failure is made **diagnosable**: without this, a collision arrives as
+    // a diff about pids in cells that are about something else — the same misreading #153 cost two
+    // rounds to undo.
+    const hardcoded = new Set<number>([
+      ...parentMap.keys(), ...parentMap.values(),
+      ...processNames.keys(), ...windowOwners.values(),
+    ]);
+    hardcoded.delete(SELF);
+    expect(
+      hardcoded.has(SELF),
+      `this run's pid (${SELF}) is one the fixture also hardcodes — the topology contradicts ` +
+        "itself and the cells below will fail about pids. This is internal #153's identity axis, " +
+        "not a product defect. Re-run; a different pid passes.",
+    ).toBe(false);
+  });
+});
+
 describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
   it("records the launch chain, the console window, and the own console host", () => {
     consoleWindow = 0xabc0n;
@@ -176,7 +309,7 @@ describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
     });
     // Self first, then up the chain, image names included.
     expect(snap[0].ancestry).toEqual([
-      { pid: SELF, processName: "node.exe", startTimeMs: 1000 + SELF },
+      { pid: SELF, processName: "node.exe", startTimeMs: SELF_STARTED_MS },
       { pid: CLI_PID, processName: "node.exe", startTimeMs: 1000 + CLI_PID },
       { pid: WT_PID, processName: "WindowsTerminal.exe", startTimeMs: 1000 + WT_PID },
     ]);
@@ -252,7 +385,7 @@ describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
     const snap = events("topology_snapshot")[0];
     expect(snap.processSnapshotUnavailable).toBe(true);
     expect(snap.ancestry).toEqual([
-      { pid: SELF, processName: "node.exe", startTimeMs: 1000 + SELF },
+      { pid: SELF, processName: "node.exe", startTimeMs: SELF_STARTED_MS },
     ]);
   });
 
