@@ -34,6 +34,38 @@ vi.mock("../../src/engine/diagnostic-log.js", async (importOriginal) => {
   };
 });
 
+// ─── Topology fixtures ───────────────────────────────────────────────────────
+
+const SELF = process.pid;
+
+/**
+ * The base every pid this fixture makes up is written against.
+ *
+ * `SELF` is the real `process.pid` — the walk in `_resolve-log.ts` starts there, so the fixture
+ * does not get to choose it. Every OTHER pid it does choose, and the property that matters is that
+ * none of them can ever BE `SELF`. When one collides, the parent map, the name map and the
+ * window-owner map describe a single pid as two different processes, and the cells below fail with
+ * a diff about pids that reads like a product defect (internal #155).
+ *
+ * Measured on this file by stubbing `process.pid`: **9001 → 15 of 50 red, 4000 → 7, 5000 → 5,
+ * 7777 → 2, 100 → 1** — and on 2026-09-21 this machine handed the test runner pid **4513**, so the
+ * range was live rather than theoretical.
+ *
+ * `2 ** 32` is not "large enough to be unlikely". It is above every pid any of the three platforms
+ * can hand out: a Windows pid is a DWORD (`0xFFFFFFFC` at the very most), Linux caps `pid_max` at
+ * `2 ** 22`, macOS at 99999. **So a collision is impossible rather than rare** — which is the whole
+ * difference, because "rare" is what left this file flaky for months (internal #153).
+ */
+const FIXTURE_PID_BASE = 2 ** 32;
+
+const CLI_PID = FIXTURE_PID_BASE + 5000;
+const WT_PID = FIXTURE_PID_BASE + 4000;
+/** An unrelated Windows Terminal, and the parent it was launched from — itself not modelled. */
+const OTHER_WT_PID = FIXTURE_PID_BASE + 9001;
+const OTHER_WT_PARENT_PID = FIXTURE_PID_BASE + 1;
+/** A notepad that owns a window but is in nobody's chain. */
+const NOTEPAD_PID = FIXTURE_PID_BASE + 7777;
+
 /**
  * The fixture's clock for a pid nobody seeded: the mock's fallback.
  *
@@ -42,12 +74,21 @@ vi.mock("../../src/engine/diagnostic-log.js", async (importOriginal) => {
  * by hand, which are in the thousands. A parent left on the fallback would then start after its own
  * child: the recycled-pid signature the walk truncates on, arrived at by arithmetic rather than by
  * anything a test meant. Taking the offset keeps the fixture's clock exactly where it was before
- * the pids moved, so this change moves identities and no times at all.
+ * the pids moved: `CLI_PID` 6000, `WT_PID` 5000, as on `main`.
  *
- * Declared as a `function` so the `vi.mock` factory below, which is hoisted, can reach it.
+ * **A pid below the base throws rather than falling back to `1000 + pid`** (gate 2, round 2). Two
+ * pids below it can legitimately arrive here — `0`, which the mocked `getWindowIdentity` returns
+ * for an unmapped hwnd, and `SELF`, whose time `seedSessionTopology` always seeds. Anything else,
+ * including `SELF` with that seed dropped, is internal #153 verbatim: the fixture's clock back on a
+ * number the OS hands out. A throw says so; a fallback would not, and no cell would go red.
  */
 function fallbackStartMs(pid: number): number {
-  return 1000 + (pid >= FIXTURE_PID_BASE ? pid - FIXTURE_PID_BASE : pid);
+  if (pid >= FIXTURE_PID_BASE) return 1000 + (pid - FIXTURE_PID_BASE);
+  if (pid === 0) return 1000; // the idle process / an unmapped hwnd's owner, as before the move
+  throw new Error(
+    `the fixture's clock was asked for pid ${pid}, which it did not invent — seed it, or use ` +
+      "FIXTURE_PID_BASE + n (internal #155)",
+  );
 }
 
 /** pid → parentPid. Rebuilt per test to model a specific topology. */
@@ -108,38 +149,6 @@ const { TERMINAL_PROCESS_RE, isTerminalClassProcessName, isConsoleHostProcessNam
 const { getProcessIdentityByPid, getWindowIdentity, buildProcessParentMap } =
   await import("../../src/engine/win32.js");
 
-// ─── Topology fixtures ───────────────────────────────────────────────────────
-
-const SELF = process.pid;
-
-/**
- * The base every pid this fixture makes up is written against.
- *
- * `SELF` is the real `process.pid` — the walk in `_resolve-log.ts` starts there, so the fixture
- * does not get to choose it. Every OTHER pid it does choose, and the property that matters is that
- * none of them can ever BE `SELF`. When one collides, the parent map, the name map and the
- * window-owner map describe a single pid as two different processes, and the cells below fail with
- * a diff about pids that reads like a product defect (internal #155).
- *
- * Measured on this file by stubbing `process.pid`: **9001 → 15 of 50 red, 4000 → 7, 5000 → 5,
- * 7777 → 2, 100 → 1** — and on 2026-09-21 this machine handed the test runner pid **4513**, so the
- * range was live rather than theoretical.
- *
- * `2 ** 32` is not "large enough to be unlikely". It is above every pid any of the three platforms
- * can hand out: a Windows pid is a DWORD (`0xFFFFFFFC` at the very most), Linux caps `pid_max` at
- * `2 ** 22`, macOS at 99999. **So a collision is impossible rather than rare** — which is the whole
- * difference, because "rare" is what left this file flaky for months (internal #153).
- */
-const FIXTURE_PID_BASE = 2 ** 32;
-
-const CLI_PID = FIXTURE_PID_BASE + 5000;
-const WT_PID = FIXTURE_PID_BASE + 4000;
-/** An unrelated Windows Terminal, and the parent it was launched from — itself not modelled. */
-const OTHER_WT_PID = FIXTURE_PID_BASE + 9001;
-const OTHER_WT_PARENT_PID = FIXTURE_PID_BASE + 1;
-/** A notepad that owns a window but is in nobody's chain. */
-const NOTEPAD_PID = FIXTURE_PID_BASE + 7777;
-
 /**
  * When THIS process started, in the fixture's clock.
  *
@@ -157,7 +166,7 @@ const NOTEPAD_PID = FIXTURE_PID_BASE + 7777;
  * Same command, same commit, two answers. It read as "adding a test file breaks it" and as an
  * order dependence, because spawning more processes first nudges the pid up. Neither was the cause.
  */
-const SELF_STARTED_MS = fallbackStartMs(CLI_PID) + 1;
+const SELF_STARTED_MS = 6001;
 
 /**
  * The reported launch chain: this server under the Claude CLI under a Windows
@@ -333,8 +342,9 @@ describe("the fixture itself", () => {
       return walked;
     };
 
-    // **EVERY chain in the seed, which is what this cell has always been named after** (gate 2 on
-    // #709): it walked one, this process's.
+    // **Every chain in the seed, not only this process's** — and **measured to kill nothing
+    // today** (gate 2, round 2: deleting this loop leaves the file 50/50 green). It is kept because
+    // the seed is what a new cell starts from, not because it caught anything.
     //
     // **And that is not what protects the side chains the tests build.** Measured: seeding the side
     // chains' parent while the fallback still read the pid left this cell GREEN (50/50), because
@@ -394,9 +404,30 @@ describe("the fixture itself", () => {
       expect(definition![1]).not.toContain(forbidden);
     }
 
+    // **The clock's rule, pinned as numbers** (gate 2, round 2). Everything else that reads a
+    // start time now writes literals, so this is the single cell that says what the rule produces.
+    // Any edit to `fallbackStartMs` — `return 42`, `1000 + pid`, `1000 + process.pid` — lands here.
+    expect(fallbackStartMs(CLI_PID), "the fixture clock moved under CLI_PID").toBe(6000);
+    expect(fallbackStartMs(WT_PID), "the fixture clock moved under WT_PID").toBe(5000);
+    expect(fallbackStartMs(0), "pid 0 is the idle process and its time has not moved").toBe(1000);
+
+    // …and the rule itself is pinned where it is decided without running, like `SELF_STARTED_MS`:
+    // the clock must not read the pid the OS handed this process (internal #153).
+    const clock = /^function fallbackStartMs\(pid: number\): number \{([\s\S]*?)\n\}/m.exec(source);
+    expect(clock, "fallbackStartMs is no longer declared where this cell reads it").not.toBeNull();
+    for (const forbidden of ["process.pid", "SELF"]) {
+      expect(
+        clock![1],
+        `the fixture's clock reads ${forbidden} — that is internal #153, one indirection away`,
+      ).not.toContain(forbidden);
+    }
+    // CONTROL: a pid the fixture did not invent is a throw, not a quiet `1000 + pid`.
+    expect(() => fallbackStartMs(SELF)).toThrow(/did not invent/);
+
     // The mocked providers hand the pid back as they got it. The REAL ones narrow to a DWORD —
-    // `getProcessIdentityByPid` (`win32.ts:556`), `getWindowIdentity` (`:408`) and
-    // `buildProcessParentMap` (`:605`) — which would fold `FIXTURE_PID_BASE + 5000` back to 5000,
+    // `getProcessIdentityByPid` (`win32.ts:556`), `getWindowProcessId` (`:408`, which
+    // `getWindowIdentity` reads through) and `buildProcessParentMap` (`:605`) — which would fold
+    // `FIXTURE_PID_BASE + 5000` back to 5000,
     // inside the OS's range again and silently. **All three, because the fixture reaches the
     // product through all three** (gate 2 on #709): the sweep above reads what the fixture STORES,
     // never what the product RECEIVES, so a mock aligned with the real one on any of these roads
@@ -445,8 +476,12 @@ describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
     // Self first, then up the chain, image names included.
     expect(snap[0].ancestry).toEqual([
       { pid: SELF, processName: "node.exe", startTimeMs: SELF_STARTED_MS },
-      { pid: CLI_PID, processName: "node.exe", startTimeMs: fallbackStartMs(CLI_PID) },
-      { pid: WT_PID, processName: "WindowsTerminal.exe", startTimeMs: fallbackStartMs(WT_PID) },
+      // **Literals, not `fallbackStartMs(...)`** (gate 2, round 2). Written through the function,
+      // this expectation cannot disagree with the mock: both read the same rule, so replacing the
+      // mock's body with `return 42` left the file 50/50 green while the commit before it went
+      // 3 red. The numbers are the fixture's clock, and they are pinned as numbers.
+      { pid: CLI_PID, processName: "node.exe", startTimeMs: 6000 },
+      { pid: WT_PID, processName: "WindowsTerminal.exe", startTimeMs: 5000 },
     ]);
     expect(snap[0].launchPath).toBe("node.exe < node.exe < WindowsTerminal.exe");
   });
@@ -727,7 +762,7 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
       vi.setSystemTime(Date.now() + 31_000);
       resolveOnto(SESSION_WT_HWND);
     }
-    processStartTimes.set(WT_PID, fallbackStartMs(WT_PID));   // readable again, too late
+    processStartTimes.set(WT_PID, 5000);            // the fixture clock's value for WT_PID   // readable again, too late
     vi.setSystemTime(Date.now() + 31_000);
     mockLogDiagnostic.mockClear();
     resolveOnto(SESSION_WT_HWND);
@@ -747,7 +782,7 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
     resolveOnto(SESSION_WT_HWND);
 
     // Even if it somehow becomes readable, the chain is not rebuilt for it.
-    processStartTimes.set(WT_PID, fallbackStartMs(WT_PID));
+    processStartTimes.set(WT_PID, 5000);            // the fixture clock's value for WT_PID
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(Date.now() + 31_000);
     mockLogDiagnostic.mockClear();
@@ -772,7 +807,7 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
       ancestryPidHit: "unverified",
     });
 
-    processStartTimes.set(WT_PID, fallbackStartMs(WT_PID));
+    processStartTimes.set(WT_PID, 5000);            // the fixture clock's value for WT_PID
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(Date.now() + 31_000);
     mockLogDiagnostic.mockClear();
@@ -945,7 +980,7 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
     // lifetime and put false records into the data OQ-P4 is decided on.
     // Two separate tool calls — one record per (call, destination), so the same
     // window resolved twice inside ONE call would collapse to one record.
-    processStartTimes.set(WT_PID, fallbackStartMs(WT_PID));
+    processStartTimes.set(WT_PID, 5000);            // the fixture clock's value for WT_PID
     _resetTopologyCachesForTest();                // cache the chain at this time
     runWithCallId(() => resolveOnto(SESSION_WT_HWND));
     expect(events("topology_relation")[0].ownerInAncestry).toBe(true);
