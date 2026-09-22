@@ -56,8 +56,11 @@ export interface EntityView {
   status?: "observed" | "stale";
   /**
    * When that observation was captured (Unix ms, `Date.now()` clock). Stamped by the lane when it
-   * built the candidate, so it is at or a few ms after `freshness.observedAtMs` (when the read
-   * STARTED) for a candidate of that read — not the same instant. Absent when it has no usable date.
+   * built the candidate, so for a candidate of this read it is AFTER `freshness.observedAtMs` (when
+   * the read STARTED), by as much as the lanes before it took: win2 measured about 8.7 s for the OCR
+   * lane on 2026-09-23, on a machine whose UIA read took about 8 s (the first wording said "a few ms",
+   * which held only where UIA is fast). A `stale` entity carries the older read's date. Absent when
+   * it has no usable date.
    */
   observedAtMs?: number;
   primaryAction: string;
