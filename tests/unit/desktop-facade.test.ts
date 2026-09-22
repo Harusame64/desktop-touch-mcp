@@ -1067,6 +1067,21 @@ describe("DesktopFacade — observed or remembered (ADR-036 item 8, internal #15
     expect(out.freshness).toEqual({ from: "read", observedAtMs: 5_500, ageMs: 0 });
   });
 
+  it("dates a direct read to when it STARTED, not when it came back", async () => {
+    // The shipped description says `observedAtMs` is when the read that produced the entities
+    // started — which is what the ingress stamps (it takes `now` before awaiting `fetchFn`).
+    // Inside the object literal, `Date.now()` runs after the provider's await resolves, so this
+    // road alone would have dated the reply to the END of its own read and reported `ageMs: 0`
+    // for a read that took a second. Caught on a re-read of the sentence against the code.
+    const facade = new DesktopFacade(() => {
+      vi.setSystemTime(6_500);          // the provider takes a second
+      return [];
+    });
+    const out = await facade.see({});
+    expect(out.freshness.observedAtMs, "dated to the end of its own read").toBe(5_500);
+    expect(out.freshness.ageMs, "a read that took a second reported as instant").toBe(1_000);
+  });
+
   it("says `unavailable` — never `read` — when the ingress says nothing", async () => {
     // **The default lands on the not-read side.** An ingress that carries no freshness (an older
     // implementation, a test double) must not have its silence reported as a fresh read: "could

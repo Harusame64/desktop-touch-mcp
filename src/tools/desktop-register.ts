@@ -1795,21 +1795,21 @@ export function registerDesktopTools(server: McpServer): void {
       "parent_disabled_prefer_popup → parent window blocked by a modal; switched to targeting the active popup dialog.",
       // ADR-036 item 8 — the shipped sentence for the field #150 added. Without it the field
       // exists and nobody reads it: the caller that needs it is a model reading this description.
-      "response.freshness says whether these entities were READ for this call or REMEMBERED: " +
-        "from='cache' means nothing was asked this time — observedAtMs is when they were actually " +
-        "read; from='read' means a fetch ran for this call, which is NOT a promise that it " +
-        "succeeded or that any lane looked (a failed lane leaves entities empty with the reason in " +
-        "warnings[] / constraints, and entities can also be replayed from an earlier snapshot); " +
-        "from='staleCache' means the snapshot had already expired or been invalidated and the " +
-        "refresh could not be attempted, so discover again rather than acting on it whatever " +
-        "ageMs says (warnings[] carries ingress_fetch_error); from='unavailable' means there is no " +
-        "observation to report, and then there is no observedAtMs and no ageMs. ageMs measures " +
-        "observedAtMs to this reply: on a 'cache' road that is how old the entities are, on a " +
-        "'read' road that failed it is how long the failed read took — not the age of any data. " +
-        "If ageMs is missing while observedAtMs is not, the two clocks disagreed and the reply " +
-        "cannot be dated. A window that has stopped responding still answers in milliseconds from " +
-        "cache with a fresh generation and nothing else to notice. It is NOT attention: that one " +
-        "is the UIA cache's TTL and says 'ok' for a hung window.",
+      "response.freshness says whether these entities were READ for this call or REMEMBERED. " +
+        "observedAtMs is when the read that produced them STARTED; ageMs is observedAtMs to this " +
+        "reply. from='cache': nothing was asked this time, so the entities are ageMs old — read " +
+        "ageMs before acting on their positions, because a window that has stopped responding " +
+        "still answers in milliseconds from cache with a fresh generation and nothing else to " +
+        "notice. from='read': a fetch ran for this call, which is NOT a promise that it succeeded " +
+        "or that any lane looked — ageMs is then how long that fetch took and says nothing about " +
+        "how old the entities are, since a lane may replay an earlier snapshot; if entities is " +
+        "empty, warnings[] and constraints say why. from='staleCache': the refresh FAILED and an " +
+        "earlier snapshot went out instead, with ingress_fetch_error in warnings[] — do not act " +
+        "on these positions, and expect the same answer until the cause named in warnings[] " +
+        "clears. from='unavailable': there is no observation to report, and then there is no " +
+        "observedAtMs and no ageMs. If ageMs is missing while observedAtMs is not, the two clocks " +
+        "disagreed and the reply cannot be dated. It is NOT attention: that one is the UIA " +
+        "cache's TTL and says 'ok' for a hung window.",
       "response.softExpiresAtMs is an advisory timestamp at ~60% of the lease TTL window — past it the LLM should consider re-calling desktop_discover even though leases are still technically valid; lease.expiresAtMs remains the only correctness wall.",
       advisoryRegistry.toolDescriptionAdvisory(),
     ].join(" "),

@@ -155,9 +155,12 @@ export type ProviderFreshness =
    *   shoot it and was right to. The three failures they COULD produce without touching
    *   credentials — a hwnd that never existed, a window killed under a live cache entry, and the
    *   same past its TTL — all landed inside a lane, where `settledLane` caught them, and every one
-   *   answered `read` with zero entities (2026-09-22). So neither this value nor `unavailable` has
-   *   a demonstrated road today; that is three roads tried, not a proof that none exists, and the
-   *   shipped description states what to DO with each value rather than where it comes from.
+   *   answered `read` with zero entities (2026-09-22). **So this value has never been observed on
+   *   real hardware** — three roads tried, not a proof that none exists. (`unavailable` is a
+   *   different case: it has two roads right here, `dispose()` and a fetch that throws with no
+   *   entry, and a cell exercises the second. It has not been seen on hardware either, which is
+   *   not the same as being unreachable.) The shipped description therefore states what to DO with
+   *   each value rather than where it comes from.
    */
   | { from: "read" | "cache" | "staleCache"; observedAtMs: number }
   /**

@@ -8,16 +8,23 @@
   were what the last successful read had seen, seconds earlier. The neighbouring tools were at
   least slow and empty about the same window; this one was fast and full.
 
-  Every reply now carries `response.freshness`: `from: "cache"` when nothing was asked this time,
-  with `observedAtMs` (when the entities were actually read) and `ageMs` (how old they are now);
-  `from: "read"` when a fetch ran for this call — which is not a promise that it succeeded or that
-  any lane looked, so an empty `entities` still needs `warnings[]` and `constraints` to explain
-  itself; `from: "staleCache"` when the read could not be attempted at all and a remembered
-  snapshot went out instead; and `from: "unavailable"` when there is no observation to report.
+  Every reply now carries `response.freshness`, with `observedAtMs` (when the read that produced
+  the entities started) and `ageMs` (that moment to the reply):
 
-  `ageMs` measures from `observedAtMs` to the reply, which is how old the entities are on a
-  `cache` road and how long a failed read took on a `read` one — not, in that second case, the age
-  of any data.
+  - `from: "cache"` — nothing was asked this time, so the entities are `ageMs` old. Read it before
+    acting on their positions.
+  - `from: "read"` — a fetch ran for this call, which is not a promise that it succeeded or that
+    any lane looked. `ageMs` is then how long the fetch took and says nothing about how old the
+    entities are, since a lane may replay an earlier snapshot; an empty `entities` still needs
+    `warnings[]` and `constraints` to explain itself.
+  - `from: "staleCache"` — the refresh failed and an earlier snapshot went out instead, with
+    `ingress_fetch_error` in `warnings[]`. Do not act on those positions, and expect the same
+    answer until the cause named in `warnings[]` clears.
+  - `from: "unavailable"` — there is no observation to report, and then no `observedAtMs` and no
+    `ageMs`.
+
+  If `ageMs` is missing while `observedAtMs` is not, the two clocks disagreed and the reply cannot
+  be dated.
 
   This is an observation, not a behaviour change: nothing is refused, nothing is re-read, and no
   cache lifetime moved. `attention` is a different signal and is unchanged — it reports the UIA

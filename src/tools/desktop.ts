@@ -153,19 +153,29 @@ export interface DesktopSeeOutput {
 /**
  * ADR-036 item 8 — read a freshness off a provider result, or answer `unavailable`.
  *
- * The ingress is an exported, injectable interface: what it hands back is runtime input. This is
- * the one place that decides whether to believe it, and the rule is the same one the field exists
- * to carry — **anything that cannot be recognised is not a read** (gate 2, 2026-09-22).
+ * The ingress is an exported, injectable interface: what it hands back is runtime input. This
+ * decides whether to believe the FRESHNESS, and the rule is the same one the field exists to carry
+ * — **anything that cannot be recognised is not a read** (gate 2, 2026-09-22).
+ *
+ * **It does not make the rest of the result safe, and this change does not claim to**:
+ * `candidates` and `warnings` are dereferenced earlier in `see()` (`rawResult.candidates.length`
+ * in the `see.enter` probe, `rawResult.warnings.some(...)` in the debug escalation), so an ingress
+ * answering `warnings: null` still fails the whole call. That is the same hole one screen earlier,
+ * it predates this change, and it is filed rather than widened into here (internal #161).
+ *
+ * A primitive (`"cache"`, `0`, `true`) needs no guard of its own: property access on it does not
+ * throw, so it falls through the unknown-`from` branch below and lands on `unavailable`.
  */
 function readFreshness(raw: ProviderFreshness | undefined): ProviderFreshness {
-  // `null` and not-an-object, not just `undefined`: the line this replaced was
+  // `null` as well as `undefined`: the line this replaced was
   // `rawResult.freshness ?? { from: "unavailable" }`, and `??` catches `null` too. Guarding only
   // `undefined` made an injected ingress answering `freshness: null` — or any result that has been
   // through a JSON round trip where an absent field became `null` — throw
   // `TypeError: Cannot read properties of null` out of `see()`, failing the whole call. Hardening
   // that fails closed on the one input it did not think of is worse than what it replaced
-  // (gate 2, 2026-09-22, measured on this branch).
-  if (raw === null || typeof raw !== "object") return { from: "unavailable" };
+  // (gate 2, 2026-09-22, measured on this branch — and a `typeof raw !== "object"` clause written
+  // beside it was measured to change no outcome at all, so it is not here).
+  if (raw === null || raw === undefined) return { from: "unavailable" };
   if (raw.from === "unavailable") return { from: "unavailable" };
   if (raw.from !== "read" && raw.from !== "cache" && raw.from !== "staleCache") {
     return { from: "unavailable" };   // a value from a newer ingress than this build knows
@@ -436,6 +446,13 @@ export class DesktopFacade {
     session.generation = `${newViewId}:${session.seq}`;
     session.viewId = newViewId;
 
+    // **Taken before the read, not after.** `observedAtMs` is documented as when the read that
+    // produced the entities STARTED, which is what the ingress stamps (it takes `now` before
+    // awaiting `fetchFn`). Inside the object literal below, `Date.now()` runs AFTER the provider's
+    // await resolves, so this road alone would date the reply to the end of its own read and
+    // report `ageMs: 0` for a read that took a second (caught re-reading the shipped sentence
+    // against the code, 2026-09-22).
+    const directReadStartedAtMs = Date.now();
     // Use ingress (event-driven cache) if available; fall back to direct provider.
     let rawResult = this.opts.ingress
       ? await this.opts.ingress.getSnapshot(key)
@@ -446,7 +463,7 @@ export class DesktopFacade {
           // call, so it is the one place that can say "read" without being told (internal #150).
           // `Date.now()`, the clock `ageMs` is computed in — not `nowFn`, which an embedder may
           // point at a monotonic counter (gate 2, 2026-09-22).
-          freshness: { from: "read" as const, observedAtMs: Date.now() },
+          freshness: { from: "read" as const, observedAtMs: directReadStartedAtMs },
         };
 
     // H4: view=debug escalation (Rule-B) — surface visual_not_attempted when the
@@ -626,11 +643,12 @@ export class DesktopFacade {
     // applied to its own input (measured: an ingress answering `{from:"cache"}` with no date put
     // exactly `{"from":"cache"}` on the wire before this).
     const observed: ProviderFreshness = readFreshness(rawResult.freshness);
-    // **A negative age is dropped, not clamped to zero** (gate 2, 2026-09-22). The ingress stamps
-    // with `Date.now()` and this line reads `nowFn`, so an embedder that injects a clock — or a
-    // backwards NTP step between the two — can make the difference negative. `Math.max(0, …)`
-    // turned that into the maximally fresh value for an entry that may be 29 s old, which is this
-    // change's own rule ("could not tell" goes to the not-read side) broken in one line.
+    // **A negative age is dropped, not clamped to zero** (gate 2, 2026-09-22). Both sides read
+    // `Date.now()` now, but an embedder-supplied ingress stamping from its own clock, or a
+    // backwards step between the stamp and this line, still makes the difference negative.
+    // `Math.max(0, …)` turned that into the maximally fresh value for an entry that may be 29 s
+    // old, which is this change's own rule ("could not tell" goes to the not-read side) broken in
+    // one line.
     const ageMs =
       observed.observedAtMs !== undefined && replyAtMs >= observed.observedAtMs
         ? replyAtMs - observed.observedAtMs
