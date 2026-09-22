@@ -102,7 +102,74 @@ export interface ProviderResult {
    * press by a delta that never happened.
    */
   origin?: AimOrigin;
+  /**
+   * ADR-036 item 8 — see {@link ProviderFreshness}.
+   *
+   * Named `freshness` rather than `observation` because `desktop_act` already answers with an
+   * `observation` of a different shape (`VisualMotionObservation`, ADR-019 Stage 5): one server,
+   * one name, two shapes is how a client helper reads `observation.verdict` off the wrong tool and
+   * gets `undefined` with no error (gate 2, 2026-09-22).
+   *
+   * Optional because a direct `CandidateProvider` or a test double has nothing to say here, and
+   * **`see()` reads an absent value as "not stated" rather than as "read"** — the same rule
+   * `identityRead` exists for, applied to freshness instead of identity.
+   */
+  freshness?: ProviderFreshness;
 }
+
+/**
+ * ADR-036 item 8 — whether the candidates in a result were READ for this call, or REMEMBERED.
+ *
+ * Measured on real hardware (internal #150, win2, 2026-09-21): against a window whose UI thread had
+ * been hung for 90 s, `desktop_discover` answered in **4 ms with six entities and a fresh
+ * generation**, while the probe recorded **no `provider.read` row at all** — no lane ran. The
+ * envelope said nothing a caller could be suspicious of: `stale`, `cached`, `ageMs`, `status` and
+ * `observed` were absent from both captures, and the one freshness field that exists (`attention`)
+ * answers a different question — whether the UIA cache has passed its TTL, which a hung window
+ * inside the TTL has not. Its neighbours are at least slow and empty; this one is fast and full.
+ *
+ * The ingress already knows the answer — `CacheEntry.fetchedAtMs` — it simply never travelled.
+ * Carrying it changes nothing else: nothing is refused, nothing is re-read, no TTL moves.
+ */
+export type ProviderFreshness =
+  /**
+   * - `read` — a fetch ran for THIS call and these candidates came back from it. **It does not say
+   *   anything looked**: the shipped composition catches a lane's failure inside
+   *   (`compose-providers.ts`'s `settledLane`) and the visual lane can replay an earlier snapshot,
+   *   so a fetch that resolved is not an observation. What each lane did is in its own
+   *   `provider.read` probe row, and `warnings` / `constraints` carry the caller-visible part.
+   * - `cache` — the entry was fresh, so nothing was asked; these were read at `observedAtMs`.
+   * - `staleCache` — the FETCH ITSELF rejected and the remembered entry was served instead.
+   *   **A LANE failing is not that**: `settledLane` catches a lane's rejection before the ingress
+   *   sees it, so a failed read arrives as `read` with an empty `entities` and
+   *   `uia_provider_failed` in `warnings` (measured on real hardware, 2026-09-22, arm D).
+   *   **But the fetch itself does reject on a shipped road**: `normalizeTarget` rethrows
+   *   `WindowExcludedError` (`compose-providers.ts:257`, `:277`) before any lane runs, so a window
+   *   that is discovered and then becomes excluded serves its remembered entry under this value
+   *   (gate 2, 2026-09-22 — an earlier draft of this comment claimed it could not happen at all,
+   *   and the tree says otherwise). On that path the exclusion is bypassed by the cache, which is
+   *   not this change's doing and is filed separately (internal #160).
+   *
+   *   **That road is read from source and has never been observed.** Reaching it needs the key
+   *   locker's dialog on screen, which means an actual credential capture, so win2 declined to
+   *   shoot it and was right to. The three failures they COULD produce without touching
+   *   credentials — a hwnd that never existed, a window killed under a live cache entry, and the
+   *   same past its TTL — all landed inside a lane, where `settledLane` caught them, and every one
+   *   answered `read` with zero entities (2026-09-22). **So this value has never been observed on
+   *   real hardware** — three roads tried, not a proof that none exists. (`unavailable` is a
+   *   different case: it has two roads right here, `dispose()` and a fetch that throws with no
+   *   entry, and a cell exercises the second. It has not been seen on hardware either, which is
+   *   not the same as being unreachable.) The shipped description therefore states what to DO with
+   *   each value rather than where it comes from.
+   */
+  | { from: "read" | "cache" | "staleCache"; observedAtMs: number }
+  /**
+   * No observation at all: the fetch rejected with nothing remembered, or the ingress is disposed.
+   * **A reader that does not recognise a value must treat it as this one** (win2, 2026-09-22: a
+   * kind added to an enum falls into whatever the default branch is, and a default on the readable
+   * side turns "could not tell" into "fresh" without a word).
+   */
+  | { from: "unavailable"; observedAtMs?: undefined };
 
 export interface CandidateIngress {
   /** Return candidates + warnings for a target key. Refreshes if dirty or expired. */
@@ -169,7 +236,7 @@ export class SnapshotIngress implements CandidateIngress {
   }
 
   async getSnapshot(targetKey: string): Promise<ProviderResult> {
-    if (this.disposed) return { candidates: [], warnings: [] };
+    if (this.disposed) return { candidates: [], warnings: [], freshness: { from: "unavailable" } };
     this.knownKeys.add(targetKey);
 
     // Drain events lazily — no background polling needed.
@@ -183,7 +250,7 @@ export class SnapshotIngress implements CandidateIngress {
     const entry = this.cache.get(targetKey);
     const now   = Date.now();
     const fresh = entry && !entry.dirty && (now - entry.fetchedAtMs) < this.cacheTtlMs;
-    if (fresh) return { candidates: entry!.candidates, warnings: entry!.warnings, target: entry!.target, identity: entry!.identity, identityRead: entry!.identityRead, origin: entry!.origin };
+    if (fresh) return { candidates: entry!.candidates, warnings: entry!.warnings, target: entry!.target, identity: entry!.identity, identityRead: entry!.identityRead, origin: entry!.origin, freshness: { from: "cache", observedAtMs: entry!.fetchedAtMs } };
 
     // Cache miss, dirty, or TTL expired → fetch.
     try {
@@ -198,15 +265,15 @@ export class SnapshotIngress implements CandidateIngress {
         fetchedAtMs: now,
         dirty: false,
       });
-      return result;
+      return { ...result, freshness: { from: "read", observedAtMs: now } };
     } catch (err) {
       console.error(`[candidate-ingress] Fetch error for "${targetKey}":`, err);
       // Stale cache fallback — mark dirty so next call retries.
       if (entry) {
         entry.dirty = true;
-        return { candidates: entry.candidates, warnings: [...entry.warnings, "ingress_fetch_error"], target: entry.target, identity: entry.identity, identityRead: entry.identityRead, origin: entry.origin };
+        return { candidates: entry.candidates, warnings: [...entry.warnings, "ingress_fetch_error"], target: entry.target, identity: entry.identity, identityRead: entry.identityRead, origin: entry.origin, freshness: { from: "staleCache", observedAtMs: entry.fetchedAtMs } };
       }
-      return { candidates: [], warnings: ["ingress_fetch_error"] };
+      return { candidates: [], warnings: ["ingress_fetch_error"], freshness: { from: "unavailable" } };
     }
   }
 

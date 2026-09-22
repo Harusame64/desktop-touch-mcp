@@ -1793,6 +1793,23 @@ export function registerDesktopTools(server: McpServer): void {
       "visual_attempted_empty_cdp_fallback → CDP failed and visual also empty (browser); check --remote-debugging-port=9222 and retry;",
       "dialog_resolved_via_owner_chain → common dialog (Save As/Open) found via owner chain; targeting is now hwnd-based;",
       "parent_disabled_prefer_popup → parent window blocked by a modal; switched to targeting the active popup dialog.",
+      // ADR-036 item 8 — the shipped sentence for the field #150 added. Without it the field
+      // exists and nobody reads it: the caller that needs it is a model reading this description.
+      "response.freshness says whether these entities were READ for this call or REMEMBERED. " +
+        "observedAtMs is when the read that produced them STARTED; ageMs is observedAtMs to this " +
+        "reply. from='cache': nothing was asked this time, so the entities are ageMs old — read " +
+        "ageMs before acting on their positions, because a window that has stopped responding " +
+        "still answers in milliseconds from cache with a fresh generation and nothing else to " +
+        "notice. from='read': a fetch ran for this call, which is NOT a promise that it succeeded " +
+        "or that any lane looked — ageMs is then how long that fetch took and says nothing about " +
+        "how old the entities are, since a lane may replay an earlier snapshot; if entities is " +
+        "empty, warnings[] and constraints say why. from='staleCache': the refresh FAILED and an " +
+        "earlier snapshot went out instead, with ingress_fetch_error in warnings[] — do not act " +
+        "on these positions, and expect the same answer until the cause named in warnings[] " +
+        "clears. from='unavailable': there is no observation to report, and then there is no " +
+        "observedAtMs and no ageMs. If ageMs is missing while observedAtMs is not, the two clocks " +
+        "disagreed and the reply cannot be dated. It is NOT attention: that one is the UIA " +
+        "cache's TTL and says 'ok' for a hung window.",
       "response.softExpiresAtMs is an advisory timestamp at ~60% of the lease TTL window — past it the LLM should consider re-calling desktop_discover even though leases are still technically valid; lease.expiresAtMs remains the only correctness wall.",
       advisoryRegistry.toolDescriptionAdvisory(),
     ].join(" "),

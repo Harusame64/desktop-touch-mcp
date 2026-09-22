@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+- **A `desktop_discover` reply now says whether it looked, or remembered.**
+  Against a window that had stopped responding, discover came back in four milliseconds with six
+  entities and a new generation, and nothing in the reply said that no lane had run — the entities
+  were what the last successful read had seen, seconds earlier. The neighbouring tools were at
+  least slow and empty about the same window; this one was fast and full.
+
+  Every reply now carries `response.freshness`, with `observedAtMs` (when the read that produced
+  the entities started) and `ageMs` (that moment to the reply):
+
+  - `from: "cache"` — nothing was asked this time, so the entities are `ageMs` old. Read it before
+    acting on their positions.
+  - `from: "read"` — a fetch ran for this call, which is not a promise that it succeeded or that
+    any lane looked. `ageMs` is then how long the fetch took and says nothing about how old the
+    entities are, since a lane may replay an earlier snapshot; an empty `entities` still needs
+    `warnings[]` and `constraints` to explain itself.
+  - `from: "staleCache"` — the refresh failed and an earlier snapshot went out instead, with
+    `ingress_fetch_error` in `warnings[]`. Do not act on those positions, and expect the same
+    answer until the cause named in `warnings[]` clears.
+  - `from: "unavailable"` — there is no observation to report, and then no `observedAtMs` and no
+    `ageMs`.
+
+  If `ageMs` is missing while `observedAtMs` is not, the two clocks disagreed and the reply cannot
+  be dated.
+
+  This is an observation, not a behaviour change: nothing is refused, nothing is re-read, and no
+  cache lifetime moved. `attention` is a different signal and is unchanged — it reports the UIA
+  cache's TTL, and it says `ok` for a window that has stopped answering.
+
 - **A lease that no longer fits now says which part stopped fitting.**
   `desktop_act` takes the lease `desktop_discover` handed you, and it refuses when the lease no
   longer describes what is on screen. Two of those refusals used to come back as

@@ -13,7 +13,7 @@ import {
   type TargetSpec,
   type ExecutorFn,
 } from "../engine/world-graph/session-registry.js";
-import type { CandidateIngress } from "../engine/world-graph/candidate-ingress.js";
+import type { CandidateIngress, ProviderFreshness } from "../engine/world-graph/candidate-ingress.js";
 import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
 import { probeAim } from "../engine/aim-probe.js";
 import { toAim, readWindowIdentityFields, homingCorrectionForSources, observedHwndOfOrigin, type Aim } from "../engine/aim.js";
@@ -124,7 +124,73 @@ export interface DesktopSeeOutput {
    * dirty) can be added without a breaking change.
    */
   attention?: AttentionState;
+  /**
+   * ADR-036 item 8 — **was this reply observed, or remembered?**
+   *
+   * What a caller could not tell, measured on real hardware (internal #150): against a window
+   * whose UI thread had been hung for 90 s, `desktop_discover` answered in **4 ms with six
+   * entities and a fresh generation**, and the probe recorded no `provider.read` row — no lane
+   * ran. Its neighbours (`screenshot(detail='text')`, `workspace_snapshot`) were slow and empty on
+   * the same window, which at least gives a caller a reason to doubt them. This one was fast and
+   * full.
+   *
+   * **`attention` is a different question and must not be read for this one.** It is
+   * `isUiaCacheStale(hwnd)` — whether the UIA cache has passed its TTL — so a window hung inside
+   * the TTL is `'ok'`. Measured on 2026-09-22, four arms on the real machine: `attention` was
+   * `'ok'` in **all** of them, including the hung window and the one whose read threw, while this
+   * field said `cache`, `cache`, `read`, `read`. (An earlier draft of this comment claimed
+   * `attention` is absent for a title-addressed target; that is wrong — `resolveTargetHwnd` falls
+   * through to `getFocusedHwnd`, which production wires. The measured absence in the 2026-09-21
+   * capture came from that rig, not from the road.)
+   *
+   * **Nothing else changed** — nothing is refused, nothing is re-read, no TTL moved. And
+   * `from: "unavailable"` is what an ingress that says nothing gets: "could not tell" belongs on
+   * the not-read side, never on the fresh one.
+   */
+  freshness: SeeFreshness;
 }
+
+/**
+ * ADR-036 item 8 — read a freshness off a provider result, or answer `unavailable`.
+ *
+ * The ingress is an exported, injectable interface: what it hands back is runtime input. This
+ * decides whether to believe the FRESHNESS, and the rule is the same one the field exists to carry
+ * — **anything that cannot be recognised is not a read** (gate 2, 2026-09-22).
+ *
+ * **It does not make the rest of the result safe, and this change does not claim to**:
+ * `candidates` and `warnings` are dereferenced earlier in `see()` (`rawResult.candidates.length`
+ * in the `see.enter` probe, `rawResult.warnings.some(...)` in the debug escalation), so an ingress
+ * answering `warnings: null` still fails the whole call. That is the same hole one screen earlier,
+ * it predates this change, and it is filed rather than widened into here (internal #161).
+ *
+ * A primitive (`"cache"`, `0`, `true`) needs no guard of its own: property access on it does not
+ * throw, so it falls through the unknown-`from` branch below and lands on `unavailable`.
+ */
+function readFreshness(raw: ProviderFreshness | undefined): ProviderFreshness {
+  // `null` as well as `undefined`: the line this replaced was
+  // `rawResult.freshness ?? { from: "unavailable" }`, and `??` catches `null` too. Guarding only
+  // `undefined` made an injected ingress answering `freshness: null` — or any result that has been
+  // through a JSON round trip where an absent field became `null` — throw
+  // `TypeError: Cannot read properties of null` out of `see()`, failing the whole call. Hardening
+  // that fails closed on the one input it did not think of is worse than what it replaced
+  // (gate 2, 2026-09-22, measured on this branch — and a `typeof raw !== "object"` clause written
+  // beside it was measured to change no outcome at all, so it is not here).
+  if (raw === null || raw === undefined) return { from: "unavailable" };
+  if (raw.from === "unavailable") return { from: "unavailable" };
+  if (raw.from !== "read" && raw.from !== "cache" && raw.from !== "staleCache") {
+    return { from: "unavailable" };   // a value from a newer ingress than this build knows
+  }
+  // A dated variant with no usable date cannot be aged, and an observation nobody can date is not
+  // one a caller should act on: `{from:"cache"}` alone used to reach the wire exactly as written.
+  return Number.isFinite(raw.observedAtMs)
+    ? { from: raw.from, observedAtMs: raw.observedAtMs }
+    : { from: "unavailable" };
+}
+
+/** ADR-036 item 8 — {@link ProviderFreshness}, plus how old it is at the moment of the reply. */
+export type SeeFreshness =
+  | { from: "read" | "cache" | "staleCache"; observedAtMs: number; ageMs?: number }
+  | { from: "unavailable"; observedAtMs?: undefined; ageMs?: undefined };
 
 export interface DesktopTouchInput {
   lease: EntityLease;
@@ -380,10 +446,25 @@ export class DesktopFacade {
     session.generation = `${newViewId}:${session.seq}`;
     session.viewId = newViewId;
 
+    // **Taken before the read, not after.** `observedAtMs` is documented as when the read that
+    // produced the entities STARTED, which is what the ingress stamps (it takes `now` before
+    // awaiting `fetchFn`). Inside the object literal below, `Date.now()` runs AFTER the provider's
+    // await resolves, so this road alone would date the reply to the end of its own read and
+    // report `ageMs: 0` for a read that took a second (caught re-reading the shipped sentence
+    // against the code, 2026-09-22).
+    const directReadStartedAtMs = Date.now();
     // Use ingress (event-driven cache) if available; fall back to direct provider.
     let rawResult = this.opts.ingress
       ? await this.opts.ingress.getSnapshot(key)
-      : { candidates: await Promise.resolve(this.candidateProvider(input)), warnings: [] as string[] };
+      : {
+          candidates: await Promise.resolve(this.candidateProvider(input)),
+          warnings: [] as string[],
+          // ADR-036 item 8 — this road has no cache to serve from: it asks the provider on every
+          // call, so it is the one place that can say "read" without being told (internal #150).
+          // `Date.now()`, the clock `ageMs` is computed in — not `nowFn`, which an embedder may
+          // point at a monotonic counter (gate 2, 2026-09-22).
+          freshness: { from: "read" as const, observedAtMs: directReadStartedAtMs },
+        };
 
     // H4: view=debug escalation (Rule-B) — surface visual_not_attempted when the
     // visual backend is unready, regardless of whether compose's Rule-A fired.
@@ -541,12 +622,57 @@ export class DesktopFacade {
       return view;
     });
 
+    // ADR-036 item 8 — say whether this reply was observed or remembered (internal #150).
+    //
+    // Read off `rawResult`, which is where the fact is known: the ingress hands back `cache` with
+    // the moment those candidates were read, `read` when it fetched for this call, and
+    // `staleCache` when the fetch threw and the remembered entry went out anyway. **An ingress
+    // that says nothing gets `unavailable`, not `read`** — "could not tell" belongs on the
+    // not-read side, and an absent field would be read as "no signal" by a caller with no way to
+    // check.
+    // **`Date.now()`, not `nowFn`** (gate 2, 2026-09-22). `observedAtMs` is stamped by the ingress
+    // with `Date.now()`, so ageing it against an injected clock subtracts two unrelated numbers —
+    // an embedder passing `() => performance.now()` (a pattern this repo already uses) would ship
+    // a plausible-looking age computed from a monotonic counter.
+    const replyAtMs = Date.now();
+    // **And the ingress is an injectable interface, so what comes back is runtime input, not a
+    // compile-time guarantee.** The type says an `unavailable` freshness has no date and every
+    // other value has one; a double, an older implementation, or a future value nobody here knows
+    // about can say otherwise. Anything this does not recognise — an unknown `from`, or a dated
+    // variant with no usable date — lands on the not-read side, which is this change's own rule
+    // applied to its own input (measured: an ingress answering `{from:"cache"}` with no date put
+    // exactly `{"from":"cache"}` on the wire before this).
+    const observed: ProviderFreshness = readFreshness(rawResult.freshness);
+    // **A negative age is dropped, not clamped to zero** (gate 2, 2026-09-22). Both sides read
+    // `Date.now()` now, but an embedder-supplied ingress stamping from its own clock, or a
+    // backwards step between the stamp and this line, still makes the difference negative.
+    // `Math.max(0, …)` turned that into the maximally fresh value for an entry that may be 29 s
+    // old, which is this change's own rule ("could not tell" goes to the not-read side) broken in
+    // one line.
+    const ageMs =
+      observed.observedAtMs !== undefined && replyAtMs >= observed.observedAtMs
+        ? replyAtMs - observed.observedAtMs
+        : undefined;
+
     const output: DesktopSeeOutput = {
       viewId: newViewId,
       target: { title: targetTitle(input.target), generation: session.generation },
       entities: entityViews,
       windows,
       softExpiresAtMs: computeSoftExpiresAtMs(issuedAtMs, policyTtl.ttlMs),
+      // Built by hand rather than spread, so the type enforces what the doc claims: an
+      // `unavailable` freshness has no date and no age, and every other value has both
+      // (gate 2, 2026-09-22 — the previous shape let an ingress hand back `{from:"cache"}` with no
+      // date, or `{from:"unavailable", observedAtMs}`, and a caller branching on `ageMs` to mean
+      // "there is an observation" would have been wrong in both directions).
+      freshness:
+        observed.from === "unavailable"
+          ? { from: "unavailable" }
+          : {
+              from: observed.from,
+              observedAtMs: observed.observedAtMs,
+              ...(ageMs !== undefined && { ageMs }),
+            },
     };
     if (rawResult.warnings.length > 0) output.warnings = rawResult.warnings;
 

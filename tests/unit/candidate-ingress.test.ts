@@ -35,6 +35,87 @@ function noopSource(): IngressEventSource {
 
 // (Helper `eventSource` was removed — was unused, see code-scanning #87.)
 
+// ── Was it read, or remembered? (ADR-036 item 8, internal #150) ───────────────
+
+describe("SnapshotIngress — says whether the answer was read or remembered", () => {
+  // Measured on real hardware (internal #150, 2026-09-21): a window hung for 90 s got six entities
+  // back in 4 ms with a fresh generation, and the probe recorded no `provider.read` row — no lane
+  // ran. The ingress knew: the entry it served carried `fetchedAtMs`. It just never left this file.
+
+  it("says `read`, with the moment of the read, when it fetched for this call", async () => {
+    const ingress = new SnapshotIngress(async () => ok("A"), noopSource());
+    const before = Date.now();
+    const result = await ingress.getSnapshot("window:1");
+    expect(result.freshness?.from).toBe("read");
+    expect(result.freshness?.observedAtMs).toBeGreaterThanOrEqual(before);
+  });
+
+  it("says `cache`, and dates it to the FETCH rather than to this call", async () => {
+    // **The clock is moved between the two calls, and that is the whole cell.** Written without
+    // it, both calls land in the same millisecond, so `observedAtMs: Date.now()` on the cache-hit
+    // road is numerically identical to the fetch's own stamp: the mutation that re-dates a
+    // remembered answer to the moment it was served passed 107/107 green (measured, 2026-09-22).
+    // Two answers that are supposed to differ have to be made to look different first.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1_000);
+      const fetch = vi.fn(async () => ok("A"));
+      const ingress = new SnapshotIngress(fetch, noopSource());
+      const first = await ingress.getSnapshot("window:1");
+      vi.setSystemTime(6_000);                        // still inside the 30 s TTL
+      const second = await ingress.getSnapshot("window:1");
+
+      expect(fetch).toHaveBeenCalledOnce();           // CONTROL: the second call really did not read
+      expect(second.freshness?.from).toBe("cache");
+      // The date is the observation's, not the reply's. Stamping "now" here would make a
+      // remembered answer look freshly read — the defect, expressed as a timestamp instead of a
+      // word.
+      expect(first.freshness?.observedAtMs).toBe(1_000);
+      expect(second.freshness?.observedAtMs).toBe(1_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says `staleCache` when the fetch threw and the remembered entry went out anyway", async () => {
+    let fail = false;
+    const ingress = new SnapshotIngress(
+      async () => {
+        if (fail) throw new Error("boom");
+        return ok("A");
+      },
+      noopSource(),
+    );
+    const first = await ingress.getSnapshot("window:1");
+    fail = true;
+    ingress.invalidate("window:1", "winevent");
+    const second = await ingress.getSnapshot("window:1");
+
+    expect(second.candidates).toHaveLength(1);      // the remembered answer did go out…
+    expect(second.warnings).toContain("ingress_fetch_error");
+    expect(second.freshness?.from).toBe("staleCache");   // …and it is not called a read
+    expect(second.freshness?.observedAtMs).toBe(first.freshness?.observedAtMs);
+  });
+
+  it("says `unavailable` — never `read` — when the fetch threw with nothing remembered", async () => {
+    const ingress = new SnapshotIngress(async () => {
+      throw new Error("boom");
+    }, noopSource());
+    const result = await ingress.getSnapshot("window:1");
+    expect(result.candidates).toEqual([]);
+    expect(result.freshness).toEqual({ from: "unavailable" });
+    // No date: there is no observation to date. An `observedAtMs` here would be the moment of a
+    // read that did not happen.
+    expect(result.freshness?.observedAtMs).toBeUndefined();
+  });
+
+  it("says `unavailable` after dispose, where it used to say nothing at all", async () => {
+    const ingress = new SnapshotIngress(async () => ok("A"), noopSource());
+    ingress.dispose();
+    expect((await ingress.getSnapshot("window:1")).freshness).toEqual({ from: "unavailable" });
+  });
+});
+
 // ── Cache behavior ────────────────────────────────────────────────────────────
 
 describe("SnapshotIngress — cache behavior", () => {
