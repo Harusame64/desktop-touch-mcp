@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- **A label seen in this read no longer comes back a second time as its own stale copy.**
+  On a window without an accessibility tree, every text label reached the caller twice: once as
+  read by OCR, and once as the visual lane's replay of what OCR had seen a read earlier, each with
+  its own entity id. The copy is now dropped when the same label, in the same place (within 8 px),
+  was observed in the same read. A stale entity with nothing observed beside it is kept, labelled
+  `status: "stale"`.
+
 - **Each `desktop_discover` entity now says whether it was seen, or handed back from earlier.**
   After a window repainted, discover returned three labels that had left the screen next to the
   three that replaced them, all under `freshness.from: "read"`. Nothing on any entity told them

@@ -1633,3 +1633,20 @@ describe("DesktopFacade — each entity says whether it was seen (internal #158)
     expect("observedAtMs" in e).toBe(false);
   });
 });
+
+describe("DesktopFacade — a fresh look replaces its own copy (internal #163)", () => {
+  it("returns one entity for a label a lane observed, even when a stale copy of it came back too", async () => {
+    const R = { x: 100, y: 200, width: 80, height: 30 };
+    const facade = new DesktopFacade(() => [
+      cand("X", "ocr", { status: "observed", rect: R, digest: undefined, observedAtMs: 35_000 }),
+      cand("X", "visual_gpu", { status: "stale", rect: R, digest: "vis-X", observedAtMs: 3_000 }),
+      cand("A", "visual_gpu", { status: "stale", rect: { ...R, y: 260 }, digest: "vis-A", observedAtMs: 1_000 }),
+    ]);
+    const out = await facade.see({});
+    expect(out.entities.map((e) => [e.label, e.sources, e.status])).toEqual([
+      ["X", ["ocr"], "observed"],
+      ["A", ["visual_gpu"], "stale"],
+    ]);
+    expect(facade.discoverHasVisualGpuForViewId(out.viewId), "the kept stale-only copy still counts").toBe(true);
+  });
+});

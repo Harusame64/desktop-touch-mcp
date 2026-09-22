@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveCandidates } from "../../src/engine/world-graph/resolver.js";
+import { resolveCandidates, supersedeStaleTwins, SAME_THING_PX } from "../../src/engine/world-graph/resolver.js";
 import type { UiEntityCandidate } from "../../src/engine/vision-gpu/types.js";
 
 const GEN = "gen-1";
@@ -334,5 +334,56 @@ describe("resolveCandidates — what the lanes said they saw (internal #158)", (
     const [e] = resolveCandidates([at("Mixed", "uia", 3_000), at("Mixed", "visual_gpu", 1_000, "stale")], GEN);
     expect(e.status).toBe("stale");
     expect(e.observedAtMs).toBe(1_000);
+  });
+});
+
+describe("supersedeStaleTwins — a fresh look replaces its own copy (internal #163)", () => {
+  // Measured: on a UIA-blind window every OCR label came back twice, `["ocr"]` and a replayed
+  // `["visual_gpu"]` copy, with different entityIds (win2, arm F, 2026-09-23).
+  const R = { x: 100, y: 200, width: 80, height: 30 };
+  const ocr = (label: string, rect = R) => candidate(label, { source: "ocr", status: "observed", rect, digest: undefined });
+  const copy = (label: string, rect = R) => candidate(label, { source: "visual_gpu", status: "stale", rect, digest: `vis-${label}` });
+
+  it("drops the stale copy of something observed in the same read, and resolves ONE entity", () => {
+    const input = [ocr("X"), copy("X")];
+    expect(supersedeStaleTwins(input)).toEqual([input[0]]);
+    const entities = resolveCandidates(input, GEN);
+    expect(entities.map((e) => [e.label, e.sources, e.status])).toEqual([["X", ["ocr"], "observed"]]);
+  });
+
+  it("keeps a stale candidate nothing observed — memory is labelled, not dropped (#158)", () => {
+    const input = [ocr("X"), copy("A", { ...R, x: 101 })];
+    expect(supersedeStaleTwins(input)).toEqual(input);
+  });
+
+  it(`treats up to ${SAME_THING_PX}px as the same element and one more as another`, () => {
+    const at = (dx: number) => supersedeStaleTwins([ocr("X"), copy("X", { ...R, x: R.x + dx })]).length;
+    expect(at(SAME_THING_PX)).toBe(1);
+    expect(at(SAME_THING_PX + 1)).toBe(2);
+    const sized = (dw: number) => supersedeStaleTwins([ocr("X"), copy("X", { ...R, width: R.width + dw })]).length;
+    // Width grows around the same x, so the centre moves by dw/2: size, not centre, decides here.
+    expect(sized(SAME_THING_PX)).toBe(1);
+    expect(sized(SAME_THING_PX + 1)).toBe(2);
+  });
+
+  it("does not let a different window's observation supersede", () => {
+    const other = candidate("X", { source: "ocr", status: "observed", rect: R, digest: undefined, target: { kind: "window", id: "hwnd-2" } });
+    expect(supersedeStaleTwins([other, copy("X")])).toHaveLength(2);
+  });
+
+  it("keeps a stale candidate it cannot compare (no rectangle)", () => {
+    const bare = candidate("X", { source: "visual_gpu", status: "stale", rect: undefined });
+    expect(supersedeStaleTwins([ocr("X"), bare])).toHaveLength(2);
+  });
+
+  it("never drops an observed or unlabelled candidate, even as a twin", () => {
+    const twinObserved = candidate("X", { source: "uia", status: "observed", rect: R, digest: undefined });
+    const quiet = candidate("X", { source: "uia", rect: R, digest: undefined });
+    expect(supersedeStaleTwins([ocr("X"), twinObserved, quiet])).toHaveLength(3);
+  });
+
+  it("returns the same list when nothing was observed", () => {
+    const input = [copy("A"), copy("B", { ...R, y: 260 })];
+    expect(supersedeStaleTwins(input)).toBe(input);
   });
 });
