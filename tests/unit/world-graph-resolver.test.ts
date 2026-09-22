@@ -304,3 +304,35 @@ describe("resolveCandidates — EntityLocator population", () => {
     expect(e.locator?.visual?.trackId).toBe("gpu-track");
   });
 });
+
+describe("resolveCandidates — what the lanes said they saw (internal #158)", () => {
+  // Without a digest the fallback key omits `source`, so these pairs merge into one entity.
+  const at = (label: string, source: UiEntityCandidate["source"], observedAtMs: number, status?: "observed" | "stale") =>
+    candidate(label, { source, observedAtMs, digest: undefined, ...(status && { status }) });
+
+  it("is `observed` when any lane looked, and dates it from that lane", () => {
+    const [e] = resolveCandidates([at("Save", "visual_gpu", 9_000, "stale"), at("Save", "uia", 5_000, "observed")], GEN);
+    expect(e.sources.sort()).toEqual(["uia", "visual_gpu"]);
+    expect(e.status).toBe("observed");
+    // The stale replay is the NEWER candidate here; the date must still be the look's.
+    expect(e.observedAtMs).toBe(5_000);
+  });
+
+  it("is `stale` only when every lane that said anything did not look", () => {
+    const [e] = resolveCandidates([at("Gone", "visual_gpu", 1_000, "stale")], GEN);
+    expect(e.status).toBe("stale");
+    expect(e.observedAtMs).toBe(1_000);
+  });
+
+  it("says nothing when no candidate said anything, and nothing is not `observed`", () => {
+    const [e] = resolveCandidates([at("Quiet", "uia", 2_000)], GEN);
+    expect(e.status).toBeUndefined();
+    expect(e.observedAtMs).toBe(2_000);
+  });
+
+  it("does not let an unlabelled candidate outvote a stale one", () => {
+    const [e] = resolveCandidates([at("Mixed", "uia", 3_000), at("Mixed", "visual_gpu", 1_000, "stale")], GEN);
+    expect(e.status).toBe("stale");
+    expect(e.observedAtMs).toBe(1_000);
+  });
+});

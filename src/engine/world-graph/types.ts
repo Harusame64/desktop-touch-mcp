@@ -123,6 +123,17 @@ export interface UiEntity {
   rect?: Rect;
   confidence: number;
   sources: EntitySourceKind[];
+  /**
+   * ADR-036 (internal #158) — whether any lane looked at this entity in the read that produced it
+   * (`observed`), or every lane that said anything handed it back from earlier (`stale`). Absent when
+   * no candidate in the group carried a status. See `UiEntityCandidate.status`.
+   */
+  status?: import("../vision-gpu/types.js").LaneEvidenceStatus;
+  /**
+   * When the evidence behind {@link status} was captured: the newest candidate that carries the
+   * entity's status, or the newest candidate when there is none. Unix ms, `Date.now()` clock.
+   */
+  observedAtMs?: number;
   affordances: UiAffordance[];
   /**
    * Source-specific locators used by desktop-executor for routing.

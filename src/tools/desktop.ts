@@ -45,6 +45,24 @@ export interface EntityView {
   role: string;
   confidence: number;
   sources: string[];
+  /**
+   * ADR-036 (internal #158) — `observed`: a lane looked at the window and saw it in the read that
+   * produced these entities. That read is this call only when `freshness.from` is `read`; on a cache
+   * hit it is the earlier read the cache holds (gate 2 — the first wording said "during this call",
+   * which a cache hit made false). `stale`: it was handed back from an earlier observation without
+   * looking, and may no longer be on screen. Absent: the source did not say. The spec's
+   * `Fluent.status` words.
+   */
+  status?: "observed" | "stale";
+  /**
+   * When that observation was captured (Unix ms, `Date.now()` clock). Stamped by the lane when it
+   * built the candidate, so for a candidate of this read it is AFTER `freshness.observedAtMs` (when
+   * the read STARTED), by as much as the lanes before it took: win2 measured about 8.7 s for the OCR
+   * lane on 2026-09-23, on a machine whose UIA read took about 8 s (the first wording said "a few ms",
+   * which held only where UIA is fast). A `stale` entity carries the older read's date. Absent when
+   * it has no usable date.
+   */
+  observedAtMs?: number;
   primaryAction: string;
   lease: EntityLease;
   rect?: { x: number; y: number; width: number; height: number };
@@ -666,6 +684,8 @@ export class DesktopFacade {
         role: e.role,
         confidence: e.confidence,
         sources: [...e.sources],
+        ...(e.status !== undefined && { status: e.status }),
+        ...(Number.isFinite(e.observedAtMs) && { observedAtMs: e.observedAtMs }),
         primaryAction: primaryActionFrom(e),
         lease,
       };
