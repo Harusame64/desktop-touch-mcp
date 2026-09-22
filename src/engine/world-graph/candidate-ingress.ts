@@ -39,7 +39,9 @@ export type IngressReason = "winevent" | "cdp" | "dirty-rect" | "startup" | "cac
  *   terminal_provider_failed  — getTextViaTextPattern threw
  *   visual_provider_unavailable — visual GPU lane is a Phase 3 stub
  *   terminal_buffer_empty     — terminal window found but buffer was empty
- *   ingress_fetch_error       — ingress fetchFn threw; stale cache returned
+ *   ingress_fetch_error       — ingress fetchFn threw; stale cache returned. Also added by
+ *                               `DesktopFacade.see` when a result arrives with no usable
+ *                               candidate list, or with entries that are not objects (#161)
  *   no_provider_matched       — target omitted and foreground window could not be resolved
  *   partial_results_only      — primary provider returned 0 entities; fallback used
  */

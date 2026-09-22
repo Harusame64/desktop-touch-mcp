@@ -13,7 +13,7 @@ import {
   type TargetSpec,
   type ExecutorFn,
 } from "../engine/world-graph/session-registry.js";
-import type { CandidateIngress, ProviderFreshness } from "../engine/world-graph/candidate-ingress.js";
+import type { CandidateIngress, ProviderFreshness, ProviderResult } from "../engine/world-graph/candidate-ingress.js";
 import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
 import { probeAim } from "../engine/aim-probe.js";
 import { toAim, readWindowIdentityFields, homingCorrectionForSources, observedHwndOfOrigin, type Aim } from "../engine/aim.js";
@@ -157,11 +157,9 @@ export interface DesktopSeeOutput {
  * decides whether to believe the FRESHNESS, and the rule is the same one the field exists to carry
  * — **anything that cannot be recognised is not a read** (gate 2, 2026-09-22).
  *
- * **It does not make the rest of the result safe, and this change does not claim to**:
- * `candidates` and `warnings` are dereferenced earlier in `see()` (`rawResult.candidates.length`
- * in the `see.enter` probe, `rawResult.warnings.some(...)` in the debug escalation), so an ingress
- * answering `warnings: null` still fails the whole call. That is the same hole one screen earlier,
- * it predates this change, and it is filed rather than widened into here (internal #161).
+ * The rest of the result — `candidates` and `warnings` — is read by {@link readProviderResult},
+ * which runs first; when it finds no candidate list it has already set this to `unavailable`
+ * (internal #161).
  *
  * A primitive (`"cache"`, `0`, `true`) needs no guard of its own: property access on it does not
  * throw, so it falls through the unknown-`from` branch below and lands on `unavailable`.
@@ -185,6 +183,57 @@ function readFreshness(raw: ProviderFreshness | undefined): ProviderFreshness {
   return Number.isFinite(raw.observedAtMs)
     ? { from: raw.from, observedAtMs: raw.observedAtMs }
     : { from: "unavailable" };
+}
+
+/**
+ * Internal #161 — the rest of a provider result, read the way {@link readFreshness} reads its date.
+ *
+ * `see()` used to dereference `candidates` and `warnings` before anything checked them, so an
+ * injected ingress answering `warnings: null` — or a result that has been through a JSON round
+ * trip where an empty array came back as `null` — threw out of `see()` and failed the whole call
+ * (measured on the #710 branch). One normalisation where the result arrives, not a guard per site.
+ *
+ * **A missing candidate list is not an empty window.** Defaulting it to `[]` would hand a caller
+ * `entities: []` and nothing to doubt, so it says `ingress_fetch_error` — whose advice is to retry —
+ * and its freshness becomes `unavailable`: no list was read, whatever the freshness claimed.
+ * Candidates that are not objects are dropped with the same warning, and the freshness stands
+ * because the ones kept were read — unless none were kept, which is the missing list again. A
+ * warning list that is not a list, or entries that are not strings, only lose the unreadable part:
+ * diagnostics say nothing about the candidates beside them.
+ *
+ * Only the shape `see()` dereferences is checked. A candidate object with bad fields inside is the
+ * resolver's input as before; this does not claim to validate it.
+ */
+function readProviderResult(raw: unknown): ProviderResult {
+  const result = raw !== null && typeof raw === "object" ? (raw as Partial<ProviderResult>) : {};
+  // Each field read by name, not spread: a spread copies own enumerable properties only, so an
+  // embedder's class instance whose `freshness` or `target` is a getter lost them here while the
+  // line this replaced read them fine (gate 2).
+  const kept = {
+    target: result.target,
+    identity: result.identity,
+    identityRead: result.identityRead,
+    origin: result.origin,
+    freshness: result.freshness,
+  };
+  const warnings = Array.isArray(result.warnings)
+    ? result.warnings.filter((w): w is string => typeof w === "string")
+    : [];
+  const damaged = (): string[] =>
+    warnings.includes("ingress_fetch_error") ? warnings : [...warnings, "ingress_fetch_error"];
+  if (!Array.isArray(result.candidates)) {
+    return { ...kept, candidates: [], warnings: damaged(), freshness: { from: "unavailable" } };
+  }
+  const candidates = result.candidates.filter(
+    (c): c is UiEntityCandidate => c !== null && typeof c === "object",
+  );
+  if (candidates.length === result.candidates.length) return { ...kept, candidates, warnings };
+  // "The ones kept were read" is the whole reason the freshness stands, and it is empty when
+  // nothing was kept: `[null]` would otherwise go out as `entities: []` dated `cache`, while
+  // `null` — the same information — says `unavailable` (gate 2).
+  return candidates.length > 0
+    ? { ...kept, candidates, warnings: damaged() }
+    : { ...kept, candidates, warnings: damaged(), freshness: { from: "unavailable" } };
 }
 
 /** ADR-036 item 8 — {@link ProviderFreshness}, plus how old it is at the moment of the reply. */
@@ -454,7 +503,9 @@ export class DesktopFacade {
     // against the code, 2026-09-22).
     const directReadStartedAtMs = Date.now();
     // Use ingress (event-driven cache) if available; fall back to direct provider.
-    let rawResult = this.opts.ingress
+    // Read through `readProviderResult` on both roads: the ingress and the direct provider are
+    // both injectable, and what they hand back is runtime input (internal #161).
+    let rawResult = readProviderResult(this.opts.ingress
       ? await this.opts.ingress.getSnapshot(key)
       : {
           candidates: await Promise.resolve(this.candidateProvider(input)),
@@ -464,7 +515,7 @@ export class DesktopFacade {
           // `Date.now()`, the clock `ageMs` is computed in — not `nowFn`, which an embedder may
           // point at a monotonic counter (gate 2, 2026-09-22).
           freshness: { from: "read" as const, observedAtMs: directReadStartedAtMs },
-        };
+        });
 
     // H4: view=debug escalation (Rule-B) — surface visual_not_attempted when the
     // visual backend is unready, regardless of whether compose's Rule-A fired.

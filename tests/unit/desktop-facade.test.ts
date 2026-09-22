@@ -1197,6 +1197,157 @@ describe("DesktopFacade — observed or remembered (ADR-036 item 8, internal #15
   });
 });
 
+describe("DesktopFacade — the ingress's answer is runtime input (internal #161)", () => {
+  // `CandidateIngress` is exported and injectable, and so is the direct `CandidateProvider`: an
+  // embedder's implementation, or a result that has been through a JSON round trip where an empty
+  // array came back as `null`, is ordinary input. Measured on the #710 branch before this: an
+  // ingress answering `warnings: null` threw at `rawResult.warnings.some(...)`, and
+  // `candidates: null` at `rawResult.candidates.length`, and either failed the whole call.
+  //
+  // The rule is #150's, applied to the rest of the result: **what cannot be recognised is not a
+  // read.** A missing candidate list is not "the window is empty" — that would hand a caller
+  // `entities: []` with nothing to doubt — so it says `ingress_fetch_error`, whose advice is to
+  // retry, and its freshness is `unavailable`.
+
+  function ingressAnswering(result: unknown): CandidateIngress {
+    return {
+      getSnapshot: async () => result as never,
+      invalidate: () => {},
+      subscribe: () => () => {},
+      dispose: () => {},
+    };
+  }
+  const READ = { from: "read", observedAtMs: 1_000 };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(5_500);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("CONTROL: a well-formed answer goes out untouched, with no warning added", async () => {
+    // Without this, a normaliser that always adds the warning, or always drops the freshness,
+    // would pass every cell below.
+    const facade = new DesktopFacade(() => [], {
+      ingress: ingressAnswering({ candidates: [cand("OK", "uia")], warnings: [], freshness: READ }),
+    });
+    const out = await facade.see({});
+    expect(out.entities.map((e) => e.label)).toEqual(["OK"]);
+    expect(out.warnings).toBeUndefined();
+    expect(out.constraints).toBeUndefined();
+    expect(out.freshness).toEqual({ from: "read", observedAtMs: 1_000, ageMs: 4_500 });
+  });
+
+  it("reads `warnings: null` as no warnings, and keeps the read", async () => {
+    // A missing diagnostic list says nothing about the candidates beside it.
+    const facade = new DesktopFacade(() => [], {
+      ingress: ingressAnswering({ candidates: [cand("OK", "uia")], warnings: null, freshness: READ }),
+    });
+    const out = await facade.see({});
+    expect(out.entities.map((e) => e.label)).toEqual(["OK"]);
+    expect(out.warnings).toBeUndefined();
+    expect(out.freshness.from).toBe("read");
+  });
+
+  it("survives `warnings: null` on the debug view too, which reads them one line earlier", async () => {
+    const facade = new DesktopFacade(() => [], {
+      ingress: ingressAnswering({ candidates: [cand("OK", "uia")], warnings: null, freshness: READ }),
+    });
+    const out = await facade.see({ view: "debug" });
+    expect(out.entities.map((e) => e.label)).toEqual(["OK"]);
+  });
+
+  it("keeps only the strings of a warning list", async () => {
+    const facade = new DesktopFacade(() => [], {
+      ingress: ingressAnswering({
+        candidates: [cand("OK", "uia")],
+        warnings: [null, "partial_results_only", 3, { w: 1 }],
+        freshness: READ,
+      }),
+    });
+    const out = await facade.see({ view: "debug" });
+    expect(out.warnings).toEqual(["partial_results_only"]);
+  });
+
+  it("says `ingress_fetch_error` for `candidates: null`, not an empty window", async () => {
+    const facade = new DesktopFacade(() => [], {
+      ingress: ingressAnswering({ candidates: null, warnings: [], freshness: READ }),
+    });
+    const out = await facade.see({});
+    expect(out.entities).toEqual([]);
+    expect(out.warnings).toEqual(["ingress_fetch_error"]);
+    expect(out.constraints?.entityZeroReason).toBe("ingress_fetch_error");
+    expect(out.freshness, "no list was read, whatever the freshness said").toEqual({ from: "unavailable" });
+  });
+
+  it("says the same for an answer that is not an object at all", async () => {
+    for (const answer of [null, undefined, "ok", 0]) {
+      const facade = new DesktopFacade(() => [], { ingress: ingressAnswering(answer) });
+      const out = await facade.see({});
+      expect(out.entities, String(answer)).toEqual([]);
+      expect(out.warnings, String(answer)).toEqual(["ingress_fetch_error"]);
+      expect(out.freshness, String(answer)).toEqual({ from: "unavailable" });
+    }
+  });
+
+  it("drops a candidate that is not an object, keeps the rest, and says the list was damaged", async () => {
+    // The kept candidates were read, so the freshness stands; the warning is what tells a caller
+    // the list is not the whole answer.
+    const facade = new DesktopFacade(() => [], {
+      ingress: ingressAnswering({ candidates: [null, cand("OK", "uia"), 7], warnings: [], freshness: READ }),
+    });
+    const out = await facade.see({});
+    expect(out.entities.map((e) => e.label)).toEqual(["OK"]);
+    expect(out.warnings).toEqual(["ingress_fetch_error"]);
+    expect(out.freshness.from).toBe("read");
+  });
+
+  it("says `unavailable` when every candidate was dropped, the same as a missing list", async () => {
+    // "The ones kept were read" is empty when none were kept (gate 2): `[null]` must not go out as
+    // `entities: []` dated `cache` while `null`, the same information, says `unavailable`.
+    const facade = new DesktopFacade(() => [], {
+      ingress: ingressAnswering({ candidates: [null], warnings: [], freshness: { from: "cache", observedAtMs: 1_000 } }),
+    });
+    const out = await facade.see({});
+    expect(out.entities).toEqual([]);
+    expect(out.warnings).toEqual(["ingress_fetch_error"]);
+    expect(out.freshness).toEqual({ from: "unavailable" });
+  });
+
+  it("reads a result's fields through getters, as the line it replaced did", async () => {
+    // A spread copies own enumerable properties only, so an embedder's class instance lost its
+    // `freshness` here and went out `unavailable` (gate 2, measured in node).
+    class Answer {
+      candidates = [cand("OK", "uia")];
+      warnings: string[] = [];
+      get freshness() { return READ; }
+    }
+    const facade = new DesktopFacade(() => [], { ingress: ingressAnswering(new Answer()) });
+    const out = await facade.see({});
+    expect(out.entities.map((e) => e.label)).toEqual(["OK"]);
+    expect(out.freshness).toEqual({ from: "read", observedAtMs: 1_000, ageMs: 4_500 });
+  });
+
+  it("does not repeat `ingress_fetch_error` when the ingress already said it", async () => {
+    const facade = new DesktopFacade(() => [], {
+      ingress: ingressAnswering({ candidates: null, warnings: ["ingress_fetch_error"], freshness: READ }),
+    });
+    expect((await facade.see({})).warnings).toEqual(["ingress_fetch_error"]);
+  });
+
+  it("applies the same rule to the direct provider road", async () => {
+    // The other injectable input: `CandidateProvider` is typed to return an array and is just as
+    // much runtime input as the ingress.
+    const facade = new DesktopFacade((() => null) as unknown as CandidateProvider);
+    const out = await facade.see({});
+    expect(out.entities).toEqual([]);
+    expect(out.warnings).toEqual(["ingress_fetch_error"]);
+    expect(out.freshness).toEqual({ from: "unavailable" });
+  });
+});
+
 describe("DesktopFacade — UIA-cache-stale → attention (#295 carry-over)", () => {
   // The cache TTL is module-scoped state in layer-buffer.ts. Each test pins time
   // deterministically and clears both the WindowLayer map AND the UIA cache so

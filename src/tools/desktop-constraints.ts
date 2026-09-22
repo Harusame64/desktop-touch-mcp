@@ -48,7 +48,11 @@ export interface ViewConstraints {
    * are informational and remain in warnings[] only — not surfaced here.
    */
   window?: "no_provider_matched";
-  /** Ingress snapshot fetch error — stale cache returned when present. */
+  /**
+   * The ingress could not give a whole answer: its fetch threw (a stale cache is returned when
+   * present), or its result had no usable candidate list, or entries that were not objects
+   * (internal #161 — then the entities that remain were read, not remembered).
+   */
   ingress?: "fetch_error";
   /**
    * One-line summary explaining why entities.length === 0.
