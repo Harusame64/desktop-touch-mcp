@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **A `desktop_discover` reply now says whether it looked, or remembered.**
+  Against a window that had stopped responding, discover came back in four milliseconds with six
+  entities and a new generation, and nothing in the reply said that no lane had run — the entities
+  were what the last successful read had seen, seconds earlier. The neighbouring tools were at
+  least slow and empty about the same window; this one was fast and full.
+
+  Every reply now carries `response.freshness`: `from: "cache"` when nothing was asked this time,
+  with `observedAtMs` (when the entities were actually read) and `ageMs` (how old they are now);
+  `from: "read"` when a fetch ran for this call — which is not a promise that it succeeded or that
+  any lane looked, so an empty `entities` still needs `warnings[]` and `constraints` to explain
+  itself; `from: "staleCache"` when the read could not be attempted at all and a remembered
+  snapshot went out instead; and `from: "unavailable"` when there is no observation to report.
+
+  This is an observation, not a behaviour change: nothing is refused, nothing is re-read, and no
+  cache lifetime moved. `attention` is a different signal and is unchanged — it reports the UIA
+  cache's TTL, and it says `ok` for a window that has stopped answering.
+
 - **A lease that no longer fits now says which part stopped fitting.**
   `desktop_act` takes the lease `desktop_discover` handed you, and it refuses when the lease no
   longer describes what is on screen. Two of those refusals used to come back as

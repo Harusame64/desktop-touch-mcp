@@ -150,6 +150,26 @@ export interface DesktopSeeOutput {
   freshness: SeeFreshness;
 }
 
+/**
+ * ADR-036 item 8 — read a freshness off a provider result, or answer `unavailable`.
+ *
+ * The ingress is an exported, injectable interface: what it hands back is runtime input. This is
+ * the one place that decides whether to believe it, and the rule is the same one the field exists
+ * to carry — **anything that cannot be recognised is not a read** (gate 2, 2026-09-22).
+ */
+function readFreshness(raw: ProviderFreshness | undefined): ProviderFreshness {
+  if (raw === undefined) return { from: "unavailable" };
+  if (raw.from === "unavailable") return { from: "unavailable" };
+  if (raw.from !== "read" && raw.from !== "cache" && raw.from !== "staleCache") {
+    return { from: "unavailable" };   // a value from a newer ingress than this build knows
+  }
+  // A dated variant with no usable date cannot be aged, and an observation nobody can date is not
+  // one a caller should act on: `{from:"cache"}` alone used to reach the wire exactly as written.
+  return Number.isFinite(raw.observedAtMs)
+    ? { from: raw.from, observedAtMs: raw.observedAtMs }
+    : { from: "unavailable" };
+}
+
 /** ADR-036 item 8 — {@link ProviderFreshness}, plus how old it is at the moment of the reply. */
 export type SeeFreshness =
   | { from: "read" | "cache" | "staleCache"; observedAtMs: number; ageMs?: number }
@@ -417,10 +437,9 @@ export class DesktopFacade {
           warnings: [] as string[],
           // ADR-036 item 8 — this road has no cache to serve from: it asks the provider on every
           // call, so it is the one place that can say "read" without being told (internal #150).
-          freshness: {
-            from: "read" as const,
-            observedAtMs: (this.opts.nowFn ?? Date.now)(),
-          },
+          // `Date.now()`, the clock `ageMs` is computed in — not `nowFn`, which an embedder may
+          // point at a monotonic counter (gate 2, 2026-09-22).
+          freshness: { from: "read" as const, observedAtMs: Date.now() },
         };
 
     // H4: view=debug escalation (Rule-B) — surface visual_not_attempted when the
@@ -587,8 +606,19 @@ export class DesktopFacade {
     // that says nothing gets `unavailable`, not `read`** — "could not tell" belongs on the
     // not-read side, and an absent field would be read as "no signal" by a caller with no way to
     // check.
-    const replyAtMs = (this.opts.nowFn ?? Date.now)();
-    const observed: ProviderFreshness = rawResult.freshness ?? { from: "unavailable" };
+    // **`Date.now()`, not `nowFn`** (gate 2, 2026-09-22). `observedAtMs` is stamped by the ingress
+    // with `Date.now()`, so ageing it against an injected clock subtracts two unrelated numbers —
+    // an embedder passing `() => performance.now()` (a pattern this repo already uses) would ship
+    // a plausible-looking age computed from a monotonic counter.
+    const replyAtMs = Date.now();
+    // **And the ingress is an injectable interface, so what comes back is runtime input, not a
+    // compile-time guarantee.** The type says an `unavailable` freshness has no date and every
+    // other value has one; a double, an older implementation, or a future value nobody here knows
+    // about can say otherwise. Anything this does not recognise — an unknown `from`, or a dated
+    // variant with no usable date — lands on the not-read side, which is this change's own rule
+    // applied to its own input (measured: an ingress answering `{from:"cache"}` with no date put
+    // exactly `{"from":"cache"}` on the wire before this).
+    const observed: ProviderFreshness = readFreshness(rawResult.freshness);
     // **A negative age is dropped, not clamped to zero** (gate 2, 2026-09-22). The ingress stamps
     // with `Date.now()` and this line reads `nowFn`, so an embedder that injects a clock — or a
     // backwards NTP step between the two — can make the difference negative. `Math.max(0, …)`

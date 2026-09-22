@@ -140,11 +140,15 @@ export type ProviderFreshness =
    *   `provider.read` probe row, and `warnings` / `constraints` carry the caller-visible part.
    * - `cache` — the entry was fresh, so nothing was asked; these were read at `observedAtMs`.
    * - `staleCache` — the FETCH ITSELF rejected and the remembered entry was served instead.
-   *   **This does not happen on the shipped roads** — `settledLane` catches a lane's rejection
-   *   before the ingress sees it, so a failed read arrives as `read` with an empty `entities` and
-   *   `uia_provider_failed` in `warnings` (measured on real hardware, 2026-09-22, arm D). It is
-   *   kept because a different `fetchFn` can reject, and because a value nobody can produce is
-   *   worth saying so about rather than deleting quietly.
+   *   **A LANE failing is not that**: `settledLane` catches a lane's rejection before the ingress
+   *   sees it, so a failed read arrives as `read` with an empty `entities` and
+   *   `uia_provider_failed` in `warnings` (measured on real hardware, 2026-09-22, arm D).
+   *   **But the fetch itself does reject on a shipped road**: `normalizeTarget` rethrows
+   *   `WindowExcludedError` (`compose-providers.ts:257`, `:277`) before any lane runs, so a window
+   *   that is discovered and then becomes excluded serves its remembered entry under this value
+   *   (gate 2, 2026-09-22 — an earlier draft of this comment claimed it could not happen at all,
+   *   and the tree says otherwise). On that path the exclusion is bypassed by the cache, which is
+   *   not this change's doing and is filed separately.
    */
   | { from: "read" | "cache" | "staleCache"; observedAtMs: number }
   /**

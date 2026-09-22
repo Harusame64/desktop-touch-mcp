@@ -1027,6 +1027,10 @@ describe("DesktopFacade — observed or remembered (ADR-036 item 8, internal #15
   // with six entities and a fresh generation, and no lane had run. The neighbours a caller could
   // compare against (`screenshot(detail='text')`, `workspace_snapshot`) were slow and empty, which
   // at least gives a reason to doubt them. This one is fast and full.
+  //
+  // **The clock here is the system clock, faked.** `ageMs` is `Date.now()` minus the ingress's own
+  // `Date.now()` stamp, deliberately: ageing against an injected `nowFn` subtracts two unrelated
+  // numbers (gate 2, 2026-09-22).
 
   function ingressSaying(freshness: unknown): CandidateIngress {
     return {
@@ -1037,10 +1041,17 @@ describe("DesktopFacade — observed or remembered (ADR-036 item 8, internal #15
     };
   }
 
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(5_500);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("carries the ingress's `cache`, and ages it against the reply rather than re-dating it", async () => {
     const facade = new DesktopFacade(() => [], {
       ingress: ingressSaying({ freshness: { from: "cache", observedAtMs: 1_000 } }),
-      nowFn: () => 5_500,
     });
     const out = await facade.see({});
     expect(out.freshness.from).toBe("cache");
@@ -1051,13 +1062,13 @@ describe("DesktopFacade — observed or remembered (ADR-036 item 8, internal #15
   it("says `read` on the road that has no cache to serve from", async () => {
     // No ingress: `see()` calls the provider on every call, so this is the one road that can say
     // "read" without being told.
-    const facade = new DesktopFacade(() => [], { nowFn: () => 7_000 });
+    const facade = new DesktopFacade(() => []);
     const out = await facade.see({});
-    expect(out.freshness).toEqual({ from: "read", observedAtMs: 7_000, ageMs: 0 });
+    expect(out.freshness).toEqual({ from: "read", observedAtMs: 5_500, ageMs: 0 });
   });
 
   it("says `unavailable` — never `read` — when the ingress says nothing", async () => {
-    // **The default lands on the not-read side.** An ingress that carries no observation (an older
+    // **The default lands on the not-read side.** An ingress that carries no freshness (an older
     // implementation, a test double) must not have its silence reported as a fresh read: "could
     // not tell" and "looked just now" are the two answers this field exists to separate (win2's
     // rule, 2026-09-22 — a kind nobody handled falls into the default branch, so the default has
@@ -1071,54 +1082,90 @@ describe("DesktopFacade — observed or remembered (ADR-036 item 8, internal #15
   it("keeps `staleCache` distinct from both a read and a plain cache hit", async () => {
     const facade = new DesktopFacade(() => [], {
       ingress: ingressSaying({ freshness: { from: "staleCache", observedAtMs: 2_000 } }),
-      nowFn: () => 2_750,
     });
     const out = await facade.see({});
-    expect(out.freshness).toEqual({ from: "staleCache", observedAtMs: 2_000, ageMs: 750 });
+    expect(out.freshness).toEqual({ from: "staleCache", observedAtMs: 2_000, ageMs: 3_500 });
   });
 
-  it("disagrees with `attention`, which is about the UIA cache's TTL", async () => {
-    // **CONTROL, and the first version of it could not fail** (gate 2, 2026-09-22): it built the
-    // facade with no `getFocusedHwnd`, so `attention` was absent whatever this change did —
-    // wiring the field straight to `freshness.from` would have kept it green. Production DOES wire
-    // `getFocusedHwnd` (`desktop-register.ts`), and `resolveTargetHwnd` falls through to it for a
-    // title-only target, so the two fields really are both present and really do disagree.
-    //
-    // Measured on real hardware the same day: four arms, `attention` `'ok'` in every one —
-    // including the hung window and the one whose read threw — while this field said `cache`,
-    // `cache`, `read`, `read`.
-    const HWND = 0xBEEF10n;
-    updateUiaCache(HWND, "<UIA tree>");
-    vi.useFakeTimers();
-    try {
-      vi.setSystemTime(UIA_CACHE_TTL_EXPORTED_MS / 2);       // the UIA cache is FRESH…
-      const facade = new DesktopFacade(() => [], {
-        ingress: ingressSaying({ freshness: { from: "cache", observedAtMs: 10 } }),
-        getFocusedHwnd: () => HWND,
-        nowFn: () => 20,
-      });
-      const out = await facade.see({ target: { windowTitle: "GameWindow" } });
-      expect(out.attention, "attention is not being answered at all").toBe("ok");
-      expect(out.freshness.from, "…while the entities were remembered, not read").toBe("cache");
-    } finally {
-      vi.useRealTimers();
-      clearUiaCache();
-    }
+  it("does not pass through a value this build does not know", async () => {
+    // The ingress is an exported, injectable interface: what comes back is runtime input, not a
+    // compile-time guarantee (gate 2, 2026-09-22). A newer ingress inventing `predicted` must not
+    // have it forwarded to a caller that has no rule for it.
+    const facade = new DesktopFacade(() => [], {
+      ingress: ingressSaying({ freshness: { from: "predicted", observedAtMs: 1_000 } }),
+    });
+    expect((await facade.see({})).freshness).toEqual({ from: "unavailable" });
+  });
+
+  it("does not pass through an observation it cannot date", async () => {
+    // `{from:"cache"}` with no date reached the wire exactly as written before this: a caller
+    // reading `ageMs` to decide whether to trust the positions got nothing to read, from a field
+    // whose whole job is to be read.
+    const facade = new DesktopFacade(() => [], {
+      ingress: ingressSaying({ freshness: { from: "cache" } }),
+    });
+    expect((await facade.see({})).freshness).toEqual({ from: "unavailable" });
+  });
+
+  it("ages against the system clock even when an embedder injects `nowFn`", async () => {
+    // `observedAtMs` is stamped by the ingress with `Date.now()`. Ageing it against `nowFn` would
+    // subtract two unrelated numbers, and this repo already passes clocks like
+    // `() => performance.now()` elsewhere — the reply would then carry a plausible age computed
+    // from a monotonic counter, and on the direct road an `observedAtMs` that is not an epoch
+    // timestamp at all (gate 2, 2026-09-22).
+    const injected = 1_000_000_000;
+    const cached = new DesktopFacade(() => [], {
+      ingress: ingressSaying({ freshness: { from: "cache", observedAtMs: 1_000 } }),
+      nowFn: () => injected,
+    });
+    expect((await cached.see({})).freshness.ageMs, "aged against the injected clock").toBe(4_500);
+
+    const direct = new DesktopFacade(() => [], { nowFn: () => injected });
+    expect(
+      (await direct.see({})).freshness.observedAtMs,
+      "the direct road stamped the injected clock, which may not be an epoch time",
+    ).toBe(5_500);
   });
 
   it("drops `ageMs` rather than clamping a negative difference to zero", async () => {
-    // The ingress stamps with `Date.now()` and `see()` reads `nowFn`; an injected clock or a
-    // backwards NTP step makes the difference negative. `Math.max(0, …)` turned that into the
-    // FRESHEST possible answer for an entry that may be 29 s old (gate 2, 2026-09-22) — this
-    // change's own rule, broken in one line.
+    // A backwards clock step between the ingress's stamp and the reply makes the difference
+    // negative. `Math.max(0, …)` turned that into the FRESHEST possible answer for an entry that
+    // may be 29 s old (gate 2, 2026-09-22) — this change's own rule, broken in one line.
     const facade = new DesktopFacade(() => [], {
       ingress: ingressSaying({ freshness: { from: "cache", observedAtMs: 9_000 } }),
-      nowFn: () => 1_000,
     });
     const out = await facade.see({});
     expect(out.freshness.from).toBe("cache");
     expect(out.freshness.observedAtMs).toBe(9_000);
     expect(out.freshness.ageMs, "a negative age was reported as fresh").toBeUndefined();
+  });
+
+  it("disagrees with `attention`, which is about the UIA cache's TTL", async () => {
+    // **CONTROL, and it has been wrong twice.** The first version built the facade with no
+    // `getFocusedHwnd`, so `attention` was absent whatever this change did. The second wrote the
+    // UIA cache entry under the REAL clock and only then set the fake one, so the entry read as
+    // written 56 years in the future rather than "fresh at half the TTL" — the cell passed for a
+    // reason its own comment did not name (gate 2, 2026-09-22). The clock is set first now.
+    //
+    // Measured on real hardware the same day: four arms, `attention` `'ok'` in every one —
+    // including the hung window and the one whose read threw — while this field said `cache`,
+    // `cache`, `read`, `read`.
+    const HWND = 0xBEEF10n;
+    vi.setSystemTime(0);
+    clearUiaCache();
+    updateUiaCache(HWND, "<UIA tree>");
+    vi.setSystemTime(UIA_CACHE_TTL_EXPORTED_MS / 2);          // the UIA cache is FRESH…
+    try {
+      const facade = new DesktopFacade(() => [], {
+        ingress: ingressSaying({ freshness: { from: "cache", observedAtMs: 10 } }),
+        getFocusedHwnd: () => HWND,
+      });
+      const out = await facade.see({ target: { windowTitle: "GameWindow" } });
+      expect(out.attention, "attention is not being answered at all").toBe("ok");
+      expect(out.freshness.from, "…while the entities were remembered, not read").toBe("cache");
+    } finally {
+      clearUiaCache();
+    }
   });
 });
 

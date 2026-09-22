@@ -1800,10 +1800,13 @@ export function registerDesktopTools(server: McpServer): void {
         "read and ageMs how old they are now; from='read' means a fetch ran for this call, which " +
         "is NOT a promise that it succeeded or that any lane looked (a failed lane leaves " +
         "entities empty with the reason in warnings[] / constraints, and entities can also be " +
-        "replayed from an earlier snapshot); from='unavailable' means there is no observation at " +
-        "all. A window that has stopped responding still answers in milliseconds from cache with a " +
-        "fresh generation and nothing else to notice, so read ageMs before acting on positions. " +
-        "It is NOT attention: that one is the UIA cache's TTL and says 'ok' for a hung window.",
+        "replayed from an earlier snapshot); from='staleCache' means the read could not even be " +
+        "attempted (e.g. the window is now excluded) and a remembered snapshot went out instead — " +
+        "treat it like 'cache'; from='unavailable' means there is no observation at all, and then " +
+        "there is no observedAtMs and no ageMs. A window that has stopped responding still answers " +
+        "in milliseconds from cache with a fresh generation and nothing else to notice, so read " +
+        "ageMs before acting on positions. It is NOT attention: that one is the UIA cache's TTL " +
+        "and says 'ok' for a hung window.",
       "response.softExpiresAtMs is an advisory timestamp at ~60% of the lease TTL window — past it the LLM should consider re-calling desktop_discover even though leases are still technically valid; lease.expiresAtMs remains the only correctness wall.",
       advisoryRegistry.toolDescriptionAdvisory(),
     ].join(" "),
