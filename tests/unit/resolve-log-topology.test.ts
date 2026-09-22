@@ -34,6 +34,22 @@ vi.mock("../../src/engine/diagnostic-log.js", async (importOriginal) => {
   };
 });
 
+/**
+ * The fixture's clock for a pid nobody seeded: the mock's fallback.
+ *
+ * **It is the OFFSET that feeds it, not the pid** (gate 2 on #709). With pids written against
+ * `FIXTURE_PID_BASE`, a `1000 + pid` fallback lands at ~4.29e9 ms — AFTER every time the tests seed
+ * by hand, which are in the thousands. A parent left on the fallback would then start after its own
+ * child: the recycled-pid signature the walk truncates on, arrived at by arithmetic rather than by
+ * anything a test meant. Taking the offset keeps the fixture's clock exactly where it was before
+ * the pids moved, so this change moves identities and no times at all.
+ *
+ * Declared as a `function` so the `vi.mock` factory below, which is hoisted, can reach it.
+ */
+function fallbackStartMs(pid: number): number {
+  return 1000 + (pid >= FIXTURE_PID_BASE ? pid - FIXTURE_PID_BASE : pid);
+}
+
 /** pid → parentPid. Rebuilt per test to model a specific topology. */
 let parentMap = new Map<number, number>();
 /** pid → image name. */
@@ -61,14 +77,14 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
     getProcessIdentityByPid: (pid: number) => ({
       pid,
       processName: processNames.get(pid) ?? "",
-      processStartTimeMs: processStartTimes.get(pid) ?? 1000 + pid,
+      processStartTimeMs: processStartTimes.get(pid) ?? fallbackStartMs(pid),
     }),
     getWindowIdentity: (hwnd: bigint) => {
       const pid = windowOwners.get(hwnd) ?? 0;
       return {
         pid,
         processName: processNames.get(pid) ?? "",
-        processStartTimeMs: processStartTimes.get(pid) ?? 1000 + pid,
+        processStartTimeMs: processStartTimes.get(pid) ?? fallbackStartMs(pid),
       };
     },
     buildProcessParentMap: () => mockBuildProcessParentMap(),
@@ -89,7 +105,8 @@ const { TERMINAL_PROCESS_RE, isTerminalClassProcessName, isConsoleHostProcessNam
 
 // The MOCKED provider, imported so the fixture-invariant cells read start times through the same
 // door the walk does rather than through a second copy of the mock's rule (internal #153, gate 2).
-const { getProcessIdentityByPid } = await import("../../src/engine/win32.js");
+const { getProcessIdentityByPid, getWindowIdentity, buildProcessParentMap } =
+  await import("../../src/engine/win32.js");
 
 // ─── Topology fixtures ───────────────────────────────────────────────────────
 
@@ -130,8 +147,8 @@ const NOTEPAD_PID = FIXTURE_PID_BASE + 7777;
  * months** (internal #153, measured 2026-09-21). `SELF` is the real `process.pid`, so the fallback
  * makes this process's start time depend on a number the OS hands out. The walk in `_resolve-log.ts`
  * refuses a parent that started AFTER its child — the recycled-pid guard — and the CLI's fallback
- * start was `1000 + 5000` (the fixture's own pids sat inside the OS's range until internal #155
- * moved them above it). So the chain survived only when the machine happened to give the test
+ * start is 6000 (the fixture's pids sat inside the OS's range until internal #155 moved them above
+ * it, and its clock reads the offset since). So the chain survived only when the machine gave the
  * runner **a pid above 5000**:
  *
  *   morning run, pid 4513 → the chain truncates to one entry, 11 of 47 cells red
@@ -140,7 +157,7 @@ const NOTEPAD_PID = FIXTURE_PID_BASE + 7777;
  * Same command, same commit, two answers. It read as "adding a test file breaks it" and as an
  * order dependence, because spawning more processes first nudges the pid up. Neither was the cause.
  */
-const SELF_STARTED_MS = 1000 + CLI_PID + 1;
+const SELF_STARTED_MS = fallbackStartMs(CLI_PID) + 1;
 
 /**
  * The reported launch chain: this server under the Claude CLI under a Windows
@@ -172,7 +189,7 @@ function seedSessionTopology(): void {
   ]);
   // The chain models a real launch, so the times have to run in that order: the terminal first,
   // then the CLI it hosts, then this process. Only SELF needs seeding — every other pid's
-  // `1000 + pid` fallback already satisfies it — and `everyChainRunsParentFirst` below is what
+  // `fallbackStartMs` already satisfies it — and `everyChainRunsParentFirst` below is what
   // notices if that stops being true.
   processStartTimes = new Map([[SELF, SELF_STARTED_MS]]);
   consoleWindow = null;
@@ -293,27 +310,43 @@ describe("the fixture itself", () => {
     // The walk reads `getProcessIdentityByPid`; so does this.
     const startOf = (pid: number) => getProcessIdentityByPid(pid).processStartTimeMs;
 
-    let pid = SELF;
-    const seen = new Set<number>();
-    const walked: number[] = [];
-    while (!seen.has(pid)) {
-      seen.add(pid);
-      walked.push(pid);
-      const parent = parentMap.get(pid);
-      if (parent === undefined || parent === 0) break;
-      // `toBeLessThanOrEqual`, because the producer's guard is `>` — equal times are accepted there,
-      // and a cell stricter than the thing it models reports a failure the product would not have.
-      expect(
-        startOf(parent),
-        `the fixture has pid ${parent} (the parent) starting at or after pid ${pid} (its child) — ` +
-          "the walk truncates there, and every chain assertion below reads the truncation as a " +
-          "product defect",
-      ).toBeLessThanOrEqual(startOf(pid));
-      pid = parent;
-    }
+    const walkFrom = (from: number): number[] => {
+      let pid = from;
+      const seen = new Set<number>();
+      const walked: number[] = [];
+      while (!seen.has(pid)) {
+        seen.add(pid);
+        walked.push(pid);
+        const parent = parentMap.get(pid);
+        if (parent === undefined || parent === 0) break;
+        // `toBeLessThanOrEqual`, because the producer's guard is `>` — equal times are accepted
+        // there, and a cell stricter than the thing it models reports a failure the product would
+        // not have.
+        expect(
+          startOf(parent),
+          `the fixture has pid ${parent} (the parent) starting at or after pid ${pid} (its child) — ` +
+            "the walk truncates there, and every chain assertion below reads the truncation as a " +
+            "product defect",
+        ).toBeLessThanOrEqual(startOf(pid));
+        pid = parent;
+      }
+      return walked;
+    };
+
+    // **EVERY chain in the seed, which is what this cell has always been named after** (gate 2 on
+    // #709): it walked one, this process's.
+    //
+    // **And that is not what protects the side chains the tests build.** Measured: seeding the side
+    // chains' parent while the fallback still read the pid left this cell GREEN (50/50), because
+    // the seeded topology is consistent under both rules — the inversion only appeared once a test
+    // seeded a child in the thousands under a parent on the fallback. The rule cannot be moved into
+    // `afterEach` either: several tests invert a pair ON PURPOSE (a parent younger than its child
+    // is the recycled-pid case they exist to cover). What removes the class is `fallbackStartMs`
+    // reading the offset, above — one clock for the whole fixture.
+    for (const start of [...parentMap.keys()]) walkFrom(start);
 
     // CONTROL 1: the walk really walked the three-deep launch this file describes.
-    expect(walked, "the seeded chain is not the launch this file models").toEqual([
+    expect(walkFrom(SELF), "the seeded chain is not the launch this file models").toEqual([
       SELF, CLI_PID, WT_PID,
     ]);
     // CONTROL 2: **the ordering assertion can fail.** The line that stood here —
@@ -361,11 +394,16 @@ describe("the fixture itself", () => {
       expect(definition![1]).not.toContain(forbidden);
     }
 
-    // The mocked provider hands the pid back as it got it. The REAL one narrows to a DWORD
-    // (`pid >>> 0` in `win32.ts`), which would fold `FIXTURE_PID_BASE + 5000` back to 5000 — inside
-    // the OS's range again, and silently. If this fixture ever reaches a narrowing provider, this
-    // fails rather than the collision coming back.
+    // The mocked providers hand the pid back as they got it. The REAL ones narrow to a DWORD —
+    // `getProcessIdentityByPid` (`win32.ts:556`), `getWindowIdentity` (`:408`) and
+    // `buildProcessParentMap` (`:605`) — which would fold `FIXTURE_PID_BASE + 5000` back to 5000,
+    // inside the OS's range again and silently. **All three, because the fixture reaches the
+    // product through all three** (gate 2 on #709): the sweep above reads what the fixture STORES,
+    // never what the product RECEIVES, so a mock aligned with the real one on any of these roads
+    // would put the collision back with every cell still green.
     expect(getProcessIdentityByPid(CLI_PID).pid).toBe(CLI_PID);
+    expect(getWindowIdentity(SESSION_WT_HWND).pid).toBe(WT_PID);
+    expect(buildProcessParentMap().get(CLI_PID)).toBe(WT_PID);
 
     // CONTROL: the sweep can fail. Injected and withdrawn before the assertion, so `afterEach`'s
     // sweep does not report it a second time.
@@ -407,8 +445,8 @@ describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
     // Self first, then up the chain, image names included.
     expect(snap[0].ancestry).toEqual([
       { pid: SELF, processName: "node.exe", startTimeMs: SELF_STARTED_MS },
-      { pid: CLI_PID, processName: "node.exe", startTimeMs: 1000 + CLI_PID },
-      { pid: WT_PID, processName: "WindowsTerminal.exe", startTimeMs: 1000 + WT_PID },
+      { pid: CLI_PID, processName: "node.exe", startTimeMs: fallbackStartMs(CLI_PID) },
+      { pid: WT_PID, processName: "WindowsTerminal.exe", startTimeMs: fallbackStartMs(WT_PID) },
     ]);
     expect(snap[0].launchPath).toBe("node.exe < node.exe < WindowsTerminal.exe");
   });
@@ -689,7 +727,7 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
       vi.setSystemTime(Date.now() + 31_000);
       resolveOnto(SESSION_WT_HWND);
     }
-    processStartTimes.set(WT_PID, 1000 + WT_PID);   // readable again, too late
+    processStartTimes.set(WT_PID, fallbackStartMs(WT_PID));   // readable again, too late
     vi.setSystemTime(Date.now() + 31_000);
     mockLogDiagnostic.mockClear();
     resolveOnto(SESSION_WT_HWND);
@@ -709,7 +747,7 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
     resolveOnto(SESSION_WT_HWND);
 
     // Even if it somehow becomes readable, the chain is not rebuilt for it.
-    processStartTimes.set(WT_PID, 1000 + WT_PID);
+    processStartTimes.set(WT_PID, fallbackStartMs(WT_PID));
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(Date.now() + 31_000);
     mockLogDiagnostic.mockClear();
@@ -734,7 +772,7 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
       ancestryPidHit: "unverified",
     });
 
-    processStartTimes.set(WT_PID, 1000 + WT_PID);
+    processStartTimes.set(WT_PID, fallbackStartMs(WT_PID));
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(Date.now() + 31_000);
     mockLogDiagnostic.mockClear();
@@ -907,7 +945,7 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
     // lifetime and put false records into the data OQ-P4 is decided on.
     // Two separate tool calls — one record per (call, destination), so the same
     // window resolved twice inside ONE call would collapse to one record.
-    processStartTimes.set(WT_PID, 1000 + WT_PID);
+    processStartTimes.set(WT_PID, fallbackStartMs(WT_PID));
     _resetTopologyCachesForTest();                // cache the chain at this time
     runWithCallId(() => resolveOnto(SESSION_WT_HWND));
     expect(events("topology_relation")[0].ownerInAncestry).toBe(true);
