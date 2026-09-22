@@ -1793,6 +1793,15 @@ export function registerDesktopTools(server: McpServer): void {
       "visual_attempted_empty_cdp_fallback → CDP failed and visual also empty (browser); check --remote-debugging-port=9222 and retry;",
       "dialog_resolved_via_owner_chain → common dialog (Save As/Open) found via owner chain; targeting is now hwnd-based;",
       "parent_disabled_prefer_popup → parent window blocked by a modal; switched to targeting the active popup dialog.",
+      // ADR-036 item 8 — the shipped sentence for the field #150 added. Without it the field
+      // exists and nobody reads it: the caller that needs it is a model reading this description.
+      "response.observation says whether these entities were READ for this call or REMEMBERED: " +
+        "from='read' (a fetch ran), 'cache' (a fresh snapshot was served without asking — " +
+        "observedAtMs is when it was actually read, ageMs how old it is now), 'staleCache' (the " +
+        "read failed and the remembered snapshot went out anyway), 'unavailable' (no observation). " +
+        "A window that has stopped responding can still answer in milliseconds from cache with a " +
+        "fresh generation and nothing else to notice, so treat anything but 'read' as possibly " +
+        "predating what is on screen. It is NOT attention: that one is the UIA cache's TTL.",
       "response.softExpiresAtMs is an advisory timestamp at ~60% of the lease TTL window — past it the LLM should consider re-calling desktop_discover even though leases are still technically valid; lease.expiresAtMs remains the only correctness wall.",
       advisoryRegistry.toolDescriptionAdvisory(),
     ].join(" "),
