@@ -102,6 +102,47 @@ export interface ProviderResult {
    * press by a delta that never happened.
    */
   origin?: AimOrigin;
+  /**
+   * ADR-036 item 8 — see {@link ProviderObservation}.
+   *
+   * Optional because a direct `CandidateProvider` or a test double has nothing to say here, and
+   * **`see()` reads an absent value as "not stated" rather than as "read"** — the same rule
+   * `identityRead` exists for, applied to freshness instead of identity.
+   */
+  observation?: ProviderObservation;
+}
+
+/**
+ * ADR-036 item 8 — whether the candidates in a result were READ for this call, or REMEMBERED.
+ *
+ * Measured on real hardware (internal #150, win2, 2026-09-21): against a window whose UI thread had
+ * been hung for 90 s, `desktop_discover` answered in **4 ms with six entities and a fresh
+ * generation**, while the probe recorded **no `provider.read` row at all** — no lane ran. The
+ * envelope said nothing a caller could be suspicious of: `stale`, `cached`, `ageMs`, `status` and
+ * `observed` were absent from both captures, and the one freshness field that exists (`attention`)
+ * answers a different question — whether the UIA cache has passed its TTL, which a hung window
+ * inside the TTL has not. Its neighbours are at least slow and empty; this one is fast and full.
+ *
+ * The ingress already knows the answer — `CacheEntry.fetchedAtMs` — it simply never travelled.
+ * Carrying it changes nothing else: nothing is refused, nothing is re-read, no TTL moves.
+ */
+export interface ProviderObservation {
+  /**
+   * - `read` — a fetch ran for THIS call and these candidates came back from it. It does **not**
+   *   say every lane looked: a lane that skipped or failed says so in its own `provider.read` row,
+   *   and that distinction stays in the probe.
+   * - `cache` — the entry was fresh, so nothing was asked; these were read at `observedAtMs`.
+   * - `staleCache` — a fetch ran, threw, and the remembered entry was served instead.
+   * - `unavailable` — no observation at all: the fetch threw with nothing remembered, or the
+   *   ingress is disposed.
+   *
+   * **A reader that does not recognise a value must treat it as NOT read.** (win2, 2026-09-22: a
+   * kind added to an enum falls into whatever the default branch is, and a default on the readable
+   * side turns "could not tell" into "fresh" without a word.)
+   */
+  from: "read" | "cache" | "staleCache" | "unavailable";
+  /** When these candidates were read (epoch ms). Absent exactly when `from` is `unavailable`. */
+  observedAtMs?: number;
 }
 
 export interface CandidateIngress {
@@ -169,7 +210,7 @@ export class SnapshotIngress implements CandidateIngress {
   }
 
   async getSnapshot(targetKey: string): Promise<ProviderResult> {
-    if (this.disposed) return { candidates: [], warnings: [] };
+    if (this.disposed) return { candidates: [], warnings: [], observation: { from: "unavailable" } };
     this.knownKeys.add(targetKey);
 
     // Drain events lazily — no background polling needed.
@@ -183,7 +224,7 @@ export class SnapshotIngress implements CandidateIngress {
     const entry = this.cache.get(targetKey);
     const now   = Date.now();
     const fresh = entry && !entry.dirty && (now - entry.fetchedAtMs) < this.cacheTtlMs;
-    if (fresh) return { candidates: entry!.candidates, warnings: entry!.warnings, target: entry!.target, identity: entry!.identity, identityRead: entry!.identityRead, origin: entry!.origin };
+    if (fresh) return { candidates: entry!.candidates, warnings: entry!.warnings, target: entry!.target, identity: entry!.identity, identityRead: entry!.identityRead, origin: entry!.origin, observation: { from: "cache", observedAtMs: entry!.fetchedAtMs } };
 
     // Cache miss, dirty, or TTL expired → fetch.
     try {
@@ -198,15 +239,15 @@ export class SnapshotIngress implements CandidateIngress {
         fetchedAtMs: now,
         dirty: false,
       });
-      return result;
+      return { ...result, observation: { from: "read", observedAtMs: now } };
     } catch (err) {
       console.error(`[candidate-ingress] Fetch error for "${targetKey}":`, err);
       // Stale cache fallback — mark dirty so next call retries.
       if (entry) {
         entry.dirty = true;
-        return { candidates: entry.candidates, warnings: [...entry.warnings, "ingress_fetch_error"], target: entry.target, identity: entry.identity, identityRead: entry.identityRead, origin: entry.origin };
+        return { candidates: entry.candidates, warnings: [...entry.warnings, "ingress_fetch_error"], target: entry.target, identity: entry.identity, identityRead: entry.identityRead, origin: entry.origin, observation: { from: "staleCache", observedAtMs: entry.fetchedAtMs } };
       }
-      return { candidates: [], warnings: ["ingress_fetch_error"] };
+      return { candidates: [], warnings: ["ingress_fetch_error"], observation: { from: "unavailable" } };
     }
   }
 

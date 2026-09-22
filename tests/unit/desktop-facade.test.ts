@@ -1022,6 +1022,76 @@ describe("DesktopFacade — automatic session eviction timer", () => {
 // resolved the field is OMITTED (not synthesised to 'ok') — absent reads as "no
 // signal", not "fresh".
 
+describe("DesktopFacade — observed or remembered (ADR-036 item 8, internal #150)", () => {
+  // The defect this answers, measured on real hardware: a window hung for 90 s answered in 4 ms
+  // with six entities and a fresh generation, and no lane had run. The neighbours a caller could
+  // compare against (`screenshot(detail='text')`, `workspace_snapshot`) were slow and empty, which
+  // at least gives a reason to doubt them. This one is fast and full.
+
+  function ingressSaying(observation: unknown): CandidateIngress {
+    return {
+      getSnapshot: async () => ({ candidates: [], warnings: [], ...(observation as object) }),
+      invalidate: () => {},
+      subscribe: () => () => {},
+      dispose: () => {},
+    };
+  }
+
+  it("carries the ingress's `cache`, and ages it against the reply rather than re-dating it", async () => {
+    const facade = new DesktopFacade(() => [], {
+      ingress: ingressSaying({ observation: { from: "cache", observedAtMs: 1_000 } }),
+      nowFn: () => 5_500,
+    });
+    const out = await facade.see({});
+    expect(out.observation.from).toBe("cache");
+    expect(out.observation.observedAtMs).toBe(1_000);
+    expect(out.observation.ageMs).toBe(4_500);
+  });
+
+  it("says `read` on the road that has no cache to serve from", async () => {
+    // No ingress: `see()` calls the provider on every call, so this is the one road that can say
+    // "read" without being told.
+    const facade = new DesktopFacade(() => [], { nowFn: () => 7_000 });
+    const out = await facade.see({});
+    expect(out.observation).toEqual({ from: "read", observedAtMs: 7_000, ageMs: 0 });
+  });
+
+  it("says `unavailable` — never `read` — when the ingress says nothing", async () => {
+    // **The default lands on the not-read side.** An ingress that carries no observation (an older
+    // implementation, a test double) must not have its silence reported as a fresh read: "could
+    // not tell" and "looked just now" are the two answers this field exists to separate (win2's
+    // rule, 2026-09-22 — a kind nobody handled falls into the default branch, so the default has
+    // to be the unreadable one).
+    const facade = new DesktopFacade(() => [], { ingress: ingressSaying({}) });
+    const out = await facade.see({});
+    expect(out.observation).toEqual({ from: "unavailable" });
+    expect(out.observation.ageMs).toBeUndefined();
+  });
+
+  it("keeps `staleCache` distinct from both a read and a plain cache hit", async () => {
+    const facade = new DesktopFacade(() => [], {
+      ingress: ingressSaying({ observation: { from: "staleCache", observedAtMs: 2_000 } }),
+      nowFn: () => 2_750,
+    });
+    const out = await facade.see({});
+    expect(out.observation).toEqual({ from: "staleCache", observedAtMs: 2_000, ageMs: 750 });
+  });
+
+  it("does not answer this question with `attention`, which is about the UIA cache's TTL", async () => {
+    // CONTROL against the field that already existed: in the round that measured #150 the envelope
+    // carried no `attention` at all (the rig addresses by title, and `attention` needs an HWND),
+    // and where it does appear it says whether the UIA cache passed its TTL — a hung window inside
+    // the TTL is `'ok'`. The two fields must not be read for each other.
+    const facade = new DesktopFacade(() => [], {
+      ingress: ingressSaying({ observation: { from: "cache", observedAtMs: 10 } }),
+      nowFn: () => 20,
+    });
+    const out = await facade.see({ target: { windowTitle: "GameWindow" } });
+    expect(out.attention).toBeUndefined();
+    expect(out.observation.from).toBe("cache");
+  });
+});
+
 describe("DesktopFacade — UIA-cache-stale → attention (#295 carry-over)", () => {
   // The cache TTL is module-scoped state in layer-buffer.ts. Each test pins time
   // deterministically and clears both the WindowLayer map AND the UIA cache so

@@ -13,7 +13,7 @@ import {
   type TargetSpec,
   type ExecutorFn,
 } from "../engine/world-graph/session-registry.js";
-import type { CandidateIngress } from "../engine/world-graph/candidate-ingress.js";
+import type { CandidateIngress, ProviderObservation } from "../engine/world-graph/candidate-ingress.js";
 import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js";
 import { probeAim } from "../engine/aim-probe.js";
 import { toAim, readWindowIdentityFields, homingCorrectionForSources, observedHwndOfOrigin, type Aim } from "../engine/aim.js";
@@ -124,6 +124,31 @@ export interface DesktopSeeOutput {
    * dirty) can be added without a breaking change.
    */
   attention?: AttentionState;
+  /**
+   * ADR-036 item 8 — **was this reply observed, or remembered?**
+   *
+   * `attention` above answers a different question and must not be read for this one: it is
+   * `isUiaCacheStale(hwnd)`, i.e. whether the UIA cache has passed its TTL. A window hung for 90 s
+   * with a warm cache is `'ok'` by that definition, and in the round that measured this
+   * (internal #150) the field did not appear at all — the rig addresses by title, and `attention`
+   * is set only when an HWND resolves.
+   *
+   * What a caller could not tell, measured on real hardware: against that hung window
+   * `desktop_discover` answered in **4 ms with six entities and a fresh generation**, and no lane
+   * had run. Its neighbours (`screenshot(detail='text')`, `workspace_snapshot`) were slow and
+   * empty, which at least gives a caller a reason to doubt them. This one was fast and full.
+   *
+   * So the envelope now says which it was. **Nothing else changed** — nothing is refused, nothing
+   * is re-read, no TTL moved. `from: "unavailable"` is also what an ingress that says nothing gets:
+   * "could not tell" belongs on the not-read side, never on the fresh one.
+   */
+  observation: SeeObservation;
+}
+
+/** ADR-036 item 8 — {@link ProviderObservation}, plus how old it is at the moment of the reply. */
+export interface SeeObservation extends ProviderObservation {
+  /** Reply time minus `observedAtMs`. Absent exactly when `from` is `unavailable`. */
+  ageMs?: number;
 }
 
 export interface DesktopTouchInput {
@@ -383,7 +408,16 @@ export class DesktopFacade {
     // Use ingress (event-driven cache) if available; fall back to direct provider.
     let rawResult = this.opts.ingress
       ? await this.opts.ingress.getSnapshot(key)
-      : { candidates: await Promise.resolve(this.candidateProvider(input)), warnings: [] as string[] };
+      : {
+          candidates: await Promise.resolve(this.candidateProvider(input)),
+          warnings: [] as string[],
+          // ADR-036 item 8 — this road has no cache to serve from: it asks the provider on every
+          // call, so it is the one place that can say "read" without being told (internal #150).
+          observation: {
+            from: "read" as const,
+            observedAtMs: (this.opts.nowFn ?? Date.now)(),
+          },
+        };
 
     // H4: view=debug escalation (Rule-B) — surface visual_not_attempted when the
     // visual backend is unready, regardless of whether compose's Rule-A fired.
@@ -541,12 +575,29 @@ export class DesktopFacade {
       return view;
     });
 
+    // ADR-036 item 8 — say whether this reply was observed or remembered (internal #150).
+    //
+    // Read off `rawResult`, which is where the fact is known: the ingress hands back `cache` with
+    // the moment those candidates were read, `read` when it fetched for this call, and
+    // `staleCache` when the fetch threw and the remembered entry went out anyway. **An ingress
+    // that says nothing gets `unavailable`, not `read`** — "could not tell" belongs on the
+    // not-read side, and an absent field would be read as "no signal" by a caller with no way to
+    // check.
+    const replyAtMs = (this.opts.nowFn ?? Date.now)();
+    const observed: ProviderObservation = rawResult.observation ?? { from: "unavailable" };
+
     const output: DesktopSeeOutput = {
       viewId: newViewId,
       target: { title: targetTitle(input.target), generation: session.generation },
       entities: entityViews,
       windows,
       softExpiresAtMs: computeSoftExpiresAtMs(issuedAtMs, policyTtl.ttlMs),
+      observation: {
+        ...observed,
+        ...(observed.observedAtMs !== undefined && {
+          ageMs: Math.max(0, replyAtMs - observed.observedAtMs),
+        }),
+      },
     };
     if (rawResult.warnings.length > 0) output.warnings = rawResult.warnings;
 
