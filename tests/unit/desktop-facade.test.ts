@@ -1304,6 +1304,32 @@ describe("DesktopFacade — the ingress's answer is runtime input (internal #161
     expect(out.freshness.from).toBe("read");
   });
 
+  it("says `unavailable` when every candidate was dropped, the same as a missing list", async () => {
+    // "The ones kept were read" is empty when none were kept (gate 2): `[null]` must not go out as
+    // `entities: []` dated `cache` while `null`, the same information, says `unavailable`.
+    const facade = new DesktopFacade(() => [], {
+      ingress: ingressAnswering({ candidates: [null], warnings: [], freshness: { from: "cache", observedAtMs: 1_000 } }),
+    });
+    const out = await facade.see({});
+    expect(out.entities).toEqual([]);
+    expect(out.warnings).toEqual(["ingress_fetch_error"]);
+    expect(out.freshness).toEqual({ from: "unavailable" });
+  });
+
+  it("reads a result's fields through getters, as the line it replaced did", async () => {
+    // A spread copies own enumerable properties only, so an embedder's class instance lost its
+    // `freshness` here and went out `unavailable` (gate 2, measured in node).
+    class Answer {
+      candidates = [cand("OK", "uia")];
+      warnings: string[] = [];
+      get freshness() { return READ; }
+    }
+    const facade = new DesktopFacade(() => [], { ingress: ingressAnswering(new Answer()) });
+    const out = await facade.see({});
+    expect(out.entities.map((e) => e.label)).toEqual(["OK"]);
+    expect(out.freshness).toEqual({ from: "read", observedAtMs: 1_000, ageMs: 4_500 });
+  });
+
   it("does not repeat `ingress_fetch_error` when the ingress already said it", async () => {
     const facade = new DesktopFacade(() => [], {
       ingress: ingressAnswering({ candidates: null, warnings: ["ingress_fetch_error"], freshness: READ }),

@@ -196,29 +196,44 @@ function readFreshness(raw: ProviderFreshness | undefined): ProviderFreshness {
  * **A missing candidate list is not an empty window.** Defaulting it to `[]` would hand a caller
  * `entities: []` and nothing to doubt, so it says `ingress_fetch_error` — whose advice is to retry —
  * and its freshness becomes `unavailable`: no list was read, whatever the freshness claimed.
- * Candidates that are not objects are dropped with the same warning, and the freshness stands,
- * because the ones kept were read. A warning list that is not a list, or entries that are not
- * strings, only lose the unreadable part: diagnostics say nothing about the candidates beside them.
+ * Candidates that are not objects are dropped with the same warning, and the freshness stands
+ * because the ones kept were read — unless none were kept, which is the missing list again. A
+ * warning list that is not a list, or entries that are not strings, only lose the unreadable part:
+ * diagnostics say nothing about the candidates beside them.
  *
  * Only the shape `see()` dereferences is checked. A candidate object with bad fields inside is the
  * resolver's input as before; this does not claim to validate it.
  */
 function readProviderResult(raw: unknown): ProviderResult {
   const result = raw !== null && typeof raw === "object" ? (raw as Partial<ProviderResult>) : {};
+  // Each field read by name, not spread: a spread copies own enumerable properties only, so an
+  // embedder's class instance whose `freshness` or `target` is a getter lost them here while the
+  // line this replaced read them fine (gate 2).
+  const kept = {
+    target: result.target,
+    identity: result.identity,
+    identityRead: result.identityRead,
+    origin: result.origin,
+    freshness: result.freshness,
+  };
   const warnings = Array.isArray(result.warnings)
     ? result.warnings.filter((w): w is string => typeof w === "string")
     : [];
   const damaged = (): string[] =>
     warnings.includes("ingress_fetch_error") ? warnings : [...warnings, "ingress_fetch_error"];
   if (!Array.isArray(result.candidates)) {
-    return { ...result, candidates: [], warnings: damaged(), freshness: { from: "unavailable" } };
+    return { ...kept, candidates: [], warnings: damaged(), freshness: { from: "unavailable" } };
   }
   const candidates = result.candidates.filter(
     (c): c is UiEntityCandidate => c !== null && typeof c === "object",
   );
-  return candidates.length === result.candidates.length
-    ? { ...result, candidates, warnings }
-    : { ...result, candidates, warnings: damaged() };
+  if (candidates.length === result.candidates.length) return { ...kept, candidates, warnings };
+  // "The ones kept were read" is the whole reason the freshness stands, and it is empty when
+  // nothing was kept: `[null]` would otherwise go out as `entities: []` dated `cache`, while
+  // `null` — the same information — says `unavailable` (gate 2).
+  return candidates.length > 0
+    ? { ...kept, candidates, warnings: damaged() }
+    : { ...kept, candidates, warnings: damaged(), freshness: { from: "unavailable" } };
 }
 
 /** ADR-036 item 8 — {@link ProviderFreshness}, plus how old it is at the moment of the reply. */
