@@ -46,12 +46,19 @@ export interface EntityView {
   confidence: number;
   sources: string[];
   /**
-   * ADR-036 (internal #158) — `observed`: a lane looked at the window during this call and saw it.
-   * `stale`: it was handed back from an earlier observation without looking, and may no longer be on
-   * screen. Absent: the source did not say. The spec's `Fluent.status` words.
+   * ADR-036 (internal #158) — `observed`: a lane looked at the window and saw it in the read that
+   * produced these entities. That read is this call only when `freshness.from` is `read`; on a cache
+   * hit it is the earlier read the cache holds (gate 2 — the first wording said "during this call",
+   * which a cache hit made false). `stale`: it was handed back from an earlier observation without
+   * looking, and may no longer be on screen. Absent: the source did not say. The spec's
+   * `Fluent.status` words.
    */
   status?: "observed" | "stale";
-  /** When that observation was captured (Unix ms, `Date.now()` clock). Absent when it has no usable date. */
+  /**
+   * When that observation was captured (Unix ms, `Date.now()` clock). Stamped by the lane when it
+   * built the candidate, so it is at or a few ms after `freshness.observedAtMs` (when the read
+   * STARTED) for a candidate of that read — not the same instant. Absent when it has no usable date.
+   */
   observedAtMs?: number;
   primaryAction: string;
   lease: EntityLease;

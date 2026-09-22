@@ -1814,10 +1814,12 @@ export function registerDesktopTools(server: McpServer): void {
       // the call, and a lane can still hand back something it did not look at; that is only visible
       // here.
       "Each entity may carry status and observedAtMs. status='observed': a lane looked at the " +
-        "window during this call and saw it. status='stale': it was handed back from an earlier " +
-        "observation without looking — it may no longer be on screen, even when freshness.from is " +
-        "'read'; confirm it is still there before acting on it. No status: the source did not say. " +
-        "observedAtMs is when that entity was observed.",
+        "window and saw it in the read that produced these entities — freshness says whether that " +
+        "read was this call (from='read') or an earlier one (from='cache' / 'staleCache'). " +
+        "status='stale': it was handed back from an earlier observation without looking — it may no " +
+        "longer be on screen, even when freshness.from is 'read'; confirm it is still there before " +
+        "acting on it. No status: the source did not say. observedAtMs is when that entity was " +
+        "observed, on the same clock as freshness.observedAtMs.",
       "response.softExpiresAtMs is an advisory timestamp at ~60% of the lease TTL window — past it the LLM should consider re-calling desktop_discover even though leases are still technically valid; lease.expiresAtMs remains the only correctness wall.",
       advisoryRegistry.toolDescriptionAdvisory(),
     ].join(" "),

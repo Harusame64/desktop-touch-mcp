@@ -367,7 +367,7 @@ describe("every lane says what it did with the read (14a)", () => {
       const warm = await visualWith({
         isAvailable: () => true,
         ensureWarm: async () => "warm",
-        getStableCandidates: async () => [{ source: "visual_gpu", label: "Painted button" }],
+        getStableCandidates: async () => [{ source: "visual_gpu", label: "Painted button", observedAtMs: 1_000 }],
         recognitionCapability: () => "recognises",
       });
       await warm({ windowTitle: "W" });
@@ -430,21 +430,30 @@ describe("every lane says what it did with the read (14a)", () => {
       expect(laneRows("visual_gpu").at(-1)).toMatchObject({ outcome: "skipped", candidateCount: 1 });
     });
 
-    it("labels what a recognising backend returns `observed`, and leaves a lane's own status alone", async () => {
+    it("labels a backend that says it recognises `stale` too: its snapshot is not a look at this call", async () => {
+      // Gate 2: the ONNX backend reports `recognises`, but in the product its snapshots are filled by
+      // the OCR adapter's pushes. `getStableCandidates` never looks during the call, whatever answers it.
       const looked = visualWith({
         isAvailable: () => true,
         ensureWarm: async () => "warm",
-        getStableCandidates: async () => [
-          { source: "visual_gpu", label: "Seen", observedAtMs: 1_000 },
-          { source: "visual_gpu", label: "Known old", observedAtMs: 500, status: "stale" },
-        ],
+        getStableCandidates: async () => [{ source: "visual_gpu", label: "Kept", observedAtMs: 1_000 }],
         recognitionCapability: () => "recognises",
       });
       const out = await (await looked)({ windowTitle: "W" });
-      expect(out.candidates.map((c: { label?: string; status?: string }) => [c.label, c.status])).toEqual([
-        ["Seen", "observed"],
-        ["Known old", "stale"],
-      ]);
+      expect(out.candidates).toEqual([{ source: "visual_gpu", label: "Kept", observedAtMs: 1_000, status: "stale" }]);
+      expect(laneRows("visual_gpu").at(-1)).toMatchObject({ outcome: "read", recognition: "recognises" });
+    });
+
+    it("still says it cannot recognise when every replayed candidate was undated and dropped", async () => {
+      // Gate 2: the warning was decided before the drop, so this answered like a warm lane that found nothing.
+      const replay = visualWith({
+        isAvailable: () => true,
+        ensureWarm: async () => "warm",
+        getStableCandidates: async () => [{ source: "visual_gpu", label: "Undated" }],
+        recognitionCapability: () => "replays_injected_only",
+      });
+      const out = await (await replay)({ windowTitle: "W" });
+      expect(out).toEqual({ candidates: [], warnings: ["visual_backend_cannot_recognise"] });
     });
 
     it("counts the retry as the second attempt of one discover", async () => {
@@ -837,6 +846,12 @@ describe("probeLane stamps the outcome it records (internal #158)", () => {
     expect(probeLane("uia", "read", {}, { candidates: [c], warnings: [] }).candidates).toEqual([{ ...c, status: "observed" }]);
     expect(probeLane("ocr", "failed", {}, { candidates: [c], warnings: [] }).candidates).toEqual([{ ...c, status: "stale" }]);
     expect(probeLane("visual_gpu", "skipped", {}, { candidates: [c], warnings: [] }).candidates).toEqual([{ ...c, status: "stale" }]);
+  });
+
+  it("leaves a status the lane already set", async () => {
+    const { probeLane } = await import("../../src/engine/aim-probe.js");
+    const old = { source: "uia", label: "Old", observedAtMs: 500, status: "stale" };
+    expect(probeLane("uia", "read", {}, { candidates: [old], warnings: [] }).candidates).toEqual([old]);
   });
 
   it("does not touch the caller's objects, and returns an empty result as it came", async () => {

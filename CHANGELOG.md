@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+- **Each `desktop_discover` entity now says whether it was seen, or handed back from earlier.**
+  After a window repainted, discover returned three labels that had left the screen next to the
+  three that replaced them, all under `freshness.from: "read"`. Nothing on any entity told them
+  apart. The visual lane hands back a snapshot kept from an earlier moment without looking at the
+  window, and the reply did not say so.
+
+  Entities now carry `status` and `observedAtMs`:
+
+  - `status: "observed"` — a lane looked at the window and saw it, in the read that produced these
+    entities. `freshness` says whether that read was this call.
+  - `status: "stale"` — it was handed back from an earlier observation without looking. It may no
+    longer be on screen, even when `freshness.from` is `"read"`. Confirm it is still there before
+    acting on it.
+  - No `status` — the source did not say.
+
+  The words come from the Reactive Perception Graph's own `Fluent.status`. Nothing is dropped and
+  nothing is refused: a stale entity still gets a lease, and it says what it is.
+
 - **A `desktop_discover` reply now says whether it looked, or remembered.**
   Against a window that had stopped responding, discover came back in four milliseconds with six
   entities and a new generation, and nothing in the reply said that no lane had run — the entities

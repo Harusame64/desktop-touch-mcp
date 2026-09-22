@@ -111,10 +111,23 @@ export async function fetchVisualCandidates(
     const recognition = runtime.recognitionCapability();
     const looked = recognition !== "replays_injected_only";
     const row = { ...asked, warmState, recognition, ...(!looked && { why: "replays_injected_only" }) };
-    if (candidates.length === 0 && !looked) {
-      return probeLane("visual_gpu", "skipped", row, { candidates, warnings: ["visual_backend_cannot_recognise"] });
+    // Internal #158 — **every candidate this lane hands back is `stale`, whichever backend answers.**
+    // `getStableCandidates` returns a snapshot kept from an earlier moment; nothing looks at the
+    // window during this call. That is true of the ONNX backend too, which says it `recognises`: in
+    // the product its snapshots are filled by the OCR adapter's pushes, not by a recognition run in
+    // this read (gate 2 — `recognizeRois` is called only by the benchmark). The row keeps the
+    // backend's own capability; the stamp says what happened to these candidates.
+    //
+    // Undated ones are dropped HERE, before the warning is decided, so a snapshot holding only
+    // undated candidates still says the backend cannot recognise instead of "ran and found nothing"
+    // (gate 2). An observation nobody can date is not one to label and pass on.
+    const dated = candidates
+      .filter((c) => Number.isFinite(c.observedAtMs))
+      .map((c) => ({ ...c, status: "stale" as const }));
+    if (dated.length === 0 && !looked) {
+      return probeLane("visual_gpu", "skipped", row, { candidates: dated, warnings: ["visual_backend_cannot_recognise"] });
     }
-    return probeLane("visual_gpu", looked ? "read" : "skipped", row, { candidates, warnings: [] });
+    return probeLane("visual_gpu", looked ? "read" : "skipped", row, { candidates: dated, warnings: [] });
   } catch (err) {
     console.error("[visual-provider] getStableCandidates failed:", err);
     return probeLane("visual_gpu", "failed", { ...asked, warmState, why: "get_stable_candidates_threw" }, { candidates: [], warnings: ["visual_provider_failed"] });
