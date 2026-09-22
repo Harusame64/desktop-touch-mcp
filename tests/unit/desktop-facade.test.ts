@@ -1604,3 +1604,32 @@ describe("DesktopFacade — resolveHwndForViewId (Stage 5 foreground fallback)",
     }
   });
 });
+
+describe("DesktopFacade — each entity says whether it was seen (internal #158)", () => {
+  // Measured before this (win2, 2026-09-23, public main 0a75f52c): after a repaint, a UIA-blind window
+  // handed back three labels that had left the screen beside the three that replaced them, all under
+  // `freshness.from: "read"`, and nothing on any entity told them apart.
+  it("carries `stale` and the date of the old observation, beside `observed`", async () => {
+    const facade = new DesktopFacade(() => [
+      cand("PAINTED-A", "visual_gpu", { status: "stale", observedAtMs: 1_000, digest: undefined }),
+      cand("PAINTED-X", "ocr", { status: "observed", observedAtMs: 35_000, digest: undefined, rect: { x: 10, y: 60, width: 80, height: 30 } }),
+    ]);
+    const out = await facade.see({});
+    const byLabel = Object.fromEntries(out.entities.map((e) => [e.label, e]));
+    expect(byLabel["PAINTED-A"]).toMatchObject({ status: "stale", observedAtMs: 1_000 });
+    expect(byLabel["PAINTED-X"]).toMatchObject({ status: "observed", observedAtMs: 35_000 });
+  });
+
+  it("omits `status` when the source said nothing, rather than calling it observed", async () => {
+    const facade = new DesktopFacade(() => [cand("Quiet", "uia", { observedAtMs: 2_000 })]);
+    const [e] = (await facade.see({})).entities;
+    expect("status" in e).toBe(false);
+    expect(e.observedAtMs).toBe(2_000);
+  });
+
+  it("omits an `observedAtMs` it cannot use", async () => {
+    const facade = new DesktopFacade(() => [cand("Undated", "uia", { observedAtMs: Number.NaN })]);
+    const [e] = (await facade.see({})).entities;
+    expect("observedAtMs" in e).toBe(false);
+  });
+});

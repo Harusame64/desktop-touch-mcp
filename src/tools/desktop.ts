@@ -45,6 +45,14 @@ export interface EntityView {
   role: string;
   confidence: number;
   sources: string[];
+  /**
+   * ADR-036 (internal #158) — `observed`: a lane looked at the window during this call and saw it.
+   * `stale`: it was handed back from an earlier observation without looking, and may no longer be on
+   * screen. Absent: the source did not say. The spec's `Fluent.status` words.
+   */
+  status?: "observed" | "stale";
+  /** When that observation was captured (Unix ms, `Date.now()` clock). Absent when it has no usable date. */
+  observedAtMs?: number;
   primaryAction: string;
   lease: EntityLease;
   rect?: { x: number; y: number; width: number; height: number };
@@ -666,6 +674,8 @@ export class DesktopFacade {
         role: e.role,
         confidence: e.confidence,
         sources: [...e.sources],
+        ...(e.status !== undefined && { status: e.status }),
+        ...(Number.isFinite(e.observedAtMs) && { observedAtMs: e.observedAtMs }),
         primaryAction: primaryActionFrom(e),
         lease,
       };

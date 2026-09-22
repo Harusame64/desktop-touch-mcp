@@ -120,5 +120,27 @@ export interface UiEntityCandidate {
   digest?: string;
   /** True while temporal fusion is accumulating votes; resolver must not issue a lease for provisional candidates. */
   provisional?: boolean;
+  /**
+   * ADR-036 (internal #158) — what the lane that produced this candidate can say about it, in the
+   * specification's own `Fluent.status` words: `observed` when the lane looked at the window in THIS
+   * read, `stale` when it handed back something observed earlier without looking.
+   *
+   * The spec keeps memory and labels it — "stale data => return with stale status and suggested
+   * refresh", "Cached state may guide reads. Freshly validated state gates actions." — so a replayed
+   * candidate is not dropped; it says what it is. Measured before this existed (win2, 2026-09-23): after
+   * a repaint, a UIA-blind window handed back three labels that had left the screen, beside the three
+   * that replaced them, all under `freshness.from: "read"`.
+   *
+   * Stamped by `probeLane` from the same outcome it records in the lane's `provider.read` row, so the
+   * row and the stamp cannot disagree. Absent when nobody said: a direct `CandidateProvider`, or a
+   * producer that does not return through a lane.
+   */
+  status?: LaneEvidenceStatus;
   raw?: unknown;
 }
+
+/**
+ * The two `Fluent.status` values a lane can know about its own candidates. The rest of the spec's
+ * vocabulary (`inferred`, `dirty`, `contradicted`, …) needs evidence a lane does not have.
+ */
+export type LaneEvidenceStatus = Extract<import("../perception/types.js").FluentStatus, "observed" | "stale">;

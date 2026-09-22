@@ -210,9 +210,19 @@ export type LaneOutcome = "read" | "skipped" | "failed";
  * — a passing terminal arm was voided by that rule, and the rule was wrong). With a row on every
  * return, a lane with no row was not called.
  *
- * Returns `result` untouched, so a return site wraps the value it already had instead of growing a
- * second statement that can drift from it. Never records candidate CONTENT — a terminal buffer or
- * a DOM label can carry anything the user has on screen — only counts and the lane's own codes.
+ * A return site wraps the value it already had instead of growing a second statement that can
+ * drift from it. Never records candidate CONTENT — a terminal buffer or a DOM label can carry
+ * anything the user has on screen — only counts and the lane's own codes.
+ *
+ * **And the same outcome is stamped on the candidates** (internal #158). The row used to be the only
+ * place the lane's answer lived: the visual lane replaying an earlier snapshot wrote `skipped`
+ * here, and its candidates went on to the caller looking exactly like a read. So `read` stamps
+ * `status: "observed"` and any other outcome that still hands candidates back stamps `"stale"` —
+ * from one value, so the row and the stamp cannot disagree. A candidate that already carries a
+ * status keeps it: a lane that looked can still know one of its answers is old.
+ *
+ * A candidate handed back without looking and with no usable `observedAtMs` is dropped: an
+ * observation nobody can date is not one to label and pass on.
  */
 export function probeLane<R extends { candidates: readonly unknown[]; warnings: readonly string[] }>(
   lane: ProbeLane,
@@ -220,15 +230,31 @@ export function probeLane<R extends { candidates: readonly unknown[]; warnings: 
   data: Record<string, unknown>,
   result: R,
 ): R {
+  const stamped = stampLaneEvidence(outcome, result);
   probeAim("provider.read", {
     lane,
     ...data,
     // New keys go at the END: the UIA lane's row predates them, and excerpts are read at fixed width.
     outcome,
-    candidateCount: result.candidates.length,
-    warnings: [...result.warnings],
+    candidateCount: stamped.candidates.length,
+    warnings: [...stamped.warnings],
   });
-  return result;
+  return stamped;
+}
+
+/** Internal #158 — see {@link probeLane}. Objects only; anything else in the list is left as it is. */
+function stampLaneEvidence<R extends { candidates: readonly unknown[] }>(outcome: LaneOutcome, result: R): R {
+  if (result.candidates.length === 0) return result;
+  const looked = outcome === "read";
+  const candidates: unknown[] = [];
+  for (const c of result.candidates) {
+    if (c === null || typeof c !== "object") { candidates.push(c); continue; }
+    const own = (c as { status?: unknown }).status;
+    if (own === "observed" || own === "stale") { candidates.push(c); continue; }
+    if (!looked && !Number.isFinite((c as { observedAtMs?: unknown }).observedAtMs)) continue;
+    candidates.push({ ...c, status: looked ? "observed" : "stale" });
+  }
+  return { ...result, candidates };
 }
 
 /**

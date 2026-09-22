@@ -397,7 +397,9 @@ describe("every lane says what it did with the read (14a)", () => {
       });
       await (await replay([]))({ windowTitle: "W" });
       vi.resetModules();
-      await (await replay([{ source: "visual_gpu", label: "Replayed from OCR" }]))({ windowTitle: "W" });
+      // Dated, as every real candidate is (`observedAtMs` is required by the type): an undated one is
+      // dropped rather than passed on as `stale` (internal #158), which the next cell pins.
+      await (await replay([{ source: "visual_gpu", label: "Replayed from OCR", observedAtMs: 1_000 }]))({ windowTitle: "W" });
       const [empty, replayed] = laneRows("visual_gpu");
       expect(empty).toMatchObject({
         outcome: "skipped", why: "replays_injected_only", recognition: "replays_injected_only",
@@ -407,6 +409,42 @@ describe("every lane says what it did with the read (14a)", () => {
         outcome: "skipped", why: "replays_injected_only", recognition: "replays_injected_only",
         candidateCount: 1, warnings: [],
       });
+    });
+
+    it("labels a replay `stale`, and drops one it cannot date (internal #158)", async () => {
+      // The row said `skipped` and the candidates reached the caller looking like a read. Now the same
+      // outcome is stamped on them. An observation nobody can date is not one to label and pass on.
+      const replay = (candidates: unknown[]) => visualWith({
+        isAvailable: () => true,
+        ensureWarm: async () => "warm",
+        getStableCandidates: async () => candidates,
+        recognitionCapability: () => "replays_injected_only",
+      });
+      const out = await (await replay([
+        { source: "visual_gpu", label: "Dated", observedAtMs: 1_000 },
+        { source: "visual_gpu", label: "Undated" },
+      ]))({ windowTitle: "W" });
+      expect(out.candidates).toEqual([
+        { source: "visual_gpu", label: "Dated", observedAtMs: 1_000, status: "stale" },
+      ]);
+      expect(laneRows("visual_gpu").at(-1)).toMatchObject({ outcome: "skipped", candidateCount: 1 });
+    });
+
+    it("labels what a recognising backend returns `observed`, and leaves a lane's own status alone", async () => {
+      const looked = visualWith({
+        isAvailable: () => true,
+        ensureWarm: async () => "warm",
+        getStableCandidates: async () => [
+          { source: "visual_gpu", label: "Seen", observedAtMs: 1_000 },
+          { source: "visual_gpu", label: "Known old", observedAtMs: 500, status: "stale" },
+        ],
+        recognitionCapability: () => "recognises",
+      });
+      const out = await (await looked)({ windowTitle: "W" });
+      expect(out.candidates.map((c: { label?: string; status?: string }) => [c.label, c.status])).toEqual([
+        ["Seen", "observed"],
+        ["Known old", "stale"],
+      ]);
     });
 
     it("counts the retry as the second attempt of one discover", async () => {
@@ -789,5 +827,24 @@ describe("a refusal says which rung made it (14c)", () => {
       [false, null, null], [true, "aim_identity_changed", "identity_changed"],
     ]);
     expect(identityRows[1]!.refused).toBe(await publishedReason(thrown));
+  });
+});
+
+describe("probeLane stamps the outcome it records (internal #158)", () => {
+  it("`read` → observed; any other outcome that still returns candidates → stale; row and stamp agree", async () => {
+    const { probeLane } = await import("../../src/engine/aim-probe.js");
+    const c = { source: "uia", label: "L", observedAtMs: 1_000 };
+    expect(probeLane("uia", "read", {}, { candidates: [c], warnings: [] }).candidates).toEqual([{ ...c, status: "observed" }]);
+    expect(probeLane("ocr", "failed", {}, { candidates: [c], warnings: [] }).candidates).toEqual([{ ...c, status: "stale" }]);
+    expect(probeLane("visual_gpu", "skipped", {}, { candidates: [c], warnings: [] }).candidates).toEqual([{ ...c, status: "stale" }]);
+  });
+
+  it("does not touch the caller's objects, and returns an empty result as it came", async () => {
+    const { probeLane } = await import("../../src/engine/aim-probe.js");
+    const c = { source: "uia", label: "L", observedAtMs: 1_000 };
+    probeLane("uia", "read", {}, { candidates: [c], warnings: [] });
+    expect(c).not.toHaveProperty("status");
+    const empty = { candidates: [], warnings: ["w"] };
+    expect(probeLane("uia", "read", {}, empty)).toBe(empty);
   });
 });

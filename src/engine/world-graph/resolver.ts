@@ -124,6 +124,9 @@ export function resolveCandidates(
     const primary = group[0];
     const sources = [...new Set(group.map((c) => c.source as EntitySourceKind))];
     const confidence = Math.max(...group.map((c) => c.confidence));
+    const status = group.some((c) => c.status === "observed")
+      ? "observed" as const
+      : group.some((c) => c.status === "stale") ? "stale" as const : undefined;
     const verbSet = new Set<string>();
     for (const c of group) c.actionability.forEach((v) => verbSet.add(v));
 
@@ -228,6 +231,11 @@ export function resolveCandidates(
       rect: primary.rect,
       confidence,
       sources,
+      // Internal #158 — one lane that looked is enough for the entity to have been seen in this
+      // read; it is `stale` only when every lane that said anything handed it back from earlier.
+      // A candidate with no status said nothing, and nothing is not `observed`.
+      ...(status !== undefined && { status }),
+      observedAtMs: (group.find((c) => c.status === status) ?? primary).observedAtMs,
       affordances: synthesizeAffordances([...verbSet]),
       locator: mergeLocators(group),
       generation,
