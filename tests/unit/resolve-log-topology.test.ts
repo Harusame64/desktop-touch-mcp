@@ -34,6 +34,63 @@ vi.mock("../../src/engine/diagnostic-log.js", async (importOriginal) => {
   };
 });
 
+// ─── Topology fixtures ───────────────────────────────────────────────────────
+
+const SELF = process.pid;
+
+/**
+ * The base every pid this fixture makes up is written against.
+ *
+ * `SELF` is the real `process.pid` — the walk in `_resolve-log.ts` starts there, so the fixture
+ * does not get to choose it. Every OTHER pid it does choose, and the property that matters is that
+ * none of them can ever BE `SELF`. When one collides, the parent map, the name map and the
+ * window-owner map describe a single pid as two different processes, and the cells below fail with
+ * a diff about pids that reads like a product defect (internal #155).
+ *
+ * Measured on this file by stubbing `process.pid`: **9001 → 15 of 50 red, 4000 → 7, 5000 → 5,
+ * 7777 → 2, 100 → 1** — and on 2026-09-21 this machine handed the test runner pid **4513**, so the
+ * range was live rather than theoretical.
+ *
+ * `2 ** 32` is not "large enough to be unlikely". It is above every pid any of the three platforms
+ * can hand out: a Windows pid is a DWORD (`0xFFFFFFFC` at the very most), Linux caps `pid_max` at
+ * `2 ** 22`, macOS at 99999. **So a collision is impossible rather than rare** — which is the whole
+ * difference, because "rare" is what left this file flaky for months (internal #153).
+ */
+const FIXTURE_PID_BASE = 2 ** 32;
+
+const CLI_PID = FIXTURE_PID_BASE + 5000;
+const WT_PID = FIXTURE_PID_BASE + 4000;
+/** An unrelated Windows Terminal, and the parent it was launched from — itself not modelled. */
+const OTHER_WT_PID = FIXTURE_PID_BASE + 9001;
+const OTHER_WT_PARENT_PID = FIXTURE_PID_BASE + 1;
+/** A notepad that owns a window but is in nobody's chain. */
+const NOTEPAD_PID = FIXTURE_PID_BASE + 7777;
+
+/**
+ * The fixture's clock for a pid nobody seeded: the mock's fallback.
+ *
+ * **It is the OFFSET that feeds it, not the pid** (gate 2 on #709). With pids written against
+ * `FIXTURE_PID_BASE`, a `1000 + pid` fallback lands at ~4.29e9 ms — AFTER every time the tests seed
+ * by hand, which are in the thousands. A parent left on the fallback would then start after its own
+ * child: the recycled-pid signature the walk truncates on, arrived at by arithmetic rather than by
+ * anything a test meant. Taking the offset keeps the fixture's clock exactly where it was before
+ * the pids moved: `CLI_PID` 6000, `WT_PID` 5000, as on `main`.
+ *
+ * **A pid below the base throws rather than falling back to `1000 + pid`** (gate 2, round 2). Two
+ * pids below it can legitimately arrive here — `0`, which the mocked `getWindowIdentity` returns
+ * for an unmapped hwnd, and `SELF`, whose time `seedSessionTopology` always seeds. Anything else,
+ * including `SELF` with that seed dropped, is internal #153 verbatim: the fixture's clock back on a
+ * number the OS hands out. A throw says so; a fallback would not, and no cell would go red.
+ */
+function fallbackStartMs(pid: number): number {
+  if (pid >= FIXTURE_PID_BASE) return 1000 + (pid - FIXTURE_PID_BASE);
+  if (pid === 0) return 1000; // the idle process / an unmapped hwnd's owner, as before the move
+  throw new Error(
+    `the fixture's clock was asked for pid ${pid}, which it did not invent — seed it, or use ` +
+      "FIXTURE_PID_BASE + n (internal #155)",
+  );
+}
+
 /** pid → parentPid. Rebuilt per test to model a specific topology. */
 let parentMap = new Map<number, number>();
 /** pid → image name. */
@@ -61,14 +118,14 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
     getProcessIdentityByPid: (pid: number) => ({
       pid,
       processName: processNames.get(pid) ?? "",
-      processStartTimeMs: processStartTimes.get(pid) ?? 1000 + pid,
+      processStartTimeMs: processStartTimes.get(pid) ?? fallbackStartMs(pid),
     }),
     getWindowIdentity: (hwnd: bigint) => {
       const pid = windowOwners.get(hwnd) ?? 0;
       return {
         pid,
         processName: processNames.get(pid) ?? "",
-        processStartTimeMs: processStartTimes.get(pid) ?? 1000 + pid,
+        processStartTimeMs: processStartTimes.get(pid) ?? fallbackStartMs(pid),
       };
     },
     buildProcessParentMap: () => mockBuildProcessParentMap(),
@@ -89,13 +146,8 @@ const { TERMINAL_PROCESS_RE, isTerminalClassProcessName, isConsoleHostProcessNam
 
 // The MOCKED provider, imported so the fixture-invariant cells read start times through the same
 // door the walk does rather than through a second copy of the mock's rule (internal #153, gate 2).
-const { getProcessIdentityByPid } = await import("../../src/engine/win32.js");
-
-// ─── Topology fixtures ───────────────────────────────────────────────────────
-
-const SELF = process.pid;
-const CLI_PID = 5000;
-const WT_PID = 4000;
+const { getProcessIdentityByPid, getWindowIdentity, buildProcessParentMap } =
+  await import("../../src/engine/win32.js");
 
 /**
  * When THIS process started, in the fixture's clock.
@@ -104,7 +156,8 @@ const WT_PID = 4000;
  * months** (internal #153, measured 2026-09-21). `SELF` is the real `process.pid`, so the fallback
  * makes this process's start time depend on a number the OS hands out. The walk in `_resolve-log.ts`
  * refuses a parent that started AFTER its child — the recycled-pid guard — and the CLI's fallback
- * start is `1000 + 5000`. So the chain survived only when the machine happened to give the test
+ * start is 6000 (the fixture's pids sat inside the OS's range until internal #155 moved them above
+ * it, and its clock reads the offset since). So the chain survived only when the machine gave the
  * runner **a pid above 5000**:
  *
  *   morning run, pid 4513 → the chain truncates to one entry, 11 of 47 cells red
@@ -113,7 +166,7 @@ const WT_PID = 4000;
  * Same command, same commit, two answers. It read as "adding a test file breaks it" and as an
  * order dependence, because spawning more processes first nudges the pid up. Neither was the cause.
  */
-const SELF_STARTED_MS = 1000 + CLI_PID + 1;
+const SELF_STARTED_MS = 6001;
 
 /**
  * The reported launch chain: this server under the Claude CLI under a Windows
@@ -129,27 +182,51 @@ function seedSessionTopology(): void {
     [SELF, CLI_PID],
     [CLI_PID, WT_PID],
     [WT_PID, 0],
-    [9001, 1], // an unrelated terminal's owner
+    [OTHER_WT_PID, OTHER_WT_PARENT_PID], // an unrelated terminal's owner
   ]);
   processNames = new Map([
     [SELF, "node.exe"],
     [CLI_PID, "node.exe"],
     [WT_PID, "WindowsTerminal.exe"],
-    [9001, "WindowsTerminal.exe"],
-    [7777, "notepad.exe"],
+    [OTHER_WT_PID, "WindowsTerminal.exe"],
+    [NOTEPAD_PID, "notepad.exe"],
   ]);
   windowOwners = new Map([
     [SESSION_WT_HWND, WT_PID],
-    [OTHER_TERM_HWND, 9001],
-    [NOTEPAD_HWND, 7777],
+    [OTHER_TERM_HWND, OTHER_WT_PID],
+    [NOTEPAD_HWND, NOTEPAD_PID],
   ]);
   // The chain models a real launch, so the times have to run in that order: the terminal first,
   // then the CLI it hosts, then this process. Only SELF needs seeding — every other pid's
-  // `1000 + pid` fallback already satisfies it — and `everyChainRunsParentFirst` below is what
+  // `fallbackStartMs` already satisfies it — and `everyChainRunsParentFirst` below is what
   // notices if that stops being true.
   processStartTimes = new Map([[SELF, SELF_STARTED_MS]]);
   consoleWindow = null;
   consoleWindowReadable = true;
+}
+
+/**
+ * Every pid the fixture has put into its maps that the OS could also hand out — empty when the
+ * fixture is well formed (internal #155).
+ *
+ * `0` is the idle process, the documented top of the tree, and `SELF` is this process, which the
+ * fixture does not choose. Everything else it invented, and an invented pid inside the OS's range
+ * is one this run could have been given.
+ */
+function fixturePidsInsideTheOsRange(): string[] {
+  const offenders: string[] = [];
+  const check = (where: string, pid: number): void => {
+    if (pid === 0 || pid === SELF) return;
+    if (pid < FIXTURE_PID_BASE) offenders.push(`${where}: ${pid}`);
+  };
+  for (const [child, parent] of parentMap) {
+    check("parentMap key", child);
+    check("parentMap value", parent);
+  }
+  for (const pid of processNames.keys()) check("processNames key", pid);
+  for (const pid of processStartTimes.keys()) check("processStartTimes key", pid);
+  for (const pid of windowOwners.values()) check("windowOwners value", pid);
+  return offenders;
 }
 
 function events(kind: string): Record<string, unknown>[] {
@@ -173,6 +250,29 @@ afterEach(() => {
   // Restored here, not inline: a throw mid-test would otherwise leak a mocked
   // clock into every test that follows.
   vi.useRealTimers();
+
+  // **After every test, because most of the fixture's pids are added inside one** (internal #155).
+  // A cell that read only `seedSessionTopology`'s maps would miss the two dozen pids the tests
+  // below invent, and those are collidable in exactly the same way.
+  // The clock throws for a pid it did not invent — but **every product road swallows it**
+  // (`logResolve`, `logTopologySnapshot` and `toRecord` all have a bare `catch {}`), so dropping
+  // `SELF`'s seed arrives as 38 cells failing about undefined records and one that carries the
+  // message (gate 2, round 3). Asserted here, where nothing stands between the check and the
+  // reporter.
+  expect(
+    processStartTimes.has(SELF),
+    "this process's start time is not seeded — the fixture's clock would be asked for a pid it " +
+      "did not invent, and the product's `catch {}` would turn that into a diff about records " +
+      "(internal #153/#155)",
+  ).toBe(true);
+
+  expect(
+    fixturePidsInsideTheOsRange(),
+    "a pid this fixture invented is inside the range the OS hands out. If a run's `process.pid` " +
+      "is that number, the parent map, the name map and the window-owner map describe one pid as " +
+      "two processes, and cells about something else fail with a diff about pids (internal " +
+      "#155). Write it as `FIXTURE_PID_BASE + n`.",
+  ).toEqual([]);
 });
 
 beforeEach(() => {
@@ -231,27 +331,44 @@ describe("the fixture itself", () => {
     // The walk reads `getProcessIdentityByPid`; so does this.
     const startOf = (pid: number) => getProcessIdentityByPid(pid).processStartTimeMs;
 
-    let pid = SELF;
-    const seen = new Set<number>();
-    const walked: number[] = [];
-    while (!seen.has(pid)) {
-      seen.add(pid);
-      walked.push(pid);
-      const parent = parentMap.get(pid);
-      if (parent === undefined || parent === 0) break;
-      // `toBeLessThanOrEqual`, because the producer's guard is `>` — equal times are accepted there,
-      // and a cell stricter than the thing it models reports a failure the product would not have.
-      expect(
-        startOf(parent),
-        `the fixture has pid ${parent} (the parent) starting at or after pid ${pid} (its child) — ` +
-          "the walk truncates there, and every chain assertion below reads the truncation as a " +
-          "product defect",
-      ).toBeLessThanOrEqual(startOf(pid));
-      pid = parent;
-    }
+    const walkFrom = (from: number): number[] => {
+      let pid = from;
+      const seen = new Set<number>();
+      const walked: number[] = [];
+      while (!seen.has(pid)) {
+        seen.add(pid);
+        walked.push(pid);
+        const parent = parentMap.get(pid);
+        if (parent === undefined || parent === 0) break;
+        // `toBeLessThanOrEqual`, because the producer's guard is `>` — equal times are accepted
+        // there, and a cell stricter than the thing it models reports a failure the product would
+        // not have.
+        expect(
+          startOf(parent),
+          `the fixture has pid ${parent} (the parent) starting at or after pid ${pid} (its child) — ` +
+            "the walk truncates there, and every chain assertion below reads the truncation as a " +
+            "product defect",
+        ).toBeLessThanOrEqual(startOf(pid));
+        pid = parent;
+      }
+      return walked;
+    };
+
+    // **Every chain in the seed, not only this process's** — and **measured to kill nothing
+    // today** (gate 2, round 2: deleting this loop leaves the file 50/50 green). It is kept because
+    // the seed is what a new cell starts from, not because it caught anything.
+    //
+    // **And that is not what protects the side chains the tests build.** Measured: seeding the side
+    // chains' parent while the fallback still read the pid left this cell GREEN (50/50), because
+    // the seeded topology is consistent under both rules — the inversion only appeared once a test
+    // seeded a child in the thousands under a parent on the fallback. The rule cannot be moved into
+    // `afterEach` either: several tests invert a pair ON PURPOSE (a parent younger than its child
+    // is the recycled-pid case they exist to cover). What removes the class is `fallbackStartMs`
+    // reading the offset, above — one clock for the whole fixture.
+    for (const start of [...parentMap.keys()]) walkFrom(start);
 
     // CONTROL 1: the walk really walked the three-deep launch this file describes.
-    expect(walked, "the seeded chain is not the launch this file models").toEqual([
+    expect(walkFrom(SELF), "the seeded chain is not the launch this file models").toEqual([
       SELF, CLI_PID, WT_PID,
     ]);
     // CONTROL 2: **the ordering assertion can fail.** The line that stood here —
@@ -266,36 +383,149 @@ describe("the fixture itself", () => {
     processStartTimes.delete(WT_PID);
   });
 
-  it("says so when this run's pid collides with a pid the fixture hardcodes", () => {
-    // **The time axis is fixed; the identity axis is not** (gate 2, and internal #153 carries it).
-    // `SELF` is still the real `process.pid`, and the fixture hardcodes about two dozen others. A
-    // collision makes the topology self-contradictory — measured: pid 9001 → 15 red, 4000 → 7,
-    // 5000 → 5, 7777 → 2. Roughly 0.02% of the macOS pid space, and this machine handed out 4513
-    // today, so the range is live rather than theoretical.
+  it("invents no pid the OS could hand out, so this run's pid cannot be one of them", () => {
+    // **internal #155 — the identity axis of #153, and the cell that stood here could not fail.**
     //
-    // Closing it means moving every hardcoded pid out of the OS's range, which is a wider edit than
-    // this one. Until then the failure is made **diagnosable**: without this, a collision arrives as
-    // a diff about pids in cells that are about something else — the same misreading #153 cost two
-    // rounds to undo.
-    const hardcoded = new Set<number>([
-      ...parentMap.keys(), ...parentMap.values(),
-      ...processNames.keys(), ...windowOwners.values(),
-    ]);
-    hardcoded.delete(SELF);
+    // That cell built a Set of the fixture's pids, deleted `SELF` from it, and asserted the Set did
+    // not contain `SELF` — true after the delete, whatever the maps held. It was written to make a
+    // collision diagnosable and it announced nothing: measured 2026-09-22 with `process.pid`
+    // stubbed to 9001, a pid the fixture then hardcoded, **15 of 50 cells went red and this one
+    // stayed green**. A Set cannot tell a legitimate `SELF` entry from a collision, because a
+    // collision is the two being the same number.
+    //
+    // So the property is no longer "say so when it happens". It is **the fixture cannot invent a
+    // pid the OS is able to hand out**, which makes the collision impossible instead of rare.
     expect(
-      hardcoded.has(SELF),
-      `this run's pid (${SELF}) is one the fixture also hardcodes — the topology contradicts ` +
-        "itself and the cells below will fail about pids. This is internal #153's identity axis, " +
-        "not a product defect. Re-run; a different pid passes.",
-    ).toBe(false);
+      fixturePidsInsideTheOsRange(),
+      "the seeded topology invented a pid inside the OS's range (internal #155)",
+    ).toEqual([]);
+
+    // Above every pid the three platforms can produce — Windows `0xFFFFFFFC`, Linux `pid_max` at
+    // `2 ** 22`, macOS 99999 — so no `process.pid` can reach the fixture's numbering.
+    expect(
+      FIXTURE_PID_BASE,
+      "FIXTURE_PID_BASE is inside the range some platform can hand out as a pid",
+    ).toBeGreaterThanOrEqual(2 ** 32);
+
+    // Pinned where it is decided without running, the way `SELF_STARTED_MS` is above: a base
+    // derived from this run's own pid would put the fixture back on a number the OS chooses.
+    const source = readFileSync(fileURLToPath(import.meta.url), "utf8");
+    const definition = /^const FIXTURE_PID_BASE = (.*);$/m.exec(source);
+    expect(definition, "FIXTURE_PID_BASE is no longer declared where this cell reads it").not.toBeNull();
+    for (const forbidden of ["SELF", "process.pid"]) {
+      expect(
+        definition![1],
+        `FIXTURE_PID_BASE is derived from ${forbidden} — the fixture's numbering would then move ` +
+          "with the number the OS hands out",
+      ).not.toContain(forbidden);
+    }
+    // CONTROL, as the `SELF_STARTED_MS` pin has: the capture is a real literal, not a name that
+    // would pass the two `not.toContain` checks by saying nothing at all (gate 2, round 3).
+    expect(definition![1], "FIXTURE_PID_BASE is not declared as a number any more").toMatch(/\d/);
+
+    // **The clock's rule, pinned as numbers** (gate 2, round 2). Everything else that reads a
+    // start time now writes literals, so this is the single cell that says what the rule produces.
+    // Any edit to `fallbackStartMs` — `return 42`, `1000 + pid`, `1000 + process.pid` — lands here.
+    expect(fallbackStartMs(CLI_PID), "the fixture clock moved under CLI_PID").toBe(6000);
+    expect(fallbackStartMs(WT_PID), "the fixture clock moved under WT_PID").toBe(5000);
+    expect(fallbackStartMs(0), "pid 0 is the idle process and its time has not moved").toBe(1000);
+
+    // …and the rule itself is pinned where it is decided without running, like `SELF_STARTED_MS`:
+    // the clock must not read the pid the OS handed this process (internal #153).
+    const clock = /^function fallbackStartMs\(pid: number\): number \{([\s\S]*?)\n\}/m.exec(source);
+    expect(clock, "fallbackStartMs is no longer declared where this cell reads it").not.toBeNull();
+    for (const forbidden of ["process.pid", "SELF"]) {
+      expect(
+        clock![1],
+        `the fixture's clock reads ${forbidden} — that is internal #153, one indirection away`,
+      ).not.toContain(forbidden);
+    }
+    // CONTROL: a pid the fixture did not invent is a throw, not a quiet `1000 + pid`.
+    expect(() => fallbackStartMs(SELF)).toThrow(/did not invent/);
+
+    // The mocked providers hand the pid back as they got it. The REAL ones narrow to a DWORD —
+    // `getProcessIdentityByPid` (`win32.ts:556`), `getWindowProcessId` (`:408`, which
+    // `getWindowIdentity` reads through) and `buildProcessParentMap` (`:605`) — which would fold
+    // `FIXTURE_PID_BASE + 5000` back to 5000,
+    // inside the OS's range again and silently. **All three, because the fixture reaches the
+    // product through all three** (gate 2 on #709): the sweep above reads what the fixture STORES,
+    // never what the product RECEIVES, so a mock aligned with the real one on any of these roads
+    // would put the collision back with every cell still green.
+    expect(getProcessIdentityByPid(CLI_PID).pid).toBe(CLI_PID);
+    expect(getWindowIdentity(SESSION_WT_HWND).pid).toBe(WT_PID);
+    expect(buildProcessParentMap().get(CLI_PID)).toBe(WT_PID);
+
+    // **The convention, decided from the source — because the sweep above cannot** (gate 2,
+    // round 3). `check()` exempts `pid === SELF`, and it has to: `SELF` is a legitimate key in all
+    // four maps. But that exempts **by value**, so a stray literal is invisible to it in exactly
+    // one case: when the literal IS this run's pid — which is the collision. Measured: with
+    // `process.pid` stubbed to 9001 and a literal `9001` back in the seed, 15 of 50 cells went red
+    // while this cell and the `afterEach` sweep stayed green.
+    //
+    // So the rule is read off the text, where the run's pid cannot reach it: **no bare number is
+    // written into a pid position.** The scan knows the four maps' `.set(...)` shapes and the
+    // seed's `new Map([[…]])` rows; a pid written through some future helper is not seen here, and
+    // that shape is what the runtime sweep still covers. `0` is allowed — the idle process.
+    const pidWrites: [RegExp, string][] = [
+      [/\bparentMap\.set\(\s*(\d+)/g, "parentMap.set(<pid>, …)"],
+      [/\bparentMap\.set\([^,]+,\s*(\d+)\s*\)/g, "parentMap.set(…, <pid>)"],
+      [/\bprocessNames\.set\(\s*(\d+)/g, "processNames.set(<pid>, …)"],
+      [/\bprocessStartTimes\.set\(\s*(\d+)/g, "processStartTimes.set(<pid>, …)"],
+      [/\bwindowOwners\.set\([^,]+,\s*(\d+)\s*\)/g, "windowOwners.set(…, <pid>)"],
+    ];
+    // …and the same rule at the other end, where a pid gets its NAME: measured, `const OTHER_WT_PID
+    // = 9001;` is invisible to the scan above, because every map row then writes the name.
+    const namedPids = /\bconst\s+([A-Z_]*(?:PID|OUTSIDER)[A-Z_]*)\s*=\s*(\d+)\s*;/g;
+    const seedBody = /function seedSessionTopology\(\): void \{([\s\S]*?)\n\}/m.exec(source);
+    expect(seedBody, "seedSessionTopology is no longer where this cell reads it").not.toBeNull();
+    const bareLiterals: string[] = [];
+    for (const [re, where] of pidWrites) {
+      for (const m of source.matchAll(re)) {
+        if (m[1] !== "0") bareLiterals.push(`${where}: ${m[1]}`);
+      }
+    }
+    for (const named of source.matchAll(namedPids)) {
+      // `FIXTURE_PID_BASE` is the one pid-named constant that IS a bare number, by construction.
+      if (named[1] !== "FIXTURE_PID_BASE" && named[2] !== "0") {
+        bareLiterals.push(`const ${named[1]}: ${named[2]}`);
+      }
+    }
+    for (const row of seedBody![1].matchAll(/\[\s*(\d+)\s*,|,\s*(\d+)\s*\]/g)) {
+      const n = row[1] ?? row[2];
+      if (n !== "0") bareLiterals.push(`a seeded map row: ${n}`);
+    }
+    expect(
+      bareLiterals,
+      "a pid is written as a bare number. Whether that collides is then up to the pid the OS hands " +
+        "this run — which is the whole of internal #155. Write it as `FIXTURE_PID_BASE + n`.",
+    ).toEqual([]);
+
+    // CONTROL: the sweep can fail. Injected and withdrawn before the assertion, so `afterEach`'s
+    // sweep does not report it a second time.
+    //
+    // `SELF + 1` rather than a literal, and that is not fussiness: **the first version of this
+    // control used 9001 and went red when the run's pid WAS 9001** (measured 2026-09-22, the same
+    // stub that found the dead cell) — the sweep skips `SELF`, correctly, so the injected pid
+    // stopped being an offender. A control written against a number the OS can hand out has the
+    // defect this cell is about. `SELF + 1` is inside the OS's range on every platform (a pid is
+    // at most `0xFFFFFFFC`) and is never this run's pid.
+    const collidable = SELF + 1;
+    parentMap.set(collidable, OTHER_WT_PARENT_PID);
+    const withACollidablePid = fixturePidsInsideTheOsRange();
+    parentMap.delete(collidable);
+    expect(
+      withACollidablePid,
+      "the sweep passed a pid the OS hands out — it is not checking what this cell claims",
+    ).toContain(`parentMap key: ${collidable}`);
   });
 });
 
 describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
   it("records the launch chain, the console window, and the own console host", () => {
     consoleWindow = 0xabc0n;
-    parentMap.set(6100, SELF); // a conhost child of THIS process
-    processNames.set(6100, "conhost.exe");
+    const CONHOST_CHILD_PID = FIXTURE_PID_BASE + 6100; // a conhost child of THIS process
+    parentMap.set(CONHOST_CHILD_PID, SELF);
+    processNames.set(CONHOST_CHILD_PID, "conhost.exe");
 
     logTopologySnapshot();
 
@@ -303,15 +533,19 @@ describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
     expect(snap).toHaveLength(1);
     expect(snap[0]).toMatchObject({
       consoleWindow: String(0xabc0n),
-      ownConsoleHostChildPid: 6100,
+      ownConsoleHostChildPid: CONHOST_CHILD_PID,
       ownConsoleHostChildName: "conhost.exe",
       processSnapshotUnavailable: false,
     });
     // Self first, then up the chain, image names included.
     expect(snap[0].ancestry).toEqual([
       { pid: SELF, processName: "node.exe", startTimeMs: SELF_STARTED_MS },
-      { pid: CLI_PID, processName: "node.exe", startTimeMs: 1000 + CLI_PID },
-      { pid: WT_PID, processName: "WindowsTerminal.exe", startTimeMs: 1000 + WT_PID },
+      // **Literals, not `fallbackStartMs(...)`** (gate 2, round 2). Written through the function,
+      // this expectation cannot disagree with the mock: both read the same rule, so replacing the
+      // mock's body with `return 42` left the file 50/50 green while the commit before it went
+      // 3 red. The numbers are the fixture's clock, and they are pinned as numbers.
+      { pid: CLI_PID, processName: "node.exe", startTimeMs: 6000 },
+      { pid: WT_PID, processName: "WindowsTerminal.exe", startTimeMs: 5000 },
     ]);
     expect(snap[0].launchPath).toBe("node.exe < node.exe < WindowsTerminal.exe");
   });
@@ -319,8 +553,9 @@ describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
   it("does not report a clean absence of a console host child when a child was unreadable", () => {
     // The child that could not be read may have BEEN the console host, and this
     // is the decisive datum the slice exists to collect.
-    parentMap.set(6200, SELF);                     // a child of this process…
-    processNames.set(6200, "");                    // …whose image name won't read
+    const UNREADABLE_CHILD_PID = FIXTURE_PID_BASE + 6200;
+    parentMap.set(UNREADABLE_CHILD_PID, SELF);     // a child of this process…
+    processNames.set(UNREADABLE_CHILD_PID, "");    // …whose image name won't read
     logTopologySnapshot();
 
     expect(events("topology_snapshot")[0]).toMatchObject({
@@ -332,11 +567,12 @@ describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
   it("releases the process table once the startup scan has read it", () => {
     // A full process table held for the life of the server, for a value read
     // once. The startup scan is its only reader.
-    parentMap.set(6400, SELF);
-    processNames.set(6400, "conhost.exe");
+    const CONHOST_CHILD_PID = FIXTURE_PID_BASE + 6400;
+    parentMap.set(CONHOST_CHILD_PID, SELF);
+    processNames.set(CONHOST_CHILD_PID, "conhost.exe");
     _resetTopologyCachesForTest();
     logTopologySnapshot();
-    expect(events("topology_snapshot")[0].ownConsoleHostChildPid).toBe(6400);
+    expect(events("topology_snapshot")[0].ownConsoleHostChildPid).toBe(CONHOST_CHILD_PID);
 
     // The record is a startup one-shot, so a second call finding the map gone
     // is not a regression — it is what pins that nothing holds onto the table.
@@ -368,8 +604,9 @@ describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
   });
 
   it("leaves the scan marker off when every child read fine", () => {
-    parentMap.set(6300, SELF);
-    processNames.set(6300, "notepad.exe");
+    const NOTEPAD_CHILD_PID = FIXTURE_PID_BASE + 6300;
+    parentMap.set(NOTEPAD_CHILD_PID, SELF);
+    processNames.set(NOTEPAD_CHILD_PID, "notepad.exe");
     logTopologySnapshot();
     expect(events("topology_snapshot")[0]).not.toHaveProperty(
       "ownConsoleHostChildScanIncomplete",
@@ -396,8 +633,9 @@ describe("ADR-035 Phase C-0 — startup topology snapshot", () => {
   });
 
   it("stops at the ancestry cap instead of walking a cyclic snapshot forever", () => {
-    parentMap = new Map([[SELF, 100], [100, SELF]]);
-    processNames.set(100, "weird.exe");
+    const CYCLE_PID = FIXTURE_PID_BASE + 100;
+    parentMap = new Map([[SELF, CYCLE_PID], [CYCLE_PID, SELF]]);
+    processNames.set(CYCLE_PID, "weird.exe");
     logTopologySnapshot();
     expect((events("topology_snapshot")[0].ancestry as unknown[]).length).toBe(2);
   });
@@ -423,7 +661,7 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
     expect(rel[0]).toMatchObject({
       resolver: "findTerminalWindow",
       targetHwnd: String(OTHER_TERM_HWND),
-      ownerPid: 9001,
+      ownerPid: OTHER_WT_PID,
       ownerProcessName: "WindowsTerminal.exe",
       ownerInAncestry: false,
       ownerIsConsoleHost: false,
@@ -588,7 +826,7 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
       vi.setSystemTime(Date.now() + 31_000);
       resolveOnto(SESSION_WT_HWND);
     }
-    processStartTimes.set(WT_PID, 1000 + WT_PID);   // readable again, too late
+    processStartTimes.set(WT_PID, 5000);            // readable again, too late
     vi.setSystemTime(Date.now() + 31_000);
     mockLogDiagnostic.mockClear();
     resolveOnto(SESSION_WT_HWND);
@@ -608,7 +846,7 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
     resolveOnto(SESSION_WT_HWND);
 
     // Even if it somehow becomes readable, the chain is not rebuilt for it.
-    processStartTimes.set(WT_PID, 1000 + WT_PID);
+    processStartTimes.set(WT_PID, 5000);            // the fixture clock's value for WT_PID
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(Date.now() + 31_000);
     mockLogDiagnostic.mockClear();
@@ -633,7 +871,7 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
       ancestryPidHit: "unverified",
     });
 
-    processStartTimes.set(WT_PID, 1000 + WT_PID);
+    processStartTimes.set(WT_PID, 5000);            // the fixture clock's value for WT_PID
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(Date.now() + 31_000);
     mockLogDiagnostic.mockClear();
@@ -648,7 +886,7 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
     // `_parentMapAtMs` is deliberately not advanced on a failed read, so an
     // unconditional age would describe a snapshot no longer in use — or, before
     // any read succeeded, report the process data as decades old.
-    const CONHOST_PID = 8700;
+    const CONHOST_PID = FIXTURE_PID_BASE + 8700;
     const CONSOLE_HWND = 0xddd0n;
     processNames.set(CONHOST_PID, "conhost.exe");
     windowOwners.set(CONSOLE_HWND, CONHOST_PID);
@@ -685,7 +923,7 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
     // read (that would mark a whole cache window unavailable on one transient
     // failure), and it must not be retried per record either (that would
     // hammer a process API that is currently failing).
-    const CONHOST_PID = 8400;
+    const CONHOST_PID = FIXTURE_PID_BASE + 8400;
     const CONSOLE_HWND = 0xaaa0n;
     const seedConsoleHost = (): void => {
       processNames.set(CONHOST_PID, "conhost.exe");
@@ -731,7 +969,7 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
   });
 
   it("omits the console-host parent fields rather than reporting a null parent it never read", () => {
-    const CONHOST_PID = 8300;
+    const CONHOST_PID = FIXTURE_PID_BASE + 8300;
     const CONSOLE_HWND = 0x99990n;
     processNames.set(CONHOST_PID, "conhost.exe");
     windowOwners.set(CONSOLE_HWND, CONHOST_PID);
@@ -806,7 +1044,7 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
     // lifetime and put false records into the data OQ-P4 is decided on.
     // Two separate tool calls — one record per (call, destination), so the same
     // window resolved twice inside ONE call would collapse to one record.
-    processStartTimes.set(WT_PID, 1000 + WT_PID);
+    processStartTimes.set(WT_PID, 5000);            // the fixture clock's value for WT_PID
     _resetTopologyCachesForTest();                // cache the chain at this time
     runWithCallId(() => resolveOnto(SESSION_WT_HWND));
     expect(events("topology_relation")[0].ownerInAncestry).toBe(true);
@@ -843,8 +1081,8 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
     // conhost is a SIBLING of the shell, not an ancestor (ADR-035 §6.2). The
     // predicate is therefore structurally silent here — and the record is what
     // Phase C actually gets to work with.
-    const CONHOST_PID = 8100;
-    const SHELL_PID = 8000;
+    const CONHOST_PID = FIXTURE_PID_BASE + 8100;
+    const SHELL_PID = FIXTURE_PID_BASE + 8000;
     const CONSOLE_HWND = 0x77770n;
     parentMap.set(SHELL_PID, CLI_PID);
     parentMap.set(CONHOST_PID, SHELL_PID);
@@ -869,8 +1107,8 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
     // (plan §3b Round 6 P1-A) — a predicate keyed on the parent would have to
     // choose between refusing a console we opened ourselves and matching a
     // recycled pid. The record says which case this is.
-    const CONHOST_PID = 8200;
-    const DEAD_CMD_PID = 8199;
+    const CONHOST_PID = FIXTURE_PID_BASE + 8200;
+    const DEAD_CMD_PID = FIXTURE_PID_BASE + 8199;
     const CONSOLE_HWND = 0x88880n;
     parentMap.set(CONHOST_PID, DEAD_CMD_PID); // DEAD_CMD_PID itself is NOT in the map
     processNames.set(CONHOST_PID, "OpenConsole.exe");
@@ -889,11 +1127,11 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
     // The `cmd.exe` a classic console is reparented through exits at once, and
     // a pid freed that early is a prime candidate for reuse. A "parent" that
     // started AFTER its own child is the signature.
-    const CONHOST_PID = 8500;
-    const REUSED_PID = 8499;
+    const CONHOST_PID = FIXTURE_PID_BASE + 8500;
+    const REUSED_PID = FIXTURE_PID_BASE + 8499;
     const CONSOLE_HWND = 0xbbb0n;
     parentMap.set(CONHOST_PID, REUSED_PID);
-    parentMap.set(REUSED_PID, 1);                  // present in the table…
+    parentMap.set(REUSED_PID, OTHER_WT_PARENT_PID); // present in the table…
     processNames.set(CONHOST_PID, "conhost.exe");
     processStartTimes.set(CONHOST_PID, 5_000);
     processStartTimes.set(REUSED_PID, 9_000);      // …but younger than its child
@@ -988,7 +1226,7 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
     // The owner side carries `ancestryPidHit` so a read failure is never read as
     // an established negative. The parent side needs the same, and this is the
     // conhost configuration with the least data.
-    const CONHOST_PID = 8800;
+    const CONHOST_PID = FIXTURE_PID_BASE + 8800;
     const CONSOLE_HWND = 0xeee0n;
     parentMap.set(CONHOST_PID, WT_PID);            // parent IS in the chain…
     processNames.set(CONHOST_PID, "conhost.exe");
@@ -1006,11 +1244,11 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
   });
 
   it("leaves the parent marker off when the parent simply is not in the chain", () => {
-    const CONHOST_PID = 8900;
-    const OUTSIDER = 9500;
+    const CONHOST_PID = FIXTURE_PID_BASE + 8900;
+    const OUTSIDER = FIXTURE_PID_BASE + 9500;
     const CONSOLE_HWND = 0xfff0n;
     parentMap.set(CONHOST_PID, OUTSIDER);
-    parentMap.set(OUTSIDER, 1);
+    parentMap.set(OUTSIDER, OTHER_WT_PARENT_PID);
     processNames.set(CONHOST_PID, "conhost.exe");
     processStartTimes.set(CONHOST_PID, 9_000);
     processStartTimes.set(OUTSIDER, 5_000);
@@ -1025,11 +1263,11 @@ describe("ADR-035 Phase C-0 — stage-1 instrument", () => {
   });
 
   it("reports an unverifiable parent lifetime as such", () => {
-    const CONHOST_PID = 8600;
-    const PARENT_PID = 8599;
+    const CONHOST_PID = FIXTURE_PID_BASE + 8600;
+    const PARENT_PID = FIXTURE_PID_BASE + 8599;
     const CONSOLE_HWND = 0xccc0n;
     parentMap.set(CONHOST_PID, PARENT_PID);
-    parentMap.set(PARENT_PID, 1);
+    parentMap.set(PARENT_PID, OTHER_WT_PARENT_PID);
     processNames.set(CONHOST_PID, "conhost.exe");
     processStartTimes.set(PARENT_PID, 0);          // creation time unreadable
     windowOwners.set(CONSOLE_HWND, CONHOST_PID);
@@ -1077,11 +1315,11 @@ describe("ADR-035 Phase C-0 — the terminal-class predicate", () => {
   });
 
   it("records a write that lands in ConEmu", () => {
-    const CONEMU_PID = 9300;
+    const CONEMU_PID = FIXTURE_PID_BASE + 9300;
     const CONEMU_HWND = 0x12340n;
     processNames.set(CONEMU_PID, "ConEmu64.exe");
     windowOwners.set(CONEMU_HWND, CONEMU_PID);
-    parentMap.set(CONEMU_PID, 1);
+    parentMap.set(CONEMU_PID, OTHER_WT_PARENT_PID);
     _resetTopologyCachesForTest();
 
     resolveOnto(CONEMU_HWND);
