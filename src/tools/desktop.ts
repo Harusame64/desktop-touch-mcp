@@ -158,7 +158,14 @@ export interface DesktopSeeOutput {
  * to carry — **anything that cannot be recognised is not a read** (gate 2, 2026-09-22).
  */
 function readFreshness(raw: ProviderFreshness | undefined): ProviderFreshness {
-  if (raw === undefined) return { from: "unavailable" };
+  // `null` and not-an-object, not just `undefined`: the line this replaced was
+  // `rawResult.freshness ?? { from: "unavailable" }`, and `??` catches `null` too. Guarding only
+  // `undefined` made an injected ingress answering `freshness: null` — or any result that has been
+  // through a JSON round trip where an absent field became `null` — throw
+  // `TypeError: Cannot read properties of null` out of `see()`, failing the whole call. Hardening
+  // that fails closed on the one input it did not think of is worse than what it replaced
+  // (gate 2, 2026-09-22, measured on this branch).
+  if (raw === null || typeof raw !== "object") return { from: "unavailable" };
   if (raw.from === "unavailable") return { from: "unavailable" };
   if (raw.from !== "read" && raw.from !== "cache" && raw.from !== "staleCache") {
     return { from: "unavailable" };   // a value from a newer ingress than this build knows

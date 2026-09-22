@@ -15,6 +15,10 @@
   itself; `from: "staleCache"` when the read could not be attempted at all and a remembered
   snapshot went out instead; and `from: "unavailable"` when there is no observation to report.
 
+  `ageMs` measures from `observedAtMs` to the reply, which is how old the entities are on a
+  `cache` road and how long a failed read took on a `read` one — not, in that second case, the age
+  of any data.
+
   This is an observation, not a behaviour change: nothing is refused, nothing is re-read, and no
   cache lifetime moved. `attention` is a different signal and is unchanged — it reports the UIA
   cache's TTL, and it says `ok` for a window that has stopped answering.

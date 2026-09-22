@@ -148,7 +148,16 @@ export type ProviderFreshness =
    *   that is discovered and then becomes excluded serves its remembered entry under this value
    *   (gate 2, 2026-09-22 — an earlier draft of this comment claimed it could not happen at all,
    *   and the tree says otherwise). On that path the exclusion is bypassed by the cache, which is
-   *   not this change's doing and is filed separately.
+   *   not this change's doing and is filed separately (internal #160).
+   *
+   *   **That road is read from source and has never been observed.** Reaching it needs the key
+   *   locker's dialog on screen, which means an actual credential capture, so win2 declined to
+   *   shoot it and was right to. The three failures they COULD produce without touching
+   *   credentials — a hwnd that never existed, a window killed under a live cache entry, and the
+   *   same past its TTL — all landed inside a lane, where `settledLane` caught them, and every one
+   *   answered `read` with zero entities (2026-09-22). So neither this value nor `unavailable` has
+   *   a demonstrated road today; that is three roads tried, not a proof that none exists, and the
+   *   shipped description states what to DO with each value rather than where it comes from.
    */
   | { from: "read" | "cache" | "staleCache"; observedAtMs: number }
   /**

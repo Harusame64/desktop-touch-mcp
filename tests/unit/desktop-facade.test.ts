@@ -1097,6 +1097,19 @@ describe("DesktopFacade — observed or remembered (ADR-036 item 8, internal #15
     expect((await facade.see({})).freshness).toEqual({ from: "unavailable" });
   });
 
+  it("survives an ingress that answers `null`, which the line it replaced handled", async () => {
+    // **The hardening's own hole** (gate 2, 2026-09-22). `rawResult.freshness ?? {…}` caught `null`
+    // as well as `undefined`; a reader that guarded only `undefined` threw
+    // `TypeError: Cannot read properties of null` out of `see()` and failed the whole call — for
+    // an injected ingress, or for any result that has been through a JSON round trip where an
+    // absent field came back as `null`. Failing closed on the one input nobody thought of is worse
+    // than the line it replaced.
+    const facade = new DesktopFacade(() => [], {
+      ingress: ingressSaying({ freshness: null }),
+    });
+    expect((await facade.see({})).freshness).toEqual({ from: "unavailable" });
+  });
+
   it("does not pass through an observation it cannot date", async () => {
     // `{from:"cache"}` with no date reached the wire exactly as written before this: a caller
     // reading `ageMs` to decide whether to trust the positions got nothing to read, from a field
