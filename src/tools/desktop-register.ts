@@ -1795,13 +1795,15 @@ export function registerDesktopTools(server: McpServer): void {
       "parent_disabled_prefer_popup → parent window blocked by a modal; switched to targeting the active popup dialog.",
       // ADR-036 item 8 — the shipped sentence for the field #150 added. Without it the field
       // exists and nobody reads it: the caller that needs it is a model reading this description.
-      "response.observation says whether these entities were READ for this call or REMEMBERED: " +
-        "from='read' (a fetch ran), 'cache' (a fresh snapshot was served without asking — " +
-        "observedAtMs is when it was actually read, ageMs how old it is now), 'staleCache' (the " +
-        "read failed and the remembered snapshot went out anyway), 'unavailable' (no observation). " +
-        "A window that has stopped responding can still answer in milliseconds from cache with a " +
-        "fresh generation and nothing else to notice, so treat anything but 'read' as possibly " +
-        "predating what is on screen. It is NOT attention: that one is the UIA cache's TTL.",
+      "response.freshness says whether these entities were READ for this call or REMEMBERED: " +
+        "from='cache' means nothing was asked this time — observedAtMs is when they were actually " +
+        "read and ageMs how old they are now; from='read' means a fetch ran for this call, which " +
+        "is NOT a promise that it succeeded or that any lane looked (a failed lane leaves " +
+        "entities empty with the reason in warnings[] / constraints, and entities can also be " +
+        "replayed from an earlier snapshot); from='unavailable' means there is no observation at " +
+        "all. A window that has stopped responding still answers in milliseconds from cache with a " +
+        "fresh generation and nothing else to notice, so read ageMs before acting on positions. " +
+        "It is NOT attention: that one is the UIA cache's TTL and says 'ok' for a hung window.",
       "response.softExpiresAtMs is an advisory timestamp at ~60% of the lease TTL window — past it the LLM should consider re-calling desktop_discover even though leases are still technically valid; lease.expiresAtMs remains the only correctness wall.",
       advisoryRegistry.toolDescriptionAdvisory(),
     ].join(" "),

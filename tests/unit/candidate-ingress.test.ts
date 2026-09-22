@@ -46,8 +46,8 @@ describe("SnapshotIngress — says whether the answer was read or remembered", (
     const ingress = new SnapshotIngress(async () => ok("A"), noopSource());
     const before = Date.now();
     const result = await ingress.getSnapshot("window:1");
-    expect(result.observation?.from).toBe("read");
-    expect(result.observation?.observedAtMs).toBeGreaterThanOrEqual(before);
+    expect(result.freshness?.from).toBe("read");
+    expect(result.freshness?.observedAtMs).toBeGreaterThanOrEqual(before);
   });
 
   it("says `cache`, and dates it to the FETCH rather than to this call", async () => {
@@ -66,12 +66,12 @@ describe("SnapshotIngress — says whether the answer was read or remembered", (
       const second = await ingress.getSnapshot("window:1");
 
       expect(fetch).toHaveBeenCalledOnce();           // CONTROL: the second call really did not read
-      expect(second.observation?.from).toBe("cache");
+      expect(second.freshness?.from).toBe("cache");
       // The date is the observation's, not the reply's. Stamping "now" here would make a
       // remembered answer look freshly read — the defect, expressed as a timestamp instead of a
       // word.
-      expect(first.observation?.observedAtMs).toBe(1_000);
-      expect(second.observation?.observedAtMs).toBe(1_000);
+      expect(first.freshness?.observedAtMs).toBe(1_000);
+      expect(second.freshness?.observedAtMs).toBe(1_000);
     } finally {
       vi.useRealTimers();
     }
@@ -88,13 +88,13 @@ describe("SnapshotIngress — says whether the answer was read or remembered", (
     );
     const first = await ingress.getSnapshot("window:1");
     fail = true;
-    ingress.invalidate("window:1", "window-event");
+    ingress.invalidate("window:1", "winevent");
     const second = await ingress.getSnapshot("window:1");
 
     expect(second.candidates).toHaveLength(1);      // the remembered answer did go out…
     expect(second.warnings).toContain("ingress_fetch_error");
-    expect(second.observation?.from).toBe("staleCache");   // …and it is not called a read
-    expect(second.observation?.observedAtMs).toBe(first.observation?.observedAtMs);
+    expect(second.freshness?.from).toBe("staleCache");   // …and it is not called a read
+    expect(second.freshness?.observedAtMs).toBe(first.freshness?.observedAtMs);
   });
 
   it("says `unavailable` — never `read` — when the fetch threw with nothing remembered", async () => {
@@ -103,16 +103,16 @@ describe("SnapshotIngress — says whether the answer was read or remembered", (
     }, noopSource());
     const result = await ingress.getSnapshot("window:1");
     expect(result.candidates).toEqual([]);
-    expect(result.observation).toEqual({ from: "unavailable" });
+    expect(result.freshness).toEqual({ from: "unavailable" });
     // No date: there is no observation to date. An `observedAtMs` here would be the moment of a
     // read that did not happen.
-    expect(result.observation?.observedAtMs).toBeUndefined();
+    expect(result.freshness?.observedAtMs).toBeUndefined();
   });
 
   it("says `unavailable` after dispose, where it used to say nothing at all", async () => {
     const ingress = new SnapshotIngress(async () => ok("A"), noopSource());
     ingress.dispose();
-    expect((await ingress.getSnapshot("window:1")).observation).toEqual({ from: "unavailable" });
+    expect((await ingress.getSnapshot("window:1")).freshness).toEqual({ from: "unavailable" });
   });
 });
 

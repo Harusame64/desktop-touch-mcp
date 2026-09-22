@@ -1028,9 +1028,9 @@ describe("DesktopFacade — observed or remembered (ADR-036 item 8, internal #15
   // compare against (`screenshot(detail='text')`, `workspace_snapshot`) were slow and empty, which
   // at least gives a reason to doubt them. This one is fast and full.
 
-  function ingressSaying(observation: unknown): CandidateIngress {
+  function ingressSaying(freshness: unknown): CandidateIngress {
     return {
-      getSnapshot: async () => ({ candidates: [], warnings: [], ...(observation as object) }),
+      getSnapshot: async () => ({ candidates: [], warnings: [], ...(freshness as object) }),
       invalidate: () => {},
       subscribe: () => () => {},
       dispose: () => {},
@@ -1039,13 +1039,13 @@ describe("DesktopFacade — observed or remembered (ADR-036 item 8, internal #15
 
   it("carries the ingress's `cache`, and ages it against the reply rather than re-dating it", async () => {
     const facade = new DesktopFacade(() => [], {
-      ingress: ingressSaying({ observation: { from: "cache", observedAtMs: 1_000 } }),
+      ingress: ingressSaying({ freshness: { from: "cache", observedAtMs: 1_000 } }),
       nowFn: () => 5_500,
     });
     const out = await facade.see({});
-    expect(out.observation.from).toBe("cache");
-    expect(out.observation.observedAtMs).toBe(1_000);
-    expect(out.observation.ageMs).toBe(4_500);
+    expect(out.freshness.from).toBe("cache");
+    expect(out.freshness.observedAtMs).toBe(1_000);
+    expect(out.freshness.ageMs).toBe(4_500);
   });
 
   it("says `read` on the road that has no cache to serve from", async () => {
@@ -1053,7 +1053,7 @@ describe("DesktopFacade — observed or remembered (ADR-036 item 8, internal #15
     // "read" without being told.
     const facade = new DesktopFacade(() => [], { nowFn: () => 7_000 });
     const out = await facade.see({});
-    expect(out.observation).toEqual({ from: "read", observedAtMs: 7_000, ageMs: 0 });
+    expect(out.freshness).toEqual({ from: "read", observedAtMs: 7_000, ageMs: 0 });
   });
 
   it("says `unavailable` — never `read` — when the ingress says nothing", async () => {
@@ -1064,31 +1064,61 @@ describe("DesktopFacade — observed or remembered (ADR-036 item 8, internal #15
     // to be the unreadable one).
     const facade = new DesktopFacade(() => [], { ingress: ingressSaying({}) });
     const out = await facade.see({});
-    expect(out.observation).toEqual({ from: "unavailable" });
-    expect(out.observation.ageMs).toBeUndefined();
+    expect(out.freshness).toEqual({ from: "unavailable" });
+    expect(out.freshness.ageMs).toBeUndefined();
   });
 
   it("keeps `staleCache` distinct from both a read and a plain cache hit", async () => {
     const facade = new DesktopFacade(() => [], {
-      ingress: ingressSaying({ observation: { from: "staleCache", observedAtMs: 2_000 } }),
+      ingress: ingressSaying({ freshness: { from: "staleCache", observedAtMs: 2_000 } }),
       nowFn: () => 2_750,
     });
     const out = await facade.see({});
-    expect(out.observation).toEqual({ from: "staleCache", observedAtMs: 2_000, ageMs: 750 });
+    expect(out.freshness).toEqual({ from: "staleCache", observedAtMs: 2_000, ageMs: 750 });
   });
 
-  it("does not answer this question with `attention`, which is about the UIA cache's TTL", async () => {
-    // CONTROL against the field that already existed: in the round that measured #150 the envelope
-    // carried no `attention` at all (the rig addresses by title, and `attention` needs an HWND),
-    // and where it does appear it says whether the UIA cache passed its TTL — a hung window inside
-    // the TTL is `'ok'`. The two fields must not be read for each other.
+  it("disagrees with `attention`, which is about the UIA cache's TTL", async () => {
+    // **CONTROL, and the first version of it could not fail** (gate 2, 2026-09-22): it built the
+    // facade with no `getFocusedHwnd`, so `attention` was absent whatever this change did —
+    // wiring the field straight to `freshness.from` would have kept it green. Production DOES wire
+    // `getFocusedHwnd` (`desktop-register.ts`), and `resolveTargetHwnd` falls through to it for a
+    // title-only target, so the two fields really are both present and really do disagree.
+    //
+    // Measured on real hardware the same day: four arms, `attention` `'ok'` in every one —
+    // including the hung window and the one whose read threw — while this field said `cache`,
+    // `cache`, `read`, `read`.
+    const HWND = 0xBEEF10n;
+    updateUiaCache(HWND, "<UIA tree>");
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(UIA_CACHE_TTL_EXPORTED_MS / 2);       // the UIA cache is FRESH…
+      const facade = new DesktopFacade(() => [], {
+        ingress: ingressSaying({ freshness: { from: "cache", observedAtMs: 10 } }),
+        getFocusedHwnd: () => HWND,
+        nowFn: () => 20,
+      });
+      const out = await facade.see({ target: { windowTitle: "GameWindow" } });
+      expect(out.attention, "attention is not being answered at all").toBe("ok");
+      expect(out.freshness.from, "…while the entities were remembered, not read").toBe("cache");
+    } finally {
+      vi.useRealTimers();
+      clearUiaCache();
+    }
+  });
+
+  it("drops `ageMs` rather than clamping a negative difference to zero", async () => {
+    // The ingress stamps with `Date.now()` and `see()` reads `nowFn`; an injected clock or a
+    // backwards NTP step makes the difference negative. `Math.max(0, …)` turned that into the
+    // FRESHEST possible answer for an entry that may be 29 s old (gate 2, 2026-09-22) — this
+    // change's own rule, broken in one line.
     const facade = new DesktopFacade(() => [], {
-      ingress: ingressSaying({ observation: { from: "cache", observedAtMs: 10 } }),
-      nowFn: () => 20,
+      ingress: ingressSaying({ freshness: { from: "cache", observedAtMs: 9_000 } }),
+      nowFn: () => 1_000,
     });
-    const out = await facade.see({ target: { windowTitle: "GameWindow" } });
-    expect(out.attention).toBeUndefined();
-    expect(out.observation.from).toBe("cache");
+    const out = await facade.see({});
+    expect(out.freshness.from).toBe("cache");
+    expect(out.freshness.observedAtMs).toBe(9_000);
+    expect(out.freshness.ageMs, "a negative age was reported as fresh").toBeUndefined();
   });
 });
 
