@@ -254,6 +254,18 @@ afterEach(() => {
   // **After every test, because most of the fixture's pids are added inside one** (internal #155).
   // A cell that read only `seedSessionTopology`'s maps would miss the two dozen pids the tests
   // below invent, and those are collidable in exactly the same way.
+  // The clock throws for a pid it did not invent — but **every product road swallows it**
+  // (`logResolve`, `logTopologySnapshot` and `toRecord` all have a bare `catch {}`), so dropping
+  // `SELF`'s seed arrives as 38 cells failing about undefined records and one that carries the
+  // message (gate 2, round 3). Asserted here, where nothing stands between the check and the
+  // reporter.
+  expect(
+    processStartTimes.has(SELF),
+    "this process's start time is not seeded — the fixture's clock would be asked for a pid it " +
+      "did not invent, and the product's `catch {}` would turn that into a diff about records " +
+      "(internal #153/#155)",
+  ).toBe(true);
+
   expect(
     fixturePidsInsideTheOsRange(),
     "a pid this fixture invented is inside the range the OS hands out. If a run's `process.pid` " +
@@ -401,8 +413,15 @@ describe("the fixture itself", () => {
     const definition = /^const FIXTURE_PID_BASE = (.*);$/m.exec(source);
     expect(definition, "FIXTURE_PID_BASE is no longer declared where this cell reads it").not.toBeNull();
     for (const forbidden of ["SELF", "process.pid"]) {
-      expect(definition![1]).not.toContain(forbidden);
+      expect(
+        definition![1],
+        `FIXTURE_PID_BASE is derived from ${forbidden} — the fixture's numbering would then move ` +
+          "with the number the OS hands out",
+      ).not.toContain(forbidden);
     }
+    // CONTROL, as the `SELF_STARTED_MS` pin has: the capture is a real literal, not a name that
+    // would pass the two `not.toContain` checks by saying nothing at all (gate 2, round 3).
+    expect(definition![1], "FIXTURE_PID_BASE is not declared as a number any more").toMatch(/\d/);
 
     // **The clock's rule, pinned as numbers** (gate 2, round 2). Everything else that reads a
     // start time now writes literals, so this is the single cell that says what the rule produces.
@@ -435,6 +454,51 @@ describe("the fixture itself", () => {
     expect(getProcessIdentityByPid(CLI_PID).pid).toBe(CLI_PID);
     expect(getWindowIdentity(SESSION_WT_HWND).pid).toBe(WT_PID);
     expect(buildProcessParentMap().get(CLI_PID)).toBe(WT_PID);
+
+    // **The convention, decided from the source — because the sweep above cannot** (gate 2,
+    // round 3). `check()` exempts `pid === SELF`, and it has to: `SELF` is a legitimate key in all
+    // four maps. But that exempts **by value**, so a stray literal is invisible to it in exactly
+    // one case: when the literal IS this run's pid — which is the collision. Measured: with
+    // `process.pid` stubbed to 9001 and a literal `9001` back in the seed, 15 of 50 cells went red
+    // while this cell and the `afterEach` sweep stayed green.
+    //
+    // So the rule is read off the text, where the run's pid cannot reach it: **no bare number is
+    // written into a pid position.** The scan knows the four maps' `.set(...)` shapes and the
+    // seed's `new Map([[…]])` rows; a pid written through some future helper is not seen here, and
+    // that shape is what the runtime sweep still covers. `0` is allowed — the idle process.
+    const pidWrites: [RegExp, string][] = [
+      [/\bparentMap\.set\(\s*(\d+)/g, "parentMap.set(<pid>, …)"],
+      [/\bparentMap\.set\([^,]+,\s*(\d+)\s*\)/g, "parentMap.set(…, <pid>)"],
+      [/\bprocessNames\.set\(\s*(\d+)/g, "processNames.set(<pid>, …)"],
+      [/\bprocessStartTimes\.set\(\s*(\d+)/g, "processStartTimes.set(<pid>, …)"],
+      [/\bwindowOwners\.set\([^,]+,\s*(\d+)\s*\)/g, "windowOwners.set(…, <pid>)"],
+    ];
+    // …and the same rule at the other end, where a pid gets its NAME: measured, `const OTHER_WT_PID
+    // = 9001;` is invisible to the scan above, because every map row then writes the name.
+    const namedPids = /\bconst\s+([A-Z_]*(?:PID|OUTSIDER)[A-Z_]*)\s*=\s*(\d+)\s*;/g;
+    const seedBody = /function seedSessionTopology\(\): void \{([\s\S]*?)\n\}/m.exec(source);
+    expect(seedBody, "seedSessionTopology is no longer where this cell reads it").not.toBeNull();
+    const bareLiterals: string[] = [];
+    for (const [re, where] of pidWrites) {
+      for (const m of source.matchAll(re)) {
+        if (m[1] !== "0") bareLiterals.push(`${where}: ${m[1]}`);
+      }
+    }
+    for (const named of source.matchAll(namedPids)) {
+      // `FIXTURE_PID_BASE` is the one pid-named constant that IS a bare number, by construction.
+      if (named[1] !== "FIXTURE_PID_BASE" && named[2] !== "0") {
+        bareLiterals.push(`const ${named[1]}: ${named[2]}`);
+      }
+    }
+    for (const row of seedBody![1].matchAll(/\[\s*(\d+)\s*,|,\s*(\d+)\s*\]/g)) {
+      const n = row[1] ?? row[2];
+      if (n !== "0") bareLiterals.push(`a seeded map row: ${n}`);
+    }
+    expect(
+      bareLiterals,
+      "a pid is written as a bare number. Whether that collides is then up to the pid the OS hands " +
+        "this run — which is the whole of internal #155. Write it as `FIXTURE_PID_BASE + n`.",
+    ).toEqual([]);
 
     // CONTROL: the sweep can fail. Injected and withdrawn before the assertion, so `afterEach`'s
     // sweep does not report it a second time.
@@ -762,7 +826,7 @@ describe("ADR-035 Phase C-0 — topology relation coverage", () => {
       vi.setSystemTime(Date.now() + 31_000);
       resolveOnto(SESSION_WT_HWND);
     }
-    processStartTimes.set(WT_PID, 5000);            // the fixture clock's value for WT_PID   // readable again, too late
+    processStartTimes.set(WT_PID, 5000);            // readable again, too late
     vi.setSystemTime(Date.now() + 31_000);
     mockLogDiagnostic.mockClear();
     resolveOnto(SESSION_WT_HWND);
