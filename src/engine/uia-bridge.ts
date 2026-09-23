@@ -5,7 +5,7 @@ import { AIM_WINDOW_GONE, AimedWindowGoneError } from "./aim.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { nativeUia, type NativeUiElement } from "./native-engine.js";
 import { isExcludedTitle, isExcludedWindowHandle, isWindowGone } from "./win32.js";
-import { WindowExcludedError } from "./tool-exclusion.js";
+import { WindowExcludedError, hasExcludedPids } from "./tool-exclusion.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -17,7 +17,23 @@ const execFileAsync = promisify(execFile);
  * buttons by title (the exact driving leak tool-exclusion exists to close). Zero-overhead when no
  * locker is alive (`isExcludedTitle` short-circuits on an empty registry).
  */
-function refuseUiaTitleIfExcluded(windowTitle: string): void {
+function refuseUiaTitleIfExcluded(windowTitle: string, handle?: bigint): void {
+  // Internal #115 row 4 — an EMPTY title with no handle names no window at all: the native root
+  // search matches "" against every window (`contains("")`), so the read or write goes to whatever
+  // UI Automation enumerates first, and `isExcludedTitle("")` answers false by design (it is asked
+  // "does this title name the locker", and "" names nothing). While a locker is armed that first
+  // window can be the locker, and nothing else on this road would stop it: the handle gate below
+  // never runs without a handle. Refused only while armed, so an idle server is unchanged; a call
+  // that carries a handle is judged by the handle gate instead.
+  if (windowTitle === "" && handle === undefined && hasExcludedPids()) {
+    // The words do not confirm that a locker is running: this caller never named it, and the
+    // coordinate refusal had the same reveal removed at gate 2 (`_errors.ts`). The `WindowExcluded:`
+    // prefix is what the flat tools' `classify` reads, as `wait-until.ts` does (gate 2 on #115).
+    throw new WindowExcludedError(
+      "WindowExcluded: this UI Automation call has an empty window title and no window handle, " +
+      "which would match whichever window is listed first; name the window, or pass its handle",
+    );
+  }
   if (isExcludedTitle(windowTitle)) {
     throw new WindowExcludedError(
       `UIA target window "${windowTitle}" belongs to the desktop-touch key locker and is excluded`,
@@ -1398,7 +1414,7 @@ export async function getUiElements(
     fetchValues?: boolean;
   }
 ): Promise<UiElementsResult & { _cacheHit?: boolean }> {
-  refuseUiaTitleIfExcluded(windowTitle);
+  refuseUiaTitleIfExcluded(windowTitle, options?.pinnedHwnd);
   if (options?.pinnedHwnd !== undefined) refuseUiaHwndIfExcluded(options.pinnedHwnd);
   // Cache hit path — only when the caller provides a handle and asks for `cached`. The refusals
   // above run first and stay first: a window that may not be touched, or is gone, is not a thing
@@ -1710,7 +1726,7 @@ export async function clickElement(
   /** (H3) When hwnd is provided, bypass title-based root search (fixes Save As / common dialogs). */
   options?: { hwnd?: bigint }
 ): Promise<{ ok: boolean; element?: string; error?: string; code?: string; via?: "native" | "powershell" }> {
-  refuseUiaTitleIfExcluded(windowTitle);
+  refuseUiaTitleIfExcluded(windowTitle, options?.hwnd);
   if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
   // ADR-036 — on the WRITE path a handle is authoritative and is never traded for a title.
   //
@@ -1769,7 +1785,7 @@ export async function setElementValue(
   /** (H3) When hwnd is provided, bypass title-based root search (fixes Save As / common dialogs). */
   options?: { hwnd?: bigint }
 ): Promise<{ ok: boolean; error?: string; code?: string }> {
-  refuseUiaTitleIfExcluded(windowTitle);
+  refuseUiaTitleIfExcluded(windowTitle, options?.hwnd);
   if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
   // A handle is authoritative here too — see `clickElement` above for why the read half's gate
   // does not belong on a write.
@@ -1817,7 +1833,7 @@ export async function insertTextViaTextPattern2(
    */
   options?: { hwnd?: bigint }
 ): Promise<{ ok: boolean; code?: string; error?: string }> {
-  refuseUiaTitleIfExcluded(windowTitle);
+  refuseUiaTitleIfExcluded(windowTitle, options?.hwnd);
   if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
   // ★ Rust native path (Phase C)
   if (nativeUia?.uiaInsertText) {
@@ -2220,7 +2236,7 @@ export async function getTextViaTextPattern(
   /** ADR-036 — scope the read to a resolved window, so the buffer read matches the window written. */
   options?: { pinnedHwnd?: bigint },
 ): Promise<string | null> {
-  refuseUiaTitleIfExcluded(windowTitle);
+  refuseUiaTitleIfExcluded(windowTitle, options?.pinnedHwnd);
   if (options?.pinnedHwnd !== undefined) refuseUiaHwndIfExcluded(options.pinnedHwnd);
   // Scoped whenever a handle is in hand, as in `getUiElements`.
   const scopeHwnd = options?.pinnedHwnd;

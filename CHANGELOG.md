@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- **While the key locker is armed, a UI Automation call with an empty window title and no window handle is refused.**
+  An empty title matches every window, so such a call went to whichever window UI Automation listed
+  first, and that could be the locker's own window: the title check passed it, and the handle check
+  never ran without a handle. It is now refused before anything is read or written, with an error
+  that says to name the window or pass its handle. Writes and pinned reads that carry a window
+  handle, and every call while no locker is armed, are unchanged.
+
 - **One unresponsive app no longer stops the native UI Automation engine for the life of the server.**
   At start-up the engine registered a desktop-wide focus-change handler before serving any request.
   That registration waited on every app's UI Automation provider, with no time limit, so a single hung
