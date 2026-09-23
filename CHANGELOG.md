@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- **Two UI Automation reads of a hung window no longer wait twice.** `getElementBounds` (behind
+  `wait_until` element conditions and `scope_element`) and `getUiElements` (behind `desktop_discover`'s
+  UIA lane, `get_ui_elements`, screenshots, narration and workspace reads) retried a timed-out native
+  read through PowerShell. Against a window that is itself hung, that retry never succeeded while it
+  stayed hung (0 of 12 measured on the first read), and it cost another budget. Now, when the native
+  read times out, the server asks every window the read could mean whether it responds (a `WM_NULL`
+  message, 200 ms), and skips the retry only when none does and Windows itself counts each as not
+  responding. The read then ends at the native timeout: `read_unfinished` for element conditions, and
+  the timeout error for element lists (`get_ui_elements` reports `UiaTimeout`). In every other case —
+  a window that responds, one that cannot be asked, or any failure that is not a timeout — the retry
+  runs as before. The other reads that fall back to PowerShell are unchanged.
+
 - **`type` / `setValue` on a button is refused instead of being sent as keystrokes.** On a WinForms
   button, `desktop_act` with `setValue` answered `ok:true` with executor `keyboard`: no value was set,
   and the text went out as keystrokes to whatever held the focus. When UI Automation reports the

@@ -34,6 +34,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const psOutputs: string[] = [];
 let psThrows: Error | null = null;
 let nativeAnswer: (() => unknown) | null = null;
+let nativeElementsThrow: Error | null = null;
+/** Internal #144 — the desktop the WM_NULL check sees: handle → [title, answers]. */
+const desktop = new Map<bigint, [string, boolean | null]>();
+let answersBindingPresent = true;
+let answersBindingThrows = false;
+const invisible = new Set<bigint>();
+const classOf = new Map<bigint, string>();
+const budgetsAsked: number[] = [];
 
 vi.mock("node:child_process", () => ({
   execFile: (
@@ -57,8 +65,22 @@ vi.mock("../../index.js", () => ({
     computeChangeFraction: () => 0,
     dhashFromRaw: () => 0n,
     hammingDistance: () => 0,
-    win32EnumTopLevelWindows: () => [],
-    uiaGetElements: async () => ({ windowTitle: "T", elementCount: 0, elements: [] }),
+    win32EnumTopLevelWindows: () => [...desktop.keys()],
+    win32IsWindowVisible: (h: bigint) => !invisible.has(h),
+    win32GetClassName: (h: bigint) => classOf.get(h) ?? "AppWindow",
+    win32GetWindowText: (h: bigint) => desktop.get(h)?.[0] ?? "",
+    get win32WindowAnswers() {
+      if (!answersBindingPresent) return undefined;
+      return (h: bigint, budget: number) => {
+        budgetsAsked.push(budget);
+        if (answersBindingThrows) throw new Error("native panic");
+        return desktop.has(h) ? desktop.get(h)![1] : null;
+      };
+    },
+    uiaGetElements: async () => {
+      if (nativeElementsThrow) throw nativeElementsThrow;
+      return { windowTitle: "T", elementCount: 0, elements: [] };
+    },
     uiaGetFocusedAndPoint: async () => ({ focused: null, atPoint: null }),
     // The addon is PRESENT here — that is the point. A build with no addon can never show the
     // fallback, and the fallback is what this file is about.
@@ -70,7 +92,7 @@ vi.mock("../../index.js", () => ({
 }));
 
 vi.resetModules();
-const { getElementBounds } = await import("../../src/engine/uia-bridge.js");
+const { getElementBounds, getUiElements, isNativeUiaTimeout } = await import("../../src/engine/uia-bridge.js");
 
 function scripts_reset(): void { psOutputs.length = 0; }
 beforeEach(() => { psOutputs.length = 0; psThrows = null; nativeAnswer = null; });
@@ -310,5 +332,109 @@ describe("the bridge says which client answered", () => {
     const answer = await fresh.getElementBounds("App", "Save");
     expect(answer).toMatchObject({ found: ELEMENT, via: "powershell" });
     expect(answer).not.toHaveProperty("nativeFailed");
+  });
+});
+
+describe("a native timeout on a target that does not answer is not waited for twice (internal #144)", () => {
+  // The user's Q2 (2026-09-21): skip the PowerShell fall-back after a native timeout. Public #715 did
+  // it for EVERY timeout and was reverted: the same timeout comes from ANOTHER hung window stalling
+  // the native title scan, and there PowerShell sometimes answered (internal `cb5d027`, 2 of 2).
+  // WM_NULL to the target splits the two, 16 of 16 (win2 `f3e6585`, `225b842`).
+  const TIMEOUT = "UIA operation timed out after 8000ms";
+  const FOUND = { name: "Save", controlType: "Button", automationId: "", boundingRect: null, value: null };
+  afterEach(() => {
+    nativeElementsThrow = null; desktop.clear(); answersBindingPresent = true; answersBindingThrows = false;
+    invisible.clear(); classOf.clear(); budgetsAsked.length = 0; psOutputs.length = 0;
+  });
+
+  it("skips the fall-back when the one window the title names does not answer (B: the target is hung)", async () => {
+    desktop.set(10n, ["My App - doc", false]);
+    desktop.set(11n, ["Other", true]);
+    nativeAnswer = () => { throw new Error(TIMEOUT); };
+    psOutputs.push(JSON.stringify(FOUND)); // a fall-back would SUCCEED — the answer must not be this
+    const answer = await getElementBounds("my app", "Save");
+    expect(answer).toMatchObject({ found: null, why: "read_unfinished", via: "none", nativeFailed: TIMEOUT });
+    expect(psOutputs, "a PowerShell script ran").toHaveLength(1);
+    // The budget is pinned: the send blocks the event loop for up to this long per window.
+    expect(budgetsAsked).toEqual([200]);
+  });
+
+  it("skips when the only other match is DWM's Ghost stand-in for the hung target (win2 367f00e)", async () => {
+    // About 6 s into a hang Windows shows a class-"Ghost" window with the same text, and it answers.
+    desktop.set(10n, ["My App - doc", false]);
+    desktop.set(77n, ["My App - doc (Not Responding)", true]);
+    classOf.set(77n, "Ghost");
+    nativeAnswer = () => { throw new Error(TIMEOUT); };
+    psOutputs.push(JSON.stringify(FOUND));
+    expect(await getElementBounds("My App", "Save")).toMatchObject({ found: null, why: "read_unfinished", via: "none" });
+    expect(psOutputs).toHaveLength(1);
+  });
+
+  it("skips at exactly the cap: eight matching windows, none answering", async () => {
+    for (let i = 0; i < 8; i++) desktop.set(BigInt(40 + i), [`My App ${i}`, false]);
+    nativeAnswer = () => { throw new Error(TIMEOUT); };
+    psOutputs.push(JSON.stringify(FOUND));
+    expect(await getElementBounds("My App", "Save")).toMatchObject({ found: null, why: "read_unfinished", via: "none" });
+    expect(psOutputs).toHaveLength(1);
+  });
+
+  it("throws the timeout from getUiElements in the same case, instead of falling back", async () => {
+    desktop.set(10n, ["My App - doc", false]);
+    nativeElementsThrow = new Error(TIMEOUT);
+    psOutputs.push(JSON.stringify({ windowTitle: "T", elementCount: 0, elements: [] }));
+    await expect(getUiElements("My App", 3, 50, 30000)).rejects.toThrow(TIMEOUT);
+    expect(psOutputs).toHaveLength(1);
+  });
+
+  // Every other case falls back exactly as before. Each is a reason the ground must be clear.
+  const fallsBack: Array<[string, () => void]> = [
+    ["the target answers — another window is the cause (A)", () => { desktop.set(10n, ["My App", true]); desktop.set(11n, ["Hung", false]); }],
+    ["two windows match and one of them answers", () => { desktop.set(10n, ["My App 1", false]); desktop.set(12n, ["My App 2", true]); }],
+    ["no window matches the title", () => { desktop.set(11n, ["Hung", false]); }],
+    ["the addon predates the check (it cannot be asked)", () => { desktop.set(10n, ["My App", false]); answersBindingPresent = false; }],
+    ["the window went away before it was asked", () => { desktop.set(10n, ["My App", null]); }],
+    ["the binding throws (never read as hung)", () => { desktop.set(10n, ["My App", false]); answersBindingThrows = true; }],
+    // UIA's root lists only visible windows, so an invisible match is not the engine's pick.
+    ["the only match is invisible", () => { desktop.set(10n, ["My App", false]); invisible.add(10n); }],
+    ["more windows match than a clear ground allows", () => { for (let i = 0; i < 9; i++) desktop.set(BigInt(20 + i), [`My App ${i}`, false]); }],
+  ];
+  for (const [label, arrange] of fallsBack) {
+    it(`falls back when ${label}`, async () => {
+      arrange();
+      nativeAnswer = () => { throw new Error(TIMEOUT); };
+      psOutputs.push(JSON.stringify(FOUND));
+      expect(await getElementBounds("My App", "Save")).toMatchObject({ found: FOUND, via: "powershell", nativeFailed: TIMEOUT });
+      expect(psOutputs, "the fall-back did not run").toHaveLength(0);
+    });
+  }
+
+  it("falls back on a native failure that is not a timeout, even when the target does not answer", async () => {
+    desktop.set(10n, ["My App", false]);
+    nativeAnswer = () => { throw new Error("UIA COM thread disconnected"); };
+    psOutputs.push(JSON.stringify(FOUND));
+    expect(await getElementBounds("My App", "Save")).toMatchObject({ found: FOUND, via: "powershell" });
+  });
+
+  it("asks the pinned handle, not the title, on a read pinned to a handle", async () => {
+    // The handle does not answer: skipped, although a window with the title answers.
+    desktop.set(4242n, ["B", false]);
+    desktop.set(10n, ["B copy", true]);
+    nativeElementsThrow = new Error(TIMEOUT);
+    psOutputs.push(JSON.stringify({ windowTitle: "B", elementCount: 0, elements: [] }));
+    await expect(getUiElements("B", 3, 50, 30000, { pinnedHwnd: 4242n })).rejects.toThrow(TIMEOUT);
+    // The handle answers: a healthy window whose read timed out in the queue behind a hung one
+    // (one COM thread; gate 2 on #715). The script reaches it through FromHandle — fall back.
+    desktop.set(4242n, ["B", true]);
+    const result = await getUiElements("B", 3, 50, 30000, { pinnedHwnd: 4242n });
+    expect(result.windowTitle).toBe("B");
+    expect(psOutputs).toHaveLength(0);
+  });
+
+  it("recognises only the engine's own timeout shape", () => {
+    expect(isNativeUiaTimeout(new Error(TIMEOUT))).toBe(true);
+    expect(isNativeUiaTimeout("UIA operation timed out after 2000ms")).toBe(true);
+    for (const other of ["Command timed out", `${TIMEOUT} (retry)`, `PS: ${TIMEOUT}`, "UIA COM thread disconnected", "PowerShell: operation timed out after 8000ms"]) {
+      expect(isNativeUiaTimeout(new Error(other)), other).toBe(false);
+    }
   });
 });

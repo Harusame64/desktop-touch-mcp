@@ -16,8 +16,10 @@ use napi_derive::napi;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
+use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetAncestor, GetLastActivePopup, GetWindow, GET_ANCESTOR_FLAGS, GET_WINDOW_CMD,
+    GetAncestor, GetLastActivePopup, GetWindow, IsHungAppWindow, IsWindow, SendMessageTimeoutW,
+    GET_ANCESTOR_FLAGS, GET_WINDOW_CMD, SMTO_ABORTIFHUNG, WM_NULL,
 };
 
 use super::safety::napi_safe_call;
@@ -69,6 +71,56 @@ pub fn win32_get_ancestor(hwnd: BigInt, ga_flags: u32) -> napi::Result<Option<Bi
 pub fn win32_is_window_enabled(hwnd: BigInt) -> napi::Result<bool> {
     napi_safe_call("win32_is_window_enabled", || {
         Ok(unsafe { IsWindowEnabled(hwnd_from_bigint(hwnd)) }.as_bool())
+    })
+}
+
+/// Internal #144 — does the window's thread answer a message within `timeout_ms`?
+///
+/// `SendMessageTimeoutW(WM_NULL, SMTO_ABORTIFHUNG)`:
+/// - `Some(true)` — the thread processed it;
+/// - `Some(false)` — **only** when the send failed **and** the OS itself counts the window as hung
+///   (`IsHungAppWindow`, about 5 s without pumping messages). A thread that is merely slow — still
+///   serving a long UIA walk — is not "does not answer" (gate 2 on public #724);
+/// - `None` — could not be asked, or the answer is not that: no such window, the window went away
+///   between the check and the send, or a failed send on a window the OS does not count as hung.
+///   `None` is never read as hung.
+///
+/// **`GetLastError` is NOT consulted**, and must not be: measured by win2 (internal `5445a40`), once
+/// the OS counts a window as hung, `SMTO_ABORTIFHUNG` returns at once with last error **0**, not
+/// `ERROR_TIMEOUT` (1460 appears only while the window is not yet counted as hung). The first
+/// version required `ERROR_TIMEOUT && IsHungAppWindow`, a conjunction that is never true, and the
+/// hung target fell back exactly as before (4 of 4). A slow-but-live window stayed
+/// `IsHungAppWindow == false` throughout (12 samples), so the OS's own verdict is the whole ground.
+///
+/// Measured by win2 (internal `f3e6585` / `225b842`): when a native UIA read times out (8 s), the
+/// send fails for a hung target and succeeds for a healthy target slowed by ANOTHER hung window,
+/// 16 of 16; `IsHungAppWindow` is true for the hung target by then (false at issue time).
+#[napi]
+pub fn win32_window_answers(hwnd: BigInt, timeout_ms: u32) -> napi::Result<Option<bool>> {
+    napi_safe_call("win32_window_answers", || {
+        let h = hwnd_from_bigint(hwnd);
+        if !unsafe { IsWindow(Some(h)) }.as_bool() {
+            return Ok(None);
+        }
+        let mut result: usize = 0;
+        let r = unsafe {
+            SendMessageTimeoutW(
+                h,
+                WM_NULL,
+                WPARAM(0),
+                LPARAM(0),
+                SMTO_ABORTIFHUNG,
+                timeout_ms,
+                Some(&mut result),
+            )
+        };
+        if r.0 != 0 {
+            return Ok(Some(true));
+        }
+        if unsafe { IsHungAppWindow(h) }.as_bool() {
+            return Ok(Some(false));
+        }
+        Ok(None)
     })
 }
 

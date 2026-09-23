@@ -120,6 +120,7 @@ export const win32VkToScanCode                = nativeBinding.win32VkToScanCode;
 export const win32GetWindow                   = nativeBinding.win32GetWindow;
 export const win32GetAncestor                 = nativeBinding.win32GetAncestor;
 export const win32IsWindowEnabled             = nativeBinding.win32IsWindowEnabled;
+export const win32WindowAnswers               = nativeBinding.win32WindowAnswers;
 export const win32GetLastActivePopup          = nativeBinding.win32GetLastActivePopup;
 export const win32IsWindowCloaked             = nativeBinding.win32IsWindowCloaked;
 
