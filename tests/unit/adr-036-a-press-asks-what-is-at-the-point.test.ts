@@ -199,6 +199,35 @@ describe("a coordinate press asks what is at the point", () => {
     expect(ok.outcome.ok).toBe(true);
   });
 
+  it("refuses 保存 over 保存しない, both ways — the boundary reads Japanese (internal #140)", async () => {
+    // Measured on the machine before this (win2, 2026-09-20): recorded `保存`, the point holding
+    // `保存しない` → `same` → pressed, and the fixture logged `CLICK-LABEL 保存しない`. The boundary was
+    // ASCII, so every kana and kanji counted as one.
+    for (const [recorded, atPoint] of [["保存", "保存しない"], ["保存しない", "保存"]] as const) {
+      const ent = entity({ locator: { uia: { name: recorded } } } as Partial<UiEntity>);
+      const { outcome, deps } = await press({ elementAtPoint: () => AT({ name: atPoint }) }, ent);
+      expect(outcome.ok, `${recorded} over ${atPoint}`).toBe(false);
+      expect(deps.mouseClick).not.toHaveBeenCalled();
+    }
+  });
+
+  it("still presses an access key and a spaced suffix, which are not letters", async () => {
+    for (const [recorded, atPoint] of [["保存する(S)", "保存する"], ["保存", "保存 (Ctrl+S)"], ["項目 1", "項目 1"]] as const) {
+      const ent = entity({ locator: { uia: { name: recorded } } } as Partial<UiEntity>);
+      const { outcome } = await press({ elementAtPoint: () => AT({ name: atPoint }) }, ent);
+      expect(outcome.ok, `${recorded} over ${atPoint}`).toBe(true);
+    }
+  });
+
+  it("refuses 保存 over 保存ボタン: the accepted cost, pinned so a loosening shows (internal #140)", async () => {
+    // The trade the user took on 2026-09-23: an outer control whose inner text extends its name with
+    // letters is refused now, rather than risking the wrong button. Only RuntimeId separates the two
+    // (measured 2026-09-20), and that is ADR-036 Annex B.
+    const ent = entity({ locator: { uia: { name: "保存" } } } as Partial<UiEntity>);
+    const { outcome } = await press({ elementAtPoint: () => AT({ name: "保存ボタン" }) }, ent);
+    expect(outcome.ok).toBe(false);
+  });
+
   it("says whether the check threw or the point was simply empty", async () => {
     // Both press and both read `unreadable`; only one of them is a defect somewhere. The bridge
     // learned the same lesson one commit earlier (`atPointWhy`).

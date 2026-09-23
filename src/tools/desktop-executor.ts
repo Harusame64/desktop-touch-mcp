@@ -563,7 +563,7 @@ async function resolvePressPoint(
         for (let i = long.indexOf(short); i !== -1; i = long.indexOf(short, i + 1)) {
           const before = i === 0 ? "" : long[i - 1];
           const after = long[i + short.length] ?? "";
-          if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) return true;
+          if (!/[\p{L}\p{N}]/u.test(before) && !/[\p{L}\p{N}]/u.test(after)) return true;
         }
         return false;
       };
