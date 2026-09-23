@@ -251,6 +251,17 @@ export type TouchResult =
        */
       roiCapture?: RoiCapture;
       /**
+       * ADR-036 (internal #166) — the kinds of change this act's `diff` could not report, because the
+       * post-action read did not look for them. Set by the registration wrapper on the S5b fold, whose
+       * post snapshot carries discover's entities forward instead of reading them again, so it does
+       * not detect an entity that vanished, moved, appeared or changed value. A listed kind that does
+       * appear in `diff` there came from an entity the fold could not carry (one with no rect, or no
+       * OCR target id to rebuild it under), not from a look. Absent on every other road; its absence
+       * does NOT mean every kind was looked for — on S5, an OCR entity has no value to compare, and a
+       * move under the id's 8 px rounding is below the 16 px move threshold (gate 2 on #720).
+       */
+      diffUnchecked?: SemanticDiff;
+      /**
        * ADR-024 Seed-2 S5b — INTERNAL channel from a `postSnapshot` closure;
        * the registration wrapper strips this before serialization and copies
        * its `roiCapture` / `observation` onto the public fields. Never present

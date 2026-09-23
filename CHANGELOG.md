@@ -9,6 +9,15 @@
   the JSON envelope. The Failure recovery list now names it: nothing was done; correct the arguments
   and call again.
 
+- **An act on a window whose accessibility tree is missing or too sparse now says which changes its
+  `diff` did not look for.** On such a window, when discover saw no GPU-detected entities, a
+  successful act's post-action check takes a faster road (one OCR instead of two) that reuses
+  discover's entities as the "after" side, so it cannot see an entity vanish, move, appear or change
+  value. Measured on hardware: a press that removed the label it pressed answered `["focus_shifted"]` there and
+  `["entity_disappeared","focus_shifted"]` on the slower road. Those acts now carry
+  `diffUnchecked` listing the six kinds they did not check; `focus_shifted` is still checked. Whether
+  that road should look instead is not decided here.
+
 - **While the key locker is armed, a UI Automation call with an empty window title and no window handle is refused.**
   An empty title matches every window, so such a call went to whichever window UI Automation listed
   first, and that could be the locker's own window: the title check passed it, and the handle check

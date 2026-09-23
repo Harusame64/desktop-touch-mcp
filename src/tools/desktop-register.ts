@@ -58,7 +58,7 @@ import {
   EntityNotFoundRefusalError,
   KeyboardTargetUnsafeRefusalError,
 } from "../errors/typed-errors.js";
-import type { WindowBlockAnswer, TouchAction, RoiCapture, RoiCaptureMaterial, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
+import type { WindowBlockAnswer, TouchAction, RoiCapture, RoiCaptureMaterial, SemanticDiff, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
   combineEventSources,
@@ -1016,6 +1016,9 @@ export const desktopActRawHandler = async (
       if (rm?.roiCapture) {
         (result as { roiCapture?: RoiCapture }).roiCapture = rm.roiCapture;
       }
+      // Internal #166: the fold's diff baseline is discover's own entities carried forward, so an
+      // empty entity diff here is not a verified no-change. Say which kinds were not looked for.
+      result.diffUnchecked = [...FOLD_DIFF_UNCHECKED];
     }
   } else {
     // ── Legacy S5 path (non-visual / fold-off / visual_gpu present / frame-diff
@@ -1546,6 +1549,23 @@ function assembleRoiCaptureFromSom(
 }
 
 /**
+ * Internal #166 — every {@link SemanticDiff} kind the fold cannot detect. Its post snapshot is
+ * discover's entities rebuilt with the same ids, so a real change of these kinds leaves pre and post
+ * equal (an entity it cannot carry — no rect, or no target id — reads as gone, which is not a look); measured on hardware (win2 arm H3, 2026-09-23), a press that removed
+ * the label it pressed answered `["focus_shifted"]` on the fold and
+ * `["entity_disappeared","focus_shifted"]` on S5. Focus is read outside the snapshot, so
+ * `focus_shifted` is the one kind the fold still reports.
+ */
+const FOLD_DIFF_UNCHECKED: readonly SemanticDiff[number][] = [
+  "entity_disappeared",
+  "entity_moved",
+  "entity_appeared",
+  "value_changed",
+  "modal_appeared",
+  "modal_dismissed",
+];
+
+/**
  * ADR-024 Seed-2 S5b — build the visual-only fold's post-snapshot closure.
  * Captured BEFORE the touch (holds the pre-frame + target identity); invoked by
  * `GuardedTouchLoop.touch()` AFTER execute.
@@ -1833,6 +1853,7 @@ export function registerDesktopTools(server: McpServer): void {
       "[EXPERIMENTAL] Act on a discovered entity (click/type/setValue/scroll). Use desktop_act.",
       "Validates the lease before executing — rejects stale, expired, or mismatched leases.",
       "Returns a semantic diff (entity_disappeared, modal_appeared, etc.) and a 'next' hint.",
+      "When diffUnchecked is present, diff did not look for the kinds it lists, so their absence from diff does not mean they did not happen; re-call desktop_discover to see the window as it is now.",
       // ADR-036 — THE SHIPPED SENTENCE IS THE RULE; THE REASONS ARE HERE.
       //
       // Fourteen review rounds went into this paragraph, and every one removed a claim the code

@@ -1124,7 +1124,9 @@ export class DesktopFacade {
    * The fold's carry-forward candidates must carry the SAME `target.id` so their
    * entityId (`sha1(window:targetId | label | snapRect)`) matches the
    * pre-snapshot — otherwise the touched entity reads as `entity_disappeared`
-   * (R1). Returns `null` when the session is gone (handler then skips the fold).
+   * (R1). Returns `null` when the session is gone. The handler does NOT skip the fold then: the fold
+   * carries no entities, so every discover entity reads as gone (gate 2 on public #720; this line used
+   * to say the fold was skipped).
    *
    * Parity used to be CLAIMED here and was false. The comment said the OCR lane "receives the
    * SAME raw `target` object", so `@active` / `windowTitle` / `hwnd` keyed identically in both
