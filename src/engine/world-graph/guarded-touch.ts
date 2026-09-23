@@ -120,6 +120,21 @@ export type WindowBlockAnswer =
   | { kind: "cannot_say" };
 
 /**
+ * G1 (ADR-036 §10) — what reading a `stale` target's place again found, just before the press.
+ *
+ * - `present`: the label the entity carries was read there again. The act goes on.
+ * - `absent`: the place was read and the label is not in it. **A clear ground**: the act is refused
+ *   as `entity_not_found`, and nothing is pressed.
+ * - `cannot_say`: the place could not be read — no label to look for, no window or rect to read,
+ *   the window's owner changed, the read failed. Not a ground (the user's rule of 2026-09-11), so
+ *   the act goes on as it did before G1. `why` goes to the `act.stale` row, not to the caller.
+ */
+export type StaleRereadAnswer =
+  | { kind: "present" }
+  | { kind: "absent" }
+  | { kind: "cannot_say"; why: string };
+
+/**
  * ADR-024 Seed-2 (S1 contract lock) — a lease-less entity preview carried inside
  * a post-action `roiCapture`. Distinct from a discovered `UiEntity`: it has NO
  * lease and therefore cannot be passed to `desktop_act` (MVP = ADR-024 OQ-8
@@ -338,6 +353,13 @@ export interface TouchEnvironment {
    * so `!check(...)` cannot silently invert the new null-means-ok convention.)
    */
   checkViewport(entity: UiEntity): ViewportVerdict;
+  /**
+   * G1 (ADR-036 §10) — read a `stale` entity's place again, and say whether its label is still
+   * there. Asked only for an entity whose `status` is `"stale"`, after every other check has cleared
+   * it and before the press. See {@link StaleRereadAnswer}. Optional: absent means "not asked", and
+   * the act goes on as it did before G1 (tests, non-Windows). Production wires `productionRereadStale`.
+   */
+  rereadStale?(entity: UiEntity): Promise<StaleRereadAnswer>;
   /**
    * Perform the action and return which executor was used. Throw on failure.
    *
@@ -661,77 +683,52 @@ export class GuardedTouchLoop {
   async touch(input: TouchInput): Promise<TouchResult> {
     const { lease, action = "auto", text } = input;
 
-    // 1. Read the current generation and the session's stored entities, and validate the lease
-    //    against them atomically. `resolveLiveEntities` is NOT a fresh resolve — see its
-    //    declaration: the only implementation hands back the `desktop_discover` snapshot, which
-    //    is why the shipped `landing` sentence says `diff.value_changed` has its baseline there
-    //    and not at the write. This comment said "re-resolve" for as long as the interface did.
-    const gen  = this.env.currentGeneration();
-    const live = this.env.resolveLiveEntities();
-    const validation = this.leaseStore.validate(lease, gen, live);
+    let checked = this.checkBeforeTouch(lease, action);
+    if (!checked.ok) return checked.refused;
 
-    if (!validation.ok) {
-      const reason = LEASE_TO_TOUCH_REASON[validation.reason] ?? "entity_not_found";
-      return { ok: false, reason, diff: [] };
-    }
-
-    const entity = validation.entity;
-
-    // 2. Resolve "auto" to a concrete verb.
-    const concreteAction = resolveAction(entity, action);
-
-    // 2b. **An action the target does not offer is refused here, before anything touches the world**
-    // (internal #154 — see `offersAction`). It comes BEFORE the environment checks on purpose: no
-    // change to the environment can make this one succeed, and a caller told `modal_blocking` would
-    // dismiss the modal, retry, and get the press this refusal exists to stop.
-    if (!offersAction(entity, concreteAction)) {
-      // **THE LOOP ALREADY HOLDS THE ANSWER THE CALLER NEEDS** — which verbs this target does take
-      // — so it is carried rather than left to be re-derived (ADR-036 item 13). Without it the
-      // advice's "read the affordances in the desktop_discover response" asks the caller to go back
-      // to a reply they may no longer have, to learn something this refusal knew when it fired.
-      const offered = [...new Set(entity.affordances.map((a: UiAffordance) => a.verb))].sort();
-      return {
-        ok: false,
-        reason: "action_not_offered",
-        diff: [],
-        detail: offered.length > 0
-          ? `this target offers: ${offered.join(", ")}`
-          : "this target offers no actions",
-      };
-    }
-
-    // 3. Pre-touch environment checks.
-    // The OS first: a window disabled by a dialog it owns is a clear ground to refuse — the user's
-    // rule (2026-09-11) is "refuse, but only when the grounds are clear" — and it is the one modal
-    // the snapshot cannot contain.
-    const windowAnswer = this.env.findBlockingWindow?.(entity) ?? { kind: "cannot_say" };
-    if (windowAnswer.kind === "blocked") {
-      return { ok: false, reason: "modal_blocking", diff: [], blockingElement: windowAnswer.blocker };
-    }
-    // …and when the OS says the window takes input, the snapshot's `Window` is not a clear ground:
-    // it cannot tell a modal from a modeless owned form, an MDI child or an embedded form, and the
-    // OS can (internal `62b4590`). What this gives up is a modal that does not disable its owner —
-    // Tk's `grab_set` is one (internal `af5ed7d`); the act is not refused, and with the aim probe on
-    // the row says what the snapshot saw, so a press that then lands nowhere can be traced to it.
-    if (windowAnswer.kind === "takes_input") {
-      const setAside = this.env.findBlockingModal?.(entity) ?? null;
-      if (setAside !== null) {
-        const seen = toBlockingElementInfo(setAside);
-        probeAim("act.modal", { entityId: entity.entityId, answer: "snapshot_set_aside", because: "window_enabled", snapshotBlocker: seen.name });
+    // 3b. **G1 — a `stale` target is read again before it is pressed** (ADR-036 §10, the user's
+    // decision of 2026-09-23, "Re-read, then refuse"). `stale` means no lane looked at this entity in
+    // the read that produced it: it was handed back from an earlier one. Measured, win2, 2026-09-23 on
+    // `main` `5163932c` (internal `ea46fd9`): a label painted over after the read came back `stale`,
+    // was pressed at its remembered place without anything reading that place, answered `ok:true`,
+    // and the press landed on the label painted there since. So its place is read now: the label
+    // still there goes on to the press; the label not there is refused, and nothing is pressed.
+    //
+    // **After every check that can refuse without reading**, so a target that is refused anyway —
+    // under a modal, in a minimised window — keeps the reason it had, and is not read for nothing.
+    //
+    // **A read that cannot answer does not refuse** — the user's rule of 2026-09-11 is "refuse, but
+    // only when the grounds are clear", and a failed read is not a ground. The act goes on as it did
+    // before this step existed; the `act.stale` row says the read could not answer, and why.
+    //
+    // **The checks run again after the read**, against the world as it is then. The read is the one
+    // `await` before the press, and step 5's promise — no await between the lease's validation and
+    // the execute — is kept by validating again rather than by trusting what was cleared before it:
+    // a `desktop_discover` that lands meanwhile moves the generation, and the lease is refused as it
+    // would have been had the discover come first.
+    if (checked.entity.status === "stale" && this.env.rereadStale) {
+      let answer: StaleRereadAnswer;
+      try {
+        answer = await this.env.rereadStale(checked.entity);
+      } catch {
+        answer = { kind: "cannot_say", why: "reread_threw" };
       }
-    } else if (this.env.isModalBlocking(entity)) {
-      const blocker = this.env.findBlockingModal?.(entity) ?? null;
-      return {
-        ok: false,
-        reason: "modal_blocking",
-        diff: [],
-        ...(blocker ? { blockingElement: toBlockingElementInfo(blocker) } : {}),
-      };
+      // The checks first, then the answer: a discover that landed or a modal that opened during the
+      // read is the world's reason, and an `absent` read under that modal is not (PR 側 codex, P2).
+      checked = this.checkBeforeTouch(lease, action);
+      if (!checked.ok) return checked.refused;
+      if (answer.kind === "absent") {
+        return {
+          ok: false,
+          reason: "entity_not_found",
+          diff: [],
+          detail: "this target was not seen by the desktop_discover that returned it (it was handed back " +
+            "from an earlier read), and reading its place again did not find its label there",
+        };
+      }
     }
-    const viewportVerdict = this.env.checkViewport(entity);
-    if (viewportVerdict !== null) {
-      return { ok: false, reason: viewportVerdict, diff: [] };
-    }
+
+    const { entity, concreteAction, gen, live } = checked;
 
     // 4. Capture pre-touch focus (before execute).
     const preFocusId = this.env.getFocusedEntityId?.();
@@ -910,5 +907,94 @@ export class GuardedTouchLoop {
       ...(landing ? { landing } : {}),
       ...(roiMaterial ? { roiMaterial } : {}),
     };
+  }
+
+  /**
+   * Steps 1–3: validate the lease, resolve the verb, and every check that can refuse before anything
+   * touches the world. Synchronous, so what it clears is what the world was when it returned — which
+   * is why {@link touch} calls it a second time after the one `await` it makes before the press (G1).
+   */
+  private checkBeforeTouch(lease: EntityLease, action: TouchAction):
+    | { ok: false; refused: TouchResult }
+    | { ok: true; entity: UiEntity; concreteAction: TouchAction; gen: string; live: UiEntity[] } {
+    // 1. Read the current generation and the session's stored entities, and validate the lease
+    //    against them atomically. `resolveLiveEntities` is NOT a fresh resolve — see its
+    //    declaration: the only implementation hands back the `desktop_discover` snapshot, which
+    //    is why the shipped `landing` sentence says `diff.value_changed` has its baseline there
+    //    and not at the write. This comment said "re-resolve" for as long as the interface did.
+    const gen  = this.env.currentGeneration();
+    const live = this.env.resolveLiveEntities();
+    const validation = this.leaseStore.validate(lease, gen, live);
+
+    if (!validation.ok) {
+      const reason = LEASE_TO_TOUCH_REASON[validation.reason] ?? "entity_not_found";
+      return { ok: false, refused: { ok: false, reason, diff: [] } };
+    }
+
+    const entity = validation.entity;
+
+    // 2. Resolve "auto" to a concrete verb.
+    const concreteAction = resolveAction(entity, action);
+
+    // 2b. **An action the target does not offer is refused here, before anything touches the world**
+    // (internal #154 — see `offersAction`). It comes BEFORE the environment checks on purpose: no
+    // change to the environment can make this one succeed, and a caller told `modal_blocking` would
+    // dismiss the modal, retry, and get the press this refusal exists to stop.
+    if (!offersAction(entity, concreteAction)) {
+      // **THE LOOP ALREADY HOLDS THE ANSWER THE CALLER NEEDS** — which verbs this target does take
+      // — so it is carried rather than left to be re-derived (ADR-036 item 13). Without it the
+      // advice's "read the affordances in the desktop_discover response" asks the caller to go back
+      // to a reply they may no longer have, to learn something this refusal knew when it fired.
+      const offered = [...new Set(entity.affordances.map((a: UiAffordance) => a.verb))].sort();
+      return {
+        ok: false,
+        refused: {
+          ok: false,
+          reason: "action_not_offered",
+          diff: [],
+          detail: offered.length > 0
+            ? `this target offers: ${offered.join(", ")}`
+            : "this target offers no actions",
+        },
+      };
+    }
+
+    // 3. Pre-touch environment checks.
+    // The OS first: a window disabled by a dialog it owns is a clear ground to refuse — the user's
+    // rule (2026-09-11) is "refuse, but only when the grounds are clear" — and it is the one modal
+    // the snapshot cannot contain.
+    const windowAnswer = this.env.findBlockingWindow?.(entity) ?? { kind: "cannot_say" };
+    if (windowAnswer.kind === "blocked") {
+      return { ok: false, refused: { ok: false, reason: "modal_blocking", diff: [], blockingElement: windowAnswer.blocker } };
+    }
+    // …and when the OS says the window takes input, the snapshot's `Window` is not a clear ground:
+    // it cannot tell a modal from a modeless owned form, an MDI child or an embedded form, and the
+    // OS can (internal `62b4590`). What this gives up is a modal that does not disable its owner —
+    // Tk's `grab_set` is one (internal `af5ed7d`); the act is not refused, and with the aim probe on
+    // the row says what the snapshot saw, so a press that then lands nowhere can be traced to it.
+    if (windowAnswer.kind === "takes_input") {
+      const setAside = this.env.findBlockingModal?.(entity) ?? null;
+      if (setAside !== null) {
+        const seen = toBlockingElementInfo(setAside);
+        probeAim("act.modal", { entityId: entity.entityId, answer: "snapshot_set_aside", because: "window_enabled", snapshotBlocker: seen.name });
+      }
+    } else if (this.env.isModalBlocking(entity)) {
+      const blocker = this.env.findBlockingModal?.(entity) ?? null;
+      return {
+        ok: false,
+        refused: {
+          ok: false,
+          reason: "modal_blocking",
+          diff: [],
+          ...(blocker ? { blockingElement: toBlockingElementInfo(blocker) } : {}),
+        },
+      };
+    }
+    const viewportVerdict = this.env.checkViewport(entity);
+    if (viewportVerdict !== null) {
+      return { ok: false, refused: { ok: false, reason: viewportVerdict, diff: [] } };
+    }
+
+    return { ok: true, entity, concreteAction, gen, live };
   }
 }

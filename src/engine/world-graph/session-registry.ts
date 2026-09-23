@@ -7,6 +7,7 @@ import {
   GuardedTouchLoop,
   type TouchAction,
   type WindowBlockAnswer,
+  type StaleRereadAnswer,
   type TouchEnvironment,
   type ViewportVerdict,
 } from "./guarded-touch.js";
@@ -242,6 +243,11 @@ export interface SessionCreateOpts {
    */
   findBlockingWindow?: (entity: UiEntity, aim: Aim | undefined) => WindowBlockAnswer;
   /**
+   * G1 (ADR-036 §10) — read a `stale` entity's place again before the press. Absent means not
+   * asked (tests, non-Windows); production wires `productionRereadStale`.
+   */
+  rereadStale?: (entity: UiEntity, aim: Aim | undefined) => Promise<StaleRereadAnswer>;
+  /**
    * Return a focus fingerprint for the currently focused element (or undefined if unknown).
    * Used for focus_shifted detection: pre- vs post-touch fingerprint is compared.
    * Conservative: when not provided, focus_shifted is never emitted.
@@ -398,6 +404,10 @@ export class SessionRegistry {
       // lane records none, and the check asked nothing).
       ...(opts.findBlockingWindow
         ? { findBlockingWindow: (entity: UiEntity) => opts.findBlockingWindow!(entity, s.lastAim) }
+        : {}),
+      // G1: the aim read at touch time, like the check above — the window this act is aimed at.
+      ...(opts.rereadStale
+        ? { rereadStale: (entity: UiEntity) => opts.rereadStale!(entity, s.lastAim) }
         : {}),
       // G1-C: Focus fingerprint for focus_shifted detection.
       // Only wired when opts.getFocusedEntityId is provided (e.g. production desktop-register.ts).
