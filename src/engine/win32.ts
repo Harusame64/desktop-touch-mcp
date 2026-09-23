@@ -892,6 +892,55 @@ export function getWindowStyle(hwnd: unknown): number | null {
 }
 
 /**
+ * Internal #144 — does the window's thread answer a message within `timeoutMs`? `WM_NULL` sent with
+ * `SMTO_ABORTIFHUNG`. `null` when it could not be asked: no such window, or no binding (an addon
+ * older than this function) — never read as "hung".
+ */
+export function windowAnswers(hwnd: bigint, timeoutMs: number): boolean | null {
+  try {
+    return requireNativeWin32().win32WindowAnswers?.(hwnd, timeoutMs) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The window class DWM gives the stand-in it shows for a hung window. */
+const GHOST_WINDOW_CLASS = "Ghost";
+
+/**
+ * Internal #144 — the visible top-level windows whose text contains `title`, case-insensitively: the
+ * rule the native engine's `find_window` applies to the UIA root's children (`src/uia/tree.rs`). All
+ * of them, because which one the engine took is not observable from here. Excluded windows are left
+ * out, as everywhere else.
+ *
+ * **DWM's "Ghost" window is left out too.** About 5–6 s after a window stops pumping messages, Windows
+ * puts up a stand-in of class `Ghost` (owned by dwm.exe) with the SAME text — and it answers messages.
+ * Measured by win2 (internal `367f00e`, 4 of 4 hung-target trials): with the ghost counted, "every
+ * window the title could mean does not answer" never held, and the hung target fell back as before.
+ * The ghost is not a window a title read could mean: were it the engine's pick, it would have
+ * answered, and the read would not have timed out.
+ */
+export function windowsWhoseTitleContains(title: string): bigint[] {
+  const needle = title.toLowerCase();
+  const out: bigint[] = [];
+  try {
+    const w32 = requireNativeWin32();
+    for (const hwnd of w32.win32EnumTopLevelWindows!()) {
+      try {
+        if (isExcludedWindowHandle(hwnd)) continue;
+        if (!w32.win32IsWindowVisible!(hwnd)) continue;
+        if (!w32.win32GetWindowText!(hwnd).toLowerCase().includes(needle)) continue;
+        if (w32.win32GetClassName?.(hwnd) === GHOST_WINDOW_CLASS) continue;
+        out.push(hwnd);
+      } catch { /* a window that went away mid-walk is not a match */ }
+    }
+  } catch {
+    return [];
+  }
+  return out;
+}
+
+/**
  * Return true if the window is enabled (accepts keyboard/mouse input).
  * Returns true on error (conservative — assume not disabled to avoid missing modals).
  */

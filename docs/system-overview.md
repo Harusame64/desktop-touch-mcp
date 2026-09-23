@@ -92,6 +92,7 @@ uia-bridge.ts
     │  nativeUia?.uiaGetElements(opts)    ← existence check
     │  ├── Success → return result
     │  └── Error / null → runPS(script)   ← PowerShell fallback
+    │      (not after a native TIMEOUT when no window the read could mean answers WM_NULL: internal #144)
     │
     ▼ (Rust path)
 lib.rs  #[napi] uia_get_elements(opts) → AsyncTask<UiaGetElementsTask>

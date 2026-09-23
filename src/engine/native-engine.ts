@@ -211,6 +211,8 @@ export interface NativeWin32 {
   win32GetWindow?(hwnd: bigint, uCmd: number): bigint | null;
   win32GetAncestor?(hwnd: bigint, gaFlags: number): bigint | null;
   win32IsWindowEnabled?(hwnd: bigint): boolean;
+  /** Internal #144 — WM_NULL with a budget; null when the handle names no window. */
+  win32WindowAnswers?(hwnd: bigint, timeoutMs: number): boolean | null;
   win32GetLastActivePopup?(hwnd: bigint): bigint | null;
   win32IsWindowCloaked?(hwnd: bigint): boolean;
 

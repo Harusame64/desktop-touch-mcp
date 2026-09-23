@@ -4,7 +4,7 @@ import { getCachedUia, updateUiaCache } from "./layer-buffer.js";
 import { AIM_WINDOW_GONE, AimedWindowGoneError } from "./aim.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { nativeUia, type NativeUiElement } from "./native-engine.js";
-import { isExcludedTitle, isExcludedWindowHandle, isWindowGone } from "./win32.js";
+import { isExcludedTitle, isExcludedWindowHandle, isWindowGone, windowAnswers, windowsWhoseTitleContains } from "./win32.js";
 import { WindowExcludedError, hasExcludedPids } from "./tool-exclusion.js";
 
 const execFileAsync = promisify(execFile);
@@ -1503,6 +1503,8 @@ export async function getUiElements(
       }
       return normalised;
     } catch (e) {
+      // Internal #144 — a timeout on a window that does not answer is not waited for a second time.
+      if (isNativeUiaTimeout(e) && targetDoesNotAnswer(windowTitle, scopeHwnd)) throw e;
       console.warn("[uia-bridge] Native uiaGetElements failed, falling back to PowerShell:", e);
       // fall through to PowerShell
     }
@@ -2096,7 +2098,8 @@ export type UiaVia = "native" | "powershell" | "none";
  * MEASURED 2026-09-20 win2 (internal `25da27f`): hanging the target window's UI
  * thread makes the native call throw `UIA operation timed out after 8000ms` while the PowerShell
  * road answers normally in 3.6 s — same call, same window, same moment. The caller got an ordinary
- * answer, and the only trace was a `console.warn` on the server's stderr.
+ * answer, and the only trace was a `console.warn` on the server's stderr. Since internal #144 a native
+ * TIMEOUT does not fall back when no window the title could mean answers WM_NULL (`targetDoesNotAnswer`).
  */
 export type BoundsAnswer =
   | { found: ElementBounds; via: UiaVia; nativeFailed?: string }
@@ -2530,6 +2533,49 @@ function shortPsFailure(e: unknown, killed: boolean): string {
   return raw && !raw.startsWith("Command failed:") ? `${head}: ${raw.slice(0, 300)}` : head;
 }
 
+/**
+ * Internal #144 — did the native client give up on its own clock, rather than fail? Recognised by
+ * the exact shape the engine produces (`src/uia/thread.rs`), not by a substring: a PowerShell or COM
+ * message that happens to say "timed out" is not the native budget running out.
+ */
+export function isNativeUiaTimeout(e: unknown): boolean {
+  const message = e instanceof Error ? e.message : String(e);
+  return /^UIA operation timed out after \d+ms$/.test(message);
+}
+
+/** WM_NULL budget per window. win2 asked with 200 ms: 16 of 16 at issue and at +8 s. */
+const TARGET_ANSWER_BUDGET_MS = 200;
+/** A title that matches more windows than this is not a clear ground: fall back as before. */
+const TARGET_ANSWER_MAX_WINDOWS = 8;
+
+/**
+ * Internal #144 — **after a native timeout, is the target itself the window that does not answer?**
+ *
+ * The user decided on 2026-09-21 (Q2) to skip the PowerShell fall-back when the native read timed
+ * out: against a hung TARGET it rescued 0 of 12 reads and cost a second budget. Public #715 did that
+ * for every timeout and was reverted the same day, because the timeout has a second cause that looks
+ * identical at that moment: ANOTHER window is hung, and the native title scan (which reads every
+ * top-level window's name) stalls on it. There PowerShell answered 2 of 2 in one shape (a hung
+ * XboxPcTray, internal `cb5d027`) and 0 of 3 in another (a WPF thread in Sleep, `fbfcb47`).
+ *
+ * What tells the two apart, measured by win2 (`f3e6585`, `225b842`): `WM_NULL` sent to the target —
+ * a hung target does not answer, a healthy one does, 16 of 16 both at issue and when the timeout
+ * fires. `IsHungAppWindow` could not (false at issue; it needs about 5 s of silence).
+ *
+ * So the fall-back is skipped ONLY on a clear ground: every window the read could have meant was
+ * asked, and none answered. A read pinned to a handle asks that handle. A title asks every visible
+ * window whose text contains it (the engine's own rule), because which one the engine took is not
+ * observable — if any of them answers, or none matches, or none could be asked (an older addon), or
+ * too many match, the fall-back runs exactly as before. Where the target answers and another window
+ * is the cause, nothing changes from today; that shape needs the title resolved without the UIA
+ * root scan, which is Annex B.
+ */
+function targetDoesNotAnswer(windowTitle: string, scopeHwnd: bigint | undefined): boolean {
+  const candidates = scopeHwnd !== undefined ? [scopeHwnd] : windowsWhoseTitleContains(windowTitle);
+  if (candidates.length === 0 || candidates.length > TARGET_ANSWER_MAX_WINDOWS) return false;
+  return candidates.every((h) => windowAnswers(h, TARGET_ANSWER_BUDGET_MS) === false);
+}
+
 export async function getElementBounds(
   windowTitle: string,
   name?: string,
@@ -2567,6 +2613,11 @@ export async function getElementBounds(
       };
     } catch (e) {
       nativeFailed = e instanceof Error ? e.message : String(e);
+      // Internal #144 — see `targetDoesNotAnswer`. Nothing was concluded, and a second budget does
+      // not change that while the target is hung. `wait_until` polls this on every tick.
+      if (isNativeUiaTimeout(e) && targetDoesNotAnswer(windowTitle, undefined)) {
+        return { found: null, why: "read_unfinished", via: "none", nativeFailed };
+      }
       console.warn("[uia-bridge] Native uiaGetElementBounds failed, falling back to PowerShell:", e);
     }
   }

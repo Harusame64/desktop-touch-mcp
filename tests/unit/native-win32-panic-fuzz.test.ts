@@ -347,6 +347,10 @@ describe.skipIf(!nativeWin32)("ADR-007 P1: native win32 panic-safety", () => {
       it(`win32IsWindowCloaked(${label}) returns false, no panic`, () => {
         expect(native.win32IsWindowCloaked!(hwnd)).toBe(false);
       });
+      // Internal #144: a handle that names no window is "could not ask" (null), never "hung" (false).
+      it(`win32WindowAnswers(${label}) returns null, no panic`, () => {
+        expect(native.win32WindowAnswers!(hwnd, 50)).toBeNull();
+      });
     }
 
     // Codifies the Rust-side normalisation that GetLastActivePopup returns
@@ -377,6 +381,12 @@ describe.skipIf(!nativeWin32)("ADR-007 P1: native win32 panic-safety", () => {
       if (fg === null) return;
       expect(typeof native.win32IsWindowEnabled!(fg)).toBe("boolean");
       expect(typeof native.win32IsWindowCloaked!(fg)).toBe("boolean");
+    });
+
+    it("win32WindowAnswers(foreground) answers true: a window that pumps messages is not hung (internal #144)", () => {
+      const fg = native.win32GetForegroundWindow!();
+      if (fg === null) return;
+      expect(native.win32WindowAnswers!(fg, 1000)).toBe(true);
     });
   });
 
