@@ -178,7 +178,14 @@ export function judgeKeyboardTarget(
   // the focused body, under `ok:true`. Keystrokes cannot write a field that refuses a value, so
   // wherever they go it is not the field the caller named. The existing `read_only` ground, said of
   // the named control: no new word.
-  if (f.valueRoadSaidReadOnly === true) {
+  //
+  // **Only for a field with no window of its own** (gate 2). The value road's answer is about "the
+  // element the route matched", which the by-handle scripts pick by name containment — not always
+  // the named control. When the named control HAS a window, the rule below reads that window
+  // directly, and a receiver that is the named control and takes text is a confirmed write whatever
+  // the value road said. Without a window there is no such fact to prefer: the value road's success
+  // would have been believed as "the field was written", so its read-only failure is believed too.
+  if (f.valueRoadSaidReadOnly === true && !eUsable) {
     if (!disabled.has("read_only")) return { kind: "refuse", ground: "read_only", subject: "named", referenceFrom };
     const rest = judgeTheReceiver(f, disabled, eUsable, reference, referenceFrom);
     return rest.kind === "refuse" ? rest : cannotSay("ground_disabled:read_only");

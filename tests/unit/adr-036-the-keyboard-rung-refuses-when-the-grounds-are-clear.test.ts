@@ -166,9 +166,10 @@ describe("the rule, step by step (first match decides)", () => {
     // CONTROL: the same facts without the value road's answer are still the designed "cannot say".
     expect(judgeKeyboardTarget(facts(windowless)))
       .toMatchObject({ kind: "post", confirmed: false, why: "entity_windowless" });
-    // …and a named control with a window of its own is refused on the same ground, not confirmed.
+    // …but a named control with a window of its own is judged by that window (gate 2): the receiver IS
+    // the named control and takes text, so the write is confirmed whatever the value road matched.
     expect(judgeKeyboardTarget(facts({ valueRoadSaidReadOnly: true })))
-      .toMatchObject({ kind: "refuse", ground: "read_only", subject: "named" });
+      .toEqual({ kind: "post", confirmed: true, referenceFrom: "entity" });
   });
 
   it("marks the post when the read_only ground is switched off, rather than refusing", () => {
@@ -290,7 +291,9 @@ async function type(target: typeof titleRoad | Aim, entity: UiEntity, d: Executo
 describe("the rung judges before it posts", () => {
   it("posts to the handle it judged, and answers the bare 'keyboard' when confirmed", async () => {
     const receipt = receiptOf();
-    const d = depsFor(receipt);
+    // The value road said read-only, and the named control's own window says it takes text: the
+    // window wins (gate 2 on internal #167 — this cell pinned exactly that before, and must still).
+    const d = depsFor(receipt, { uiaSetValue: vi.fn(async () => { throw READ_ONLY_PS; }) });
     expect(await type(titleRoad, field(), d)).toBe("keyboard");
     expect(d.keyboardPost).toHaveBeenCalledWith(receipt, "PROBE-R");
     expect(d.keyboardTypeBg).not.toHaveBeenCalled();

@@ -39,8 +39,10 @@
   On Notepad, `desktop_act` with `setValue` on the status bar's read-only field answered `ok:true`
   and typed the text into the document body. UI Automation had already said the field is read-only;
   the keyboard fallback could not tell where its keystrokes would land for a field without a window
-  of its own, and posted them anyway. When UI Automation answers that the field is read-only, the
-  act is now refused with `keyboard_target_unsafe` (ground `read_only`) before anything is typed.
+  of its own, and posted them anyway. For such a field, when the UI Automation write reports it is
+  read-only, the act is now refused with `keyboard_target_unsafe` (ground `read_only`) before anything
+  is typed. The PowerShell road's answer is recognised; the native engine's is not yet, so that road
+  still types and marks the result as unconfirmed.
 
 - **A label seen in this read no longer comes back a second time as its own stale copy.**
   On a window without an accessibility tree, every text label reached the caller twice: once as
