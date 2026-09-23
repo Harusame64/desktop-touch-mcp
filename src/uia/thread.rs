@@ -145,6 +145,20 @@ static UIA_SLOT: OnceLock<Mutex<Option<Arc<UiaThreadHandle>>>> = OnceLock::new()
 // task is sent to it. So they answer from what happened, not from what was configured.
 static COM_THREAD_STARTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static TASKS_SENT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+// Internal #168 — how many tasks the COM thread has FINISHED (run to completion or panicked), beside how
+// many were sent. The measured stall was "22 sent, 0 processed", and only `tasksSent` was visible.
+static TASKS_DONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+// Internal #168 — where the desktop-wide focus-handler registration is. A registration that never returns
+// is `pending` for the life of the server, and focus events are then off; this is how a caller can see it.
+static FOCUS_REGISTRATION: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(FOCUS_NOT_STARTED);
+const FOCUS_NOT_STARTED: u8 = 0;
+const FOCUS_PENDING: u8 = 1;
+const FOCUS_REGISTERED: u8 = 2;
+const FOCUS_FAILED: u8 = 3;
+
+fn set_focus_registration(state: u8) {
+    FOCUS_REGISTRATION.store(state, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// Saturating, so a long-lived process can never wrap back round to the 0 that means "never ran".
 fn bump(counter: &std::sync::atomic::AtomicU32) {
@@ -152,10 +166,17 @@ fn bump(counter: &std::sync::atomic::AtomicU32) {
     let _ = counter.fetch_update(Relaxed, Relaxed, |v| Some(v.saturating_add(1)));
 }
 
-/// How many times the UIA COM thread was started in this process, and how many tasks were sent to it.
-pub(crate) fn engine_evidence() -> (u32, u32) {
+/// What the UIA engine has done in this process: COM-thread starts, tasks sent, tasks finished, and
+/// where the focus-handler registration is (`not_started` / `pending` / `registered` / `failed`).
+pub(crate) fn engine_evidence() -> (u32, u32, u32, &'static str) {
     use std::sync::atomic::Ordering::Relaxed;
-    (COM_THREAD_STARTS.load(Relaxed), TASKS_SENT.load(Relaxed))
+    let focus = match FOCUS_REGISTRATION.load(Relaxed) {
+        FOCUS_PENDING => "pending",
+        FOCUS_REGISTERED => "registered",
+        FOCUS_FAILED => "failed",
+        _ => "not_started",
+    };
+    (COM_THREAD_STARTS.load(Relaxed), TASKS_SENT.load(Relaxed), TASKS_DONE.load(Relaxed), focus)
 }
 
 pub(crate) fn ensure_uia_thread() -> Arc<UiaThreadHandle> {
@@ -276,7 +297,7 @@ fn com_thread_main(rx: Receiver<UiaTask>, shutdown_rx: Receiver<()>) {
     // registration that never returns costs focus events only — which is what the old code's own
     // failure branch already accepted ("focus events disabled").
     let (focus_stop_tx, focus_stop_rx) = bounded::<()>(1);
-    spawn_focus_registration(focus_stop_rx);
+    let focus_thread = spawn_focus_registration(focus_stop_rx);
     // ────────────────────────────────────────────────────────────────────────
 
     // Main loop — process tasks until shutdown signal or task channel closes.
@@ -294,6 +315,7 @@ fn com_thread_main(rx: Receiver<UiaTask>, shutdown_rx: Receiver<()>) {
                     if let Err(info) = res {
                         eprintln!("[uia-com] Task panicked: {info:?}");
                     }
+                    bump(&TASKS_DONE);
                 }
                 Err(_) => break, // task channel disconnected
             },
@@ -301,10 +323,22 @@ fn com_thread_main(rx: Receiver<UiaTask>, shutdown_rx: Receiver<()>) {
         }
     }
 
-    // Internal #168 — tell the registration thread to remove its handler and leave. Not joined: if
-    // the registration never returned, the thread is still inside it, and waiting here would put
-    // back the stall this change removes from the task loop, at shutdown instead.
+    // Internal #168 — tell the registration thread to remove its handler and leave, and wait for it
+    // only briefly. In the ordinary case the removal finishes inside the wait, so a re-spawned COM
+    // thread (the tests' shutdown/restart cycles) never adds a handler while the old one is still
+    // registered — the one-thread-at-a-time rule Microsoft states for adding and removing event
+    // handlers (gate 2). If the registration never returned, the thread is still inside it: the wait
+    // ends and the thread is left, rather than moving the stall this change removed to shutdown.
     let _ = focus_stop_tx.try_send(());
+    if let Some(handle) = focus_thread {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !handle.is_finished() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if handle.is_finished() {
+            let _ = handle.join();
+        }
+    }
 
     // CoUninitialize must happen on this same thread, after the apartment is
     // fully drained.
@@ -316,7 +350,7 @@ fn com_thread_main(rx: Receiver<UiaTask>, shutdown_rx: Receiver<()>) {
 /// P5c-1's rules still hold, on this thread: the owner is dropped (each `Remove*EventHandler` runs)
 /// before `CoUninitialize`, and a registration failure is logged and costs focus events only.
 /// The handler pushes into the shared L1 ring exactly as before; only the registering thread moved.
-fn spawn_focus_registration(stop_rx: Receiver<()>) {
+fn spawn_focus_registration(stop_rx: Receiver<()>) -> Option<thread::JoinHandle<()>> {
     let spawned = thread::Builder::new()
         .name("uia-focus-registration".into())
         .spawn(move || {
@@ -324,6 +358,7 @@ fn spawn_focus_registration(stop_rx: Receiver<()>) {
             unsafe {
                 let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
                 if hr.is_err() {
+                    set_focus_registration(FOCUS_FAILED);
                     eprintln!("[uia-focus] CoInitializeEx failed: HRESULT 0x{:08x} -- focus events disabled", hr.0);
                     return;
                 }
@@ -332,6 +367,7 @@ fn spawn_focus_registration(stop_rx: Receiver<()>) {
                 let ctx = match build_context() {
                     Ok(c) => c,
                     Err(e) => {
+                        set_focus_registration(FOCUS_FAILED);
                         eprintln!("[uia-focus] Failed to initialise UIA context: {e} -- focus events disabled");
                         unsafe { CoUninitialize(); }
                         return;
@@ -340,8 +376,17 @@ fn spawn_focus_registration(stop_rx: Receiver<()>) {
                 let mut event_owner = event_handlers::UiaEventHandlerOwner::new(ctx.automation.clone());
                 let ring = crate::l1_capture::ensure_l1().ring.clone();
                 let focus_handler = event_handlers::focus::make_focus_handler(ring);
-                if let Err(e) = event_owner.register_focus(&ctx.cache_request, focus_handler) {
-                    eprintln!("[uia-focus] AddFocusChangedEventHandler failed: {e} -- focus events disabled");
+                set_focus_registration(FOCUS_PENDING);
+                let started = std::time::Instant::now();
+                match event_owner.register_focus(&ctx.cache_request, focus_handler) {
+                    Ok(()) => {
+                        set_focus_registration(FOCUS_REGISTERED);
+                        eprintln!("[uia-focus] focus handler registered in {} ms", started.elapsed().as_millis());
+                    }
+                    Err(e) => {
+                        set_focus_registration(FOCUS_FAILED);
+                        eprintln!("[uia-focus] AddFocusChangedEventHandler failed: {e} -- focus events disabled");
+                    }
                 }
                 // Hold the registration until the task thread shuts down (or its sender is gone).
                 let _ = stop_rx.recv();
@@ -351,8 +396,13 @@ fn spawn_focus_registration(stop_rx: Receiver<()>) {
             }
             unsafe { CoUninitialize(); }
         });
-    if let Err(e) = spawned {
-        eprintln!("[uia-focus] could not start the registration thread: {e} -- focus events disabled");
+    match spawned {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            set_focus_registration(FOCUS_FAILED);
+            eprintln!("[uia-focus] could not start the registration thread: {e} -- focus events disabled");
+            None
+        }
     }
 }
 
@@ -463,12 +513,25 @@ mod tests {
     #[test]
     fn engine_evidence_counts_a_task_and_the_thread_that_ran_it() {
         let _serial = one_at_a_time();
-        let (_, tasks_before) = engine_evidence();
+        let (_, tasks_before, done_before, _) = engine_evidence();
         let r: napi::Result<()> = execute_with_timeout(|_ctx| Ok(()), 5000);
         assert!(r.is_ok(), "the no-op task should run: {r:?}");
-        let (starts, tasks_after) = engine_evidence();
+        let (starts, tasks_after, done_after, focus) = engine_evidence();
         assert!(starts >= 1, "the thread that ran the task was started, so its start was counted");
         assert_eq!(tasks_after, tasks_before + 1, "the task was counted exactly once");
+        // Internal #168 — and FINISHED exactly once. The reply arrives after the task body returns and
+        // before `TASKS_DONE` is bumped, so allow the bump a moment rather than racing it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut done_now = done_after;
+        while done_now < done_before + 1 && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+            done_now = engine_evidence().2;
+        }
+        assert_eq!(done_now, done_before + 1, "the task was counted as finished exactly once");
+        assert!(
+            ["not_started", "pending", "registered", "failed"].contains(&focus),
+            "the focus registration answers one of its four words, got {focus:?}"
+        );
     }
 
     /// ADR-036 H2 — the counts stop at the top rather than wrapping round to the 0 that means "never ran".

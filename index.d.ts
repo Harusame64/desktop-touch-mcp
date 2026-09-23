@@ -78,6 +78,16 @@ export interface NativeUiaFocusInfo {
 export interface NativeUiaEvidence {
   comThreadStarts: number
   tasksSent: number
+  /**
+   * Internal #168 — tasks the COM thread has finished. `tasks_sent` far above it means the thread is
+   * not serving its queue (measured: 22 sent, 0 finished, while the focus registration hung).
+   */
+  tasksDone: number
+  /**
+   * Internal #168 — `not_started` / `pending` / `registered` / `failed`. `pending` for long means a
+   * desktop-wide registration is not returning, and focus events are off.
+   */
+  focusRegistration: string
   uiaCoreLoaded: boolean
 }
 
