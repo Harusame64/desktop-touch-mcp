@@ -1650,3 +1650,25 @@ describe("DesktopFacade — a fresh look replaces its own copy (internal #163)",
     expect(facade.discoverHasVisualGpuForViewId(out.viewId), "the kept stale-only copy still counts").toBe(true);
   });
 });
+
+describe("DesktopFacade — the post-action road is chosen from what discover saw, not what it kept (internal #163)", () => {
+  // Measured on real hardware (win2, arm H3): deciding from `entities` after the supersede moved a
+  // blind window's `desktop_act` onto the fold, which did not report a label that vanished. The user
+  // kept the road unchanged.
+  const R = { x: 100, y: 200, width: 80, height: 30 };
+  it("still says the visual lane was seen when every copy was superseded", async () => {
+    const facade = new DesktopFacade(() => [
+      cand("X", "ocr", { status: "observed", rect: R, digest: undefined }),
+      cand("X", "visual_gpu", { status: "stale", rect: R, digest: "vis-X" }),
+    ]);
+    const out = await facade.see({});
+    expect(out.entities.map((e) => e.sources)).toEqual([["ocr"]]);
+    expect(facade.discoverHasVisualGpuForViewId(out.viewId)).toBe(true);
+  });
+
+  it("CONTROL: says no when no visual candidate came back at all", async () => {
+    const facade = new DesktopFacade(() => [cand("X", "ocr", { status: "observed", rect: R, digest: undefined })]);
+    const out = await facade.see({});
+    expect(facade.discoverHasVisualGpuForViewId(out.viewId)).toBe(false);
+  });
+});

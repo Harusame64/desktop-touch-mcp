@@ -158,6 +158,15 @@ export interface SessionState {
   seq: number;
   generation: string;
   entities: UiEntity[];
+  /**
+   * Internal #163 — whether the last discover's candidates included any `visual_gpu` one, counted
+   * BEFORE the resolver superseded stale copies. `desktop_act` chooses its post-action road from this
+   * (the S5b fold is skipped when the discover saw the visual lane), and that choice was made on the
+   * copies before #163 removed them from `entities`. Measured on real hardware (win2, arm H3): reading
+   * `entities` instead moved blind windows onto the fold, which does not report a label that vanished.
+   * The user kept the road unchanged; the fold's silence is its own issue.
+   */
+  discoverSawVisualGpu?: boolean;
   lastTarget: TargetSpec | undefined;
   /**
    * ADR-036 item 2 — the aim, as one value: the window the last read was made against, with who
