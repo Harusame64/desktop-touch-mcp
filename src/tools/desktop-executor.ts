@@ -1181,15 +1181,48 @@ function probeRefusal(
  * the rung's `catch` and report a write that happened as one that failed. A fact that cannot be read
  * is written as `landingError`.
  */
+/**
+ * Internal #130 ⑧ — the keys an `act.route` row already carries where `...keyboardLanding(…)` is
+ * spread into it: `probeAim`'s row writer (`aim-probe.ts` `writeRow`) the first four, `probeRoute` the
+ * next five, `probeRefusal` two, and the rung's four call sites the rest. (The first version missed
+ * the writer's four — gate 2 on #725: a fact named `seq` would have renumbered the row.) A spread wins over what was written before it, so a landing fact under
+ * one of these names would overwrite the row's own value, and the road reader cannot see it: it is
+ * syntax-only by rule 1, and a call's spread is exempt (reporting it would redden these four sites).
+ * So the COMPILER refuses it instead. Add a key here when a call site starts writing one.
+ */
+type RowKeysLandingMayNotWrite =
+  | "seq" | "tsMs" | "pid" | "seam"
+  | "route" | "hasAim" | "aimHwnd" | "entityId" | "entityLabel"
+  | "rung" | "refused"
+  | "why" | "verdict" | "referenceFrom" | "ground" | "addressedWindowBy";
+
+/** What the rung's row may be given by {@link keyboardLanding}: any fact but the row's own keys. */
+type LandingFacts = Record<string, unknown> & { readonly [K in RowKeysLandingMayNotWrite]?: never };
+
+// Compile-time pin: every listed key must stay refused. If the refusing half of `LandingFacts` is
+// removed or loosened, a key's type stops being `undefined` and this line fails `tsc`.
+const _landingFactsRefuseTheRowKeys: Record<RowKeysLandingMayNotWrite, true> = {} as {
+  [K in RowKeysLandingMayNotWrite]: [LandingFacts[K]] extends [undefined] ? true : false;
+};
+void _landingFactsRefuseTheRowKeys;
+
+/**
+ * Adds `more` to `facts` key by key. Not `Object.assign`: it takes any object and checks no keys, so a
+ * row key would pass through it untyped (measured: `Object.assign(facts, { why })` compiles).
+ */
+function addLandingFacts(facts: LandingFacts, more: LandingFacts): void {
+  for (const [k, v] of Object.entries(more)) (facts as Record<string, unknown>)[k] = v;
+}
+
 function keyboardLanding(
   entity: UiEntity,
   receipt: KeyboardReceipt | void,
   /** The value road's error, on the rung that falls back from it. Absent on the keyboard-only road. */
   valueRoadError?: unknown,
-): Record<string, unknown> {
+): LandingFacts {
   if (!aimProbeEnabled()) return {};
   // Filled in order, so the facts read before a throw are still written beside `landingError`.
-  const facts: Record<string, unknown> = {};
+  const facts: LandingFacts = {};
   try {
     facts.valueRoadFailure =
       valueRoadError === undefined ? null : (classifyUiaRouteFailure(valueRoadError) ?? "unclassified");
@@ -1204,7 +1237,7 @@ function keyboardLanding(
     // 2026-09-16: `c4-refuse-other-control` does not fire for a WinForms edit whose control
     // demonstrably has a window, and until this field nothing in the record said which case it was.
     facts.entityHwndRead = entity.locator?.uia?.nativeWindowHandleRead ?? null;
-    Object.assign(facts, receiverFacts(receipt, entity.rect ?? null, entity.locator?.uia?.nativeWindowHandle ?? null));
+    addLandingFacts(facts, receiverFacts(receipt, entity.rect ?? null, entity.locator?.uia?.nativeWindowHandle ?? null));
   } catch {
     facts.landingError = true;
   }
@@ -1222,7 +1255,7 @@ function receiverFacts(
   entityRect: { x: number; y: number; width: number; height: number } | null,
   /** The named element's own window handle, when the read recorded one (`locator.uia.nativeWindowHandle`). */
   entityHwnd: string | null,
-): Record<string, unknown> {
+): LandingFacts {
   // `null`, not left out, when the backend did not say: absence is recorded, not inferred.
   if (!receipt) {
     return { receiver: null, receiverIsEntity: null, receiverInEntity: null, entityCenterInReceiver: null };
