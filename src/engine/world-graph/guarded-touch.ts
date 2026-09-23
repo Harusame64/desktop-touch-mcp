@@ -713,6 +713,10 @@ export class GuardedTouchLoop {
       } catch {
         answer = { kind: "cannot_say", why: "reread_threw" };
       }
+      // The checks first, then the answer: a discover that landed or a modal that opened during the
+      // read is the world's reason, and an `absent` read under that modal is not (PR 側 codex, P2).
+      checked = this.checkBeforeTouch(lease, action);
+      if (!checked.ok) return checked.refused;
       if (answer.kind === "absent") {
         return {
           ok: false,
@@ -722,8 +726,6 @@ export class GuardedTouchLoop {
             "from an earlier read), and reading its place again did not find its label there",
         };
       }
-      checked = this.checkBeforeTouch(lease, action);
-      if (!checked.ok) return checked.refused;
     }
 
     const { entity, concreteAction, gen, live } = checked;

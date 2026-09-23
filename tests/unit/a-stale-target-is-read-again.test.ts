@@ -167,6 +167,13 @@ describe("the loop: a stale target is read again before the press", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it("a discover during a read that answers absent is the reason given, not the absence (PR 側 codex)", async () => {
+    const ctx = await touch(entity(), { reread: answer({ kind: "absent" }), during: () => ctx.moveGeneration() });
+    const result = await ctx.loop.touch({ lease: ctx.lease });
+    expect(result).toMatchObject({ ok: false, reason: "lease_generation_mismatch" });
+    expect(ctx.execute).not.toHaveBeenCalled();
+  });
+
   it("the checks run again after the read: a modal that opened during it refuses the press", async () => {
     let answerNow: WindowBlockAnswer = { kind: "cannot_say" };
     const { GuardedTouchLoop } = await import("../../src/engine/world-graph/guarded-touch.js");
