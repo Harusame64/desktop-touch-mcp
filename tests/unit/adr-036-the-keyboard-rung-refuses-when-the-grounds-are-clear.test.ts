@@ -156,6 +156,27 @@ describe("the rule, step by step (first match decides)", () => {
       .toMatchObject({ kind: "refuse", ground: "read_only", subject: "focused" });
   });
 
+  it("refuses read_only for the NAMED control when the value road said it is read-only (internal #167)", () => {
+    // Measured on real hardware (win2, 2026-09-23, `c56ec5c`): Notepad's status-bar field is an
+    // `Edit` with `IsReadOnly=true` and no window. The value road answered `element_read_only`; the
+    // rung could not compare handles, said `entity_windowless`, and the text landed in the body.
+    const windowless = { entityHwnd: null, entityRoot: null, originRoot: HWND, receiver: OTHER };
+    expect(judgeKeyboardTarget(facts({ ...windowless, valueRoadSaidReadOnly: true })))
+      .toMatchObject({ kind: "refuse", ground: "read_only", subject: "named" });
+    // CONTROL: the same facts without the value road's answer are still the designed "cannot say".
+    expect(judgeKeyboardTarget(facts(windowless)))
+      .toMatchObject({ kind: "post", confirmed: false, why: "entity_windowless" });
+    // …and a named control with a window of its own is refused on the same ground, not confirmed.
+    expect(judgeKeyboardTarget(facts({ valueRoadSaidReadOnly: true })))
+      .toMatchObject({ kind: "refuse", ground: "read_only", subject: "named" });
+  });
+
+  it("marks the post when the read_only ground is switched off, rather than refusing", () => {
+    const f = facts({ entityHwnd: null, entityRoot: null, originRoot: HWND, receiver: OTHER, valueRoadSaidReadOnly: true });
+    expect(judgeKeyboardTarget(f, new Set(["read_only"])))
+      .toMatchObject({ kind: "post", confirmed: false, why: "ground_disabled:read_only" });
+  });
+
   it("7. cannot say otherwise: a windowless element, or a stale handle", () => {
     expect(judgeKeyboardTarget(facts({ entityHwnd: null, entityRoot: null, aimRoot: HWND, receiver: OTHER })))
       .toMatchObject({ kind: "post", confirmed: false, why: "entity_windowless" });
@@ -215,6 +236,12 @@ const RECT = { x: 100, y: 200, width: 120, height: 24 };
 const EDIT = "WindowsForms10.EDIT.app.0.1";
 const WRITABLE = 0x50010080;
 const READ_ONLY_PS = new Error('Exception calling "SetValue" with "1" argument(s): "Value is read-only."');
+/**
+ * Why the value road failed in the cells that only need to REACH the rung. They used `READ_ONLY_PS`
+ * until internal #167 made that answer a ground of its own; a control without ValuePattern is the
+ * ordinary reason to fall through to the keyboard, and says nothing about the field.
+ */
+const VALUE_ROAD_FAILED = new Error("ValuePattern not supported by this element");
 
 /** `handle` null means the element has no window of its own (WPF, most of a browser). */
 function field(handle: string | null = "5001", over: Partial<UiEntity> = {}): UiEntity {
@@ -240,7 +267,7 @@ function receiptOf(over: Partial<KeyboardReceipt> = {}): KeyboardReceipt {
 function depsFor(receipt: KeyboardReceipt, over: Partial<ExecutorDeps> = {}) {
   return {
     uiaClick: vi.fn(async () => {}),
-    uiaSetValue: vi.fn(async () => { throw READ_ONLY_PS; }),
+    uiaSetValue: vi.fn(async () => { throw VALUE_ROAD_FAILED; }),
     cdpClick: vi.fn(async () => {}),
     cdpFill: vi.fn(async () => {}),
     terminalSend: vi.fn(async () => {}),
@@ -522,5 +549,25 @@ describe("the real backend resolves once, looks the window up in the low 32 bits
       owners: new Map(), entity: keyboardOnly("5001"),
     }).then((r) => r, (err: unknown) => ({ result: err }));
     expect(result).toMatchObject({ name: "KeyboardTargetUnsafeError", ground: "other_window" });
+  });
+});
+
+describe("the value road's read-only answer, end to end through the executor (internal #167)", () => {
+  // The shape measured on the machine: a windowless field, the focus on another control of the same
+  // window, and the value road answering read-only.
+  const windowless = () => field(null, { origin: { kind: "window", id: "4919", hwnd: "4919" } } as Partial<UiEntity>);
+  const focusElsewhere = () => receiptOf({ receiverHwnd: OTHER, entityRootHwnd: null, originRootHwnd: HWND });
+
+  it("refuses before anything is posted when the value road said read-only", async () => {
+    const d = depsFor(focusElsewhere(), { uiaSetValue: vi.fn(async () => { throw READ_ONLY_PS; }) });
+    await expect(type(titleRoad, windowless(), d)).rejects.toMatchObject({ name: "KeyboardTargetUnsafeError", ground: "read_only" });
+    expect(d.keyboardPost).not.toHaveBeenCalled();
+    expect(d.keyboardTypeBg).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: the same shape with any other value-road failure is the designed marked success", async () => {
+    const d = depsFor(focusElsewhere());
+    expect(await type(titleRoad, windowless(), d))
+      .toMatchObject({ kind: "keyboard", landing: { confirmed: false, why: "entity_windowless" } });
   });
 });
