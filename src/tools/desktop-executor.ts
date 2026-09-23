@@ -544,9 +544,16 @@ async function resolvePressPoint(
      * found (`イーサネット 2 接続済み` over `イーサネット 2`) are space-separated and still press. The
      * inner side was taken from the tree, not the point read, which did not answer on that machine
      * that morning. No WinForms or WPF app was measured.
+     *
+     * **What no boundary can do** (gate 2): `Save` over `Don't save` still reads as the same name —
+     * the space before `save` is a boundary in any language, and a word rule cannot tell `X` from
+     * `Don't X` / `Do not X`. That is the English form of the same mispress, pre-existing, and only
+     * RuntimeId closes it (ADR-036 Annex B).
      */
     const sameName = (a: string, b: string): boolean => {
-      const fold = (t: string) => t.toLowerCase().replace(/&/g, "").replace(/\s+/g, " ").trim();
+      // NFC first: a decomposed name (`ハ` + U+3099, as files made on macOS reach Explorer) is then the
+      // same string as its composed form rather than a shorter name with a "boundary" after it (gate 2).
+      const fold = (t: string) => t.normalize("NFC").toLowerCase().replace(/&/g, "").replace(/\s+/g, " ").trim();
       const [x1, y1] = [fold(a), fold(b)];
       // A name that folds to nothing is handled by the two rules below rather than by a guard of its
       // own: `x1 === y1` keeps an exact match (a WinForms caption of `&&` renders as `&` and can be
@@ -559,19 +566,15 @@ async function resolvePressPoint(
       // is the second of the two shapes this rung's own refusal message names — pressing the wrong
       // row and answering `ok:true` is exactly what it exists to stop (gate 2). `"Save"` inside
       // `"Save document (Ctrl+S)"` ends on a space and stands.
+      // Matched by code point, with lookarounds, not by UTF-16 index: `long[i - 1]` handed a lone
+      // surrogate to the class for an astral neighbour (`𠮷野家` over `野家`), and a lone surrogate is
+      // not a letter, so a letter-extension pressed (gate 2, run). Combining marks (`\p{M}`) and
+      // format characters (`\p{Cf}`: ZWSP, ZWJ, SHY) are part of a word, not a boundary.
+      const WORD = "[\\p{L}\\p{N}\\p{M}\\p{Cf}]";
       const inside = (long: string, short: string) => {
-        // `short === ""` is not "inside everything" here, and saying so is not belt-and-braces: the
-        // empty string is found at every index INCLUDING the end, where `indexOf` clamps and the
-        // loop below stops advancing. Removing the guard above to see whether a cell noticed hung
-        // the suite instead of reddening it (gate 2's mutation, run). A predicate that can hang is
-        // worse than one that can be wrong, and neither should depend on a caller's guard.
         if (short === "") return false;
-        for (let i = long.indexOf(short); i !== -1; i = long.indexOf(short, i + 1)) {
-          const before = i === 0 ? "" : long[i - 1];
-          const after = long[i + short.length] ?? "";
-          if (!/[\p{L}\p{N}]/u.test(before) && !/[\p{L}\p{N}]/u.test(after)) return true;
-        }
-        return false;
+        const escaped = short.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return new RegExp(`(?<!${WORD})${escaped}(?!${WORD})`, "u").test(long);
       };
       return x1 === y1 || inside(x1, y1) || inside(y1, x1);
     };

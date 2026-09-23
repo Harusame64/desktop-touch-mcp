@@ -212,11 +212,27 @@ describe("a coordinate press asks what is at the point", () => {
   });
 
   it("still presses an access key and a spaced suffix, which are not letters", async () => {
-    for (const [recorded, atPoint] of [["保存する(S)", "保存する"], ["保存", "保存 (Ctrl+S)"], ["項目 1", "項目 1"]] as const) {
+    for (const [recorded, atPoint] of [["保存する(S)", "保存する"], ["保存", "保存 (Ctrl+S)"], ["項目 1", "項目 1 選択済み"]] as const) {
       const ent = entity({ locator: { uia: { name: recorded } } } as Partial<UiEntity>);
       const { outcome } = await press({ elementAtPoint: () => AT({ name: atPoint }) }, ent);
       expect(outcome.ok, `${recorded} over ${atPoint}`).toBe(true);
     }
+  });
+
+  it("does not let an astral letter, a combining mark or a zero-width character pass for a boundary (gate 2)", async () => {
+    for (const [recorded, atPoint] of [
+      ["野家", "𠮷野家"], ["野家", "野家𠮷"], ["cafe", "cafe\u0301s"], ["save", "save\u200bnot"], ["ह", "हि"],
+    ] as const) {
+      const ent = entity({ locator: { uia: { name: recorded } } } as Partial<UiEntity>);
+      const { outcome } = await press({ elementAtPoint: () => AT({ name: atPoint }) }, ent);
+      expect(outcome.ok, `${recorded} over ${JSON.stringify(atPoint)}`).toBe(false);
+    }
+  });
+
+  it("reads a decomposed name as the composed one (NFC)", async () => {
+    const ent = entity({ locator: { uia: { name: "バックアップ" } } } as Partial<UiEntity>);
+    const { outcome } = await press({ elementAtPoint: () => AT({ name: "ハ\u3099ックアップ" }) }, ent);
+    expect(outcome.ok).toBe(true);
   });
 
   it("refuses 保存 over 保存ボタン: the accepted cost, pinned so a loosening shows (internal #140)", async () => {
