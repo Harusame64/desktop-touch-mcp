@@ -34,6 +34,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const psOutputs: string[] = [];
 let psThrows: Error | null = null;
 let nativeAnswer: (() => unknown) | null = null;
+let nativeElementsThrow: Error | null = null;
 
 vi.mock("node:child_process", () => ({
   execFile: (
@@ -58,7 +59,10 @@ vi.mock("../../index.js", () => ({
     dhashFromRaw: () => 0n,
     hammingDistance: () => 0,
     win32EnumTopLevelWindows: () => [],
-    uiaGetElements: async () => ({ windowTitle: "T", elementCount: 0, elements: [] }),
+    uiaGetElements: async () => {
+      if (nativeElementsThrow) throw nativeElementsThrow;
+      return { windowTitle: "T", elementCount: 0, elements: [] };
+    },
     uiaGetFocusedAndPoint: async () => ({ focused: null, atPoint: null }),
     // The addon is PRESENT here — that is the point. A build with no addon can never show the
     // fallback, and the fallback is what this file is about.
@@ -70,7 +74,7 @@ vi.mock("../../index.js", () => ({
 }));
 
 vi.resetModules();
-const { getElementBounds } = await import("../../src/engine/uia-bridge.js");
+const { getElementBounds, getUiElements, isNativeUiaTimeout } = await import("../../src/engine/uia-bridge.js");
 
 function scripts_reset(): void { psOutputs.length = 0; }
 beforeEach(() => { psOutputs.length = 0; psThrows = null; nativeAnswer = null; });
@@ -109,13 +113,13 @@ describe("the bridge says which silence the read was", () => {
     // 8000 ms of `runPS` timeout, spent one after the other, with the script killed and stdout
     // empty. That is not "the element is not there"; it is "nobody finished asking", and it is the
     // only silence a longer wait can turn into an answer. It looked exactly like the other three.
-    nativeAnswer = () => { throw new Error("UIA operation timed out after 8000ms"); };
+    nativeAnswer = () => { throw new Error("UIA COM thread disconnected"); };
     psThrows = Object.assign(new Error("Command failed: powershell.exe"), { killed: true, signal: "SIGTERM" });
     const answer = await getElementBounds("App", "Save");
     expect(answer).toMatchObject({ found: null, why: "read_unfinished", via: "none" });
     // …and it still says the engine was asked first and what it said, which is how a reader sees
     // that the sixteen seconds were two budgets and not one.
-    expect((answer as { nativeFailed?: string }).nativeFailed).toMatch(/timed out after 8000ms/);
+    expect((answer as { nativeFailed?: string }).nativeFailed).toMatch(/COM thread disconnected/);
   });
 
   it("does not put the whole generated script into the answer", async () => {
@@ -252,7 +256,7 @@ describe("the bridge says which silence the read was", () => {
     // "If the native client fails, the PowerShell road answers" is false when the cause of the
     // failure is SLOWNESS — both budgets are 8000 ms and they are spent serially (win2,
     // `0c5547d`). Writing `via: "powershell"` on that answer would name a client that never spoke.
-    nativeAnswer = () => { throw new Error("UIA operation timed out after 8000ms"); };
+    nativeAnswer = () => { throw new Error("UIA COM thread disconnected"); };
     psThrows = Object.assign(new Error("Command failed"), { killed: true });
     expect(await getElementBounds("App", "Save")).toMatchObject({ via: "none" });
   });
@@ -280,11 +284,11 @@ describe("the bridge says which client answered", () => {
     // The measured case: the window's UI thread hangs, the native call times out, PowerShell
     // answers. Before this the caller got `{name:"Save",…}` and could not tell it from an answer
     // the engine gave — while the two clients name some controls differently (internal #136).
-    nativeAnswer = () => { throw new Error("UIA operation timed out after 8000ms"); };
+    nativeAnswer = () => { throw new Error("UIA COM thread disconnected"); };
     psOutputs.push(JSON.stringify(ELEMENT));
     const answer = await getElementBounds("App", "Save");
     expect(answer).toMatchObject({ found: ELEMENT, via: "powershell" });
-    expect((answer as { nativeFailed?: string }).nativeFailed).toMatch(/timed out after 8000ms/);
+    expect((answer as { nativeFailed?: string }).nativeFailed).toMatch(/COM thread disconnected/);
   });
 
   it("carries the fall-back onto a MISS too, which is the shape that hides the vocabulary", async () => {
@@ -293,7 +297,7 @@ describe("the bridge says which client answered", () => {
     // this one calls it. With the engine hung, the same call falls back and the answer becomes
     // "not found" — for an element that is on the screen the whole time. Without `nativeFailed`
     // the caller sees a plain miss and blames the name.
-    nativeAnswer = () => { throw new Error("UIA operation timed out after 8000ms"); };
+    nativeAnswer = () => { throw new Error("UIA COM thread disconnected"); };
     psOutputs.push('{"error":"Element not found"}');
     const answer = await getElementBounds("App", "最小化");
     expect(answer).toMatchObject({ found: null, why: "element_not_found", via: "powershell" });
@@ -310,5 +314,39 @@ describe("the bridge says which client answered", () => {
     const answer = await fresh.getElementBounds("App", "Save");
     expect(answer).toMatchObject({ found: ELEMENT, via: "powershell" });
     expect(answer).not.toHaveProperty("nativeFailed");
+  });
+});
+
+describe("a native timeout is not a reason to wait a second time (internal #144, the user's Q2)", () => {
+  // Measured by win2 against a hung window: the PowerShell fall-back saved 0 of 12 reads while the
+  // window was still hung, cost a second 8 s budget per read, and on the road with the caller's
+  // budget spent 33 s to answer `Window not found` about a window on the screen.
+  afterEach(() => { nativeElementsThrow = null; });
+
+  it("answers `read_unfinished` from the native timeout, and runs no PowerShell script", async () => {
+    nativeAnswer = () => { throw new Error("UIA operation timed out after 8000ms"); };
+    // Queued so that a fall-back would SUCCEED if it ran — the answer below must not be this.
+    psOutputs.push(JSON.stringify({ name: "Save", controlType: "Button", automationId: "", boundingRect: null, value: null }));
+    const answer = await getElementBounds("App", "Save");
+    expect(answer).toMatchObject({ found: null, why: "read_unfinished", via: "none" });
+    expect((answer as { nativeFailed?: string }).nativeFailed).toBe("UIA operation timed out after 8000ms");
+    expect(psOutputs, "a PowerShell script ran after a native timeout").toHaveLength(1);
+    psOutputs.length = 0;
+  });
+
+  it("throws the native timeout from getUiElements instead of falling back", async () => {
+    nativeElementsThrow = new Error("UIA operation timed out after 30000ms");
+    psOutputs.push(JSON.stringify({ windowTitle: "T", elementCount: 0, elements: [] }));
+    await expect(getUiElements("App", 3, 50, 30000)).rejects.toThrow("UIA operation timed out after 30000ms");
+    expect(psOutputs).toHaveLength(1);
+    psOutputs.length = 0;
+  });
+
+  it("recognises only the engine's own shape", () => {
+    expect(isNativeUiaTimeout(new Error("UIA operation timed out after 8000ms"))).toBe(true);
+    expect(isNativeUiaTimeout("UIA operation timed out after 2000ms")).toBe(true);
+    for (const other of ["Command timed out", "UIA operation timed out after 8000ms (retry)", "UIA COM thread disconnected", "PowerShell: operation timed out after 8000ms"]) {
+      expect(isNativeUiaTimeout(new Error(other)), other).toBe(false);
+    }
   });
 });

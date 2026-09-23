@@ -1487,6 +1487,8 @@ export async function getUiElements(
       }
       return normalised;
     } catch (e) {
+      // Internal #144 — a timeout is not a reason to wait a second time (see `isNativeUiaTimeout`).
+      if (isNativeUiaTimeout(e)) throw e;
       console.warn("[uia-bridge] Native uiaGetElements failed, falling back to PowerShell:", e);
       // fall through to PowerShell
     }
@@ -1999,6 +2001,24 @@ export interface ElementBounds {
  * guess, because the field does not exist in the addon. Closing it is a Rust change and a rebuilt
  * addon — and a build without that field must not be read as if it had one.
  */
+/**
+ * Internal #144 — did the native client give up on its own clock, rather than fail?
+ *
+ * The user's decision of 2026-09-21 (Q2): **when the native read timed out, do not fall back to
+ * PowerShell.** Measured by win2 against a window whose UI thread was hung: the second road saved
+ * 0 of 12 reads while the window was still hung (the three that completed landed 130 ms after the
+ * hang ended — recovery, not rescue), and it cost a second 8 s budget per read. Worse, on the road
+ * that takes the caller's budget it spent 33 s and then answered `Window not found` about a window
+ * on the screen — a confident lie where the native road had an honest silence.
+ *
+ * Recognised by the exact shape the engine produces (`src/uia/thread.rs`), not by a substring: a
+ * PowerShell or COM message that happens to say "timed out" is not the native budget running out.
+ */
+export function isNativeUiaTimeout(e: unknown): boolean {
+  const message = e instanceof Error ? e.message : String(e);
+  return /^UIA operation timed out after \d+ms$/.test(message);
+}
+
 export type BoundsMiss =
   /** The title matched no top-level window. Checking the element's name cannot help. */
   | "window_not_found"
@@ -2551,6 +2571,10 @@ export async function getElementBounds(
       };
     } catch (e) {
       nativeFailed = e instanceof Error ? e.message : String(e);
+      // Internal #144 — nothing was concluded, and a second budget would not change that while the
+      // window is hung (0 of 12, measured). `wait_until` polls this on every tick, so the skipped
+      // fall-back is 8 s per poll given back to the caller's wait.
+      if (isNativeUiaTimeout(e)) return { found: null, why: "read_unfinished", via: "none", nativeFailed };
       console.warn("[uia-bridge] Native uiaGetElementBounds failed, falling back to PowerShell:", e);
     }
   }
