@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- **`type` / `setValue` on a button is refused instead of being sent as keystrokes.** On a WinForms
+  button, `desktop_act` with `setValue` answered `ok:true` with executor `keyboard`: no value was set,
+  and the text went out as keystrokes to whatever held the focus. When UI Automation reports the
+  target as a button, check box, radio button, hyperlink or menu item, a `type` or `setValue` is now
+  refused with `action_not_offered` before anything is done. Text fields UI Automation does not call
+  `Edit` (a `Document`, a custom control) and targets read by OCR are unchanged.
+
 - **The server instructions now say what a malformed call answers.** When the arguments do not match
   a tool's schema, the MCP SDK refuses the call before the tool runs and answers
   `MCP error -32602: Input validation error: …` as plain text, with no `ok`, `code` or `suggest`,

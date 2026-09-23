@@ -16,6 +16,7 @@ import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
 import { probeLane } from "../../engine/aim-probe.js";
 import { parseTargetHwnd, type TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
+import { UIA_PRESS_ONLY_CONTROL_TYPES } from "../../engine/world-graph/guarded-touch.js";
 
 function uiaRoleFromControlType(ct: string): string {
   const map: Record<string, string> = {
@@ -28,7 +29,7 @@ function uiaRoleFromControlType(ct: string): string {
 }
 
 function uiaActionability(ct: string): Array<"click" | "invoke" | "type" | "read"> {
-  if (["Button", "CheckBox", "RadioButton", "Hyperlink", "MenuItem"].includes(ct)) return ["invoke", "click"];
+  if ((UIA_PRESS_ONLY_CONTROL_TYPES as readonly string[]).includes(ct)) return ["invoke", "click"];
   if (["Edit", "ComboBox"].includes(ct)) return ["type", "click"];
   return ["read"];
 }

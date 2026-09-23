@@ -203,3 +203,67 @@ describe("internal #154 — an action the target does not offer", () => {
     expect(joined, "the substitution is not warned about").toMatch(/interchangeable|substituted/i);
   });
 });
+
+describe("internal #154 W3 — text into a control UI Automation says only presses", () => {
+  // Measured, win2, 2026-09-21: setValue with text on a Button answered ok:true, executor keyboard —
+  // no value was set, and the text went out as keystrokes.
+  const pressOnly = ["Button", "CheckBox", "RadioButton", "Hyperlink", "MenuItem"];
+  // The role each one gets from the UIA provider (`uiaRoleFromControlType`). Built with the real role,
+  // because a guard keyed on `role === "button"` passed every cell while all five were built as
+  // buttons — and would leave Hyperlink and MenuItem unguarded (gate 2 on #723, measured).
+  const roleOf: Record<string, string> = { Button: "button", CheckBox: "button", RadioButton: "button", Hyperlink: "link", MenuItem: "menuitem" };
+
+  for (const controlType of pressOnly) {
+    it(`refuses setValue and type on a UIA ${controlType} (role ${roleOf[controlType]}), and nothing reaches the executor`, async () => {
+      for (const action of ["setValue", "type"] as const) {
+        const { result, performed } = await act({ ...button(), role: roleOf[controlType], controlType } as UiEntity, action);
+        expect(result.ok, `${controlType}/${action} was told it succeeded`).toBe(false);
+        expect(result.reason).toBe("action_not_offered");
+        expect(performed, `${controlType}/${action} reached the executor`).toEqual([]);
+      }
+    });
+  }
+
+  it("the list the refusal reads is the list the UIA provider gives invoke/click to — exactly these five", async () => {
+    const { UIA_PRESS_ONLY_CONTROL_TYPES } = await import("../../src/engine/world-graph/guarded-touch.js");
+    expect([...UIA_PRESS_ONLY_CONTROL_TYPES]).toEqual(pressOnly);
+    const src = (await import("node:fs")).readFileSync("src/tools/desktop-providers/uia-provider.ts", "utf8");
+    expect(src, "the provider spells the list again instead of reading the shared one").toMatch(
+      /if \(\(UIA_PRESS_ONLY_CONTROL_TYPES as readonly string\[\]\)\.includes\(ct\)\) return \["invoke", "click"\];/,
+    );
+  });
+
+  // CONTROLS — the text roads that work today must still reach the executor. Each one is a reason
+  // the ground is the UIA control type and not the affordances.
+  const takesText: Array<[string, Partial<UiEntity>]> = [
+    ["a UIA Edit", { role: "textbox", controlType: "Edit", affordances: [{ verb: "type" }, { verb: "click" }] }],
+    // An editable combo box: the provider gives it type. "Allow only Edit and Document" passed the
+    // cells without this one (gate 2 on #723).
+    ["a UIA ComboBox", { role: "textbox", controlType: "ComboBox", affordances: [{ verb: "type" }, { verb: "click" }] }],
+    // A custom text area outside every list: the commit names it as a reason for this ground.
+    ["a UIA Custom control that advertises only read", { role: "unknown", controlType: "Custom", affordances: [{ verb: "read" }] }],
+    // Notepad's body on the native road reports Document (win2 2b8f8c4); #327 item E's fallback.
+    ["a UIA Document that advertises only read", { role: "label", controlType: "Document", affordances: [{ verb: "read" }] }],
+    // A blind window: typing is the keyboard rung's designed marked success (release cut W-g).
+    ["an OCR entity that advertises only click", { role: "label", sources: ["ocr"], affordances: [{ verb: "click" }], locator: undefined }],
+    // The visual lane adds invoke to any region its detector calls a button: a guess, not a ground.
+    ["a visual-lane 'button' with no UIA control type", { sources: ["visual_gpu"], locator: undefined }],
+  ] as never;
+  for (const [label, over] of takesText) {
+    it(`CONTROL: ${label} still takes setValue and type`, async () => {
+      for (const action of ["setValue", "type"] as const) {
+        const { result, performed } = await act({ ...button(), ...over } as UiEntity, action);
+        expect(result.ok, `${label}/${action} was refused`).toBe(true);
+        expect(performed).toEqual([action]);
+      }
+    });
+  }
+
+  it("CONTROL: a UIA Button still takes click and invoke", async () => {
+    for (const action of ["click", "invoke"] as const) {
+      const { result, performed } = await act({ ...button(), controlType: "Button" } as UiEntity, action);
+      expect(result.ok).toBe(true);
+      expect(performed).toEqual([action]);
+    }
+  });
+});
