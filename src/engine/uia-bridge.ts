@@ -26,9 +26,12 @@ function refuseUiaTitleIfExcluded(windowTitle: string, handle?: bigint): void {
   // never runs without a handle. Refused only while armed, so an idle server is unchanged; a call
   // that carries a handle is judged by the handle gate instead.
   if (windowTitle === "" && handle === undefined && hasExcludedPids()) {
+    // The words do not confirm that a locker is running: this caller never named it, and the
+    // coordinate refusal had the same reveal removed at gate 2 (`_errors.ts`). The `WindowExcluded:`
+    // prefix is what the flat tools' `classify` reads, as `wait-until.ts` does (gate 2 on #115).
     throw new WindowExcludedError(
-      "UIA target has an empty title and no window handle while the desktop-touch key locker is armed; " +
-      "an empty title matches every window, including the locker, so it is refused",
+      "WindowExcluded: this UI Automation call has an empty window title and no window handle, " +
+      "which would match whichever window is listed first; name the window, or pass its handle",
     );
   }
   if (isExcludedTitle(windowTitle)) {

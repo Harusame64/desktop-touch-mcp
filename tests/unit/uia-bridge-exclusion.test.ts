@@ -69,7 +69,9 @@ describe("uia-bridge — an empty title with no handle while the locker is armed
     registerExcludedPid(2222);
     const err = await settle(setElementValue("", "text", "Field"));
     expect(err).toBeInstanceOf(WindowExcludedError);
-    expect(String((err as Error).message)).toMatch(/empty title/);
+    expect(String((err as Error).message)).toMatch(/^WindowExcluded: .*empty window title/);
+    // …and it does not confirm to this caller that a locker is running.
+    expect(String((err as Error).message)).not.toMatch(/locker/i);
   });
 
   it("refuses the read and the click too", async () => {
