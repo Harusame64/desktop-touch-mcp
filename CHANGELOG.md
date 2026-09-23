@@ -35,6 +35,15 @@
   events are missing. `server_status` now shows `nativeUiaEvidence.tasksDone` beside `tasksSent`, and
   `focusRegistration` (`pending` for long means focus events are off).
 
+- **A `setValue` on a read-only field is refused instead of being typed somewhere else.**
+  On Notepad, `desktop_act` with `setValue` on the status bar's read-only field answered `ok:true`
+  and typed the text into the document body. UI Automation had already said the field is read-only;
+  the keyboard fallback could not tell where its keystrokes would land for a field without a window
+  of its own, and posted them anyway. For such a field, when the UI Automation write reports it is
+  read-only, the act is now refused with `keyboard_target_unsafe` (ground `read_only`) before anything
+  is typed. On the same field the native engine was measured not to reach the keyboard at all: it
+  reads the field as a label, and the act answers `executor_failed` with nothing typed.
+
 - **A label seen in this read no longer comes back a second time as its own stale copy.**
   On a window without an accessibility tree, every text label reached the caller twice: once as
   read by OCR, and once as the visual lane's replay of what OCR had seen a read earlier, each with

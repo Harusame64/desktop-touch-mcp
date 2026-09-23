@@ -94,6 +94,11 @@ export interface KeyboardFacts {
   originTakesInput: boolean | null;
   /** Whether the value road, just before, failed because UI Automation said the element is disabled. */
   valueRoadSaidDisabled: boolean;
+  /**
+   * Internal #167 — whether the value road, just before, failed because UI Automation said the
+   * element is READ-ONLY. Optional so a caller that predates it says nothing (read as false).
+   */
+  valueRoadSaidReadOnly?: boolean;
 }
 
 export type KeyboardVerdict =
@@ -165,6 +170,25 @@ export function judgeKeyboardTarget(
     if (!disabled.has("disabled")) return { kind: "refuse", ground: "disabled", subject: eUsable ? "named" : "window", referenceFrom };
     const rest = judgeTheReceiver(f, disabled, eUsable, reference, referenceFrom);
     return rest.kind === "refuse" ? rest : cannotSay("ground_disabled:disabled");
+  }
+  // Internal #167 — the named control told the value road it does not take a value. Measured on real
+  // hardware (win2, 2026-09-23, internal `c56ec5c`): Notepad's status-bar field (`Edit`,
+  // `IsReadOnly=true`, no window of its own) answered the value road `element_read_only`, the rung
+  // then could not compare handles, said `entity_windowless`, posted — and the characters landed in
+  // the focused body, under `ok:true`. Keystrokes cannot write a field that refuses a value, so
+  // wherever they go it is not the field the caller named. The existing `read_only` ground, said of
+  // the named control: no new word.
+  //
+  // **Only for a field with no window of its own** (gate 2). The value road's answer is about "the
+  // element the route matched", which the by-handle scripts pick by name containment — not always
+  // the named control. When the named control HAS a window, the rule below reads that window
+  // directly, and a receiver that is the named control and takes text is a confirmed write whatever
+  // the value road said. Without a window there is no such fact to prefer: the value road's success
+  // would have been believed as "the field was written", so its read-only failure is believed too.
+  if (f.valueRoadSaidReadOnly === true && !eUsable) {
+    if (!disabled.has("read_only")) return { kind: "refuse", ground: "read_only", subject: "named", referenceFrom };
+    const rest = judgeTheReceiver(f, disabled, eUsable, reference, referenceFrom);
+    return rest.kind === "refuse" ? rest : cannotSay("ground_disabled:read_only");
   }
   return judgeTheReceiver(f, disabled, eUsable, reference, referenceFrom);
 }

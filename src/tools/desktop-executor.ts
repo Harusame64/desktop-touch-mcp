@@ -1325,6 +1325,7 @@ function keyboardFactsOf(
     entityTakesInput: takesInput.entity,
     originTakesInput: takesInput.origin,
     valueRoadSaidDisabled: valueRoadError !== undefined && classifyUiaRouteFailure(valueRoadError) === "element_disabled",
+    valueRoadSaidReadOnly: valueRoadError !== undefined && classifyUiaRouteFailure(valueRoadError) === "element_read_only",
   };
 }
 
