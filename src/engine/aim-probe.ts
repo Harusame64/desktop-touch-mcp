@@ -70,6 +70,14 @@ export type AimSeam =
    */
   | "act.modal"
   /**
+   * G1 (ADR-036 §10) — act time, for a `stale` target only, before any backend: which window and
+   * which part of it was read again, what label was looked for, and whether it was found
+   * (`present` / `absent`) or the read could not answer (`cannot_say`, with `why`). "Could not
+   * answer" is written for the same reason as `act.modal`'s: the act goes on then, exactly as it
+   * does when the label was found, and only this row tells the two apart.
+   */
+  | "act.stale"
+  /**
    * ADR-036 family 2, arm A: one row per `keyboard` dispatch — which rung sent, who received, and
    * what the rule would have said about it. The tool road has no entity, so the rule can only ever
    * answer "cannot say" or `read_only` there; the row exists to count that before anything refuses.

@@ -104,6 +104,7 @@ import { shouldReturnRoiCapture, type ReturnCaptureMode } from "./_roi-capture-g
 import { filterDirtyRectsToWindow, boundingBox, clampRectToWindow, resolveFoldOcrRoi } from "./_roi-region.js";
 import { buildRoiPreviewEntities, somElementsToCandidates } from "./_roi-preview.js";
 import { runSomPipeline } from "../engine/ocr-bridge.js";
+import { productionRereadStale } from "./_stale-reread.js";
 import type { Rect, UiEntityCandidate } from "../engine/vision-gpu/types.js";
 import { createDefaultCapabilityRegistry } from "../capabilities/registry.js";
 
@@ -703,6 +704,8 @@ export function getDesktopFacade(): DesktopFacade {
       checkViewport: productionCheckViewport,
       // internal #126: the OS's answer about the entity's own window, asked before the snapshot.
       findBlockingWindow: productionFindBlockingWindow,
+      // G1 (ADR-036 §10): a `stale` target's place is read again before the press.
+      rereadStale: productionRereadStale,
       // G1-C: window-level focus fingerprint for focus_shifted diff.
       getFocusedEntityId: productionGetFocusedEntityId,
       // Issue #295 carry-over — foreground HWND for the see() UIA-cache-stale
@@ -1880,7 +1883,7 @@ export function registerDesktopTools(server: McpServer): void {
       // next round from re-adding a claim.
       landingAdvice(LANDING_ADVICE_TOOL_DESCRIPTION),
       "If ok=false, read 'reason':",
-      "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover; entity_not_found is also the answer when an act that named its window by title is told that the element cannot be found by the native UIA engine that also read it — nothing was pressed where it used to be;",
+      "  lease_expired / lease_generation_mismatch / lease_digest_mismatch / entity_not_found → re-call desktop_discover; entity_not_found is also the answer when an act that named its window by title is told that the element cannot be found by the native UIA engine that also read it, and when desktop_discover handed the element back from an earlier read and its label is no longer where it was — nothing was pressed where it used to be;",
       "  modal_blocking → response.blockingElement (when present) names the blocker. role:'dialog' means a separate dialog window has disabled the target's window: blockingElement.hwnd is that dialog — re-call desktop_discover with target.hwnd=blockingElement.hwnd, answer it there, then retry (name is its title, which may be empty or shared, so neither click_element(name) nor focus_window(title=name) reaches it). Any other role: a window the desktop_discover snapshot holds, where the OS could not say whether it blocks this entity — with blockingElement.hwnd, re-call desktop_discover with target.hwnd=blockingElement.hwnd and answer it there; without it, dismiss via V1 click_element(name=blockingElement.name). Then re-call desktop_discover on the original target and act on the new lease — this refusal came from that snapshot, so the same lease is refused again;",
       "  entity_outside_viewport → scroll it back via V1 scroll(action='to_element'/'raw'), or re-call desktop_discover if its window moved or closed;",
       "  origin_window_not_visible → the element's window is minimised or hidden — V1 focus_window(windowTitle) to restore it, then re-call desktop_discover;",
