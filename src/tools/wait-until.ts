@@ -146,9 +146,7 @@ type LastLook = Record<string, unknown>;
  * same way (internal #136), so WHICH of them answered is part of what the answer means.
  * `nativeFailed` appears only when a read fell back mid-call: MEASURED 2026-09-20 win2 (internal
  * `25da27f`), hanging a window's UI thread makes the native call throw while the PowerShell road
- * answers normally, and before this the only trace was a line on the server's stderr. Since
- * internal #144 a native TIMEOUT no longer falls back on this road; it is `read_unfinished` with
- * `via: "none"` and the timeout in `nativeFailed`.
+ * answers normally, and before this the only trace was a line on the server's stderr.
  */
 function provenance(answer: { via: string; nativeFailed?: string }): Record<string, unknown> {
   return { via: answer.via, ...(answer.nativeFailed !== undefined && { nativeFailed: answer.nativeFailed }) };

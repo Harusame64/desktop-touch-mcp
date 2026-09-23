@@ -2,17 +2,6 @@
 
 ## [Unreleased]
 
-- **A read of a window that has stopped responding stops sooner, and no longer ends in a false "Window not found".**
-  When the native engine's read timed out, the server used to try the same read again through
-  PowerShell. Against a hung window that second try never succeeded while the window was still hung
-  (0 of 12, measured). It cost another 8 s, and the road that takes your own timeout spent up to 33 s
-  before answering `Window not found` about a window that was on the screen. Now a native timeout ends
-  a read that finds its window by title: `desktop_discover` reports its UIA lane as failed
-  (`uia_provider_failed`) instead of waiting, and `wait_until` polls about twice as often. A read
-  pinned to a window handle still falls back, and so does any native failure that is not a timeout.
-  The trade: a window that is busy for roughly 8–16 s, then recovers, used to answer late on that
-  second try and now fails at 8 s.
-
 - **A label seen in this read no longer comes back a second time as its own stale copy.**
   On a window without an accessibility tree, every text label reached the caller twice: once as
   read by OCR, and once as the visual lane's replay of what OCR had seen a read earlier, each with
