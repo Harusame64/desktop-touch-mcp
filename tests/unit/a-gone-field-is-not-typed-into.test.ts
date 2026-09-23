@@ -29,10 +29,14 @@ const HWND = 4919n; // the window
 const GONE = 6423322n; // FOXTROT's own window, destroyed since discover
 const DELTA = 5002n; // the field that holds the focus
 
-function foxtrot(readVia: "native" | "powershell" | undefined = "native", handle: bigint | null = GONE): UiEntity {
+function foxtrot(
+  readVia: "native" | "powershell" | undefined = "native",
+  handle: bigint | null = GONE,
+  handleRead: "value" | "zero" | "failed" = handle === null ? "zero" : "value",
+): UiEntity {
   return {
     entityId: "foxtrot", role: "textbox", label: "FOXTROT", confidence: 0.9, sources: ["uia"],
-    locator: { uia: { name: "FOXTROT", ...(readVia !== undefined && { via: readVia }), ...(handle !== null && { nativeWindowHandle: handle.toString() }) } },
+    locator: { uia: { name: "FOXTROT", ...(readVia !== undefined && { via: readVia }), ...(handle !== null && { nativeWindowHandle: handle.toString() }), nativeWindowHandleRead: handleRead } },
     affordances: [{ verb: "type", executors: ["uia"], confidence: 0.9, preconditions: [], postconditions: [] }],
     generation: "gen-1", evidenceDigest: "d", rect: { x: 100, y: 200, width: 120, height: 24 }, controlType: "Edit",
     origin: { kind: "window", id: "T1-FIXTURE", hwnd: HWND.toString() },
@@ -40,18 +44,18 @@ function foxtrot(readVia: "native" | "powershell" | undefined = "native", handle
 }
 
 /**
- * What t1 read at the rung: DELTA holds the focus, and FOXTROT's own window is not alive
- * (`entityRootHwnd: null`, the OS's answer). `alive` puts FOXTROT's window back, focused.
+ * What t1 read at the rung: DELTA holds the focus, and the OS, asked, says FOXTROT's own window is not
+ * a window (`entityWindowAlive: false`). `alive` puts FOXTROT's window back, focused.
  */
 function receipt(over: Partial<KeyboardReceipt> = {}): KeyboardReceipt {
   return {
     windowHwnd: HWND, receiverHwnd: DELTA, receiverClass: "WindowsForms10.EDIT.app.0.1", receiverRect: null,
     receiverRootHwnd: HWND, receiverStyle: 0x50010080, receiverAncestors: [HWND], ancestorsComplete: true,
-    entityRootHwnd: null, originRootHwnd: HWND, aimRootHwnd: null, lookupRootHwnd: HWND, ownerChain: [],
+    entityRootHwnd: null, entityWindowAlive: false, originRootHwnd: HWND, aimRootHwnd: null, lookupRootHwnd: HWND, ownerChain: [],
     ...over,
   };
 }
-const alive = { entityRootHwnd: HWND, receiverHwnd: GONE, receiverAncestors: [HWND] };
+const alive = { entityRootHwnd: HWND, entityWindowAlive: true, receiverHwnd: GONE, receiverAncestors: [HWND] };
 
 const failing = (message: string, via?: "native" | "powershell") =>
   vi.fn(async () => { throw Object.assign(new Error(message), via !== undefined ? { uiaVia: via } : {}); });
@@ -148,26 +152,33 @@ describe("t1 — the named field's own window is gone, and UIA says the element 
   });
 });
 
-describe("a field with no window of its own — item 16's condition, as on the click path", () => {
-  for (const [road, target] of roads) {
-    it(`is refused when the read and the write were both native — ${road}`, async () => {
-      const d = deps();
-      const { e } = await outcome(type(target, foxtrot("native", null), d));
-      expect(e).toMatchObject({ name: "TargetGoneError" });
-      expect(d.keyboardPost).not.toHaveBeenCalled();
+describe("a field UIA said has no window of its own — item 16's condition, where the click path believes it", () => {
+  it("is refused on the title road when the read and the write were both native", async () => {
+    const d = deps();
+    const { e } = await outcome(type(titleRoad, foxtrot("native", null), d));
+    expect(e).toMatchObject({ name: "TargetGoneError" });
+    expect(d.keyboardPost).not.toHaveBeenCalled();
+    // Decided before the resolve: it needs no receipt (gate 2, round 2).
+    expect(d.keyboardResolve).not.toHaveBeenCalled();
+  });
+  it("is refused even when the resolve would have thrown — the ladder cannot rename it (gate 2, round 2)", async () => {
+    const d = deps({ keyboardResolve: vi.fn(async () => { throw new Error("Background keyboard type not supported"); }) });
+    const { e } = await outcome(type(titleRoad, foxtrot("native", null), d));
+    expect(e).toMatchObject({ name: "TargetGoneError" });
+  });
+  for (const [what, entity, target, over] of [
+    ["a PowerShell answer to the write", foxtrot("native", null), titleRoad, { uiaSetValue: failing("Element not found", "powershell") }],
+    ["an entity the PowerShell client read", foxtrot("powershell", null), titleRoad, {}],
+    ["an answer that does not say which client gave it", foxtrot("native", null), titleRoad, { uiaSetValue: failing("Element not found") }],
+    ["the handle road — an aimed search is not the click path's measurement", foxtrot("native", null), handleRoad, {}],
+    ["a handle the read FAILED to record (internal#118), not one UIA said is absent", foxtrot("native", null, "failed"), titleRoad, {}],
+  ] as const) {
+    it(`keeps the rung for ${what}`, async () => {
+      const d = deps(over);
+      await outcome(type(target, entity, d));
+      // The rung ran and posted — t1's answer before this change, kept where the answer is not believed.
+      expect(d.keyboardPost).toHaveBeenCalledOnce();
     });
-    for (const [what, entity, over] of [
-      ["a PowerShell answer to the write", foxtrot("native", null), { uiaSetValue: failing("Element not found", "powershell") }],
-      ["an entity the PowerShell client read", foxtrot("powershell", null), {}],
-      ["an answer that does not say which client gave it", foxtrot("native", null), { uiaSetValue: failing("Element not found") }],
-    ] as const) {
-      it(`keeps the rung for ${what} — ${road}`, async () => {
-        const d = deps(over);
-        await outcome(type(target, entity, d));
-        // The rung ran and posted — t1's answer before this change, kept where the answer is not believed.
-        expect(d.keyboardPost).toHaveBeenCalledOnce();
-      });
-    }
   }
 });
 
@@ -181,15 +192,22 @@ describe("the named field's own window is ALIVE — not refused as gone, whateve
       expect(d.keyboardPost).toHaveBeenCalledOnce();
     });
     it(`with the focus elsewhere, the rung's own ground refuses it, not "gone" — ${road}`, async () => {
-      const d = deps({}, receipt({ entityRootHwnd: HWND }));
+      const d = deps({}, receipt({ entityRootHwnd: HWND, entityWindowAlive: true }));
       const { e } = await outcome(type(target, foxtrot(), d));
       expect(e).toMatchObject({ name: "KeyboardTargetUnsafeError", ground: "other_control" });
     });
   }
 
-  it("a backend that did not read the field's window is not evidence it is gone", async () => {
-    const d = deps({ uiaSetValue: failing("Element not found", "powershell") }, receipt({ entityRootHwnd: undefined }));
+  it("a backend that did not ask whether the field's window lives is not evidence it is gone", async () => {
+    const d = deps({ uiaSetValue: failing("Element not found", "powershell") }, receipt({ entityWindowAlive: undefined }));
     await outcome(type(titleRoad, foxtrot("powershell"), d));
+    expect(d.keyboardPost).toHaveBeenCalledOnce();
+  });
+
+  it("a root that could not be read is not \"gone\" — only the OS answering no is (gate 2, round 2)", async () => {
+    // `getWindowRoot`'s null says "not a window" and "the call failed" alike; the first version read it.
+    const d = deps({}, receipt({ entityRootHwnd: null, entityWindowAlive: undefined }));
+    await outcome(type(titleRoad, foxtrot(), d));
     expect(d.keyboardPost).toHaveBeenCalledOnce();
   });
 
@@ -219,5 +237,30 @@ describe("the bridge says which client answered a failed write", () => {
     const { _realExecutorDepsForTest } = await import("../../src/tools/desktop-executor.js");
     const err = await _realExecutorDepsForTest().uiaSetValue("T1-FIXTURE", "x", "FOXTROT").then(() => null, (e: unknown) => e as { uiaVia?: unknown });
     expect(err?.uiaVia).toBe("native");
+  });
+});
+
+describe("windowIsAlive — three answers, so a failed question is never \"gone\" (gate 2, round 2)", () => {
+  async function aliveWith(nativeWin32: unknown) {
+    vi.resetModules();
+    vi.doMock("../../src/engine/native-engine.js", async (orig) => ({
+      ...(await orig<typeof import("../../src/engine/native-engine.js")>()),
+      nativeWin32,
+    }));
+    const { windowIsAlive } = await import("../../src/engine/win32.js");
+    return windowIsAlive(GONE);
+  }
+  it("false only when the native call ran and found no root", async () => {
+    expect(await aliveWith({ win32GetAncestor: () => null })).toBe(false);
+  });
+  it("true when it found one", async () => {
+    expect(await aliveWith({ win32GetAncestor: () => HWND })).toBe(true);
+  });
+  it("undefined when the call throws", async () => {
+    expect(await aliveWith({ win32GetAncestor: () => { throw new Error("napi"); } })).toBeUndefined();
+  });
+  it("undefined when the binding is missing, or there is no addon", async () => {
+    expect(await aliveWith({})).toBeUndefined();
+    expect(await aliveWith(null)).toBeUndefined();
   });
 });
