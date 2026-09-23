@@ -266,23 +266,17 @@ fn com_thread_main(rx: Receiver<UiaTask>, shutdown_rx: Receiver<()>) {
         }
     };
 
-    // ── P5c-1: register UIA event handlers ──────────────────────────────────
-    // Owner holds the `IUIAutomation*EventHandler` instances; its `Drop`
-    // calls the matching `Remove*EventHandler` so we tear down the
-    // registration before `CoUninitialize` below. The handler holds an
-    // `Arc<EventRing>` so it can push directly into the L1 ring without
-    // ever touching `L1Inner` (which stays private to `l1_capture::worker`).
-    let mut event_owner = event_handlers::UiaEventHandlerOwner::new(ctx.automation.clone());
-    let ring = crate::l1_capture::ensure_l1().ring.clone();
-    let focus_handler = event_handlers::focus::make_focus_handler(ring);
-    if let Err(e) = event_owner.register_focus(&ctx.cache_request, focus_handler) {
-        // Tier 1 graceful disable: log + continue. The COM thread is
-        // still useful for everything else (existing UIA polling tasks
-        // delivered via `rx`); we just lose focus event capture.
-        eprintln!(
-            "[uia-com] AddFocusChangedEventHandler failed: {e} -- focus events disabled"
-        );
-    }
+    // ── Internal #168: the focus handler is registered OFF this thread ──────
+    // `AddFocusChangedEventHandler` is desktop-wide and synchronous, and it has no deadline. With one
+    // unresponsive UIA provider anywhere on the desktop it did not return, and because it ran here —
+    // before the task loop — the loop was never reached: 22 tasks sent in 75 s, 0 processed, every
+    // native read a timeout for the life of the server (win2 / Opus, 2026-09-23, internal `2078af5`;
+    // the suspect was a hung XboxPcTray CoreWindow). Tasks are served first now; the registration
+    // runs on its own thread with its own apartment membership and its own `IUIAutomation`, and a
+    // registration that never returns costs focus events only — which is what the old code's own
+    // failure branch already accepted ("focus events disabled").
+    let (focus_stop_tx, focus_stop_rx) = bounded::<()>(1);
+    spawn_focus_registration(focus_stop_rx);
     // ────────────────────────────────────────────────────────────────────────
 
     // Main loop — process tasks until shutdown signal or task channel closes.
@@ -307,14 +301,59 @@ fn com_thread_main(rx: Receiver<UiaTask>, shutdown_rx: Receiver<()>) {
         }
     }
 
-    // ── P5c-1: drop the handler owner *before* CoUninitialize so each
-    // `Remove*EventHandler` runs while the apartment is still alive.
-    // Explicit drop pins the order; we don't rely on lexical scope.
-    drop(event_owner);
+    // Internal #168 — tell the registration thread to remove its handler and leave. Not joined: if
+    // the registration never returned, the thread is still inside it, and waiting here would put
+    // back the stall this change removes from the task loop, at shutdown instead.
+    let _ = focus_stop_tx.try_send(());
 
     // CoUninitialize must happen on this same thread, after the apartment is
     // fully drained.
     unsafe { CoUninitialize(); }
+}
+
+/// Internal #168 — register the desktop-wide focus-changed handler on a thread of its own.
+///
+/// P5c-1's rules still hold, on this thread: the owner is dropped (each `Remove*EventHandler` runs)
+/// before `CoUninitialize`, and a registration failure is logged and costs focus events only.
+/// The handler pushes into the shared L1 ring exactly as before; only the registering thread moved.
+fn spawn_focus_registration(stop_rx: Receiver<()>) {
+    let spawned = thread::Builder::new()
+        .name("uia-focus-registration".into())
+        .spawn(move || {
+            // Safety: COM is initialised once on this thread; nothing it creates leaves it.
+            unsafe {
+                let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
+                if hr.is_err() {
+                    eprintln!("[uia-focus] CoInitializeEx failed: HRESULT 0x{:08x} -- focus events disabled", hr.0);
+                    return;
+                }
+            }
+            {
+                let ctx = match build_context() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("[uia-focus] Failed to initialise UIA context: {e} -- focus events disabled");
+                        unsafe { CoUninitialize(); }
+                        return;
+                    }
+                };
+                let mut event_owner = event_handlers::UiaEventHandlerOwner::new(ctx.automation.clone());
+                let ring = crate::l1_capture::ensure_l1().ring.clone();
+                let focus_handler = event_handlers::focus::make_focus_handler(ring);
+                if let Err(e) = event_owner.register_focus(&ctx.cache_request, focus_handler) {
+                    eprintln!("[uia-focus] AddFocusChangedEventHandler failed: {e} -- focus events disabled");
+                }
+                // Hold the registration until the task thread shuts down (or its sender is gone).
+                let _ = stop_rx.recv();
+                // P5c-1 — the owner before CoUninitialize, explicitly.
+                drop(event_owner);
+                drop(ctx);
+            }
+            unsafe { CoUninitialize(); }
+        });
+    if let Err(e) = spawned {
+        eprintln!("[uia-focus] could not start the registration thread: {e} -- focus events disabled");
+    }
 }
 
 /// Build persistent COM objects that live for the entire thread lifetime.
