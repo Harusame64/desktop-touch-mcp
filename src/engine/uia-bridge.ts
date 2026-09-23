@@ -1786,7 +1786,7 @@ export async function setElementValue(
   automationId?: string,
   /** (H3) When hwnd is provided, bypass title-based root search (fixes Save As / common dialogs). */
   options?: { hwnd?: bigint }
-): Promise<{ ok: boolean; error?: string; code?: string }> {
+): Promise<{ ok: boolean; error?: string; code?: string; via?: "native" | "powershell" }> {
   refuseUiaTitleIfExcluded(windowTitle, options?.hwnd);
   if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
   // A handle is authoritative here too — see `clickElement` above for why the read half's gate
@@ -1800,7 +1800,9 @@ export async function setElementValue(
         automationId: automationId ?? undefined,
         ...(options?.hwnd !== undefined && { hwnd: options.hwnd.toString() }),
       });
-      return { ok: result.ok, error: result.error ?? undefined, code: result.code ?? undefined };
+      // `via` on a failure only: item 16 weighs a "not found" by it, and a success has nothing to
+      // weigh — V1 `set_element_value` spreads this object into its reply, and gains no field.
+      return { ok: result.ok, error: result.error ?? undefined, code: result.code ?? undefined, ...(!result.ok && { via: "native" as const }) };
     } catch (e) {
       console.warn("[uia-bridge] Native uiaSetValue failed, falling back to PowerShell:", e);
     }
@@ -1811,7 +1813,9 @@ export async function setElementValue(
     ? makeSetValueScriptByHwnd(options.hwnd, name, automationId, value)
     : makeSetValueScript(windowTitle, name, automationId, value);
   const output = await runPS(script, 8000);
-  return JSON.parse(output);
+  // Which client answered, as `clickElement` says it — on a failure only, as above.
+  const parsed = JSON.parse(output) as { ok: boolean; error?: string; code?: string };
+  return parsed.ok ? parsed : { ...parsed, via: "powershell" };
 }
 
 /**

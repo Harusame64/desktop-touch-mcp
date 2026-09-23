@@ -861,6 +861,29 @@ export function getWindowRoot(hwnd: unknown): bigint | null {
 }
 
 /**
+ * Whether `hwnd` names a window now — a three-valued answer, unlike {@link getWindowRoot}'s `null`,
+ * which says "not a window" and "the call failed" alike. `false` only when the native call ran and
+ * answered no root (GetAncestor returns NULL for a handle that is not a window: GA_ROOT of any window
+ * is at least itself); `undefined` when it could not be asked — no addon, no binding, or a throw.
+ * The keyboard rung refuses a write as "gone" on `false` alone (gate 2 on the first version, which
+ * read `getWindowRoot`'s null and so turned a failed question into a refusal).
+ */
+export function windowIsAlive(hwnd: bigint): boolean | undefined {
+  let w32: ReturnType<typeof requireNativeWin32>;
+  try {
+    w32 = requireNativeWin32();
+  } catch {
+    return undefined;
+  }
+  if (!w32.win32GetAncestor) return undefined;
+  try {
+    return w32.win32GetAncestor(hwnd, GA_ROOT) !== null;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Return the window's parent (GetAncestor GA_PARENT=1), or null when it has none or the call fails.
  * The parent of a top-level window is the desktop window, so a walk up the chain stops at the root.
  */

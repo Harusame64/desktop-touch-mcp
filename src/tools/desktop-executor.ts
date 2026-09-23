@@ -103,6 +103,12 @@ export interface KeyboardReceipt {
    *   - the owners of the receiver's top-level window, nearest first (GW_OWNER, bounded).
    */
   entityRootHwnd?: bigint | null;
+  /**
+   * Whether the named control's own window is a window now (`windowIsAlive`): `false` only when the OS
+   * was asked and said no, `undefined` when it was not asked or could not answer. `entityRootHwnd`'s
+   * `null` cannot tell those apart, and the rung's "gone" refusal must.
+   */
+  entityWindowAlive?: boolean;
   originRootHwnd?: bigint | null;
   aimRootHwnd?: bigint | null;
   lookupRootHwnd?: bigint | null;
@@ -1194,7 +1200,9 @@ type RowKeysLandingMayNotWrite =
   | "seq" | "tsMs" | "pid" | "seam"
   | "route" | "hasAim" | "aimHwnd" | "entityId" | "entityLabel"
   | "rung" | "refused"
-  | "why" | "verdict" | "referenceFrom" | "ground" | "addressedWindowBy";
+  | "why" | "verdict" | "referenceFrom" | "ground" | "addressedWindowBy"
+  // The rung's "gone" refusal (item 16 on the write road, t1).
+  | "routeFailure" | "gone" | "readVia" | "setVia";
 
 /** What the rung's row may be given by {@link keyboardLanding}: any fact but the row's own keys. */
 type LandingFacts = Record<string, unknown> & { readonly [K in RowKeysLandingMayNotWrite]?: never };
@@ -1333,6 +1341,23 @@ function insideEntity(
 
 
 /**
+ * ADR-036 item 16's condition, in one place: which client read the entity, which answered the act,
+ * and whether both were native. A route failure is believed about THIS element only then — without
+ * the native engine, the PowerShell script registers fewer providers than the read did and tells a
+ * present element it has gone (gate 2 on #624). Read by the click path's "not found" and "disabled"
+ * refusals and by the keyboard rung's "gone" refusal, so the three cannot drift apart.
+ */
+function whoAnswered(
+  uiaErr: unknown,
+  entity: UiEntity,
+): { readVia: "native" | "powershell" | undefined; actVia: "native" | "powershell" | undefined; bothNative: boolean } {
+  const readVia = entity.locator?.uia?.via;
+  const raw = (uiaErr as { uiaVia?: unknown } | null)?.uiaVia;
+  const actVia = raw === "native" || raw === "powershell" ? raw : undefined;
+  return { readVia, actVia, bothNative: readVia === "native" && actVia === "native" };
+}
+
+/**
  * The rule's facts (`engine/keyboard-target.ts`), from what {@link ExecutorDeps.keyboardResolve} read,
  * and whether the named control's window and the captured window take input.
  */
@@ -1406,7 +1431,66 @@ async function keyboardRung(
   }
   const entityHwnd = parseHandle(entity.locator?.uia?.nativeWindowHandle) ?? undefined;
   const originHwnd = observedHwndOfOrigin(entity.origin);
+  // ADR-036 item 16 on the WRITE road — the Guard `target.exists`, the spec-side table's row 1 × type.
+  // MEASURED on `main` `192941e6` (win2, 2026-09-23, cell t1, internal `9fc97d75`, three of three):
+  // FOXTROT was removed after discover and `type` sent on its lease while DELTA held the focus. The value
+  // road answered `element_not_found`, this rung could not compare handles (FOXTROT's own window had
+  // been destroyed: `entity_handle_stale`) and posted, and the characters landed in DELTA under `ok:true`.
+  //
+  // So when the value road said "not found", the rung believes it on either of two grounds:
+  //   - **the named control's own window is gone** — it recorded a handle, and the OS, asked, says the
+  //     handle is no longer a window (`entityWindowAlive === false`; a question that could not be asked
+  //     is not that answer). Two independent readers agree, whichever UIA client answered;
+  //   - **UIA said it has no window of its own** (`nativeWindowHandleRead: "zero"` — not a handle the read
+  //     failed to record, internal#118), on the TITLE road, and item 16's condition holds (read and write
+  //     both native): exactly where the click path believes it (#624, measured there as Pii-a). An aimed
+  //     by-handle search is not that measurement, and keeps the rung.
+  // A control whose own window is ALIVE is not refused here, whatever UIA said: a field renamed since
+  // discover, or a provider that stopped exposing its descendants while the HWND lives — the case WM_CHAR
+  // injection is for — goes on to the rule below, which confirms a write into that very handle or refuses
+  // it for a ground of its own (gate 2 on the first version of this change, which refused before the
+  // receipt and threw that evidence away). Both grounds sit after the `unchecked` switch, which restores
+  // the pre-rule path exactly, as it says. The windowless ground needs no receipt, so it is decided before
+  // the resolve: a resolve that throws would otherwise hand the ladder a "not found" it then renames.
+  const valueRoadNotFound = valueRoadError !== undefined && classifyUiaRouteFailure(valueRoadError) === "element_not_found";
+  // The throw only: each refusal writes its own row, in this function's body, where the road reader
+  // (check:route-vocabulary) can follow `why` to this function's parameter.
+  const goneError = (gone: "own_window_destroyed" | "native_not_found"): TargetGoneError => new TargetGoneError(
+    `UIA found no element for "${entity.label ?? entity.entityId}" to write into` +
+    (gone === "own_window_destroyed" ? " and its own window no longer exists" : "") +
+    `. Not typing into whatever holds the focus.`,
+    { cause: valueRoadError },
+    `UIA found no element for "${quotedLabel(entity)}" in the window this act named ` +
+    `(it may have gone, been renamed, or moved), and nothing was typed — the keystrokes ` +
+    `would have gone to whatever holds the focus instead.`,
+  );
+  const answered = whoAnswered(valueRoadError, entity);
+  if (valueRoadNotFound && entityHwnd === undefined && aimHwnd === undefined
+      && entity.locator?.uia?.nativeWindowHandleRead === "zero" && answered.bothNative) {
+    probeRefusal("keyboard", "entity_not_found", aimHwnd, entity, {
+      why,
+      routeFailure: "element_not_found",
+      gone: "native_not_found",
+      readVia: answered.readVia ?? null,
+      setVia: answered.actVia ?? null,
+      addressedWindowBy,
+      ...keyboardLanding(entity, undefined, valueRoadError),
+    });
+    throw goneError("native_not_found");
+  }
   const receipt = await d.keyboardResolve(winTitle, aimHwnd, { entityHwnd, originHwnd });
+  if (valueRoadNotFound && entityHwnd !== undefined && receipt.entityWindowAlive === false) {
+    probeRefusal("keyboard", "entity_not_found", aimHwnd, entity, {
+      why,
+      routeFailure: "element_not_found",
+      gone: "own_window_destroyed",
+      readVia: answered.readVia ?? null,
+      setVia: answered.actVia ?? null,
+      addressedWindowBy,
+      ...keyboardLanding(entity, receipt, valueRoadError),
+    });
+    throw goneError("own_window_destroyed");
+  }
   // The `disabled` ground's facts: asked of the OS, as the click's disabled refusal asks them. Not
   // asked (no backend, no handle) is null, never "takes input" and never "does not".
   const takesInput = async (h: bigint | undefined): Promise<boolean | null> =>
@@ -1924,6 +2008,9 @@ export function createDesktopExecutor(
             // `executor_failed`, whose advice is a foreground type into the control this refused
             // (gate 2, F2 and its second read).
             if (kbErr instanceof Error && kbErr.name === "KeyboardTargetUnsafeError") throw kbErr;
+            // …and so is the rung's "gone" (item 16 on the write road, t1): renamed to the ladder's
+            // ending, it would advise the foreground type this refusal exists to stop.
+            if (kbErr instanceof TargetGoneError) throw kbErr;
             // Both rungs are spent, so the refusal that was let through above is now the whole
             // answer: a window that has gone gets the same typed refusal here as it does on the
             // click path, instead of an `executor_failed` that reads like a UIA hiccup
@@ -2067,10 +2154,8 @@ export function createDesktopExecutor(
         // native, the combination measured (win2, Pii-a); anything else keeps the downgrade it had
         // before item 16, and its probe row says which halves it saw.
         const routeFailure = classifyUiaRouteFailure(uiaErr);
-        const readVia = entity.locator?.uia?.via;
-        const clickViaRaw = (uiaErr as { uiaVia?: unknown } | null)?.uiaVia;
-        const clickVia = clickViaRaw === "native" || clickViaRaw === "powershell" ? clickViaRaw : undefined;
-        if (routeFailure === "element_not_found" && readVia === "native" && clickVia === "native") {
+        const { readVia, actVia: clickVia, bothNative } = whoAnswered(uiaErr, entity);
+        if (routeFailure === "element_not_found" && bothNative) {
           probeRefusal("uia_downgrade", "entity_not_found", undefined, entity, { routeFailure: "element_not_found", readVia, clickVia, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
           throw new TargetGoneError(
             `UIA found no element for "${entity.label ?? entity.entityId}" on the title-only road: ` +
@@ -2100,7 +2185,7 @@ export function createDesktopExecutor(
         // NOT that evidence: it is not unique — templated items share one with their name — and the
         // search takes the first match, which discovery's enabled-only filter never saw (codex on
         // #685). Otherwise the downgrade stands.
-        if (routeFailure === "element_disabled" && readVia === "native" && clickVia === "native") {
+        if (routeFailure === "element_disabled" && bothNative) {
           const own = entity.locator?.uia?.nativeWindowHandle;
           const ownHwnd = own !== undefined && /^\d+$/.test(own) && own !== "0" ? BigInt(own) : undefined;
           const ownRefuses = ownHwnd !== undefined && (await d.windowTakesInput?.(ownHwnd)) === false;
@@ -2370,6 +2455,11 @@ async function readReceiverFacts(receiver: bigint): Promise<Partial<KeyboardRece
  */
 let _realDepsCache: ExecutorDeps | undefined;
 
+/** Tests only: the production deps, to check what they carry on their errors without a Windows backend. */
+export function _realExecutorDepsForTest(): ExecutorDeps {
+  return getSharedRealDeps();
+}
+
 function getSharedRealDeps(): ExecutorDeps {
   if (_realDepsCache) return _realDepsCache;
   _realDepsCache = {
@@ -2391,7 +2481,9 @@ function getSharedRealDeps(): ExecutorDeps {
       const { setElementValue } = await import("../engine/uia-bridge.js");
       const r = await setElementValue(windowTitle, value, name, automationId, hwnd !== undefined ? { hwnd } : undefined);
       if (!r.ok && r.code === AIM_WINDOW_GONE) throw new AimedWindowGoneError(hwnd, r.error);
-      if (!r.ok) throw new Error(r.error ?? "UIA setElementValue failed");
+      // Which client answered, carried on the error as `uiaClick` carries it: the type road's item 16
+      // believes a "not found" only from the native client, about an entity the native client read.
+      if (!r.ok) throw Object.assign(new Error(r.error ?? "UIA setElementValue failed"), { uiaVia: r.via });
     },
 
     async cdpClick(selector, tabId) {
@@ -2575,7 +2667,7 @@ function getSharedRealDeps(): ExecutorDeps {
     },
 
     async keyboardResolve(windowTitle, hwnd, refs) {
-      const { enumWindowsInZOrder, getWindowRoot } = await import("../engine/win32.js");
+      const { enumWindowsInZOrder, getWindowRoot, windowIsAlive } = await import("../engine/win32.js");
       const { resolveKeyTarget, canInjectViaPostMessage } = await import("../engine/bg-input.js");
       const wins = enumWindowsInZOrder();
       // As `keyboardTypeBg` looks the window up, except that a handle is compared in its low 32 bits
@@ -2617,6 +2709,10 @@ function getSharedRealDeps(): ExecutorDeps {
       Object.assign(receipt, await readReceiverFacts(receiver));
       const rootOf = (h: bigint | undefined): bigint | null => (h === undefined ? null : getWindowRoot(h));
       receipt.entityRootHwnd = rootOf(refs.entityHwnd);
+      if (refs.entityHwnd !== undefined) {
+        const alive = windowIsAlive(refs.entityHwnd);
+        if (alive !== undefined) receipt.entityWindowAlive = alive;
+      }
       receipt.originRootHwnd = rootOf(refs.originHwnd);
       receipt.aimRootHwnd = rootOf(hwnd);
       receipt.lookupRootHwnd = getWindowRoot(win.hwnd);
