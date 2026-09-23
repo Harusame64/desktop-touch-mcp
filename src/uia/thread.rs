@@ -47,9 +47,10 @@ pub(crate) type UiaTask = Box<dyn FnOnce(&UiaContext) + Send + 'static>;
 // worker (`OnceLock<Mutex<Option<Arc<...>>>>`) so the thread can be cleanly
 // shut down for tests and so future event-handler ownership (P5c-1) has a
 // well-defined lifetime to attach to. `RemoveFocusChangedEventHandler` and
-// friends require the COM apartment to still be alive, so shutdown must run
-// *before* `CoUninitialize` — that ordering is enforced by the select-loop
-// below.
+// friends require the COM apartment to still be alive, so they must run
+// *before* `CoUninitialize`. Since internal #168 the focus handler is owned by
+// its own registration thread (`spawn_focus_registration`), which keeps that
+// order on itself; this thread only signals it and waits briefly.
 
 pub(crate) struct UiaThreadHandle {
     sender: Sender<UiaTask>,
@@ -190,8 +191,8 @@ pub(crate) fn ensure_uia_thread() -> Arc<UiaThreadHandle> {
 
 /// Tear down the UIA thread so a subsequent `ensure_uia_thread()` re-spawns
 /// it. Used for the 5-cycle shutdown/restart test (ADR-007 §3.4.3 acceptance,
-/// applied to UIA thread in P5c-0b) and by P5c-1 to drop event handlers
-/// before `CoUninitialize`.
+/// applied to UIA thread in P5c-0b). The focus handler is not dropped here: since internal #168 its
+/// registration thread removes it on the signal the COM thread sends as it leaves its loop.
 ///
 /// **Slot is cleared only on success.** If `shutdown_with_timeout`
 /// returns `Err` (typically a long-running UIA task exceeded the

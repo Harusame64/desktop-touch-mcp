@@ -8,9 +8,11 @@
 //!
 //! Handler lifetime is owned by [`UiaEventHandlerOwner`]; its `Drop` impl
 //! calls the matching `Remove*EventHandler` so the COM apartment can be
-//! torn down cleanly. The owner is constructed and dropped on the UIA
-//! COM thread (`src/uia/thread.rs::com_thread_main`) so the Remove call
-//! always runs before `CoUninitialize`.
+//! torn down cleanly. The owner is constructed and dropped on the
+//! focus-registration thread (`src/uia/thread.rs::spawn_focus_registration`,
+//! internal #168) so the Remove call always runs before that thread's
+//! `CoUninitialize`, and a registration that never returns cannot hold the
+//! task thread.
 
 pub(crate) mod focus;
 pub(crate) mod owner;
