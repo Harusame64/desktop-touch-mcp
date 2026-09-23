@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- **The server instructions now say what a malformed call answers.** When the arguments do not match
+  a tool's schema, the MCP SDK refuses the call before the tool runs and answers
+  `MCP error -32602: Input validation error: …` as plain text, with no `ok`, `code` or `suggest`,
+  and `include` does not change it. Nothing said so, and it is the one answer a caller cannot get in
+  the JSON envelope. The Failure recovery list now names it: nothing was done; correct the arguments
+  and call again.
+
 - **While the key locker is armed, a UI Automation call with an empty window title and no window handle is refused.**
   An empty title matches every window, so such a call went to whichever window UI Automation listed
   first, and that could be the locker's own window: the title check passed it, and the handle check
