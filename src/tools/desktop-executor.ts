@@ -1084,8 +1084,21 @@ function uiaAddressAxes(aimTitle: string | undefined, aimHwnd: bigint | undefine
   return {
     addressedBy: { automationId: Boolean(automationId), name: Boolean(name) },
     addressedElementBy: automationId ? "automation_id" : name ? "name_substring" : "nothing",
-    addressedWindowBy: aimHwnd !== undefined ? "handle" : namesAWindowByTitle(aimTitle) ? "title" : "nothing",
+    addressedWindowBy: addressedWindowByOf(aimTitle, aimHwnd),
   } as const;
+}
+
+/**
+ * The window axis alone, for the one road that addresses a window and no element by name: the keyboard
+ * rung finds its receiver by handles (`receiver*` on its row), so `addressedBy` / `addressedElementBy`
+ * would describe a call it does not make. Its rows carry this field only (internal #157: they carried
+ * none, so the grid's write column had no window axis to read). The press road passes `aim.title`,
+ * the rung passes `winTitle` (`aim.title ?? "@active"`, what its backends receive); the answers are
+ * the same because `namesAWindowByTitle` reads `"@active"` as naming no window. "nothing" means the
+ * caller named no window, not that no lookup ran: the backends still search that string.
+ */
+function addressedWindowByOf(aimTitle: string | undefined, aimHwnd: bigint | undefined): "handle" | "title" | "nothing" {
+  return aimHwnd !== undefined ? "handle" : namesAWindowByTitle(aimTitle) ? "title" : "nothing";
 }
 
 /**
@@ -1335,10 +1348,13 @@ async function keyboardRung(
   valueRoadError?: unknown,
 ): Promise<ExecutorKind | ExecutorOutcome> {
   const sw = readKeyboardRungSwitch();
+  // Internal #157: from the two values this rung hands its backends, so the row cannot say one window
+  // while the lookup used another (gate 2 on public #721).
+  const addressedWindowBy = addressedWindowByOf(winTitle, aimHwnd);
   // The switch's whole form: today's path exactly — no check, a bare "keyboard".
   if (sw.unchecked) {
     const receipt = await d.keyboardTypeBg(winTitle, text, aimHwnd);
-    probeRoute("keyboard", aimHwnd, entity, { why, verdict: "unchecked", ...keyboardLanding(entity, receipt, valueRoadError) });
+    probeRoute("keyboard", aimHwnd, entity, { why, verdict: "unchecked", addressedWindowBy, ...keyboardLanding(entity, receipt, valueRoadError) });
     return "keyboard";
   }
   // A backend that cannot resolve the receiver before posting. It posts as before, and the success says
@@ -1349,6 +1365,7 @@ async function keyboardRung(
       why,
       verdict: "unconfirmed:receiver_unknown",
       referenceFrom: "none",
+      addressedWindowBy,
       ...keyboardLanding(entity, receipt, valueRoadError),
     });
     return { kind: "keyboard", landing: { confirmed: false, why: "receiver_unknown", referenceFrom: "none" } };
@@ -1370,6 +1387,7 @@ async function keyboardRung(
       why,
       ground: verdict.ground,
       referenceFrom: verdict.referenceFrom,
+      addressedWindowBy,
       ...keyboardLanding(entity, receipt, valueRoadError),
     });
     throw new KeyboardTargetUnsafeError(
@@ -1387,6 +1405,7 @@ async function keyboardRung(
     why,
     verdict: verdict.confirmed ? "posted" : `unconfirmed:${verdict.why}`,
     referenceFrom: verdict.referenceFrom,
+    addressedWindowBy,
     ...keyboardLanding(entity, receipt, valueRoadError),
   });
   return verdict.confirmed
