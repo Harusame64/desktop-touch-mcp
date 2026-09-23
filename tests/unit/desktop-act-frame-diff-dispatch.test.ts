@@ -443,6 +443,57 @@ describe("desktop_act frame-diff dispatch — S5b-2 fold (default on)", () => {
     expect("roiBbox" in obs).toBe(false);
   });
 
+  it("internal #166 — the fold names the diff kinds it did not look for; focus_shifted is not among them", async () => {
+    spyFacadeFold({});
+    mockVerifyLocalRepaint.mockResolvedValue({
+      motion: "local_repaint",
+      source: "ssim_residual",
+      roiBbox: { x: 50, y: 60, width: 100, height: 80 },
+      framesSampled: 2,
+      totalElapsedMs: 80,
+    });
+
+    const parsed = parse((await desktopActRawHandler({ lease: FAKE_LEASE, action: "click" })).content);
+
+    // toEqual, not a containment check: "these and only these" is the claim. focus_shifted stays
+    // out because the loop reads focus from the environment, not from the carried snapshot.
+    expect(parsed["diffUnchecked"]).toEqual([
+      "entity_disappeared",
+      "entity_moved",
+      "entity_appeared",
+      "value_changed",
+      "modal_appeared",
+      "modal_dismissed",
+    ]);
+  });
+
+  it("internal #166 — a fold act that did not succeed carries no diffUnchecked (there is no diff to qualify)", async () => {
+    const facade = spyFacadeFold({});
+    vi.spyOn(facade, "touch").mockResolvedValue({ ok: false, reason: "modal_blocking", diff: [] } as Awaited<ReturnType<typeof facade.touch>>);
+    mockVerifyLocalRepaint.mockResolvedValue({ motion: "no_change", source: "ssim_residual", framesSampled: 2, totalElapsedMs: 40 });
+
+    const parsed = parse((await desktopActRawHandler({ lease: FAKE_LEASE, action: "click" })).content);
+
+    expect(parsed["ok"]).toBe(false);
+    expect("diffUnchecked" in parsed).toBe(false);
+  });
+
+  it("internal #166 — the S5 road taken because discover saw visual_gpu carries no diffUnchecked", async () => {
+    spyFacadeFold({ hasVisualGpu: true });
+    mockVerifyLocalRepaint.mockResolvedValue({
+      motion: "local_repaint",
+      source: "ssim_residual",
+      roiBbox: { x: 50, y: 60, width: 100, height: 80 },
+      framesSampled: 2,
+      totalElapsedMs: 80,
+    });
+
+    const parsed = parse((await desktopActRawHandler({ lease: FAKE_LEASE, action: "click" })).content);
+
+    expect(parsed["ok"]).toBe(true);
+    expect("diffUnchecked" in parsed).toBe(false);
+  });
+
   it("D6 gate — discover has visual_gpu → fold disabled, touch called WITHOUT a postSnapshot closure (S5 legacy path)", async () => {
     const facade = spyFacadeFold({ hasVisualGpu: true });
     mockVerifyLocalRepaint.mockResolvedValue({
@@ -584,5 +635,16 @@ describe("desktop_act S5b flag parity — STAGE5B_FOLD_OCR=0 falls back to the S
     // And the internal roiMaterial channel never leaks to the wire on either path.
     expect("roiMaterial" in off.parsed).toBe(false);
     expect("roiMaterial" in on.parsed).toBe(false);
+    // Internal #166: only the fold says what its diff did not look at. S5 reads the window again
+    // after the press, so it names no unchecked kinds.
+    expect(on.parsed["diffUnchecked"]).toEqual([
+      "entity_disappeared",
+      "entity_moved",
+      "entity_appeared",
+      "value_changed",
+      "modal_appeared",
+      "modal_dismissed",
+    ]);
+    expect("diffUnchecked" in off.parsed).toBe(false);
   });
 });
