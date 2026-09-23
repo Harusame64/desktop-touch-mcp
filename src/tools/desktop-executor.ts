@@ -526,21 +526,34 @@ async function resolvePressPoint(
      * refused identically. A refusal whose own recovery cannot clear it is worse than the press it
      * withholds.
      *
-     * **What it gives up, and it is not what an earlier draft of this comment said.** The boundary
-     * closed the short-name hole as a side effect — `"OK"` in `"Lookup"` and `"X"` in almost
-     * anything are both `different` now (measured). What remains is that the boundary is ASCII:
-     * `/[a-z0-9]/` calls every kana and kanji a boundary, so `保存` over a point holding `保存しない`
-     * reads as the same thing and the press goes out. That is the ordinary unsaved-changes dialog
-     * on the locale this product is measured on, and it is the mispress that destroys something.
-     * It is pre-existing — plain containment did the same — but the rule added here to stop "the
-     * row next door" does not stop it in Japanese. `/[\p{L}\p{N}]/u` flips exactly that pair and
-     * no measured arm (gate 2 ran the table both ways); it is not taken here because tightening has
-     * the other trap — an outer `保存` whose inner `Text` reads `保存ボタン` would then be refused
-     * with an `entity_not_found` that re-discovery cannot clear, which is what this rung spent two
-     * rounds removing. It needs a measured CJK arm first: internal #140.
+     * **What it gives up.** The boundary closed the short-name hole as a side effect — `"OK"` in
+     * `"Lookup"` and `"X"` in almost anything are both `different` (measured). **And it reads
+     * Japanese** (internal #140): the class is `/[\p{L}\p{N}]/u`, not `/[a-z0-9]/`. The ASCII class
+     * called every kana and kanji a boundary, so `保存` over a point holding `保存しない` read as the
+     * same thing and the press went out — measured on the machine (win2, 2026-09-20): the fixture
+     * logged `CLICK-LABEL 保存しない`. That is the unsaved-changes shape, and the mispress that
+     * destroys something.
+     *
+     * **The cost, taken on purpose** (the user, 2026-09-23): an outer control whose inner text
+     * extends its name with LETTERS — `保存` over `保存ボタン` — is now `different`, and re-discovery
+     * reads the same two names, so that act stays refused. Only RuntimeId separates "the same
+     * control, text changed" from "another control in its place" (measured 2026-09-20; ADR-036
+     * Annex B). How often the cost is paid was measured before taking it (win2, 2026-09-23, internal
+     * `35d3f39`): 88 pairs of outer name / innermost element at the centre across Notepad, its save
+     * dialog, Explorer and Settings — **zero** that extend only with letters. The two containments
+     * found (`イーサネット 2 接続済み` over `イーサネット 2`) are space-separated and still press. The
+     * inner side was taken from the tree, not the point read, which did not answer on that machine
+     * that morning. No WinForms or WPF app was measured.
+     *
+     * **What no boundary can do** (gate 2): `Save` over `Don't save` still reads as the same name —
+     * the space before `save` is a boundary in any language, and a word rule cannot tell `X` from
+     * `Don't X` / `Do not X`. That is the English form of the same mispress, pre-existing, and only
+     * RuntimeId closes it (ADR-036 Annex B).
      */
     const sameName = (a: string, b: string): boolean => {
-      const fold = (t: string) => t.toLowerCase().replace(/&/g, "").replace(/\s+/g, " ").trim();
+      // NFC first: a decomposed name (`ハ` + U+3099, as files made on macOS reach Explorer) is then the
+      // same string as its composed form rather than a shorter name with a "boundary" after it (gate 2).
+      const fold = (t: string) => t.normalize("NFC").toLowerCase().replace(/&/g, "").replace(/\s+/g, " ").trim();
       const [x1, y1] = [fold(a), fold(b)];
       // A name that folds to nothing is handled by the two rules below rather than by a guard of its
       // own: `x1 === y1` keeps an exact match (a WinForms caption of `&&` renders as `&` and can be
@@ -553,19 +566,15 @@ async function resolvePressPoint(
       // is the second of the two shapes this rung's own refusal message names — pressing the wrong
       // row and answering `ok:true` is exactly what it exists to stop (gate 2). `"Save"` inside
       // `"Save document (Ctrl+S)"` ends on a space and stands.
+      // Matched by code point, with lookarounds, not by UTF-16 index: `long[i - 1]` handed a lone
+      // surrogate to the class for an astral neighbour (`𠮷野家` over `野家`), and a lone surrogate is
+      // not a letter, so a letter-extension pressed (gate 2, run). Combining marks (`\p{M}`) and
+      // format characters (`\p{Cf}`: ZWSP, ZWJ, SHY) are part of a word, not a boundary.
+      const WORD = "[\\p{L}\\p{N}\\p{M}\\p{Cf}]";
       const inside = (long: string, short: string) => {
-        // `short === ""` is not "inside everything" here, and saying so is not belt-and-braces: the
-        // empty string is found at every index INCLUDING the end, where `indexOf` clamps and the
-        // loop below stops advancing. Removing the guard above to see whether a cell noticed hung
-        // the suite instead of reddening it (gate 2's mutation, run). A predicate that can hang is
-        // worse than one that can be wrong, and neither should depend on a caller's guard.
         if (short === "") return false;
-        for (let i = long.indexOf(short); i !== -1; i = long.indexOf(short, i + 1)) {
-          const before = i === 0 ? "" : long[i - 1];
-          const after = long[i + short.length] ?? "";
-          if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) return true;
-        }
-        return false;
+        const escaped = short.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return new RegExp(`(?<!${WORD})${escaped}(?!${WORD})`, "u").test(long);
       };
       return x1 === y1 || inside(x1, y1) || inside(y1, x1);
     };
