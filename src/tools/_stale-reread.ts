@@ -41,12 +41,16 @@ import { clampRectToWindow, resolveFoldOcrRoi } from "./_roi-region.js";
 const READABLE: ReadonlySet<string> = new Set(["applied", "not_moved", "no_origin_rect", "measurement_moment_unknown"]);
 
 /**
- * Text as it is compared: compatibility-folded, case-folded, with every space removed. OCR splits
- * and joins words differently from one read to the next ("PAINTED-A" / "PAINTED - A"), and a false
- * `absent` is a refusal of something that is there — the costlier error here.
+ * Text as it is compared: compatibility-folded, case-folded, and **letters and digits only**. OCR
+ * splits and joins words differently from one read to the next ("PAINTED-A" / "PAINTED - A"), and
+ * the label being looked for may have been written by another engine than the one reading now —
+ * the ONNX visual backend reads with PaddleOCR, this read with Windows OCR — which can disagree on a
+ * hyphen, a dash or a bracket. A false `absent` is a refusal of something that is there, the
+ * costlier error here, so what is compared is what two engines are likeliest to agree on. A label
+ * with no letter or digit folds to nothing and is not looked for (`no_label`).
  */
 export function foldForMatch(text: string): string {
-  return text.normalize("NFKC").toLowerCase().replace(/\s+/gu, "");
+  return text.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 }
 
 /**

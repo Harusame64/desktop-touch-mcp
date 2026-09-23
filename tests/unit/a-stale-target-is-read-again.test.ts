@@ -21,7 +21,7 @@ import { join } from "node:path";
 import type { StaleRereadAnswer, TouchEnvironment, WindowBlockAnswer } from "../../src/engine/world-graph/guarded-touch.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
 import type { UiEntityCandidate, Rect } from "../../src/engine/vision-gpu/types.js";
-import type { Aim } from "../../src/engine/aim.js";
+import type { Aim, WindowIdentity } from "../../src/engine/aim.js";
 
 const GEN = "gen-1";
 
@@ -204,7 +204,11 @@ const PAINTED_A = { text: "PAINTED-A", region: { x: 357, y: 224, width: 144, hei
 const PAINTED_X = { text: "PAINTED-X", region: { x: 357, y: 224, width: 144, height: 23 } };
 const aim = (extra: Partial<Aim> = {}): Aim => ({ kind: "aim", hwnd: HWND, ...extra }) as Aim;
 
-async function reread(target: UiEntity, found: ReadonlyArray<{ text: string; region: Rect }> | Error, opts: { aim?: Aim; window?: Rect | null } = {}) {
+async function reread(
+  target: UiEntity,
+  found: ReadonlyArray<{ text: string; region: Rect }> | Error,
+  opts: { aim?: Aim; window?: Rect | null; identityNow?: WindowIdentity } = {},
+) {
   const { productionRereadStale } = await import("../../src/tools/_stale-reread.js");
   const read = vi.fn(async () => {
     if (found instanceof Error) throw found;
@@ -212,7 +216,7 @@ async function reread(target: UiEntity, found: ReadonlyArray<{ text: string; reg
   });
   const result = await productionRereadStale(target, opts.aim ?? aim(), {
     windowRect: () => (opts.window === undefined ? WINDOW : opts.window),
-    identityNow: () => undefined,
+    identityNow: () => opts.identityNow,
     read,
   });
   return { result, read };
@@ -262,7 +266,8 @@ describe("productionRereadStale", () => {
   });
 
   it("no label to look for: cannot say, and nothing is read", async () => {
-    const { result, read } = await reread(entity({ label: "  " }), [PAINTED_X]);
+    // A symbol-only label folds to nothing, as a blank one does.
+    const { result, read } = await reread(entity({ label: " × " }), [PAINTED_X]);
     expect(result).toEqual({ kind: "cannot_say", why: "no_label" });
     expect(read).not.toHaveBeenCalled();
   });
@@ -271,6 +276,20 @@ describe("productionRereadStale", () => {
     const { result, read } = await reread(entity(), [PAINTED_X], { window: null });
     expect(result).toEqual({ kind: "cannot_say", why: "no_window_rect" });
     expect(read).not.toHaveBeenCalled();
+  });
+
+  it("a handle that now names another program's window is not read: the executor's refusal answers", async () => {
+    const then: WindowIdentity = { hwnd: HWND, pid: 100, processName: "fixture.exe", processStartTimeMs: 1 };
+    const now: WindowIdentity = { hwnd: HWND, pid: 200, processName: "other.exe", processStartTimeMs: 2 };
+    const { result, read } = await reread(entity(), [PAINTED_X], { aim: aim({ identity: then }), identityNow: now });
+    expect(result).toEqual({ kind: "cannot_say", why: "aim_identity_changed" });
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("the same program's window is read", async () => {
+    const then: WindowIdentity = { hwnd: HWND, pid: 100, processName: "fixture.exe", processStartTimeMs: 1 };
+    const { result } = await reread(entity(), [PAINTED_X], { aim: aim({ identity: then }), identityNow: then });
+    expect(result).toEqual({ kind: "absent" });
   });
 
   it("where the press path refuses on its own (a resized window), this steps aside", async () => {
@@ -311,6 +330,8 @@ describe("labelIsIn", () => {
     expect(labelIsIn("PAINTED-A", [PAINTED_X])).toBe(false);
     expect(labelIsIn("PAINTED-A", [PAINTED_A])).toBe(true);
     expect(labelIsIn("painted - a", [PAINTED_A])).toBe(true);
+    // Another engine's hyphen (U+2010) is still the same label.
+    expect(labelIsIn("PAINTED\u2010A", [PAINTED_A])).toBe(true);
     expect(labelIsIn("", [PAINTED_A])).toBe(false);
   });
 });
