@@ -526,18 +526,24 @@ async function resolvePressPoint(
      * refused identically. A refusal whose own recovery cannot clear it is worse than the press it
      * withholds.
      *
-     * **What it gives up, and it is not what an earlier draft of this comment said.** The boundary
-     * closed the short-name hole as a side effect — `"OK"` in `"Lookup"` and `"X"` in almost
-     * anything are both `different` now (measured). What remains is that the boundary is ASCII:
-     * `/[a-z0-9]/` calls every kana and kanji a boundary, so `保存` over a point holding `保存しない`
-     * reads as the same thing and the press goes out. That is the ordinary unsaved-changes dialog
-     * on the locale this product is measured on, and it is the mispress that destroys something.
-     * It is pre-existing — plain containment did the same — but the rule added here to stop "the
-     * row next door" does not stop it in Japanese. `/[\p{L}\p{N}]/u` flips exactly that pair and
-     * no measured arm (gate 2 ran the table both ways); it is not taken here because tightening has
-     * the other trap — an outer `保存` whose inner `Text` reads `保存ボタン` would then be refused
-     * with an `entity_not_found` that re-discovery cannot clear, which is what this rung spent two
-     * rounds removing. It needs a measured CJK arm first: internal #140.
+     * **What it gives up.** The boundary closed the short-name hole as a side effect — `"OK"` in
+     * `"Lookup"` and `"X"` in almost anything are both `different` (measured). **And it reads
+     * Japanese** (internal #140): the class is `/[\p{L}\p{N}]/u`, not `/[a-z0-9]/`. The ASCII class
+     * called every kana and kanji a boundary, so `保存` over a point holding `保存しない` read as the
+     * same thing and the press went out — measured on the machine (win2, 2026-09-20): the fixture
+     * logged `CLICK-LABEL 保存しない`. That is the unsaved-changes shape, and the mispress that
+     * destroys something.
+     *
+     * **The cost, taken on purpose** (the user, 2026-09-23): an outer control whose inner text
+     * extends its name with LETTERS — `保存` over `保存ボタン` — is now `different`, and re-discovery
+     * reads the same two names, so that act stays refused. Only RuntimeId separates "the same
+     * control, text changed" from "another control in its place" (measured 2026-09-20; ADR-036
+     * Annex B). How often the cost is paid was measured before taking it (win2, 2026-09-23, internal
+     * `35d3f39`): 88 pairs of outer name / innermost element at the centre across Notepad, its save
+     * dialog, Explorer and Settings — **zero** that extend only with letters. The two containments
+     * found (`イーサネット 2 接続済み` over `イーサネット 2`) are space-separated and still press. The
+     * inner side was taken from the tree, not the point read, which did not answer on that machine
+     * that morning. No WinForms or WPF app was measured.
      */
     const sameName = (a: string, b: string): boolean => {
       const fold = (t: string) => t.toLowerCase().replace(/&/g, "").replace(/\s+/g, " ").trim();
