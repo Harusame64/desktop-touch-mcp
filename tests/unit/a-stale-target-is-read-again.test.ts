@@ -234,9 +234,56 @@ describe("productionRereadStale", () => {
     expect(result).toEqual({ kind: "absent" });
   });
 
-  it("an empty read is absent too — the read ran, and the label is not in it", async () => {
+  it("a read that found nothing at all cannot say — a black capture looks like this (gate 2)", async () => {
     const { result } = await reread(entity(), []);
+    expect(result).toEqual({ kind: "cannot_say", why: "read_found_nothing" });
+  });
+
+  it("the label in the next row of the crop is not the label at the place (gate 2)", async () => {
+    // A list scrolled one row: the place now reads "Item 2", and "Item 1" sits one row lower, inside
+    // the padded crop. Found anywhere in the crop, it would press "Item 2".
+    const item1 = entity({ label: "Item 1", rect: { x: 354, y: 227, width: 144, height: 30 } });
+    const { result } = await reread(item1, [
+      { text: "Item 2", region: { x: 357, y: 228, width: 60, height: 28 } },
+      { text: "Item 1", region: { x: 357, y: 258, width: 60, height: 28 } },
+    ]);
     expect(result).toEqual({ kind: "absent" });
+  });
+
+  it("a short label inside a longer word is not the label (gate 2)", async () => {
+    const ok = entity({ label: "OK" });
+    expect((await reread(ok, [{ text: "Book", region: PAINTED_A.region }])).result).toEqual({ kind: "absent" });
+    const item1 = entity({ label: "Item 1" });
+    expect((await reread(item1, [{ text: "Item 10", region: PAINTED_A.region }])).result).toEqual({ kind: "absent" });
+  });
+
+  it("a read past its bound cannot say, and the act is not held for it", async () => {
+    const { productionRereadStale } = await import("../../src/tools/_stale-reread.js");
+    const result = await productionRereadStale(entity(), aim(), {
+      windowRect: () => WINDOW,
+      identityNow: () => undefined,
+      read: () => new Promise(() => {}),
+      timeoutMs: 20,
+    });
+    expect(result).toEqual({ kind: "cannot_say", why: "read_timed_out" });
+  });
+
+  it("a throw outside the read still writes its row (gate 2)", async () => {
+    const { productionRereadStale } = await import("../../src/tools/_stale-reread.js");
+    const result = await productionRereadStale(entity(), aim(), {
+      windowRect: () => { throw new Error("win32 down"); },
+      identityNow: () => undefined,
+      read: async () => [PAINTED_A],
+    });
+    expect(result).toEqual({ kind: "cannot_say", why: "threw" });
+    expect(staleRows()).toEqual([expect.objectContaining({ answer: "cannot_say", why: "threw" })]);
+  });
+
+  it("a press point outside the window is the press path's refusal, not a read of the strip left inside (gate 2)", async () => {
+    const straddling = entity({ rect: { x: 900, y: 227, width: 100, height: 20 } }); // centre x 950 > 940
+    const { result, read } = await reread(straddling, [PAINTED_A]);
+    expect(result).toEqual({ kind: "cannot_say", why: "point_outside_window" });
+    expect(read).not.toHaveBeenCalled();
   });
 
   it("reads the entity's own place, padded, in the window's coordinates", async () => {
@@ -268,16 +315,17 @@ describe("productionRereadStale", () => {
     expect(result).toEqual({ kind: "present" });
   });
 
-  it("two lines are read top to bottom, each left to right", async () => {
-    const { labelIsIn } = await import("../../src/tools/_stale-reread.js");
+  it("reads the place's own line left to right, and not the line below it", async () => {
+    const { labelIsAt } = await import("../../src/tools/_stale-reread.js");
+    const place = { x: 354, y: 227, width: 144, height: 20 };
     const found = [
       { text: "B", region: { x: 400, y: 260, width: 20, height: 20 } },
       { text: "-A", region: { x: 450, y: 223, width: 30, height: 23 } },
       { text: "PAINTED", region: { x: 357, y: 225, width: 90, height: 23 } },
     ];
-    expect(labelIsIn("PAINTED-A", found)).toBe(true);
-    expect(labelIsIn("PAINTED-AB", found)).toBe(true);
-    expect(labelIsIn("B PAINTED", found)).toBe(false);
+    expect(labelIsAt("PAINTED-A", found, place)).toBe(true);
+    expect(labelIsAt("PAINTED-AB", found, place)).toBe(false);
+    expect(labelIsAt("A PAINTED", found, place)).toBe(false);
   });
 
   it("a read that fails cannot say — it is not an absence", async () => {
@@ -344,15 +392,33 @@ describe("productionRereadStale", () => {
   });
 });
 
-describe("labelIsIn", () => {
+describe("labelIsAt", () => {
+  const place = { x: 354, y: 227, width: 144, height: 20 };
   it("does not take one label for another that shares a prefix", async () => {
-    const { labelIsIn } = await import("../../src/tools/_stale-reread.js");
-    expect(labelIsIn("PAINTED-A", [PAINTED_X])).toBe(false);
-    expect(labelIsIn("PAINTED-A", [PAINTED_A])).toBe(true);
-    expect(labelIsIn("painted - a", [PAINTED_A])).toBe(true);
+    const { labelIsAt } = await import("../../src/tools/_stale-reread.js");
+    expect(labelIsAt("PAINTED-A", [PAINTED_X], place)).toBe(false);
+    expect(labelIsAt("PAINTED-A", [PAINTED_A], place)).toBe(true);
+    expect(labelIsAt("painted - a", [PAINTED_A], place)).toBe(true);
     // Another engine's hyphen (U+2010) is still the same label.
-    expect(labelIsIn("PAINTED\u2010A", [PAINTED_A])).toBe(true);
-    expect(labelIsIn("", [PAINTED_A])).toBe(false);
+    expect(labelIsAt("PAINTED\u2010A", [PAINTED_A], place)).toBe(true);
+    // …and an engine that dropped it.
+    expect(labelIsAt("PAINTED-A", [{ text: "PAINTEDA", region: PAINTED_A.region }], place)).toBe(true);
+    expect(labelIsAt("", [PAINTED_A], place)).toBe(false);
+  });
+
+  it("finds a word in an unspaced script at any character, and a spaced one only at word edges", async () => {
+    const { labelIsAt } = await import("../../src/tools/_stale-reread.js");
+    const at = (text: string) => [{ text, region: PAINTED_A.region }];
+    expect(labelIsAt("保存", at("上書き保存"), place)).toBe(true);
+    expect(labelIsAt("保存", at("保 存"), place)).toBe(true);
+    expect(labelIsAt("Save", at("Save As"), place)).toBe(true);
+    expect(labelIsAt("Save", at("Saved"), place)).toBe(false);
+  });
+
+  it("ignores text elsewhere in the crop", async () => {
+    const { labelIsAt } = await import("../../src/tools/_stale-reread.js");
+    const beside = { text: "PAINTED-A", region: { x: 560, y: 224, width: 144, height: 23 } };
+    expect(labelIsAt("PAINTED-A", [beside], place)).toBe(false);
   });
 });
 

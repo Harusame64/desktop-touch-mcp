@@ -89,9 +89,8 @@ import {
   getWindowThreadId,
   getWindowTitleW,
   getWindowClassName,
-  getWindowIdentity,
 } from "../engine/win32.js";
-import { compareAimIdentity, readWindowIdentityFields, type Aim, type WindowIdentity } from "../engine/aim.js";
+import { compareAimIdentity, type Aim, type WindowIdentity } from "../engine/aim.js";
 import { probeAim } from "../engine/aim-probe.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { pickPlainTopLevelWindowByTitle } from "./_resolve-window.js";
@@ -105,6 +104,7 @@ import { filterDirtyRectsToWindow, boundingBox, clampRectToWindow, resolveFoldOc
 import { buildRoiPreviewEntities, somElementsToCandidates } from "./_roi-preview.js";
 import { runSomPipeline } from "../engine/ocr-bridge.js";
 import { productionRereadStale } from "./_stale-reread.js";
+import { productionWindowIdentity } from "./_window-identity.js";
 import type { Rect, UiEntityCandidate } from "../engine/vision-gpu/types.js";
 import { createDefaultCapabilityRegistry } from "../capabilities/registry.js";
 
@@ -444,9 +444,6 @@ function isPopupVisible(hwnd: bigint): boolean {
   return getWindowRenderState(hwnd)?.visible ?? false;
 }
 
-function productionWindowIdentity(hwnd: bigint): WindowIdentity | undefined {
-  return readWindowIdentityFields(hwnd, { identity: getWindowIdentity, className: getWindowClassName, title: getWindowTitleW });
-}
 
 /**
  * G1-C: Production focus fingerprint (window-level, best-effort).
