@@ -513,9 +513,22 @@ export interface NativeUiaEvidence {
   comThreadStarts: number;
   /** How many UIA tasks were sent to that thread. */
   tasksSent: number;
+  /**
+   * Internal #168 — how many of those tasks the thread FINISHED. `tasksSent` far above it means the
+   * thread is not serving its queue: measured as 22 sent, 0 finished, while a desktop-wide focus
+   * registration hung on one unresponsive UIA provider. Absent from an addon older than the field.
+   */
+  tasksDone?: number;
+  /**
+   * Internal #168 — where the focus-handler registration is: `not_started`, `pending` (not returned
+   * yet; focus events are off until it does), `registered`, or `failed`. Absent from an older addon.
+   */
+  focusRegistration?: "not_started" | "pending" | "registered" | "failed";
   /** Whether UIAutomationCore.dll is loaded in this process, as the OS answers. */
   uiaCoreLoaded: boolean;
 }
+
+const FOCUS_REGISTRATION_STATES: ReadonlySet<string> = new Set(["not_started", "pending", "registered", "failed"]);
 
 /**
  * ADR-036 H2 — whether the native UIA engine actually ran in this process, answered by the engine and
@@ -542,7 +555,16 @@ export function nativeUiaEvidence(): NativeUiaEvidence | null {
     if (!e || typeof e.comThreadStarts !== "number" || typeof e.tasksSent !== "number" || typeof e.uiaCoreLoaded !== "boolean") {
       return null;
     }
-    return { comThreadStarts: e.comThreadStarts, tasksSent: e.tasksSent, uiaCoreLoaded: e.uiaCoreLoaded };
+    // Internal #168 — the two newer fields are passed on only when they are what they say they are, and
+    // an addon that predates them still answers with the three it has rather than with `null`.
+    return {
+      comThreadStarts: e.comThreadStarts,
+      tasksSent: e.tasksSent,
+      ...(typeof e.tasksDone === "number" && { tasksDone: e.tasksDone }),
+      ...(typeof e.focusRegistration === "string" && FOCUS_REGISTRATION_STATES.has(e.focusRegistration) &&
+        { focusRegistration: e.focusRegistration }),
+      uiaCoreLoaded: e.uiaCoreLoaded,
+    };
   } catch {
     return null;
   }

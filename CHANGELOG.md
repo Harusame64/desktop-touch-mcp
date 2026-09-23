@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **One unresponsive app no longer stops the native UI Automation engine for the life of the server.**
+  At start-up the engine registered a desktop-wide focus-change handler before serving any request.
+  That registration waited on every app's UI Automation provider, with no time limit, so a single hung
+  app (measured: a hung Xbox tray window) kept it from ever returning. Every native UI Automation call
+  then waited out its 8 s timeout, as long as the server ran, before falling back to PowerShell. The
+  registration now runs on its own thread, and requests are served at once (measured on the same
+  machine: 0 of 7 answered before, 7 of 7 in 59–110 ms after). If it never returns, only focus-change
+  events are missing. `server_status` now shows `nativeUiaEvidence.tasksDone` beside `tasksSent`, and
+  `focusRegistration` (`pending` for long means focus events are off).
+
 - **A label seen in this read no longer comes back a second time as its own stale copy.**
   On a window without an accessibility tree, every text label reached the caller twice: once as
   read by OCR, and once as the visual lane's replay of what OCR had seen a read earlier, each with

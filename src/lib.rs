@@ -211,22 +211,34 @@ pub fn uia_get_focused_element() -> AsyncTask<UiaGetFocusedElementTask> {
 pub struct NativeUiaEvidence {
     pub com_thread_starts: u32,
     pub tasks_sent: u32,
+    /// Internal #168 — tasks the COM thread has finished. `tasks_sent` far above it means the thread is
+    /// not serving its queue (measured: 22 sent, 0 finished, while the focus registration hung).
+    pub tasks_done: u32,
+    /// Internal #168 — `not_started` / `pending` / `registered` / `failed`. `pending` for long means a
+    /// desktop-wide registration is not returning, and focus events are off.
+    pub focus_registration: String,
     pub uia_core_loaded: bool,
 }
 
-/// See [`NativeUiaEvidence`]. Sync and cheap: two atomic loads and one `GetModuleHandleW`.
+/// See [`NativeUiaEvidence`]. Sync and cheap: four atomic loads and one `GetModuleHandleW`.
 #[cfg(windows)]
 #[napi]
 pub fn uia_engine_evidence() -> Result<NativeUiaEvidence> {
     win32::safety::napi_safe_call("uia_engine_evidence", || {
-        let (com_thread_starts, tasks_sent) = uia::thread::engine_evidence();
+        let (com_thread_starts, tasks_sent, tasks_done, focus_registration) = uia::thread::engine_evidence();
         // SAFETY: GetModuleHandleW only reads the loader's module list. It loads nothing, and it takes
         // no reference that the caller must release.
         let uia_core_loaded = unsafe {
             windows::Win32::System::LibraryLoader::GetModuleHandleW(windows::core::w!("UIAutomationCore.dll"))
         }
         .is_ok();
-        Ok(NativeUiaEvidence { com_thread_starts, tasks_sent, uia_core_loaded })
+        Ok(NativeUiaEvidence {
+            com_thread_starts,
+            tasks_sent,
+            tasks_done,
+            focus_registration: focus_registration.to_string(),
+            uia_core_loaded,
+        })
     })
 }
 

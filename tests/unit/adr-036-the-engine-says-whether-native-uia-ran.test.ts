@@ -54,6 +54,22 @@ describe("nativeUiaEvidence", () => {
     expect((await engineWith(QUIET, undefined)).nativeUiaEvidence()).toEqual(QUIET);
   });
 
+  it("passes on how many tasks finished and where the focus registration is (internal #168)", async () => {
+    // Measured: 22 tasks sent, 0 processed, while the focus registration hung. With only `tasksSent`
+    // visible, that stall read like a busy engine.
+    const stuck = { ...RAN, tasksSent: 22, tasksDone: 0, focusRegistration: "pending" };
+    expect((await engineWith(stuck, undefined)).nativeUiaEvidence()).toEqual(stuck);
+  });
+
+  it("still answers from an addon older than the two fields, rather than saying nothing", async () => {
+    expect((await engineWith(RAN, undefined)).nativeUiaEvidence()).toEqual(RAN);
+  });
+
+  it("drops a focus-registration value it does not know, and keeps the rest", async () => {
+    const odd = { ...RAN, tasksDone: 3, focusRegistration: "maybe" };
+    expect((await engineWith(odd, undefined)).nativeUiaEvidence()).toEqual({ ...RAN, tasksDone: 3 });
+  });
+
   it("is read from the binding, so the switch that nulls nativeUia does not hide it", async () => {
     const engine = await engineWith(RAN, "1");
     expect(engine.nativeUia).toBeNull();

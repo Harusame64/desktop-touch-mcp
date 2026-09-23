@@ -4,7 +4,9 @@
 //! `IUIAutomation` they were registered against, so the matching
 //! `Remove*EventHandler` always runs (R3 leak prevention) — including
 //! when the COM thread tears down via the `shutdown_uia_for_test` path
-//! (R11/R12 polling shutdown).
+//! (R11/R12 polling shutdown). Since internal #168 the owner lives on the
+//! focus-registration thread (`thread.rs::spawn_focus_registration`), not
+//! on the task thread: adding and removing happen on that one thread.
 //!
 //! P5c-3 will add a `window_handler` slot, P5c-4 a `scroll_handler`
 //! slot. Their `Remove*` APIs have different shapes (5-arg
@@ -18,9 +20,11 @@ use windows::Win32::UI::Accessibility::{
 
 /// Owns the registered handler instances for the UIA COM thread.
 ///
-/// Constructed inside `com_thread_main` after `build_context`, dropped
-/// before `CoUninitialize` so the `Remove*EventHandler` calls run while
-/// the apartment is still alive.
+/// Constructed on the focus-registration thread after its own `build_context`
+/// (internal #168 — it used to be `com_thread_main`, where a registration that
+/// never returned kept the task loop from starting), dropped there before
+/// `CoUninitialize` so the `Remove*EventHandler` calls run while the apartment
+/// is still alive.
 pub(crate) struct UiaEventHandlerOwner {
     automation: IUIAutomation,
     focus_handler: Option<IUIAutomationFocusChangedEventHandler>,
