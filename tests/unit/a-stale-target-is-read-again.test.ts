@@ -260,6 +260,26 @@ describe("productionRereadStale", () => {
     expect(result).toEqual({ kind: "present" });
   });
 
+  it("a split label whose halves do not share a top edge is still found (codex, gate 1)", async () => {
+    const { result } = await reread(entity(), [
+      { text: "PAINTED", region: { x: 357, y: 224, width: 90, height: 23 } },
+      { text: "-A", region: { x: 450, y: 223, width: 30, height: 23 } },
+    ]);
+    expect(result).toEqual({ kind: "present" });
+  });
+
+  it("two lines are read top to bottom, each left to right", async () => {
+    const { labelIsIn } = await import("../../src/tools/_stale-reread.js");
+    const found = [
+      { text: "B", region: { x: 400, y: 260, width: 20, height: 20 } },
+      { text: "-A", region: { x: 450, y: 223, width: 30, height: 23 } },
+      { text: "PAINTED", region: { x: 357, y: 225, width: 90, height: 23 } },
+    ];
+    expect(labelIsIn("PAINTED-A", found)).toBe(true);
+    expect(labelIsIn("PAINTED-AB", found)).toBe(true);
+    expect(labelIsIn("B PAINTED", found)).toBe(false);
+  });
+
   it("a read that fails cannot say — it is not an absence", async () => {
     const { result } = await reread(entity(), new Error("ocr down"));
     expect(result).toEqual({ kind: "cannot_say", why: "read_failed" });

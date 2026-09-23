@@ -1841,8 +1841,11 @@ export function registerDesktopTools(server: McpServer): void {
         "window and saw it in the read that produced these entities — freshness says whether that " +
         "read was this call (from='read') or an earlier one (from='cache' / 'staleCache'). " +
         "status='stale': it was handed back from an earlier observation without looking — it may no " +
-        "longer be on screen, even when freshness.from is 'read'; confirm it is still there before " +
-        "acting on it. No status: the source did not say. observedAtMs is when that entity was " +
+        "longer be on screen, even when freshness.from is 'read'. desktop_act looks for a stale " +
+        "entity's label at its place before acting, and refuses with entity_not_found when the label " +
+        "is not there; when it cannot look (no label, or the read fails) it acts unchecked, so confirm " +
+        "a stale entity with no label is still there before acting on it. No status: the source did " +
+        "not say. observedAtMs is when that entity was " +
         "observed, on the same clock as freshness.observedAtMs.",
       "response.softExpiresAtMs is an advisory timestamp at ~60% of the lease TTL window — past it the LLM should consider re-calling desktop_discover even though leases are still technically valid; lease.expiresAtMs remains the only correctness wall.",
       advisoryRegistry.toolDescriptionAdvisory(),

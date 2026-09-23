@@ -58,13 +58,31 @@ export function foldForMatch(text: string): string {
  * reading order and their text concatenated, so a label OCR split across two elements is still
  * found. Joining can only turn an `absent` into a `present` — which costs the refusal, never a
  * press that did not happen before G1.
+ *
+ * **Reading order is by LINE, then by x** — not by `y`, then `x`. The two halves of one split label
+ * need not share a top edge: `PAINTED` at y 224 and `-A` at y 223 sorted by `y` read "apainted", and
+ * the label that is there was refused (codex, gate 1). An element joins the line whose vertical span
+ * holds its centre.
  */
 export function labelIsIn(label: string, found: ReadonlyArray<{ text: string; region: Rect }>): boolean {
   const wanted = foldForMatch(label);
   if (wanted === "") return false;
-  const read = [...found]
-    .sort((a, b) => a.region.y - b.region.y || a.region.x - b.region.x)
-    .map((e) => foldForMatch(e.text))
+  const centre = (r: Rect): number => r.y + r.height / 2;
+  const lines: Array<{ top: number; bottom: number; items: Array<{ text: string; region: Rect }> }> = [];
+  for (const e of [...found].sort((a, b) => centre(a.region) - centre(b.region))) {
+    const c = centre(e.region);
+    const line = lines.find((l) => c >= l.top && c <= l.bottom);
+    if (line) {
+      line.items.push(e);
+      line.top = Math.min(line.top, e.region.y);
+      line.bottom = Math.max(line.bottom, e.region.y + e.region.height);
+    } else {
+      lines.push({ top: e.region.y, bottom: e.region.y + e.region.height, items: [e] });
+    }
+  }
+  const read = lines
+    .sort((a, b) => a.top - b.top)
+    .map((l) => l.items.sort((a, b) => a.region.x - b.region.x).map((e) => foldForMatch(e.text)).join(""))
     .join("");
   return read.includes(wanted);
 }
