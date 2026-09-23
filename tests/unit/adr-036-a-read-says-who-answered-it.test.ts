@@ -281,8 +281,8 @@ describe("the bridge says which client answered", () => {
   });
 
   it("names the PowerShell client, and what the native one threw, when the road changed mid-call", async () => {
-    // The measured case: the window's UI thread hangs, the native call times out, PowerShell
-    // answers. Before this the caller got `{name:"Save",…}` and could not tell it from an answer
+    // The native call fails and PowerShell answers. (The measured case was a native TIMEOUT; since
+    // internal #144 a timeout on this road no longer falls back, so the failure here is another.) Before this the caller got `{name:"Save",…}` and could not tell it from an answer
     // the engine gave — while the two clients name some controls differently (internal #136).
     nativeAnswer = () => { throw new Error("UIA COM thread disconnected"); };
     psOutputs.push(JSON.stringify(ELEMENT));
@@ -340,6 +340,16 @@ describe("a native timeout is not a reason to wait a second time (internal #144,
     await expect(getUiElements("App", 3, 50, 30000)).rejects.toThrow("UIA operation timed out after 30000ms");
     expect(psOutputs).toHaveLength(1);
     psOutputs.length = 0;
+  });
+
+  it("still falls back when the read is pinned to a handle (gate 2)", async () => {
+    // One COM thread: a hung window A's timed-out call keeps it busy, so a healthy window B read by
+    // handle right after times out in the queue. The script reaches B through `FromHandle` alone.
+    nativeElementsThrow = new Error("UIA operation timed out after 8000ms");
+    psOutputs.push(JSON.stringify({ windowTitle: "B", elementCount: 0, elements: [] }));
+    const result = await getUiElements("B", 3, 50, 30000, { pinnedHwnd: 4242n });
+    expect(result.windowTitle).toBe("B");
+    expect(psOutputs, "the fall-back did not run").toHaveLength(0);
   });
 
   it("recognises only the engine's own shape", () => {

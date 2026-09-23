@@ -1487,8 +1487,14 @@ export async function getUiElements(
       }
       return normalised;
     } catch (e) {
-      // Internal #144 — a timeout is not a reason to wait a second time (see `isNativeUiaTimeout`).
-      if (isNativeUiaTimeout(e)) throw e;
+      // Internal #144 — a timeout is not a reason to wait a second time (see `isNativeUiaTimeout`) —
+      // **on the title road only**. That is where it was measured: resolving a title reads every
+      // top-level window's name, so a hung window costs both roads the same. A read pinned to a
+      // handle is different (gate 2): the native engine runs one COM thread, a timed-out call to a
+      // hung window A keeps it busy, and a healthy window B read by handle right after times out in
+      // the queue — while the PowerShell script reaches B through `FromHandle` and never touches A.
+      // Not measured either way; the fall-back that answered about B is kept.
+      if (isNativeUiaTimeout(e) && scopeHwnd === undefined) throw e;
       console.warn("[uia-bridge] Native uiaGetElements failed, falling back to PowerShell:", e);
       // fall through to PowerShell
     }
@@ -2100,7 +2106,10 @@ export type UiaVia = "native" | "powershell" | "none";
  * MEASURED 2026-09-20 win2 (internal `25da27f`): hanging the target window's UI
  * thread makes the native call throw `UIA operation timed out after 8000ms` while the PowerShell
  * road answers normally in 3.6 s — same call, same window, same moment. The caller got an ordinary
- * answer, and the only trace was a `console.warn` on the server's stderr.
+ * answer, and the only trace was a `console.warn` on the server's stderr. **Since internal #144 this
+ * road no longer falls back on a native TIMEOUT** (0 of 12 rescues while the window was still hung;
+ * the 3.6 s answer above came after the hang ended), so `nativeFailed` with `via: "powershell"` now
+ * means a native failure that was not a timeout.
  */
 export type BoundsAnswer =
   | { found: ElementBounds; via: UiaVia; nativeFailed?: string }
