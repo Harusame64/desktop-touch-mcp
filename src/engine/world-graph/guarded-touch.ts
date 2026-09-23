@@ -411,19 +411,31 @@ function resolveAction(entity: UiEntity, requested: TouchAction): TouchAction {
  * first — one on the producing TYPE, one on the executor's dispatch — so neither half can be built
  * quietly. Until then a caller asking to select is told nothing happened, which is the truth.
  */
-function offersAction(_entity: UiEntity, action: TouchAction): boolean {
+function offersAction(entity: UiEntity, action: TouchAction): boolean {
   switch (action) {
     // **NOT SUPPORTED BY THIS PRODUCT** — see above. Refused before anything touches the world.
     case "select":
       return false;
-    // The rest are performed today. `setValue` is here rather than checked against the affordances
-    // because entities advertise the UIA ValuePattern / CDP fill road under the `type` verb (see
-    // `AUTO_PRIORITY`'s note), so an affordance check would refuse it everywhere.
+    // **Text into a control UI Automation says only presses** (internal #154, W3). Measured, win2,
+    // 2026-09-21: `setValue` with text on a Button answered `ok:true` with executor `keyboard` — no
+    // value was set, and the text went out as keystrokes to whatever held the focus.
+    //
+    // THE GROUND IS THE UIA CONTROL TYPE, NOT THE AFFORDANCES, and not "lacks `type`":
+    //   - an OCR entity advertises `click` only, and typing into a blind window is a designed road
+    //     (the keyboard rung's marked success, release cut W-g) — "no `type`" would refuse all of it;
+    //   - a UIA text area outside Edit/ComboBox (a `Document`, a custom control) advertises `read`,
+    //     and #327 item E's keyboard fallback exists for exactly such fields;
+    //   - `invoke` in the affordances is a union across sources, and the visual lane adds it for any
+    //     region its detector calls a button — a guess, not a clear ground.
+    // The control type is what UIA itself reported for the element (`entity.controlType`). Measured
+    // before this line (win2 `2b8f8c4` / `03ef392` / `82b635f`): Notepad's body is not in the set on
+    // either road, and a dialog's edit box is `Edit`, so nothing written today is refused.
+    case "type":
+    case "setValue":
+      return !(entity.controlType !== undefined && (UIA_PRESS_ONLY_CONTROL_TYPES as readonly string[]).includes(entity.controlType));
     case "auto":
     case "invoke":
     case "click":
-    case "type":
-    case "setValue":
       return true;
     default: {
       // **A NEW VERB HAS TO BE DECIDED HERE, at compile time** (gate 2). The previous version was a
@@ -436,6 +448,13 @@ function offersAction(_entity: UiEntity, action: TouchAction): boolean {
     }
   }
 }
+
+/**
+ * The UIA control types that only press: `invoke` and `click` are what they offer, and none of them
+ * takes text. One place, read by the UIA provider (their affordances) and by {@link offersAction}
+ * (the refusal of text into them), so the two cannot drift apart.
+ */
+export const UIA_PRESS_ONLY_CONTROL_TYPES = ["Button", "CheckBox", "RadioButton", "Hyperlink", "MenuItem"] as const;
 
 // ── Lease → fail reason mapping ───────────────────────────────────────────────
 
