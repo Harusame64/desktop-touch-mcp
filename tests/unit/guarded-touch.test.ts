@@ -706,6 +706,40 @@ describe("GuardedTouchLoop — enriched semantic diff (P2-D)", () => {
     if (result.ok) expect(result.diff).toContain("entity_appeared");
   });
 
+  it("a stale replay in the post read is not an appearance (internal #163, gate 2)", async () => {
+    // Discover superseded the replayed copy of "Close", so pre holds only the OCR entity. The click
+    // removes "Close"; the post read's OCR no longer sees it and the visual lane replays the pre-click
+    // screen. That copy has a different id and must not come back as `entity_appeared`.
+    const close = entity("close-ocr", GEN, { sources: ["ocr"], status: "observed" });
+    const copy  = entity("close-copy", GEN, { sources: ["visual_gpu"], status: "stale" });
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(close, "v1");
+    const loop  = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities:      () => [close],
+      resolvePostTouchEntities: async () => [copy],
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.diff).toContain("entity_disappeared");
+      expect(result.diff).not.toContain("entity_appeared");
+    }
+  });
+
+  it("CONTROL: an entity a lane observed after the touch still appears", async () => {
+    const btn = entity("btn", GEN, { sources: ["ocr"], status: "observed" });
+    const seen = entity("seen", GEN, { sources: ["ocr"], status: "observed" });
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(btn, "v1");
+    const loop  = new GuardedTouchLoop(store, makeEnv({
+      resolveLiveEntities:      () => [btn],
+      resolvePostTouchEntities: async () => [btn, seen],
+    }));
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.diff).toContain("entity_appeared");
+  });
+
   it("entity_appeared not emitted for modal (modal_appeared takes priority)", async () => {
     const btn   = entity("btn",   GEN, { sources: ["visual_gpu"] });
     const modal = entity("modal", GEN, { sources: ["uia"], role: "unknown", controlType: "Window" });

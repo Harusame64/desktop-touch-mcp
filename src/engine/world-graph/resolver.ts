@@ -104,11 +104,53 @@ function mergeLocators(candidates: UiEntityCandidate[]): EntityLocator | undefin
  * - Candidates sharing the same key (digest or label+rect fallback) are merged.
  * - Sources are unioned; confidence is max; most-recent observedAtMs wins for label/rect.
  */
+/**
+ * Internal #163 — a `stale` copy of something a lane `observed` in the same read is dropped.
+ *
+ * Measured (win2, 2026-09-23, arm F on public main `0a75f52c`): on a UIA-blind window every OCR label
+ * reached the caller twice, once as `["ocr"]` and once as `["visual_gpu"]`, with different entityIds.
+ * The default build's visual lane replays what the OCR adapter pushed earlier, so the second one is a
+ * COPY of the OCR lane's previous output, not a second sensor's evidence.
+ *
+ * **Superseded, not merged** (the user, 2026-09-23). Merging would make the entity
+ * `["ocr","visual_gpu"]`, and `homingCorrectionForSources` follows a moved window only when every
+ * source is one it can vouch for: a press after a window move on a blind window would stop being
+ * corrected. And a copy is not the spec's second `support`. Merging waits for the day the visual lane
+ * can stamp `observed` itself (ADR-036 Annex B, B-7).
+ *
+ * **Memory is not narrowed**: a `stale` candidate with no `observed` counterpart stays, labelled — the
+ * transient of #158, and the case where the lane that looked failed this time. Only an exact
+ * counterpart supersedes: same target, same label, and a rectangle within {@link SAME_THING_PX} on
+ * centre and size. Distance, not a bucket: the producer snaps with floor-8 and this file with round-8,
+ * so a bucket splits the same element at a boundary. A candidate with no rectangle cannot be compared
+ * and is kept.
+ */
+export function supersedeStaleTwins(candidates: UiEntityCandidate[]): UiEntityCandidate[] {
+  const observed = candidates.filter((c) => c.status === "observed" && c.rect);
+  if (observed.length === 0) return candidates;
+  return candidates.filter((c) =>
+    c.status !== "stale" || !c.rect || !observed.some((o) => sameThing(o, c)),
+  );
+}
+
+/** Internal #163 — how far apart two rectangles of one element may be, in px, on centre and on size. */
+export const SAME_THING_PX = 8;
+
+function sameThing(a: UiEntityCandidate, b: UiEntityCandidate): boolean {
+  if (a.target.kind !== b.target.kind || a.target.id !== b.target.id) return false;
+  if ((a.label ?? "") !== (b.label ?? "")) return false;
+  const ra = a.rect!, rb = b.rect!;
+  return Math.abs((ra.x + ra.width / 2) - (rb.x + rb.width / 2)) <= SAME_THING_PX
+    && Math.abs((ra.y + ra.height / 2) - (rb.y + rb.height / 2)) <= SAME_THING_PX
+    && Math.abs(ra.width - rb.width) <= SAME_THING_PX
+    && Math.abs(ra.height - rb.height) <= SAME_THING_PX;
+}
+
 export function resolveCandidates(
   candidates: UiEntityCandidate[],
   generation: string
 ): UiEntity[] {
-  const valid = candidates.filter((c) => !c.provisional);
+  const valid = supersedeStaleTwins(candidates.filter((c) => !c.provisional));
 
   const groups = new Map<string, UiEntityCandidate[]>();
   for (const c of valid) {

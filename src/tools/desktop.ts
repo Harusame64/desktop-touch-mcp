@@ -615,6 +615,8 @@ export class DesktopFacade {
     resolved = resolved.slice(0, max);
 
     session.entities = resolved;
+    // Internal #163 — from the candidates, before the resolver drops stale copies. See the field.
+    session.discoverSawVisualGpu = rawResult.candidates.some((c) => c.source === "visual_gpu" && !c.provisional);
     // ADR-024 Seed-2 — persist whether this discover saw a *visual-only* target
     // for the desktop_act wrapper to gate post-action roiCapture. Visual-only =
     // UIA-blind (PWA/Electron/canvas/RDP) AND no structured observation source.
@@ -1110,7 +1112,10 @@ export class DesktopFacade {
   discoverHasVisualGpuForViewId(viewId: string): boolean {
     const session = this.registry.getByViewId(viewId, this.opts.nowFn);
     if (!session) return false;
-    return session.entities.some((e) => e.sources.includes("visual_gpu"));
+    // Internal #163 — the candidates' answer, not `entities`: the resolver now drops a stale copy of
+    // what OCR saw, and deciding the road from what is left moved blind windows onto the fold (win2,
+    // arm H3). Falls back to `entities` for a session filed before the field existed.
+    return session.discoverSawVisualGpu ?? session.entities.some((e) => e.sources.includes("visual_gpu"));
   }
 
   /**

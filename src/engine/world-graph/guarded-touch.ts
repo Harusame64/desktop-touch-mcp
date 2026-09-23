@@ -566,7 +566,13 @@ function computeDiff(ctx: DiffContext): SemanticDiff {
   // `appeared` is drawn from the post snapshot (already region-bound on the
   // fold path); `removed` is scoped so out-of-region pre-entities (never
   // re-observed) are not falsely counted as gone.
-  const appeared = postEntities.filter((e) => !preIds.has(e.entityId));
+  //
+  // Internal #163 — and a `stale` entity is not evidence that anything appeared: no lane looked at it
+  // in the post read. Gate 2 on the supersede: discover drops a replayed copy when OCR saw the same
+  // label, so the copy is not in `preEntities`; after a click that REMOVES that label, OCR no longer
+  // sees it and the post read keeps the replay — the pre-click screen — which then read as a new
+  // entity (`entity_disappeared` + a ghost `entity_appeared`).
+  const appeared = postEntities.filter((e) => !preIds.has(e.entityId) && e.status !== "stale");
   const removed  = preEntities.filter((e) => !postIds.has(e.entityId) && inScope(e));
 
   // modal_appeared / modal_dismissed take priority for modal entities.
