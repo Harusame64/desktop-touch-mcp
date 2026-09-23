@@ -1909,6 +1909,40 @@ export function createDesktopExecutor(
             probeRefusal("uia_set_value", "window_excluded", aimHwnd, entity, { addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
             throw uiaErr;
           }
+          // ADR-036 item 16 on the WRITE road — the Guard `target.exists`, as the click path below has
+          // had it since #624. When UIA says the element is not in the window, the keyboard rung is
+          // not a way round that: it posts to whatever holds the focus, and the element the caller
+          // named is not there to hold it. MEASURED on `main` `192941e6` (win2, 2026-09-23, cell t1,
+          // internal `9fc97d75`, three of three): FOXTROT removed after discover, `type` on its lease
+          // → the value road answered `element_not_found`, the rung could not compare handles
+          // (FOXTROT's window was destroyed: `entity_handle_stale`), posted, and the characters landed
+          // in DELTA, which held the focus — under `ok:true`. The spec-side table's row 1 × type.
+          //
+          // The same condition as the click path, for the same reason (gate 2 on #624): a "not found"
+          // is believed only when the client that read the entity and the client that answered the
+          // write are both native. Without the native engine the PowerShell script registers fewer
+          // providers than the read did, and would tell a present field it has gone on every retry.
+          // Those answers keep the rung, whose own grounds (`keyboard-target.ts`) still apply.
+          //
+          // What is given up, as on the click path: a field renamed since discover is refused here
+          // and written after a re-discover.
+          {
+            const routeFailure = classifyUiaRouteFailure(uiaErr);
+            const readVia = entity.locator?.uia?.via;
+            const setViaRaw = (uiaErr as { uiaVia?: unknown } | null)?.uiaVia;
+            const setVia = setViaRaw === "native" || setViaRaw === "powershell" ? setViaRaw : undefined;
+            if (routeFailure === "element_not_found" && readVia === "native" && setVia === "native") {
+              probeRefusal("uia_set_value", "entity_not_found", aimHwnd, entity, { routeFailure: "element_not_found", readVia, setVia, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
+              throw new TargetGoneError(
+                `UIA found no element for "${entity.label ?? entity.entityId}" to write into: ` +
+                `${uiaErr instanceof Error ? uiaErr.message : String(uiaErr)}. Not typing into whatever holds the focus.`,
+                { cause: uiaErr },
+                `UIA found no element for "${quotedLabel(entity)}" in the window this act named ` +
+                `(it may have gone, been renamed, or moved), and nothing was typed — the keystrokes ` +
+                `would have gone to whatever holds the focus instead.`,
+              );
+            }
+          }
           // A dead aim is NOT short-circuited here, unlike in the click path. That rung addresses
           // the same handle (`keyboardTypeBg` looks the window up by hwnd and throws when the
           // enumeration does not hold it), so it cannot write into a different window — and a
@@ -2391,7 +2425,9 @@ function getSharedRealDeps(): ExecutorDeps {
       const { setElementValue } = await import("../engine/uia-bridge.js");
       const r = await setElementValue(windowTitle, value, name, automationId, hwnd !== undefined ? { hwnd } : undefined);
       if (!r.ok && r.code === AIM_WINDOW_GONE) throw new AimedWindowGoneError(hwnd, r.error);
-      if (!r.ok) throw new Error(r.error ?? "UIA setElementValue failed");
+      // Which client answered, carried on the error as `uiaClick` carries it: the type road's item 16
+      // believes a "not found" only from the native client, about an entity the native client read.
+      if (!r.ok) throw Object.assign(new Error(r.error ?? "UIA setElementValue failed"), { uiaVia: r.via });
     },
 
     async cdpClick(selector, tabId) {
