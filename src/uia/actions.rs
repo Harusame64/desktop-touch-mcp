@@ -226,16 +226,6 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
         }
     };
 
-    let is_enabled = unsafe { elem.CurrentIsEnabled().map(|b| b == true).unwrap_or(true) };
-    if !is_enabled {
-        return Ok(ActionResult {
-            ok: false,
-            element: None,
-            error: Some("Element is disabled".into()),
-            code: Some("ElementDisabled".into()),
-        });
-    }
-
     unsafe {
         let pat = match elem.GetCurrentPattern(UIA_ValuePatternId) {
             Ok(p) => p,
@@ -259,6 +249,21 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
                 });
             }
         };
+
+        // Internal #190 (gate 2) — IsEnabled is read AFTER the ValuePattern, as the managed client does:
+        // the element here is the first descendant whose name contains the entity's, and a disabled
+        // button or label found that way used to answer "disabled" for an enabled text field. Since the
+        // keyboard rung believes a windowless field's "disabled" on UI Automation's word alone, a
+        // control that takes no value must answer "no pattern" instead.
+        let is_enabled = elem.CurrentIsEnabled().map(|b| b == true).unwrap_or(true);
+        if !is_enabled {
+            return Ok(ActionResult {
+                ok: false,
+                element: None,
+                error: Some("Element is disabled".into()),
+                code: Some("ElementDisabled".into()),
+            });
+        }
 
         // Internal #188 — a read-only field is named by the pattern's own property, not by
         // SetValue's error. That error arrives in the OS language ("SetValue は、読み取り専用の値に
