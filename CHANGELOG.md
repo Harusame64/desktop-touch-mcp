@@ -9,7 +9,9 @@
   and differs from what was written, the act answers `ok:false` with `value_not_applied`, and nothing
   else is tried: typing into the same control lands at its caret (measured: `42420` for `4242`). A
   value that is reformatted on the way in (`04343` → `4343`) counts as written. Password fields, and
-  values that cannot be read before and after, answer as before.
+  values that cannot be read before and after, answer as before. V1 `set_element_value` uses the same
+  write, so on such a control it now reports a failure instead of `ok:true` (with
+  `DTM_SET_VALUE_CHAIN=1` it goes on to its other channels, as for any other failed write).
 
 - **Two UI Automation reads of a hung window no longer wait twice.** `getElementBounds` (behind
   `wait_until` element conditions and `scope_element`) and `getUiElements` (behind `desktop_discover`'s
