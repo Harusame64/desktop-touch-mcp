@@ -683,7 +683,7 @@ describe("desktopActRawHandler — executor_failed if_unexpected attach (#327 it
     expect(ifUnexpected?.most_likely_cause).toBe("ValueNotApplied");
     // The advice is the handler's (SUGGESTS.ValueNotApplied), not the mocked detail echoed back (gate 2).
     const firstStep = ((ifUnexpected?.try_next as Array<{ action?: unknown }> | undefined) ?? [])[0];
-    expect(String(firstStep?.action)).toMatch(/reading it back right after the write showed no change/);
+    expect(String(firstStep?.action)).toMatch(/reading it back for a moment after the write showed no change/);
     expect((ifUnexpected as { detail?: unknown } | undefined)?.detail).toBe(detail);
     const advice = (ifUnexpected?.try_next as Array<{ action?: unknown }> | undefined) ?? [];
     expect(advice.length).toBeGreaterThan(0);

@@ -2004,8 +2004,8 @@ export function createDesktopExecutor(
             throw new ValueNotAppliedError(
               `UIA accepted the value for "${entity.label ?? entity.entityId}" and its value read back unchanged. Not typing it another way.`,
               { cause: uiaErr },
-              `UI Automation accepted the value for "${quotedLabel(entity)}", but its value read back unchanged right after ` +
-              `the write, so this act does not report it written and tried nothing else. Re-run desktop_discover and check the field before writing again.`,
+              `UI Automation accepted the value for "${quotedLabel(entity)}", but its value read back unchanged for a moment ` +
+              `after the write, so this act does not report it written and tried nothing else. Re-run desktop_discover and check the field before writing again.`,
             );
           }
           // A dead aim is NOT short-circuited here, unlike in the click path. That rung addresses

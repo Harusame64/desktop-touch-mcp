@@ -85,7 +85,7 @@ describe("#182 — the value road wrote, the control said yes, and nothing chang
         const d = await deps();
         const { e } = await outcome(write(target, d, action));
         expect(e).toMatchObject({ name: "ValueNotAppliedError" });
-        expect(e?.callerDetail).toMatch(/read back unchanged right after the write/);
+        expect(e?.callerDetail).toMatch(/read back unchanged for a moment after the write/);
         expect(e?.callerDetail).toMatch(/check the field before writing again/);
         expect(e?.callerDetail).toMatch(/GOLF/);
         // The engine's words, not the backend's.

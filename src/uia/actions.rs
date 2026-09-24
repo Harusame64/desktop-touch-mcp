@@ -265,29 +265,44 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
         // put (win2, 3 of 3). So the value is read before and after, on this element and this
         // pattern, and the write is believed not to have taken only when the value did not move
         // AND differs from what was written. Not an equality test: a field that reformats what it
-        // is given ("04343" → "4343") moved, and was written. A password field is not read (UIA
-        // does not hand its value back), and a value that cannot be read on either side decides
-        // nothing — both answer as they did before this check.
-        let is_password = elem.CurrentIsPassword().map(|b| b == true).unwrap_or(true);
-        let before = if is_password {
-            None
-        } else {
+        // is given moved, and was written.
+        //
+        // Not every element is asked. Chromium (Edge, WebView2) answers SetValue on a text field at
+        // once and applies it a moment later, so the read right after it sees the old value: win2
+        // measured 7 of 8 overwrites refused that had landed, the new value readable ~120 ms later
+        // (internal `11fe8dc1`). The user's decision (2026-09-24) is both halves: Edit and Document
+        // are not checked at all, and every other type is read again for up to
+        // `NOT_APPLIED_SETTLE_MS` before the write is called not applied. A password field, a type
+        // or a value that cannot be read decides nothing — each answers as it did before the check.
+        let checked = !elem.CurrentIsPassword().map(|b| b == true).unwrap_or(true)
+            && elem
+                .CurrentControlType()
+                .map(|t| write_is_checked(t.0))
+                .unwrap_or(false);
+        let before = if checked {
             vp.CurrentValue().ok().map(|b| b.to_string())
+        } else {
+            None
         };
         let bstr = windows::core::BSTR::from(&*opts.value);
         match vp.SetValue(&bstr) {
             Ok(()) => {
-                let after = before
-                    .as_ref()
-                    .and_then(|_| vp.CurrentValue().ok().map(|b| b.to_string()));
+                let read = || vp.CurrentValue().ok().map(|b| b.to_string());
+                let mut after = before.as_ref().and_then(|_| read());
+                let started = std::time::Instant::now();
+                while value_not_applied(before.as_deref(), after.as_deref(), &opts.value)
+                    && started.elapsed() < std::time::Duration::from_millis(NOT_APPLIED_SETTLE_MS)
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(NOT_APPLIED_POLL_MS));
+                    after = read();
+                }
                 if value_not_applied(before.as_deref(), after.as_deref(), &opts.value) {
                     return Ok(ActionResult {
                         ok: false,
                         element: None,
-                        error: Some(
-                            "SetValue returned success, but the element's value read back unchanged right after it"
-                                .into(),
-                        ),
+                        error: Some(format!(
+                            "SetValue returned success, but the element's value read back unchanged for {NOT_APPLIED_SETTLE_MS} ms after it"
+                        )),
                         code: Some("ValueNotApplied".into()),
                     });
                 }
@@ -308,8 +323,21 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
     }
 }
 
+/// How long a write that reads back unchanged is read again before it is called not applied
+/// (internal #182). win2 saw Chromium's value ~120 ms after SetValue returned; this is that, with room.
+const NOT_APPLIED_SETTLE_MS: u64 = 300;
+const NOT_APPLIED_POLL_MS: u64 = 30;
+
+/// Internal #182 — which control types the not-applied check asks. Edit and Document are not: the
+/// providers measured to apply a text write late (Chromium's inputs, in Edge and in WebView2) are
+/// Edit, and a check there refused writes that had landed. The one type measured to accept a write and
+/// ignore it (a WinForms NumericUpDown's outer element) is ComboBox. The user's decision, 2026-09-24.
+fn write_is_checked(control_type: i32) -> bool {
+    control_type != UIA_EditControlTypeId.0 && control_type != UIA_DocumentControlTypeId.0
+}
+
 /// Internal #182 — whether a SetValue that answered S_OK is believed not to have taken: the value read
-/// back right after it is the value read before it, and not what was written. `None` on either side
+/// back after it is the value read before it, and not what was written. `None` on either side
 /// (a password field, or a read that failed) decides nothing. Not an equality test against `written`:
 /// a field that reformats what it is given has moved, and was written.
 ///
@@ -579,6 +607,7 @@ fn matches_with_ct(
 #[cfg(test)]
 mod tests {
     use super::value_not_applied;
+    use windows::Win32::UI::Accessibility::*;
 
     #[test]
     fn the_numeric_up_down_that_took_nothing_is_not_applied() {
@@ -597,6 +626,14 @@ mod tests {
     fn writing_what_is_already_there_is_not_refused() {
         assert!(!value_not_applied(Some("abc"), Some("abc"), "abc"));
         assert!(!value_not_applied(Some(""), Some(""), ""));
+    }
+
+    #[test]
+    fn text_fields_are_not_asked_and_a_combo_box_is() {
+        assert!(!super::write_is_checked(UIA_EditControlTypeId.0));
+        assert!(!super::write_is_checked(UIA_DocumentControlTypeId.0));
+        assert!(super::write_is_checked(UIA_ComboBoxControlTypeId.0));
+        assert!(super::write_is_checked(UIA_SpinnerControlTypeId.0));
     }
 
     #[test]
