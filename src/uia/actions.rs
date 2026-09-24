@@ -280,18 +280,16 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
                 let after = before
                     .as_ref()
                     .and_then(|_| vp.CurrentValue().ok().map(|b| b.to_string()));
-                if let (Some(before), Some(after)) = (before, after) {
-                    if after == before && after != opts.value {
-                        return Ok(ActionResult {
-                            ok: false,
-                            element: None,
-                            error: Some(
-                                "SetValue returned success, but the element's value did not change"
-                                    .into(),
-                            ),
-                            code: Some("ValueNotApplied".into()),
-                        });
-                    }
+                if value_not_applied(before.as_deref(), after.as_deref(), &opts.value) {
+                    return Ok(ActionResult {
+                        ok: false,
+                        element: None,
+                        error: Some(
+                            "SetValue returned success, but the element's value read back unchanged right after it"
+                                .into(),
+                        ),
+                        code: Some("ValueNotApplied".into()),
+                    });
                 }
                 Ok(ActionResult {
                     ok: true,
@@ -307,6 +305,22 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
                 code: None,
             }),
         }
+    }
+}
+
+/// Internal #182 — whether a SetValue that answered S_OK is believed not to have taken: the value read
+/// back right after it is the value read before it, and not what was written. `None` on either side
+/// (a password field, or a read that failed) decides nothing. Not an equality test against `written`:
+/// a field that reformats what it is given has moved, and was written.
+///
+/// What this cannot see, said so a reader does not price it wrong: a provider that applies the write
+/// after SetValue returns reads back unchanged here; a clear (`""`) on a control whose value always
+/// reads `""` equals what was written; and a field already holding the normalised form of what is
+/// written reads back unchanged and different.
+fn value_not_applied(before: Option<&str>, after: Option<&str>, written: &str) -> bool {
+    match (before, after) {
+        (Some(before), Some(after)) => after == before && after != written,
+        _ => false,
     }
 }
 
@@ -560,4 +574,35 @@ fn matches_with_ct(
     };
 
     name_ok && id_ok && ct_ok
+}
+
+#[cfg(test)]
+mod tests {
+    use super::value_not_applied;
+
+    #[test]
+    fn the_numeric_up_down_that_took_nothing_is_not_applied() {
+        // win2 d58b673d: the outer GOLF read "" before and after a write of "4242".
+        assert!(value_not_applied(Some(""), Some(""), "4242"));
+        assert!(value_not_applied(Some("0"), Some("0"), "4242"));
+    }
+
+    #[test]
+    fn a_value_that_moved_was_written_even_if_reformatted() {
+        assert!(!value_not_applied(Some("0"), Some("4343"), "4343"));
+        assert!(!value_not_applied(Some("0"), Some("4343"), "04343"));
+    }
+
+    #[test]
+    fn writing_what_is_already_there_is_not_refused() {
+        assert!(!value_not_applied(Some("abc"), Some("abc"), "abc"));
+        assert!(!value_not_applied(Some(""), Some(""), ""));
+    }
+
+    #[test]
+    fn a_value_that_could_not_be_read_decides_nothing() {
+        assert!(!value_not_applied(None, Some(""), "4242"));
+        assert!(!value_not_applied(Some(""), None, "4242"));
+        assert!(!value_not_applied(None, None, "4242"));
+    }
 }

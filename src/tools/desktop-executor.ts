@@ -2002,10 +2002,10 @@ export function createDesktopExecutor(
           if (uiaErr instanceof ValueNotAppliedError) {
             probeRefusal("uia_set_value", "value_not_applied", aimHwnd, entity, { addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
             throw new ValueNotAppliedError(
-              `UIA accepted the value for "${entity.label ?? entity.entityId}" and its value did not change. Not typing it another way.`,
+              `UIA accepted the value for "${entity.label ?? entity.entityId}" and its value read back unchanged. Not typing it another way.`,
               { cause: uiaErr },
-              `UI Automation accepted the value for "${quotedLabel(entity)}", but the control's value did not change — ` +
-              `nothing was written. This control does not take a value this way; re-run desktop_discover and act on the field that holds the text.`,
+              `UI Automation accepted the value for "${quotedLabel(entity)}", but its value read back unchanged right after ` +
+              `the write, so this act does not report it written and tried nothing else. Re-run desktop_discover and check the field before writing again.`,
             );
           }
           // A dead aim is NOT short-circuited here, unlike in the click path. That rung addresses

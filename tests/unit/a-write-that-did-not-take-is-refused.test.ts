@@ -85,7 +85,8 @@ describe("#182 — the value road wrote, the control said yes, and nothing chang
         const d = await deps();
         const { e } = await outcome(write(target, d, action));
         expect(e).toMatchObject({ name: "ValueNotAppliedError" });
-        expect(e?.callerDetail).toMatch(/nothing was written/);
+        expect(e?.callerDetail).toMatch(/read back unchanged right after the write/);
+        expect(e?.callerDetail).toMatch(/check the field before writing again/);
         expect(e?.callerDetail).toMatch(/GOLF/);
         // The engine's words, not the backend's.
         expect(e?.callerDetail).not.toContain("SetValue returned success");
@@ -110,6 +111,15 @@ describe("#182 — the value road wrote, the control said yes, and nothing chang
     expect(v).toBe("uia");
   });
 
+  it("stays refused under DESKTOP_TOUCH_KEYBOARD_RUNG_UNCHECKED=1 — that switch restores the rung, and this is not the rung (gate 2)", async () => {
+    vi.stubEnv("DESKTOP_TOUCH_KEYBOARD_RUNG_UNCHECKED", "1");
+    const d = await deps();
+    const { e } = await outcome(write(titleRoad, d));
+    expect(e).toMatchObject({ name: "ValueNotAppliedError" });
+    expect(d.keyboardTypeBg).not.toHaveBeenCalled();
+    expect(d.keyboardPost).not.toHaveBeenCalled();
+  });
+
   it("writes one refusal row on the value road, and no keyboard row", async () => {
     const dir = mkdtempSync(join(tmpdir(), "vna-row-"));
     const logPath = join(dir, "aim-probe.jsonl");
@@ -120,7 +130,15 @@ describe("#182 — the value road wrote, the control said yes, and nothing chang
       const rows = readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
       const refusals = rows.filter((r) => r.route === "refusal");
       expect(refusals).toHaveLength(1);
-      expect(refusals[0]).toMatchObject({ rung: "uia_set_value", refused: "value_not_applied", addressedWindowBy: "title" });
+      // The whole row, not a subset: the addressing axes the other value-road refusals carry, and
+      // never the typed text (gate 2).
+      expect(refusals[0]).toEqual({
+        seq: expect.any(Number), tsMs: expect.any(Number), pid: expect.any(Number),
+        seam: "act.route", route: "refusal", hasAim: false, aimHwnd: null, entityId: "golf", entityLabel: "GOLF",
+        rung: "uia_set_value", refused: "value_not_applied",
+        addressedBy: { automationId: true, name: true }, addressedElementBy: "automation_id", addressedWindowBy: "title",
+      });
+      expect(JSON.stringify(rows)).not.toContain("4242");
       expect(rows.some((r) => r.route === "keyboard")).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -145,7 +163,7 @@ describe("#182 — the value road wrote, the control said yes, and nothing chang
       resolvePostTouchEntities: async () => [entity],
     }).touch({ lease, action: "type", text: "4242" });
     expect(result).toMatchObject({ ok: false, reason: "value_not_applied" });
-    expect((result as { detail?: string }).detail).toMatch(/nothing was written/);
+    expect((result as { detail?: string }).detail).toMatch(/read back unchanged/);
   });
 });
 
@@ -176,7 +194,7 @@ describe("#182 — the advice", () => {
     const advice = getSuggestsForCode("ValueNotApplied");
     expect(advice.length).toBeGreaterThan(0);
     const text = advice.join(" ");
-    expect(text).toMatch(/nothing was written/);
+    expect(text).toMatch(/read(?:ing it)? back/);
     expect(text).toMatch(/desktop_discover/);
     expect(text).toMatch(/do NOT[^.]*keyboard/i);
   });

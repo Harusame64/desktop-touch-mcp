@@ -5,13 +5,16 @@
 - **A `type` / `setValue` that UI Automation accepts but that changes nothing is refused instead of reported done.**
   On a WinForms NumericUpDown, `desktop_act` with `type` answered `ok:true` while the control's value
   stayed where it was: the native UI Automation client reads it as a combo box whose value accepts a
-  write and ignores it. The native write now reads the value before and after. When it did not move
-  and differs from what was written, the act answers `ok:false` with `value_not_applied`, and nothing
-  else is tried: typing into the same control lands at its caret (measured: `42420` for `4242`). A
-  value that is reformatted on the way in (`04343` → `4343`) counts as written. Password fields, and
-  values that cannot be read before and after, answer as before. V1 `set_element_value` uses the same
-  write, so on such a control it now reports a failure instead of `ok:true` (with
-  `DTM_SET_VALUE_CHAIN=1` it goes on to its other channels, as for any other failed write).
+  write and ignores it. The native client's write now reads the value before and after. When it reads
+  back unchanged and different from what was written, the act answers `ok:false` with
+  `value_not_applied`, and nothing else is tried: on that control, typing landed at its caret
+  (`42420` for `4242`). A value that reads back different from before counts as written, in whatever
+  form. Password fields, and values that cannot be read before and after, answer as before, and the
+  PowerShell client does not make the check. A control already holding what a write normalises to reads
+  back unchanged and is refused, and a clear (`""`) on a control whose value always reads empty is not
+  caught. V1 `set_element_value` uses the same write, so on such a control it now reports a failure
+  instead of `ok:true` (with `DTM_SET_VALUE_CHAIN=1` it goes on to its other channels, as for any other
+  failed write).
 
 - **Two UI Automation reads of a hung window no longer wait twice.** `getElementBounds` (behind
   `wait_until` element conditions and `scope_element`) and `getUiElements` (behind `desktop_discover`'s
