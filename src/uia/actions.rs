@@ -260,6 +260,24 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
             }
         };
 
+        // Internal #188 — a read-only field is named by the pattern's own property, not by
+        // SetValue's error. That error arrives in the OS language ("SetValue は、読み取り専用の値に
+        // 対して呼び出せません (0x80131509)" on a Japanese Windows), and its HRESULT is .NET's generic
+        // InvalidOperationException, so the route classifier never recognised it on this road and the
+        // keyboard rung's read-only ground (#722) was never raised: a read-only WPF TextBox answered a
+        // marked `ok:true` with nothing written (win2, AB arm C-4). `IsReadOnly` was true on exactly
+        // the three read-only fields measured and false on every writable one (win2 `ca06123b`).
+        // The message is this writer's own, in the words `uia-route-failure.ts` matches whole. A
+        // property that cannot be read decides nothing: SetValue runs as before.
+        if vp.CurrentIsReadOnly().map(|b| b == true).unwrap_or(false) {
+            return Ok(ActionResult {
+                ok: false,
+                element: None,
+                error: Some("Value is read-only".into()),
+                code: Some("ElementReadOnly".into()),
+            });
+        }
+
         // Internal #182 — a provider can accept SetValue and change nothing: a WinForms
         // NumericUpDown, read by this client as a ComboBox, answered S_OK while its value stayed
         // put (win2, 3 of 3). So the value is read before and after, on this element and this

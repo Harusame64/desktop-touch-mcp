@@ -74,6 +74,9 @@ const WHOLE: ReadonlyMap<string, UiaRouteFailure> = new Map([
   ["InvokePattern not supported by this element", "pattern_not_supported"],
   ["ValuePattern not supported by this element", "pattern_not_supported"],
   ["Element is disabled", "element_disabled"],
+  // Internal #188 — the native writer reads `ValuePattern.IsReadOnly` and says so in these words
+  // before calling SetValue, whose own error is localized and cannot be matched.
+  ["Value is read-only", "element_read_only"],
 ]);
 
 /** .NET's text inside PowerShell's method-invocation wrapper — the wrapper names the method. */
