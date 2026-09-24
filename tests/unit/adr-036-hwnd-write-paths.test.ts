@@ -528,3 +528,64 @@ describe("ADR-036 I-4 — background delivery is addressed to the named window",
     expect(mockPostEnter.mock.calls[0]![0]).toBe(LIVE);
   });
 });
+
+// ─── A modifier cannot be posted ─────────────────────────────────────────────
+// MEASURED on the v2.0.0 release build (Notepad, background): `press ctrl+a` typed the letter "a"
+// into the text and answered ok:true. A posted WM_KEYDOWN for Ctrl does not hold Ctrl.
+
+describe("a key combo with a modifier is not sent in the background", () => {
+  it("keyboard:press ctrl+a with method:'background' is refused, and nothing is posted", async () => {
+    const r = parse(await keyboardPressHandler({
+      keys: "ctrl+a", hwnd: String(LIVE), method: "background", trackFocus: false, settleMs: 0,
+    } as never));
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r)).toContain("BackgroundModifierComboUnsupported");
+    expect(mockPostCombo).not.toHaveBeenCalled();
+    expect(mockPostChars).not.toHaveBeenCalled();
+    expect(mockPostEnter).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: a key without a modifier is still posted in the background", async () => {
+    const r = parse(await keyboardPressHandler({
+      keys: "escape", hwnd: String(LIVE), method: "background", trackFocus: false, settleMs: 0,
+    } as never));
+    expect(r.ok).toBe(true);
+    expect(mockPostCombo).toHaveBeenCalledOnce();
+  });
+
+  it("chosen automatically (DTM_BG_AUTO), a modifier combo takes the foreground road instead of failing", async () => {
+    const { isBgAutoEnabled } = await import("../../src/engine/bg-input.js");
+    vi.mocked(isBgAutoEnabled).mockReturnValue(true);
+    try {
+      const r = parse(await keyboardPressHandler({
+        keys: "ctrl+a", hwnd: String(LIVE), trackFocus: false, settleMs: 0,
+      } as never));
+      expect(JSON.stringify(r)).not.toContain("BackgroundModifierComboUnsupported");
+      expect(mockPostCombo).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(isBgAutoEnabled).mockReturnValue(false);
+    }
+  });
+
+  it("keyboard:type with replaceAll and method:'background' is refused before a character is sent", async () => {
+    const r = parse(await keyboardTypeHandler({ ...TYPE_BASE, replaceAll: true, hwnd: String(LIVE), method: "background" } as never));
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r)).toContain("BackgroundModifierComboUnsupported");
+    expect(mockPostCombo).not.toHaveBeenCalled();
+    expect(mockPostChars).not.toHaveBeenCalled();
+  });
+
+  it("keyboard:type with replaceAll on the flash road's WM_CHAR channel is refused before a character is sent", async () => {
+    const r = parse(await keyboardTypeHandler({
+      ...TYPE_BASE, replaceAll: true, hwnd: String(LIVE), windowTitle: SHARED_TITLE, method: "foreground_flash",
+    } as never));
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r)).toContain("BackgroundModifierComboUnsupported");
+    expect(mockPostChars).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: keyboard:type without replaceAll in the background still posts the characters", async () => {
+    await keyboardTypeHandler({ ...TYPE_BASE, hwnd: String(LIVE), method: "background" } as never);
+    expect(mockPostChars).toHaveBeenCalled();
+  });
+});

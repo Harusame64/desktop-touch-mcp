@@ -923,6 +923,14 @@ const SUGGESTS: Record<string, string[]> = {
     "If the target supports background injection (WM_KEYDOWN-class hosts), keyboard({action:'press', keys, method:'background', windowTitle}) also works.",
     "If you actually wanted to paste text (not chord keys), switch to keyboard({action:'type', text, method:'foreground_flash', windowTitle}) or terminal({action:'send', input, method:'foreground_flash'}).",
   ],
+  // A posted WM_KEYDOWN for Ctrl/Shift/Alt does not press the modifier: the receiver's key state
+  // stays up, so it types the main key. Measured on the v2.0.0 release build: `ctrl+a` in the
+  // background put an "a" into Notepad under ok:true. Nothing is sent on this refusal.
+  BackgroundModifierComboUnsupported: [
+    "A key combination with Ctrl, Shift or Alt cannot be sent in the background: the app does not see the modifier held and would type the plain key instead. Nothing was sent.",
+    "Use method:'foreground' (or omit method) for this combination, and for type with replaceAll:true, which selects with Ctrl+A first.",
+    "Keys without a modifier (enter, tab, escape, arrows, page keys) still work in the background.",
+  ],
   BackgroundNotApplicableToSequence: [
     "Sequence does not support the background path — Alt-menu mnemonics require real SendInput which only the foreground path provides.",
     "Use foreground (default) and target via windowTitle/hwnd, or split into separate keyboard(action:'press') calls if BG delivery is essential.",

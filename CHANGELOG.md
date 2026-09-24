@@ -29,6 +29,7 @@ matches on the values below, update it.
 | `browser_form` on a password field (or any field the page masks) | The value, in clear text | `value: null`, `valueWithheld: "masked"`, and `hasValue` | Nothing replaces the value. `browser_fill` no longer echoes it either |
 | `desktop_act` with `action: "select"` | Pressed the target, exactly like `click`, `ok: true` | `action_not_offered` on every target, nothing done | Use `action: "click"` or `"invoke"`, and click the list item you want |
 | `desktop_act` `type` / `setValue` on a button, check box, radio button, hyperlink or menu item | `ok: true`; the text went out as keystrokes to whatever held the focus | `action_not_offered`, nothing typed | Act on the text field itself |
+| `keyboard` `press` of a combo with Ctrl, Shift or Alt, or `keyboard` `type` with `replaceAll: true`, with `method: "background"` | `ok: true`; the modifier was not held, so the app typed the plain key (`ctrl+a` put an "a" into the text) | `BackgroundModifierComboUnsupported`, nothing sent | Use `method: "foreground"` or leave `method` out: `"auto"` now sends these through the foreground, including to terminal windows |
 
 **What a session pays up front grew by about 22%.** The server instructions plus the `tools/list`
 reply went from 124,834 to 152,311 characters, mostly because the instructions and the
@@ -58,6 +59,7 @@ above, because an agent may have relied on them.
 | `type` into a read-only WPF text field | Nothing was written | `keyboard_target_unsafe` (`read_only`) |
 | `type` into a WinForms NumericUpDown | The value did not change (measured on a pre-release build; 1.16.0 could not reach this control on the test window, see **New**) | `value_not_applied` |
 | `type` into a WPF text field disabled after discover, while another field held the focus | The text went into the focused field (measured on a pre-release build; not measured on 1.16.0) | `keyboard_target_unsafe` (`disabled`) |
+| `keyboard` `press` `ctrl+a` in the background (Notepad) | No select-all; the letter "a" was typed into the text | `BackgroundModifierComboUnsupported` (see the table above) |
 
 The password value in `browser_form` also belongs here and is listed under **Breaking changes**.
 

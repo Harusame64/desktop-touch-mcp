@@ -24,6 +24,7 @@ import {
   canInjectViaPostMessage,
   postCharsToHwnd,
   postKeyComboToHwnd,
+  comboHasModifier,
   postEnterToHwnd,
   isBgAutoEnabled,
   injectViaForegroundFlash,
@@ -1032,7 +1033,9 @@ const methodParam = z.enum(["auto", "background", "foreground", "foreground_flas
   "'auto' uses background (PostMessage) when the target window is a known terminal class " +
   "(Windows Terminal / cmd / PowerShell) OR DTM_BG_AUTO=1 is set; else foreground. Terminal " +
   "auto-detect is HWND-targeted so user-side focus changes mid-stream cannot divert keystrokes. " +
-  "'background' forces PostMessage-only (no focus change, fails on Chromium/IME). " +
+  "'background' forces PostMessage-only (no focus change, fails on Chromium/IME). A key combo with ctrl, shift or alt, " +
+  "and type's replaceAll (which selects with Ctrl+A), cannot be posted — the app would see the plain key and type it — so " +
+  "'background' refuses them with BackgroundModifierComboUnsupported and nothing is sent; 'auto' sends them through the foreground. " +
   "'foreground' forces the current behavior (SetForegroundWindow + keystrokes). " +
   "'foreground_flash' (ADR-013 Option E) is an explicit opt-in 妥協 BG path for Windows " +
   "Terminal: temporarily steals foreground (~50-80ms), pastes via clipboard, sends Ctrl+V, " +
@@ -1702,9 +1705,10 @@ export const keyboardTypeHandler = async ({
         // Opus Round 1 P2-6 反映: replaceAll 失敗 → warning 集約。
         const ffWarnings = [...warnings];
         logDispatchSink({ sink: "wm_char", tool: "keyboard:type", targetHwnd: target.hwnd, payloadChars: effectiveText.length });
+        // A posted Ctrl+A is not a select-all (see `comboHasModifier`): it typed "a" and the text
+        // was appended. Refused before anything is sent rather than warned about after.
         if (replaceAll) {
-          const okSelectAll = postKeyComboToHwnd(target.hwnd, "ctrl+a");
-          if (!okSelectAll) ffWarnings.push("ReplaceAllFailed");
+          return failWith(new Error("BackgroundModifierComboUnsupported"), "keyboard:type", { replaceAll: true, channel: "wm_char", windowTitle: effectiveWindowTitle });
         }
         const r = postCharsToHwnd(target.hwnd, effectiveText);
         // ADR-036 arm A — `r.target` is the handle the characters went to, and it was discarded here
@@ -1837,7 +1841,14 @@ export const keyboardTypeHandler = async ({
     // terminal class) → try BG first. See resolveEffectiveInputMethod.
     const effectiveMethod = resolveEffectiveInputMethod(inputMethod, effectiveWindowTitle, explicitHwnd);
 
-    if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && effectiveWindowTitle) {
+    // `replaceAll` selects with Ctrl+A first, and a posted Ctrl is not pressed: the background road
+    // typed "a" and then appended the text (see `comboHasModifier`). Asked for explicitly, the
+    // background road refuses before anything is sent; chosen automatically, it is not taken.
+    if (replaceAll && effectiveMethod === "background") {
+      return failWith(new Error("BackgroundModifierComboUnsupported"), "keyboard:type", { replaceAll: true, windowTitle: effectiveWindowTitle });
+    }
+    const bgReplaceAllSkip = replaceAll && effectiveMethod === "background-auto";
+    if ((effectiveMethod === "background" || (effectiveMethod === "background-auto" && !bgReplaceAllSkip)) && effectiveWindowTitle) {
       const wins = enumWindowsInZOrder();
       // ADR-036 I-4 — the background channel posts WM_CHAR to a handle, and
       // this is where that handle is chosen. Picking the first same-titled
@@ -1983,7 +1994,7 @@ export const keyboardTypeHandler = async ({
           // delta comparison when TP slicing yields "unverifiable".
           const valueBaseline = valueBaselineRaw;
 
-          if (replaceAll) postKeyComboToHwnd(target.hwnd, "ctrl+a");
+          // `replaceAll` never reaches this road (refused or routed to the foreground at its entry).
 
           // Stage 4 pre-frame: capture AFTER the optional Ctrl+A replace-all
           // so the SSIM residual measures **only** the typed-text repaint, not
@@ -2695,7 +2706,16 @@ export const keyboardPressHandler = async ({
 
     // ── Background input path ──────────────────────────────────────────────
     const effectiveMethod = resolveEffectiveInputMethod(inputMethod, effectiveWindowTitle, explicitHwnd);
-    if ((effectiveMethod === "background" || effectiveMethod === "background-auto") && effectiveWindowTitle) {
+    // A combo with ctrl / shift / alt cannot be posted: the receiver's key state stays up, so it
+    // typed the main key as a character — `ctrl+a` put an "a" into Notepad under `ok:true` (see
+    // `comboHasModifier`). Asked for explicitly, the background road refuses before anything is
+    // sent; chosen automatically (DTM_BG_AUTO, or a terminal-class window), it is not taken and the
+    // foreground road below sends the combo.
+    if (effectiveMethod === "background" && comboHasModifier(keys)) {
+      return failWith(new Error("BackgroundModifierComboUnsupported"), "keyboard:press", { keys, windowTitle: effectiveWindowTitle });
+    }
+    const bgModifierSkip = effectiveMethod === "background-auto" && comboHasModifier(keys);
+    if ((effectiveMethod === "background" || (effectiveMethod === "background-auto" && !bgModifierSkip)) && effectiveWindowTitle) {
       const wins = enumWindowsInZOrder();
       // ADR-036 I-4 — same handle pin as keyboard:type's background path.
       const bgPressMatches = explicitHwnd !== undefined
