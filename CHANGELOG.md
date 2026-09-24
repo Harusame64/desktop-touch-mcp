@@ -96,8 +96,9 @@ The password value in `browser_form` also belongs here and is listed under **Bre
 - **`desktop_act` `type` into the search field of the Windows Settings app is refused with
   `modal_blocking`.** The `blockingElement` it names is the Settings window's own title bar, not a
   dialog, and nothing is typed. This is an over-refusal: the field is writable and nothing is in
-  the way. 1.16.0 refuses it the same way. Until it is fixed: click the field with `mouse_click`,
-  then `keyboard` `type` with the Settings window's `windowTitle` — that writes.
+  the way. 1.16.0 refuses it the same way. Until it is fixed: click the field with `mouse_click`
+  given only `x` and `y`, then `keyboard` `type` with the Settings window's `windowTitle` — that
+  writes.
 - **`desktop_discover` by title is still slow while another app is hung.** Measured with a
   different app's window hung: about 16 s and no entities, in both 1.16.0 and 2.0.0. Discover by
   `hwnd` instead (8.7 s with entities, above).
@@ -105,6 +106,20 @@ The password value in `browser_form` also belongs here and is listed under **Bre
   up by the name discover saw, so a `Play` button that has turned into `Pause` answers
   `entity_not_found`; discover again and act on the new lease. A label that changes continuously
   (a countdown such as `Resend code (59s)`) can be refused on every retry.
+- **`desktop_discover` does not reach some common windows.** Calculator's digit buttons, File
+  Explorer's items and the content of the Settings app are not listed as entities you can act on.
+  `click_element`, or `mouse_click` followed by `keyboard`, reaches them.
+- **A `mouse_click` that names its window is refused everywhere under a full-screen overlay.** Some
+  monitor utilities draw a transparent full-screen window over the desktop (for example Dell's
+  display manager). While one is present, `mouse_click` with `windowTitle` answers
+  `AutoGuardBlocked` at every point. A `mouse_click` given only `x` and `y`, or `desktop_act`,
+  still presses.
+- **`desktop_act` `type` replaces the field's text when UI Automation writes it.** A reply with
+  `executor: "uia"` means the field's whole value was set to your text, the same as `setValue`, and
+  the write can move the focus to that field (in a browser, its window can come to the front). A
+  reply with `executor: "keyboard"` means the text went in at the caret instead. UI Automation has no
+  way to insert text, so this is unchanged from 1.16.0; to add to existing text, include it in what
+  you pass, or click the field and use `keyboard` `type`.
 - **Some controls are not listed by `desktop_discover`, in either version.** Disabled controls are
   not listed, so a click on one cannot be requested. The buttons of a Tk main window are not listed
   while a `grab_set` dialog is open over it.
