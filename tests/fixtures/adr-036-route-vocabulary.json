@@ -49,6 +49,7 @@
     "cursor_placement_blocked",
     "entity_not_found",
     "keyboard_target_unsafe",
+    "value_not_applied",
     "window_excluded"
   ],
   "why": [
@@ -96,6 +97,7 @@
     "lease_generation_mismatch",
     "modal_blocking",
     "origin_window_not_visible",
+    "value_not_applied",
     "window_excluded"
   ],
   "landingWhy": [

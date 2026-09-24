@@ -180,6 +180,33 @@ export class TargetGoneError extends Error implements CallerFacingRefusal {
 }
 
 /**
+ * Backend code for "SetValue answered success and the element's value did not move" (the native
+ * client's `set_value_impl`, internal #182).
+ */
+export const VALUE_NOT_APPLIED = "ValueNotApplied";
+
+/**
+ * The value road wrote, the provider said yes, and nothing changed.
+ *
+ * MEASURED 2026-09-24 (win2, the AB test's arm B-7, internal `7055e3dc` / `d58b673d`, 3 of 3): `type`
+ * on a WinForms NumericUpDown, which the native client reads as a ComboBox with a ValuePattern,
+ * answered `ok:true` from `uia_set_value` while the control's text and value stayed at 0 and no event
+ * fired. The specification's H1(i) — a success reported for an act that did not happen.
+ *
+ * A refusal, not a rung: the keyboard rung would post into the control's inner edit at its caret, and
+ * win2 measured that landing as `42420` for `4242` — a different wrong value, under a marked success.
+ * Nothing was written, so re-discovering and choosing another control is the recovery.
+ */
+export class ValueNotAppliedError extends Error implements CallerFacingRefusal {
+  readonly callerDetail: string;
+  constructor(message: string, options?: ErrorOptions, callerDetail?: string) {
+    super(message, options);
+    this.name = "ValueNotAppliedError";
+    this.callerDetail = callerDetail ?? "";
+  }
+}
+
+/**
  * ADR-036 — the handle now belongs to somebody else.
  *
  * The specification's word for this is **invalidation**, and it is deliberately not an ordinary

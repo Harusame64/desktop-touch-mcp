@@ -670,6 +670,27 @@ describe("desktopActRawHandler — executor_failed if_unexpected attach (#327 it
     }
   });
 
+  // internal #182 — the value road wrote and nothing changed. The handler's branch, pinned as the
+  // keyboard rung's is above: a dropped branch would publish `executor_failed`'s foreground advice.
+  it("publishes value_not_applied under its own cause, with no foreground type in the advice", async () => {
+    const detail = "UI Automation accepted the value for \"GOLF\", but the control's value did not change — nothing was written.";
+    vi.spyOn(getDesktopFacade(), "touch").mockResolvedValue({ ok: false, reason: "value_not_applied", diff: [], detail });
+    const parsed = parseHandlerResult((await desktopActRawHandler({ lease: fakeLease, action: "type", text: "4242" })).content);
+
+    expect(parsed["ok"]).toBe(false);
+    expect(parsed["reason"]).toBe("value_not_applied");
+    const ifUnexpected = parsed["if_unexpected"] as { most_likely_cause?: unknown; try_next?: unknown } | undefined;
+    expect(ifUnexpected?.most_likely_cause).toBe("ValueNotApplied");
+    expect(JSON.stringify(parsed)).toContain("nothing was written");
+    const advice = (ifUnexpected?.try_next as Array<{ action?: unknown }> | undefined) ?? [];
+    expect(advice.length).toBeGreaterThan(0);
+    for (const step of advice) {
+      const line = String(step.action);
+      if (!/method:\s*'foreground'|keyboard\(\{/.test(line)) continue;
+      expect(line).toMatch(/(?:do not|never|cannot)[^.]*?(?:foreground|keyboard\(\{)/i);
+    }
+  });
+
   it("carries the landing marker on a success the keyboard rung could not confirm", async () => {
     const landing = { confirmed: false as const, why: "receiver_is_window" as const, referenceFrom: "entity" as const };
     vi.spyOn(getDesktopFacade(), "touch").mockResolvedValue({ ok: true, executor: "keyboard", diff: [], next: "none", landing });

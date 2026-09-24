@@ -42,7 +42,9 @@ import {
   AimedPointOutsideWindowError,
   AimedRouteFailedError,
   TargetGoneError,
+  ValueNotAppliedError,
   AIM_WINDOW_GONE,
+  VALUE_NOT_APPLIED,
 } from "../engine/aim.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
 import type { AdvertisedExecutorKind } from "../capabilities/registry.js";
@@ -1993,6 +1995,19 @@ export function createDesktopExecutor(
             probeRefusal("uia_set_value", "window_excluded", aimHwnd, entity, { addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
             throw uiaErr;
           }
+          // Internal #182 — the provider took the write and its value did not move. Not a rung
+          // either: the keyboard rung would post into the control's inner edit at its caret, which
+          // win2 measured writing `42420` for `4242` (`ValueNotAppliedError` says why). Refused here,
+          // before the rung, with nothing written.
+          if (uiaErr instanceof ValueNotAppliedError) {
+            probeRefusal("uia_set_value", "value_not_applied", aimHwnd, entity, { addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
+            throw new ValueNotAppliedError(
+              `UIA accepted the value for "${entity.label ?? entity.entityId}" and its value did not change. Not typing it another way.`,
+              { cause: uiaErr },
+              `UI Automation accepted the value for "${quotedLabel(entity)}", but the control's value did not change — ` +
+              `nothing was written. This control does not take a value this way; re-run desktop_discover and act on the field that holds the text.`,
+            );
+          }
           // A dead aim is NOT short-circuited here, unlike in the click path. That rung addresses
           // the same handle (`keyboardTypeBg` looks the window up by hwnd and throws when the
           // enumeration does not hold it), so it cannot write into a different window — and a
@@ -2481,6 +2496,9 @@ function getSharedRealDeps(): ExecutorDeps {
       const { setElementValue } = await import("../engine/uia-bridge.js");
       const r = await setElementValue(windowTitle, value, name, automationId, hwnd !== undefined ? { hwnd } : undefined);
       if (!r.ok && r.code === AIM_WINDOW_GONE) throw new AimedWindowGoneError(hwnd, r.error);
+      // Internal #182 — the provider took the write and the value did not move. Typed here, where the
+      // backend's code is read, so the ladder can refuse it before the keyboard rung.
+      if (!r.ok && r.code === VALUE_NOT_APPLIED) throw new ValueNotAppliedError(r.error ?? "UIA SetValue changed nothing");
       // Which client answered, carried on the error as `uiaClick` carries it: the type road's item 16
       // believes a "not found" only from the native client, about an entity the native client read.
       if (!r.ok) throw Object.assign(new Error(r.error ?? "UIA setElementValue failed"), { uiaVia: r.via });

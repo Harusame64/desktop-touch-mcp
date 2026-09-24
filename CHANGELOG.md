@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **A `type` / `setValue` that UI Automation accepts but that changes nothing is refused instead of reported done.**
+  On a WinForms NumericUpDown, `desktop_act` with `type` answered `ok:true` while the control's value
+  stayed where it was: the native UI Automation client reads it as a combo box whose value accepts a
+  write and ignores it. The native write now reads the value before and after. When it did not move
+  and differs from what was written, the act answers `ok:false` with `value_not_applied`, and nothing
+  else is tried: typing into the same control lands at its caret (measured: `42420` for `4242`). A
+  value that is reformatted on the way in (`04343` → `4343`) counts as written. Password fields, and
+  values that cannot be read before and after, answer as before.
+
 - **Two UI Automation reads of a hung window no longer wait twice.** `getElementBounds` (behind
   `wait_until` element conditions and `scope_element`) and `getUiElements` (behind `desktop_discover`'s
   UIA lane, `get_ui_elements`, screenshots, narration and workspace reads) retried a timed-out native

@@ -314,6 +314,22 @@ export class ActionNotOfferedError extends HandlerError {
 }
 
 /**
+ * internal #182 — the value road wrote, the provider answered success, and the control's value did
+ * not move. Nothing was written.
+ *
+ * Separate from `ExecutorFailed` for the reason `ActionNotOffered` is: that reason's advice is a
+ * foreground type into the same control, and the one measured control that answers this way
+ * (a WinForms NumericUpDown) took such a type at its caret and ended up with a different wrong value.
+ * `name` is `"ValueNotApplied"`, matching the SUGGESTS key.
+ */
+export class ValueNotAppliedRefusalError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ValueNotApplied";
+  }
+}
+
+/**
  * ADR-031 — a screen rectangle the current capture backend cannot read.
  *
  * Which rectangle counts as capturable is decided by the backend the process

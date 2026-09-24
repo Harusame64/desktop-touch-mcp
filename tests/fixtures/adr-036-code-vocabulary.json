@@ -101,6 +101,7 @@
     "SemanticMemoryKUpperBoundExceeded",
     "Unknown",
     "UnknownScheme",
+    "ValueNotApplied",
     "WindowExcluded",
     "WorkingMemoryNUpperBoundExceeded"
   ],
@@ -180,6 +181,7 @@
     "ProceduralMemoryKUpperBoundExceeded",
     "SemanticMemoryKUpperBoundExceeded",
     "Unknown",
+    "ValueNotApplied",
     "WindowExcluded",
     "WorkingMemoryNUpperBoundExceeded"
   ],

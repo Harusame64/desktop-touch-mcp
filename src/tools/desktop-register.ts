@@ -53,6 +53,7 @@ import {
   AimIdentityChangedError,
   AimRouteFailedError,
   ActionNotOfferedError,
+  ValueNotAppliedRefusalError,
   WindowExcludedRefusalError,
   AimBlockedByExcludedRefusalError,
   EntityNotFoundRefusalError,
@@ -1328,6 +1329,21 @@ export const desktopActRawHandler = async (
     };
   }
 
+  // internal #182 — the value road wrote and nothing changed. Its own envelope, because
+  // `executor_failed`'s advice is a foreground type into the same control.
+  if (!result.ok && result.reason === "value_not_applied") {
+    const failure = toFailureEnvelope(
+      Err(new ValueNotAppliedRefusalError(
+        "ValueNotApplied: UI Automation accepted the value, but the control's value did not change — nothing was written. " +
+        "if_unexpected.detail names the control"
+      )),
+      { optIn: false, detail: result.detail },
+    );
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
+    };
+  }
+
   // A security refusal, not a failed route. `tool-exclusion.ts` has claimed since it was written
   // that this error is wired into `_errors.ts`; it was not, so the one refusal that must never
   // suggest a coordinate press was the loudest about it.
@@ -1897,6 +1913,7 @@ export function registerDesktopTools(server: McpServer): void {
       "  keyboard_target_unsafe → the background write would not have reached the field this act named (the focus is on a different control or in a different window, the receiving control does not take typed text, or the field — or its window — is disabled); nothing was typed. if_unexpected.detail names which. For disabled, answer or wait out whatever disabled it, then re-call desktop_discover — it does not list a disabled field, so missing there means still disabled; clicking it does not help. For read_only on the field you named, that field does not take text — typing again will not change it; name the field that does. Otherwise put the focus on the field you named, then type again — if_unexpected.detail names the way back for the road this act took: on a window named by title, desktop_act(action='click') on the same entity does it; on a window named by handle no route here focuses a text field yet, so re-call desktop_discover by the window's title and click it from there (a common dialog's title resolves to a handle too, so that road does not open there). For other_window, V1 focus_window on the field's window first — it comes forward with the focus it last had, and a window over the field makes a click answer aim_occluded — do NOT type through the foreground instead;",
       "  aim_blocked_by_excluded_window → a window this server may not act through is over the point, so nothing was done; the window you named is NOT the excluded one and is still actionable. Use V1 click_element, which does not use coordinates, or retry once the point is clear — do NOT retry by coordinate, and note that nothing in the response describes the window in the way;",
       "  action_not_offered → the target does not offer this action and NOTHING WAS DONE — no road was taken, so it is not a failed executor. Ask for what you mean: action='click' / 'invoke' presses it; the entity's affordances say which actions it offers. No provider advertises 'select', so a select on any target is this refusal. A type or setValue on a control UI Automation reports as a button, check box, radio button, hyperlink or menu item is this refusal too: none of them takes text, and nothing was typed;",
+      "  value_not_applied → a type or setValue went through UI Automation, the control said yes, and its value did not change — nothing was written. Do not retry it or type into the same control another way (a keystroke lands at its caret); re-call desktop_discover and act on the field that holds the text;",
       "  window_excluded → this window is excluded from every tool surface of this server (the key locker's own windows are); nothing was clicked and no route here can click it. Act on another window;",
       "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",
       "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead;",

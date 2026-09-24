@@ -18,6 +18,7 @@
     "lease_generation_mismatch",
     "modal_blocking",
     "origin_window_not_visible",
+    "value_not_applied",
     "window_excluded"
   ],
   "producedNames": [
@@ -40,6 +41,7 @@
     "ProceduralMemoryKUpperBoundExceeded",
     "SemanticMemoryKUpperBoundExceeded",
     "Unknown",
+    "ValueNotApplied",
     "WindowExcluded",
     "WorkingMemoryNUpperBoundExceeded"
   ],
@@ -71,6 +73,7 @@
     "modal_blocking",
     "origin_window_not_visible",
     "unknown",
+    "value_not_applied",
     "window_excluded"
   ],
   "toolCatalogue": [
@@ -93,6 +96,7 @@
     "modal_blocking",
     "origin_window_not_visible",
     "unknown",
+    "value_not_applied",
     "window_excluded"
   ],
   "withoutAdvice": [

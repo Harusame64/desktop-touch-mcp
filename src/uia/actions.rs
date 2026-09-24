@@ -260,14 +260,46 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
             }
         };
 
+        // Internal #182 — a provider can accept SetValue and change nothing: a WinForms
+        // NumericUpDown, read by this client as a ComboBox, answered S_OK while its value stayed
+        // put (win2, 3 of 3). So the value is read before and after, on this element and this
+        // pattern, and the write is believed not to have taken only when the value did not move
+        // AND differs from what was written. Not an equality test: a field that reformats what it
+        // is given ("04343" → "4343") moved, and was written. A password field is not read (UIA
+        // does not hand its value back), and a value that cannot be read on either side decides
+        // nothing — both answer as they did before this check.
+        let is_password = elem.CurrentIsPassword().map(|b| b == true).unwrap_or(true);
+        let before = if is_password {
+            None
+        } else {
+            vp.CurrentValue().ok().map(|b| b.to_string())
+        };
         let bstr = windows::core::BSTR::from(&*opts.value);
         match vp.SetValue(&bstr) {
-            Ok(()) => Ok(ActionResult {
-                ok: true,
-                element: None,
-                error: None,
-                code: None,
-            }),
+            Ok(()) => {
+                let after = before
+                    .as_ref()
+                    .and_then(|_| vp.CurrentValue().ok().map(|b| b.to_string()));
+                if let (Some(before), Some(after)) = (before, after) {
+                    if after == before && after != opts.value {
+                        return Ok(ActionResult {
+                            ok: false,
+                            element: None,
+                            error: Some(
+                                "SetValue returned success, but the element's value did not change"
+                                    .into(),
+                            ),
+                            code: Some("ValueNotApplied".into()),
+                        });
+                    }
+                }
+                Ok(ActionResult {
+                    ok: true,
+                    element: None,
+                    error: None,
+                    code: None,
+                })
+            }
             Err(e) => Ok(ActionResult {
                 ok: false,
                 element: None,

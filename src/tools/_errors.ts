@@ -597,6 +597,15 @@ const SUGGESTS: Record<string, string[]> = {
     "A type or setValue on a control UI Automation reports as a button, check box, radio button, hyperlink or menu item is this refusal too: none of them takes text, so nothing was typed — if you meant to press it, ask for click or invoke.",
     "desktop_discover never offers 'select' on any target, so asking for it is always this refusal — reach a list item, combo entry or tab by clicking it. NOTE: screenshot(detail='elements') and workspace_snapshot DO print action:'select' on list items; that is a different reader's word for the same click, and desktop_act does not take it.",
   ],
+  // internal #182. The value road wrote, UI Automation answered success, and the control's value
+  // did not move — so nothing was written, and the caller must not read the refusal as "try harder
+  // on the same control". Measured on a WinForms NumericUpDown: a keystroke fallback landed at the
+  // inner edit's caret and produced a different wrong value.
+  ValueNotApplied: [
+    "UI Automation accepted the value, but the control's value did not change — nothing was written. This is not a route that failed; the control took the call and ignored it.",
+    "Do NOT retry the same act, and do NOT fall back to keyboard / type into the same control: a keystroke lands at its caret and can leave a different wrong value (measured: '42420' for '4242').",
+    "Re-run desktop_discover and look for the field that actually holds the text — a spin box or combo box often exposes an inner edit that takes the value.",
+  ],
   WindowExcluded: [
     "This window is excluded from every tool surface of this server, by design: the key locker's own windows are excluded so a secret being typed cannot be read or driven by the same session. Nothing was done to it.",
     "Do NOT retry by coordinate. mouse_click / keyboard at the window's rectangle would reach it through a route that does not check the exclusion — which is the press the exclusion exists to prevent.",
