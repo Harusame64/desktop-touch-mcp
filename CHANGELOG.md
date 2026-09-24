@@ -105,6 +105,12 @@ The password value in `browser_form` also belongs here and is listed under **Bre
   up by the name discover saw, so a `Play` button that has turned into `Pause` answers
   `entity_not_found`; discover again and act on the new lease. A label that changes continuously
   (a countdown such as `Resend code (59s)`) can be refused on every retry.
+- **`desktop_act` `type` replaces the field's text when UI Automation writes it.** A reply with
+  `executor: "uia"` means the field's whole value was set to your text, the same as `setValue`, and
+  the write can move the focus to that field (in a browser, its window can come to the front). A
+  reply with `executor: "keyboard"` means the text went in at the caret instead. UI Automation has no
+  way to insert text, so this is unchanged from 1.16.0; to add to existing text, include it in what
+  you pass, or click the field and use `keyboard` `type`.
 - **Some controls are not listed by `desktop_discover`, in either version.** Disabled controls are
   not listed, so a click on one cannot be requested. The buttons of a Tk main window are not listed
   while a `grab_set` dialog is open over it.

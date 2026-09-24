@@ -827,7 +827,9 @@ export const desktopTouchSchema = {
     "NOTE: action='select' is REFUSED on every target (action_not_offered) — nothing here offers it and no road performs it; click the item instead. " +
     "type/setValue on a button, check box, radio button, hyperlink or menu item (as UI Automation reports it) is refused the same way. " +
     "Action to perform. 'auto' selects the best affordance from the entity. " +
-    "'setValue' (Phase 4: absorbs former set_element_value) sets a UIA ValuePattern value or fills a CDP controlled input — pass the new value via text."
+    "'setValue' (Phase 4: absorbs former set_element_value) sets a UIA ValuePattern value or fills a CDP controlled input — pass the new value via text. " +
+    "'type' written through UI Automation (response executor 'uia') REPLACES the field's whole value, exactly as 'setValue' does, and the write can move the focus to that field (a browser window can come forward); " +
+    "when the keyboard road writes it instead (executor 'keyboard'), the text is inserted at the caret."
   ),
   text:   z.string().optional().describe("Text to type or set (required when action='type' or action='setValue')."),
   returnCapture: z.enum(["on-change", "always", "never"]).optional().describe(
