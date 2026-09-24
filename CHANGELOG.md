@@ -1,29 +1,258 @@
 # Changelog
 
-## [Unreleased]
+## [2.0.0] - 2026-09-24 — An action that cannot be done is refused, not reported as done
+
+2.0 changes what `desktop_act` does when the screen no longer matches what `desktop_discover`
+saw. In 1.16.0 it guessed: it pressed the remembered coordinates, typed into whatever held the
+focus, or treated `select` as a click, and answered `ok: true` whether or not the thing you asked
+for happened. In 2.0 it checks first. When the window has moved on, the control is gone, a dialog
+is in the way, or the target does not take that action, the act is refused under a named `reason`
+with next steps, and nothing is pressed or typed. Several replies also changed shape, which is why
+this is a major version. Read **Breaking changes** before upgrading if your agent branches on
+`reason`, on warnings, or on the fields of a reply.
+
+Staying on 1.16.0: pin `@harusame64/desktop-touch-mcp@1.16.0` in your MCP config. `npx` without a
+version always takes the latest release.
+
+### Breaking changes
+
+If your agent only reads `ok` and follows `try_next`, most of this needs nothing from you. If code
+matches on the values below, update it.
+
+| Situation | 1.16.0 answered | 2.0.0 answers | What to do |
+|---|---|---|---|
+| `desktop_act` with a lease taken before another `desktop_discover` of the same window | `reason: "unknown"`, `most_likely_cause: "Unknown"`, empty `try_next` | `reason: "entity_not_found"` (`EntityNotFound`) with three next steps. The other stale-lease cases now answer `lease_generation_mismatch` / `lease_digest_mismatch`. `unknown` now means only that the tool itself threw | Match the three names instead of `unknown`. Discover again and act on the fresh lease |
+| `desktop_act` click on a button renamed since discover (the old name is not part of the new one) | Pressed the renamed button by coordinate, `ok: true` | `entity_not_found`, nothing pressed | Discover again. This is the one case measured where 1.16.0 pressed the right control and 2.0.0 refuses. |
+| `post.focusedElement` on a call that names no window (`mouse_click` with only `x`/`y`, `keyboard` with `windowTitle: "@active"`, `clipboard`, …) | The focused field's content. On some windows it came back in `name`, not `value` | No `value` and no `name`. `hasValuePattern` says whether the element has a value; `hints.postValueWithheld: "call_named_no_window"` says why it is missing | Name the window (`windowTitle` or `hwnd`) on the call, or read the field with `desktop_state` |
+| `scroll` with `target: ""` | The tool ran and failed: `ToolError`, "All scroll strategies failed" | Refused by the MCP SDK before the tool runs: plain text `MCP error -32602: Input validation error: …`, with no `ok`, `code` or `suggest` | Pass a non-empty `target` |
+| `desktop_discover` on a window with no usable accessibility tree | `warnings` held `visual_attempted_empty`; `constraints.visual: "attempted_empty"` | `warnings` hold `visual_backend_cannot_recognise` and `visual_not_attempted`; `constraints.visual: "backend_cannot_recognise"` | The default build's visual lane recognises nothing, so waiting does not change this. OCR entities are still returned |
+| `browser_form` on a password field (or any field the page masks) | The value, in clear text | `value: null`, `valueWithheld: "masked"`, and `hasValue` | Nothing replaces the value. `browser_fill` no longer echoes it either |
+| `desktop_act` with `action: "select"` | Pressed the target, exactly like `click`, `ok: true` | `action_not_offered` on every target, nothing done | Use `action: "click"` or `"invoke"`, and click the list item you want |
+| `desktop_act` `type` / `setValue` on a button, check box, radio button, hyperlink or menu item | `ok: true`; the text went out as keystrokes to whatever held the focus | `action_not_offered`, nothing typed | Act on the text field itself |
+
+**What a session pays up front grew by about 22%.** The server instructions plus the `tools/list`
+reply went from 124,834 to 152,311 characters, mostly because the instructions and the
+`desktop_discover` / `desktop_act` descriptions now spell out each refusal and what to do about
+it. No tool was added or removed, and no argument was added, removed or made required. The one
+schema change is that `scroll`'s `target` must not be empty (the row above).
+
+One new refusal stops a write that should work: see **Known issues**.
+
+### Acts that used to report success and now refuse
+
+Each of these was measured side by side on the same test windows. In 1.16.0 the call answered
+`ok: true` while doing nothing, or while acting on something other than the target. In 2.0.0 it is
+refused and nothing is done. These are fixes, not counted as breaking for the version, but an agent
+that got `ok: true` from them before will now see a refusal. The first two also appear in the table
+above, because an agent may have relied on them.
+
+| What was asked | What happened in 1.16.0 (answered `ok: true`) | 2.0.0 answers |
+|---|---|---|
+| `select` on a button | The button was pressed | `action_not_offered` |
+| `type` on a button, while a text field held the focus | The text was typed into the focused text field | `action_not_offered` |
+| Click on a control removed after discover | The neighbouring control, now at that point, was pressed | `entity_not_found` |
+| Click on a button while an owned modal dialog was open over its window | The covered button was pressed: a UI Automation invoke goes through even though the window is disabled | `modal_blocking`, with `blockingElement: { role: "dialog", hwnd }` naming the dialog |
+| Click after the window was resized smaller, with another window behind it | The window behind was pressed | `aim_occluded` (the window now under the point is reported) |
+| Click on an OCR label that had been repainted since discover (a window with no accessibility tree) | The label painted there now was pressed | `entity_not_found` |
+| `type` into a field removed after discover, while another field held the focus | The text went into the focused field | `entity_not_found` |
+| `type` into a read-only WPF text field | Nothing was written | `keyboard_target_unsafe` (`read_only`) |
+| `type` into a WinForms NumericUpDown | The value did not change (measured on a pre-release build; 1.16.0 could not reach this control on the test window, see **New**) | `value_not_applied` |
+| `type` into a WPF text field disabled after discover, while another field held the focus | The text went into the focused field (measured on a pre-release build; not measured on 1.16.0) | `keyboard_target_unsafe` (`disabled`) |
+
+The password value in `browser_form` also belongs here and is listed under **Breaking changes**.
+
+### New
+
+- **Passing `hwnd` reaches the one you named when two windows share a title.** 1.16.0 refused such
+  a write with `ambiguous_target` even when `hwnd` was passed. Measured with two same-titled
+  windows: `keyboard` `type` with the second window's `hwnd` wrote into the second window, and the
+  first was unchanged. Details are under **All changes**.
+- **A window 1.16.0 could not act on at all.** On one WinForms test window, 1.16.0 listed three
+  entities with role `unknown` and refused every act there with `modal_blocking`. 2.0.0 lists its
+  thirteen controls with their roles and acts on them. This was measured on that one window only.
+- **Buttons inside an owned modal dialog.** A `desktop_discover` of the dialog returned no entities
+  in 1.16.0 (measured once); 2.0.0 lists its buttons and presses them.
+- **Discovering by window handle while another app is hung.** With a different app's window hung,
+  a `desktop_discover` by `hwnd` took 16.0 s and found nothing in 1.16.0, and 8.7 s with the
+  window's entities in 2.0.0. Discovering by title is unchanged (see **Known issues**).
+- **New refusal reasons for `desktop_act`**, each with its own next steps, and each meaning that
+  nothing was pressed or typed: `aim_window_gone`, `aim_identity_changed`,
+  `aim_point_outside_window`, `aim_occluded`, `aim_blocked_by_excluded_window`,
+  `aim_route_failed`, `keyboard_target_unsafe`, `window_excluded`, `action_not_offered` and
+  `value_not_applied`. The server instructions list each one with its recovery.
+- **New reply fields**: `response.freshness` and each entity's `status` / `observedAtMs` on
+  `desktop_discover`; `diffUnchecked`, `if_unexpected.detail` and `landing` on `desktop_act`;
+  `hasValuePattern` and `hints.postValueWithheld` in `post.focusedElement`;
+  `blockingElement.hwnd` on `modal_blocking`; `why` / `via` and `context.lastLook` on
+  `wait_until`; `engine.nativeUia` and `engine.nativeUiaEvidence` in `server_status`.
+- **New environment variables**: `DESKTOP_TOUCH_KEYBOARD_RUNG_UNCHECKED`,
+  `DESKTOP_TOUCH_DISABLE_NATIVE_UIA` and `DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES`.
+
+### Known issues
+
+- **`desktop_act` `type` into the search field of the Windows Settings app is refused with
+  `modal_blocking`.** The `blockingElement` it names is the Settings window's own title bar, not a
+  dialog, and nothing is typed. This is an over-refusal: the field is writable and nothing is in
+  the way. 1.16.0 refuses it the same way. Until it is fixed: click the field with `mouse_click`,
+  then `keyboard` `type` with the Settings window's `windowTitle` — that writes.
+- **`desktop_discover` by title is still slow while another app is hung.** Measured with a
+  different app's window hung: about 16 s and no entities, in both 1.16.0 and 2.0.0. Discover by
+  `hwnd` instead (8.7 s with entities, above).
+- **A control whose label changes between discover and act is refused.** The control is looked
+  up by the name discover saw, so a `Play` button that has turned into `Pause` answers
+  `entity_not_found`; discover again and act on the new lease. A label that changes continuously
+  (a countdown such as `Resend code (59s)`) can be refused on every retry.
+- **Some controls are not listed by `desktop_discover`, in either version.** Disabled controls are
+  not listed, so a click on one cannot be requested. The buttons of a Tk main window are not listed
+  while a `grab_set` dialog is open over it.
+
+### All changes
+
+- **A click aimed at a window now checks that it is still that window, and follows it when it moves (for a window discovered by `hwnd`).**
+  A `desktop_discover` returns coordinates, and `desktop_act` used to press them
+  without asking whether anything had changed in between. Three things can have
+  changed, and each of them produced a click that looked like it worked: the
+  window can have closed and left its number to another one, something can have
+  been drawn over the point, and the window can have moved with the point still
+  inside it — so the press landed on whatever had arrived there and came back
+  `ok: true`. The last one was measured on a window with five stacked buttons:
+  the lease named the title bar, the window moved 71 pixels up, and the button
+  that logged the press was one the lease had never mentioned.
+
+  Coordinates now travel with the position they were measured in, and a press
+  that would go somewhere else is refused rather than made. Three refusal
+  reasons carry that:
+
+  - `aim_identity_changed` — the handle names a different window now. Usually
+    another process took it; it can also be the same program putting a different
+    kind of window on the same number, which is why the window's class is
+    compared as well as the process. Nothing was done, and the recovery is the
+    same for all of them: discover again and act on what comes back.
+  - `aim_occluded` — Windows' own hit test says a press at the point would land
+    in another window drawn over it. Bring your window forward, or act through
+    `click_element`, which does not use coordinates. A dropdown or menu your own
+    window owns is *not* treated as being in the way, and neither is an overlay
+    that lets presses pass through: with two kinds of click-through overlay
+    measured, the press went through to the control underneath, as it did in
+    1.16.0.
+  - `aim_point_outside_window` — the coordinates can no longer be followed to the
+    window they were measured in. Among the reasons: it was minimised; it was
+    resized (the contents may have been laid out differently, so this is refused
+    even where the point still falls inside); it moved while it was being read;
+    the coordinates came from a stored visual snapshot whose moment cannot be
+    established; or they were captured in a window other than the one the call
+    named. A menu or dialog your window owns has an origin of its own and does
+    not move with its owner, so it is pressed while it is still what sits under
+    the point, and refused once something else is. When another window sits
+    under the point, that is reported first: a window shrunk so that the point
+    fell on the window behind it was measured to answer `aim_occluded`.
+
+  **A window that only moved is followed instead of refused** — the point is
+  carried by the same offset, so a press after a drag lands on the control you
+  discovered. That applies to presses made by coordinate on a window that
+  `desktop_discover` was given by `hwnd`, when the coordinates were measured in
+  the same read that measured the window. A window discovered by title records no
+  position to follow from, so its coordinates are not moved. A press that goes
+  through UI Automation finds the control itself and does not use the point. A
+  move large enough to take the point off the window is answered earlier, by the
+  existing viewport check.
+
+  If your window has not moved and nothing is on top of it, nothing about your
+  calls changes.
+
+- **`desktop_act` acts on the window `desktop_discover` read, and a closed window is no longer pressed blind.**
+  With two same-titled windows open, 1.16.0 could discover one and act on the other: the act went to
+  whichever came first in the window order. It now goes to the window discover read. A
+  `desktop_discover` with no arguments now leaves the act a real target, so it is made through UI
+  Automation instead of falling back to a mouse click at the entity's rectangle (on the machine where
+  this was measured, 9.2 s by mouse before, 1.3 s through UI Automation after). When the window has
+  closed, the act is refused — `aim_window_gone` when it was named by handle — instead of pressing
+  where the window used to be. When the UI Automation route to a window named by handle fails, the
+  act answers `aim_route_failed` instead of finishing as a coordinate press. An act on a window this
+  server may not act on (the key locker's own windows) answers `window_excluded`; in 1.16.0 it
+  answered `ok: false` while the fallback click still landed.
+
+- **A control UI Automation cannot find is no longer pressed at its old coordinates.**
+  When the control an act named has gone, the act answers `entity_not_found` and nothing is pressed;
+  in 1.16.0 the press went out at the remembered point, and whatever was there took it. Before a
+  coordinate press, the server also asks UI Automation what is at the point; when it names a
+  different control, the press is refused with `entity_not_found`. A window whose title contains the
+  control's name (a `Save` button in a `Save As` window) no longer answers for that control, in acts
+  or in reads. **`wait_until` with `element_appears` no longer succeeds on a name that only the
+  window's title carries** — if you used it to wait for a window, use `window_appears`.
+
+- **A stale lease now says which part stopped fitting.**
+  `desktop_act` takes the lease `desktop_discover` handed you, and it refuses when the lease no
+  longer describes what is on screen. Three of those refusals used to come back as
+  `reason: "unknown"` with no recovery hint at all — and a tool that crashed internally came back
+  the same way, so four different situations were one response with nothing to tell them apart.
+
+  They now arrive under their own names, each with what to do next:
+
+  - `entity_not_found` — the entity the lease names is no longer in the view. This is the common
+    case: measured with a lease taken before a second `desktop_discover` of the same window, 1.16.0
+    answered `unknown` and 2.0.0 answers `entity_not_found` with three next steps. Discover again and
+    act on the fresh entity; do not retry by coordinate.
+  - `lease_generation_mismatch` — the `targetGeneration` in the lease is not the one the view is
+    on any more, so the entity ids it carries describe a snapshot the server no longer answers
+    from. Discover again and act on what comes back, and pass the lease back exactly as discover
+    returned it.
+  - `lease_digest_mismatch` — the element is still there, but the evidence it was described by no
+    longer matches, so the lease does not vouch for what would be acted on. Discover again rather
+    than retrying by coordinate: whatever changed may be what moved it.
+
+  `reason: "unknown"` still exists, and for these refusals it no longer appears: it now means the
+  tool itself threw, and its advice says the act may have taken effect before the throw, so observe
+  the target before retrying. **If you branch on `reason`, this is a breaking change** — code that
+  recognised a stale lease by `reason === "unknown"` will stop matching, and should test for the
+  three names instead. Everything that matched a named reason is unaffected, and the
+  `most_likely_cause` in the envelope carries the same split (`EntityNotFound` /
+  `LeaseGenerationMismatch` / `LeaseDigestMismatch`).
+
+- **An action the target does not offer is refused instead of being substituted.**
+  `desktop_act` with `action: "select"` pressed the target, exactly as `click` would, and answered
+  `ok: true`. No target offers `select`, so it is now refused with `action_not_offered` everywhere,
+  and nothing is done: click the list item you want instead. `type` / `setValue` on a button is
+  refused the same way. On a WinForms button, `setValue` answered `ok: true` with executor
+  `keyboard`: no value was set, and the text went out as keystrokes to whatever held the focus. When
+  UI Automation reports the target as a button, check box, radio button, hyperlink or menu item, a
+  `type` or `setValue` is now refused with `action_not_offered` before anything is done. Text fields
+  UI Automation does not call `Edit` (a `Document`, a custom control) and targets read by OCR are
+  unchanged.
+
+- **A `type` / `setValue` that would land somewhere else is refused, and one that cannot be confirmed says so.**
+  When `desktop_act` falls back to sending keystrokes, 1.16.0 sent them to whatever held the focus
+  and answered `ok: true`. Now, when the keystrokes would reach a different
+  control or a different window, or the field is read-only or disabled, the act answers
+  `keyboard_target_unsafe` and nothing is typed; `if_unexpected.detail` names which of
+  `other_control`, `other_window`, `read_only` or `disabled` it was, and the way back. When the
+  server cannot confirm where the keystrokes went (a WPF text field has no window of its own, for
+  example), the act still answers `ok: true` and adds `landing: { confirmed: false, why }`. Set
+  `DESKTOP_TOUCH_KEYBOARD_RUNG_UNCHECKED=1` to go back to the old behaviour, or to a comma-separated
+  list of those four grounds to turn only those into marked successes.
 
 - **A `type` into a disabled field that has no window of its own is refused instead of typed next door.**
   On a WPF window, a text box disabled after `desktop_discover`, with the focus on another text box in
   the same (enabled) window: `desktop_act` with `type` answered `ok:true` and the text went into the
   other text box. UI Automation had said the field is disabled, but for a field without a window of its
-  own the keyboard fallback also required the whole window to be disabled before refusing. It now
-  refuses on UI Automation's answer alone for such a field, with `keyboard_target_unsafe` (`disabled`),
-  as it already did when Windows reports a field's own window disabled. The sentence says it is UI
-  Automation's report. A disabled button or label whose name contains the field's no longer answers for it:
-  the native write asks for the value pattern before it reads whether the element is enabled.
+  own the check also required the whole window to be disabled before refusing. It now refuses on UI
+  Automation's answer alone for such a field, with `keyboard_target_unsafe` (`disabled`), as it already
+  did when Windows reports a field's own window disabled. The detail says it is UI Automation's report.
+  A disabled button or label whose name contains the field's no longer answers for it.
 
 - **A `type` into a read-only text field is refused on a Windows that is not in English, too.**
   On a Japanese Windows, `desktop_act` with `type` on a read-only WPF text box answered `ok:true`
   (with its mark that the write was not confirmed) and wrote nothing. The native UI Automation client's
-  error for a read-only field comes back in the OS language, so it was never recognised as read-only
-  and the keyboard fallback's read-only refusal never ran on that client. The native write now asks a
-  text field (`Edit` or `Document`) whether it is read-only before writing, and answers in words the
-  server recognises in any language, so such a `type` is refused with `keyboard_target_unsafe`
-  (`read_only`) — as it already was on the PowerShell client and for WinForms text boxes. A read-only
-  input in a web page read through UI Automation is refused the same way. Other controls that say they
-  are read-only are still written to; when that write fails (measured on a read-only WPF combo box, which
-  answered `ok:true` with nothing selected), they are refused the same way. V1 `set_element_value` on a read-only text field still fails; its error now reads
-  `Value is read-only` instead of the OS-language text.
+  error for a read-only field comes back in the OS language, so it was never recognised as read-only.
+  The native write now asks a text field (`Edit` or `Document`) whether it is read-only before
+  writing, and answers in words the server recognises in any language, so such a `type` is refused
+  with `keyboard_target_unsafe` (`read_only`) — as it already was on the PowerShell client and for
+  WinForms text boxes. A read-only input in a web page read through UI Automation is refused the same
+  way. Other controls that say they are read-only are still written to; when that write fails
+  (measured on a read-only WPF combo box, which answered `ok:true` with nothing selected), they are
+  refused the same way. `set_element_value` (registered with `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1`)
+  on a read-only text field still fails; its error now reads `Value is read-only` instead of the
+  OS-language text.
 
 - **A `type` / `setValue` that UI Automation accepts but that changes nothing is refused instead of reported done.**
   On a WinForms NumericUpDown, `desktop_act` with `type` answered `ok:true` while the control's value
@@ -37,70 +266,34 @@
   different from before counts as written, in whatever form. Password fields, and values that cannot be
   read, answer as before, and the PowerShell client does not make the check. A control already holding
   what a write normalises to reads back unchanged and is refused, and a clear (`""`) on a control whose
-  value always reads empty is not caught. V1 `set_element_value` uses the same write, so on such a
+  value always reads empty is not caught. `set_element_value` uses the same write, so on such a
   control it now reports a failure instead of `ok:true` (with `DTM_SET_VALUE_CHAIN=1` it goes on to its
   other channels, as for any other failed write).
-
-- **Two UI Automation reads of a hung window no longer wait twice.** `getElementBounds` (behind
-  `wait_until` element conditions and `scope_element`) and `getUiElements` (behind `desktop_discover`'s
-  UIA lane, `get_ui_elements`, screenshots, narration and workspace reads) retried a timed-out native
-  read through PowerShell. Against a window that is itself hung, that retry never succeeded while it
-  stayed hung (0 of 12 measured on the first read), and it cost another budget. Now, when the native
-  read times out, the server asks every window the read could mean whether it responds (a `WM_NULL`
-  message, 200 ms), and skips the retry only when none does and Windows itself counts each as not
-  responding. The read then ends at the native timeout: `read_unfinished` for element conditions, and
-  the timeout error for element lists (`get_ui_elements` reports `UiaTimeout`). In every other case —
-  a window that responds, one that cannot be asked, or any failure that is not a timeout — the retry
-  runs as before. The other reads that fall back to PowerShell are unchanged.
-
-- **`type` / `setValue` on a button is refused instead of being sent as keystrokes.** On a WinForms
-  button, `desktop_act` with `setValue` answered `ok:true` with executor `keyboard`: no value was set,
-  and the text went out as keystrokes to whatever held the focus. When UI Automation reports the
-  target as a button, check box, radio button, hyperlink or menu item, a `type` or `setValue` is now
-  refused with `action_not_offered` before anything is done. Text fields UI Automation does not call
-  `Edit` (a `Document`, a custom control) and targets read by OCR are unchanged.
-
-- **The server instructions now say what a malformed call answers.** When the arguments do not match
-  a tool's schema, the MCP SDK refuses the call before the tool runs and answers
-  `MCP error -32602: Input validation error: …` as plain text, with no `ok`, `code` or `suggest`,
-  and `include` does not change it. Nothing said so, and it is the one answer a caller cannot get in
-  the JSON envelope. The Failure recovery list now names it: nothing was done; correct the arguments
-  and call again.
-
-- **An act on a window whose accessibility tree is missing or too sparse now says which changes its
-  `diff` did not look for.** On such a window, when discover saw no GPU-detected entities, a
-  successful act's post-action check takes a faster road (one OCR instead of two) that reuses
-  discover's entities as the "after" side, so it cannot see an entity vanish, move, appear or change
-  value. Measured on hardware: a press that removed the label it pressed answered `["focus_shifted"]` there and
-  `["entity_disappeared","focus_shifted"]` on the slower road. Those acts now carry
-  `diffUnchecked` listing the six kinds they did not check; `focus_shifted` is still checked. Whether
-  that road should look instead is not decided here.
-
-- **While the key locker is armed, a UI Automation call with an empty window title and no window handle is refused.**
-  An empty title matches every window, so such a call went to whichever window UI Automation listed
-  first, and that could be the locker's own window: the title check passed it, and the handle check
-  never ran without a handle. It is now refused before anything is read or written, with an error
-  that says to name the window or pass its handle. Writes and pinned reads that carry a window
-  handle, and every call while no locker is armed, are unchanged.
-
-- **One unresponsive app no longer stops the native UI Automation engine for the life of the server.**
-  At start-up the engine registered a desktop-wide focus-change handler before serving any request.
-  That registration waited on every app's UI Automation provider, with no time limit, so a single hung
-  app (measured: a hung Xbox tray window) kept it from ever returning. Every native UI Automation call
-  then waited out its 8 s timeout, as long as the server ran, before falling back to PowerShell. The
-  registration now runs on its own thread, and requests are served at once (measured on the same
-  machine: 0 of 7 answered before, 7 of 7 in 59–110 ms after). If it never returns, only focus-change
-  events are missing. `server_status` now shows `nativeUiaEvidence.tasksDone` beside `tasksSent`, and
-  `focusRegistration` (`pending` for long means focus events are off).
 
 - **A `setValue` on a read-only field is refused instead of being typed somewhere else.**
   On Notepad, `desktop_act` with `setValue` on the status bar's read-only field answered `ok:true`
   and typed the text into the document body. UI Automation had already said the field is read-only;
   the keyboard fallback could not tell where its keystrokes would land for a field without a window
-  of its own, and posted them anyway. For such a field, when the UI Automation write reports it is
+  of its own, and sent them anyway. For such a field, when the UI Automation write reports it is
   read-only, the act is now refused with `keyboard_target_unsafe` (ground `read_only`) before anything
   is typed. On the same field the native engine was measured not to reach the keyboard at all: it
   reads the field as a label, and the act answers `executor_failed` with nothing typed.
+
+- **The modal check asks Windows, so real dialogs are caught and fewer false ones are reported.**
+  1.16.0 decided whether a dialog blocked the target from the discover snapshot alone. A dialog in
+  another top-level window (a WinForms `ShowDialog` or a `MessageBox`) was invisible to it, and any
+  element with role `unknown` could be taken for a blocker, which refused acts next to a
+  NumericUpDown. The check now asks Windows first: when the target's window is disabled by a dialog,
+  the act answers `modal_blocking` with `blockingElement: { name, role: "dialog", hwnd }`. Re-discover
+  with `target.hwnd` set to that handle, answer the dialog, then retry. When the target's own window
+  takes input, the snapshot's guess is set aside, so a modeless owned window or an MDI child is
+  pressed. A blocker found in the snapshot now carries its own `hwnd` too.
+
+- **A refusal now carries what the refusing step knew.** `desktop_act` refusals can carry
+  `if_unexpected.detail`: for `aim_occluded`, the window in the way and its handle; for
+  `aim_route_failed`, whether UI Automation reported the element not found, without the needed
+  pattern, disabled or read-only. The advice that follows depends on it. The backend's own error text
+  is never passed through.
 
 - **A label seen in this read no longer comes back a second time as its own stale copy.**
   On a window without an accessibility tree, every text label reached the caller twice: once as
@@ -112,6 +305,12 @@
   `maxEntities` with copies and cut off the OCR entities. It now returns the OCR entities, in their
   own order. After a click, a stale copy is no longer reported as `entity_appeared`: nothing looked
   at it after the click.
+
+- **A press on a stale label looks for it again first.** When `desktop_act` is asked to press an
+  entity marked `status: "stale"`, the server reads the label again by OCR at that place before
+  pressing. If it is gone, the act answers `entity_not_found` and nothing is pressed; 1.16.0 pressed
+  whatever label had been painted there since. If the read cannot tell, the press goes ahead. This
+  costs about 0.2 s per such press.
 
 - **Each `desktop_discover` entity now says whether it was seen, or handed back from earlier.**
   After a window repainted, discover returned three labels that had left the screen next to the
@@ -128,8 +327,8 @@
     acting on it.
   - No `status` — the source did not say.
 
-  The words come from the Reactive Perception Graph's own `Fluent.status`. Nothing is dropped and
-  nothing is refused: a stale entity still gets a lease, and it says what it is.
+  A stale entity still gets a lease, and it says what it is. Before a press, its label is looked for
+  again (see above).
 
 - **A `desktop_discover` reply now says whether it looked, or remembered.**
   Against a window that had stopped responding, discover came back in four milliseconds with six
@@ -155,78 +354,107 @@
   If `ageMs` is missing while `observedAtMs` is not, the two clocks disagreed and the reply cannot
   be dated.
 
-  This is an observation, not a behaviour change: nothing is refused, nothing is re-read, and no
-  cache lifetime moved. `attention` is a different signal and is unchanged — it reports the UIA
-  cache's TTL, and it says `ok` for a window that has stopped answering.
+  This field is an observation: it refuses nothing, re-reads nothing, and moves no cache lifetime.
+  `attention` is a different signal and is unchanged — it reports the UI Automation cache's TTL, and
+  it says `ok` for a window that has stopped answering.
 
-- **A lease that no longer fits now says which part stopped fitting.**
-  `desktop_act` takes the lease `desktop_discover` handed you, and it refuses when the lease no
-  longer describes what is on screen. Two of those refusals used to come back as
-  `reason: "unknown"` with no recovery hint at all — and a tool that crashed internally came back
-  the same way, so three different situations were one response with nothing to tell them apart.
+- **`desktop_discover` says when its visual lane cannot recognise anything.** In the default build
+  the visual lane recognises nothing. On a window with no usable accessibility tree, the reply said
+  `visual_attempted_empty` — that the lane had looked and found nothing. It now says
+  `visual_backend_cannot_recognise` and `visual_not_attempted` in `warnings`, and
+  `constraints.visual: "backend_cannot_recognise"`. Waiting does not change it.
 
-  They now arrive under their own names, each with what to do next:
+- **An act on a window whose accessibility tree is missing or too sparse now says which changes its
+  `diff` did not look for.** On such a window, when discover saw no GPU-detected entities, a
+  successful act's post-action check takes a faster road (one OCR instead of two) that reuses
+  discover's entities as the "after" side, so it cannot see an entity vanish, move, appear or change
+  value. Measured on hardware: a press that removed the label it pressed answered `["focus_shifted"]` there and
+  `["entity_disappeared","focus_shifted"]` on the slower road. Those acts now carry
+  `diffUnchecked` listing the six kinds they did not check; `focus_shifted` is still checked. This
+  release reports the gap; it does not close it.
 
-  - `lease_generation_mismatch` — the `targetGeneration` in the lease is not the one the view is
-    on any more, so the entity ids it carries describe a snapshot the server no longer answers
-    from. Discover again and act on what comes back, and pass the lease back exactly as discover
-    returned it.
-  - `lease_digest_mismatch` — the element is still there, but the evidence it was described by no
-    longer matches, so the lease does not vouch for what would be acted on. Discover again rather
-    than retrying by coordinate: whatever changed may be what moved it.
+- **The focused field's value and name are returned only to a call that named its window.**
+  Every action tool's `post.focusedElement` carried the value of whatever held the focus, up to
+  4,096 characters, including on calls that touched no field (`clipboard`, `mouse_click`, `scroll`).
+  Now `value` comes back only when the call named the window that holds the focus, by `hwnd` or
+  `windowTitle`; `windowTitle: "@active"` names nothing. `name` is left out on calls that named no
+  window, since it could be the previously focused element's name or, on some windows, the field's
+  content. `hasValuePattern` is always there, and `hints.postValueWithheld` says why the value is
+  missing: `call_named_no_window`, `not_the_window_you_named`, `target_came_from_elsewhere`,
+  `foreground_moved_during_read` or `could_not_verify_the_window`. `desktop_state` still returns the
+  focused field's value.
 
-  `reason: "unknown"` still exists, and for these refusals it no longer appears: it now means the
-  tool itself threw. **If you branch on `reason`, read this as a breaking change for one case** —
-  code that recognised a stale lease by `reason === "unknown"` will stop matching, and should test
-  for the two new values instead. Everything that matched a NAMED reason is unaffected, and the
-  `most_likely_cause` in the envelope carries the same split (`LeaseGenerationMismatch` /
-  `LeaseDigestMismatch`).
-- **A click aimed at a window now checks that it is still that window, and follows it when it moves.**
-  A `desktop_discover` returns coordinates, and `desktop_act` used to press them
-  without asking whether anything had changed in between. Three things can have
-  changed, and each of them produced a click that looked like it worked: the
-  window can have closed and left its number to another one, something can have
-  been drawn over the point, and the window can have moved with the point still
-  inside it — so the press landed on whatever had arrived there and came back
-  `ok: true`. The last one was measured on a window with five stacked buttons:
-  the lease named the title bar, the window moved 71 pixels up, and the button
-  that logged the press was one the lease had never mentioned.
+- **Browser tools never name a field by its value, and never read a masked one.**
+  For an `<input>` with no label or placeholder, the browser tools used the field's value as its
+  name, so `desktop_discover` labels and `browser_overview` text could show a password. A field is
+  now named by its label, its accessible name or its selector (a nameless password field reads like
+  `input[password] #pw`), never by its value. `browser_form` returns `value: null`,
+  `valueWithheld: "masked"` and `hasValue` for a password field or one the page masks, and
+  `browser_fill` does not echo the value for such a field. If you keyed on a nameless input's label,
+  it has changed.
 
-  Coordinates now travel with the position they were measured in, and a press
-  that would go somewhere else is refused rather than made. Three refusal
-  reasons carry that:
+- **The server instructions now say what a malformed call answers.** When the arguments do not match
+  a tool's schema, the MCP SDK refuses the call before the tool runs and answers
+  `MCP error -32602: Input validation error: …` as plain text, with no `ok`, `code` or `suggest`,
+  and `include` does not change it. Nothing said so, and it is the one answer a caller cannot get in
+  the JSON envelope. The Failure recovery list now names it: nothing was done; correct the arguments
+  and call again. `scroll`'s `target` is now required to be non-empty, so `target: ""` gets this
+  answer.
 
-  - `aim_identity_changed` — the handle names a different window now. Usually
-    another process took it; it can also be the same program putting a different
-    kind of window on the same number, which is why the window's class is
-    compared as well as the process. Nothing was done, and the recovery is the
-    same for all of them: discover again and act on what comes back.
-  - `aim_occluded` — another window is drawn over the point. Bring your window
-    forward, or act through `click_element`, which does not use coordinates. A
-    dropdown or menu your own window owns is *not* treated as being in the way.
-    Whether the covering window would really have taken the click is not
-    something this build can ask — that needs the OS hit test, which the native
-    bindings do not expose yet — so anything on top counts as in the way. Some
-    overlays are drawn over everything and let presses through; those are
-    reported here too, and `click_element` is the way past them.
-  - `aim_point_outside_window` — the coordinates can no longer be followed to the
-    window they were measured in. Among the reasons: it was minimised; it was
-    resized (the contents may have been laid out differently, so this is refused
-    even where the point still falls inside); it moved while it was being read;
-    the coordinates came from a stored visual snapshot whose moment cannot be
-    established; or they were captured in a window other than the one the call
-    named. A menu or dialog your window owns has an origin of its own and does
-    not move with its owner, so it is pressed while it is still what sits under
-    the point, and refused once something else is.
+- **A `wait_until` that times out says what it last saw.** A timeout used to look the same for
+  "no window has that title", "no element has that name" and "the element is there, its value did
+  not change", and against a title matching no window it advised checking the element name. The
+  `WaitTimeout` now carries `context.lastLook` with `why` (`window_not_found`,
+  `element_not_found`, `unreadable`, `read_unfinished` or `read_failed`) and `via` (`native`,
+  `powershell` or `none`), and the first suggestion follows it. `scope_element` and `mouse_click`'s
+  element re-query use the same answer. A `get_ui_elements` read cut off against a hung window
+  answers with `context.readCutOff: true` and a short error, instead of the whole PowerShell script
+  under an unrelated error code.
 
-  **A window that only moved is followed instead of refused** — the point is
-  carried by the same offset, so a press after a drag lands on the control you
-  discovered. That applies when the coordinates were measured in the same read
-  that measured the window; a move large enough to take the point off the window
-  is answered earlier, by the existing viewport check.
+- **Two UI Automation reads of a hung window no longer wait twice.** The element lookup behind
+  `wait_until` element conditions and `scope_element`, and the element-list read behind
+  `desktop_discover`'s UI Automation lane, `get_ui_elements`, screenshots, narration and workspace
+  reads, retried a timed-out native read through PowerShell. Against a window that is itself hung,
+  that retry never succeeded while it stayed hung (0 of 12 measured on the first read), and it cost
+  another budget. Now, when the native read times out, the server asks every window the read could
+  mean whether it responds (a `WM_NULL` message, 200 ms), and skips the retry only when none does and
+  Windows itself counts each as not responding. The read then ends at the native timeout:
+  `read_unfinished` for element conditions, and the timeout error for element lists
+  (`get_ui_elements` reports `UiaTimeout`). In every other case — a window that responds, one that
+  cannot be asked, or any failure that is not a timeout — the retry runs as before. The other reads
+  that fall back to PowerShell are unchanged.
 
-  If your window has not moved and nothing is on top of it, nothing about your
-  calls changes.
+- **One unresponsive app no longer stops the native UI Automation engine for the life of the server.**
+  At start-up the engine registered a desktop-wide focus-change handler before serving any request.
+  That registration waited on every app's UI Automation provider, with no time limit, so a single hung
+  app (measured: a hung Xbox tray window) kept it from ever returning. Every native UI Automation call
+  then waited out its 8 s timeout, as long as the server ran, before falling back to PowerShell. The
+  registration now runs on its own thread, and requests are served at once (measured on the same
+  machine: 0 of 7 answered before, 7 of 7 in 59–110 ms after). If it never returns, only focus-change
+  events are missing. `server_status` now shows `nativeUiaEvidence.tasksDone` beside `tasksSent`, and
+  `focusRegistration` (`pending` for long means focus events are off).
+
+- **`server_status` says whether the native UI Automation engine is the one answering.**
+  `engine.nativeUia` is `native`, `disabled` or `unavailable`, and `engine.nativeUiaEvidence` counts
+  the work it has been sent and has finished. Set `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1` to send all UI
+  Automation work through PowerShell instead; with it unset, nothing changes.
+
+- **While the key locker is armed, a UI Automation call with an empty window title and no window handle is refused.**
+  An empty title matches every window, so such a call went to whichever window UI Automation listed
+  first, and that could be the locker's own window: the title check passed it, and the handle check
+  never ran without a handle. It is now refused before anything is read or written, with an error
+  that says to name the window or pass its handle. Writes and pinned reads that carry a window
+  handle, and every call while no locker is armed, are unchanged.
+
+- **Advice names only tools that exist in the running configuration.** With
+  `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1`, or with the key locker off, some suggestions named tools
+  that were not registered and could not be called. Suggestions are now resolved against the tools
+  actually registered, and a suggestion with nothing to call is dropped. `run_macro`'s description
+  now lists only the steps it can run.
+
+- **`mouse_click` and `mouse_drag` can confirm delivery on installs without the native module.**
+  On those installs, the pointer read behind `verifyDelivery` never ran, so every click answered
+  `unverifiable`. It now runs.
 
 - **Passing `hwnd` now really reaches that window when several share a title.**
   When two open windows have matching titles, the safety guard stops a keyboard
@@ -239,7 +467,7 @@
   made every `keyboard` write to that project's own window impossible to
   complete, with no way out from the tool arguments.
 
-  Four separate layers were losing the handle, and all four now keep it. The
+  Four separate steps were losing the handle, and all four now keep it. The
   safety guard resolves the window by handle instead of counting title matches.
   The focus step brings that exact window to the front instead of the first
   same-titled one. `method: "background"` and `method: "foreground_flash"` send
@@ -279,28 +507,28 @@
 
   - When a `method: "background"` write is addressed by handle and more than one
     window carries its title, the delivery check is skipped and the result comes
-    back `unverifiable`. That check reads the target back through UIA *by title*,
-    so it could otherwise report a delivery that never happened, or deny one that
-    did, from the other window's contents. The keys still go to the window you
-    named; only the verdict is withheld. Note that `unverifiable` is not proof
-    that this skip happened: the same verdict is returned whenever the read-back
-    cannot read its target for any reason. On the machine where this was
-    measured the skip was confirmed by timing instead — the skipped call costs
-    about 400 ms less, which is the read-back it did not perform. **The count is
-    taken before the action, so this does not cover a same-titled window that the
-    action itself opens** — measured on a real desktop, 8 of 8 such calls read
-    the sibling back and reported a delivery that had happened as
-    `BackgroundInputNotDelivered`, with or without a handle. Two things would close it, and
-    they cost differently: counting again after the action and withholding the
-    verdict when the desktop moved — which is what the narration path in this
-    same release does for the identical shape — removes the false denial but
-    returns no verdict; pinning the read-back to the handle removes it and keeps
-    one. Both change what a delivery verdict means on a shipping path, so neither
-    is in this release.
+    back `unverifiable`. That check reads the target back through UI Automation
+    *by title*, so it could otherwise report a delivery that never happened, or
+    deny one that did, from the other window's contents. The keys still go to the
+    window you named; only the verdict is withheld. Note that `unverifiable` is
+    not proof that this skip happened: the same verdict is returned whenever the
+    read-back cannot read its target for any reason. On the machine where this
+    was measured the skip was confirmed by timing instead — the skipped call
+    costs about 400 ms less, which is the read-back it did not perform. **The
+    count is taken before the action, so this does not cover a same-titled
+    window that the action itself opens** — measured on a real desktop, 8 of 8
+    such calls read the sibling back and reported a delivery that had happened as
+    `BackgroundInputNotDelivered`, with or without a handle. Two things would
+    close it, and they cost differently: counting again after the action and
+    withholding the verdict when the desktop moved — which is what the narration
+    path in this same release does for the identical shape — removes the false
+    denial but returns no verdict; pinning the read-back to the handle removes it
+    and keeps one. Both change what a delivery verdict means, so neither is in
+    this release.
   - `narrate: "rich"` returns no before/after diff when the diff cannot be shown
     to describe the window that was acted on, and says which case in
-    `diffDegraded`. That diff is built from UIA snapshots taken *by title*, so it
-    would otherwise describe the window you did not write to.
+    `diffDegraded`. That diff is built from UI Automation snapshots taken *by
+    title*, so it would otherwise describe the window you did not write to.
     `ambiguous_title`: another open window's title contains the text this call
     resolved to. That covers a handle you named, and equally one the server
     resolved for you — `windowTitle: "@active"`, or the rescue that prefers a
@@ -311,10 +539,9 @@
     the stored fix names is not visible to the part that takes the snapshots — a
     fix exists because the guard found a narrower window than your argument did,
     so the two normally differ. The action itself is unaffected in every case —
-    only the diff is
-    withheld. `ambiguous_title` and `target_changed` apply to the tools this ADR
-    covers that a caller can reach: `click_element` and `keyboard` (and
-    `set_element_value`, which is registered only under
+    only the diff is withheld. `ambiguous_title` and `target_changed` apply to
+    the tools this change covers that a caller can reach: `click_element` and
+    `keyboard` (and `set_element_value`, which is registered only under
     `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1`).
     `fix_target_unknown` is wider on purpose, because its reason is wider: it
     applies to every tool whose snapshots follow the `windowTitle` argument while
