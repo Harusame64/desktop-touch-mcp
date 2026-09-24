@@ -402,8 +402,32 @@ const COMBO_VK: Record<string, number> = {
 const MODIFIER_VKS = new Set([VK_CONTROL, VK_SHIFT, VK_MENU]);
 
 /**
- * Send a key combination such as 'ctrl+a', 'escape', 'ctrl+shift+s' to `hwnd`.
- * Returns false if any key in the combo fails or the combo is unknown.
+ * Whether `combo` holds a modifier (ctrl / shift / alt) — the combos a posted message cannot deliver.
+ *
+ * A posted WM_KEYDOWN for VK_CONTROL does not press Ctrl: the receiver's key state (GetKeyState)
+ * stays up, so its TranslateMessage turns the next key into a character. MEASURED on the v2.0.0
+ * release build (win2, 2026-09-24): `keyboard` press `ctrl+a` in the background inserted the
+ * letter "a" into Notepad's text and answered `ok:true` — a different act from the one asked for.
+ * An unknown key answers false, as before.
+ */
+export function comboHasModifier(combo: string): boolean {
+  return combo.toLowerCase().split("+").map((p) => p.trim())
+    .some((p) => MODIFIER_NAMES.has(p) || (COMBO_VK[p] !== undefined && MODIFIER_VKS.has(COMBO_VK[p]!)));
+}
+
+/**
+ * The modifier spellings the foreground road accepts (`utils/key-map.ts`) that this module's key
+ * table does not: `control`, `win`, `meta`. Without them `control+a` was not a "modifier combo",
+ * took the background road under `auto`, and failed there as an unknown key (gate 2 on #732).
+ */
+const MODIFIER_NAMES = new Set(["ctrl", "control", "shift", "alt", "win", "meta"]);
+
+/**
+ * Send a key combination WITHOUT a modifier, such as 'escape', 'enter', 'pagedown', to `hwnd`.
+ * Returns false if any key fails, the combo is unknown, or it holds a modifier: a modifier cannot
+ * be delivered by a posted message (see {@link comboHasModifier}), so nothing is posted for one —
+ * posting it typed the main key as a character instead. Callers decide what to do instead
+ * (refuse, or take the foreground road).
  *
  * Note: ctrl+v paste does NOT work in background mode (clipboard paste requires
  * the window to be foreground). This function is for structural key combos only.
@@ -416,21 +440,11 @@ export function postKeyComboToHwnd(hwnd: unknown, combo: string): boolean {
 
   const modifiers = vks.filter(v => MODIFIER_VKS.has(v));
   const mainKeys  = vks.filter(v => !MODIFIER_VKS.has(v));
+  if (modifiers.length > 0) return false; // cannot be delivered — nothing posted (comboHasModifier)
 
-  // Press modifiers
-  for (const m of modifiers) {
-    const scan = vkToScanCode(m);
-    if (!postMessageToHwnd(target, WM_KEYDOWN, m, (scan & 0xFF) << 16)) return false;
-  }
-  // Press + release main keys
+  // Press + release each key
   for (const k of mainKeys) {
     if (!postKeyToHwnd(target, k)) return false;
-  }
-  // Release modifiers (reverse order)
-  for (const m of [...modifiers].reverse()) {
-    const scan = vkToScanCode(m);
-    const lParam = ((scan & 0xFF) << 16) | (1 << 30) | (1 << 31);
-    if (!postMessageToHwnd(target, WM_KEYUP, m, lParam)) return false;
   }
   return true;
 }

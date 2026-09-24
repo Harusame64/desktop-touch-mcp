@@ -640,7 +640,11 @@ describe("ADR-036: desktop_state names the road that left the value out", () => 
     const docs = tracked
       .filter((f) => /landing[\s\S]{0,80}confirmed/i.test(readFileSync(join(root, f), "utf8")))
       .sort();
+    // CHANGELOG.md joined with the 2.0.0 entry, which explains the marked success in the release notes.
+    // Read on 2026-09-24: it says the server "cannot confirm where the keystrokes went", not that
+    // they were sent or landed.
     expect(docs, "a document that speaks about an unconfirmed landing was added or removed").toEqual([
+      "CHANGELOG.md",
       "README.ja.md",
       "README.md",
       "docs/system-overview.md",

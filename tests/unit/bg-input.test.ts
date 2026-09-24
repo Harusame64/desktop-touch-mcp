@@ -42,6 +42,7 @@ import {
   postKeyToHwnd,
   postEnterToHwnd,
   postKeyComboToHwnd,
+  comboHasModifier,
   isBgAutoEnabled,
   pasteIntoConsoleNoFocus,
 } from "../../src/engine/bg-input.js";
@@ -181,12 +182,22 @@ describe("postEnterToHwnd", () => {
 describe("postKeyComboToHwnd", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("sends ctrl+a: KEYDOWN ctrl, KEYDOWN/UP a, KEYUP ctrl", () => {
+  it("refuses ctrl+a and posts nothing — a posted Ctrl is not held, so the app would type 'a'", () => {
+    // MEASURED on the v2.0.0 release build (Notepad): this cell used to pin four posted messages
+    // and `true`, and on hardware that put the letter "a" into the text under ok:true.
     vi.mocked(postMessageToHwnd).mockReturnValue(true);
-    const result = postKeyComboToHwnd(HWND, "ctrl+a");
-    expect(result).toBe(true);
-    // ctrl down, a down, a up, ctrl up = 4 messages
-    expect(postMessageToHwnd).toHaveBeenCalledTimes(4);
+    expect(postKeyComboToHwnd(HWND, "ctrl+a")).toBe(false);
+    expect(postKeyComboToHwnd(HWND, "shift+tab")).toBe(false);
+    expect(postKeyComboToHwnd(HWND, "alt+f4")).toBe(false);
+    expect(postMessageToHwnd).not.toHaveBeenCalled();
+  });
+
+  it("comboHasModifier names the combos with ctrl, shift or alt, and only those", () => {
+    for (const c of ["ctrl+a", "Ctrl+Shift+S", "alt+f4", "shift+tab"]) expect(comboHasModifier(c), c).toBe(true);
+    for (const c of ["enter", "escape", "pagedown", "down", "f5", "ctrl+xyz_unknown_only"]) {
+      // an unknown key with a known modifier still names the modifier
+      expect(comboHasModifier(c), c).toBe(c.startsWith("ctrl+"));
+    }
   });
 
   it("returns false for unknown key", () => {

@@ -29,6 +29,7 @@ matches on the values below, update it.
 | `browser_form` on a password field (or any field the page masks) | The value, in clear text | `value: null`, `valueWithheld: "masked"`, and `hasValue` | Nothing replaces the value. `browser_fill` no longer echoes it either |
 | `desktop_act` with `action: "select"` | Pressed the target, exactly like `click`, `ok: true` | `action_not_offered` on every target, nothing done | Use `action: "click"` or `"invoke"`, and click the list item you want |
 | `desktop_act` `type` / `setValue` on a button, check box, radio button, hyperlink or menu item | `ok: true`; the text went out as keystrokes to whatever held the focus | `action_not_offered`, nothing typed | Act on the text field itself |
+| `keyboard` `press` of a combo with Ctrl, Shift or Alt, or `keyboard` `type` with `replaceAll: true`, with `method: "background"` (and `replaceAll` on the `foreground_flash` road's keystroke channel) | `ok: true`; the modifier was not held, so a letter or digit key was typed as plain text (measured: `ctrl+a` put an "a" into Notepad; `replaceAll`, which selects with the same Ctrl+A, read from the code) | `BackgroundModifierComboUnsupported`, nothing sent | Use `method: "foreground"` or leave `method` out: `"auto"` now sends these through the foreground, including to terminal windows, where a refused focus answers `ForegroundRestricted` |
 
 **What a session pays up front grew by about 22%.** The server instructions plus the `tools/list`
 reply went from 124,834 to 152,311 characters, mostly because the instructions and the
@@ -43,7 +44,7 @@ One new refusal stops a write that should work: see **Known issues**.
 Each of these was measured side by side on the same test windows. In 1.16.0 the call answered
 `ok: true` while doing nothing, or while acting on something other than the target. In 2.0.0 it is
 refused and nothing is done. These are fixes, not counted as breaking for the version, but an agent
-that got `ok: true` from them before will now see a refusal. The first two also appear in the table
+that got `ok: true` from them before will now see a refusal. The first two, and the background `ctrl+a`, also appear in the table
 above, because an agent may have relied on them.
 
 | What was asked | What happened in 1.16.0 (answered `ok: true`) | 2.0.0 answers |
@@ -58,6 +59,7 @@ above, because an agent may have relied on them.
 | `type` into a read-only WPF text field | Nothing was written | `keyboard_target_unsafe` (`read_only`) |
 | `type` into a WinForms NumericUpDown | The value did not change (measured on a pre-release build; 1.16.0 could not reach this control on the test window, see **New**) | `value_not_applied` |
 | `type` into a WPF text field disabled after discover, while another field held the focus | The text went into the focused field (measured on a pre-release build; not measured on 1.16.0) | `keyboard_target_unsafe` (`disabled`) |
+| `keyboard` `press` `ctrl+a` in the background (Notepad) | No select-all; the letter "a" was typed into the text (measured on the 2.0.0 release candidate before this fix; 1.16.0 has the same code) | `BackgroundModifierComboUnsupported` (see the table above) |
 
 The password value in `browser_form` also belongs here and is listed under **Breaking changes**.
 
