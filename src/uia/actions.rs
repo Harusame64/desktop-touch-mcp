@@ -269,7 +269,16 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
         // the three read-only fields measured and false on every writable one (win2 `ca06123b`).
         // The message is this writer's own, in the words `uia-route-failure.ts` matches whole. A
         // property that cannot be read decides nothing: SetValue runs as before.
-        if vp.CurrentIsReadOnly().map(|b| b == true).unwrap_or(false) {
+        //
+        // Only for a text field (Edit, Document), the kind measured. A combo box that says read-only
+        // may still take SetValue (an editable WPF ComboBox with IsReadOnly set, from its peer's
+        // source — not measured); refusing it here would send it to the keyboard rung, where WM_CHAR
+        // on a drop-down selects by first letter (gate 2 on #729). Other types answer as before.
+        let is_text_field = elem
+            .CurrentControlType()
+            .map(|t| t.0 == UIA_EditControlTypeId.0 || t.0 == UIA_DocumentControlTypeId.0)
+            .unwrap_or(false);
+        if is_text_field && vp.CurrentIsReadOnly().map(|b| b == true).unwrap_or(false) {
             return Ok(ActionResult {
                 ok: false,
                 element: None,
