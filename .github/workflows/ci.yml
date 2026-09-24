@@ -154,6 +154,11 @@ jobs:
         # restricted environment degrades to a no-op rather than a red build.
         run: cargo test -p desktop-touch-engine --lib win32::window
 
+      - name: Rust unit tests (UIA write predicate)
+        # internal #182 — the rule that refuses a write the control accepted and did not take. A pure
+        # function, so it runs anywhere; without this step no CI job compiles the test at all.
+        run: cargo test -p desktop-touch-engine --lib uia::actions
+
       - name: Build native addon (Rust → .node, debug profile for CI speed)
         run: npm run build:rs:debug
 

@@ -260,14 +260,59 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
             }
         };
 
+        // Internal #182 — a provider can accept SetValue and change nothing: a WinForms
+        // NumericUpDown, read by this client as a ComboBox, answered S_OK while its value stayed
+        // put (win2, 3 of 3). So the value is read before and after, on this element and this
+        // pattern, and the write is believed not to have taken only when the value did not move
+        // AND differs from what was written. Not an equality test: a field that reformats what it
+        // is given moved, and was written.
+        //
+        // Not every element is asked. Chromium (Edge, WebView2) answers SetValue on a text field at
+        // once and applies it a moment later, so the read right after it sees the old value: win2
+        // measured 7 of 8 overwrites refused that had landed, the new value readable ~120 ms later
+        // (internal `11fe8dc1`). The user's decision (2026-09-24) is both halves: Edit and Document
+        // are not checked at all, and every other type is read again for up to
+        // `NOT_APPLIED_SETTLE_MS` before the write is called not applied. A password field, a type
+        // or a value that cannot be read decides nothing — each answers as it did before the check.
+        let checked = !elem.CurrentIsPassword().map(|b| b == true).unwrap_or(true)
+            && elem
+                .CurrentControlType()
+                .map(|t| write_is_checked(t.0))
+                .unwrap_or(false);
+        let before = if checked {
+            vp.CurrentValue().ok().map(|b| b.to_string())
+        } else {
+            None
+        };
         let bstr = windows::core::BSTR::from(&*opts.value);
         match vp.SetValue(&bstr) {
-            Ok(()) => Ok(ActionResult {
-                ok: true,
-                element: None,
-                error: None,
-                code: None,
-            }),
+            Ok(()) => {
+                let read = || vp.CurrentValue().ok().map(|b| b.to_string());
+                let mut after = before.as_ref().and_then(|_| read());
+                let started = std::time::Instant::now();
+                while value_not_applied(before.as_deref(), after.as_deref(), &opts.value)
+                    && started.elapsed() < std::time::Duration::from_millis(NOT_APPLIED_SETTLE_MS)
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(NOT_APPLIED_POLL_MS));
+                    after = read();
+                }
+                if value_not_applied(before.as_deref(), after.as_deref(), &opts.value) {
+                    return Ok(ActionResult {
+                        ok: false,
+                        element: None,
+                        error: Some(format!(
+                            "SetValue returned success, but the element's value read back unchanged for {NOT_APPLIED_SETTLE_MS} ms after it"
+                        )),
+                        code: Some("ValueNotApplied".into()),
+                    });
+                }
+                Ok(ActionResult {
+                    ok: true,
+                    element: None,
+                    error: None,
+                    code: None,
+                })
+            }
             Err(e) => Ok(ActionResult {
                 ok: false,
                 element: None,
@@ -275,6 +320,35 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
                 code: None,
             }),
         }
+    }
+}
+
+/// How long a write that reads back unchanged is read again before it is called not applied
+/// (internal #182). win2 saw Chromium's value ~120 ms after SetValue returned; this is that, with room.
+const NOT_APPLIED_SETTLE_MS: u64 = 300;
+const NOT_APPLIED_POLL_MS: u64 = 30;
+
+/// Internal #182 — which control types the not-applied check asks. Edit and Document are not: the
+/// providers measured to apply a text write late (Chromium's inputs, in Edge and in WebView2) are
+/// Edit, and a check there refused writes that had landed. The one type measured to accept a write and
+/// ignore it (a WinForms NumericUpDown's outer element) is ComboBox. The user's decision, 2026-09-24.
+fn write_is_checked(control_type: i32) -> bool {
+    control_type != UIA_EditControlTypeId.0 && control_type != UIA_DocumentControlTypeId.0
+}
+
+/// Internal #182 — whether a SetValue that answered S_OK is believed not to have taken: the value read
+/// back after it is the value read before it, and not what was written. `None` on either side
+/// (a password field, or a read that failed) decides nothing. Not an equality test against `written`:
+/// a field that reformats what it is given has moved, and was written.
+///
+/// What this cannot see, said so a reader does not price it wrong: a provider that applies the write
+/// after SetValue returns reads back unchanged here; a clear (`""`) on a control whose value always
+/// reads `""` equals what was written; and a field already holding the normalised form of what is
+/// written reads back unchanged and different.
+fn value_not_applied(before: Option<&str>, after: Option<&str>, written: &str) -> bool {
+    match (before, after) {
+        (Some(before), Some(after)) => after == before && after != written,
+        _ => false,
     }
 }
 
@@ -528,4 +602,44 @@ fn matches_with_ct(
     };
 
     name_ok && id_ok && ct_ok
+}
+
+#[cfg(test)]
+mod tests {
+    use super::value_not_applied;
+    use windows::Win32::UI::Accessibility::*;
+
+    #[test]
+    fn the_numeric_up_down_that_took_nothing_is_not_applied() {
+        // win2 d58b673d: the outer GOLF read "" before and after a write of "4242".
+        assert!(value_not_applied(Some(""), Some(""), "4242"));
+        assert!(value_not_applied(Some("0"), Some("0"), "4242"));
+    }
+
+    #[test]
+    fn a_value_that_moved_was_written_even_if_reformatted() {
+        assert!(!value_not_applied(Some("0"), Some("4343"), "4343"));
+        assert!(!value_not_applied(Some("0"), Some("4343"), "04343"));
+    }
+
+    #[test]
+    fn writing_what_is_already_there_is_not_refused() {
+        assert!(!value_not_applied(Some("abc"), Some("abc"), "abc"));
+        assert!(!value_not_applied(Some(""), Some(""), ""));
+    }
+
+    #[test]
+    fn text_fields_are_not_asked_and_a_combo_box_is() {
+        assert!(!super::write_is_checked(UIA_EditControlTypeId.0));
+        assert!(!super::write_is_checked(UIA_DocumentControlTypeId.0));
+        assert!(super::write_is_checked(UIA_ComboBoxControlTypeId.0));
+        assert!(super::write_is_checked(UIA_SpinnerControlTypeId.0));
+    }
+
+    #[test]
+    fn a_value_that_could_not_be_read_decides_nothing() {
+        assert!(!value_not_applied(None, Some(""), "4242"));
+        assert!(!value_not_applied(Some(""), None, "4242"));
+        assert!(!value_not_applied(None, None, "4242"));
+    }
 }

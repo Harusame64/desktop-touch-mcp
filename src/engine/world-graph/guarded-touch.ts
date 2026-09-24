@@ -61,6 +61,7 @@ export type TouchFailReason =
   | "keyboard_target_unsafe"
   | "window_excluded"
   | "action_not_offered"
+  | "value_not_applied"
   | "executor_failed";
 
 /**
@@ -852,6 +853,12 @@ export class GuardedTouchLoop {
       // later: the same reason, and the same recovery — re-discover.
       if (err instanceof Error && err.name === "TargetGoneError") {
         return { ok: false, reason: "entity_not_found", diff: [], ...(detail !== undefined && { detail }) };
+      }
+      // Internal #182 — the value road wrote, the provider said yes, and the value did not move.
+      // Flattened, it would be `executor_failed`, whose advice sends the caller to a foreground type
+      // into the same control; nothing was written, and the recovery is a different field.
+      if (err instanceof Error && err.name === "ValueNotAppliedError") {
+        return { ok: false, reason: "value_not_applied", diff: [], ...(detail !== undefined && { detail }) };
       }
       // "You may not touch that window" — a security refusal, not a route that failed. Flattened,
       // it told the caller to press the rect the excluded window occupies, which is the one

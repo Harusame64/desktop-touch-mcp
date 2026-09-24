@@ -597,6 +597,15 @@ const SUGGESTS: Record<string, string[]> = {
     "A type or setValue on a control UI Automation reports as a button, check box, radio button, hyperlink or menu item is this refusal too: none of them takes text, so nothing was typed — if you meant to press it, ask for click or invoke.",
     "desktop_discover never offers 'select' on any target, so asking for it is always this refusal — reach a list item, combo entry or tab by clicking it. NOTE: screenshot(detail='elements') and workspace_snapshot DO print action:'select' on list items; that is a different reader's word for the same click, and desktop_act does not take it.",
   ],
+  // internal #182. The value road wrote, UI Automation answered success, and the control's value
+  // did not move — so nothing was written, and the caller must not read the refusal as "try harder
+  // on the same control". Measured on a WinForms NumericUpDown: a keystroke fallback landed at the
+  // inner edit's caret and produced a different wrong value.
+  ValueNotApplied: [
+    "UI Automation (the native client) accepted the value, but reading it back for a moment after the write showed no change, so this act does not report it written and tried nothing else.",
+    "Do NOT retry the same act, and do NOT fall back to keyboard / type into the same control: on a WinForms NumericUpDown a keystroke landed at its caret and left a different wrong value ('42420' for '4242').",
+    "Re-run desktop_discover and check the field before writing again — a control that applies a value later than that reads back unchanged; if it still holds its old value, look for the field that holds the text (a spin box or combo box can expose an inner edit).",
+  ],
   WindowExcluded: [
     "This window is excluded from every tool surface of this server, by design: the key locker's own windows are excluded so a secret being typed cannot be read or driven by the same session. Nothing was done to it.",
     "Do NOT retry by coordinate. mouse_click / keyboard at the window's rectangle would reach it through a route that does not check the exclusion — which is the press the exclusion exists to prevent.",
