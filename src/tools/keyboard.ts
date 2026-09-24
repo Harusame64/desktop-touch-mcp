@@ -1032,7 +1032,8 @@ const methodParam = z.enum(["auto", "background", "foreground", "foreground_flas
   "Input routing channel. " +
   "'auto' uses background (PostMessage) when the target window is a known terminal class " +
   "(Windows Terminal / cmd / PowerShell) OR DTM_BG_AUTO=1 is set; else foreground. Terminal " +
-  "auto-detect is HWND-targeted so user-side focus changes mid-stream cannot divert keystrokes. " +
+  "auto-detect is HWND-targeted so user-side focus changes mid-stream cannot divert keystrokes (except a combo with ctrl/shift/alt, " +
+  "or type with replaceAll, which 'auto' sends through the foreground). " +
   "'background' forces PostMessage-only (no focus change, fails on Chromium/IME). A key combo with ctrl, shift or alt, " +
   "and type's replaceAll (which selects with Ctrl+A), cannot be posted — the app would see the plain key and type it — so " +
   "'background' refuses them with BackgroundModifierComboUnsupported and nothing is sent; 'auto' sends them through the foreground. " +
@@ -1703,13 +1704,14 @@ export const keyboardTypeHandler = async ({
         // Resolver picked wm_char via allowedChannels; honour it without UIA
         // post-send verification (= simplified BG path、Phase 3 MVP scope)。
         // Opus Round 1 P2-6 反映: replaceAll 失敗 → warning 集約。
-        const ffWarnings = [...warnings];
-        logDispatchSink({ sink: "wm_char", tool: "keyboard:type", targetHwnd: target.hwnd, payloadChars: effectiveText.length });
         // A posted Ctrl+A is not a select-all (see `comboHasModifier`): it typed "a" and the text
-        // was appended. Refused before anything is sent rather than warned about after.
+        // was appended. Refused before anything is sent — and before the sink row, which records a
+        // write — rather than warned about after (gate 2 on #732).
         if (replaceAll) {
           return failWith(new Error("BackgroundModifierComboUnsupported"), "keyboard:type", { replaceAll: true, channel: "wm_char", windowTitle: effectiveWindowTitle });
         }
+        const ffWarnings = [...warnings];
+        logDispatchSink({ sink: "wm_char", tool: "keyboard:type", targetHwnd: target.hwnd, payloadChars: effectiveText.length });
         const r = postCharsToHwnd(target.hwnd, effectiveText);
         // ADR-036 arm A — `r.target` is the handle the characters went to, and it was discarded here
         // until now. The sink row above says where this AIMED; only this one says where it LANDED.
@@ -3667,7 +3669,7 @@ export function registerKeyboardTools(server: McpServer): void {
         purpose: "Send keyboard input to a window: 'type' for text, 'press' for key combos, 'sequence' for atomic multi-step chords.",
         details: "action='type' inserts text (auto-clipboard for non-ASCII, bypassing IME conversion). action='press' sends key combos like 'ctrl+c'/'alt+tab'. action='sequence' runs ordered steps in one keyboard lock — use for Alt+letter, letter mnemonic chains where intermediate tool calls would close the menu. windowTitle or hwnd is REQUIRED (blank/whitespace counts as neither) — the server focuses and auto-guards that window (identity, foreground, modal) first, and a call with neither stops with DestinationRequired before any key is sent. Use windowTitle:'@active' to aim at the foreground window on purpose; an hwnd naming a titleless window works only while that window is already foreground. DESKTOP_TOUCH_REQUIRE_DESTINATION=0 downgrades the stop to a warning.",
         prefer: "Set lensId for perception guards. Use desktop_act({action:'setValue'}) for UIA ValuePattern text fields.",
-        caveats: "win+r/win+x/win+s/win+l blocked. action='type' does not handle CJK IME composition — use use_clipboard=true or desktop_act({action:'setValue'}); neither lands while an IME composition is pending — commit or cancel it first. hints.clipboard reports the backend and whether the clipboard was restored. Non-ASCII text (CJK / emoji / diacritics / smart-quote-class punctuation) auto-clipboards to prevent silent-drop and Chrome accelerator hijack; pass forceKeystrokes:true to disable. Background (PostMessage/WM_CHAR) auto-engages for terminal-class windows (Windows Terminal / cmd / PowerShell); DTM_BG_AUTO=1 enables globally. Foreground non-terminal type runs a per-chunk leash; user focus-steal mid-stream aborts with FocusLostDuringType + context.typed/remaining; pass abortOnFocusLoss:false to disable. BG type verifies WM_CHAR via UIA TextPattern read-back; mismatch returns BackgroundInputNotDelivered (see SUGGESTS for false-positive notes). BG press read-back is scoped to terminal-class + enter/tab/arrow; other combos return verifyDelivery:'unverifiable', failure returns BackgroundKeyNotDelivered. action='sequence' is FG-only (BG/foreground_flash schema-rejected); emits verifyDelivery:'focus_only'; mid-loop focus theft returns MenuFocusLostMidSequence + context.remaining: Step[]. Win11 FG refusal returns ForegroundRestricted — terminal-class targets auto-engage BG; non-terminal switch to desktop_act / click_element.",
+        caveats: "win+r/win+x/win+s/win+l blocked. action='type' does not handle CJK IME composition — use use_clipboard=true or desktop_act({action:'setValue'}); neither lands while an IME composition is pending — commit or cancel it first. hints.clipboard reports the backend and whether the clipboard was restored. Non-ASCII text (CJK / emoji / diacritics / smart-quote-class punctuation) auto-clipboards to prevent silent-drop and Chrome accelerator hijack; pass forceKeystrokes:true to disable. Background (PostMessage/WM_CHAR) auto-engages for terminal-class windows (Windows Terminal / cmd / PowerShell); DTM_BG_AUTO=1 enables globally. Foreground non-terminal type runs a per-chunk leash; user focus-steal mid-stream aborts with FocusLostDuringType + context.typed/remaining; pass abortOnFocusLoss:false to disable. BG type verifies WM_CHAR via UIA TextPattern read-back; mismatch returns BackgroundInputNotDelivered (see SUGGESTS for false-positive notes). BG press read-back is scoped to terminal-class + enter/tab/arrow; other combos return verifyDelivery:'unverifiable', failure returns BackgroundKeyNotDelivered. action='sequence' is FG-only (BG/foreground_flash schema-rejected); emits verifyDelivery:'focus_only'; mid-loop focus theft returns MenuFocusLostMidSequence + context.remaining: Step[]. Win11 FG refusal returns ForegroundRestricted — terminal-class targets auto-engage BG (except a combo with ctrl/shift/alt and type with replaceAll, which go through FG and can return ForegroundRestricted too); non-terminal switch to desktop_act / click_element.",
         examples: [
           "keyboard({action:'type', text:'hello', windowTitle:'Untitled - Notepad'}) → text injected (guarded)",
           "keyboard({action:'type', text:'hello', windowTitle:'@active'}) → typed into the foreground window",

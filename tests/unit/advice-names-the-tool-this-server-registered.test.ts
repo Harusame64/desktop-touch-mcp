@@ -528,6 +528,10 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
         "internal #126: the title-only road now refuses a disabled element with this code too, so two lines that said 'named its window by handle' were made road-neutral",
       KeyboardTargetUnsafe:
         "the fourth ground, disabled (the user's decision 2026-09-19): named in the ground list, with a way back of its own — a disabled field takes no click",
+      ForegroundFlashNotApplicableToKeyPress:
+        "the line pointing to method:'background' for a key combo now says a combo with Ctrl/Shift/Alt cannot be sent there (v2.0.0 dogfood: a posted ctrl+a typed \"a\")",
+      BackgroundNotApplicableToSequence:
+        "the line suggesting separate background presses now says only keys without Ctrl/Shift/Alt can be pressed in the background (same finding)",
       AimOccluded:
         "the first and fourth lines said the OS hit test cannot be asked and click-through overlays are refused too; the addon asks WindowFromPoint where it can, and only a build that cannot falls back to the window list (AB 2026-09-24: presses went through click-through overlays)",
     };

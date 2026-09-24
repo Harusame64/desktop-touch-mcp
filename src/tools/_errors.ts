@@ -920,7 +920,7 @@ const SUGGESTS: Record<string, string[]> = {
   ForegroundFlashNotApplicableToKeyPress: [
     "method:'foreground_flash' is for text injection (keyboard:type / terminal:send) only — clipboard paste cannot carry a key combo.",
     "For the key combo, call keyboard({action:'press', keys, method:'foreground', windowTitle}) instead (default FG SendInput).",
-    "If the target supports background injection (WM_KEYDOWN-class hosts), keyboard({action:'press', keys, method:'background', windowTitle}) also works.",
+    "If the target supports background injection (WM_KEYDOWN-class hosts) and the combo has no Ctrl, Shift or Alt, keyboard({action:'press', keys, method:'background', windowTitle}) also works — a combo with a modifier cannot be sent in the background.",
     "If you actually wanted to paste text (not chord keys), switch to keyboard({action:'type', text, method:'foreground_flash', windowTitle}) or terminal({action:'send', input, method:'foreground_flash'}).",
   ],
   // A posted WM_KEYDOWN for Ctrl/Shift/Alt does not press the modifier: the receiver's key state
@@ -933,7 +933,7 @@ const SUGGESTS: Record<string, string[]> = {
   ],
   BackgroundNotApplicableToSequence: [
     "Sequence does not support the background path — Alt-menu mnemonics require real SendInput which only the foreground path provides.",
-    "Use foreground (default) and target via windowTitle/hwnd, or split into separate keyboard(action:'press') calls if BG delivery is essential.",
+    "Use foreground (default) and target via windowTitle/hwnd, or split into separate keyboard(action:'press') calls if BG delivery is essential — only keys without Ctrl, Shift or Alt can be pressed in the background.",
   ],
   // Phase 7 F3: workspace_launch spawnDetached rejection (ENOENT / EACCES /
   // EPERM 等) の typed reason。production handler は `failWith(err)` 経由で

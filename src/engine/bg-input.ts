@@ -412,8 +412,15 @@ const MODIFIER_VKS = new Set([VK_CONTROL, VK_SHIFT, VK_MENU]);
  */
 export function comboHasModifier(combo: string): boolean {
   return combo.toLowerCase().split("+").map((p) => p.trim())
-    .some((p) => { const vk = COMBO_VK[p]; return vk !== undefined && MODIFIER_VKS.has(vk); });
+    .some((p) => MODIFIER_NAMES.has(p) || (COMBO_VK[p] !== undefined && MODIFIER_VKS.has(COMBO_VK[p]!)));
 }
+
+/**
+ * The modifier spellings the foreground road accepts (`utils/key-map.ts`) that this module's key
+ * table does not: `control`, `win`, `meta`. Without them `control+a` was not a "modifier combo",
+ * took the background road under `auto`, and failed there as an unknown key (gate 2 on #732).
+ */
+const MODIFIER_NAMES = new Set(["ctrl", "control", "shift", "alt", "win", "meta"]);
 
 /**
  * Send a key combination WITHOUT a modifier, such as 'escape', 'enter', 'pagedown', to `hwnd`.

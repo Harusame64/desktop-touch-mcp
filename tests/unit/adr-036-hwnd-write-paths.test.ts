@@ -74,7 +74,8 @@ vi.mock("../../src/engine/perception/guards.js", () => ({
 
 // ─── Sinks — nothing may reach the real desktop ──────────────────────────────
 
-const { mockType, mockPostChars, mockPostCombo, mockPostEnter } = vi.hoisted(() => ({
+const { mockType, mockPostChars, mockPostCombo, mockPostEnter, mockPressKey } = vi.hoisted(() => ({
+  mockPressKey: vi.fn(async () => {}),
   mockType: vi.fn(async () => {}),
   mockPostChars: vi.fn(() => ({ full: true, sent: 8 })),
   mockPostCombo: vi.fn(() => true),
@@ -84,7 +85,7 @@ const { mockType, mockPostChars, mockPostCombo, mockPostEnter } = vi.hoisted(() 
 vi.mock("../../src/engine/nutjs.js", () => ({
   keyboard: {
     type: (...a: unknown[]) => mockType(...(a as [])),
-    pressKey: vi.fn(async () => {}),
+    pressKey: (...a: unknown[]) => mockPressKey(...(a as [])),
     releaseKey: vi.fn(async () => {}),
   },
   rawKeyboard: { pressKeyDown: vi.fn(), pressKeyUp: vi.fn() },
@@ -222,6 +223,7 @@ beforeEach(() => {
   mockPostChars.mockClear();
   mockPostCombo.mockClear();
   mockPostEnter.mockClear();
+  mockPressKey.mockClear();
   mockGetText.mockClear();
   mockGetValue.mockClear();
   mockCheckForeground.mockClear();
@@ -539,7 +541,7 @@ describe("a key combo with a modifier is not sent in the background", () => {
       keys: "ctrl+a", hwnd: String(LIVE), method: "background", trackFocus: false, settleMs: 0,
     } as never));
     expect(r.ok).toBe(false);
-    expect(JSON.stringify(r)).toContain("BackgroundModifierComboUnsupported");
+    expect(r.code).toBe("BackgroundModifierComboUnsupported");
     expect(mockPostCombo).not.toHaveBeenCalled();
     expect(mockPostChars).not.toHaveBeenCalled();
     expect(mockPostEnter).not.toHaveBeenCalled();
@@ -560,17 +562,41 @@ describe("a key combo with a modifier is not sent in the background", () => {
       const r = parse(await keyboardPressHandler({
         keys: "ctrl+a", hwnd: String(LIVE), trackFocus: false, settleMs: 0,
       } as never));
-      expect(JSON.stringify(r)).not.toContain("BackgroundModifierComboUnsupported");
+      // Delivered, and through the foreground road: SendInput pressed the combo (gate 2 on #732 —
+      // "not refused" alone passed any foreground failure).
+      expect(r.ok).toBe(true);
       expect(mockPostCombo).not.toHaveBeenCalled();
+      expect(mockPressKey).toHaveBeenCalled();
     } finally {
       vi.mocked(isBgAutoEnabled).mockReturnValue(false);
     }
   });
 
+  for (const [how, arrange, undo] of [
+    ["DTM_BG_AUTO", async () => { const m = await import("../../src/engine/bg-input.js"); vi.mocked(m.isBgAutoEnabled).mockReturnValue(true); },
+      async () => { const m = await import("../../src/engine/bg-input.js"); vi.mocked(m.isBgAutoEnabled).mockReturnValue(false); }],
+    ["a terminal-class window", async () => { const w = await import("../../src/engine/win32.js"); vi.mocked(w.getWindowClassName).mockReturnValue("ConsoleWindowClass"); },
+      async () => { const w = await import("../../src/engine/win32.js"); vi.mocked(w.getWindowClassName).mockReturnValue("Chrome_WidgetWin_1"); }],
+  ] as const) {
+    it(`type with replaceAll, background chosen automatically (${how}), goes through the foreground: Ctrl+A by SendInput, nothing posted`, async () => {
+      await arrange();
+      try {
+        const r = parse(await keyboardTypeHandler({ ...TYPE_BASE, replaceAll: true, hwnd: String(LIVE) } as never));
+        expect(r.code).not.toBe("BackgroundModifierComboUnsupported");
+        expect(mockPostChars).not.toHaveBeenCalled();
+        expect(mockPostCombo).not.toHaveBeenCalled();
+        // The select-all went out on the foreground road before the text.
+        expect(mockPressKey).toHaveBeenCalled();
+      } finally {
+        await undo();
+      }
+    });
+  }
+
   it("keyboard:type with replaceAll and method:'background' is refused before a character is sent", async () => {
     const r = parse(await keyboardTypeHandler({ ...TYPE_BASE, replaceAll: true, hwnd: String(LIVE), method: "background" } as never));
     expect(r.ok).toBe(false);
-    expect(JSON.stringify(r)).toContain("BackgroundModifierComboUnsupported");
+    expect(r.code).toBe("BackgroundModifierComboUnsupported");
     expect(mockPostCombo).not.toHaveBeenCalled();
     expect(mockPostChars).not.toHaveBeenCalled();
   });
@@ -580,7 +606,7 @@ describe("a key combo with a modifier is not sent in the background", () => {
       ...TYPE_BASE, replaceAll: true, hwnd: String(LIVE), windowTitle: SHARED_TITLE, method: "foreground_flash",
     } as never));
     expect(r.ok).toBe(false);
-    expect(JSON.stringify(r)).toContain("BackgroundModifierComboUnsupported");
+    expect(r.code).toBe("BackgroundModifierComboUnsupported");
     expect(mockPostChars).not.toHaveBeenCalled();
   });
 
