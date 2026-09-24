@@ -206,6 +206,13 @@ export interface NativeForceFocusResult {
   fgAfter: bigint
 }
 
+/** `win32GetThreadFocus`: the focus / active windows of a window's thread (GetGUIThreadInfo), each
+ *  absent when the thread has none. The call itself answers null when it could not ask. */
+export interface NativeThreadFocus {
+  focus?: bigint | null
+  active?: bigint | null
+}
+
 // ─── ADR-013 Option E (`foreground_flash` channel、Phase 1c-1f) ──────────────
 
 export interface NativeForegroundFlashOptions {
@@ -497,6 +504,8 @@ export declare function win32SetWindowBounds(hwnd: bigint, x: number, y: number,
 export declare function win32ForceSetForegroundWindow(hwnd: bigint): NativeForceFocusResult
 export declare function win32ForegroundFlashInject(targetHwnd: bigint, targetPid: number, text: string, options: NativeForegroundFlashOptions): NativeForegroundFlashResult
 export declare function win32GetFocusedChildHwnd(targetHwnd: bigint): bigint | null
+
+export declare function win32GetThreadFocus(targetHwnd: bigint): NativeThreadFocus | null
 export declare function win32BuildProcessParentMap(): NativeProcessParentEntry[]
 export declare function win32GetProcessIdentity(pid: number): NativeProcessIdentity
 export declare function win32GetProcessCommandLine(pid: number): string[] | null

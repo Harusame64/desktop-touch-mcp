@@ -407,6 +407,13 @@ export interface NativeForceFocusResult {
   fgAfter: bigint
 }
 
+/** `win32GetThreadFocus`: the focus / active windows of a window's thread (GetGUIThreadInfo), each
+ *  absent when the thread has none. The call itself answers null when it could not ask. */
+export interface NativeThreadFocus {
+  focus?: bigint | null
+  active?: bigint | null
+}
+
 // ── ADR-013 Option E (`foreground_flash` channel、Phase 1c-1f) ──────────────
 
 /** Caller-supplied options for `win32ForegroundFlashInject`.

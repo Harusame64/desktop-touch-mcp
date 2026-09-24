@@ -24,7 +24,7 @@
  * pinned one is NOT the one the title rule would pick.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const SHARED_TITLE = "pictkura — Chrome";
 const SIBLING = 0x1111n;   // first title match (lowest zOrder) — the wrong window
@@ -55,6 +55,8 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
     getWindowIdentity: vi.fn(() => ({ pid: 7, processName: "chrome.exe", processStartTimeMs: 0 })),
     getWindowProcessId: vi.fn(() => 7),
     getWindowRectByHwnd: vi.fn(() => ({ x: 0, y: 0, width: 800, height: 600 })),
+    // Not asked, unless a cell says otherwise: the keystroke goes out as it always did.
+    getThreadFocus: vi.fn(() => undefined),
   };
 });
 
@@ -614,4 +616,66 @@ describe("a key combo with a modifier is not sent in the background", () => {
     await keyboardTypeHandler({ ...TYPE_BASE, hwnd: String(LIVE), method: "background" } as never);
     expect(mockPostChars).toHaveBeenCalled();
   });
+});
+
+// ─── A thread with no focused window drops a background keystroke ────────────
+// MEASURED (win2, 2026-09-24, internal e4c54dcf): the server's own forced focus leaves the window it
+// moves away from with thread focus 0; a background type there went nowhere in Notepad, WinForms and
+// WPF, and Notepad's road answered ok:true. conhost took it.
+
+describe("a background keystroke is not sent to a thread with no focused window", () => {
+  async function withThreadFocus(answer: { focus: bigint | null; active: bigint | null } | undefined, cls = "Chrome_WidgetWin_1") {
+    const w = await import("../../src/engine/win32.js");
+    vi.mocked(w.getThreadFocus).mockReturnValue(answer);
+    vi.mocked(w.getWindowClassName).mockReturnValue(cls);
+  }
+  afterEach(async () => {
+    const w = await import("../../src/engine/win32.js");
+    vi.mocked(w.getThreadFocus).mockReturnValue(undefined);
+    vi.mocked(w.getWindowClassName).mockReturnValue("Chrome_WidgetWin_1");
+  });
+  const NO_FOCUS = { focus: null, active: null };
+
+  it("keyboard:type with method:'background' is refused, and no character is posted", async () => {
+    await withThreadFocus(NO_FOCUS);
+    const r = parse(await keyboardTypeHandler({ ...TYPE_BASE, hwnd: String(LIVE), method: "background" } as never));
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("BackgroundTargetHasNoFocus");
+    expect(mockPostChars).not.toHaveBeenCalled();
+  });
+
+  it("keyboard:press with method:'background' is refused, and no key is posted", async () => {
+    await withThreadFocus(NO_FOCUS);
+    const r = parse(await keyboardPressHandler({ keys: "enter", hwnd: String(LIVE), method: "background", trackFocus: false, settleMs: 0 } as never));
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("BackgroundTargetHasNoFocus");
+    expect(mockPostEnter).not.toHaveBeenCalled();
+    expect(mockPostCombo).not.toHaveBeenCalled();
+  });
+
+  it("chosen automatically (DTM_BG_AUTO), the type goes through the foreground instead", async () => {
+    await withThreadFocus(NO_FOCUS);
+    const { isBgAutoEnabled } = await import("../../src/engine/bg-input.js");
+    vi.mocked(isBgAutoEnabled).mockReturnValue(true);
+    try {
+      const r = parse(await keyboardTypeHandler({ ...TYPE_BASE, hwnd: String(LIVE) } as never));
+      expect(r.code).not.toBe("BackgroundTargetHasNoFocus");
+      expect(mockPostChars).not.toHaveBeenCalled();
+      expect(mockType).toHaveBeenCalled();
+    } finally {
+      vi.mocked(isBgAutoEnabled).mockReturnValue(false);
+    }
+  });
+
+  for (const [what, answer, cls] of [
+    ["a thread with a focused window", { focus: 0x9999n, active: LIVE }, "Chrome_WidgetWin_1"],
+    ["a question that could not be asked", undefined, "Chrome_WidgetWin_1"],
+    ["a console, which takes WM_CHAR on its own window", { focus: null, active: null }, "ConsoleWindowClass"],
+  ] as const) {
+    it(`CONTROL: ${what} still takes the background type`, async () => {
+      await withThreadFocus(answer as never, cls);
+      await keyboardTypeHandler({ ...TYPE_BASE, hwnd: String(LIVE), method: "background" } as never);
+      expect(mockPostChars).toHaveBeenCalled();
+    });
+  }
 });

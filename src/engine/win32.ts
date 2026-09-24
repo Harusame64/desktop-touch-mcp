@@ -1110,6 +1110,24 @@ export function getFocusedChildHwnd(targetHwnd: unknown): bigint | null {
   }
 }
 
+/**
+ * The focus / active windows of `hwnd`'s thread (GetGUIThreadInfo, read without attaching to it).
+ * `undefined` when it could not be asked — no binding, no such window, or the call failed; `null`
+ * in a field when the thread was asked and has none. Three answers, because a keystroke is refused
+ * on "asked, and no focus" alone (see `bg-input.ts` `threadHasNoFocus`).
+ */
+export function getThreadFocus(hwnd: bigint): { focus: bigint | null; active: bigint | null } | undefined {
+  try {
+    const w32 = requireNativeWin32();
+    if (!w32.win32GetThreadFocus) return undefined;
+    const r = w32.win32GetThreadFocus(hwnd);
+    if (!r) return undefined;
+    return { focus: r.focus ?? null, active: r.active ?? null };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Map a Virtual Key code to a scan code (used for lParam of WM_KEYDOWN). */
 export function vkToScanCode(vk: number): number {
   try {

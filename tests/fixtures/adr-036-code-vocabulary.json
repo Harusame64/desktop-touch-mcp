@@ -82,6 +82,7 @@
     "AimPointOutsideWindow",
     "AimRouteFailed",
     "BackgroundModifierComboUnsupported",
+    "BackgroundTargetHasNoFocus",
     "BadPercentEscape",
     "BadPort",
     "ClipboardWriteTooLargeForFallback",

@@ -108,6 +108,7 @@ export const win32ClearWindowTopmost          = nativeBinding.win32ClearWindowTo
 export const win32SetWindowBounds             = nativeBinding.win32SetWindowBounds;
 export const win32ForceSetForegroundWindow    = nativeBinding.win32ForceSetForegroundWindow;
 export const win32GetFocusedChildHwnd         = nativeBinding.win32GetFocusedChildHwnd;
+export const win32GetThreadFocus         = nativeBinding.win32GetThreadFocus;
 export const win32BuildProcessParentMap       = nativeBinding.win32BuildProcessParentMap;
 export const win32GetProcessIdentity          = nativeBinding.win32GetProcessIdentity;
 export const win32GetProcessCommandLine       = nativeBinding.win32GetProcessCommandLine;

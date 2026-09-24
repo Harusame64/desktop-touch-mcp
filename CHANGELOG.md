@@ -60,6 +60,7 @@ above, because an agent may have relied on them.
 | `type` into a WinForms NumericUpDown | The value did not change (measured on a pre-release build; 1.16.0 could not reach this control on the test window, see **New**) | `value_not_applied` |
 | `type` into a WPF text field disabled after discover, while another field held the focus | The text went into the focused field (measured on a pre-release build; not measured on 1.16.0) | `keyboard_target_unsafe` (`disabled`) |
 | `keyboard` `press` `ctrl+a` in the background (Notepad) | No select-all; the letter "a" was typed into the text (measured on the 2.0.0 release candidate before this fix; 1.16.0 has the same code) | `BackgroundModifierComboUnsupported` (see the table above) |
+| `keyboard` `type` in the background into Notepad after this server moved the focus to another window | Nothing was typed — the window's thread had no focused control, so the characters went nowhere (measured on the 2.0.0 release candidate before this fix) | `BackgroundTargetHasNoFocus` with `method: "background"`, nothing sent; under `method: "auto"` the foreground road is taken instead |
 
 The password value in `browser_form` also belongs here and is listed under **Breaking changes**.
 

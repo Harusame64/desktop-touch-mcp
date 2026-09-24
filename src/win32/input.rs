@@ -14,12 +14,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, MapVirtualKeyW, MAP_VIRTUAL_KEY_TYPE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, PostMessageW,
-    SetForegroundWindow,
+    BringWindowToTop, GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, PostMessageW,
+    SetForegroundWindow, GUITHREADINFO,
 };
 
 use super::safety::napi_safe_call;
-use super::types::NativeForceFocusResult;
+use super::types::{NativeForceFocusResult, NativeThreadFocus};
 
 /// Reinterpret a JS BigInt as an HWND. `get_u64` (magnitude) is correct for an
 /// HWND handle value; the signed `get_i64` is only needed for WPARAM/LPARAM
@@ -110,6 +110,36 @@ pub fn win32_force_set_foreground_window(
             fg_before: hwnd_to_bigint(fg_before),
             fg_after: hwnd_to_bigint(fg_after),
         })
+    })
+}
+
+// ── win32_get_thread_focus ───────────────────────────────────────────────────
+
+/// The focus and active windows of `target_hwnd`'s thread, from `GetGUIThreadInfo`. `None` when the
+/// question could not be asked (no such window, or the call failed); `Some` with `focus: None` when
+/// it was asked and the thread has no focused window — a background keystroke posted to such a
+/// window has no receiver and is dropped (win2, 2026-09-24: Notepad, WinForms and WPF dropped it,
+/// conhost took it).
+#[napi]
+pub fn win32_get_thread_focus(target_hwnd: BigInt) -> napi::Result<Option<NativeThreadFocus>> {
+    napi_safe_call("win32_get_thread_focus", || {
+        let target = hwnd_from_bigint(target_hwnd);
+        let thread = unsafe { GetWindowThreadProcessId(target, None) };
+        if thread == 0 {
+            return Ok(None);
+        }
+        let mut info = GUITHREADINFO {
+            cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        if unsafe { GetGUIThreadInfo(thread, &mut info) }.is_err() {
+            return Ok(None);
+        }
+        let opt = |h: HWND| if h.0.is_null() { None } else { Some(hwnd_to_bigint(h)) };
+        Ok(Some(NativeThreadFocus {
+            focus: opt(info.hwndFocus),
+            active: opt(info.hwndActive),
+        }))
     })
 }
 
