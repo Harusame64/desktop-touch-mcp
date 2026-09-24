@@ -568,6 +568,23 @@ describe("the value road's read-only answer, end to end through the executor (in
     expect(d.keyboardTypeBg).not.toHaveBeenCalled();
   });
 
+  // Internal #188 — the native road. Its SetValue error on a read-only field is localized
+  // ("SetValue は、読み取り専用の値に対して呼び出せません (0x80131509)", win2, AB arm C-4), so the native
+  // writer now reads `IsReadOnly` first and says so in its own words. Those words raise the ground.
+  it("refuses on the native writer's own read-only answer too (internal #188)", async () => {
+    const native = Object.assign(new Error("Value is read-only"), { uiaVia: "native" });
+    const d = depsFor(focusElsewhere(), { uiaSetValue: vi.fn(async () => { throw native; }) });
+    await expect(type(titleRoad, windowless(), d)).rejects.toMatchObject({ name: "KeyboardTargetUnsafeError", ground: "read_only" });
+    expect(d.keyboardPost).not.toHaveBeenCalled();
+  });
+
+  it("the localized SetValue error the native road gave before #188 raises no ground — which is why the writer names it itself", async () => {
+    const localized = Object.assign(new Error("SetValue は、読み取り専用の値に対して呼び出せません (0x80131509)"), { uiaVia: "native" });
+    const d = depsFor(focusElsewhere(), { uiaSetValue: vi.fn(async () => { throw localized; }) });
+    expect(await type(titleRoad, windowless(), d))
+      .toMatchObject({ kind: "keyboard", landing: { confirmed: false, why: "entity_windowless" } });
+  });
+
   it("CONTROL: the same shape with any other value-road failure is the designed marked success", async () => {
     const d = depsFor(focusElsewhere());
     expect(await type(titleRoad, windowless(), d))

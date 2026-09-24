@@ -260,6 +260,36 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
             }
         };
 
+        // Internal #188 — a read-only field is named by the pattern's own property, not by
+        // SetValue's error. That error arrives in the OS language ("SetValue は、読み取り専用の値に
+        // 対して呼び出せません (0x80131509)" on a Japanese Windows), and its HRESULT is .NET's generic
+        // InvalidOperationException, so the route classifier never recognised it on this road and the
+        // keyboard rung's read-only ground (#722) was never raised: a read-only WPF TextBox answered a
+        // marked `ok:true` with nothing written (win2, AB arm C-4). `IsReadOnly` was true on exactly
+        // the three read-only fields measured and false on every writable one (win2 `ca06123b`).
+        // The message is this writer's own, in the words `uia-route-failure.ts` matches whole. A
+        // property that cannot be read decides nothing: SetValue runs as before.
+        //
+        // Refused before writing only for a text field (Edit, Document), the kind measured. A combo box
+        // that says read-only might still take SetValue (gate 2 on #729), so it is written, and only
+        // a write that then FAILS on an element that said read-only is named read-only (below). win2
+        // measured the case gate 2 named — a WPF ComboBox, IsEditable and IsReadOnly — and its SetValue
+        // failed with the localized error, leaving a marked `ok:true` with nothing selected
+        // (`18facd3a`, KILO).
+        let is_text_field = elem
+            .CurrentControlType()
+            .map(|t| t.0 == UIA_EditControlTypeId.0 || t.0 == UIA_DocumentControlTypeId.0)
+            .unwrap_or(false);
+        let said_read_only = vp.CurrentIsReadOnly().map(|b| b == true).unwrap_or(false);
+        if is_text_field && said_read_only {
+            return Ok(ActionResult {
+                ok: false,
+                element: None,
+                error: Some("Value is read-only".into()),
+                code: Some("ElementReadOnly".into()),
+            });
+        }
+
         // Internal #182 — a provider can accept SetValue and change nothing: a WinForms
         // NumericUpDown, read by this client as a ComboBox, answered S_OK while its value stayed
         // put (win2, 3 of 3). So the value is read before and after, on this element and this
@@ -313,6 +343,14 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
                     code: None,
                 })
             }
+            // A write that failed on an element that said read-only is named read-only, in words
+            // the classifier matches in any OS language (see the note above `is_text_field`).
+            Err(_) if said_read_only => Ok(ActionResult {
+                ok: false,
+                element: None,
+                error: Some("Value is read-only".into()),
+                code: Some("ElementReadOnly".into()),
+            }),
             Err(e) => Ok(ActionResult {
                 ok: false,
                 element: None,

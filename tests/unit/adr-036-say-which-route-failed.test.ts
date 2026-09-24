@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { classifyUiaRouteFailure, describeUiaRouteFailure } from "../../src/engine/uia-route-failure.js";
 import type { Aim } from "../../src/engine/aim.js";
 import type { ExecutorDeps } from "../../src/tools/desktop-executor.js";
@@ -30,6 +31,9 @@ const MEASURED: Array<[string, string]> = [
   ["Element is disabled", "element_disabled"],
   ['Exception calling "SetValue" with "1" argument(s): "The operation is not allowed on a nonenabled element."', "element_disabled"],
   ['Exception calling "SetValue" with "1" argument(s): "Value is read-only."', "element_read_only"],
+  // Internal #188 — the native writer's own words, written after it reads `ValuePattern.IsReadOnly`,
+  // because SetValue's error on that road is localized.
+  ["Value is read-only", "element_read_only"],
 ];
 
 describe("the classifier knows the answers the backend gave, and only those", () => {
@@ -49,6 +53,9 @@ describe("the classifier knows the answers the backend gave, and only those", ()
   it("does not guess at a text it has not seen, a localised one included", () => {
     for (const text of [
       "要素が見つかりません",
+      // The native road's localized SetValue error on a read-only field (win2, AB arm C-4). Its
+      // HRESULT is .NET's generic InvalidOperationException, so it is not read as read-only.
+      "SetValue は、読み取り専用の値に対して呼び出せません (0x80131509)",
       'Exception calling "Invoke" with "0" argument(s): "Operation is not valid due to the current state of the object."',
       "UIA click failed",
       "Element not found: ALPHA",
@@ -74,6 +81,29 @@ describe("the classifier knows the answers the backend gave, and only those", ()
     expect(readOnly).not.toBe(disabled);
     expect(describeUiaRouteFailure(readOnly!)).toContain("read-only");
     expect(describeUiaRouteFailure(readOnly!)).not.toContain("disabled");
+  });
+});
+
+describe("the native writer's own words are the classifier's words (gate 2 on #729)", () => {
+  // Internal #188 made a Rust string load-bearing: `set_value_impl` answers "Value is read-only", and
+  // the rung's read-only ground fires only when this module matches it whole. Every other cell writes
+  // the string on the TS side, so a Rust edit (a trailing period, say) would leave them green and the
+  // ground silent. This cell reads the literals out of the Rust source instead.
+  const rust = readFileSync(fileURLToPath(new URL("../../src/uia/actions.rs", import.meta.url)), "utf8");
+  const literals = [...new Set([...rust.matchAll(/error: Some\("([^"]+)"\.into\(\)\)/g)].map((m) => m[1]!))];
+  /** Written by the native side and deliberately not classified: nothing decides on them. */
+  const UNCLASSIFIED = ["InvokePattern cast failed", "ValuePattern cast failed", "TextPattern2 cast failed", "TextPattern2 not supported by this element"];
+
+  it("finds the literals it is about (the scan is not empty)", () => {
+    expect(literals).toContain("Value is read-only");
+    expect(literals).toContain("Element is disabled");
+  });
+  it("classifies every literal the native writer returns, except the ones listed as unclassified", () => {
+    const unclassified = literals.filter((l) => classifyUiaRouteFailure(new Error(l)) === undefined).sort();
+    expect(unclassified).toEqual([...UNCLASSIFIED].sort());
+  });
+  it("reads the read-only words as read-only", () => {
+    expect(classifyUiaRouteFailure(new Error("Value is read-only"))).toBe("element_read_only");
   });
 });
 

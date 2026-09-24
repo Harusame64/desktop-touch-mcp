@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **A `type` into a read-only text field is refused on a Windows that is not in English, too.**
+  On a Japanese Windows, `desktop_act` with `type` on a read-only WPF text box answered `ok:true`
+  (with its mark that the write was not confirmed) and wrote nothing. The native UI Automation client's
+  error for a read-only field comes back in the OS language, so it was never recognised as read-only
+  and the keyboard fallback's read-only refusal never ran on that client. The native write now asks a
+  text field (`Edit` or `Document`) whether it is read-only before writing, and answers in words the
+  server recognises in any language, so such a `type` is refused with `keyboard_target_unsafe`
+  (`read_only`) — as it already was on the PowerShell client and for WinForms text boxes. A read-only
+  input in a web page read through UI Automation is refused the same way. Other controls that say they
+  are read-only are still written to; when that write fails (measured on a read-only WPF combo box, which
+  answered `ok:true` with nothing selected), they are refused the same way. V1 `set_element_value` on a read-only text field still fails; its error now reads
+  `Value is read-only` instead of the OS-language text.
+
 - **A `type` / `setValue` that UI Automation accepts but that changes nothing is refused instead of reported done.**
   On a WinForms NumericUpDown, `desktop_act` with `type` answered `ok:true` while the control's value
   stayed where it was: the native UI Automation client reads it as a combo box whose value accepts a
