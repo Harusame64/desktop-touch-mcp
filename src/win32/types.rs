@@ -131,6 +131,15 @@ pub struct NativeForceFocusResult {
     pub fg_after: BigInt,
 }
 
+/// What `GetGUIThreadInfo` says about a window's thread: the window that has the keyboard focus on
+/// it and the active window, each absent when the thread has none. Read without `AttachThreadInput`,
+/// so the read does not disturb the focus it reports.
+#[napi(object)]
+pub struct NativeThreadFocus {
+    pub focus: Option<BigInt>,
+    pub active: Option<BigInt>,
+}
+
 /// One row of the (pid, parent_pid) map produced by Toolhelp32Snapshot. The
 /// TS wrapper rebuilds the `Map<number, number>` shape that callers expect.
 #[napi(object)]

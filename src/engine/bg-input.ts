@@ -20,6 +20,7 @@ import {
   getWindowProcessId,
   getProcessIdentityByPid,
   getFocusedChildHwnd,
+  getThreadFocus,
   postMessageToHwnd,
   vkToScanCode,
   WM_CHAR, WM_KEYDOWN, WM_KEYUP, VK_RETURN, VK_CONTROL, VK_SHIFT, VK_MENU,
@@ -146,6 +147,13 @@ function _check(hwnd: unknown): InjectCheckResult {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function resolveTarget(hwnd: unknown): unknown {
+  // The thread's focus read without attaching to it (GetGUIThreadInfo) — the same reader
+  // `threadHasNoFocus` asks before a keystroke is sent, so the check and the post look at one answer
+  // (gate 2 on #733). The attach-based read is the fallback for a build without that binding.
+  if (typeof hwnd === "bigint") {
+    const tf = getThreadFocus(hwnd);
+    if (tf !== undefined) return tf.focus ?? hwnd;
+  }
   try {
     const child = getFocusedChildHwnd(hwnd);
     return child !== null ? child : hwnd;
@@ -421,6 +429,22 @@ export function comboHasModifier(combo: string): boolean {
  * took the background road under `auto`, and failed there as an unknown key (gate 2 on #732).
  */
 const MODIFIER_NAMES = new Set(["ctrl", "control", "shift", "alt", "win", "meta"]);
+
+/**
+ * Whether a keystroke posted to `hwnd` has nowhere to go: its thread was asked and has no focused
+ * window, and it is not a console (which takes WM_CHAR on its own window). MEASURED (win2,
+ * 2026-09-24, internal `e4c54dcf`): a thread left with focus 0 — which this server's own forced
+ * focus produces on the window it leaves — dropped a background type in Notepad, WinForms and WPF,
+ * and Notepad's road answered ok:true; conhost took it. A question that could not be asked is not
+ * that answer, and the keystroke goes out as before.
+ */
+export function threadHasNoFocus(hwnd: unknown): boolean {
+  if (typeof hwnd !== "bigint") return false;
+  const cls = (() => { try { return getWindowClassName(hwnd); } catch { return ""; } })();
+  if (cls && TERMINAL_WINDOW_CLASSES.has(cls)) return false;
+  const tf = getThreadFocus(hwnd);
+  return tf !== undefined && tf.focus === null;
+}
 
 /**
  * Send a key combination WITHOUT a modifier, such as 'escape', 'enter', 'pagedown', to `hwnd`.

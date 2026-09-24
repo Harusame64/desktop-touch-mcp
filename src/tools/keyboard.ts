@@ -25,6 +25,7 @@ import {
   postCharsToHwnd,
   postKeyComboToHwnd,
   comboHasModifier,
+  threadHasNoFocus,
   postEnterToHwnd,
   isBgAutoEnabled,
   injectViaForegroundFlash,
@@ -1710,6 +1711,11 @@ export const keyboardTypeHandler = async ({
         if (replaceAll) {
           return failWith(new Error("BackgroundModifierComboUnsupported"), "keyboard:type", { replaceAll: true, channel: "wm_char", windowTitle: effectiveWindowTitle });
         }
+        // The same posted characters as the background road, so the same receiver question: a thread
+        // with no focused window drops them (see `threadHasNoFocus`, gate 2 on #733).
+        if (threadHasNoFocus(target.hwnd)) {
+          return failWith(new Error("BackgroundTargetHasNoFocus"), "keyboard:type", { channel: "wm_char", windowTitle: effectiveWindowTitle });
+        }
         const ffWarnings = [...warnings];
         logDispatchSink({ sink: "wm_char", tool: "keyboard:type", targetHwnd: target.hwnd, payloadChars: effectiveText.length });
         const r = postCharsToHwnd(target.hwnd, effectiveText);
@@ -1885,7 +1891,10 @@ export const keyboardTypeHandler = async ({
       appendTopologyWarnings(warnings);
       if (target) {
         const check = canInjectViaPostMessage(target.hwnd);
-        if (check.supported) {
+        // A thread with no focused window drops the characters (see `threadHasNoFocus`); the road
+        // is not taken — refused below when it was asked for, the foreground road otherwise.
+        const noReceiver = check.supported && threadHasNoFocus(target.hwnd);
+        if (check.supported && !noReceiver) {
           // Phase A safety: evaluate lensId / auto-guard BEFORE WM_CHAR send so
           // the BG path doesn't silently bypass guards that the foreground path
           // would have run (PR #64 Codex P1). foregroundVerified=true is the
@@ -2273,6 +2282,12 @@ export const keyboardTypeHandler = async ({
             }),
             ...(bgPerception && { _perceptionForPost: bgPerception }),
           });
+        } else if (effectiveMethod === "background" && noReceiver) {
+          return failWith(
+            new Error("BackgroundTargetHasNoFocus"),
+            "keyboard:type",
+            { windowTitle: effectiveWindowTitle },
+          );
         } else if (effectiveMethod === "background") {
           // Issue #195 / matrix doc §3.1 + §4.3 alignment:
           //   - `wt_xaml_pipeline` reason → `BackgroundInputNotDelivered`
@@ -2747,7 +2762,9 @@ export const keyboardPressHandler = async ({
       // ADR-035 Phase C-0: surface the stage-1 topology advisory if the resolve
       // above raised one. Non-blocking observation — see `_resolve-log.ts`.
       appendTopologyWarnings(warnings);
-      if (target && canInjectViaPostMessage(target.hwnd).supported) {
+      // A thread with no focused window drops the key (see `threadHasNoFocus`); the road is not taken.
+      const pressNoReceiver = !!target && canInjectViaPostMessage(target.hwnd).supported && threadHasNoFocus(target.hwnd);
+      if (target && canInjectViaPostMessage(target.hwnd).supported && !pressNoReceiver) {
         // Phase A safety: evaluate lensId / auto-guard before WM_CHAR send so
         // BG path doesn't silently bypass guards (PR #64 Codex P1). See type
         // handler comment above for foregroundVerified=true rationale.
@@ -2937,6 +2954,13 @@ export const keyboardPressHandler = async ({
             new Error("WindowNotFound"),
             "keyboard:press",
             { windowTitle: effectiveWindowTitle }
+          );
+        }
+        if (pressNoReceiver) {
+          return failWith(
+            new Error("BackgroundTargetHasNoFocus"),
+            "keyboard:press",
+            { keys, windowTitle: effectiveWindowTitle },
           );
         }
         return failWith(

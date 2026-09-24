@@ -926,6 +926,13 @@ const SUGGESTS: Record<string, string[]> = {
   // A posted WM_KEYDOWN for Ctrl/Shift/Alt does not press the modifier: the receiver's key state
   // stays up, so it types the main key. Measured on the v2.0.0 release build: `ctrl+a` in the
   // background put an "a" into Notepad under ok:true. Nothing is sent on this refusal.
+  // The window's thread has no focused window, so a posted keystroke has no receiver and is dropped.
+  // The server's own forced focus leaves the window it moves away from in this state (measured
+  // 2026-09-24). Nothing is sent on this refusal.
+  BackgroundTargetHasNoFocus: [
+    "The target window's thread has no focused control right now, so a background keystroke would have nowhere to go and would be dropped. Nothing was sent.",
+    "Bring the window forward (focus_window) or click the field you want, then retry — or use method:'foreground' (or omit method), which focuses the window first.",
+  ],
   BackgroundModifierComboUnsupported: [
     "A key combination with Ctrl, Shift or Alt cannot be sent in the background: the app does not see the modifier held and would type the plain key instead. Nothing was sent.",
     "Use method:'foreground' (or omit method) for this combination, and for type with replaceAll:true, which selects with Ctrl+A first.",

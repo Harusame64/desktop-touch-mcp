@@ -43,6 +43,7 @@ import type {
   NativeCursorPoint,
   NativeCursorMoveResult,
   NativeForceFocusResult,
+  NativeThreadFocus,
   NativeForegroundFlashOptions,
   NativeForegroundFlashResult,
   NativeConsolePasteResult,
@@ -197,6 +198,7 @@ export interface NativeWin32 {
   win32SetWindowBounds?(hwnd: bigint, x: number, y: number, cx: number, cy: number, noActivate?: boolean): boolean;
   win32ForceSetForegroundWindow?(hwnd: bigint): NativeForceFocusResult;
   win32GetFocusedChildHwnd?(targetHwnd: bigint): bigint | null;
+  win32GetThreadFocus?(targetHwnd: bigint): NativeThreadFocus | null;
   win32BuildProcessParentMap?(): NativeProcessParentEntry[];
   win32GetProcessIdentity?(pid: number): NativeProcessIdentity;
   /** ADR-014 v2 R3 L3-4 W-0: a process's launch argv (CommandLineToArgvW), or
