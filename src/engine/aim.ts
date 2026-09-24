@@ -345,12 +345,11 @@ export class AimOccludedError extends Error implements CallerFacingRefusal {
     super(
       `Refusing to press (${x}, ${y}) for ${describedAs ?? `the window this act named (hwnd ${hwnd})`}: the window on top at ` +
       `that point is ${byTitle ? `"${byTitle}" (hwnd ${byHwnd})` : `an untitled window (hwnd ${byHwnd})`}. ` +
-      // NOT "so the press would go there". Whether that window would really take the press is the
-      // one thing this check cannot answer — a per-pixel-alpha overlay is reported here and presses
-      // pass straight through it (measured, item 11) — and the published advice says so in the same
-      // envelope. The sentence claimed it anyway, and item 13 is what would have published the
-      // contradiction (gate 2, Opus sandbox review, 2026-09-10).
-      `Anything on top counts as being in the way here, including overlays a press would pass through. ` +
+      // Which answer decided this, said the way the published advice says it in the same envelope:
+      // Windows' own hit test where the addon can ask it (`whoIsUnderPoint`, `via: os_hit_test`), and
+      // the window list where it cannot, whose mask passes only TRANSPARENT|LAYERED (gate 2 on #731:
+      // this sentence still said "anything on top counts" after the advice stopped saying it).
+      `Windows' own hit test decides this where the native addon can ask it; otherwise the window list does, and any window on top counts unless it has both WS_EX_TRANSPARENT and WS_EX_LAYERED. ` +
       `Bring the intended window forward, or act through a route that does not use coordinates.`,
       options,
     );

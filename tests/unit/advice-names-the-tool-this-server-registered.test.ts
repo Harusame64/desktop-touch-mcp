@@ -529,7 +529,7 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
       KeyboardTargetUnsafe:
         "the fourth ground, disabled (the user's decision 2026-09-19): named in the ground list, with a way back of its own — a disabled field takes no click",
       AimOccluded:
-        "the first and fourth lines said the OS hit test cannot be asked and click-through overlays are refused too; since the addon asks WindowFromPoint and refuses only on its answer, both were false (AB 2026-09-24: presses went through click-through overlays)",
+        "the first and fourth lines said the OS hit test cannot be asked and click-through overlays are refused too; the addon asks WindowFromPoint where it can, and only a build that cannot falls back to the window list (AB 2026-09-24: presses went through click-through overlays)",
     };
 
     const cfg = cfgFor("v2_default");
