@@ -270,15 +270,18 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
         // The message is this writer's own, in the words `uia-route-failure.ts` matches whole. A
         // property that cannot be read decides nothing: SetValue runs as before.
         //
-        // Only for a text field (Edit, Document), the kind measured. A combo box that says read-only
-        // may still take SetValue (an editable WPF ComboBox with IsReadOnly set, from its peer's
-        // source — not measured); refusing it here would send it to the keyboard rung, where WM_CHAR
-        // on a drop-down selects by first letter (gate 2 on #729). Other types answer as before.
+        // Refused before writing only for a text field (Edit, Document), the kind measured. A combo box
+        // that says read-only might still take SetValue (gate 2 on #729), so it is written, and only
+        // a write that then FAILS on an element that said read-only is named read-only (below). win2
+        // measured the case gate 2 named — a WPF ComboBox, IsEditable and IsReadOnly — and its SetValue
+        // failed with the localized error, leaving a marked `ok:true` with nothing selected
+        // (`18facd3a`, KILO).
         let is_text_field = elem
             .CurrentControlType()
             .map(|t| t.0 == UIA_EditControlTypeId.0 || t.0 == UIA_DocumentControlTypeId.0)
             .unwrap_or(false);
-        if is_text_field && vp.CurrentIsReadOnly().map(|b| b == true).unwrap_or(false) {
+        let said_read_only = vp.CurrentIsReadOnly().map(|b| b == true).unwrap_or(false);
+        if is_text_field && said_read_only {
             return Ok(ActionResult {
                 ok: false,
                 element: None,
@@ -340,6 +343,14 @@ fn set_value_impl(ctx: &UiaContext, opts: &SetValueOptions) -> napi::Result<Acti
                     code: None,
                 })
             }
+            // A write that failed on an element that said read-only is named read-only, in words
+            // the classifier matches in any OS language (see the note above `is_text_field`).
+            Err(_) if said_read_only => Ok(ActionResult {
+                ok: false,
+                element: None,
+                error: Some("Value is read-only".into()),
+                code: Some("ElementReadOnly".into()),
+            }),
             Err(e) => Ok(ActionResult {
                 ok: false,
                 element: None,
