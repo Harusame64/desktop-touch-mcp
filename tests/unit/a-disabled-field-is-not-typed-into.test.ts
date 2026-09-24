@@ -80,6 +80,32 @@ describe("the rule's step 0", () => {
       .toEqual({ kind: "refuse", ground: "disabled", subject: "window", referenceFrom: "origin" });
   });
 
+  // Internal #190 — measured (win2 `aa71d50f`): a disabled WPF field, the window enabled, the focus on
+  // DELTA. Before this, the rung posted and DELTA took the text under `ok:true`.
+  it("refuses, about the named field, when it has no window of its own and UIA said disabled, whatever the captured window says (#190)", () => {
+    for (const originTakesInput of [true, null] as const) {
+      expect(judgeKeyboardTarget(facts({ entityHwnd: null, entityRoot: null, originRoot: HWND, receiver: HWND, originTakesInput, valueRoadSaidDisabled: true })), String(originTakesInput))
+        .toEqual({ kind: "refuse", ground: "disabled", subject: "named", referenceFrom: "origin" });
+    }
+  });
+
+  it("CONTROL: the same windowless field, the window enabled, and the value road NOT saying disabled, is the marked success it was (#190)", () => {
+    expect(judgeKeyboardTarget(facts({ entityHwnd: null, entityRoot: null, originRoot: HWND, receiver: HWND, originTakesInput: true, valueRoadSaidDisabled: false })))
+      .toEqual({ kind: "post", confirmed: false, why: "receiver_is_window", referenceFrom: "origin" });
+  });
+
+  it("end to end: a windowless field UIA calls disabled, in an enabled window with the focus on a neighbour, is not typed into (#190)", async () => {
+    const d = depsFor(receiptOf({ entityRootHwnd: null, originRootHwnd: HWND, receiverHwnd: 5002n }), { windowTakesInput: () => true });
+    await expect(type(titleRoad, field(null, inWindow), d))
+      .rejects.toMatchObject({ name: "KeyboardTargetUnsafeError", ground: "disabled" });
+    expect(d.keyboardPost).not.toHaveBeenCalled();
+  });
+
+  it("with the ground switched off, #190's refusal becomes the marked success, not a later step's post", () => {
+    expect(judgeKeyboardTarget(facts({ entityHwnd: null, entityRoot: null, originRoot: HWND, receiver: HWND, originTakesInput: true, valueRoadSaidDisabled: true }), new Set(["disabled"] as const)))
+      .toEqual({ kind: "post", confirmed: false, why: "ground_disabled:disabled", referenceFrom: "origin" });
+  });
+
   it("does not refuse on the captured window alone — an owned dialog's field is read through the owner the dialog disables (gate 2)", () => {
     // A field with no window of its own, in a modal dialog found through its owner: the captured
     // window is the owner, disabled by that very dialog, and the characters go into the dialog.
@@ -185,12 +211,20 @@ describe("the rung asks the OS, and refuses before anything is posted", () => {
     expect(d.keyboardPost).toHaveBeenCalledOnce();
   });
 
-  it("asks the captured window, never the aim's — the handle road with a disabled aim and an enabled capture posts", async () => {
-    // Gate 2: reading the aim's window instead of the captured one survived every cell.
+  it("asks the captured window, never the aim's — the handle road with a disabled aim and an enabled capture names the field, not a window", async () => {
+    // Gate 2: reading the aim's window instead of the captured one survived every cell. Since #190 the
+    // value road's "disabled" refuses a windowless field on its own, so the two windows now differ in
+    // the refusal's subject: the captured window (enabled) leaves it about the named field; the aim's
+    // (disabled) would have made it about the window. This cell posted before #190.
     const SIBLING = 8888n;
     const d = depsFor(receiptOf({ entityRootHwnd: null, originRootHwnd: SIBLING }), { windowTakesInput: (h: bigint) => h !== HWND });
-    await type(handleRoad, field(null, { origin: { kind: "window", id: "K-FIXTURE", hwnd: "8888" } }), d);
-    expect(d.keyboardPost).toHaveBeenCalledOnce();
+    await expect(type(handleRoad, field(null, { origin: { kind: "window", id: "K-FIXTURE", hwnd: "8888" } }), d))
+      .rejects.toMatchObject({
+        name: "KeyboardTargetUnsafeError", ground: "disabled",
+        // The subject shows in the caller's sentence: about the named field, not "the window it was read from".
+        callerDetail: expect.stringMatching(/the field this act named does not take input now/),
+      });
+    expect(d.keyboardPost).not.toHaveBeenCalled();
   });
 
   it("posts, marked, when the OS could not be asked — the answer before this ground existed", async () => {

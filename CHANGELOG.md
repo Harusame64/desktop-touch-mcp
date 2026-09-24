@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- **A `type` into a disabled field that has no window of its own is refused instead of typed next door.**
+  On a WPF window, a text box disabled after `desktop_discover`, with the focus on another text box in
+  the same (enabled) window: `desktop_act` with `type` answered `ok:true` and the text went into the
+  other text box. UI Automation had said the field is disabled, but for a field without a window of its
+  own the keyboard fallback also required the whole window to be disabled before refusing. It now
+  refuses on UI Automation's answer alone for such a field, with `keyboard_target_unsafe` (`disabled`),
+  as it already did for a field with a window of its own.
+
 - **A `type` into a read-only text field is refused on a Windows that is not in English, too.**
   On a Japanese Windows, `desktop_act` with `type` on a read-only WPF text box answered `ok:true`
   (with its mark that the write was not confirmed) and wrote nothing. The native UI Automation client's

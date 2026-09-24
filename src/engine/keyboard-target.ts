@@ -130,6 +130,8 @@ function same(a: bigint, b: bigint): boolean {
  *    through their owner — which the dialog itself disables — so the captured window alone refused a
  *    write into the dialog that step 3 would have posted (gate 2). Never the aim's or the looked-up
  *    window: either can be a same-titled sibling. Not asked is not evidence.
+ *    Then, still with no usable E, the value road's "disabled" alone refuses, about the named field
+ *    (internal #190: a disabled WPF field in an enabled window was typed into its neighbour).
  * 1. T or its root cannot be read → cannot say.
  * 2. E is usable, and T is E, or E is among T's parents (a partial walk counts), or E is T's root:
  *    the named control or a window inside it. Refuse `read_only` if T does not take typing;
@@ -168,6 +170,19 @@ export function judgeKeyboardTarget(
   // 0.
   if (eUsable ? f.entityTakesInput === false : f.valueRoadSaidDisabled && f.originTakesInput === false) {
     if (!disabled.has("disabled")) return { kind: "refuse", ground: "disabled", subject: eUsable ? "named" : "window", referenceFrom };
+    const rest = judgeTheReceiver(f, disabled, eUsable, reference, referenceFrom);
+    return rest.kind === "refuse" ? rest : cannotSay("ground_disabled:disabled");
+  }
+  // Internal #190 — the same belief as #167's below, about "disabled". MEASURED on real hardware (win2,
+  // 2026-09-24, internal `aa71d50f`, on `859a3cf9` and on #729's branch alike): a WPF TextBox disabled
+  // after discover, the focus on DELTA in the same, enabled window. The value road answered
+  // `element_disabled`; step 0 above needs the captured window to be disabled too for a field with no
+  // window of its own, so the rung went on, said `receiver_is_window`, posted — and the characters
+  // landed in DELTA under `ok:true`. Without a window of its own there is no fact to prefer over the
+  // value road's answer, so its "disabled" is believed as its success would have been. Step 0 still
+  // decides first where the captured window is disabled too, and names the window.
+  if (f.valueRoadSaidDisabled && !eUsable) {
+    if (!disabled.has("disabled")) return { kind: "refuse", ground: "disabled", subject: "named", referenceFrom };
     const rest = judgeTheReceiver(f, disabled, eUsable, reference, referenceFrom);
     return rest.kind === "refuse" ? rest : cannotSay("ground_disabled:disabled");
   }
