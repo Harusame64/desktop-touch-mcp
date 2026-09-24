@@ -147,6 +147,13 @@ function _check(hwnd: unknown): InjectCheckResult {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function resolveTarget(hwnd: unknown): unknown {
+  // The thread's focus read without attaching to it (GetGUIThreadInfo) — the same reader
+  // `threadHasNoFocus` asks before a keystroke is sent, so the check and the post look at one answer
+  // (gate 2 on #733). The attach-based read is the fallback for a build without that binding.
+  if (typeof hwnd === "bigint") {
+    const tf = getThreadFocus(hwnd);
+    if (tf !== undefined) return tf.focus ?? hwnd;
+  }
   try {
     const child = getFocusedChildHwnd(hwnd);
     return child !== null ? child : hwnd;

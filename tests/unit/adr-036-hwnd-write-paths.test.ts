@@ -667,6 +667,28 @@ describe("a background keystroke is not sent to a thread with no focused window"
     }
   });
 
+  it("keyboard:press chosen automatically (DTM_BG_AUTO) goes through the foreground instead", async () => {
+    await withThreadFocus(NO_FOCUS);
+    const { isBgAutoEnabled } = await import("../../src/engine/bg-input.js");
+    vi.mocked(isBgAutoEnabled).mockReturnValue(true);
+    try {
+      const r = parse(await keyboardPressHandler({ keys: "enter", hwnd: String(LIVE), trackFocus: false, settleMs: 0 } as never));
+      expect(r.code).not.toBe("BackgroundTargetHasNoFocus");
+      expect(mockPostEnter).not.toHaveBeenCalled();
+      expect(mockPressKey).toHaveBeenCalled();
+    } finally {
+      vi.mocked(isBgAutoEnabled).mockReturnValue(false);
+    }
+  });
+
+  it("keyboard:type on the flash road's WM_CHAR channel is refused too, and no character is posted", async () => {
+    await withThreadFocus(NO_FOCUS);
+    const r = parse(await keyboardTypeHandler({ ...TYPE_BASE, hwnd: String(LIVE), windowTitle: SHARED_TITLE, method: "foreground_flash" } as never));
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("BackgroundTargetHasNoFocus");
+    expect(mockPostChars).not.toHaveBeenCalled();
+  });
+
   for (const [what, answer, cls] of [
     ["a thread with a focused window", { focus: 0x9999n, active: LIVE }, "Chrome_WidgetWin_1"],
     ["a question that could not be asked", undefined, "Chrome_WidgetWin_1"],
@@ -676,6 +698,11 @@ describe("a background keystroke is not sent to a thread with no focused window"
       await withThreadFocus(answer as never, cls);
       await keyboardTypeHandler({ ...TYPE_BASE, hwnd: String(LIVE), method: "background" } as never);
       expect(mockPostChars).toHaveBeenCalled();
+    });
+    it(`CONTROL: ${what} still takes the background press`, async () => {
+      await withThreadFocus(answer as never, cls);
+      await keyboardPressHandler({ keys: "enter", hwnd: String(LIVE), method: "background", trackFocus: false, settleMs: 0 } as never);
+      expect(mockPostEnter).toHaveBeenCalled();
     });
   }
 });

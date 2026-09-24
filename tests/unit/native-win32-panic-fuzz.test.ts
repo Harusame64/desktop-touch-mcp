@@ -191,6 +191,9 @@ describe.skipIf(!nativeWin32)("ADR-007 P1: native win32 panic-safety", () => {
       it(`win32GetFocusedChildHwnd(${label}) returns null, no panic`, () => {
         expect(native.win32GetFocusedChildHwnd!(hwnd)).toBeNull();
       });
+      it(`win32GetThreadFocus(${label}) returns null (could not ask), no panic`, () => {
+        expect(native.win32GetThreadFocus!(hwnd)).toBeNull();
+      });
       it(`win32GetScrollInfo(${label}, "vertical") returns null, no panic`, () => {
         expect(native.win32GetScrollInfo!(hwnd, "vertical")).toBeNull();
       });

@@ -1711,6 +1711,11 @@ export const keyboardTypeHandler = async ({
         if (replaceAll) {
           return failWith(new Error("BackgroundModifierComboUnsupported"), "keyboard:type", { replaceAll: true, channel: "wm_char", windowTitle: effectiveWindowTitle });
         }
+        // The same posted characters as the background road, so the same receiver question: a thread
+        // with no focused window drops them (see `threadHasNoFocus`, gate 2 on #733).
+        if (threadHasNoFocus(target.hwnd)) {
+          return failWith(new Error("BackgroundTargetHasNoFocus"), "keyboard:type", { channel: "wm_char", windowTitle: effectiveWindowTitle });
+        }
         const ffWarnings = [...warnings];
         logDispatchSink({ sink: "wm_char", tool: "keyboard:type", targetHwnd: target.hwnd, payloadChars: effectiveText.length });
         const r = postCharsToHwnd(target.hwnd, effectiveText);
