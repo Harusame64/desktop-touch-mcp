@@ -8,7 +8,9 @@
   other text box. UI Automation had said the field is disabled, but for a field without a window of its
   own the keyboard fallback also required the whole window to be disabled before refusing. It now
   refuses on UI Automation's answer alone for such a field, with `keyboard_target_unsafe` (`disabled`),
-  as it already did for a field with a window of its own.
+  as it already did when Windows reports a field's own window disabled. The sentence says it is UI
+  Automation's report. A disabled button or label whose name contains the field's no longer answers for it:
+  the native write asks for the value pattern before it reads whether the element is enabled.
 
 - **A `type` into a read-only text field is refused on a Windows that is not in English, too.**
   On a Japanese Windows, `desktop_act` with `type` on a read-only WPF text box answered `ok:true`

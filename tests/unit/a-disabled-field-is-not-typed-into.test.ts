@@ -85,7 +85,7 @@ describe("the rule's step 0", () => {
   it("refuses, about the named field, when it has no window of its own and UIA said disabled, whatever the captured window says (#190)", () => {
     for (const originTakesInput of [true, null] as const) {
       expect(judgeKeyboardTarget(facts({ entityHwnd: null, entityRoot: null, originRoot: HWND, receiver: HWND, originTakesInput, valueRoadSaidDisabled: true })), String(originTakesInput))
-        .toEqual({ kind: "refuse", ground: "disabled", subject: "named", referenceFrom: "origin" });
+        .toEqual({ kind: "refuse", ground: "disabled", subject: "reported_named", referenceFrom: "origin" });
     }
   });
 
@@ -99,6 +99,21 @@ describe("the rule's step 0", () => {
     await expect(type(titleRoad, field(null, inWindow), d))
       .rejects.toMatchObject({ name: "KeyboardTargetUnsafeError", ground: "disabled" });
     expect(d.keyboardPost).not.toHaveBeenCalled();
+  });
+
+  it("with the ground switched off, a later step's refusal still stands — a read-only control holding the focus (gate 2 on #730)", () => {
+    expect(judgeKeyboardTarget(facts({
+      entityHwnd: null, entityRoot: null, originRoot: HWND, receiver: OTHER, receiverRoot: HWND, receiverReadOnly: true,
+      originTakesInput: true, valueRoadSaidDisabled: true,
+    }), new Set(["disabled"] as const))).toEqual({ kind: "refuse", ground: "read_only", subject: "focused", referenceFrom: "origin" });
+  });
+
+  it("the sentence for #190 says it is UI Automation's word, and does not claim the field is missing from discover (gate 2 on #730)", async () => {
+    const d = depsFor(receiptOf({ entityRootHwnd: null, originRootHwnd: HWND, receiverHwnd: 5002n }), { windowTakesInput: () => true });
+    const e = await type(titleRoad, field(null, inWindow), d).then(() => null, (err: unknown) => err as { callerDetail?: string });
+    expect(e?.callerDetail).toMatch(/^Nothing was typed \(disabled\): UI Automation reported the field this act named disabled\. /);
+    expect(e?.callerDetail).not.toMatch(/missing then means still disabled/);
+    expect(e?.callerDetail).toMatch(/automationId/);
   });
 
   it("with the ground switched off, #190's refusal becomes the marked success, not a later step's post", () => {
@@ -222,7 +237,7 @@ describe("the rung asks the OS, and refuses before anything is posted", () => {
       .rejects.toMatchObject({
         name: "KeyboardTargetUnsafeError", ground: "disabled",
         // The subject shows in the caller's sentence: about the named field, not "the window it was read from".
-        callerDetail: expect.stringMatching(/the field this act named does not take input now/),
+        callerDetail: expect.stringMatching(/UI Automation reported the field this act named disabled/),
       });
     expect(d.keyboardPost).not.toHaveBeenCalled();
   });

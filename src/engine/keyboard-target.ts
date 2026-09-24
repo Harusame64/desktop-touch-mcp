@@ -41,7 +41,12 @@ export type LandingWhy =
  * Whom a refusal is about, so its sentence does not blame the wrong control. `window` is the window
  * the entity was captured in, for a `disabled` refusal about a control with no window of its own.
  */
-export type RefusalSubject = "named" | "focused_inside_named" | "focused" | "window";
+/**
+ * Whom the refusal is about, and on whose word. `reported_named` is the named field on UI Automation's
+ * word alone (internal #190: a field with no window of its own, which the OS cannot be asked about) —
+ * so its sentence says who reported it, and does not claim the field is missing from discover.
+ */
+export type RefusalSubject = "named" | "reported_named" | "focused_inside_named" | "focused" | "window";
 
 /**
  * How the act named its window. The way back differs: a text field has no UIA invoke, so the click
@@ -181,8 +186,15 @@ export function judgeKeyboardTarget(
   // landed in DELTA under `ok:true`. Without a window of its own there is no fact to prefer over the
   // value road's answer, so its "disabled" is believed as its success would have been. Step 0 still
   // decides first where the captured window is disabled too, and names the window.
+  //
+  // #167's caveat holds here too: the value road's answer is about "the element the route matched" —
+  // the first descendant whose name CONTAINS the entity's. Since this change the native writer asks for
+  // the ValuePattern before it reads IsEnabled (as the managed client does), so a disabled button or
+  // label with a containing name answers "no pattern", not "disabled" (gate 2). What remains is an
+  // earlier disabled EDITABLE field whose name contains this one's; the sentence therefore says the
+  // refusal is UI Automation's word, and how to narrow the name if it repeats.
   if (f.valueRoadSaidDisabled && !eUsable) {
-    if (!disabled.has("disabled")) return { kind: "refuse", ground: "disabled", subject: "named", referenceFrom };
+    if (!disabled.has("disabled")) return { kind: "refuse", ground: "disabled", subject: "reported_named", referenceFrom };
     const rest = judgeTheReceiver(f, disabled, eUsable, reference, referenceFrom);
     return rest.kind === "refuse" ? rest : cannotSay("ground_disabled:disabled");
   }
@@ -317,6 +329,12 @@ function callerSentence(ground: KeyboardGround, subject: RefusalSubject, road: K
           ? BY_HANDLE_WAY_BACK
           : "Click the field this act named (desktop_act action='click' on the same entity), then type again.");
     case "disabled":
+      if (subject === "reported_named") {
+        return "Nothing was typed (disabled): UI Automation reported the field this act named disabled. " +
+          "Answer or wait out whatever disabled it (a form being submitted, a dialog, a step not yet done), then re-run desktop_discover and type again. " +
+          "If desktop_discover lists the field and this refusal repeats, the answer may have come from another element whose name contains this one's: " +
+          "name the field by its automationId if it has one.";
+      }
       return (subject === "window"
         ? "Nothing was typed (disabled): UI Automation reported the field disabled, and the window it was read from does not take input now. "
         : "Nothing was typed (disabled): the field this act named does not take input now — it, or its window, is disabled. ") +
