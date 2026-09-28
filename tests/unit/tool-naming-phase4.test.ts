@@ -685,6 +685,9 @@ describe("Phase 4 — Codex PR #41 round 5 P1: desktop_discover.windows[] is imp
     expect((await facade.see({ target: { hwnd: "0x3039" } })).target.title).toBe("Notepad");
     expect((await facade.see({ target: { hwnd: " 12345" } })).target.title).toBe("Notepad");
     expect((await facade.see({ target: { hwnd: "not-a-handle" } })).target.title).toBe("not-a-handle");
+    // An unusable handle gives way to windowTitle, as the read does (parseTargetHwnd)
+    expect((await facade.see({ target: { hwnd: "0", windowTitle: "Notepad" } })).target.title).toBe("Notepad");
+    expect((await facade.see({ target: { hwnd: "x", windowTitle: "Notepad" } })).target.title).toBe("Notepad");
     // hwnd wins over windowTitle, as the target is resolved
     expect((await facade.see({ target: { hwnd: "12345", windowTitle: "メモ" } })).target.title).toBe("Notepad");
     // An empty title is not a title
