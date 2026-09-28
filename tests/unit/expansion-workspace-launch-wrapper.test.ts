@@ -230,6 +230,11 @@ describe("workspace_launch reply: windowTitle / hwnd / pid (internal #211 item 6
     const found = await waitForLaunchedWindow(() => [win(2n, "Chrome - b")], before, titles, 30, 5);
     expect(found?.hwnd).toBe(2n);
     expect(await waitForLaunchedWindow(() => [win(1n, "Old")], before, titles, 30, 5)).toBeNull();
+    // A retitled window that closed, or took its old title back, by the last listing is not reported
+    let k = 0;
+    expect(await waitForLaunchedWindow(() => (k++ === 0 ? [win(2n, "Chrome - b")] : [win(2n, "Chrome - a")]), before, titles, 30, 5)).toBeNull();
+    let m = 0;
+    expect(await waitForLaunchedWindow(() => (m++ === 0 ? [win(2n, "Chrome - b")] : []), before, titles, 30, 5)).toBeNull();
     // A listing that throws is retried, not fatal
     let calls = 0;
     const afterThrow = await waitForLaunchedWindow(() => {

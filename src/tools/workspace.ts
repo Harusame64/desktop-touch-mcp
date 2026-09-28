@@ -280,7 +280,9 @@ export async function waitForLaunchedWindow(
     async () => {
       try {
         const picked = pickLaunchedWindows(listWindows(), beforeHwnds, beforeTitles);
-        if (picked.retitled) retitled = picked.retitled;
+        // The latest listing's answer, including none: a retitled window that has since closed or
+        // taken its old title back is not reported from an earlier listing.
+        retitled = picked.retitled;
         return picked.created;
       } catch {
         // enumWindowsInZOrder FFI failure — non-fatal, retry on next poll
