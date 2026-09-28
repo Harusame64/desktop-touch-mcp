@@ -15,6 +15,8 @@
  *
  * Warning codes emitted here:
  *   no_provider_matched               — target omitted and foreground window could not be resolved
+ *   target_window_gone                — target.hwnd names no window any more (the OS said so); no
+ *                                       lane runs
  *   partial_results_only              — primary provider returned 0 entities; fallback attempted
  *   visual_not_attempted              — (H4) visual lane was unready (unavailable/warming) on a blind target
  *   visual_attempted_empty            — (H4) visual lane ran warm but produced no candidates on a blind target
@@ -35,7 +37,7 @@ import { resolveWindowTarget }     from "../_resolve-window.js";
 import { WindowExcludedError }     from "../../engine/tool-exclusion.js";
 import { probeAim, probeLane, type ProbeLane } from "../../engine/aim-probe.js";
 import { toAim, readWindowIdentityFields, type WindowIdentity, type WindowRect, type AimOrigin } from "../../engine/aim.js";
-import { getWindowIdentity, getWindowClassName, getWindowTitleW, getWindowRectByHwnd } from "../../engine/win32.js";
+import { getWindowIdentity, getWindowClassName, getWindowTitleW, getWindowRectByHwnd, windowIsAlive } from "../../engine/win32.js";
 
 // ── G4: transient visual warnings trigger a single 200ms retry ────────────────
 // Covers the first-request race where VisualRuntime.attach() (fire-and-forget in
@@ -176,6 +178,19 @@ function applyVisualEscalation(
   return extra;
 }
 
+
+/**
+ * internal #211 item 9(3) — a `target.hwnd` the OS says is not a window: a positive decimal handle,
+ * and `windowIsAlive`'s definite no. Not for an opaque key (the visual lanes pass those in the same
+ * field), not for zero (no handle, as `parseTargetHwnd` reads it), and not for a question that could
+ * not be asked. A hidden window is alive and is not this.
+ */
+function handleIsGone(hwnd: string): boolean {
+  if (!/^\d+$/.test(hwnd)) return false;
+  const h = BigInt(hwnd);
+  return h > 0n && windowIsAlive(h) === false;
+}
+
 /**
  * ADR-036 — a fact about the deployment is not a warning about THIS read.
  *
@@ -255,6 +270,12 @@ async function normalizeTarget(
       // fan-out and the OCR lane reads the key-locker dialog by handle (Codex R1 P1-A). Other
       // resolution errors keep the legacy tolerant passthrough.
       if (e instanceof WindowExcludedError) throw e;
+      // internal #211 item 9(3): a handle that names no window any more — a dialog that has
+      // closed, the one a refusal named — read as nothing at all, and the caller who followed the
+      // advice there got `entities: []` with no warning (win2, internal #212 arm 9c). Said only on
+      // the OS's definite no, and only for a decimal handle: the visual lanes pass opaque keys in
+      // the same field, and a question that could not be asked is not a closed window.
+      if (handleIsGone(target.hwnd)) return { target, warnings: ["target_window_gone"] };
       return { target, warnings: [] };
     }
   }
@@ -281,6 +302,8 @@ async function normalizeTarget(
   }
 
   if (target?.windowTitle) {  // hwnd + windowTitle: pass through as before
+    // …but a handle that names no window any more is said here too (gate 2 on internal #211 9(3)).
+    if (target.hwnd && handleIsGone(target.hwnd)) return { target, warnings: ["target_window_gone"] };
     return { target, warnings: [] };
   }
 
@@ -320,6 +343,13 @@ export async function composeCandidates(
     // Nothing resolved: no candidates, and — deliberately — no `target`. "We could not work out
     // which window" must not arrive as "the window is nothing" (ADR-036).
     return { candidates: [], warnings: normalized.warnings };
+  }
+  // The window the caller named has closed: nothing a lane reads there is about it, and a lane that
+  // replays an earlier snapshot would hand back leases for the closed window (gate 2 on internal
+  // #211 item 9(3)). The target stays — it is the window that was named — and its identity is
+  // recorded as looked for and not found, so no later read baselines whoever inherits the handle.
+  if (normalized.warnings.includes("target_window_gone")) {
+    return { candidates: [], warnings: normalized.warnings, target: normalized.target, identityRead: true };
   }
 
   // ADR-036 — the resolution and the warnings it produced are applied HERE, once, rather than at

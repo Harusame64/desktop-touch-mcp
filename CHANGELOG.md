@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **`desktop_discover` says when the window `target.hwnd` names has closed.** A call with the handle
+  of a window that is gone, such as a dialog named by an earlier refusal, used to return
+  `entities: []` with no warning. It now returns the warning `target_window_gone`, sets
+  `constraints.window` to the same value, and when there are no entities sets
+  `constraints.entityZeroReason` to it too. To recover, discover the window the closed one belonged
+  to, or call without `target.hwnd`. Nothing is read from the closed window, so a remembered read
+  of it is not returned with new leases. The warning appears only when Windows answers that the
+  handle is not a window. A window that is only hidden, or a handle of zero, does not get it.
+
 - **`desktop_discover` reads a window again after a dialog it owns opens or closes, and after an
   act on it.** It used to serve its cached read for up to 30 seconds. That read was missing a save
   dialog that had just opened, and still listed the buttons of one that had closed, as `observed`.

@@ -43,11 +43,16 @@ export interface ViewConstraints {
   terminal?: "buffer_empty" | "provider_failed";
   /**
    * Foreground window resolution failure.
-   * Only "no_provider_matched" is a true failure (constraint).
+   * Only "no_provider_matched" and "target_window_gone" are true failures (constraints).
    * H3 success notifications (dialog_resolved_via_owner_chain, parent_disabled_prefer_popup)
    * are informational and remain in warnings[] only — not surfaced here.
    */
-  window?: "no_provider_matched";
+  window?: "no_provider_matched"
+    /**
+     * internal #211 item 9(3) — the `target.hwnd` the caller sent names no window any more: the OS
+     * answered that it is not a window. A dialog that closed is the usual one.
+     */
+    | "target_window_gone";
   /**
    * The ingress could not give a whole answer: its fetch threw (a stale cache is returned when
    * present), or its result had no usable candidate list, or entries that were not objects
@@ -61,6 +66,8 @@ export interface ViewConstraints {
    *
    * Fallback guidance by value:
    *   foreground_unresolved    → add target.windowTitle or wait for focus
+   *   target_window_gone       → the window target.hwnd named has closed: discover the window it
+   *                              belonged to, or call without target.hwnd
    *   ingress_fetch_error      → retry desktop_discover
    *   uia_blind_visual_incapable → the attached visual backend recognises nothing (the default
    *                              build). Waiting never changes it: enable a recognising backend, or
@@ -78,6 +85,7 @@ export interface ViewConstraints {
     | "cdp_failed_visual_empty"
     | "all_providers_failed"
     | "foreground_unresolved"
+    | "target_window_gone"
     | "ingress_fetch_error";
 }
 
@@ -183,6 +191,10 @@ export function deriveViewConstraints(
         c.window = "no_provider_matched";
         hasConstraint = true;
         break;
+      case "target_window_gone":
+        c.window = "target_window_gone";
+        hasConstraint = true;
+        break;
       // Ingress
       case "ingress_fetch_error":
         c.ingress = "fetch_error";
@@ -204,6 +216,7 @@ export function deriveViewConstraints(
 
 function deriveEntityZeroReason(c: ViewConstraints): ViewConstraints["entityZeroReason"] {
   // Priority: highest severity / most actionable first.
+  if (c.window === "target_window_gone") return "target_window_gone";
   if (c.window === "no_provider_matched") return "foreground_unresolved";
   if (c.ingress === "fetch_error") return "ingress_fetch_error";
 

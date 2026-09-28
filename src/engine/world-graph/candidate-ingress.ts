@@ -43,6 +43,7 @@ export type IngressReason = "winevent" | "cdp" | "dirty-rect" | "startup" | "cac
  *                               `DesktopFacade.see` when a result arrives with no usable
  *                               candidate list, or with entries that are not objects (#161)
  *   no_provider_matched       — target omitted and foreground window could not be resolved
+ *   target_window_gone        — target.hwnd names no window any more (internal #211 item 9(3))
  *   partial_results_only      — primary provider returned 0 entities; fallback used
  */
 export interface ProviderResult {
