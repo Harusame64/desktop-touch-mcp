@@ -501,16 +501,28 @@ async function downloadFile(url, destination) {
   }
 }
 
+// Expand-Archive under Windows PowerShell 5.1 answers a path that is too long
+// with ~1,600 cleanup errors (1.3 MB) and puts the real cause last, so the
+// buffer must hold all of it and a message keeps only the tail (internal #208).
+const RUN_MAX_BUFFER = 64 * 1024 * 1024;
+const STDERR_TAIL_CHARS = 1000;
+
+function stderrTail(stderr) {
+  const text = String(stderr ?? "").trim();
+  return text.length > STDERR_TAIL_CHARS ? `...${text.slice(-STDERR_TAIL_CHARS)}` : text;
+}
+
+/** Resolves with the command's stderr, which may be non-empty on success. */
 function run(command, args) {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { windowsHide: true }, (error, _stdout, stderr) => {
+    execFile(command, args, { windowsHide: true, maxBuffer: RUN_MAX_BUFFER }, (error, _stdout, stderr) => {
       if (error) {
-        const suffix = stderr ? `\n${stderr}` : "";
-        error.message = `${error.message}${suffix}`;
+        const tail = stderrTail(stderr);
+        error.message = tail ? `${error.message}\n${tail}` : error.message;
         reject(error);
         return;
       }
-      resolve();
+      resolve(String(stderr ?? ""));
     });
   });
 }
@@ -520,11 +532,77 @@ async function expandZip(zipPath, destination) {
   const args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script, zipPath, destination];
 
   try {
-    await run("powershell.exe", args);
+    return await run("powershell.exe", args);
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
-    await run("pwsh.exe", ["-NoLogo", ...args]);
+    return await run("pwsh.exe", ["-NoLogo", ...args]);
   }
+}
+
+/**
+ * The file names (not directories) in a zip's central directory, or null when
+ * that directory cannot be read (a zip64 archive, whose offset field points
+ * past the end of the file, lands here too). The launcher counts what the
+ * extractor left against these, because Expand-Archive can lose every file and
+ * still exit 0 (internal #208).
+ * @internal Exported for tests; not part of the package's public surface.
+ */
+export async function readZipFileNames(zipPath) {
+  const data = await readFile(zipPath);
+  const EOCD_SIZE = 22;
+  const lowest = Math.max(0, data.length - EOCD_SIZE - 0xffff);
+  for (let eocd = data.length - EOCD_SIZE; eocd >= lowest; eocd -= 1) {
+    if (data.readUInt32LE(eocd) !== 0x06054b50) continue;
+    const count = data.readUInt16LE(eocd + 10);
+    const offset = data.readUInt32LE(eocd + 16);
+    const names = [];
+    let entry = offset;
+    for (let i = 0; i < count; i += 1) {
+      if (entry + 46 > eocd || data.readUInt32LE(entry) !== 0x02014b50) return null;
+      const nameLength = data.readUInt16LE(entry + 28);
+      const extraLength = data.readUInt16LE(entry + 30);
+      const commentLength = data.readUInt16LE(entry + 32);
+      const name = data.toString("utf8", entry + 46, entry + 46 + nameLength);
+      if (!/[\\/]$/.test(name)) names.push(name);
+      entry += 46 + nameLength + extraLength + commentLength;
+    }
+    return names;
+  }
+  return null;
+}
+
+async function countFiles(dir) {
+  let count = 0;
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    count += entry.isDirectory() ? await countFiles(path.join(dir, entry.name)) : 1;
+  }
+  return count;
+}
+
+// MAX_PATH is 260 including the terminator. With long paths disabled, the
+// first file to fail was 261 characters long (internal #208).
+const WINDOWS_MAX_PATH_CHARS = 259;
+
+/**
+ * The message for an extraction that left fewer files than the zip holds.
+ * @internal Exported for tests; not part of the package's public surface.
+ */
+export function describeShortExtraction({ extracted, names, cacheRoot, extractDir, stderr }) {
+  const longest = names.reduce((a, b) => (b.length > a.length ? b : a), "");
+  const longestPath = extractDir.length + 1 + longest.length;
+  const lines = [`Extracting ${ASSET_NAME} under ${cacheRoot} left ${extracted} of ${names.length} files.`];
+  if (longestPath > WINDOWS_MAX_PATH_CHARS) {
+    // The cache root is the default when DESKTOP_TOUCH_MCP_HOME is unset, so
+    // the same advice holds whether or not the variable was set.
+    lines.push(
+      `Its longest file comes to ${longestPath} characters there, and Windows refuses a path over ` +
+        `${WINDOWS_MAX_PATH_CHARS} characters unless long paths are enabled. Set DESKTOP_TOUCH_MCP_HOME ` +
+        `to a directory at least ${longestPath - WINDOWS_MAX_PATH_CHARS} characters shorter than ${cacheRoot}.`,
+    );
+  }
+  const tail = stderrTail(stderr);
+  if (tail) lines.push(`The extractor reported:\n${tail}`);
+  return lines.join("\n");
 }
 
 async function findExtractedRoot(extractDir) {
@@ -558,7 +636,18 @@ async function installRelease(release, expected) {
            "skipping integrity verification of the downloaded zip. Development use only.");
     }
     await mkdir(extractDir, { recursive: true });
-    await expandZip(zipPath, extractDir);
+    const stderr = await expandZip(zipPath, extractDir);
+    const names = await readZipFileNames(zipPath);
+    if (names) {
+      const extracted = await countFiles(extractDir);
+      if (extracted < names.length) {
+        throw new Error(
+          describeShortExtraction({ extracted, names, cacheRoot: CACHE_ROOT, extractDir, stderr }),
+        );
+      }
+    } else {
+      warn(`Could not read the file list in ${ASSET_NAME}; installing without checking that every file was extracted.`);
+    }
 
     const extractedRoot = await findExtractedRoot(extractDir);
     await rm(targetDir, { recursive: true, force: true });
