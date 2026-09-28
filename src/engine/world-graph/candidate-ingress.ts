@@ -190,8 +190,18 @@ export interface CandidateIngress {
  * Returns async to allow ESM dynamic imports inside the adapter.
  */
 export interface IngressEventSource {
-  drain(knownKeys: ReadonlySet<string>): Promise<Iterable<{ key: string; reason: IngressReason }>>;
+  drain(knownKeys: ReadonlySet<string>, context?: IngressDrainContext): Promise<Iterable<{ key: string; reason: IngressReason }>>;
   dispose(): void;
+}
+
+/**
+ * internal #211 item 9(1) — what the ingress knows that an event source does not: which windows
+ * a key's cached read listed. A window that has closed is gone before its event is drained, so
+ * the OS cannot say whose it was; the cached read can.
+ */
+export interface IngressDrainContext {
+  /** Whether `targetKey`'s cached candidates include one recorded with this window handle. */
+  listsWindow(targetKey: string, hwnd: string): boolean;
 }
 
 // ── SnapshotIngress ───────────────────────────────────────────────────────────
@@ -243,7 +253,7 @@ export class SnapshotIngress implements CandidateIngress {
 
     // Drain events lazily — no background polling needed.
     if (this.eventSource) {
-      const pending = await this.eventSource.drain(this.knownKeys);
+      const pending = await this.eventSource.drain(this.knownKeys, this.drainContext);
       for (const { key, reason } of pending) {
         this._markDirty(key, reason);
       }
@@ -251,6 +261,10 @@ export class SnapshotIngress implements CandidateIngress {
 
     const entry = this.cache.get(targetKey);
     const now   = Date.now();
+    // A dirty mark that lands while the fetch below is in flight — an act's `invalidate`, an event
+    // drained by a concurrent call — is about a world newer than the read's start, so the entry this
+    // fetch writes stays dirty (gate 2 on internal #211 item 9(1)).
+    const marksAtStart = this.marks.get(targetKey) ?? 0;
     const fresh = entry && !entry.dirty && (now - entry.fetchedAtMs) < this.cacheTtlMs;
     if (fresh) return { candidates: entry!.candidates, warnings: entry!.warnings, target: entry!.target, identity: entry!.identity, identityRead: entry!.identityRead, origin: entry!.origin, freshness: { from: "cache", observedAtMs: entry!.fetchedAtMs } };
 
@@ -265,7 +279,7 @@ export class SnapshotIngress implements CandidateIngress {
         identityRead: result.identityRead,
         origin: result.origin,
         fetchedAtMs: now,
-        dirty: false,
+        dirty: (this.marks.get(targetKey) ?? 0) !== marksAtStart,
       });
       return { ...result, freshness: { from: "read", observedAtMs: now } };
     } catch (err) {
@@ -301,9 +315,21 @@ export class SnapshotIngress implements CandidateIngress {
     this.cache.clear();
     this.subs.clear();
     this.knownKeys.clear();
+    this.marks.clear();
   }
 
+  private readonly drainContext: IngressDrainContext = {
+    listsWindow: (targetKey, hwnd) => {
+      const candidates = this.cache.get(targetKey)?.candidates;
+      return Array.isArray(candidates) && candidates.some((c) => c?.locator?.uia?.nativeWindowHandle === hwnd);
+    },
+  };
+
+  /** How many times each key has been marked dirty — see `marksAtStart` in `getSnapshot`. */
+  private readonly marks = new Map<string, number>();
+
   private _markDirty(targetKey: string, _reason: IngressReason): void {
+    this.marks.set(targetKey, (this.marks.get(targetKey) ?? 0) + 1);
     const entry = this.cache.get(targetKey);
     if (entry) entry.dirty = true;
     this.subs.get(targetKey)?.forEach((cb) => cb());
@@ -346,13 +372,13 @@ export function windowEventMatchesKey(event: WindowEventLike, key: string): bool
  */
 export function combineEventSources(sources: IngressEventSource[]): IngressEventSource {
   return {
-    async drain(knownKeys: ReadonlySet<string>): Promise<Iterable<{ key: string; reason: IngressReason }>> {
+    async drain(knownKeys: ReadonlySet<string>, context?: IngressDrainContext): Promise<Iterable<{ key: string; reason: IngressReason }>> {
       const results: Array<{ key: string; reason: IngressReason }> = [];
       const seen = new Set<string>();
 
       for (const source of sources) {
         try {
-          const events = await source.drain(knownKeys);
+          const events = await source.drain(knownKeys, context);
           for (const e of events) {
             if (!seen.has(e.key)) {
               seen.add(e.key);
@@ -383,8 +409,25 @@ export function combineEventSources(sources: IngressEventSource[]): IngressEvent
  *
  * The subscription is created lazily on first drain to avoid importing
  * event-bus during module load (flag-OFF path safety).
+ *
+ * **A window's own events are not the only ones that change it** (internal #211 item 9(1)). An owned
+ * dialog is a top-level window of its own, with its own handle, so its coming and going never
+ * matched the owner's key: win2 measured `desktop_discover` serving a read without the save dialog
+ * for about 30 s after it appeared, and the dialog's buttons as `observed` after it closed (internal
+ * #212, arm 9). So a key is also dirtied when:
+ * - a window appears that the key's window owns, directly or further up (asked of the OS at drain
+ *   time, so a window already gone by then is not seen),
+ * - a window disappears that the key's cached read listed (the OS cannot say whose a gone window
+ *   was; the read can — {@link IngressDrainContext}).
+ *
+ * `deps` exists for unit tests only.
  */
-export function createWinEventIngressSource(): IngressEventSource {
+export interface WinEventIngressDeps {
+  events?: () => Promise<Array<WindowEventLike & { type?: string }>>;
+  owner?: (hwnd: bigint) => bigint | null;
+}
+
+export function createWinEventIngressSource(deps: WinEventIngressDeps = {}): IngressEventSource {
   let subId: string | null = null;
 
   async function ensureSubscribed(): Promise<typeof import("../event-bus.js")> {
@@ -395,27 +438,73 @@ export function createWinEventIngressSource(): IngressEventSource {
     return bus;
   }
 
-  return {
-    async drain(knownKeys) {
-      if (knownKeys.size === 0) return [];
-      try {
-        const bus    = await ensureSubscribed();
-        const events = bus.poll(subId!);
-        const out: Array<{ key: string; reason: IngressReason }> = [];
+  async function pending(): Promise<Array<WindowEventLike & { type?: string }>> {
+    if (deps.events) return deps.events();
+    const bus = await ensureSubscribed();
+    return bus.poll(subId!) as Array<WindowEventLike & { type?: string }>;
+  }
 
-        for (const event of events) {
-          const added = new Set<string>();
-          for (const key of knownKeys) {
-            if (!added.has(key) && windowEventMatchesKey(event as WindowEventLike, key)) {
-              out.push({ key, reason: "winevent" });
-              added.add(key);
-            }
-          }
-        }
-        return out;
+  // The windows that own `hwnd`, nearest first, by GW_OWNER — the walk `readOwnerChain`
+  // (receiver-facts.ts) makes, kept here so win32 is loaded lazily with the bus and the reads can be
+  // injected. Bounded: a read that tears must not spin.
+  let ownerOf: ((hwnd: bigint) => bigint | null) | undefined = deps.owner;
+  async function ownersOf(hwnd: string): Promise<string[]> {
+    if (!/^\d+$/.test(hwnd)) return [];
+    ownerOf ??= (await import("../win32.js")).getWindowOwner;
+    const owners: string[] = [];
+    let at = BigInt(hwnd);
+    for (let i = 0; i < 32; i++) {
+      const next = ownerOf(at);
+      if (next === null || next === 0n || next === at) break;
+      owners.push(String(next));
+      at = next;
+    }
+    return owners;
+  }
+
+  return {
+    async drain(knownKeys, context) {
+      if (knownKeys.size === 0) return [];
+      let events: Array<WindowEventLike & { type?: string }>;
+      try {
+        events = await pending();
       } catch {
         return [];
       }
+      const out: Array<{ key: string; reason: IngressReason }> = [];
+      const added = new Set<string>();
+      const add = (key: string): void => {
+        if (!added.has(key)) {
+          out.push({ key, reason: "winevent" });
+          added.add(key);
+        }
+      };
+      const byHandle = [...knownKeys].some((k) => k.startsWith("window:"));
+
+      for (const event of events) {
+        // One event that cannot be read loses that event, not the batch: the bus has already
+        // handed the whole batch over and will not hand it again.
+        try {
+          for (const key of knownKeys) {
+            if (windowEventMatchesKey(event, key)) add(key);
+          }
+          if (event.hwnd === undefined) continue;
+          if (event.type === "window_appeared" && byHandle) {
+            // Every window it is owned by, not only the top: UIA lists an owned window under its
+            // IMMEDIATE owner, so a read of the Save As dialog lists the box that dialog opens.
+            for (const owner of await ownersOf(event.hwnd)) {
+              if (knownKeys.has(`window:${owner}`)) add(`window:${owner}`);
+            }
+          } else if (event.type === "window_disappeared" && context) {
+            for (const key of knownKeys) {
+              if (context.listsWindow(key, event.hwnd)) add(key);
+            }
+          }
+        } catch {
+          // Next event.
+        }
+      }
+      return out;
     },
 
     dispose() {

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- **`desktop_discover` reads a window again after a dialog it owns opens or closes, and after an
+  act on it.** It used to serve its cached read for up to 30 seconds. That read was missing a save
+  dialog that had just opened, and still listed the buttons of one that had closed, as `observed`.
+  A dialog opening now marks every window that owns it for a new read. A window that the cached read
+  listed and that has since closed does the same. `desktop_act`, whether it pressed or refused, also
+  ends the cached read it acted on, so the next `desktop_discover` called the same way reads the
+  window again. A read of the same window under another target (by title instead of `hwnd`) keeps
+  its cache. Only dialogs that the window enumeration lists (visible, titled, at least
+  50 px) are followed. The case of a dialog opening is followed only when `desktop_discover` was
+  called by `hwnd`.
+
 - **`desktop_act` no longer refuses a button because of its own window's title bar, and says when
   the dialog it would have named has closed.** A window that `desktop_discover` listed is now
   checked with Windows at the time of the act before it counts as a blocking modal. A window inside

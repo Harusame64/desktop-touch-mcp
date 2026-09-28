@@ -1220,7 +1220,14 @@ export class DesktopFacade {
     if (!session) {
       return { ok: false, reason: "entity_not_found", diff: [] };
     }
-    return session.loop.touch(input);
+    try {
+      return await session.loop.touch(input);
+    } finally {
+      // internal #211 item 9(1): the read an act was made against is not the world after it —
+      // whether it pressed (the window changed) or was refused because the read was stale. The next
+      // `desktop_discover` of this window reads again instead of serving it from the cache.
+      this.opts.ingress?.invalidate(session.key, "manual");
+    }
   }
 
   /** Evict sessions that have not been accessed within `sessionTtlMs`. */
