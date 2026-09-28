@@ -407,9 +407,20 @@ function primaryActionFrom(entity: UiEntity): string {
   return entity.affordances[0]?.verb ?? "read";
 }
 
-function targetTitle(target?: TargetSpec): string {
+/**
+ * The `target.title` the reply carries. An hwnd target reports the window's own title, read from
+ * the `windows` list this same reply carries; it used to report the hwnd itself, so a caller that
+ * addressed by hwnd got a number where the field says title (internal #211 item 5). A window the
+ * list does not hold (the list is the visible top-level windows) still reports the hwnd, as before.
+ */
+function targetTitle(target: TargetSpec | undefined, windows: readonly DesktopWindowMeta[]): string {
   if (!target) return "(current)";
-  return target.windowTitle ?? target.hwnd ?? target.tabId ?? "(current)";
+  if (target.windowTitle !== undefined) return target.windowTitle;
+  if (target.hwnd !== undefined) {
+    const title = windows.find((w) => w.hwnd === target.hwnd)?.title;
+    return title ? title : target.hwnd;
+  }
+  return target.tabId ?? "(current)";
 }
 
 /**
@@ -734,7 +745,7 @@ export class DesktopFacade {
 
     const output: DesktopSeeOutput = {
       viewId: newViewId,
-      target: { title: targetTitle(input.target), generation: session.generation },
+      target: { title: targetTitle(input.target, windows), generation: session.generation },
       entities: entityViews,
       windows,
       softExpiresAtMs: computeSoftExpiresAtMs(issuedAtMs, policyTtl.ttlMs),

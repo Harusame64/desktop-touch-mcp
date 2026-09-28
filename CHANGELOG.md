@@ -14,6 +14,19 @@
   characters shorter the cache directory must be, followed by the extractor's
   own last message.
 
+- **`workspace_launch` returns the window it found: `windowTitle`, `hwnd` and `pid`.** Its
+  description promised these, but the reply carried only `foundWindow` (the title) and
+  `region`. `foundWindow` stays, with the same value as `windowTitle`. The description now
+  names the parameter the tool takes (`waitMs`, default 2000) instead of `timeoutMs` and
+  `detach`, which it never had.
+- **`desktop_discover` addressed by `hwnd` reports the window's title in `target.title`.** It
+  reported the hwnd itself. A window missing from the reply's `windows` list still reports
+  the hwnd.
+- **The `keyboard` advice points at a `desktop_discover` call the tool accepts.** With no
+  `windowTitle`, its example used `target:{focused:true}`, a key `desktop_discover` does not
+  take, which it silently dropped. The example now uses the caller's `hwnd`, or no target
+  (the foreground window).
+
 ## [2.0.0] - 2026-09-24 — An action that cannot be done is refused, not reported as done
 
 2.0 changes what `desktop_act` does when the screen no longer matches what `desktop_discover`

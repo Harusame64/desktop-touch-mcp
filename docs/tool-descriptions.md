@@ -23,7 +23,7 @@ LLMのtools/listで渡される全ツールのdescription一覧。合計58ツー
 | 17 | `set_element_value` | Set the value of a text field or combo box via UIA ValuePattern. |
 | 18 | `scope_element` | Return a high-resolution screenshot of a specific element's region plus its child element tree. |
 | 19 | `workspace_snapshot` | Orient fully in one call with display layouts, window thumbnails, and per-window actionable elements. |
-| 20 | `workspace_launch` | Launch an application and wait for its new window to appear, returning title, HWND, and PID. |
+| 20 | `workspace_launch` | Launch an application and wait for its window to appear, returning the window's title, HWND, and PID. |
 | 21 | `pin_window` | Make a window always-on-top until unpin_window is called or duration_ms elapses. |
 | 22 | `unpin_window` | Remove always-on-top from a window. Reverses pin_window. |
 | 23 | `scroll_capture` | Scroll a window top-to-bottom and stitch all frames into one image for full-length webpages. |

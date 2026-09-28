@@ -665,6 +665,31 @@ describe("Phase 4 — Codex PR #41 round 5 P1: desktop_discover.windows[] is imp
     expect(out.windows).toHaveLength(0);
   });
 
+  it("DesktopFacade.see() reports an hwnd target's own title, not the hwnd (internal #211 item 5)", async () => {
+    const { DesktopFacade } = await import("../../src/tools/desktop.js");
+    const notepad = {
+      zOrder: 0,
+      title: "Notepad",
+      hwnd: "12345",
+      region: { x: 0, y: 0, width: 800, height: 600 },
+      isActive: true,
+      isMinimized: false,
+      isMaximized: false,
+      processName: "notepad.exe",
+    };
+    const facade = new DesktopFacade(() => [], { windowsProvider: () => [notepad] });
+    expect((await facade.see({ target: { hwnd: "12345" } })).target.title).toBe("Notepad");
+    // A window the list does not hold still reports the hwnd, as before
+    expect((await facade.see({ target: { hwnd: "99999" } })).target.title).toBe("99999");
+    // An empty title is not a title
+    const untitled = new DesktopFacade(() => [], { windowsProvider: () => [{ ...notepad, title: "" }] });
+    expect((await untitled.see({ target: { hwnd: "12345" } })).target.title).toBe("12345");
+    // windowTitle and tabId targets are unchanged
+    expect((await facade.see({ target: { windowTitle: "メモ帳" } })).target.title).toBe("メモ帳");
+    expect((await facade.see({ target: { tabId: "tab-1" } })).target.title).toBe("tab-1");
+    expect((await facade.see({})).target.title).toBe("(current)");
+  });
+
   it("DesktopFacade.see() degrades to empty windows[] when windowsProvider throws", async () => {
     const { DesktopFacade } = await import("../../src/tools/desktop.js");
     const facade = new DesktopFacade(() => [], {

@@ -158,3 +158,45 @@ describe("expansion swimlane 1 (workspace_launch): trunk completion contract —
     expect(result.content).toBeDefined();
   });
 });
+
+// ── internal #211 item 6: the reply carries the window the description promises ──
+describe("workspace_launch reply: windowTitle / hwnd / pid (internal #211 item 6)", () => {
+  it("reports the found window's title, hwnd as a string, pid and region, and keeps foundWindow", async () => {
+    const { buildLaunchResult } = await import("../../src/tools/workspace.js");
+    const region = { x: 1, y: 2, width: 300, height: 200 };
+    const r = buildLaunchResult("notepad.exe", [], { title: "無題 - メモ帳", hwnd: 723210n, region }, (h) => (h === 723210n ? 4242 : 0));
+    expect(r).toEqual({
+      launched: "notepad.exe",
+      args: [],
+      windowTitle: "無題 - メモ帳",
+      hwnd: "723210",
+      pid: 4242,
+      region,
+      foundWindow: "無題 - メモ帳",
+    });
+  });
+
+  it("reports null window fields when no window was found, without asking for a pid", async () => {
+    const { buildLaunchResult } = await import("../../src/tools/workspace.js");
+    let asked = false;
+    const r = buildLaunchResult("calc.exe", ["/x"], null, () => { asked = true; return 1; });
+    expect(r).toEqual({ launched: "calc.exe", args: ["/x"], windowTitle: null, hwnd: null, pid: null, region: null, foundWindow: null });
+    expect(asked).toBe(false);
+  });
+
+  it("reports pid null when the owning process cannot be read", async () => {
+    const { buildLaunchResult } = await import("../../src/tools/workspace.js");
+    const r = buildLaunchResult("x.exe", [], { title: "t", hwnd: 1n, region: { x: 0, y: 0, width: 60, height: 60 } }, () => 0);
+    expect(r.pid).toBeNull();
+    expect(r.hwnd).toBe("1");
+  });
+
+  it("the description names the fields the reply carries and the parameter the schema takes", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../../src/tools/workspace.ts", import.meta.url), "utf-8");
+    const desc = src.slice(src.indexOf('"workspace_launch",'), src.indexOf("workspaceLaunchRegistrationSchema,"));
+    expect(desc).toContain("{launched, args, windowTitle, hwnd, pid, region, foundWindow}");
+    expect(desc).toContain("waitMs");
+    expect(desc).not.toMatch(/timeoutMs|detach|elapsedMs|ShellExecute/);
+  });
+});
