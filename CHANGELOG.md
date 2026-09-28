@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- **`desktop_act` no longer refuses a button because of its own window's title bar, and says when
+  the dialog it would have named has closed.** A window that `desktop_discover` listed is now
+  checked with Windows at the time of the act before it counts as a blocking modal. A window inside
+  the top-level window the element was read from is not counted. One example is Calculator's own
+  title bar, which refused every button with `modal_blocking`. A listed window that has since
+  closed now gets `lease_generation_mismatch` with a `detail` that names it, instead of
+  `modal_blocking` naming a window that is not there. Re-call `desktop_discover`. An owned dialog, a
+  MessageBox, a child window inside another top-level window, and a window Windows cannot be asked
+  about are refused as before. A modal that an app draws as a child window of its own main window
+  (an MDI modal child) is no longer refused. Windows does not disable the main window for it, so no
+  check sees it.
+
 - **The launcher says why a first install failed under a long cache path.** With
   long paths disabled in Windows, a cache directory (`DESKTOP_TOUCH_MCP_HOME`, or
   `%USERPROFILE%\.desktop-touch-mcp` by default) of 126 characters or more put

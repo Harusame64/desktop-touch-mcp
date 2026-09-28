@@ -59,7 +59,7 @@ import {
   EntityNotFoundRefusalError,
   KeyboardTargetUnsafeRefusalError,
 } from "../errors/typed-errors.js";
-import type { WindowBlockAnswer, TouchAction, RoiCapture, RoiCaptureMaterial, SemanticDiff, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
+import type { WindowBlockAnswer, SnapshotWindowAnswer, TouchAction, RoiCapture, RoiCaptureMaterial, SemanticDiff, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import {
   SnapshotIngress,
   combineEventSources,
@@ -84,6 +84,7 @@ import {
   getVirtualScreen,
   getWindowRenderState,
   getWindowRoot,
+  windowIsAlive,
   getWindowOwner,
   isWindowEnabled,
   enumTopLevelWindowHandles,
@@ -445,6 +446,86 @@ function isPopupVisible(hwnd: bigint): boolean {
   return getWindowRenderState(hwnd)?.visible ?? false;
 }
 
+/**
+ * internal #211 items 2 and 9 — what the OS says now about one `Window` of the `desktop_discover`
+ * snapshot, asked by that window's own handle ({@link SnapshotWindowAnswer}).
+ *
+ * - `not_a_dialog`: its top-level window (`GA_ROOT`) is the one the touched element was read from —
+ *   reached from the element's own handle, its recorded one, or the aim's while the aim still names
+ *   its owner (`compareAimIdentity`, as `productionFindBlockingWindow` asks). Calculator's own title
+ *   bar, a `WS_CHILD` of its frame, was refused as the modal blocking its "±" on every act (win2,
+ *   internal #212). A child window is not waived by its style alone: a child inside a separate
+ *   dialog is that dialog's content (gate 2, round 1).
+ * - `closed`: `windowIsAlive` answered a definite no, while a window the element was read from is
+ *   still there. When every one of those is gone too, the element's own window has closed, and the
+ *   answer is `not_a_dialog`: the executor says that (`aim_window_gone`), not this stale snapshot.
+ * - `may_block`: everything else, including no handle, no binding and a read that fails — the
+ *   snapshot counts it, as it did before this was asked.
+ *
+ * An owned dialog is a top-level window of its own, so it stays `may_block` for an element of the
+ * window that owns it. **What this gives up**: a modal built as a child window of the element's own
+ * top-level window (an MDI modal child) is not counted, and the OS check does not see it either, as
+ * the top-level window stays enabled. One `act.modal` row per window asked.
+ *
+ * `deps` exists for unit tests only.
+ */
+export interface SnapshotWindowDeps {
+  isAlive?: (hwnd: bigint) => boolean | undefined;
+  root?: (hwnd: bigint) => bigint | null;
+  identityNow?: (hwnd: bigint) => WindowIdentity | undefined;
+}
+
+export function productionJudgeSnapshotWindow(
+  window: UiEntity,
+  entity: UiEntity,
+  aim: Aim | undefined,
+  deps: SnapshotWindowDeps = {},
+): SnapshotWindowAnswer {
+  const handle = parseRecordedHandle(window.locator?.uia?.nativeWindowHandle);
+  const row = (answer: SnapshotWindowAnswer, because: string): SnapshotWindowAnswer => {
+    probeAim("act.modal", { entityId: entity.entityId, check: "snapshot_window", window: window.entityId, handle: handle?.toString() ?? null, answer, because });
+    return answer;
+  };
+  if (handle === undefined) return row("may_block", "no_handle");
+  try {
+    const isAlive = deps.isAlive ?? windowIsAlive;
+    const rootOf = deps.root ?? getWindowRoot;
+    // The windows the element was read from. The aim's only while it still names its owner: a
+    // recycled handle names someone else's window, and would waive whatever shares its root.
+    // The recorded handle is usually the aim's own, so it is dropped with it (gate 2, round 2).
+    const recycled =
+      aim?.hwnd !== undefined && compareAimIdentity(aim, (deps.identityNow ?? productionWindowIdentity)(aim.hwnd)) === "changed"
+        ? aim.hwnd
+        : undefined;
+    const readFrom = [parseRecordedHandle(entity.locator?.uia?.nativeWindowHandle), parseRecordedHandle(entity.origin?.hwnd), aim?.hwnd]
+      .filter((h): h is bigint => h !== undefined && h !== recycled);
+    const alive = isAlive(handle);
+    if (alive === undefined) return row("may_block", "not_asked");
+    if (alive === false) {
+      if (readFrom.length > 0 && readFrom.every((h) => isAlive(h) === false)) return row("not_a_dialog", "element_window_gone");
+      return row("closed", "not_a_window");
+    }
+    const root = rootOf(handle);
+    if (root === null) return row("may_block", "no_root");
+    for (const h of readFrom) {
+      if (rootOf(h) === root) return row("not_a_dialog", "same_root");
+    }
+    return row("may_block", "top_level");
+  } catch {
+    return row("may_block", "unreadable");
+  }
+}
+
+/**
+ * A window handle recorded as a decimal string; `undefined` for none, a non-number, or zero. Not
+ * `keyboard-target`'s `parseHandle`, which masks to 32 bits for the keyboard rung.
+ */
+function parseRecordedHandle(v: string | undefined): bigint | undefined {
+  if (v === undefined || !/^\d+$/.test(v)) return undefined;
+  const h = BigInt(v);
+  return h === 0n ? undefined : h;
+}
+
 
 /**
  * G1-C: Production focus fingerprint (window-level, best-effort).
@@ -702,6 +783,9 @@ export function getDesktopFacade(): DesktopFacade {
       checkViewport: productionCheckViewport,
       // internal #126: the OS's answer about the entity's own window, asked before the snapshot.
       findBlockingWindow: productionFindBlockingWindow,
+      // internal #211: each `Window` of the snapshot, asked by its own handle — a child window or
+      // the element's own top-level window is not a dialog, and a closed one refuses the act.
+      judgeSnapshotWindow: productionJudgeSnapshotWindow,
       // G1 (ADR-036 §10): a `stale` target's place is read again before the press.
       rereadStale: productionRereadStale,
       // G1-C: window-level focus fingerprint for focus_shifted diff.

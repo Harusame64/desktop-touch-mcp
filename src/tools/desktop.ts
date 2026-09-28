@@ -18,7 +18,7 @@ import { createDesktopExecutor, type ExecutorDeps } from "./desktop-executor.js"
 import { probeAim } from "../engine/aim-probe.js";
 import { toAim, readWindowIdentityFields, homingCorrectionForSources, observedHwndOfOrigin, type Aim } from "../engine/aim.js";
 import { resolveWindowTarget, findPlainTopLevelWindowByTitle } from "./_resolve-window.js";
-import type { WindowBlockAnswer, StaleRereadAnswer, TouchAction, TouchInput, TouchResult, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
+import type { WindowBlockAnswer, SnapshotWindowAnswer, StaleRereadAnswer, TouchAction, TouchInput, TouchResult, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import { deriveViewConstraints, type ViewConstraints, type EntityCapabilities } from "./desktop-constraints.js";
 import { UIA_BLIND_WARNINGS } from "./desktop-providers/compose-providers.js";
 import { deriveEntityCapabilities } from "./desktop-capabilities.js";
@@ -340,6 +340,11 @@ export interface DesktopFacadeOptions {
    * Production implementation provided by desktop-register.ts.
    */
   findBlockingWindow?: (entity: UiEntity, aim: Aim | undefined) => WindowBlockAnswer;
+  /**
+   * internal #211 items 2 and 9 — ask the OS about one `Window` of the snapshot by its own handle.
+   * Production implementation provided by desktop-register.ts.
+   */
+  judgeSnapshotWindow?: (window: UiEntity, entity: UiEntity, aim: Aim | undefined) => SnapshotWindowAnswer;
   /**
    * G1 (ADR-036 §10) — read a `stale` entity's place again before the press.
    * Production implementation provided by desktop-register.ts.
@@ -1257,6 +1262,7 @@ export class DesktopFacade {
       findBlockingModal:  this.opts.findBlockingModal,
       checkViewport:      this.opts.checkViewport,
       findBlockingWindow: this.opts.findBlockingWindow,
+      judgeSnapshotWindow: this.opts.judgeSnapshotWindow,
       rereadStale:        this.opts.rereadStale,
       getFocusedEntityId: this.opts.getFocusedEntityId,
       defaultTtlMs:       this.opts.defaultTtlMs,

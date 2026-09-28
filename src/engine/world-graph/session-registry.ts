@@ -7,6 +7,7 @@ import {
   GuardedTouchLoop,
   type TouchAction,
   type WindowBlockAnswer,
+  type SnapshotWindowAnswer,
   type StaleRereadAnswer,
   type TouchEnvironment,
   type ViewportVerdict,
@@ -243,6 +244,16 @@ export interface SessionCreateOpts {
    */
   findBlockingWindow?: (entity: UiEntity, aim: Aim | undefined) => WindowBlockAnswer;
   /**
+   * internal #211 items 2 and 9 — ask the OS about one `Window` of the snapshot, by its own handle,
+   * at the moment of the act ({@link SnapshotWindowAnswer}). With it, the default snapshot check
+   * counts only the windows answered `may_block`, and a window answered `closed` refuses the act as
+   * `lease_generation_mismatch` (the env's `judgeSnapshot`, asking each window once per check). Absent means not asked (tests,
+   * non-Windows): every `Window` counts, as before. Not consulted when `isModalBlocking` or
+   * `findBlockingModal` is overridden — a custom predicate is the caller's whole answer.
+   * Production wires `productionJudgeSnapshotWindow`.
+   */
+  judgeSnapshotWindow?: (window: UiEntity, entity: UiEntity, aim: Aim | undefined) => SnapshotWindowAnswer;
+  /**
    * G1 (ADR-036 §10) — read a `stale` entity's place again before the press. Absent means not
    * asked (tests, non-Windows); production wires `productionRereadStale`.
    */
@@ -398,6 +409,28 @@ export class SessionRegistry {
         (opts.isModalBlocking
           ? () => null
           : (entity: UiEntity) => s.entities.find((e) => classifyModal(e, "pre-touch", { excludeSelf: entity })) ?? null),
+      // internal #211: with `judgeSnapshotWindow`, the refusal counts only a `Window` the OS answers
+      // `may_block` — not a child window of the element's own top-level window (item 2) — and one
+      // that has closed since the read refuses as a stale snapshot (item 9). Each window is asked
+      // once per check, so the blocker named is the one the decision counted.
+      ...(opts.judgeSnapshotWindow && !opts.isModalBlocking && !opts.findBlockingModal
+        ? {
+            judgeSnapshot: (entity: UiEntity) => {
+              let blocker: UiEntity | null = null;
+              let closed: UiEntity | null = null;
+              for (const e of s.entities) {
+                if (!classifyModal(e, "pre-touch", { excludeSelf: entity })) continue;
+                const answer = opts.judgeSnapshotWindow!(e, entity, s.lastAim);
+                if (answer === "may_block") {
+                  blocker = e;
+                  break;
+                }
+                if (answer === "closed" && closed === null) closed = e;
+              }
+              return { blocker, closed };
+            },
+          }
+        : {}),
       checkViewport: opts.checkViewport ?? (() => null),
       // The aim is read at touch time, like the executor's: an entity whose lane recorded no handle
       // is asked about the window this act is aimed at (win2: on an addon older than #619 the UIA

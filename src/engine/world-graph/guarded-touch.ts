@@ -121,6 +121,23 @@ export type WindowBlockAnswer =
   | { kind: "cannot_say" };
 
 /**
+ * internal #211 items 2 and 9 — what the OS says, at the moment of the act, about a `Window` the
+ * `desktop_discover` snapshot holds, asked by that window's own handle.
+ *
+ * - `may_block`: a live window that can be a dialog, or one the OS could not be asked about (no
+ *   handle, no binding). The snapshot check counts it, as before.
+ * - `not_a_dialog`: its top-level window is the one the touched element was read from, so it cannot
+ *   be a dialog blocking that element. Calculator's own title bar (`ApplicationFrameTitleBarWindow`,
+ *   a `WS_CHILD` of its frame) was named as the modal blocking its own "±" button, on every act
+ *   (win2, internal #212). Also the answer when the element's own window has closed too: that is
+ *   the executor's to say (`aim_window_gone`).
+ * - `closed`: the window is gone while the element's window is not. The snapshot is older than the
+ *   world: a dialog that was listed and has since closed was named as the blocker, and a caller told
+ *   to answer it there found nothing (win2, internal #212).
+ */
+export type SnapshotWindowAnswer = "may_block" | "not_a_dialog" | "closed";
+
+/**
  * G1 (ADR-036 §10) — what reading a `stale` target's place again found, just before the press.
  *
  * - `present`: the label the entity carries was read there again. The act goes on.
@@ -347,6 +364,16 @@ export interface TouchEnvironment {
    * means "not asked", which the loop treats as `cannot_say`.
    */
   findBlockingWindow?(entity: UiEntity): WindowBlockAnswer;
+  /**
+   * internal #211 items 2 and 9 — the snapshot check with each `Window` asked about by its own handle
+   * ({@link SnapshotWindowAnswer}), once per check: every window is asked a single time, so the
+   * blocker named and the decision to refuse come from the same answers. When present it replaces
+   * `isModalBlocking` / `findBlockingModal` in the refusal: `blocker` is the first window that may
+   * block, and `closed` the first that has closed — refused as `lease_generation_mismatch` when
+   * nothing may block, since acting on it would press what the read saw, not what is there.
+   * Optional: absent means not asked (a custom modal predicate, tests).
+   */
+  judgeSnapshot?(entity: UiEntity): { blocker: UiEntity | null; closed: UiEntity | null };
   /**
    * ADR-029 Phase 1: check whether the entity is currently reachable on screen.
    * Returns `null` when the touch may proceed, otherwise the block reason.
@@ -980,22 +1007,44 @@ export class GuardedTouchLoop {
     // Tk's `grab_set` is one (internal `af5ed7d`); the act is not refused, and with the aim probe on
     // the row says what the snapshot saw, so a press that then lands nowhere can be traced to it.
     if (windowAnswer.kind === "takes_input") {
-      const setAside = this.env.findBlockingModal?.(entity) ?? null;
+      // The window the refusal would have named: judged when the OS can be asked, so the row does
+      // not name a window the check itself does not count (gate 2, round 2).
+      const setAside = this.env.judgeSnapshot ? this.env.judgeSnapshot(entity).blocker : (this.env.findBlockingModal?.(entity) ?? null);
       if (setAside !== null) {
         const seen = toBlockingElementInfo(setAside);
         probeAim("act.modal", { entityId: entity.entityId, answer: "snapshot_set_aside", because: "window_enabled", snapshotBlocker: seen.name });
       }
-    } else if (this.env.isModalBlocking(entity)) {
-      const blocker = this.env.findBlockingModal?.(entity) ?? null;
-      return {
-        ok: false,
-        refused: {
+    } else {
+      const judged = this.env.judgeSnapshot?.(entity);
+      if (judged ? judged.blocker !== null : this.env.isModalBlocking(entity)) {
+        const blocker = judged ? judged.blocker : (this.env.findBlockingModal?.(entity) ?? null);
+        return {
           ok: false,
-          reason: "modal_blocking",
-          diff: [],
-          ...(blocker ? { blockingElement: toBlockingElementInfo(blocker) } : {}),
-        },
-      };
+          refused: {
+            ok: false,
+            reason: "modal_blocking",
+            diff: [],
+            ...(blocker ? { blockingElement: toBlockingElementInfo(blocker) } : {}),
+          },
+        };
+      }
+      // A window the read listed has closed since: the snapshot the lease came from is not the
+      // world any more. Naming the closed window as the blocker sent the caller to a window that
+      // is not there (internal #211 item 9); the answer is a new read.
+      if (judged?.closed) {
+        // Its title only: `toBlockingElementInfo` falls back to the role, which is not a name.
+        const title = judged.closed.locator?.uia?.name || judged.closed.label;
+        const { hwnd } = toBlockingElementInfo(judged.closed);
+        return {
+          ok: false,
+          refused: {
+            ok: false,
+            reason: "lease_generation_mismatch",
+            diff: [],
+            detail: `${title ? `the window "${title}"` : "a window"}${hwnd ? ` (hwnd ${hwnd})` : ""} that desktop_discover listed has closed since that read`,
+          },
+        };
+      }
     }
     const viewportVerdict = this.env.checkViewport(entity);
     if (viewportVerdict !== null) {
