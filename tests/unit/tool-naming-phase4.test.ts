@@ -681,6 +681,12 @@ describe("Phase 4 — Codex PR #41 round 5 P1: desktop_discover.windows[] is imp
     expect((await facade.see({ target: { hwnd: "12345" } })).target.title).toBe("Notepad");
     // A window the list does not hold still reports the hwnd, as before
     expect((await facade.see({ target: { hwnd: "99999" } })).target.title).toBe("99999");
+    // Other spellings of the same hwnd, and an hwnd that does not parse
+    expect((await facade.see({ target: { hwnd: "0x3039" } })).target.title).toBe("Notepad");
+    expect((await facade.see({ target: { hwnd: " 12345" } })).target.title).toBe("Notepad");
+    expect((await facade.see({ target: { hwnd: "not-a-handle" } })).target.title).toBe("not-a-handle");
+    // hwnd wins over windowTitle, as the target is resolved
+    expect((await facade.see({ target: { hwnd: "12345", windowTitle: "メモ" } })).target.title).toBe("Notepad");
     // An empty title is not a title
     const untitled = new DesktopFacade(() => [], { windowsProvider: () => [{ ...notepad, title: "" }] });
     expect((await untitled.see({ target: { hwnd: "12345" } })).target.title).toBe("12345");

@@ -410,17 +410,29 @@ function primaryActionFrom(entity: UiEntity): string {
 /**
  * The `target.title` the reply carries. An hwnd target reports the window's own title, read from
  * the `windows` list this same reply carries; it used to report the hwnd itself, so a caller that
- * addressed by hwnd got a number where the field says title (internal #211 item 5). A window the
- * list does not hold (the list is the visible top-level windows) still reports the hwnd, as before.
+ * addressed by hwnd got a number where the field says title (internal #211 item 5). hwnd comes
+ * first, as it does in resolving the target (`hwnd ?? windowTitle`), so the title names the window
+ * that was read. The hwnd is compared as a number, as it is parsed elsewhere (`0x…` and leading
+ * zeros name the same window). A window the list does not hold (the list is the visible top-level
+ * windows) still reports the hwnd, as before. A windowTitle target reports what the caller passed.
  */
 function targetTitle(target: TargetSpec | undefined, windows: readonly DesktopWindowMeta[]): string {
   if (!target) return "(current)";
-  if (target.windowTitle !== undefined) return target.windowTitle;
   if (target.hwnd !== undefined) {
-    const title = windows.find((w) => w.hwnd === target.hwnd)?.title;
+    const want = parseHwnd(target.hwnd);
+    const title = want === undefined ? undefined : windows.find((w) => parseHwnd(w.hwnd) === want)?.title;
     return title ? title : target.hwnd;
   }
+  if (target.windowTitle !== undefined) return target.windowTitle;
   return target.tabId ?? "(current)";
+}
+
+function parseHwnd(hwnd: string): bigint | undefined {
+  try {
+    return BigInt(hwnd);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

@@ -18,14 +18,16 @@
   description promised these, but the reply carried only `foundWindow` (the title) and
   `region`. `foundWindow` stays, with the same value as `windowTitle`. The description now
   names the parameter the tool takes (`waitMs`, default 2000) instead of `timeoutMs` and
-  `detach`, which it never had.
+  `detach`, which it never had. A new window now wins over an already-open window that only
+  changed its title during the wait (which could be an unrelated app); that one is reported only
+  when no new window appeared.
 - **`desktop_discover` addressed by `hwnd` reports the window's title in `target.title`.** It
-  reported the hwnd itself. A window missing from the reply's `windows` list still reports
-  the hwnd.
+  reported the hwnd itself. With both `hwnd` and `windowTitle`, the title is the hwnd's window,
+  the one that was read. A window missing from the reply's `windows` list still reports the hwnd.
 - **The `keyboard` advice points at a `desktop_discover` call the tool accepts.** With no
   `windowTitle`, its example used `target:{focused:true}`, a key `desktop_discover` does not
-  take, which it silently dropped. The example now uses the caller's `hwnd`, or no target
-  (the foreground window).
+  take, which it silently dropped. The example now uses the caller's `hwnd` (ahead of
+  `windowTitle`, as `keyboard` itself targets), or no target (the foreground window).
 
 ## [2.0.0] - 2026-09-24 — An action that cannot be done is refused, not reported as done
 

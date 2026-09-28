@@ -202,8 +202,10 @@ describe("workspace_launch reply: windowTitle / hwnd / pid (internal #211 item 6
     // A new hwnd
     expect(findLaunchedWindow([win(1n, "Old"), win(7n, "New")], before, titles)).toEqual(
       { title: "New", hwnd: 7n, region: { x: 0, y: 0, width: 400, height: 300 } });
-    // An existing hwnd whose title changed
+    // An existing hwnd whose title changed, when there is no new window
     expect(findLaunchedWindow([win(2n, "Chrome - b")], before, titles)?.hwnd).toBe(2n);
+    // A new window wins over an already-open window that retitled itself, even when that one is in front
+    expect(findLaunchedWindow([win(2n, "Chrome - b"), win(7n, "New")], before, titles)?.hwnd).toBe(7n);
     // Skipped: untitled, minimized, too small, unchanged
     expect(findLaunchedWindow([
       win(8n, ""),
@@ -216,8 +218,12 @@ describe("workspace_launch reply: windowTitle / hwnd / pid (internal #211 item 6
   it("the description names the fields the reply carries and the parameter the schema takes", async () => {
     const { readFileSync } = await import("node:fs");
     const src = readFileSync(new URL("../../src/tools/workspace.ts", import.meta.url), "utf-8");
-    const desc = src.slice(src.indexOf('"workspace_launch",'), src.indexOf("workspaceLaunchRegistrationSchema,"));
+    const start = src.search(/server\.tool\(\s*"workspace_launch",/);
+    expect(start).toBeGreaterThan(-1);
+    const desc = src.slice(start, src.indexOf("workspaceLaunchRegistrationSchema,", start));
+    expect(desc).toContain("buildDesc({");
     expect(desc).toContain("{launched, args, windowTitle, hwnd, pid, region, foundWindow}");
+    expect(desc).toContain("with the window fields null");
     expect(desc).toContain("waitMs");
     expect(desc).not.toMatch(/timeoutMs|detach|elapsedMs|ShellExecute/);
   });

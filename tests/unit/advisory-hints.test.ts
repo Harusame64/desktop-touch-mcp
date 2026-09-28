@@ -53,10 +53,13 @@ describe("maybeAdvisory — keyboard(type) → desktop_act", () => {
     expect(hint!.example).toContain("text:'…'");
   });
 
-  it("uses the hwnd the caller addressed when there is no windowTitle", () => {
+  it("uses the hwnd the caller addressed, ahead of windowTitle as keyboard does", () => {
     const hint = maybeAdvisory("keyboard", { action: "type", hwnd: "723210" }, edit(), NATIVE);
     expect(hint).not.toBeNull();
     expect(hint!.example).toContain("desktop_discover({target:{hwnd:'723210'}})");
+    const both = maybeAdvisory("keyboard", { action: "type", windowTitle: "メモ", hwnd: "723210" }, edit(), NATIVE);
+    expect(both!.example).toContain("desktop_discover({target:{hwnd:'723210'}})");
+    expect(both!.example).not.toContain("windowTitle");
   });
 
   it("truncates long text and sanitises quotes/newlines/backslashes in the example", () => {

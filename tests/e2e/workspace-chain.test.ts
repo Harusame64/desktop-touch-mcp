@@ -97,11 +97,18 @@ describe("H1-chain: workspace_launch + wait_until + focus_window happy path", ()
         killer.on("error", () => resolve());
       });
 
-      // workspace_launch returns { launched, args, foundWindow, region } — no ok field
+      // workspace_launch returns { launched, args, windowTitle, hwnd, pid, region, foundWindow } — no ok field
       expect(p.launched).toBeTruthy();
-      // foundWindow may be populated if window appeared within waitMs
-      // (some CI environments may be slow, so we just check the structure)
-      expect("foundWindow" in p).toBe(true);
+      // The window fields may be null if the window did not appear within waitMs
+      // (some CI environments may be slow, so the values are checked only when a window was found)
+      for (const k of ["windowTitle", "hwnd", "pid", "region", "foundWindow"]) expect(k in p).toBe(true);
+      if (p.windowTitle !== null) {
+        expect(p.foundWindow).toBe(p.windowTitle);
+        expect(typeof p.hwnd).toBe("string");
+        expect(/^\d+$/.test(p.hwnd as string)).toBe(true);
+        expect(typeof p.pid).toBe("number");
+        expect(p.pid as number).toBeGreaterThan(0);
+      }
     } finally {
       try { unlinkSync(tempFile); } catch { /* ignore */ }
     }

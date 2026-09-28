@@ -235,24 +235,27 @@ export function buildLaunchResult(
 }
 
 /**
- * The window a launch produced, picked from the windows listed after it: the first one (in
- * Z-order) with a title, not minimized, at least 50×50, whose HWND was not listed before the launch
- * or whose title changed (a single-instance app that retitles its existing window).
+ * The window a launch produced, picked from the windows listed after it. Only windows with a
+ * title, not minimized, and at least 50×50 count. A window whose HWND was not listed before the
+ * launch wins (the first in Z-order); only when there is none does an already-open window whose
+ * title changed count (a single-instance app that retitles its existing window). That order
+ * matters now that the reply carries the window's hwnd and pid: a window that was already open and
+ * merely retitled itself during the wait (a browser tab's timer, a player) must not beat the new
+ * window the launch made.
  */
 export function findLaunchedWindow(
   afterWindows: readonly WindowZInfo[],
   beforeHwnds: ReadonlySet<bigint>,
   beforeTitles: ReadonlySet<string>,
 ): LaunchedWindow | null {
+  let retitled: LaunchedWindow | null = null;
   for (const w of afterWindows) {
     if (!w.title) continue;
     if (w.isMinimized || w.region.width < 50 || w.region.height < 50) continue;
-    const isNewWindow = !beforeHwnds.has(w.hwnd);
-    const isTitleChange = beforeHwnds.has(w.hwnd) && !beforeTitles.has(w.title);
-    if (!isNewWindow && !isTitleChange) continue;
-    return { title: w.title, hwnd: w.hwnd, region: w.region };
+    if (!beforeHwnds.has(w.hwnd)) return { title: w.title, hwnd: w.hwnd, region: w.region };
+    if (retitled === null && !beforeTitles.has(w.title)) retitled = { title: w.title, hwnd: w.hwnd, region: w.region };
   }
-  return null;
+  return retitled;
 }
 
 export const workspaceLaunchHandler = async ({
@@ -411,9 +414,9 @@ export function registerWorkspaceTools(server: McpServer): void {
     "workspace_launch",
     buildDesc({
       purpose: "Launch an application and wait for its window to appear, returning the window's title, HWND, and PID.",
-      details: "Starts the executable (well-known names and App Paths entries resolve to a full path), lists the top-level windows before the launch, then checks every 200 ms, for up to waitMs, for a window whose HWND was not there before or whose title changed. Returns {launched, args, windowTitle, hwnd, pid, region, foundWindow}; the window fields are null when no window appeared in time, and a hint says why. foundWindow is the same as windowTitle, kept for older callers. Works for localized window titles (e.g. '電卓' for calc.exe) because detection is HWND-based. waitMs default 2000, max 30000; waitMs:0 returns right after the launch with no window fields.",
-      prefer: "Use instead of run_macro({exec, sleep, desktop_discover}) combos. Follow with focus_window(windowTitle) to interact with the launched app.",
-      caveats: "Single-instance apps that reuse an existing window will not register as a new HWND — call desktop_discover first to check if the window is already open. Minimized windows and windows smaller than 50×50 are not reported. pid is the process that owns the window, which can differ from the one launched (an app that hands off to another process).",
+      details: "Starts the executable (well-known names and App Paths entries resolve to a full path), lists the top-level windows before the launch, then checks every 200 ms, for up to waitMs, for a window whose HWND was not there before or whose title changed. Returns {launched, args, windowTitle, hwnd, pid, region, foundWindow}; the window fields are null when no window appeared in time, and a hint says why. foundWindow is the same as windowTitle, kept for older callers. Works for localized window titles (e.g. '電卓' for calc.exe) because detection is HWND-based. waitMs default 2000, max 30000; waitMs:0 returns right after the launch with the window fields null.",
+      prefer: "Use instead of run_macro({exec, sleep, desktop_discover}) combos. Follow with desktop_discover({target:{hwnd}}) using the returned hwnd, which names this window even when another has a similar title (or focus_window(windowTitle)).",
+      caveats: "Single-instance apps that reuse an existing window will not register as a new HWND — call desktop_discover first to check if the window is already open. Minimized windows and windows smaller than 50×50 are not reported. When no new window appears, an already-open window whose title changed during the wait is reported instead, which may not be the launched app. pid is the process that owns the window, which can differ from the one launched (an app that hands off to another process).",
       examples: [
         "workspace_launch({command:'notepad.exe'}) → {windowTitle:'<localized title>', hwnd:'...', pid:...}",
         "workspace_launch({command:'calc.exe', waitMs:15000})",
