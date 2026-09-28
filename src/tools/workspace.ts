@@ -235,27 +235,61 @@ export function buildLaunchResult(
 }
 
 /**
- * The window a launch produced, picked from the windows listed after it. Only windows with a
- * title, not minimized, and at least 50×50 count. A window whose HWND was not listed before the
- * launch wins (the first in Z-order); only when there is none does an already-open window whose
- * title changed count (a single-instance app that retitles its existing window). That order
- * matters now that the reply carries the window's hwnd and pid: a window that was already open and
- * merely retitled itself during the wait (a browser tab's timer, a player) must not beat the new
- * window the launch made.
+ * The candidates a launch produced in one listing of the windows. Only windows with a title, not
+ * minimized, and at least 50×50 count. `created` is the first (in Z-order) whose HWND was not
+ * listed before the launch; `retitled` is the first already-open window whose title changed (a
+ * single-instance app that retitles its existing window).
  */
-export function findLaunchedWindow(
+export function pickLaunchedWindows(
   afterWindows: readonly WindowZInfo[],
   beforeHwnds: ReadonlySet<bigint>,
   beforeTitles: ReadonlySet<string>,
-): LaunchedWindow | null {
+): { created: LaunchedWindow | null; retitled: LaunchedWindow | null } {
+  let created: LaunchedWindow | null = null;
   let retitled: LaunchedWindow | null = null;
   for (const w of afterWindows) {
     if (!w.title) continue;
     if (w.isMinimized || w.region.width < 50 || w.region.height < 50) continue;
-    if (!beforeHwnds.has(w.hwnd)) return { title: w.title, hwnd: w.hwnd, region: w.region };
-    if (retitled === null && !beforeTitles.has(w.title)) retitled = { title: w.title, hwnd: w.hwnd, region: w.region };
+    const window = { title: w.title, hwnd: w.hwnd, region: w.region };
+    if (!beforeHwnds.has(w.hwnd)) {
+      if (created === null) created = window;
+    } else if (retitled === null && !beforeTitles.has(w.title)) {
+      retitled = window;
+    }
   }
-  return retitled;
+  return { created, retitled };
+}
+
+/**
+ * Wait for the window a launch produced. A new window wins, whenever it appears within the wait;
+ * an already-open window whose title changed is reported only when no new window appeared by the
+ * end of it. That order matters now that the reply carries the window's hwnd and pid: a window
+ * that was already open and merely retitled itself during the wait (a browser tab's timer, a
+ * player) must not beat the new window the launch made, even when the retitle comes first. The
+ * price is that an app which only retitles its existing window answers after the whole wait.
+ */
+export async function waitForLaunchedWindow(
+  listWindows: () => readonly WindowZInfo[],
+  beforeHwnds: ReadonlySet<bigint>,
+  beforeTitles: ReadonlySet<string>,
+  waitMs: number,
+  intervalMs = 200,
+): Promise<LaunchedWindow | null> {
+  let retitled: LaunchedWindow | null = null;
+  const r = await pollUntil(
+    async () => {
+      try {
+        const picked = pickLaunchedWindows(listWindows(), beforeHwnds, beforeTitles);
+        if (picked.retitled) retitled = picked.retitled;
+        return picked.created;
+      } catch {
+        // enumWindowsInZOrder FFI failure — non-fatal, retry on next poll
+        return null;
+      }
+    },
+    { intervalMs, timeoutMs: waitMs }
+  );
+  return r.ok ? r.value : retitled;
 }
 
 export const workspaceLaunchHandler = async ({
@@ -292,22 +326,8 @@ export const workspaceLaunchHandler = async ({
     // - If the window appears in 200ms, we return in ~200ms not 2000ms.
     // - For Chrome single-instance, the title change may happen at any time.
     // - For slow apps, we keep checking up to the full waitMs budget.
-    let found: LaunchedWindow | null = null;
-
-    if (waitMs > 0) {
-      const r = await pollUntil(
-        async () => {
-          try {
-            return findLaunchedWindow(enumWindowsInZOrder(), beforeHwnds, beforeTitles);
-          } catch {
-            // enumWindowsInZOrder FFI failure — non-fatal, retry on next poll
-          }
-          return null;
-        },
-        { intervalMs: 200, timeoutMs: waitMs }
-      );
-      if (r.ok) found = r.value;
-    }
+    const found: LaunchedWindow | null =
+      waitMs > 0 ? await waitForLaunchedWindow(enumWindowsInZOrder, beforeHwnds, beforeTitles, waitMs) : null;
 
     const result = buildLaunchResult(actualCommand, args, found);
     if (source !== "identity") {
@@ -416,7 +436,7 @@ export function registerWorkspaceTools(server: McpServer): void {
       purpose: "Launch an application and wait for its window to appear, returning the window's title, HWND, and PID.",
       details: "Starts the executable (well-known names and App Paths entries resolve to a full path), lists the top-level windows before the launch, then checks every 200 ms, for up to waitMs, for a window whose HWND was not there before or whose title changed. Returns {launched, args, windowTitle, hwnd, pid, region, foundWindow}; the window fields are null when no window appeared in time, and a hint says why. foundWindow is the same as windowTitle, kept for older callers. Works for localized window titles (e.g. '電卓' for calc.exe) because detection is HWND-based. waitMs default 2000, max 30000; waitMs:0 returns right after the launch with the window fields null.",
       prefer: "Use instead of run_macro({exec, sleep, desktop_discover}) combos. Follow with desktop_discover({target:{hwnd}}) using the returned hwnd, which names this window even when another has a similar title (or focus_window(windowTitle)).",
-      caveats: "Single-instance apps that reuse an existing window will not register as a new HWND — call desktop_discover first to check if the window is already open. Minimized windows and windows smaller than 50×50 are not reported. When no new window appears, an already-open window whose title changed during the wait is reported instead, which may not be the launched app. pid is the process that owns the window, which can differ from the one launched (an app that hands off to another process).",
+      caveats: "Single-instance apps that reuse an existing window will not register as a new HWND — call desktop_discover first to check if the window is already open. Minimized windows and windows smaller than 50×50 are not reported. When no new window appears within waitMs, an already-open window whose title changed during the wait is reported instead, which may not be the launched app; such an app (one that only retitles its existing window) answers after the whole waitMs. pid is the process that owns the window, which can differ from the one launched (an app that hands off to another process).",
       examples: [
         "workspace_launch({command:'notepad.exe'}) → {windowTitle:'<localized title>', hwnd:'...', pid:...}",
         "workspace_launch({command:'calc.exe', waitMs:15000})",

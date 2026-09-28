@@ -191,28 +191,52 @@ describe("workspace_launch reply: windowTitle / hwnd / pid (internal #211 item 6
     expect(r.hwnd).toBe("1");
   });
 
-  it("findLaunchedWindow picks the new or retitled window and carries its hwnd", async () => {
-    const { findLaunchedWindow } = await import("../../src/tools/workspace.js");
-    const win = (hwnd: bigint, title: string, extra: Record<string, unknown> = {}) => ({
-      hwnd, title, region: { x: 0, y: 0, width: 400, height: 300 }, zOrder: 0,
-      isMinimized: false, isMaximized: false, isActive: false, ...extra,
+  const win = (hwnd: bigint, title: string, extra: Record<string, unknown> = {}) => ({
+    hwnd, title, region: { x: 0, y: 0, width: 400, height: 300 }, zOrder: 0,
+    isMinimized: false, isMaximized: false, isActive: false, ...extra,
+  });
+  const before = new Set([1n, 2n]);
+  const titles = new Set(["Old", "Chrome - a"]);
+
+  it("pickLaunchedWindows separates a new window from a retitled one and carries the hwnd", async () => {
+    const { pickLaunchedWindows } = await import("../../src/tools/workspace.js");
+    expect(pickLaunchedWindows([win(1n, "Old"), win(7n, "New")], before, titles)).toEqual({
+      created: { title: "New", hwnd: 7n, region: { x: 0, y: 0, width: 400, height: 300 } },
+      retitled: null,
     });
-    const before = new Set([1n, 2n]);
-    const titles = new Set(["Old", "Chrome - a"]);
-    // A new hwnd
-    expect(findLaunchedWindow([win(1n, "Old"), win(7n, "New")], before, titles)).toEqual(
-      { title: "New", hwnd: 7n, region: { x: 0, y: 0, width: 400, height: 300 } });
-    // An existing hwnd whose title changed, when there is no new window
-    expect(findLaunchedWindow([win(2n, "Chrome - b")], before, titles)?.hwnd).toBe(2n);
-    // A new window wins over an already-open window that retitled itself, even when that one is in front
-    expect(findLaunchedWindow([win(2n, "Chrome - b"), win(7n, "New")], before, titles)?.hwnd).toBe(7n);
+    const both = pickLaunchedWindows([win(2n, "Chrome - b"), win(7n, "New")], before, titles);
+    expect(both.created?.hwnd).toBe(7n);
+    expect(both.retitled?.hwnd).toBe(2n);
     // Skipped: untitled, minimized, too small, unchanged
-    expect(findLaunchedWindow([
+    expect(pickLaunchedWindows([
       win(8n, ""),
       win(9n, "Min", { isMinimized: true }),
       win(10n, "Tiny", { region: { x: 0, y: 0, width: 49, height: 300 } }),
       win(1n, "Old"),
-    ], before, titles)).toBeNull();
+    ], before, titles)).toEqual({ created: null, retitled: null });
+  });
+
+  it("waitForLaunchedWindow keeps waiting past a retitle for the new window", async () => {
+    const { waitForLaunchedWindow } = await import("../../src/tools/workspace.js");
+    // Listing 1: only the already-open window retitled. Listing 2: the new window appears.
+    const listings = [[win(2n, "Chrome - b")], [win(2n, "Chrome - b"), win(7n, "New")]];
+    let n = 0;
+    const found = await waitForLaunchedWindow(() => listings[Math.min(n++, listings.length - 1)]!, before, titles, 1000, 5);
+    expect(found?.hwnd).toBe(7n);
+  });
+
+  it("waitForLaunchedWindow reports the retitled window only when no new window appeared", async () => {
+    const { waitForLaunchedWindow } = await import("../../src/tools/workspace.js");
+    const found = await waitForLaunchedWindow(() => [win(2n, "Chrome - b")], before, titles, 30, 5);
+    expect(found?.hwnd).toBe(2n);
+    expect(await waitForLaunchedWindow(() => [win(1n, "Old")], before, titles, 30, 5)).toBeNull();
+    // A listing that throws is retried, not fatal
+    let calls = 0;
+    const afterThrow = await waitForLaunchedWindow(() => {
+      if (calls++ === 0) throw new Error("enum failed");
+      return [win(7n, "New")];
+    }, before, titles, 1000, 5);
+    expect(afterThrow?.hwnd).toBe(7n);
   });
 
   it("the description names the fields the reply carries and the parameter the schema takes", async () => {
@@ -224,6 +248,7 @@ describe("workspace_launch reply: windowTitle / hwnd / pid (internal #211 item 6
     expect(desc).toContain("buildDesc({");
     expect(desc).toContain("{launched, args, windowTitle, hwnd, pid, region, foundWindow}");
     expect(desc).toContain("with the window fields null");
+    expect(desc).toContain("answers after the whole waitMs");
     expect(desc).toContain("waitMs");
     expect(desc).not.toMatch(/timeoutMs|detach|elapsedMs|ShellExecute/);
   });

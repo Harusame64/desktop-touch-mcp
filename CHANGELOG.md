@@ -20,7 +20,8 @@
   names the parameter the tool takes (`waitMs`, default 2000) instead of `timeoutMs` and
   `detach`, which it never had. A new window now wins over an already-open window that only
   changed its title during the wait (which could be an unrelated app); that one is reported only
-  when no new window appeared.
+  when no new window appeared by the end of `waitMs`. An app that only retitles its existing
+  window (such as a single-instance browser) therefore answers after the whole `waitMs`.
 - **`desktop_discover` addressed by `hwnd` reports the window's title in `target.title`.** It
   reported the hwnd itself. With both `hwnd` and `windowTitle`, the title is the hwnd's window,
   the one that was read. A window missing from the reply's `windows` list still reports the hwnd.
