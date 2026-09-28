@@ -234,6 +234,27 @@ export function buildLaunchResult(
   };
 }
 
+/**
+ * The window a launch produced, picked from the windows listed after it: the first one (in
+ * Z-order) with a title, not minimized, at least 50×50, whose HWND was not listed before the launch
+ * or whose title changed (a single-instance app that retitles its existing window).
+ */
+export function findLaunchedWindow(
+  afterWindows: readonly WindowZInfo[],
+  beforeHwnds: ReadonlySet<bigint>,
+  beforeTitles: ReadonlySet<string>,
+): LaunchedWindow | null {
+  for (const w of afterWindows) {
+    if (!w.title) continue;
+    if (w.isMinimized || w.region.width < 50 || w.region.height < 50) continue;
+    const isNewWindow = !beforeHwnds.has(w.hwnd);
+    const isTitleChange = beforeHwnds.has(w.hwnd) && !beforeTitles.has(w.title);
+    if (!isNewWindow && !isTitleChange) continue;
+    return { title: w.title, hwnd: w.hwnd, region: w.region };
+  }
+  return null;
+}
+
 export const workspaceLaunchHandler = async ({
   command, args, waitMs,
 }: { command: string; args: string[]; waitMs: number }): Promise<ToolResult> => {
@@ -274,15 +295,7 @@ export const workspaceLaunchHandler = async ({
       const r = await pollUntil(
         async () => {
           try {
-            const afterWindows = enumWindowsInZOrder();
-            for (const w of afterWindows) {
-              if (!w.title) continue;
-              if (w.isMinimized || w.region.width < 50 || w.region.height < 50) continue;
-              const isNewWindow = !beforeHwnds.has(w.hwnd);
-              const isTitleChange = beforeHwnds.has(w.hwnd) && !beforeTitles.has(w.title);
-              if (!isNewWindow && !isTitleChange) continue;
-              return { title: w.title, hwnd: w.hwnd, region: w.region };
-            }
+            return findLaunchedWindow(enumWindowsInZOrder(), beforeHwnds, beforeTitles);
           } catch {
             // enumWindowsInZOrder FFI failure — non-fatal, retry on next poll
           }

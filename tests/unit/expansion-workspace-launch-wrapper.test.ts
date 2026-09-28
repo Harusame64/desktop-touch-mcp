@@ -191,6 +191,28 @@ describe("workspace_launch reply: windowTitle / hwnd / pid (internal #211 item 6
     expect(r.hwnd).toBe("1");
   });
 
+  it("findLaunchedWindow picks the new or retitled window and carries its hwnd", async () => {
+    const { findLaunchedWindow } = await import("../../src/tools/workspace.js");
+    const win = (hwnd: bigint, title: string, extra: Record<string, unknown> = {}) => ({
+      hwnd, title, region: { x: 0, y: 0, width: 400, height: 300 }, zOrder: 0,
+      isMinimized: false, isMaximized: false, isActive: false, ...extra,
+    });
+    const before = new Set([1n, 2n]);
+    const titles = new Set(["Old", "Chrome - a"]);
+    // A new hwnd
+    expect(findLaunchedWindow([win(1n, "Old"), win(7n, "New")], before, titles)).toEqual(
+      { title: "New", hwnd: 7n, region: { x: 0, y: 0, width: 400, height: 300 } });
+    // An existing hwnd whose title changed
+    expect(findLaunchedWindow([win(2n, "Chrome - b")], before, titles)?.hwnd).toBe(2n);
+    // Skipped: untitled, minimized, too small, unchanged
+    expect(findLaunchedWindow([
+      win(8n, ""),
+      win(9n, "Min", { isMinimized: true }),
+      win(10n, "Tiny", { region: { x: 0, y: 0, width: 49, height: 300 } }),
+      win(1n, "Old"),
+    ], before, titles)).toBeNull();
+  });
+
   it("the description names the fields the reply carries and the parameter the schema takes", async () => {
     const { readFileSync } = await import("node:fs");
     const src = readFileSync(new URL("../../src/tools/workspace.ts", import.meta.url), "utf-8");
