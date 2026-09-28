@@ -64,6 +64,13 @@ describe("discover by a handle that names no window", () => {
     expect(result.warnings).toContain("target_window_gone");
   });
 
+  it("reads the handle as the act does, so a hex spelling is said too (PR codex P2, win2 R7)", async () => {
+    mocks.windowIsAlive.mockReturnValue(false);
+    const result = await composeCandidates({ hwnd: "0x6E0B90" });
+    expect(result.warnings).toContain("target_window_gone");
+    expect(mocks.windowIsAlive).toHaveBeenCalledWith(0x6e0b90n);
+  });
+
   it("does not call handle zero a closed window: it names none (gate 2)", async () => {
     mocks.windowIsAlive.mockReturnValue(false);
     const result = await composeCandidates({ hwnd: "0" });

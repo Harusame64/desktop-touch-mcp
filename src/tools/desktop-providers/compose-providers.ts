@@ -26,7 +26,7 @@
  *   visual_attempted_empty_cdp_fallback — (H4) CDP failed and visual also empty (browser target)
  */
 
-import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
+import { parseTargetHwnd, type TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 import { fetchUiaCandidates }      from "./uia-provider.js";
 import { fetchBrowserCandidates }  from "./browser-provider.js";
@@ -180,15 +180,15 @@ function applyVisualEscalation(
 
 
 /**
- * internal #211 item 9(3) — a `target.hwnd` the OS says is not a window: a positive decimal handle,
- * and `windowIsAlive`'s definite no. Not for an opaque key (the visual lanes pass those in the same
- * field), not for zero (no handle, as `parseTargetHwnd` reads it), and not for a question that could
- * not be asked. A hidden window is alive and is not this.
+ * internal #211 item 9(3) — a `target.hwnd` the OS says is not a window: a handle read the way the
+ * act reads it (`parseTargetHwnd` — every spelling `BigInt` takes, `0x…` included, and nothing at or
+ * below zero), and `windowIsAlive`'s definite no. Not for an opaque key (the visual lanes pass those
+ * in the same field), and not for a question that could not be asked. A hidden window is alive and
+ * is not this.
  */
 function handleIsGone(hwnd: string): boolean {
-  if (!/^\d+$/.test(hwnd)) return false;
-  const h = BigInt(hwnd);
-  return h > 0n && windowIsAlive(h) === false;
+  const h = parseTargetHwnd({ hwnd });
+  return h !== undefined && windowIsAlive(h) === false;
 }
 
 /**
