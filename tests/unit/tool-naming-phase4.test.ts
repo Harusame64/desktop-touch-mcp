@@ -699,6 +699,9 @@ describe("Phase 4 — Codex PR #41 round 5 P1: desktop_discover.windows[] is imp
     };
     const cached = new DesktopFacade(() => [], { windowsProvider: () => [notepad], ingress });
     expect((await cached.see({ target: { hwnd: "12345" } })).target.title).toBe("Earlier title");
+    // ... only when the caller sent the handle alone: with a windowTitle too, the ingress hands the
+    // caller's target back, so its title is the caller's text, not a resolved one
+    expect((await cached.see({ target: { hwnd: "12345", windowTitle: "stale" } })).target.title).toBe("Notepad");
     // ... only when it names the same handle
     resolvedTarget.hwnd = "777";
     expect((await cached.see({ target: { hwnd: "12345" } })).target.title).toBe("Notepad");

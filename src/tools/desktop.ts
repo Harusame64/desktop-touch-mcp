@@ -416,8 +416,9 @@ function primaryActionFrom(entity: UiEntity): string {
  *
  * The title is the one the candidates were read with: the ingress resolves a handle alone to a
  * handle and a title (`ProviderResult.target`), and a cache hit hands back that target, so the
- * title matches the entities and the lease even if the window has since retitled. Only when the
- * ingress said nothing (a direct provider) does the title come from this reply's `windows` list,
+ * title matches the entities and the lease even if the window has since retitled. When the caller sent a
+ * title with the handle, or the ingress said nothing (a direct provider), the title comes from this
+ * reply's `windows` list,
  * and a window that list does not hold still reports the hwnd, as before. A windowTitle target
  * reports what the caller passed.
  */
@@ -429,7 +430,11 @@ function targetTitle(
   if (!target) return "(current)";
   const pinned = parseTargetHwnd(target);
   if (pinned !== undefined) {
-    if (resolved?.windowTitle && parseTargetHwnd(resolved) === pinned) return resolved.windowTitle;
+    // Only a title the ingress resolved counts: when the caller sent a windowTitle along with the
+    // handle, the ingress hands that target back unchanged, and its title is the caller's text.
+    if (target.windowTitle === undefined && resolved?.windowTitle && parseTargetHwnd(resolved) === pinned) {
+      return resolved.windowTitle;
+    }
     const title = windows.find((w) => parseHwnd(w.hwnd) === pinned)?.title;
     return title ? title : target.hwnd!;
   }
