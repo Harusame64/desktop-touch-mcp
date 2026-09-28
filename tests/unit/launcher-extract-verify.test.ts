@@ -223,7 +223,7 @@ describe("installing a release counts what the extractor left", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) =>
-        url.includes("api.github.com")
+        new URL(url).hostname === "api.github.com"
           ? new Response(
               JSON.stringify({
                 tag_name: tagName,
