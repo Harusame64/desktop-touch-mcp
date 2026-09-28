@@ -688,6 +688,20 @@ describe("Phase 4 — Codex PR #41 round 5 P1: desktop_discover.windows[] is imp
     // An unusable handle gives way to windowTitle, as the read does (parseTargetHwnd)
     expect((await facade.see({ target: { hwnd: "0", windowTitle: "Notepad" } })).target.title).toBe("Notepad");
     expect((await facade.see({ target: { hwnd: "x", windowTitle: "Notepad" } })).target.title).toBe("Notepad");
+    // The title the candidates were read with (the ingress's resolved target, e.g. a cache hit)
+    // beats this reply's later window listing
+    const resolvedTarget = { hwnd: "12345", windowTitle: "Earlier title" };
+    const ingress = {
+      getSnapshot: async () => ({ candidates: [], warnings: [], target: resolvedTarget }),
+      invalidate: () => {},
+      subscribe: () => () => {},
+      dispose: () => {},
+    };
+    const cached = new DesktopFacade(() => [], { windowsProvider: () => [notepad], ingress });
+    expect((await cached.see({ target: { hwnd: "12345" } })).target.title).toBe("Earlier title");
+    // ... only when it names the same handle
+    resolvedTarget.hwnd = "777";
+    expect((await cached.see({ target: { hwnd: "12345" } })).target.title).toBe("Notepad");
     // hwnd wins over windowTitle, as the target is resolved
     expect((await facade.see({ target: { hwnd: "12345", windowTitle: "メモ" } })).target.title).toBe("Notepad");
     // An empty title is not a title
