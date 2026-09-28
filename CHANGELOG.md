@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+- **The launcher says why a first install failed under a long cache path.** With
+  long paths disabled in Windows, a cache directory (`DESKTOP_TOUCH_MCP_HOME`, or
+  `%USERPROFILE%\.desktop-touch-mcp` by default) of 126 characters or more put
+  some of 2.0.0's files past Windows' 260-character limit. Windows PowerShell 5.1's
+  extractor then removed what it had written and reported success, and the
+  launcher printed only `stderr maxBuffer length exceeded`.
+
+  The launcher now checks that every file in the release arrived. When some are
+  missing, startup stops with how many arrived, the longest path, and how many
+  characters shorter the cache directory must be, followed by the extractor's
+  own last message.
+
 ## [2.0.0] - 2026-09-24 — An action that cannot be done is refused, not reported as done
 
 2.0 changes what `desktop_act` does when the screen no longer matches what `desktop_discover`
