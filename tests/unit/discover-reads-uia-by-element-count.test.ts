@@ -152,6 +152,27 @@ describe("discover's UIA read", () => {
     expect(result.webArea).toEqual(page.boundingRect);
   });
 
+  it("finds a page with no <title> under DevTools, not DevTools, the larger root (PR codex P2)", async () => {
+    const devtools: El = { ...pane(7), name: "DevTools", controlType: "Document", automationId: "RootWebArea", boundingRect: { x: 48, y: 127, width: 1384, height: 805 } };
+    const page: El = { ...devtools, name: "", boundingRect: { x: 48, y: 127, width: 829, height: 805 } };
+    const { result } = await read({ tree: [devtools, page], windowRect: { x: 40, y: 40, width: 1400, height: 900 } });
+    expect(result.webArea).toEqual(page.boundingRect);
+  });
+
+  it("still reports DevTools' root when it is the only one (DevTools undocked into its own window)", async () => {
+    const devtools: El = { ...web("DevTools", 0, 900) };
+    const { result } = await read({ tree: [devtools] });
+    expect(result.webArea).toEqual(devtools.boundingRect);
+  });
+
+  it.each([
+    ["zero width", { x: 0, y: 0, width: 0, height: 600 }],
+    ["negative height", { x: 0, y: 0, width: 900, height: -600 }],
+  ])("reports no page when the window's bounds are %s (PR codex P2)", async (_name, windowRect) => {
+    const { result } = await read({ tree: [web("FX-HTML", 0, 900)], windowRect });
+    expect(result.webArea).toBeUndefined();
+  });
+
   it("does not count twice what two overlapping roots share: two over the same 30% are 30% (PR codex P2)", async () => {
     const a: El = { ...web("Help", 0, 324), boundingRect: { x: 0, y: 100, width: 324, height: 500 } };
     const { result } = await read({ tree: [button("OK", 1), a, { ...a, name: "Help 2" }] });

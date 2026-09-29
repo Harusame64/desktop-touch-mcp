@@ -233,15 +233,19 @@ export async function fetchUiaCandidates(
     // P2). The half is of the area the roots cover together, inside the window: either root alone
     // can fall under it beside a docked DevTools, and two overlapping roots must not count their
     // shared part twice (PR codex P2 ×2). Of several, the one the window's title names — a browser
-    // titles itself after the page — and otherwise the largest.
+    // titles itself after the page — and otherwise the largest that is not DevTools: its root spans
+    // the whole content area wherever it is docked, so for a page with no <title> the largest would
+    // be DevTools (win2 measured the root's name "DevTools", Chrome, 2026-09-29; PR codex P2).
     const window = result.windowRect;
     const area = (el: UiElement) => el.boundingRect!.width * el.boundingRect!.height;
     const roots = result.elements
       .filter((el) => el.automationId === WEB_AREA_AUTOMATION_ID && el.boundingRect && el.boundingRect.width > 0 && el.boundingRect.height > 0)
       .sort((a, b) => area(b) - area(a));
-    const isMostOfWindow = !!window && coveredArea(roots.map((el) => el.boundingRect!), window) >= 0.5 * window.width * window.height;
+    const isMostOfWindow = !!window && window.width > 0 && window.height > 0 && coveredArea(roots.map((el) => el.boundingRect!), window) >= 0.5 * window.width * window.height;
     const title = result.windowTitle ?? "";
-    const webArea = isMostOfWindow ? (roots.find((el) => el.name && title.includes(el.name)) ?? roots[0])?.boundingRect ?? undefined : undefined;
+    const webArea = isMostOfWindow
+      ? (roots.find((el) => el.name && title.includes(el.name)) ?? roots.find((el) => el.name !== DEVTOOLS_ROOT_NAME) ?? roots[0])?.boundingRect ?? undefined
+      : undefined;
 
     return probeLane("uia", "read", read, { candidates, warnings, ...(webArea && { webArea }) });
   } catch (err) {
@@ -250,6 +254,9 @@ export async function fetchUiaCandidates(
     return probeLane("uia", "failed", { ...(read ?? asked), why: "threw" }, { candidates: [], warnings: [...hwndWarnings, "uia_provider_failed"] });
   }
 }
+
+/** The name Chrome and Edge give DevTools' own RootWebArea (measured, win2, 2026-09-29). */
+const DEVTOOLS_ROOT_NAME = "DevTools";
 
 type Rect = { x: number; y: number; width: number; height: number };
 
