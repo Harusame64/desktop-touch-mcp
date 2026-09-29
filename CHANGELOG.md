@@ -4,8 +4,8 @@
 
 - **`desktop_discover` says why a `query` found nothing.** A `query` that matched none of the
   controls read used to return an empty list and nothing else. The list was the same when the text
-  was scrolled out of view, when it was a value UI Automation does not expose (a spreadsheet cell's
-  number, for example), and when the read had stopped at its element cap. The reply now carries the
+  was scrolled out of view, when it was text UI Automation does not expose (a spreadsheet cell's
+  number, a Word document's body, a Java window's contents), and when the read had stopped at its element cap. The reply now carries the
   constraint `query: "no_match"` (and `entityZeroReason: "query_no_match"` when the list is empty,
   unless a lane failure explains it better). The description says what to do instead: scroll the
   text into view and call again, or read visible text with `screenshot(detail: "ocr")`. The next
