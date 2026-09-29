@@ -19,6 +19,7 @@ use windows::core::Interface;
 use super::thread::{self, UiaContext, win_err};
 use super::types::*;
 use super::control_type_name;
+use crate::word_pages;
 
 // ─── Configuration defaults ──────────────────────────────────────────────────
 
@@ -111,25 +112,28 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
             continue;
         }
 
-        // One RPC: fetch ALL ControlView children of this parent.
-        let children = unsafe {
-            parent.FindAllBuildCache(
-                TreeScope_Children,
-                &ctx.control_view_condition,
-                &ctx.tree_cache_request,
-            )
-        };
-        let arr = match children {
-            Ok(a) => a,
-            Err(_) => continue,
-        };
-        let kids: Vec<(IUIAutomationElement, i32)> = if elements.len() < max_elements as usize && is_word_document(&parent) {
-            // internal #217 — this Document does not answer `FindAll` with its pages. (A read already
-            // at its cap takes one child more at most, so it is not navigated for; gate 2.)
-            word_document_children(ctx, &parent)
-        } else {
-            let count = unsafe { arr.Length() }.unwrap_or(0);
-            (0..count).filter_map(|i| unsafe { arr.GetElement(i) }.ok().map(|c| (c, i))).collect()
+        // internal #217 — Word's document area does not answer `FindAll` with its pages; it is
+        // navigated instead, and only when that runs out of time is `FindAll` asked after all.
+        let navigated = if is_word_document(&parent) { word_document_children(ctx, &parent) } else { None };
+        let kids: Box<dyn Iterator<Item = (IUIAutomationElement, i32)>> = match navigated {
+            Some(list) => Box::new(list.into_iter()),
+            None => {
+                // One RPC: fetch ALL ControlView children of this parent.
+                let children = unsafe {
+                    parent.FindAllBuildCache(
+                        TreeScope_Children,
+                        &ctx.control_view_condition,
+                        &ctx.tree_cache_request,
+                    )
+                };
+                let arr = match children {
+                    Ok(a) => a,
+                    Err(_) => continue,
+                };
+                let count = unsafe { arr.Length() }.unwrap_or(0);
+                // Read one at a time, so a read that reaches its cap stops asking (gate 2).
+                Box::new((0..count).filter_map(move |i| unsafe { arr.GetElement(i) }.ok().map(|c| (c, i))))
+            }
         };
 
         for (child, i) in kids {
@@ -175,8 +179,9 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
     })
 }
 
-/// How many children of Word's Document are navigated, whatever is found: one per page, plus a few.
-const MAX_WORD_DOCUMENT_CHILDREN: i32 = 2048;
+/// How long the navigation of Word's document area may take: one RPC per child, in series, and the
+/// whole read runs under an 8 s timeout that returns nothing at all when it is passed (gate 2).
+const WORD_NAVIGATION_BUDGET: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// Word's document area: a `Document` of class `_WwG`.
 fn is_word_document(elem: &IUIAutomationElement) -> bool {
@@ -186,45 +191,45 @@ fn is_word_document(elem: &IUIAutomationElement) -> bool {
     }
 }
 
-/// internal #217 — the children of Word's Document, by navigation instead of `FindAll`.
+/// internal #217 — the children of Word's document area, by navigation instead of `FindAll`.
 ///
 /// MEASURED win2 (2026-09-30): Word's `_WwG` Document answers `FindAll(Children)` with a 68x68 Pane
-/// alone, while `ControlViewWalker` navigation returns the Pane and one `Custom` per page, under
+/// alone, while `ControlViewWalker` navigation returns the Pane and one page per `Custom`, under
 /// which `FindAll` works again (the page's `Edit` body). Across Notepad, Explorer, Calculator,
 /// Chrome, an Edge PDF, VS Code, Excel and PowerPoint no parent disagreed. So only this Document is
 /// navigated, and its children come from navigation alone: one list, one index space (an earlier
 /// version merged the two lists for every Document, and each gate round found another way for the
-/// merge to double or misnumber a child).
+/// merge to double or misnumber a child). `FindAll` is not asked at all.
 ///
-/// A long document has one `Custom` per page, all but the visible ones offscreen and pruned by the
-/// walk: navigating every page cost 3–4x the read on 34 pages. So once a page has been onscreen, the
-/// next offscreen page ends the list. Only pages count: the Pane that comes first is onscreen (gate 2).
-/// An `IsOffscreen` that cannot be read neither starts nor stops anything. Pages scrolled past above
-/// the visible one are navigated, one RPC each, up to `MAX_WORD_DOCUMENT_CHILDREN` children.
+/// A long document has one page per child, all but the visible ones offscreen and pruned by the walk,
+/// so the list ends where `word_pages::PageStop` says. Pages scrolled past above the view are
+/// navigated, one RPC each: past `WORD_NAVIGATION_BUDGET` this answers `None`, and the walk asks
+/// `FindAll` instead — the read before #217, without the body, rather than a read that times out
+/// (gate 2). Not measured: Outlook's Word editor (also `_WwG`), and a view showing two separate
+/// stretches of pages at once (the second stretch is past the stop).
 ///
 /// Not applied in `get_element_children`, nor on the PowerShell road, which reads to depth 4 and never
 /// reaches a page body (depth 5).
-fn word_document_children(ctx: &UiaContext, parent: &IUIAutomationElement) -> Vec<(IUIAutomationElement, i32)> {
+fn word_document_children(ctx: &UiaContext, parent: &IUIAutomationElement) -> Option<Vec<(IUIAutomationElement, i32)>> {
+    let started = Instant::now();
     let mut kids = Vec::new();
+    let mut stop = word_pages::PageStop::default();
     let mut next = unsafe { ctx.walker.GetFirstChildElementBuildCache(parent, &ctx.tree_cache_request) }.ok();
     let mut index: i32 = 0;
-    let mut page_seen_on_screen = false;
     while let Some(child) = next {
-        if index >= MAX_WORD_DOCUMENT_CHILDREN {
-            break;
+        if started.elapsed() >= WORD_NAVIGATION_BUDGET {
+            return None;
         }
-        if unsafe { child.CachedControlType() }.ok() == Some(UIA_CustomControlTypeId) {
-            match unsafe { child.CachedIsOffscreen() }.ok().map(|b| b == true) {
-                Some(true) if page_seen_on_screen => break,
-                Some(false) => page_seen_on_screen = true,
-                _ => {}
-            }
+        let is_page = unsafe { child.CachedAutomationId() }.is_ok_and(|id| word_pages::is_word_page(&id.to_string()));
+        let offscreen = unsafe { child.CachedIsOffscreen() }.ok().map(|b| b == true);
+        if stop.ends_before(is_page, offscreen) {
+            break;
         }
         next = unsafe { ctx.walker.GetNextSiblingElementBuildCache(&child, &ctx.tree_cache_request) }.ok();
         kids.push((child, index));
         index += 1;
     }
-    kids
+    Some(kids)
 }
 
 // ─── Window finding ──────────────────────────────────────────────────────────

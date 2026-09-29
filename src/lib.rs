@@ -13,6 +13,9 @@ mod image_processing;
 mod ssim;
 #[cfg(windows)]
 mod uia;
+// internal #217 — the stop rule of the Word document walk, pure so its tests run on any host.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod word_pages;
 #[cfg(windows)]
 pub mod duplication;
 // ADR-007 P1: hot-path window APIs migrated from koffi to windows-rs.
