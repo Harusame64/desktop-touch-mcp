@@ -993,6 +993,24 @@ export function isWindowCloaked(hwnd: unknown): boolean {
 }
 
 /**
+ * internal #211 B2 — whether a window is still on the screen, asked of its handle: it exists, it is
+ * shown (`IsWindowVisible` — a minimised window is), and DWM is not hiding it (another virtual
+ * desktop). `enumWindowsInZOrder` cannot answer this: it also drops untitled windows and ones under
+ * 50 px, which are on the screen (win2 on #752: a window that cleared its title, or shrank to
+ * 40×40, read as closed). `undefined` when the OS could not be asked.
+ */
+export function windowIsShown(hwnd: bigint): boolean | undefined {
+  try {
+    const w32 = requireNativeWin32();
+    if (!w32.win32IsWindowVisible) return undefined;
+    if (windowIsAlive(hwnd) === false) return false;
+    return w32.win32IsWindowVisible(hwnd) && !isWindowCloaked(hwnd);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * ADR-027 D3 gate — whether a window may be captured via WGC (`captureWindowWgc`).
  *
  * WGC must only target windows DWM is *actively compositing*. Minimised

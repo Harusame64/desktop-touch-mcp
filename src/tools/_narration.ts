@@ -27,7 +27,9 @@ import {
   UIA_DISCOVER_MAX_DEPTH,
   UIA_DISCOVER_MAX_ELEMENTS,
 } from "./desktop-providers/uia-provider.js";
-import { enumWindowsInZOrder } from "../engine/win32.js";
+import { enumWindowsInZOrder, windowIsShown } from "../engine/win32.js";
+import { forgetUiaCache } from "../engine/layer-buffer.js";
+import { parseWindowHandle } from "../engine/aim.js";
 import { computeUiaDiff, degradedRichBlock } from "../engine/uia-diff.js";
 import type { RichBlock } from "../engine/uia-diff.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
@@ -113,10 +115,16 @@ const UI_SETTLE_MS = 120;
 // UIA snapshot helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** A read's elements with the road that read them, or why there is nothing to diff. */
-type Snapshot = { elements: UiElement[]; via: "native" | "powershell" | undefined };
+/**
+ * A read's elements with the road that read them and the window it read (internal #211 B2: the
+ * after-read reads that window again, by handle), or why there is nothing to diff.
+ */
+type Snapshot = { elements: UiElement[]; via: "native" | "powershell" | undefined; hwnd: bigint | undefined };
 
-async function snapElements(windowTitle: string, useCache: boolean): Promise<Snapshot | "cut" | "slow" | null> {
+/** A read that came back but cannot be diffed, with the window it read (so its cache can be dropped). */
+type Unusable = { unusable: "cut" | "slow"; hwnd: bigint | undefined };
+
+async function snapElements(windowTitle: string, useCache: boolean, hwnd?: bigint): Promise<Snapshot | Unusable | null> {
   try {
     // internal #211 (B) — the discover read's caps, by element count: Calculator's display sits at
     // depth 4–5 and Explorer's status bar at depth 5 (win2 S3/S10), below the old depth 3 / 80.
@@ -124,16 +132,18 @@ async function snapElements(windowTitle: string, useCache: boolean): Promise<Sna
       cached: useCache,
       fetchValues: true,
       fallbackLimits: { maxDepth: UIA_DISCOVER_FALLBACK_DEPTH, maxElements: UIA_DISCOVER_FALLBACK_ELEMENTS },
+      ...(hwnd !== undefined && { pinnedHwnd: hwnd }),
     });
     // ADR-036 — a tree cut short is a prefix, and this function's caller DIFFS two of them. Two
     // prefixes that end in different places read as elements appearing and disappearing that never
     // moved, so the narration would describe a change the user never made. A walk that ran out of
     // time says so (`truncated`: "slow"); one that stopped at its element cap does not, and is a
     // prefix all the same ("cut", internal #211 B) — two different reasons, said apart (gate 2).
-    if (result.truncated) return "slow";
+    const read = parseWindowHandle(result.windowHwnd) ?? hwnd;
+    if (result.truncated) return { unusable: "slow", hwnd: read };
     const cap = result.via === "powershell" ? UIA_DISCOVER_FALLBACK_ELEMENTS : UIA_DISCOVER_MAX_ELEMENTS;
-    if (result.elementCount >= cap) return "cut";
-    return { elements: result.elements, via: result.via };
+    if (result.elementCount >= cap) return { unusable: "cut", hwnd: read };
+    return { elements: result.elements, via: result.via, hwnd: read };
   } catch {
     return null;
   }
@@ -176,9 +186,10 @@ export interface RichNarrationOptions {
 
   /**
    * ADR-036 — key in the args object that holds the target window HANDLE, when
-   * the tool takes one. The snapshots below resolve their window by title, so a
-   * call that named a handle is narrated only while that title is unique; see
-   * the check in the rich path.
+   * the tool takes one. The snapshots below read the resolved window by its
+   * handle (internal #211 B2), but `keyboard` still delivers by title, so a call
+   * that named a handle is narrated only while that title is unique; see the
+   * checks in the rich path.
    */
   hwndKey?: string;
 
@@ -266,10 +277,20 @@ export const UIA_WRITE_NARRATION: RichNarrationOptions = {
  * nothing in this file establishes that they cannot fail. The safe branch is
  * kept for what is not known, not as decoration for a case that cannot happen.
  */
+/** Of these visible top-level windows, those whose title contains this one, case folded. */
+function matchingTitle<W extends { title: string }>(wins: W[], windowTitle: string): W[] {
+  const q = windowTitle.toLowerCase();
+  return wins.filter((w) => w.title.toLowerCase().includes(q));
+}
+
+/** The visible top-level windows whose title contains this one; throws as the enumeration does. */
+function windowsMatchingTitle(windowTitle: string) {
+  return matchingTitle(enumWindowsInZOrder(), windowTitle);
+}
+
 function titleIsSharedByMoreThanOneWindow(windowTitle: string): boolean {
   try {
-    const q = windowTitle.toLowerCase();
-    return enumWindowsInZOrder().filter((w) => w.title.toLowerCase().includes(q)).length > 1;
+    return windowsMatchingTitle(windowTitle).length > 1;
   } catch {
     return true;
   }
@@ -452,13 +473,15 @@ export function withRichNarration<T extends Record<string, unknown>>(
     }
 
     // ADR-036 — a handle-named call whose title is shared is not narrated.
-    // `snapElements` finds its window BY TITLE, so with two same-titled windows
-    // the action goes to the handle while the diff describes the sibling: a
+    // `snapElements` found its window BY TITLE, so with two same-titled windows
+    // the action went to the handle while the diff described the sibling: a
     // report about a window nobody touched, with nothing in it to say so. This
     // wrapper sits on the three tools whose `ambiguous_target` refusal this ADR
-    // lifts, so the case only became reachable when that refusal did. It narrows
-    // again when the reads take a handle (ADR-036 I-6), which is also what
-    // retires this check.
+    // lifts, so the case only became reachable when that refusal did. The reads
+    // take the handle now (internal #211 B2), and that did NOT retire this check:
+    // delivery is still title-based for `keyboard` (below), so a shared title
+    // still lets the keys land on a sibling while the diff describes the window
+    // read (gate 2 on B2).
     //
     // This used to say "same treatment as the background delivery check", and
     // that was false — measured, not argued. That check counts same-titled
@@ -503,14 +526,16 @@ export function withRichNarration<T extends Record<string, unknown>>(
     //
     //   hwnd or `@active`   3   resolver 0 (Cases 1 and 2 enumerate nothing)
     //                           + this gate + the gate after the re-check
-    //                           + the identity check after the after-snapshot
-    //   plain title, hit    1   resolver only: it returns `null`, so `pinnedHwnd`
-    //                           stays unset and every gate below is skipped
+    //                           + the check before the after-read
+    //   plain title, hit    2   resolver (it returns `null`, so `pinnedHwnd`
+    //                           stays unset and the gates before the action are
+    //                           skipped) + the check before the after-read,
+    //                           when the before-read reported its window
     //   Case 4 dialog       7   resolver 2, twice (probe and re-check), + 3
     //
     // `minimal` pays none of it. Not folded into one, because the alternative is
     // reimplementing the resolver here, which is the defect this replaced.
-    const snapBefore = await snapElements(windowTitle, true);  // try cache first
+    const snapBefore = await snapElements(windowTitle, true, pinnedHwnd);  // try cache first
 
     // The handler resolves again, and the desktop can move in between — a modal
     // closing, the foreground changing. Then the snapshots describe one window
@@ -580,11 +605,17 @@ export function withRichNarration<T extends Record<string, unknown>>(
 
     const result = await handoff(() => wrappedWithPost(args));
 
-    if (!snapBefore || snapBefore === "slow") {
+    // The action has run: a tree cached under this window before it — by the before-read, or by
+    // an earlier read — is not the window any more, whichever way this call leaves from here
+    // (PR codex P2: the early returns below skipped this when it sat before the after-read).
+    const actedOn = pinnedHwnd ?? snapBefore?.hwnd;
+    if (actedOn !== undefined) forgetUiaCache(actedOn);
+
+    if (!snapBefore || ("unusable" in snapBefore && snapBefore.unusable === "slow")) {
       spliceRich(result, degradedRichBlock("timeout"));
       return result;
     }
-    if (snapBefore === "cut") {
+    if ("unusable" in snapBefore) {
       spliceRich(result, degradedRichBlock("tree_truncated"));
       return result;
     }
@@ -593,12 +624,53 @@ export function withRichNarration<T extends Record<string, unknown>>(
     await new Promise<void>((r) => setTimeout(r, UI_SETTLE_MS));
 
     try {
-      const snapAfterElements = await snapElements(windowTitle, false);
-      if (!snapAfterElements || snapAfterElements === "slow") {
+      // internal #211 B2 — the after-read reads the window the before-read read, by its handle: an
+      // action that renames its window ("*ab - メモ帳" after typing, a folder's name after opening
+      // it) made the title search find nothing, or another window (win2: Explorer's folder change
+      // came back `timeout`, S10 and #750). What the window may be is asked first, of one
+      // enumeration of the VISIBLE windows, and before the read: a closed window is not read twice
+      // over two roads to find that out, and a hidden one (a dialog that hides on OK) must not be
+      // read by its handle and described as though it were on the screen (gate 2).
+      const afterHwnd = pinnedHwnd ?? snapBefore.hwnd;
+      if (afterHwnd !== undefined) {
+        let wins;
+        try {
+          wins = enumWindowsInZOrder();
+        } catch {
+          // Withhold rather than guess, as the checks before the action do.
+          spliceRich(result, degradedRichBlock("ambiguous_title"));
+          return result;
+        }
+        const matches = matchingTitle(wins, windowTitle);
+        // Still here, and still the only window wearing the title the handler delivers by:
+        // `keyboard` takes its handle from the public argument, so its focus leash follows the
+        // title, and a same-titled window the action opened (Ctrl+N) takes the rest of the keys
+        // — a diff of the window read would describe one that got none (gate 2). Scoped to the
+        // pinned population, as the checks before the action are.
+        if (pinnedHwnd !== undefined && matches.length > 1) {
+          spliceRich(result, degradedRichBlock("ambiguous_title"));
+          return result;
+        }
+        // Gone is asked of the handle first: the enumeration drops untitled and tiny windows, which
+        // are on the screen (win2 on #752), and keeps a cloaked one, which is not (PR codex P2: a
+        // window moved to another virtual desktop). The list answers only when the handle cannot.
+        const shown = windowIsShown(afterHwnd) ?? wins.some((w) => w.hwnd === afterHwnd);
+        if (!shown) {
+          // Gone from the screen — closed, hidden, or destroyed and replaced by the next one (a
+          // dialog that advances that way). One other window wearing the title is where to look
+          // (`target_changed`, not `window_closed`, which a caller would read as "give up"); more
+          // than one cannot be told apart.
+          const others = matches.filter((w) => w.hwnd !== afterHwnd).length;
+          spliceRich(result, degradedRichBlock(others > 1 ? "ambiguous_title" : others === 1 ? "target_changed" : "window_closed"));
+          return result;
+        }
+      }
+      const snapAfterElements = await snapElements(windowTitle, false, afterHwnd);
+      if (!snapAfterElements || ("unusable" in snapAfterElements && snapAfterElements.unusable === "slow")) {
         spliceRich(result, degradedRichBlock("timeout"));
         return result;
       }
-      if (snapAfterElements === "cut") {
+      if ("unusable" in snapAfterElements) {
         spliceRich(result, degradedRichBlock("tree_truncated"));
         return result;
       }
@@ -610,67 +682,6 @@ export function withRichNarration<T extends Record<string, unknown>>(
         spliceRich(result, degradedRichBlock("timeout"));
         return result;
       }
-      // Third check, and now genuinely the last one that can matter: the two
-      // before the action cannot see a window the action itself opened, and
-      // placing this between the settle and the after-snapshot still left the
-      // LONGEST await open — `snapElements` is an uncached UIA read with a
-      // 4 s budget, and it is the read that actually picks the window. Asked
-      // after that read returns, so the interval it covers ends where the
-      // snapshot does. The snapshot is paid for and then discarded when this
-      // fires; the action has already run, so there is nothing to save by
-      // asking earlier.
-      //
-      // Scoped to the pinned population, like the other two: extending a new
-      // withhold to the sixteen tools that never had one is how the last two
-      // spills happened, and it would be a behaviour change with no acceptance
-      // behind it.
-      if (pinnedHwnd !== undefined) {
-        // Both questions off ONE enumeration, because they are the same question
-        // asked twice: will the after-snapshot's title search find the window the
-        // before-snapshot described?
-        //
-        // Counting alone is not enough here. A dialog that advances by DESTROYING
-        // its window and creating the next one keeps the count at exactly one and
-        // the title identical, so a count passes and the title search below reads
-        // the REPLACEMENT's tree against the original's snapshot — every
-        // appeared/disappeared in that diff an artefact of the swap. The
-        // pre-action re-check compares handles for this reason; this is that check
-        // on the far side, where only it can see what the action did to the
-        // window's identity.
-        //
-        // Asked of the HANDLE rather than by re-resolving the query, because the
-        // query can be `@active` and the foreground moving is not a problem for a
-        // snapshot that searches the resolved title. Re-resolving would have
-        // withheld every rich `@active` call whose action changed focus.
-        let wins;
-        try {
-          wins = enumWindowsInZOrder();
-        } catch {
-          // Same rule as the counter above: withhold rather than guess.
-          spliceRich(result, degradedRichBlock("ambiguous_title"));
-          return result;
-        }
-        const q = windowTitle.toLowerCase();
-        const matches = wins.filter((w) => w.title.toLowerCase().includes(q));
-        if (matches.length > 1) {
-          spliceRich(result, degradedRichBlock("ambiguous_title"));
-          return result;
-        }
-        const still = wins.find((w) => w.hwnd === pinnedHwnd);
-        if (!still) {
-          // Gone, and something else answers to its title: a caller told
-          // `window_closed` would give up on a window that is on the screen.
-          spliceRich(result, degradedRichBlock(matches.length === 1 ? "target_changed" : "window_closed"));
-          return result;
-        }
-        if (!still.title.toLowerCase().includes(q)) {
-          // Renamed under the snapshot: the search will find something else, or
-          // nothing.
-          spliceRich(result, degradedRichBlock("target_changed"));
-          return result;
-        }
-      }
-
 
       const diff = computeUiaDiff(snapBefore.elements, snapAfterElements.elements);
       const richBlock: RichBlock = { ...diff, diffSource: "uia" };

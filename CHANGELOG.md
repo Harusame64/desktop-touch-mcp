@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **Rich narration keeps the window an action renamed.** The diff read the window again by its
+  title after the action. An action that changed the title — typing into Notepad makes it read
+  `*… - メモ帳`, and opening a folder renames Explorer after it — left that read finding nothing,
+  and the diff came back `timeout`. Both reads now name the window by its handle, so the diff is
+  shown. This also applies to calls that give only a window title: the second read goes to the
+  window the first one read. A window that closed, was hidden, or was replaced after the action is
+  reported as `window_closed`, `target_changed` (one other window has its title) or
+  `ambiguous_title` (several do), now also for those title-only calls.
+
 - **Rich narration says when an element's name changed.** Some apps show a value in an element's
   name rather than its value: a calculator's display, a status bar's item count. When such a name
   changed, `narrate: "rich"` reported one element disappearing and another appearing, and

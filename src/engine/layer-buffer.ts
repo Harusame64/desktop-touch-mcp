@@ -362,6 +362,20 @@ export function updateUiaCache(hwnd: bigint, uiaText: string): void {
   }
 }
 
+/**
+ * Forget one window's cached tree, and its layer's copy. For a read taken before an action: the
+ * action has changed the window, and a cached pre-action tree would be served to `cached:true`
+ * readers as current for the rest of the TTL (gate 2 on internal #211 B2).
+ */
+export function forgetUiaCache(hwnd: bigint): void {
+  uiaCache.delete(hwnd);
+  const layer = layers.get(hwnd);
+  if (layer) {
+    layer.uiaText = null;
+    layer.uiaTimestamp = 0;
+  }
+}
+
 /** Get cached UIA text for a window, or null if not cached / expired. */
 export function getCachedUia(hwnd: bigint): string | null {
   const entry = uiaCache.get(hwnd);

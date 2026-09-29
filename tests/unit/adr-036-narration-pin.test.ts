@@ -2,10 +2,12 @@
  * adr-036-narration-pin.test.ts — ADR-036: rich narration and the shared title.
  *
  * `withRichNarration` wraps the three write tools whose `ambiguous_target`
- * refusal this ADR lifts. Its before/after snapshots find their window BY
+ * refusal this ADR lifts. Its before/after snapshots found their window BY
  * TITLE (`snapElements` → `getUiElements`), so a call that named a handle used
  * to be stopped by the guard before the wrapper could report on the wrong
- * window — and lifting the refusal made that reachable.
+ * window — and lifting the refusal made that reachable. Since internal #211 B2
+ * they read the resolved window by its handle; `keyboard` still delivers by
+ * title, which is why the shared-title checks stay.
  *
  * Every case here is paired with the same fixture minus the handle, so no
  * assertion can pass for a reason other than the handle being what changed it.
@@ -19,6 +21,12 @@ const LIVE = "0x2222";
 /** Mutable so one file can hold "two windows", "one window" and "cannot tell". */
 let windows: Array<{ hwnd: bigint; title: string }> = [];
 let enumThrows = false;
+/** Windows on the screen that `enumWindowsInZOrder` does not list (untitled, tiny). */
+let shownOffList: bigint[] = [];
+/** The handle could not be asked (no native binding). */
+let shownUnknown = false;
+/** Listed by the enumeration but cloaked by DWM (another virtual desktop). */
+let cloaked: bigint[] = [];
 
 vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
@@ -33,6 +41,10 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
         className: "Chrome_WidgetWin_1", ownerHwnd: null,
       }));
     }),
+    // internal #211 B2 — the handle is asked what the enumeration cannot say: a window it drops
+    // (untitled, under 50 px) that is still shown.
+    // Shown: listed and not cloaked, or on the off-list (untitled, tiny).
+    windowIsShown: vi.fn((h: bigint) => (shownUnknown ? undefined : (windows.some((w) => w.hwnd === h) && !cloaked.includes(h)) || shownOffList.includes(h))),
   };
 });
 
@@ -93,7 +105,17 @@ const { mockGetUiElements } = vi.hoisted(() => ({
 
 vi.mock("../../src/engine/uia-bridge.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/uia-bridge.js")>();
-  return { ...actual, getUiElements: (...a: unknown[]) => mockGetUiElements(...(a as [])) };
+  // A read scoped to a handle that no longer names a window fails, as the real one does
+  // ("Window not found by hwnd"); the call is still counted.
+  return {
+    ...actual,
+    getUiElements: async (...a: unknown[]) => {
+      const r = await mockGetUiElements(...(a as []));
+      const pinned = (a[4] as { pinnedHwnd?: bigint } | undefined)?.pinnedHwnd;
+      if (pinned !== undefined && !windows.some((w) => w.hwnd === pinned) && !shownOffList.includes(pinned)) throw new Error(`Window not found by hwnd: ${pinned}`);
+      return r;
+    },
+  };
 });
 
 // The post-state layer is not what this file is about; passthrough keeps the
@@ -130,6 +152,9 @@ beforeEach(() => {
   mockGetUiElements.mockClear();
   innerHandler.mockClear();
   enumThrows = false;
+  shownOffList = [];
+  shownUnknown = false;
+  cloaked = [];
   mockPin.mockClear();
   mockDeferredEmit.mockClear();
   popupFor = {};
@@ -736,8 +761,9 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
   it("withholds when the ACTION itself creates the sibling", async () => {
     // Both earlier counts run before the action, so neither can see a window the
     // action opened — a state-changing shortcut doing exactly that is the
-    // ordinary case. The after-snapshot is title-only and would read the new
-    // window, and the diff would be built across two of them.
+    // ordinary case. The reads follow the handle since internal #211 B2, but
+    // `keyboard` delivers by title, so the rest of the keys can go to the new
+    // window while the diff describes the one read (gate 2 on B2 put this back).
     windows = [{ hwnd: 0x2222n, title: "Ledger" }];
     innerHandler.mockImplementationOnce(async () => {
       windows = [
@@ -752,20 +778,163 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
       windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich",
     } as never);
     expect(richOf(r).diffDegraded).toBe("ambiguous_title");
-    // BOTH snapshots were taken. The check sits after the after-snapshot on
-    // purpose — that read is the longest await on the path and the one that
-    // actually picks the window, so asking before it left the largest interval
-    // open. The snapshot is paid for and discarded; the action has already run,
-    // so there is nothing to save by asking earlier. The first version of this
-    // test asserted ONE snapshot, and that assertion forbade the placement that
-    // closes the interval.
-    expect(mockGetUiElements).toHaveBeenCalledTimes(2);
+    // Asked before the after-read now: nothing the read could return changes the
+    // answer, so it is not paid for.
+    expect(mockGetUiElements).toHaveBeenCalledTimes(1);
   });
 
-  it("withholds when the sibling arrives during the AFTER-snapshot itself", async () => {
-    // The interval the earlier placement left open: `snapElements` is an
-    // uncached UIA read with a 4 s budget, and a window opening inside it is
-    // read by that very search.
+  it("narrates the same shape when nothing was pinned: a plain-title call is not delivered by a pin", async () => {
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    innerHandler.mockImplementationOnce(async () => {
+      windows = [{ hwnd: 0x2222n, title: "Ledger" }, { hwnd: 0x8888n, title: "Ledger" }];
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
+    });
+    mockGetUiElements.mockResolvedValue({ ok: true, windowHwnd: "8738", via: "native", elementCount: 1, elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }] } as never);
+    try {
+      const r = await narrated({ windowTitle: "Ledger", name: "OK", narrate: "rich" } as never);
+      expect(richOf(r).diffSource).toBe("uia");
+    } finally {
+      mockGetUiElements.mockReset();
+      mockGetUiElements.mockImplementation(async () => ({ ok: true, elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }] }) as never);
+    }
+  });
+
+  it("says window_closed when the window a read was pinned to is hidden, not only destroyed (gate 2 on B2)", async () => {
+    // A dialog that hides on OK is still a window, and would still read by its handle.
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    innerHandler.mockImplementationOnce(async () => {
+      windows = [];   // the enumeration lists visible windows only
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
+    });
+    const r = await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
+    expect(richOf(r).diffDegraded).toBe("window_closed");
+    expect(mockGetUiElements).toHaveBeenCalledTimes(1);
+  });
+
+  it("says ambiguous_title when the window closed and two others wear its title", async () => {
+    innerHandler.mockImplementationOnce(async () => {
+      windows = [{ hwnd: 0x3333n, title: "Ledger" }, { hwnd: 0x4444n, title: "Ledger" }];
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
+    });
+    mockGetUiElements.mockResolvedValue({ ok: true, windowHwnd: "8738", via: "native", elementCount: 1, elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }] } as never);
+    windows = [{ hwnd: 8738n, title: "Ledger" }];
+    try {
+      const r = await narrated({ windowTitle: "Ledger", name: "OK", narrate: "rich" } as never);
+      expect(richOf(r).diffDegraded).toBe("ambiguous_title");
+    } finally {
+      mockGetUiElements.mockReset();
+      mockGetUiElements.mockImplementation(async () => ({ ok: true, elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }] }) as never);
+    }
+  });
+
+  it("narrates a window the enumeration drops but the handle says is shown (win2 X2/X3 on #752)", async () => {
+    // The action cleared its window's title, or shrank it to 40x40: `enumWindowsInZOrder` skips
+    // untitled and tiny windows, and the window is still on the screen.
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    innerHandler.mockImplementationOnce(async () => {
+      windows = [];
+      shownOffList = [0x2222n];
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
+    });
+    const r = await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
+    expect(richOf(r).diffDegraded).toBeUndefined();
+    expect(richOf(r).diffSource).toBe("uia");
+  });
+
+  it("says window_closed for a window moved to another virtual desktop, though still listed (PR codex P2)", async () => {
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    innerHandler.mockImplementationOnce(async () => {
+      cloaked = [0x2222n];
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
+    });
+    const r = await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
+    expect(richOf(r).diffDegraded).toBe("window_closed");
+  });
+
+  it("drops the window's cached tree even when the before-read was cut (PR codex P2)", async () => {
+    const { updateUiaCache, getCachedUia } = await import("../../src/engine/layer-buffer.js");
+    updateUiaCache(0x2222n, "{\"elements\":[\"from discover, before the action\"]}");
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    mockGetUiElements.mockResolvedValueOnce({ ok: true, truncated: true, elements: [] } as never);
+    const r = await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
+    expect(richOf(r).diffDegraded).toBe("timeout");
+    expect(getCachedUia(0x2222n)).toBeNull();
+  });
+
+  it("drops the cached tree of the window a plain-title before-read reported", async () => {
+    const { updateUiaCache, getCachedUia } = await import("../../src/engine/layer-buffer.js");
+    updateUiaCache(8738n, "{\"elements\":[\"before the action\"]}");
+    windows = [{ hwnd: 8738n, title: "Ledger" }];
+    mockGetUiElements.mockResolvedValue({ ok: true, windowHwnd: "8738", via: "native", elementCount: 1, elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }] } as never);
+    try {
+      await narrated({ windowTitle: "Ledger", name: "OK", narrate: "rich" } as never);
+      expect(getCachedUia(8738n)).toBeNull();
+    } finally {
+      mockGetUiElements.mockReset();
+      mockGetUiElements.mockImplementation(async () => ({ ok: true, elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }] }) as never);
+    }
+  });
+
+  it("drops the cached tree when a plain-title before-read was cut, by the handle it reported (PR codex P2)", async () => {
+    const { updateUiaCache, getCachedUia } = await import("../../src/engine/layer-buffer.js");
+    updateUiaCache(8738n, "{\"elements\":[\"from discover, before the action\"]}");
+    windows = [{ hwnd: 8738n, title: "Ledger" }];
+    mockGetUiElements.mockResolvedValueOnce({ ok: true, truncated: true, windowHwnd: "8738", elements: [] } as never);
+    const r = await narrated({ windowTitle: "Ledger", name: "OK", narrate: "rich" } as never);
+    expect(richOf(r).diffDegraded).toBe("timeout");
+    expect(getCachedUia(8738n)).toBeNull();
+  });
+
+  it("goes by the enumeration alone when the handle cannot be asked", async () => {
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    innerHandler.mockImplementationOnce(async () => {
+      windows = [];
+      shownUnknown = true;
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
+    });
+    const r = await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
+    expect(richOf(r).diffDegraded).toBe("window_closed");
+  });
+
+  it("withholds when the enumeration after the action cannot answer", async () => {
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    innerHandler.mockImplementationOnce(async () => {
+      enumThrows = true;
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
+    });
+    const r = await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
+    expect(richOf(r).diffDegraded).toBe("ambiguous_title");
+    expect(mockGetUiElements).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not leave the pre-action tree in the cache for other readers (gate 2 on B2)", async () => {
+    const { updateUiaCache, getCachedUia } = await import("../../src/engine/layer-buffer.js");
+    updateUiaCache(0x2222n, "{\"elements\":[\"before the action\"]}");
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
+    expect(getCachedUia(0x2222n)).toBeNull();
+  });
+
+  it("narrates a plain-title call whose window the action renamed (Explorer's folder change, B2)", async () => {
+    mockGetUiElements.mockResolvedValue({ ok: true, windowHwnd: "8738", via: "native", elementCount: 1, elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }] } as never);
+    windows = [{ hwnd: 8738n, title: "exfolder" }];
+    innerHandler.mockImplementationOnce(async () => {
+      windows = [{ hwnd: 8738n, title: "sub1" }];
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
+    });
+    try {
+      const r = await narrated({ windowTitle: "exfolder", name: "sub1", narrate: "rich" } as never);
+      expect(richOf(r).diffDegraded).toBeUndefined();
+      expect(richOf(r).diffSource).toBe("uia");
+    } finally {
+      mockGetUiElements.mockReset();
+      mockGetUiElements.mockImplementation(async () => ({ ok: true, elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }] }) as never);
+    }
+  });
+
+  it("narrates by handle when the sibling arrives during the AFTER-snapshot itself (B2)", async () => {
+    // The interval a title search left open: a window opening inside the read was
+    // read by that very search. A read by handle is not a search.
     windows = [{ hwnd: 0x2222n, title: "Ledger" }];
     mockGetUiElements
       .mockImplementationOnce(async () => ({
@@ -781,7 +950,55 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     const r = await narrated({
       windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich",
     } as never);
-    expect(richOf(r).diffDegraded).toBe("ambiguous_title");
+    expect(richOf(r).diffDegraded).toBeUndefined();
+    expect(richOf(r).diffSource).toBe("uia");
+  });
+
+  it("narrates a window the action renamed: the after-read follows the handle, not the title (B2)", async () => {
+    // Typing into Notepad makes "タイトルなし - メモ帳" read "*ab - メモ帳"; opening a folder
+    // renames Explorer after it. A title search found nothing (win2: Explorer's folder change
+    // came back `timeout`, #750).
+    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
+    innerHandler.mockImplementationOnce(async () => {
+      windows = [{ hwnd: 0x2222n, title: "*Ledger (edited)" }];
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
+    });
+    const r = await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
+    expect(richOf(r).diffDegraded).toBeUndefined();
+    expect(richOf(r).diffSource).toBe("uia");
+  });
+
+  it("reads the after-snapshot by the handle the before-read reported when nothing was pinned (B2)", async () => {
+    // A plain-title call pins nothing; the before-read's own answer names the window.
+    mockGetUiElements.mockResolvedValue({
+      ok: true, windowHwnd: "30583", via: "native", elementCount: 1,
+      elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }],
+    } as never);
+    windows = [{ hwnd: 30583n, title: SHARED_TITLE }];
+    try {
+      const r = await narrated({ windowTitle: SHARED_TITLE, name: "OK", narrate: "rich" } as never);
+      expect(richOf(r).diffSource).toBe("uia");
+      const [first, second] = mockGetUiElements.mock.calls as unknown as unknown[][];
+      expect(first[4]).not.toHaveProperty("pinnedHwnd");
+      expect(second[4]).toMatchObject({ pinnedHwnd: 30583n });
+    } finally {
+      mockGetUiElements.mockReset();
+      mockGetUiElements.mockImplementation(async () => ({ ok: true, elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }] }) as never);
+    }
+  });
+
+  it("says window_closed when the window a plain-title before-read reported has gone (B2)", async () => {
+    mockGetUiElements.mockResolvedValueOnce({
+      ok: true, windowHwnd: "30583", via: "native", elementCount: 1,
+      elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }],
+    } as never);
+    windows = [{ hwnd: 30583n, title: SHARED_TITLE }];
+    innerHandler.mockImplementationOnce(async () => {
+      windows = [];
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
+    });
+    const r = await narrated({ windowTitle: SHARED_TITLE, name: "OK", narrate: "rich" } as never);
+    expect(richOf(r).diffDegraded).toBe("window_closed");
   });
 
   it("withholds when the action swaps the window for a same-titled replacement", async () => {

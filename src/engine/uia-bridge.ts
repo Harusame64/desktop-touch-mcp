@@ -1444,11 +1444,11 @@ export async function getUiElements(
      * took the Rust path away from it. Two things that are not the same thing do not share a
      * name.
      *
-     * Scoping is not free — it is the PowerShell path, and a deep tree comes back `truncated`
-     * where the native walker would have finished. `get_ui_elements` pays it deliberately
-     * (`ui-elements.ts`): it resolves a window and then reports which one it read, so a read of
-     * a different window would make that report false. `screenshot` does not pin, and keeps the
-     * native path. The cost goes away when the native side takes a handle, not before.
+     * Both roads take it: the native walk resolves the handle with `ElementFromHandle`, and the
+     * PowerShell one with `FromHandle`. `get_ui_elements` pins (`ui-elements.ts`): it resolves a
+     * window and then reports which one it read, so a read of a different window would make that
+     * report false. Rich narration pins both of its reads to the window it acted on (internal
+     * #211 B2), so an action that renames its window does not lose it.
      */
     pinnedHwnd?: bigint;
     fetchValues?: boolean;
