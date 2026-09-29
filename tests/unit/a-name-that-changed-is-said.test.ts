@@ -386,6 +386,31 @@ describe("a new row's cells (win2 on #750, 7496f3d0)", () => {
   });
 });
 
+describe("a control replaced by another type under the same name (PR codex on #750's final head)", () => {
+  it("says a Button replaced by a Text under one RuntimeId, though both read 保存", () => {
+    const d = computeUiaDiff(
+      [el("保存", { controlType: "Button", runtimeId: "1" })],
+      [el("保存", { controlType: "Text", runtimeId: "1" })],
+    );
+    expect(d.disappeared).toEqual([{ name: "保存", type: "Button" }]);
+    expect(d.appeared).toEqual([{ name: "保存", type: "Text" }]);
+  });
+
+  it("says it under one automationId too", () => {
+    const d = computeUiaDiff(
+      [el("保存", { controlType: "Button", automationId: "save" })],
+      [el("保存", { controlType: "Text", automationId: "save" })],
+    );
+    expect(d.disappeared).toEqual([{ name: "保存", type: "Button" }]);
+    expect(d.appeared).toEqual([{ name: "保存", type: "Text", automationId: "save" }]);
+  });
+
+  it("still pairs the same control under one RuntimeId and one name (the control)", () => {
+    const d = computeUiaDiff([el("保存", { controlType: "Button", runtimeId: "1" })], [el("保存", { controlType: "Button", runtimeId: "1" })]);
+    expect(d).toEqual({ appeared: [], disappeared: [], valueDeltas: [] });
+  });
+});
+
 describe("a read without RuntimeId or path (an older addon)", () => {
   it("is diffed by the old key: a Name change is still a disappearance and an appearance", () => {
     const d = computeUiaDiff([el("表示は 8")], [el("表示は 15")]);

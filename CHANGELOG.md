@@ -17,7 +17,8 @@
   rows of a list, grid or tree or what is inside them: those rows are reused for other files when
   a list is refreshed or moves to another folder. A row renamed for real is reported as one item
   disappearing and one appearing, and a row that appears or disappears is reported without the
-  cells inside it.
+  cells inside it. A control replaced by one of another type is reported as one disappearing and
+  one appearing, even under the same name.
 
 - **A window that says it is not modal no longer blocks an act.** UI Automation lists a window's
   owned windows in its tree, and `desktop_act` refused an act when any of them was in the last read,

@@ -211,7 +211,9 @@ function pairElements(before: UiElement[], after: UiElement[]): {
     // which would refuse a counter that changed while another element still shows its old value
     // (PR codex P2). The reuse win2 measured was inside a list, whose rows `sameKindOutsideRows` keeps
     // out.
-    if (a && !usedAfter.has(a) && (b.name === a.name || sameKindOutsideRows(b, a))) {
+    // One control either way: a RuntimeId handed to a control of another type is not the same
+    // element, even under the same name (PR codex on #750's final head).
+    if (a && !usedAfter.has(a) && a.controlType === b.controlType && (b.name === a.name || sameKindOutsideRows(b, a))) {
       pairs.push([b, a]);
       usedAfter.add(a);
     } else {
@@ -280,7 +282,9 @@ function pairElements(before: UiElement[], after: UiElement[]): {
   // as the two above; one that fails it is one element gone and another new.
   for (const [k, b] of beforeByKey) {
     const a = afterByKey.get(k);
-    if (a && sameOrRenamed(b, a)) {
+    // An automationId key does not carry the type: a Button and a Text under one id are two controls,
+    // named alike or not (PR codex on #750's final head).
+    if (a && a.controlType === b.controlType && sameOrRenamed(b, a)) {
       pairs.push([b, a]);
     } else {
       onlyBefore.push(b);
