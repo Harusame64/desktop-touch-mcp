@@ -211,15 +211,15 @@ function handleIsGone(hwnd: string): boolean {
  */
 /**
  * internal #211 — for a window holding a web page, the page first: UIA controls on the page, then
- * what OCR read on the page, then everything else (the browser's own tabs, address bar, toolbar and
- * the OCR of them), each group in its original order. discover keeps the first `maxEntities` in
- * this order; in read order the browser's chrome filled them (gate 2; the user chose page-first with
- * OCR alongside, 2026-09-29).
+ * OCR text on the page when OCR ran (a window that also read as blind), then everything else (the
+ * browser's own tabs, address bar and toolbar), each group in read order. discover keeps the first
+ * `maxEntities` in this order; in read order the browser's chrome filled them (gate 2; win2 measured
+ * page-first on #746: Wikipedia 49 of 50 page entries, NHK chrome from 31st, against 2nd on main).
  *
  * "On the page" is the element's centre inside the page's rectangle, so a control half scrolled out
- * of view still counts (gate 2, round 2). OCR text that repeats a UIA control — the same label, its
- * centre inside that control — is dropped: the UIA entity is the one that can be pressed by
- * pattern, and two copies of each link spent the cap twice.
+ * of view still counts. Text that repeats a control on the page — the same label, its centre inside
+ * that control — is dropped, whether OCR read it or the visual lane replays it: the UIA entity is
+ * the one pressed by pattern, and two copies spent the cap twice.
  */
 export function pageFirst(
   candidates: ProviderResult["candidates"],
@@ -565,29 +565,22 @@ async function composeCandidatesInner(target: TargetSpec): Promise<ProviderResul
   // OCR lane: additive, UIA-blind targets only.
   // Builds a label dictionary from UIA candidates for snap-correction inside runSomPipeline.
   const uiaBlindForOcr = uiaResult.warnings.some((w) => UIA_BLIND_WARNINGS.has(w));
-  // internal #211 — a web page read through UIA (`webArea`, Chrome/Edge/Electron) still gets OCR
-  // alongside: the deep read reaches the page's controls, but its text is what OCR used to list
-  // when the window read as blind, and the user chose to keep it (2026-09-29).
+  // internal #211 — the page a UIA read found (Chrome/Edge/Electron). It orders the reply; it does
+  // NOT start OCR. OCR is the lane for a window UIA cannot see: on a page UIA reads, it cost
+  // 340–435 ms per discover while almost none of it reached the first 50 entities (win2, #746). A
+  // caller that finds the page's text missing switches tools itself (screenshot, detail 'ocr') —
+  // the user's call, 2026-09-29.
   const webArea = uiaResult.webArea;
-  // The snap dictionary is the page's own labels when OCR runs for the page: hundreds of tab,
-  // bookmark and toolbar names from the deep read would pull page words onto unrelated labels.
-  const snapFrom = webArea !== undefined && !uiaBlindForOcr
-    ? uiaResult.candidates.filter((c) => c.rect && containsPoint(webArea, c.rect.x + c.rect.width / 2, c.rect.y + c.rect.height / 2))
-    : uiaResult.candidates;
-  const ocrRaw: ProviderResult = uiaBlindForOcr || webArea !== undefined
+  const ocrResult: ProviderResult = uiaBlindForOcr
     ? await fetchOcrCandidates(
         target,
-        snapFrom
+        uiaResult.candidates
           .filter((c) => c.label && c.rect)
           .map((c) => ({ label: c.label!, rect: c.rect })),
       ).catch((): ProviderResult => probeLane("ocr", "failed", { why: "rejected" }, { candidates: [], warnings: ["ocr_provider_failed"] }))
     // Not called, and said so: on this road "OCR did not look" is a decision about THIS window, and
     // without a row it prints like a lane nobody instrumented (item 14a).
     : probeLane("ocr", "skipped", { why: "uia_not_blind" }, { candidates: [], warnings: [] });
-  // OCR that ran only for a page UIA already read is an addition, not the window's read: its lane
-  // warnings (failed, empty) would tell the caller a healthy window's read failed — the same rule
-  // `withoutUnneededBlindNotice` applies to the visual lane (gate 2 on A2).
-  const ocrResult: ProviderResult = uiaBlindForOcr ? ocrRaw : { ...ocrRaw, warnings: [] };
 
   const mergedAll  = withoutUnneededBlindNotice(mergeResults([uiaResult, visualResult, ocrResult]), uiaBlindForOcr);
   const merged     = webArea !== undefined ? { ...mergedAll, candidates: pageFirst(mergedAll.candidates, webArea) } : mergedAll;
