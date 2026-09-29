@@ -21,12 +21,12 @@ type El = { name: string; controlType: string; isEnabled: boolean; boundingRect:
 const pane = (depth: number): El => ({ name: "Chrome Legacy Window", controlType: "Pane", isEnabled: true, boundingRect: { x: 0, y: 0, width: 900, height: 600 }, patterns: [], depth });
 const button = (name: string, depth: number): El => ({ name, automationId: name, controlType: "Button", isEnabled: true, boundingRect: { x: 10, y: 10, width: 60, height: 20 }, patterns: ["Invoke"], depth });
 
-async function read(opts: { tree: El[]; truncated?: boolean; via?: "native" | "powershell"; windowRect?: { x: number; y: number; width: number; height: number } | null }) {
+async function read(opts: { tree: El[]; truncated?: boolean; via?: "native" | "powershell"; windowRect?: { x: number; y: number; width: number; height: number } | null; windowTitle?: string }) {
   vi.resetModules();
   const getUiElements = vi.fn(async (_title: string, maxDepth: number, maxElements: number, _t: number, _o?: unknown) => {
     const elements = opts.tree.filter((e) => e.depth <= maxDepth).slice(0, maxElements);
     return {
-      windowTitle: "FX-HTML - Google Chrome",
+      windowTitle: opts.windowTitle ?? "FX-HTML - Google Chrome",
       windowRect: opts.windowRect === undefined ? { x: 0, y: 0, width: 900, height: 600 } : opts.windowRect,
       elementCount: elements.length,
       elements,
@@ -156,6 +156,20 @@ describe("discover's UIA read", () => {
     const devtools: El = { ...pane(7), name: "DevTools", controlType: "Document", automationId: "RootWebArea", boundingRect: { x: 48, y: 127, width: 1384, height: 805 } };
     const page: El = { ...devtools, name: "", boundingRect: { x: 48, y: 127, width: 829, height: 805 } };
     const { result } = await read({ tree: [devtools, page], windowRect: { x: 40, y: 40, width: 1400, height: 900 } });
+    expect(result.webArea).toEqual(page.boundingRect);
+  });
+
+  it("prefers the root the window's title names over a larger one that is not DevTools", async () => {
+    const other: El = { ...web("Frame B", 0, 900) };
+    const page: El = { ...web("FX-HTML", 0, 600) };
+    const { result } = await read({ tree: [other, page] });
+    expect(result.webArea).toEqual(page.boundingRect);
+  });
+
+  it("finds a page titled about DevTools, not DevTools, though the title names both (PR codex P2)", async () => {
+    const devtools: El = { ...pane(7), name: "DevTools", controlType: "Document", automationId: "RootWebArea", boundingRect: { x: 48, y: 127, width: 1384, height: 805 } };
+    const page: El = { ...devtools, name: "Chrome DevTools", boundingRect: { x: 48, y: 127, width: 829, height: 805 } };
+    const { result } = await read({ tree: [devtools, page], windowRect: { x: 40, y: 40, width: 1400, height: 900 }, windowTitle: "Chrome DevTools - Google Chrome" });
     expect(result.webArea).toEqual(page.boundingRect);
   });
 

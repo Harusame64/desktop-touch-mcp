@@ -232,19 +232,22 @@ export async function fetchUiaCandidates(
     // on A2) — and without the window's bounds that cannot be told, so there is no page (PR codex
     // P2). The half is of the area the roots cover together, inside the window: either root alone
     // can fall under it beside a docked DevTools, and two overlapping roots must not count their
-    // shared part twice (PR codex P2 ×2). Of several, the one the window's title names — a browser
-    // titles itself after the page — and otherwise the largest that is not DevTools: its root spans
-    // the whole content area wherever it is docked, so for a page with no <title> the largest would
-    // be DevTools (win2 measured the root's name "DevTools", Chrome, 2026-09-29; PR codex P2).
+    // shared part twice (PR codex P2 ×2). DevTools' root is never the page while another root is
+    // there: it spans the whole content area wherever it is docked, so it would win "the largest"
+    // for a page with no <title>, and "the one the title names" for a page titled about DevTools
+    // (win2 measured the root's name "DevTools", Chrome, 2026-09-29; PR codex P2 ×2). Of the rest,
+    // the one the window's title names — a browser titles itself after the page — and otherwise
+    // the largest. DevTools undocked into its own window is the only root there, and counts.
     const window = result.windowRect;
     const area = (el: UiElement) => el.boundingRect!.width * el.boundingRect!.height;
     const roots = result.elements
       .filter((el) => el.automationId === WEB_AREA_AUTOMATION_ID && el.boundingRect && el.boundingRect.width > 0 && el.boundingRect.height > 0)
       .sort((a, b) => area(b) - area(a));
+    const pages = roots.some((el) => el.name !== DEVTOOLS_ROOT_NAME) ? roots.filter((el) => el.name !== DEVTOOLS_ROOT_NAME) : roots;
     const isMostOfWindow = !!window && window.width > 0 && window.height > 0 && coveredArea(roots.map((el) => el.boundingRect!), window) >= 0.5 * window.width * window.height;
     const title = result.windowTitle ?? "";
     const webArea = isMostOfWindow
-      ? (roots.find((el) => el.name && title.includes(el.name)) ?? roots.find((el) => el.name !== DEVTOOLS_ROOT_NAME) ?? roots[0])?.boundingRect ?? undefined
+      ? (pages.find((el) => el.name && title.includes(el.name)) ?? pages[0])?.boundingRect ?? undefined
       : undefined;
 
     return probeLane("uia", "read", read, { candidates, warnings, ...(webArea && { webArea }) });
