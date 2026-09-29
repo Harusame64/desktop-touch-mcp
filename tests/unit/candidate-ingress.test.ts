@@ -58,7 +58,8 @@ describe("SnapshotIngress — every call reads (internal #218)", () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(1_000);
-      const ingress = new SnapshotIngress(async () => ok("A"));
+      // Each read takes 500 ms, so its start and its end are different moments.
+      const ingress = new SnapshotIngress(async () => { vi.setSystemTime(Date.now() + 500); return ok("A"); });
       await ingress.getSnapshot("window:1");
       vi.setSystemTime(6_000);
       expect((await ingress.getSnapshot("window:1")).freshness).toEqual({ from: "read", observedAtMs: 6_000 });
