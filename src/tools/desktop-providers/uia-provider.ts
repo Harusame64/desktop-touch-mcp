@@ -17,6 +17,7 @@ import { probeLane } from "../../engine/aim-probe.js";
 import { parseTargetHwnd, type TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 import { UIA_PRESS_ONLY_CONTROL_TYPES } from "../../engine/world-graph/guarded-touch.js";
+import { WEB_AREA_AUTOMATION_ID } from "../_advisory.js";
 
 function uiaRoleFromControlType(ct: string): string {
   const map: Record<string, string> = {
@@ -121,10 +122,11 @@ export async function fetchUiaCandidates(
       fallbackLimits: { maxDepth: UIA_DISCOVER_FALLBACK_DEPTH, maxElements: UIA_DISCOVER_FALLBACK_ELEMENTS },
     });
     // A read that filled its cap may have stopped early; it is published as a prefix, not judged
-    // for blindness as the window. Which cap it ran with depends on the road that answered. The
-    // PowerShell script's own flag covers only its deadline.
-    const cap = raw.via === "powershell" ? UIA_DISCOVER_FALLBACK_ELEMENTS : UIA_DISCOVER_MAX_ELEMENTS;
-    const result  = !raw.truncated && raw.elementCount >= cap ? { ...raw, truncated: true } : raw;
+    // for blindness as the window.
+    // Against the native cap only: the PowerShell road stops at its 80 without saying so, as it
+    // always did, and a blind canvas app read there must still be judged blind and get OCR (gate 2
+    // on A2). A PowerShell read never reaches 500.
+    const result  = !raw.truncated && raw.elementCount >= UIA_DISCOVER_MAX_ELEMENTS ? { ...raw, truncated: true } : raw;
 
     // ADR-036 probe — what this lane actually asked for, and what it stamps on every candidate.
     // `scoped:false` with a `targetId` that looks like a handle is the read describing one window
@@ -223,7 +225,20 @@ export async function fetchUiaCandidates(
       else if (blind.reason === "too-few-elements") warnings.push("uia_blind_too_few_elements");
     }
 
-    return probeLane("uia", "read", read, { candidates, warnings });
+    // internal #211 — the page, from the whole read and not the named candidates: a page with no
+    // <title> has a nameless root, which the filter above drops. Only a page that is most of the
+    // window counts — a small WebView2 pane in a native app is not what the window is (gate 2 on
+    // A2). Of several (docked DevTools beside the page), the one the window's title names — a
+    // browser titles itself after the page — and otherwise the largest.
+    const window = result.windowRect;
+    const roots = result.elements
+      .filter((el) => el.automationId === WEB_AREA_AUTOMATION_ID && el.boundingRect && el.boundingRect.width > 0 && el.boundingRect.height > 0)
+      .filter((el) => !window || el.boundingRect!.width * el.boundingRect!.height >= 0.5 * window.width * window.height)
+      .sort((a, b) => b.boundingRect!.width * b.boundingRect!.height - a.boundingRect!.width * a.boundingRect!.height);
+    const title = result.windowTitle ?? "";
+    const webArea = (roots.find((el) => el.name && title.includes(el.name)) ?? roots[0])?.boundingRect ?? undefined;
+
+    return probeLane("uia", "read", read, { candidates, warnings, ...(webArea && { webArea }) });
   } catch (err) {
     console.error(`[uia-provider] Error for target "${targetId}":`, err);
     // What was read, when the throw came after the read; what was asked, when it came before.

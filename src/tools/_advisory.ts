@@ -48,7 +48,7 @@ const TEXT_INPUT_CONTROL_TYPES = new Set(["Edit", "Document"]);
 /** UIA automationId of a Chromium web-area root. dogfood (ADR-022) showed a
  *  browser's focused element resolves to this Document with value=URL — a wrong
  *  desktop_act nudge (web content uses browser_* / keyboard, not desktop_act). */
-const WEB_AREA_AUTOMATION_ID = "RootWebArea";
+export const WEB_AREA_AUTOMATION_ID = "RootWebArea";
 
 /** Browser executables — when the focused window is one of these, the target is
  *  web content (UIA-blind / RootWebArea / web ComboBox/Edit) where browser_* is

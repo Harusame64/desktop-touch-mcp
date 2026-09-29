@@ -119,6 +119,13 @@ export interface ProviderResult {
    * `identityRead` exists for, applied to freshness instead of identity.
    */
   freshness?: ProviderFreshness;
+  /**
+   * internal #211 — the screen rectangle of the web page the UIA read found (the largest
+   * `RootWebArea`: Chrome/Edge's page, an Electron app's content), read from every element the walk
+   * returned, named or not. Set by the UIA lane only; the composer uses it to put the page first
+   * and to run OCR alongside. Absent means no page was read.
+   */
+  webArea?: { x: number; y: number; width: number; height: number };
 }
 
 /**

@@ -83,8 +83,43 @@ describe("discover's UIA read", () => {
     expect(result.warnings).not.toContain("uia_tree_truncated");
   });
 
-  it("measures a PowerShell read against the PowerShell road's 80, not 500", async () => {
-    const { result } = await read({ tree: Array.from({ length: 80 }, (_, i) => button(`b${i}`, 2)), via: "powershell" });
-    expect(result.warnings).toContain("uia_tree_truncated");
+  it("does not call a PowerShell read truncated at its 80 — that road stops there silently, as before", async () => {
+    // A blind canvas app read on the PowerShell road was judged blind and got OCR; truncated would
+    // have skipped both (gate 2 on A2).
+    const { result } = await read({ tree: [pane(1), ...Array.from({ length: 79 }, (_, i) => ({ ...pane(2), name: `p${i}`, controlType: "Text" }))], via: "powershell" });
+    expect(result.warnings).not.toContain("uia_tree_truncated");
+  });
+
+  it("reports the page's rectangle from every element read, named or not (a page with no <title>)", async () => {
+    const nameless = { ...pane(7), name: "", controlType: "Document", automationId: "RootWebArea", boundingRect: { x: 0, y: 100, width: 900, height: 500 } };
+    const { result } = await read({ tree: [pane(4), nameless, button("inc", 8)] });
+    expect(result.webArea).toEqual({ x: 0, y: 100, width: 900, height: 500 });
+  });
+
+  it("reports the largest page when there are several and the title names neither", async () => {
+    // Window 900 x 600; both cover at least half of it.
+    const small = { ...pane(7), name: "Frame A", controlType: "Document", automationId: "RootWebArea", boundingRect: { x: 0, y: 100, width: 900, height: 320 } };
+    const large = { ...pane(7), name: "Frame B", controlType: "Document", automationId: "RootWebArea", boundingRect: { x: 0, y: 100, width: 900, height: 450 } };
+    const { result } = await read({ tree: [small, large] });
+    expect(result.webArea).toEqual(large.boundingRect);
+  });
+
+  it("reports no page for a window without one", async () => {
+    const { result } = await read({ tree: [button("OK", 1)] });
+    expect(result.webArea).toBeUndefined();
+  });
+
+  it("reports no page for a small web pane in a native app (under half the window)", async () => {
+    const pane300 = { ...pane(3), name: "Help", controlType: "Document", automationId: "RootWebArea", boundingRect: { x: 0, y: 0, width: 300, height: 150 } };
+    const { result } = await read({ tree: [button("OK", 1), pane300] });
+    expect(result.webArea).toBeUndefined();
+  });
+
+  it("prefers the page the window's title names over a larger DevTools", async () => {
+    // The window is 900 x 600; both web areas cover at least half of it, and DevTools is the larger.
+    const bigDev = { ...pane(7), name: "DevTools", controlType: "Document", automationId: "RootWebArea", boundingRect: { x: 0, y: 100, width: 900, height: 400 } };
+    const bigPage = { ...pane(7), name: "FX-HTML", controlType: "Document", automationId: "RootWebArea", boundingRect: { x: 0, y: 100, width: 900, height: 320 } };
+    const { result } = await read({ tree: [bigDev, bigPage] });
+    expect(result.webArea).toEqual(bigPage.boundingRect);
   });
 });

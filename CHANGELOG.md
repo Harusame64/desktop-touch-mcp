@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+- **In a window holding a web page, `desktop_discover` lists the page first.** Browsers and
+  Electron apps now expose their pages to the deeper UIA read, but in read order the browser's own
+  tabs, address bar and toolbar came first and filled the default 20 entities. When the read finds a
+  page, the reply lists:
+  1. the page's controls;
+  2. the text OCR read on the page (OCR runs alongside there, as it did when such windows read as
+     blind);
+  3. everything else.
+
+  OCR text that repeats a control on the page is left out. A page counts only when it fills at
+  least half the window, so a small web pane inside a native app does not reorder that app. When
+  there are several, the page the window's title names is chosen, so docked DevTools do not take
+  the page's place. OCR that ran only for the page does not add its own lane warnings.
+
 - **`desktop_discover` reads deeper into a window's UI Automation tree.** Its UIA read stopped at
   depth 4. So Chrome, Edge and VS Code, which expose their page controls at depth 7–12, were
   reported as `uia_blind_single_pane`, and value labels in Explorer and Settings (depth 5–7) were
