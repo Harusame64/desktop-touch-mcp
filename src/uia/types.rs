@@ -41,6 +41,10 @@ pub struct UiElement {
     /// window" (correct) and "the read failed" (a defect) were indistinguishable **to the rule**, not
     /// only to a reader. Observation only: nothing branches on this.
     pub native_window_handle_read: String,
+    /// internal #211 (C) — a `Window` element's `WindowPattern.IsModal`. `None` for every other
+    /// control type, and for a window that does not support the pattern: a title bar and a UWP
+    /// `CoreWindow` do not (win2 S6, 2026-09-29), and "not supported" is not "not modal".
+    pub is_modal: Option<bool>,
 }
 
 #[napi(object)]

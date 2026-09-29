@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **A window that says it is not modal no longer blocks an act.** UI Automation lists a window's
+  owned windows in its tree, and `desktop_act` refused an act when any of them was in the last read,
+  unless the OS could say the element's own window takes input. For controls without a window of
+  their own (WinUI, XAML, WPF, web content) it could not, so a modeless window such as a
+  Find/Replace box or a tool window refused acts on those controls, and its opening was reported as
+  `modal_appeared`. The read now records each window's own `IsModal`. A window that answers
+  `false` does not block, and its appearing is reported as `entity_appeared`. A window that answers
+  `true`, or does not answer (a title bar, an older native engine), is treated as before.
+
 - **In a window holding a web page, `desktop_discover` lists the page first.** Browsers and
   Electron apps now expose their pages to the deeper UIA read. In read order, though, the browser's
   own tabs, address bar and toolbar came first and filled the first entities returned (20 by default). When the read

@@ -28,6 +28,8 @@ export interface NativeUiElement {
   nativeWindowHandle?: string | null
   /** ADR-036 `internal#118` — why the field above is absent: `"value"` | `"zero"` | `"failed"`. */
   nativeWindowHandleRead?: string
+  /** internal #211 (C) — a `Window` element's `WindowPattern.IsModal`; absent when it did not answer. */
+  isModal?: boolean | null
 }
 
 export interface NativeUiElementsResult {

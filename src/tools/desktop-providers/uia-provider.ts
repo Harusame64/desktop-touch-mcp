@@ -162,6 +162,7 @@ export async function fetchUiaCandidates(
             ...(el.nativeWindowHandleRead !== undefined && { nativeWindowHandleRead: el.nativeWindowHandleRead }),
             ...(result.via !== undefined && { via: result.via }),
             ...(el.nativeWindowHandle !== undefined && { nativeWindowHandle: el.nativeWindowHandle }),
+            ...(el.isModal !== undefined && { isModal: el.isModal }),
           },
         },
         role: uiaRoleFromControlType(el.controlType),

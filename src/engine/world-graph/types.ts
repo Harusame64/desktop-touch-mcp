@@ -43,6 +43,12 @@ export interface EntityLocator {
      * Absent on an entity read before this field existed.
      */
     nativeWindowHandleRead?: "value" | "zero" | "failed";
+    /**
+     * internal #211 (C) — a `Window` element's own `WindowPattern.IsModal`, as the read answered it.
+     * Absent when it did not answer (another control type, a window without the pattern, an older
+     * addon): absence is "not said", never "not modal".
+     */
+    isModal?: boolean;
   };
   /** CDP: element identified by CSS selector, optionally scoped to a tab. */
   cdp?: { selector?: string; tabId?: string };

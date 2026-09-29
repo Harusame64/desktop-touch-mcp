@@ -284,6 +284,23 @@ fn extract_element(
             .filter(|h| *h != 0)
             .map(|h| h.to_string());
 
+        // internal #211 (C) — asked of a `Window` only: win2 measured `true` on the four real modals
+        // (a Win32 save dialog, a MessageBox, WinForms and WPF `ShowDialog`) and `false` on a
+        // modeless Find/Replace and on ordinary windows (S6, 2026-09-29). Anything that does not
+        // answer stays `None`. Read live, one call per `Window`, and NOT through the shared cache
+        // request: that request also serves every element of every walk and the focus-event
+        // delivery thread's slow-path budget, which would each pay for a pattern almost none of
+        // them have (gate 2).
+        let is_modal = if control_type_id == UIA_WindowControlTypeId {
+            elem.GetCurrentPattern(UIA_WindowPatternId)
+                .ok()
+                .and_then(|p| p.cast::<IUIAutomationWindowPattern>().ok())
+                .and_then(|w| w.CurrentIsModal().ok())
+                .map(|b| b.as_bool())
+        } else {
+            None
+        };
+
         let mut patterns = Vec::with_capacity(6);
         if elem.GetCachedPattern(UIA_InvokePatternId).is_ok() {
             patterns.push("Invoke".to_string());
@@ -323,6 +340,7 @@ fn extract_element(
             value,
             native_window_handle,
             native_window_handle_read,
+            is_modal,
         })
     }
 }

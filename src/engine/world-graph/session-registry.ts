@@ -69,9 +69,12 @@ export function parseTargetHwnd(target: TargetSpec | undefined): bigint | undefi
  *
  * What narrowing does NOT fix, measured (internal `62b4590`): a `Window` in the owner's tree
  * that is not a modal — a modeless owned form, an MDI child, a `TopLevel=false` form embedded in
- * the window — rings before and after. Nothing this predicate reads tells them from the real one
- * (same controlType, same class, `IsDialog` false on all four); only the OS does: the real
- * modal's owner is disabled, and `productionFindBlockingWindow` asks exactly that.
+ * the window — rings before and after. Nothing this predicate read told them from the real one
+ * (same controlType, same class, `IsDialog` false on all four); the OS does — the real modal's
+ * owner is disabled, and `productionFindBlockingWindow` asks exactly that — and since internal
+ * #211 C so does the window's own `WindowPattern.IsModal`: `false` on a modeless Find/Replace,
+ * `true` on the four real modals (win2 S6, 2026-09-29). An MDI child and a `TopLevel=false` form
+ * were not read for it.
  *
  * NOT measured: WinUI `ContentDialog`, WPF dialog windows, `DialogBox` classes other than
  * `#32770`.
@@ -87,7 +90,8 @@ const MODAL_CONTROL_TYPE = "Window";
  * two paths cannot diverge again.
  *
  * Core predicate (both contexts): UIA-sourced + controlType `Window` (see
- * `MODAL_CONTROL_TYPE`). An entity without a `controlType` is not a modal: the
+ * `MODAL_CONTROL_TYPE`), unless the window's own `WindowPattern.IsModal` read
+ * `false` (internal #211 C). An entity without a `controlType` is not a modal: the
  * only UIA producer (`uia-provider.ts`) always sets one, and "no type" read as
  * "modal" is what made a missing fact refuse the act.
  *
@@ -120,8 +124,23 @@ export function classifyModal(
   options?: { excludeSelf?: UiEntity },
 ): boolean {
   if (context === "pre-touch" && options?.excludeSelf?.entityId === entity.entityId) return false;
-  if (!entity.sources.includes("uia")) return false;
-  return entity.controlType === MODAL_CONTROL_TYPE;
+  if (!isUiaWindow(entity)) return false;
+  // internal #211 (C) — a window that says it is NOT modal is not one. win2 measured
+  // `WindowPattern.IsModal` on real windows (S6, 2026-09-29): `true` on a Win32 save dialog, a
+  // MessageBox and WinForms / WPF `ShowDialog`; `false` on a modeless Find/Replace (its owner stays
+  // enabled) and on ordinary windows. A window that did not answer — a title bar, a UWP
+  // `CoreWindow`, a read by an older addon — is counted as before: "not said" is not "not modal".
+  return entity.locator?.uia?.isModal !== false;
+}
+
+/**
+ * A UIA `Window` in a read, whatever it says about being modal. For the questions a window answers
+ * as a window, not as a blocker: that one the read listed has gone (`modal_dismissed`, and the
+ * stale-snapshot refusal of internal #211 item 9) — a modeless window's closing is news too (gate 2
+ * on C).
+ */
+export function isUiaWindow(entity: UiEntity): boolean {
+  return entity.sources.includes("uia") && entity.controlType === MODAL_CONTROL_TYPE;
 }
 
 /**
@@ -213,7 +232,8 @@ export interface SessionCreateOpts {
   executorFactory?: (aim: Aim | TargetSpec | undefined) => ExecutorFn;
   /**
    * Override modal detection. Default: session-aware check — blocks if any OTHER entity
-   * in the current snapshot is a UIA `Window` (an owned dialog; `classifyModal`). Consulted only
+   * in the current snapshot is a UIA `Window` (an owned dialog; `classifyModal`) that did not say
+   * it is modeless (`IsModal` false, internal #211 C). Consulted only
    * when `findBlockingWindow` is absent or did not answer `takes_input`.
    *
    * Issue #63: predicate ↔ blockingElement consistency.
@@ -387,7 +407,8 @@ export class SessionRegistry {
       currentGeneration:   () => s.generation,
       // G1-A: Session-aware modal guard — consulted only when the OS's answer (`findBlockingWindow`)
       // did not settle it (guarded-touch.ts).
-      // Default: block if any OTHER entity in the live snapshot is a UIA `Window` — an owned
+      // Default: block if any OTHER entity in the live snapshot is a UIA `Window` that did not say it
+      // is modeless (`IsModal` false, internal #211 C) — an owned
       // dialog appears in its owner's tree as one (`classifyModal`, internal #126). Overlays drawn
       // inside a window do not reach the UIA tree at all (internal `89797ae`).
       //
@@ -419,9 +440,12 @@ export class SessionRegistry {
               let blocker: UiEntity | null = null;
               let closed: UiEntity | null = null;
               for (const e of s.entities) {
-                if (!classifyModal(e, "pre-touch", { excludeSelf: entity })) continue;
+                // Every window the read listed is asked whether it has gone (item 9): a modeless one
+                // closing makes the read stale as much as a modal one does. Only a window that did
+                // not say it is modeless can block (C; gate 2).
+                if (e.entityId === entity.entityId || !isUiaWindow(e)) continue;
                 const answer = opts.judgeSnapshotWindow!(e, entity, s.lastAim);
-                if (answer === "may_block") {
+                if (answer === "may_block" && classifyModal(e, "pre-touch", { excludeSelf: entity })) {
                   blocker = e;
                   break;
                 }

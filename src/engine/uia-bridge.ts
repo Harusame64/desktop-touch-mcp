@@ -526,6 +526,13 @@ $wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $nu
         else { $elHwndRead = 'zero' }
     } catch {}
 
+    # internal #211 (C) - a Window's own IsModal, as the native road reads it; nothing for a window
+    # that does not support the pattern.
+    $elModal = $null
+    if ($ctName -eq 'Window') {
+        try { $elModal = [bool]$el.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Current.IsModal } catch {}
+    }
+
     ${fetchValuesBlock}
     $elObj = @{
         name         = $elName
@@ -540,6 +547,7 @@ $wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $nu
     if ($null -ne $elVal) { $elObj['value'] = $elVal }
     if ($null -ne $elHwnd) { $elObj['nativeWindowHandle'] = $elHwnd }
     $elObj['nativeWindowHandleRead'] = $elHwndRead
+    if ($null -ne $elModal) { $elObj['isModal'] = $elModal }
     $results.Add($elObj)
     $count++
     if ($count -ge ${maxElements}) { break bfs }
@@ -1111,6 +1119,12 @@ export interface UiElement {
    * Observation only; nothing branches on it. Absent on a read taken before this field existed.
    */
   nativeWindowHandleRead?: "value" | "zero" | "failed";
+  /**
+   * internal #211 (C) — a `Window` element's own `WindowPattern.IsModal`. Absent for every other
+   * control type, for a window that does not support the pattern (a title bar, a UWP `CoreWindow`),
+   * and on an addon older than the field: absence is "did not answer", never "not modal".
+   */
+  isModal?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1488,16 +1502,7 @@ export async function getUiElements(
         windowHwnd: result.windowHwnd ?? undefined,
         windowRect: result.windowRect ?? null,
         elementCount: result.elementCount,
-        elements: result.elements.map(({ nativeWindowHandle, nativeWindowHandleRead, ...el }: NativeUiElement) => ({
-          ...el,
-          boundingRect: el.boundingRect ?? null,
-          // Rust's `None` arrives as null. This type says "absent", as the PowerShell road does, so the
-          // key is left out rather than set to undefined.
-          ...(nativeWindowHandle != null && { nativeWindowHandle }),
-          // `internal#118` — and WHY it is absent, kept beside it. A build older than the field sends
-          // nothing, which stays absent rather than becoming a guess.
-          ...(nativeWindowHandleRead != null && { nativeWindowHandleRead: nativeWindowHandleRead as "value" | "zero" | "failed" }),
-        })),
+        elements: result.elements.map(normalizeNativeElement),
         via: "native",
       };
       // A prefix of a window is not the window — the same rule the PowerShell road follows below.
@@ -2194,6 +2199,10 @@ function Collect($el, $depth) {
     }
     if ($null -ne $elHwnd) { $item['nativeWindowHandle'] = $elHwnd }
     $item['nativeWindowHandleRead'] = $elHwndRead
+    # internal #211 (C) - a Window's own IsModal, as the get-elements script reads it (gate 2).
+    if ($item['controlType'] -eq 'Window') {
+        try { $item['isModal'] = [bool]$el.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Current.IsModal } catch {}
+    }
     $script:results.Add($item)
     $script:count++
     $kids = $el.FindAll([System.Windows.Automation.TreeScope]::Children, $trueC)
@@ -2206,6 +2215,24 @@ foreach ($k in $kids) { Collect $k 0 }
 
 @{ elementCount=$results.Count; elements=$results.ToArray() } | ConvertTo-Json -Depth 6 -Compress
 `;
+}
+
+/**
+ * One native element as `UiElement`, for both reads that return them (`getUiElements` and
+ * `getElementChildren` share `extract_element` on the Rust side). Rust's `None` arrives as null; this
+ * type says "absent", as the PowerShell road does, so each optional key is left out rather than set
+ * to undefined. A build older than a field sends nothing, which stays absent rather than becoming a
+ * guess. One function, so a new field cannot reach one read and not the other (gate 2 on #211 C).
+ */
+function normalizeNativeElement({ nativeWindowHandle, nativeWindowHandleRead, isModal, ...el }: NativeUiElement): UiElement {
+  return {
+    ...el,
+    boundingRect: el.boundingRect ?? null,
+    ...(nativeWindowHandle != null && { nativeWindowHandle }),
+    // `internal#118` — and WHY it is absent, kept beside it.
+    ...(nativeWindowHandleRead != null && { nativeWindowHandleRead: nativeWindowHandleRead as "value" | "zero" | "failed" }),
+    ...(isModal != null && { isModal }),
+  };
 }
 
 export async function getElementChildren(
@@ -2231,14 +2258,7 @@ export async function getElementChildren(
         timeoutMs,
       });
       // Normalise boundingRect: Rust Option → null
-      return result.map(({ nativeWindowHandle, nativeWindowHandleRead, ...el }: NativeUiElement) => ({
-        ...el,
-        boundingRect: el.boundingRect ?? null,
-        // Rust's `None` arrives as null. This type says "absent", as `getUiElements` does, so the key is
-        // left out rather than set to undefined.
-        ...(nativeWindowHandle != null && { nativeWindowHandle }),
-        ...(nativeWindowHandleRead != null && { nativeWindowHandleRead: nativeWindowHandleRead as "value" | "zero" | "failed" }),
-      }));
+      return result.map(normalizeNativeElement);
     } catch (e) {
       console.warn("[uia-bridge] Native uiaGetElementChildren failed, falling back to PowerShell:", e);
     }

@@ -29,6 +29,8 @@ export interface NativeUiElement {
    * read as dead code — and removing them would put `undefined` on the wire (gate 2, 2026-09-16).
    */
   nativeWindowHandleRead?: string
+  /** internal #211 (C) — a `Window` element's `WindowPattern.IsModal`; absent when it did not answer, and on an older addon. */
+  isModal?: boolean | null
 }
 
 export interface NativeUiElementsResult {

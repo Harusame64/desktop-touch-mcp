@@ -2,7 +2,7 @@ import type { UiEntity, EntityLease, ExecutorKind, ExecutorOutcome, UiAffordance
 import type { LeaseStore } from "./lease-store.js";
 import type { VisualMotionObservation } from "../../tools/_input-pipeline.js";
 import type { Rect, UiEntityCandidate } from "../vision-gpu/types.js";
-import { classifyModal } from "./session-registry.js";
+import { classifyModal, isUiaWindow } from "./session-registry.js";
 import { probeAim } from "../aim-probe.js";
 import { resolveCandidates } from "./resolver.js";
 
@@ -659,7 +659,9 @@ function computeDiff(ctx: DiffContext): SemanticDiff {
   // ADR-020 PR-P2-1: unified classifier (post-touch-diff context, no self-exclusion;
   // the `touched` entity is handled separately above).
   const modalAppeared   = appeared.filter((e) => classifyModal(e, "post-touch-diff"));
-  const modalDismissed  = removed.filter((e) => classifyModal(e, "post-touch-diff"));
+  // A window's going is said whatever it said about being modal: a modeless window closing has no
+  // other code to be reported under (gate 2 on internal #211 C).
+  const modalDismissed  = removed.filter((e) => isUiaWindow(e));
   if (modalAppeared.length   > 0) diff.push("modal_appeared");
   if (modalDismissed.length  > 0) diff.push("modal_dismissed");
 
@@ -696,8 +698,10 @@ function computeDiff(ctx: DiffContext): SemanticDiff {
  * Semantic diff codes:
  *   entity_disappeared  — touched entity no longer in post snapshot
  *   entity_moved        — touched entity moved > 16px
- *   modal_appeared      — a new UIA `Window` appeared (an owned dialog, internal #126)
- *   modal_dismissed     — a UIA `Window` disappeared
+ *   modal_appeared      — a new UIA `Window` appeared (an owned dialog, internal #126), unless its own
+ *                         `IsModal` read false (a modeless window: `entity_appeared`, internal #211 C)
+ *   modal_dismissed     — a UIA `Window` disappeared (modal or not: a modeless window's closing
+ *                         has no other code)
  *   value_changed       — entity's value or terminal label changed (source-specific)
  *   entity_appeared     — non-modal entity appeared in post snapshot
  *   focus_shifted       — focus moved to a different entity (requires getFocusedEntityId)
