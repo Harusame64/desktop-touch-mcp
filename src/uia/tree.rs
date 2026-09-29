@@ -182,7 +182,7 @@ const MAX_WORD_DOCUMENT_CHILDREN: i32 = 2048;
 fn is_word_document(elem: &IUIAutomationElement) -> bool {
     unsafe {
         elem.CachedControlType().ok() == Some(UIA_DocumentControlTypeId)
-            && elem.CachedClassName().ok().is_some_and(|c| c.to_string() == "_WwG")
+            && elem.CachedClassName().ok().is_some_and(|c| c == "_WwG")
     }
 }
 
