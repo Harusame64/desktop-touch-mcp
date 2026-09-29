@@ -6,9 +6,20 @@
   Electron apps now expose their pages to the deeper UIA read. In read order, though, the browser's
   own tabs, address bar and toolbar came first and filled the first entities returned (20 by default). When the read
   finds a page, the page's controls are listed first and everything else after them. A page counts
-  only when web content fills at least half the window (the page and a DevTools docked beside it
-  count together), so a small web pane inside a native app does not reorder that app. OCR is not run for a page that UIA reads. If a page's text is not in the reply,
-  use `screenshot` with `detail: "ocr"`.
+  only when web content covers at least half the window (a page and a docked DevTools count
+  together, and where they overlap it counts once), so a small web pane inside a native app does
+  not reorder that app. OCR is not run for a page that UIA reads. If a page's text is not in the
+  reply, use `screenshot` with `detail: "ocr"`.
+
+- **`desktop_discover` says why a `query` found nothing.** A `query` that matched none of the
+  controls read used to return an empty list and nothing else. The list was the same when the text
+  was scrolled out of view, when it was text UI Automation does not expose (a spreadsheet cell's
+  number, a Word document's body, a Java window's contents), and when the read had stopped at its element cap. The reply now carries the
+  constraint `query: "no_match"` (and `entityZeroReason: "query_no_match"` when the list is empty,
+  unless a lane failure explains it better). The description says what to do instead: scroll the
+  text into view and call again, or read visible text with `screenshot(detail: "ocr")`. The next
+  call reads the window again rather than serving the list from before the scroll. The description
+  also says what `uia_tree_truncated` means.
 
 - **`desktop_discover` reads deeper into a window's UI Automation tree.** Its UIA read stopped at
   depth 4. So Chrome, Edge and VS Code, which expose their page controls at depth 7–12, were

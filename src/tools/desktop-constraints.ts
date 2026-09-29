@@ -60,12 +60,22 @@ export interface ViewConstraints {
    */
   ingress?: "fetch_error";
   /**
+   * internal #211 — the caller's `query` matched none of the entities read. Only on-screen
+   * controls UIA exposes can match: text scrolled out of view, values UIA does not expose (a
+   * spreadsheet cell's number), and — with `uia_tree_truncated` — elements past the read's cap are
+   * not in the list at all.
+   */
+  query?: "no_match";
+  /**
    * One-line summary explaining why entities.length === 0.
-   * Set only when entities === 0 AND at least one provider signalled a constraint.
+   * Set only when entities === 0 AND a constraint was signalled — by a provider, or by a `query`
+   * that matched nothing read.
    * Absent when entities > 0 or entities === 0 but no constraint detected (genuine empty screen).
    *
    * Fallback guidance by value:
    *   foreground_unresolved    → add target.windowTitle or wait for focus
+   *   query_no_match           → the query matched nothing read: scroll the text into view and
+   *                              discover again, or read visible text with screenshot(detail:'ocr')
    *   target_window_gone       → the window target.hwnd named has closed: discover the window it
    *                              belonged to, or call without target.hwnd
    *   ingress_fetch_error      → retry desktop_discover
@@ -85,6 +95,7 @@ export interface ViewConstraints {
     | "cdp_failed_visual_empty"
     | "all_providers_failed"
     | "foreground_unresolved"
+    | "query_no_match"
     | "target_window_gone"
     | "ingress_fetch_error";
 }
@@ -195,6 +206,10 @@ export function deriveViewConstraints(
         c.window = "target_window_gone";
         hasConstraint = true;
         break;
+      case "query_no_match":
+        c.query = "no_match";
+        hasConstraint = true;
+        break;
       // Ingress
       case "ingress_fetch_error":
         c.ingress = "fetch_error";
@@ -235,6 +250,10 @@ function deriveEntityZeroReason(c: ViewConstraints): ViewConstraints["entityZero
   if (c.uia === "provider_failed" || c.cdp === "provider_failed" || c.terminal === "provider_failed") {
     return "all_providers_failed";
   }
+  // Last: a lane that failed or read blind is the better explanation of an empty list, and its
+  // remedy (wait, another tool) is not "scroll" (gate 2). What is left is a read that worked and a
+  // query that matched none of it.
+  if (c.query === "no_match") return "query_no_match";
 
   return undefined;
 }
