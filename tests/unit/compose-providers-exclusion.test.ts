@@ -61,7 +61,7 @@ describe("composeCandidates — R3 WindowExcludedError propagation", () => {
     // `ingress_fetch_error`. What this cell protects is unchanged — the refusal short-circuits
     // BEFORE the OCR lane could read the dialog by handle.
     mockResolveWindowTarget.mockRejectedValue(new WindowExcludedError("WindowExcluded: key locker"));
-    expect((await composeCandidates({ hwnd: "500" })).warnings).toContain("window_excluded");
+    expect((await composeCandidates({ hwnd: "500" })).warnings).toEqual(["window_excluded"]);
     expect(fetchOcrCandidates).not.toHaveBeenCalled();
     expect(fetchUiaCandidates).not.toHaveBeenCalled();
     expect(fetchVisualCandidates).not.toHaveBeenCalled();

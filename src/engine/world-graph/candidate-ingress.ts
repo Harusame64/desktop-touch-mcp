@@ -26,13 +26,13 @@ export type IngressReason = "winevent" | "cdp" | "dirty-rect" | "startup" | "cac
  *   terminal_provider_failed  — getTextViaTextPattern threw
  *   visual_provider_unavailable — visual GPU lane is a Phase 3 stub
  *   terminal_buffer_empty     — terminal window found but buffer was empty
- *   window_excluded           — the target is a window excluded from every tool surface (the key
- *                               locker's own); no lane runs (internal #222)
  *   ingress_fetch_error       — ingress fetchFn threw (nothing was read). Also added by
  *                               `DesktopFacade.see` when a result arrives with no usable
  *                               candidate list, or with entries that are not objects (#161)
  *   no_provider_matched       — target omitted and foreground window could not be resolved
  *   target_window_gone        — target.hwnd names no window any more (internal #211 item 9(3))
+ *   window_excluded           — the target is a window excluded from every tool surface (the key
+ *                               locker's own); no lane runs (internal #222)
  *   partial_results_only      — primary provider returned 0 entities; fallback used
  */
 export interface ProviderResult {
@@ -201,9 +201,9 @@ export interface CandidateIngress {
  * What the cache saved was 60–350 ms a call (Notepad 65, Explorer 272, Excel 354 read against 2–5
  * cached), and there is no idle cost either way: nothing reads between calls.
  *
- * Nor is the last read kept for a read that throws: the one throw that reaches here on a shipped
- * road is `WindowExcludedError`, and handing back the read from before the exclusion is the bypass
- * internal #160 recorded (gate 2).
+ * Nor is the last read kept for a read that throws: the one throw that reached here on a shipped
+ * road was `WindowExcludedError`, and handing back the read from before the exclusion was the
+ * bypass internal #160 recorded (gate 2). Since internal #222 that is an answer, not a throw.
  */
 export class SnapshotIngress implements CandidateIngress {
   private readonly subs = new Map<string, Set<() => void>>();

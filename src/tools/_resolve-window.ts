@@ -31,7 +31,7 @@ import type { ResolveResolver } from "../engine/diagnostic-log.js";
  * short-circuits on an empty registry → zero syscalls when no locker is alive, and fails CLOSED on
  * an unreadable PID. Throws the typed `WindowExcludedError` (L0-local; L4 wires it into `_errors.ts`)
  * rather than masquerading as WindowNotFound — the window exists, it is protected — so callers that
- * tolerate resolution misses (e.g. `normalizeTarget`) can single it out and propagate the refusal.
+ * tolerate resolution misses (e.g. `normalizeTarget`) can single it out and answer it as a refusal.
  */
 function refuseIfExcludedTarget(hwnd: bigint): void {
   if (isExcludedWindowHandle(hwnd)) {

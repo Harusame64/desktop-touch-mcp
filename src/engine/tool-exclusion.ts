@@ -28,7 +28,8 @@
 //      screenshot(mode:'background') title-match, the window list, workspace, and macro.
 //   3. resolveWindowTarget() Cases 1/2 (explicit `hwnd`, `@active`) bypass the enumerators, so
 //      they consult the registry directly and throw `WindowExcludedError`; `normalizeTarget`
-//      (desktop_discover) re-throws it instead of swallowing it as a normal resolution miss.
+//      (desktop_discover) answers it as `window_excluded` and runs no lane, instead of swallowing it
+//      as a normal resolution miss (internal #222).
 //   4. runSomPipeline() (OCR read) refuses an explicit-hwnd target owned by an excluded PID — its
 //      title-only branch already relies on the filtered enumerator, so this closes the by-hwnd gap.
 // All are gated on a NON-EMPTY exclusion set so idle callers (no locker running — the common case)

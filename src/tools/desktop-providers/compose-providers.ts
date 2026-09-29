@@ -31,6 +31,7 @@
 import { parseTargetHwnd, type TargetSpec } from "../../engine/world-graph/session-registry.js";
 import { WEB_AREA_AUTOMATION_ID } from "../_advisory.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
+import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
 import { fetchUiaCandidates }      from "./uia-provider.js";
 import { fetchBrowserCandidates }  from "./browser-provider.js";
 import { fetchTerminalCandidates } from "./terminal-provider.js";
@@ -343,7 +344,9 @@ async function normalizeTarget(
     } catch (e) {
       // R3: an excluded key-locker title is said, and no lane runs (parity with the hwnd branch
       // above); other resolution errors keep the tolerant fall-through.
-      if (e instanceof WindowExcludedError) return { target, warnings: ["window_excluded"] };
+      // `@active` names no window: the foreground is excluded, and the aim must not keep the word
+      // as a title (gate 2, as the bare call below).
+      if (e instanceof WindowExcludedError) return { target: target.windowTitle === "@active" ? undefined : target, warnings: ["window_excluded"] };
       /* fall through */
     }
     return { target, warnings: [] };
@@ -374,6 +377,22 @@ async function normalizeTarget(
 }
 
 /**
+ * The candidates alone, for the roads that keep nothing else (the facade's direct provider, which is
+ * also the post-touch snapshot). An excluded target still fails loudly there, as it did before
+ * internal #222: an empty list would read as every entity gone (gate 2).
+ */
+export async function composeCandidatesOnly(target: TargetSpec | undefined): Promise<UiEntityCandidate[]> {
+  const result = await composeCandidates(target);
+  if (result.warnings.includes("window_excluded")) {
+    throw new WindowExcludedError("WindowExcluded: the target is excluded from every tool surface of this server");
+  }
+  return result.candidates;
+}
+
+/** Resolution answers after which no lane may run on the target. */
+const NO_LANE_WARNINGS: ReadonlySet<string> = new Set(["target_window_gone", "window_excluded"]);
+
+/**
  * Fetch candidates from all appropriate providers and return merged result + warnings.
  * Uses Promise.allSettled so one failing provider doesn't block others.
  */
@@ -399,9 +418,9 @@ export async function composeCandidates(
   // replays an earlier snapshot would hand back leases for the closed window (gate 2 on internal
   // #211 item 9(3)). The target stays — it is the window that was named — and its identity is
   // recorded as looked for and not found, so no later read baselines whoever inherits the handle.
-  // The same for a window excluded from every tool surface (internal #222): nothing is read from
-  // it, its identity included.
-  if (normalized.warnings.includes("target_window_gone") || normalized.warnings.includes("window_excluded")) {
+  // The same for a window excluded from every tool surface (internal #222): no lane runs on it, and
+  // its identity is not read.
+  if (normalized.warnings.some((w) => NO_LANE_WARNINGS.has(w))) {
     return { candidates: [], warnings: normalized.warnings, target: normalized.target, identityRead: true };
   }
 

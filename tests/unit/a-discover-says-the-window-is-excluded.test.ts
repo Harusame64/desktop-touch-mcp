@@ -35,7 +35,7 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   };
 });
 
-import { composeCandidates } from "../../src/tools/desktop-providers/compose-providers.js";
+import { composeCandidates, composeCandidatesOnly } from "../../src/tools/desktop-providers/compose-providers.js";
 import { SnapshotIngress } from "../../src/engine/world-graph/candidate-ingress.js";
 import { WindowExcludedError } from "../../src/engine/tool-exclusion.js";
 import { deriveViewConstraints } from "../../src/tools/desktop-constraints.js";
@@ -62,6 +62,11 @@ describe("composeCandidates, when the target is excluded", () => {
     expect(mocks.lane).not.toHaveBeenCalled();
   });
 
+  it("names no window for an explicit @active either (gate 2)", async () => {
+    expect(await composeCandidates({ windowTitle: "@active" })).toEqual({ candidates: [], warnings: ["window_excluded"] });
+    expect(mocks.lane).not.toHaveBeenCalled();
+  });
+
   it("says it for a bare call with the locker in front, and names no window (gate 2)", async () => {
     expect(await composeCandidates(undefined)).toEqual({ candidates: [], warnings: ["window_excluded"] });
     expect(mocks.lane).not.toHaveBeenCalled();
@@ -75,6 +80,18 @@ describe("composeCandidates, when the target is excluded", () => {
   it("keeps no_provider_matched for a bare call whose foreground cannot be resolved (the control)", async () => {
     mocks.resolveWindowTarget.mockRejectedValue(new Error("WindowExcluded: a plain Error with the same words"));
     expect((await composeCandidates(undefined)).warnings).toEqual(["no_provider_matched"]);
+  });
+});
+
+describe("the road that keeps only the candidates (the direct provider, the post-touch snapshot)", () => {
+  it("still fails loudly on an excluded target: an empty list would read as every entity gone (gate 2)", async () => {
+    await expect(composeCandidatesOnly({ hwnd: "500" })).rejects.toBeInstanceOf(WindowExcludedError);
+  });
+
+  it("hands back the candidates otherwise (the control)", async () => {
+    mocks.resolveWindowTarget.mockResolvedValue(null);
+    await expect(composeCandidatesOnly({ hwnd: "500" })).resolves.toEqual([]);
+    expect(mocks.lane).toHaveBeenCalled();
   });
 });
 

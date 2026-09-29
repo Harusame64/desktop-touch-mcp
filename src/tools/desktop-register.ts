@@ -62,7 +62,7 @@ import {
 import type { WindowBlockAnswer, SnapshotWindowAnswer, TouchAction, RoiCapture, RoiCaptureMaterial, SemanticDiff, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import { SnapshotIngress } from "../engine/world-graph/candidate-ingress.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
-import { composeCandidates } from "./desktop-providers/compose-providers.js";
+import { composeCandidates, composeCandidatesOnly } from "./desktop-providers/compose-providers.js";
 import { getVisualRuntime } from "../engine/vision-gpu/runtime.js";
 import { PocVisualBackend } from "../engine/vision-gpu/poc-backend.js";
 import { OnnxBackend } from "../engine/vision-gpu/onnx-backend.js";
@@ -716,8 +716,7 @@ async function initVisualRuntime(): Promise<void> {
  */
 export function getDesktopFacade(): DesktopFacade {
   if (!_facade) {
-    const provider: CandidateProvider = async (input: DesktopSeeInput) =>
-      (await composeCandidates(input.target)).candidates;
+    const provider: CandidateProvider = async (input: DesktopSeeInput) => composeCandidatesOnly(input.target);
 
     // internal #218: every discover reads; see `SnapshotIngress`.
     const ingress = new SnapshotIngress((key: string) => composeCandidates(targetKeyToSpec(key)));

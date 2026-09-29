@@ -1035,7 +1035,7 @@ async function resolvePressPoint(
  *      the state of the desktop does.
  *   3. Window resolution FAILS: the caller's own string stays, and it can be one that names no
  *      window. `{windowTitle:"@active"}` with no foreground to resolve throws inside `:267`
- *      (`_resolve-window.ts:449`), the catch at `:274` re-throws only `WindowExcludedError`, and
+ *      (`_resolve-window.ts:449`), the catch at `:274` singles out only `WindowExcludedError`, and
  *      `:280` returns the caller's spec — so `aim.title === "@active"`. A bare call in the same
  *      state returns `{target: undefined}` (`:289`, `:298`) and the aim has no title at all.
  *
