@@ -89,16 +89,14 @@
   of it is not returned with new leases. The warning appears only when Windows answers that the
   handle is not a window. A window that is only hidden, or a handle of zero, does not get it.
 
-- **`desktop_discover` reads a window again after a dialog it owns opens or closes, and after an
-  act on it.** It used to serve its cached read for up to 30 seconds. That read was missing a save
-  dialog that had just opened, and still listed the buttons of one that had closed, as `observed`.
-  A dialog opening now marks every window that owns it for a new read. A window that the cached read
-  listed and that has since closed does the same. `desktop_act`, whether it pressed or refused, also
-  ends the cached read it acted on, so the next `desktop_discover` called the same way reads the
-  window again. A read of the same window under another target (by title instead of `hwnd`) keeps
-  its cache. Only dialogs that the window enumeration lists (visible, titled, at least
-  50 px) are followed. The case of a dialog opening is followed only when `desktop_discover` was
-  called by `hwnd`.
+- **`desktop_discover` reads the window on every call.** It used to answer from its last read for
+  up to 30 seconds unless a window appeared or disappeared, and missed every change made inside a
+  window by something other than `desktop_act`: an Excel sheet switched or zoomed over COM, a field
+  changed by another program, a control destroyed, a dialog opened or closed. A call with no
+  target kept describing the previous foreground window after an Alt-Tab. `freshness.from` is now
+  `read`, or `unavailable` when the read failed. A failed read no longer returns the previous read
+  as `staleCache`. A call takes as long as a read: 65 ms for Notepad, about 350 ms for an Excel
+  sheet, measured.
 
 - **`desktop_act` no longer refuses a button because of its own window's title bar, and says when
   the dialog it would have named has closed.** A window that `desktop_discover` listed is now

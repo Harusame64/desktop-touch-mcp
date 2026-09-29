@@ -2,7 +2,7 @@
  * runtime.ts — VisualRuntime: process-level coordinator for the GPU visual lane.
  *
  * Wraps a VisualBackend and exposes a stable API to the TS control plane
- * (visual-provider, visual-ingress) without leaking backend internals.
+ * (visual-provider) without leaking backend internals.
  *
  * The runtime is a process singleton. One backend is attached at server startup
  * (or during test setup). Multiple targets share the same backend.

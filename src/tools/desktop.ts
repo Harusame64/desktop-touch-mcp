@@ -377,9 +377,9 @@ export interface DesktopFacadeOptions {
    */
   sessionEvictionIntervalMs?: number;
   /**
-   * Event-driven candidate ingress. When set, see() calls ingress.getSnapshot(key)
-   * instead of candidateProvider(input) directly — reducing idle refresh cost.
-   * candidateProvider is still used as the underlying fetch function via the ingress.
+   * Candidate ingress. When set, see() calls ingress.getSnapshot(key) instead of
+   * candidateProvider(input) directly. Production's `SnapshotIngress` reads on every call
+   * (internal #218); an injected one may remember, and says so in `freshness`.
    */
   ingress?: CandidateIngress;
   /**
@@ -420,8 +420,8 @@ function primaryActionFrom(entity: UiEntity): string {
  * window), and an unusable one (`"0"`, text) gives way to `windowTitle`, as the read did.
  *
  * The title is the one the candidates were read with: the ingress resolves a handle alone to a
- * handle and a title (`ProviderResult.target`), and a cache hit hands back that target, so the
- * title matches the entities and the lease even if the window has since retitled. When the caller sent a
+ * handle and a title (`ProviderResult.target`), and a remembered read hands back that target, so
+ * the title matches the entities and the lease even if the window has since retitled. When the caller sent a
  * title with the handle, or the ingress said nothing (a direct provider), the title comes from this
  * reply's `windows` list,
  * and a window that list does not hold still reports the hwnd, as before. A windowTitle target
@@ -567,7 +567,7 @@ export class DesktopFacade {
     // report `ageMs: 0` for a read that took a second (caught re-reading the shipped sentence
     // against the code, 2026-09-22).
     const directReadStartedAtMs = Date.now();
-    // Use ingress (event-driven cache) if available; fall back to direct provider.
+    // Use the ingress if available; fall back to direct provider.
     // Read through `readProviderResult` on both roads: the ingress and the direct provider are
     // both injectable, and what they hand back is runtime input (internal #161).
     let rawResult = readProviderResult(this.opts.ingress
@@ -607,14 +607,14 @@ export class DesktopFacade {
     // "we could not work out which window" must not overwrite what the caller did tell us. The
     // non-ingress path (`candidateProvider`) returns candidates only, so it also falls back here.
     //
-    // On a cache hit the target comes from the entry the candidates came from, which is the point:
+    // From an ingress that remembers, the target comes from the entry the candidates came from:
     // the aim and the view describe the same window even when the foreground has moved on.
     if (rawResult.target) session.lastTarget = rawResult.target;
 
     // ADR-036 item 2 — and the aim, as one value, with who owned the window when it was read.
     //
-    // The identity comes from the provider result, not from a read taken here: on a cache hit
-    // those are different moments, and a window that closed and had its handle recycled in between
+    // The identity comes from the provider result, not from a read taken here: a read takes time,
+    // and a remembered one (an injected ingress) longer, so those are different moments, and a window that closed and had its handle recycled in between
     // would be baselined against its new owner — the comparison would then answer "same" and wave
     // an action through to a window nobody discovered (gate 1, 2026-09-09). The identity belongs to
     // the observation, so it travels with it.
@@ -811,9 +811,9 @@ export class DesktopFacade {
       queryFoundNothing ? [...rawResult.warnings, "query_no_match"] : rawResult.warnings,
       entityViews.length,
     );
-    // …and the advice for it is "scroll it into view and call again", which a cached read would
-    // answer with the list from before the scroll: a scroll made with another tool does not mark
-    // the read stale. So the read that missed is ended here, and the next call reads again.
+    // …and the advice for it is "scroll it into view and call again", which a remembered read
+    // would answer with the list from before the scroll: a scroll made with another tool does not
+    // mark it stale. So an ingress that remembers is told the read that missed is over.
     if (queryFoundNothing) this.opts.ingress?.invalidate(key, "manual");
     if (constraints) output.constraints = constraints;
 
@@ -1129,7 +1129,7 @@ export class DesktopFacade {
    *
    * Only for results that carried no identity of their own: the direct `candidateProvider` path,
    * and any test double. The ingress path takes its identity with the snapshot instead, because a
-   * cache hit would otherwise baseline against a window that arrived after the read.
+   * remembered read would otherwise baseline against a window that arrived after the read.
    *
    * The identity is read through `win32` directly rather than through `identity-tracker.ts`, whose
    * entry point (`observeTarget`) RECORDS what it sees: this is the read half of a comparison, and
@@ -1241,8 +1241,8 @@ export class DesktopFacade {
       return await session.loop.touch(input);
     } finally {
       // internal #211 item 9(1): the read an act was made against is not the world after it —
-      // whether it pressed (the window changed) or was refused because the read was stale. The next
-      // `desktop_discover` of this window reads again instead of serving it from the cache.
+      // whether it pressed (the window changed) or was refused because the read was stale. An ingress
+      // that remembers is told so (production's reads every call anyway, internal #218).
       this.opts.ingress?.invalidate(session.key, "manual");
     }
   }

@@ -61,7 +61,6 @@ import {
 } from "../errors/typed-errors.js";
 import type { WindowBlockAnswer, SnapshotWindowAnswer, TouchAction, RoiCapture, RoiCaptureMaterial, SemanticDiff, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import { SnapshotIngress } from "../engine/world-graph/candidate-ingress.js";
-import { createVisualIngressSource, type VisualIngressSource } from "../engine/world-graph/visual-ingress.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
 import { composeCandidates } from "./desktop-providers/compose-providers.js";
 import { getVisualRuntime } from "../engine/vision-gpu/runtime.js";
@@ -637,9 +636,6 @@ export function createCachedProductionWindowsProvider(
 
 let _facade: DesktopFacade | undefined;
 
-/** Process-level visual invalidation hook. Call to trigger visual cache refresh. */
-let _visualSource: VisualIngressSource | undefined;
-
 /** Process-level PoC visual backend. Expose for P3-D pipeline to call updateSnapshot(). */
 let _pocBackend: PocVisualBackend | undefined;
 
@@ -657,20 +653,7 @@ let _onnxBackend: OnnxBackend | undefined;
 let _dirtyRouter: DirtyRectRouter | undefined;
 
 /**
- * @internal Test-only entry point. Production code does not call this.
- * Kept exported for `tests/unit/{dirty-signal,poc-backend,benchmark-gates}.test.ts`
- * which need to inject snapshots without touching CandidateProducer.
- *
- * The production dataplane feeds PocVisualBackend via pushDirtySignal
- * from OcrVisualAdapter (Phase 1) and, in Phase 3+, from the dirty-rect
- * event loop. External callers should use pushDirtySignal, not this function.
- */
-export function getVisualIngressSource(): VisualIngressSource | undefined {
-  return _visualSource;
-}
-
-/**
- * @internal Same rationale as getVisualIngressSource.
+ * @internal Test-only entry point: production feeds the backend via pushDirtySignal.
  * Call backend.updateSnapshot(targetKey, candidates) to deliver stable candidates.
  */
 export function getPocVisualBackend(): PocVisualBackend | undefined {
@@ -694,23 +677,11 @@ export function getOnnxBackend(): OnnxBackend | undefined {
  * based on target type and merges results additively.
  */
 /**
- * Return the process-level DesktopFacade.
- *
- * P2-E used to give the ingress a composite event source (WinEvent, CDP, terminal buffer, visual)
- * to mark cached reads dirty. Since internal #218 every discover reads, so nothing is drained.
+ * P3-B: Attach a visual backend to the global VisualRuntime. Its dirty signals used to mark the
+ * ingress's cached read for the target; since internal #218 every discover reads, so they are not
+ * listened to here.
  */
-/**
- * P3-B: Attach PocVisualBackend to the global VisualRuntime and wire its dirty
- * signals to the visual ingress source so target caches are invalidated automatically
- * when the GPU pipeline produces new stable candidates.
- *
- * Flow:
- *   PocVisualBackend.updateSnapshot(targetKey, candidates)
- *     → backend fires dirty listeners
- *     → VisualIngressSource.markDirty(targetKey)
- * The ingress no longer drains that source (internal #218): the next see() reads regardless.
- */
-async function initVisualRuntime(visualSource: VisualIngressSource): Promise<void> {
+async function initVisualRuntime(): Promise<void> {
   // Phase 4a (ADR-005): prefer Rust-internal OnnxBackend when available and
   // explicitly opted in. Falls back to PocVisualBackend otherwise so that
   // Phase 1-3 behaviour is unchanged when the operator has not enabled Phase 4.
@@ -720,7 +691,6 @@ async function initVisualRuntime(visualSource: VisualIngressSource): Promise<voi
   if (useOnnx) {
     const backend = new OnnxBackend();
     _onnxBackend = backend;
-    backend.onDirty((targetKey) => visualSource.markDirty(targetKey, "dirty-rect"));
     onDirtySignal((targetKey, candidates) => {
       backend.updateSnapshot(targetKey, candidates);
     });
@@ -732,7 +702,6 @@ async function initVisualRuntime(visualSource: VisualIngressSource): Promise<voi
   // Default: PocVisualBackend (Phase 1-3 behaviour).
   const backend = new PocVisualBackend();
   _pocBackend = backend;
-  backend.onDirty((targetKey) => visualSource.markDirty(targetKey, "dirty-rect"));
   onDirtySignal((targetKey, candidates) => {
     backend.updateSnapshot(targetKey, candidates);
   });
@@ -749,8 +718,6 @@ export function getDesktopFacade(): DesktopFacade {
   if (!_facade) {
     const provider: CandidateProvider = async (input: DesktopSeeInput) =>
       (await composeCandidates(input.target)).candidates;
-
-    _visualSource = createVisualIngressSource();
 
     // internal #218: every discover reads; see `SnapshotIngress`.
     const ingress = new SnapshotIngress((key: string) => composeCandidates(targetKeyToSpec(key)));
@@ -801,7 +768,7 @@ export function getDesktopFacade(): DesktopFacade {
     // Before Phase 4 default-on: consider making getDesktopFacade() return
     // Promise<DesktopFacade> and awaiting this to eliminate the window entirely.
     if (process.env["DESKTOP_TOUCH_DISABLE_VISUAL_GPU"] !== "1") {
-      initVisualRuntime(_visualSource).catch((err) => {
+      initVisualRuntime().catch((err) => {
         console.error("[desktop-register] Failed to initialize visual runtime:", err);
       });
 
@@ -851,7 +818,6 @@ function targetKeyToSpec(key: string): TargetSpec | undefined {
 export function _resetFacadeForTest(): void {
   (_facade as unknown as { dispose?: () => void })?.dispose?.();
   _facade = undefined;
-  _visualSource = undefined;
   _pocBackend = undefined;
   void _onnxBackend?.dispose();
   _onnxBackend = undefined;
@@ -1969,26 +1935,23 @@ export function registerDesktopTools(server: McpServer): void {
       "parent_disabled_prefer_popup → parent window blocked by a modal; switched to targeting the active popup dialog.",
       // ADR-036 item 8 — the shipped sentence for the field #150 added. Without it the field
       // exists and nobody reads it: the caller that needs it is a model reading this description.
-      "response.freshness says whether these entities were READ for this call or REMEMBERED. " +
-        "observedAtMs is when the read that produced them STARTED; ageMs is observedAtMs to this " +
-        "reply. from='cache': nothing was asked this time, so the entities are ageMs old — read " +
-        "ageMs before acting on their positions. from='read': a fetch ran for this call, which " +
-        "is NOT a promise that it succeeded " +
-        "or that any lane looked — ageMs is then how long that fetch took and says nothing about " +
-        "how old the entities are, since a lane may replay an earlier snapshot; if entities is " +
-        "empty, warnings[] and constraints say why. from='staleCache': the refresh FAILED and an " +
-        "earlier snapshot went out instead, with ingress_fetch_error in warnings[] — do not act " +
-        "on these positions, and expect the same answer until the cause named in warnings[] " +
-        "clears. from='unavailable': there is no observation to report, and then there is no " +
-        "observedAtMs and no ageMs. If ageMs is missing while observedAtMs is not, the two clocks " +
-        "disagreed and the reply cannot be dated. It is NOT attention: that one is the UIA " +
+      "response.freshness says whether these entities were READ for this call. Every call " +
+        "reads the window again. observedAtMs is when that read STARTED; ageMs is observedAtMs to " +
+        "this reply. from='read': a fetch ran for this call, which is NOT a promise that it " +
+        "succeeded or that any lane looked — ageMs is then how long that fetch took and says " +
+        "nothing about how old the entities are, since a lane may replay an earlier snapshot; if " +
+        "entities is empty, warnings[] and constraints say why. from='unavailable': nothing was " +
+        "read (ingress_fetch_error in warnings[] when the read failed), and then there is no " +
+        "observedAtMs and no ageMs. from='cache' or 'staleCache' means the entities were " +
+        "remembered from an earlier read: this server does not answer them. A value not listed " +
+        "here is to be read as 'unavailable'. If ageMs is missing while observedAtMs is not, the two " +
+        "clocks disagreed and the reply cannot be dated. It is NOT attention: that one is the UIA " +
         "cache's TTL and says 'ok' for a hung window.",
       // Internal #158 — the per-entity answer to what freshness says per call. from='read' is about
       // the call, and a lane can still hand back something it did not look at; that is only visible
       // here.
       "Each entity may carry status and observedAtMs. status='observed': a lane looked at the " +
-        "window and saw it in the read that produced these entities — freshness says whether that " +
-        "read was this call (from='read') or an earlier one (from='cache' / 'staleCache'). " +
+        "window and saw it in the read that produced these entities. " +
         "status='stale': it was handed back from an earlier observation without looking — it may no " +
         "longer be on screen, even when freshness.from is 'read'. desktop_act looks for a stale " +
         "entity's label at its place before acting, and refuses with entity_not_found when the label " +

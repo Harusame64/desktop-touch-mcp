@@ -1,10 +1,8 @@
 /**
  * candidate-ingress.ts — the layer between DesktopFacade.see() and the providers.
  *
- * `SnapshotIngress` reads on every call and remembers the last read per target key, only to hand
- * it back as `staleCache` when a read throws (internal #218: it used to serve that read for up to
- * 30 s, and no event said when the window had changed inside). The event-source types and adapters
- * below are what that cache was invalidated by; nothing in production drains them now.
+ * `SnapshotIngress` reads on every call and remembers nothing (internal #218: it used to serve a
+ * target's last read for up to 30 s, and no event said when the window had changed inside).
  */
 
 import type { UiEntityCandidate } from "../vision-gpu/types.js";
@@ -28,7 +26,7 @@ export type IngressReason = "winevent" | "cdp" | "dirty-rect" | "startup" | "cac
  *   terminal_provider_failed  — getTextViaTextPattern threw
  *   visual_provider_unavailable — visual GPU lane is a Phase 3 stub
  *   terminal_buffer_empty     — terminal window found but buffer was empty
- *   ingress_fetch_error       — ingress fetchFn threw; stale cache returned. Also added by
+ *   ingress_fetch_error       — ingress fetchFn threw (nothing was read). Also added by
  *                               `DesktopFacade.see` when a result arrives with no usable
  *                               candidate list, or with entries that are not objects (#161)
  *   no_provider_matched       — target omitted and foreground window could not be resolved
@@ -49,9 +47,9 @@ export interface ProviderResult {
    * real machine 2026-09-09: providers scoped to `2624042`, session stored `null`, the executor was
    * handed `"@active"` as a title and pressed a remembered coordinate instead.
    *
-   * Carrying it here keeps the aim and the view the same window BY CONSTRUCTION, including on a
-   * cache hit: a stale entry hands back the target its candidates came from, which is the one the
-   * lease describes, rather than whatever is in the foreground now.
+   * Carrying it here keeps the aim and the view the same window BY CONSTRUCTION, including from an
+   * ingress that remembers: its entry hands back the target its candidates came from, which is the
+   * one the lease describes, rather than whatever is in the foreground now.
    *
    * Optional because a provider that does not resolve anything (a direct `CandidateProvider`, a
    * test double) has nothing to say here, and saying nothing must stay different from saying
@@ -138,8 +136,10 @@ export type ProviderFreshness =
    *   so a fetch that resolved is not an observation. What each lane did is in its own
    *   `provider.read` probe row, and `warnings` / `constraints` carry the caller-visible part.
    * - `cache` — the entry was fresh, so nothing was asked; these were read at `observedAtMs`.
-   *   `SnapshotIngress` no longer answers it (internal #218); an injected ingress still may.
    * - `staleCache` — the FETCH ITSELF rejected and the remembered entry was served instead.
+   *
+   *   **`SnapshotIngress` answers neither since internal #218**: it remembers nothing. An injected
+   *   ingress still may, so the values stay. What follows is the history of `staleCache` there.
    *   **A LANE failing is not that**: `settledLane` catches a lane's rejection before the ingress
    *   sees it, so a failed read arrives as `read` with an empty `entities` and
    *   `uia_provider_failed` in `warnings` (measured on real hardware, 2026-09-22, arm D).
@@ -147,8 +147,8 @@ export type ProviderFreshness =
    *   `WindowExcludedError` (`compose-providers.ts:257`, `:277`) before any lane runs, so a window
    *   that is discovered and then becomes excluded serves its remembered entry under this value
    *   (gate 2, 2026-09-22 — an earlier draft of this comment claimed it could not happen at all,
-   *   and the tree says otherwise). On that path the exclusion is bypassed by the cache, which is
-   *   not this change's doing and is filed separately (internal #160).
+   *   and the tree says otherwise). On that path the exclusion was bypassed by the cache (internal
+   *   #160) — the road that went with the fallback in #218 (gate 2).
    *
    *   **That road is read from source and has never been observed.** Reaching it needs the key
    *   locker's dialog on screen, which means an actual credential capture, so win2 declined to
@@ -164,7 +164,7 @@ export type ProviderFreshness =
    */
   | { from: "read" | "cache" | "staleCache"; observedAtMs: number }
   /**
-   * No observation at all: the fetch rejected with nothing remembered, or the ingress is disposed.
+   * No observation at all: the fetch rejected (with nothing remembered), or the ingress is disposed.
    * **A reader that does not recognise a value must treat it as this one** (win2, 2026-09-22: a
    * kind added to an enum falls into whatever the default branch is, and a default on the readable
    * side turns "could not tell" into "fresh" without a word).
@@ -178,68 +178,33 @@ export interface CandidateIngress {
   invalidate(targetKey: string, reason: IngressReason): void;
   /** Subscribe to invalidation events. Returns an unsubscribe function. */
   subscribe(targetKey: string, cb: () => void): () => void;
-  /** Optional: clear the dirty flag after a manual reconciliation. */
-  markRecovered?(targetKey: string): void;
   dispose(): void;
-}
-
-/**
- * Injectable event source — drains pending events and maps them to target keys.
- * Returns async to allow ESM dynamic imports inside the adapter.
- */
-export interface IngressEventSource {
-  drain(knownKeys: ReadonlySet<string>, context?: IngressDrainContext): Promise<Iterable<{ key: string; reason: IngressReason }>>;
-  dispose(): void;
-}
-
-/**
- * internal #211 item 9(1) — what the ingress knows that an event source does not: which windows
- * a key's cached read listed. A window that has closed is gone before its event is drained, so
- * the OS cannot say whose it was; the cached read can.
- */
-export interface IngressDrainContext {
-  /** Whether `targetKey`'s cached candidates include one recorded with this window handle. */
-  listsWindow(targetKey: string, hwnd: string): boolean;
 }
 
 // ── SnapshotIngress ───────────────────────────────────────────────────────────
 
-interface CacheEntry {
-  candidates: UiEntityCandidate[];
-  warnings: string[];
-  /** ADR-036 — the resolved target these candidates describe; see `ProviderResult.target`. */
-  target?: TargetSpec;
-  /** ADR-036 — the identity read at the same moment; see `ProviderResult.identity`. */
-  identity?: WindowIdentity;
-  /** ADR-036 — whether it was looked for; see `ProviderResult.identityRead`. */
-  identityRead?: boolean;
-  /** ADR-036 item 5 — the window origin those candidates were measured against. */
-  origin?: AimOrigin;
-  fetchedAtMs: number;
-}
-
 /**
- * Default CandidateIngress implementation: every call reads.
+ * Default CandidateIngress implementation: every call reads, and nothing is remembered.
  *
  * internal #218 — this used to serve a target's last read for up to 30 s unless an event had marked
  * it dirty. The events it could hear were a window appearing or disappearing and the foreground
  * changing; a change made INSIDE a window by anyone but our own act raised none of them. Measured
  * (win2): a field's text changed from outside, a control destroyed and a window moved were all
  * served from cache (2026-09-12, `dev/lease-cost/RESULTS-warm-cache.md` in the internal repo), and
- * so was an Excel sheet after COM changed its zoom and sheet (2026-09-29). A bare `desktop_discover()`
- * was keyed `window:__default__`, which no window event matches, so after an Alt-Tab it kept serving
- * the window that had been in front. Watching the window's pixels instead does not close it:
- * Excel with `ScreenUpdating` off changes its values without a repaint, a covered part is not on
- * screen, and a sleeping display delivers no frames (win2, 2026-09-29). What the cache saved was
- * 60–350 ms a call (Notepad 65, Explorer 272, Excel 354 read against 2–5 cached), and there is no
- * idle cost either way: nothing reads between calls.
+ * so was an Excel sheet after COM changed its zoom and sheet (2026-09-29). A bare
+ * `desktop_discover()` was keyed `window:__default__`, which no window event matches, so after an
+ * Alt-Tab it kept serving the window that had been in front. Watching the window's pixels instead
+ * does not close it: Excel with `ScreenUpdating` off changes its values without a repaint, a
+ * covered part is not on screen, and a sleeping display delivers no frames (win2, 2026-09-29).
+ * What the cache saved was 60–350 ms a call (Notepad 65, Explorer 272, Excel 354 read against 2–5
+ * cached), and there is no idle cost either way: nothing reads between calls.
  *
- * The last read is still kept, for one road: when the read itself throws, it goes out as
- * `staleCache`, with `ingress_fetch_error` in `warnings`.
+ * Nor is the last read kept for a read that throws: the one throw that reaches here on a shipped
+ * road is `WindowExcludedError`, and handing back the read from before the exclusion is the bypass
+ * internal #160 recorded (gate 2).
  */
 export class SnapshotIngress implements CandidateIngress {
-  private readonly cache = new Map<string, CacheEntry>();
-  private readonly subs  = new Map<string, Set<() => void>>();
+  private readonly subs = new Map<string, Set<() => void>>();
   private disposed = false;
 
   constructor(private readonly fetchFn: (targetKey: string) => Promise<ProviderResult>) {}
@@ -249,27 +214,14 @@ export class SnapshotIngress implements CandidateIngress {
     const now = Date.now();
     try {
       const result = await this.fetchFn(targetKey);
-      this.cache.set(targetKey, {
-        candidates: result.candidates,
-        warnings: result.warnings,
-        target: result.target,
-        identity: result.identity,
-        identityRead: result.identityRead,
-        origin: result.origin,
-        fetchedAtMs: now,
-      });
       return { ...result, freshness: { from: "read", observedAtMs: now } };
     } catch (err) {
       console.error(`[candidate-ingress] Fetch error for "${targetKey}":`, err);
-      const entry = this.cache.get(targetKey);
-      if (entry) {
-        return { candidates: entry.candidates, warnings: [...entry.warnings, "ingress_fetch_error"], target: entry.target, identity: entry.identity, identityRead: entry.identityRead, origin: entry.origin, freshness: { from: "staleCache", observedAtMs: entry.fetchedAtMs } };
-      }
       return { candidates: [], warnings: ["ingress_fetch_error"], freshness: { from: "unavailable" } };
     }
   }
 
-  /** Nothing is served from memory, so there is nothing to mark; subscribers are still told. */
+  /** Nothing is remembered, so there is nothing to end; subscribers are still told. */
   invalidate(targetKey: string, _reason: IngressReason): void {
     this.subs.get(targetKey)?.forEach((cb) => cb());
   }
@@ -283,188 +235,6 @@ export class SnapshotIngress implements CandidateIngress {
 
   dispose(): void {
     this.disposed = true;
-    this.cache.clear();
     this.subs.clear();
   }
-}
-
-// ── WinEvent adapter ──────────────────────────────────────────────────────────
-
-type WindowEventLike = { hwnd?: string; windowTitle?: string };
-
-/**
- * Match a window event to a TargetSessionKey.
- *
- * `window:{hwnd}` → matched by hwnd equality
- * `title:{title}` → matched by case-insensitive substring
- * `tab:{tabId}`   → not matched (handled by CDP adapter)
- */
-export function windowEventMatchesKey(event: WindowEventLike, key: string): boolean {
-  if (key.startsWith("window:")) {
-    return event.hwnd === key.slice(7);
-  }
-  if (key.startsWith("title:")) {
-    const title = key.slice(6).toLowerCase();
-    return typeof event.windowTitle === "string" &&
-           event.windowTitle.toLowerCase().includes(title);
-  }
-  return false;
-}
-
-// ── Source composition ────────────────────────────────────────────────────────
-
-/**
- * Combine multiple IngressEventSource instances into one.
- * Each sub-source is drained independently; results are deduplicated by key.
- * If a sub-source throws, it is skipped (graceful degradation — one broken source
- * does not block the others).
- *
- * Composite source preserves target isolation: each sub-source is responsible for
- * only emitting events for keys it recognises.
- */
-export function combineEventSources(sources: IngressEventSource[]): IngressEventSource {
-  return {
-    async drain(knownKeys: ReadonlySet<string>, context?: IngressDrainContext): Promise<Iterable<{ key: string; reason: IngressReason }>> {
-      const results: Array<{ key: string; reason: IngressReason }> = [];
-      const seen = new Set<string>();
-
-      for (const source of sources) {
-        try {
-          const events = await source.drain(knownKeys, context);
-          for (const e of events) {
-            if (!seen.has(e.key)) {
-              seen.add(e.key);
-              results.push(e);
-            }
-          }
-        } catch {
-          // One broken source never blocks the others.
-        }
-      }
-
-      return results;
-    },
-
-    dispose(): void {
-      for (const source of sources) {
-        try { source.dispose(); } catch { /* best-effort */ }
-      }
-    },
-  };
-}
-
-/**
- * Create an IngressEventSource backed by event-bus.ts.
- *
- * The event-bus runs its own 500ms poll internally. This adapter drains
- * buffered events on demand (inside getSnapshot) — no additional timers.
- *
- * The subscription is created lazily on first drain to avoid importing
- * event-bus during module load (flag-OFF path safety).
- *
- * **A window's own events are not the only ones that change it** (internal #211 item 9(1)). An owned
- * dialog is a top-level window of its own, with its own handle, so its coming and going never
- * matched the owner's key: win2 measured `desktop_discover` serving a read without the save dialog
- * for about 30 s after it appeared, and the dialog's buttons as `observed` after it closed (internal
- * #212, arm 9). So a key is also dirtied when:
- * - a window appears that the key's window owns, directly or further up (asked of the OS at drain
- *   time, so a window already gone by then is not seen),
- * - a window disappears that the key's cached read listed (the OS cannot say whose a gone window
- *   was; the read can — {@link IngressDrainContext}).
- *
- * `deps` exists for unit tests only.
- */
-export interface WinEventIngressDeps {
-  events?: () => Promise<Array<WindowEventLike & { type?: string }>>;
-  owner?: (hwnd: bigint) => bigint | null;
-}
-
-export function createWinEventIngressSource(deps: WinEventIngressDeps = {}): IngressEventSource {
-  let subId: string | null = null;
-
-  async function ensureSubscribed(): Promise<typeof import("../event-bus.js")> {
-    const bus = await import("../event-bus.js");
-    if (!subId) {
-      subId = bus.subscribe(["window_appeared", "window_disappeared", "foreground_changed"]);
-    }
-    return bus;
-  }
-
-  async function pending(): Promise<Array<WindowEventLike & { type?: string }>> {
-    if (deps.events) return deps.events();
-    const bus = await ensureSubscribed();
-    return bus.poll(subId!) as Array<WindowEventLike & { type?: string }>;
-  }
-
-  // The windows that own `hwnd`, nearest first, by GW_OWNER — the walk `readOwnerChain`
-  // (receiver-facts.ts) makes, kept here so win32 is loaded lazily with the bus and the reads can be
-  // injected. Bounded: a read that tears must not spin.
-  let ownerOf: ((hwnd: bigint) => bigint | null) | undefined = deps.owner;
-  async function ownersOf(hwnd: string): Promise<string[]> {
-    if (!/^\d+$/.test(hwnd)) return [];
-    ownerOf ??= (await import("../win32.js")).getWindowOwner;
-    const owners: string[] = [];
-    let at = BigInt(hwnd);
-    for (let i = 0; i < 32; i++) {
-      const next = ownerOf(at);
-      if (next === null || next === 0n || next === at) break;
-      owners.push(String(next));
-      at = next;
-    }
-    return owners;
-  }
-
-  return {
-    async drain(knownKeys, context) {
-      if (knownKeys.size === 0) return [];
-      let events: Array<WindowEventLike & { type?: string }>;
-      try {
-        events = await pending();
-      } catch {
-        return [];
-      }
-      const out: Array<{ key: string; reason: IngressReason }> = [];
-      const added = new Set<string>();
-      const add = (key: string): void => {
-        if (!added.has(key)) {
-          out.push({ key, reason: "winevent" });
-          added.add(key);
-        }
-      };
-      const byHandle = [...knownKeys].some((k) => k.startsWith("window:"));
-
-      for (const event of events) {
-        // One event that cannot be read loses that event, not the batch: the bus has already
-        // handed the whole batch over and will not hand it again.
-        try {
-          for (const key of knownKeys) {
-            if (windowEventMatchesKey(event, key)) add(key);
-          }
-          if (event.hwnd === undefined) continue;
-          if (event.type === "window_appeared" && byHandle) {
-            // Every window it is owned by, not only the top: UIA lists an owned window under its
-            // IMMEDIATE owner, so a read of the Save As dialog lists the box that dialog opens.
-            for (const owner of await ownersOf(event.hwnd)) {
-              if (knownKeys.has(`window:${owner}`)) add(`window:${owner}`);
-            }
-          } else if (event.type === "window_disappeared" && context) {
-            for (const key of knownKeys) {
-              if (context.listsWindow(key, event.hwnd)) add(key);
-            }
-          }
-        } catch {
-          // Next event.
-        }
-      }
-      return out;
-    },
-
-    dispose() {
-      if (subId) {
-        import("../event-bus.js")
-          .then((bus) => { bus.unsubscribe(subId!); subId = null; })
-          .catch(() => {/* best-effort */});
-      }
-    },
-  };
 }

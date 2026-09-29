@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   SnapshotIngress,
-  windowEventMatchesKey,
   type ProviderResult,
 } from "../../src/engine/world-graph/candidate-ingress.js";
 import type { UiEntityCandidate } from "../../src/engine/vision-gpu/types.js";
@@ -77,65 +76,55 @@ describe("SnapshotIngress — every call reads (internal #218)", () => {
     expect(second.freshness?.from).toBe("read");
   });
 
-  it("idle: nothing is read between calls", async () => {
-    const fetch = vi.fn(async () => ok("A"));
-    const ingress = new SnapshotIngress(fetch);
-    await ingress.getSnapshot("window:1");
-    await new Promise((r) => setTimeout(r, 10));
-    expect(fetch).toHaveBeenCalledOnce();
+  it("through the facade: an act still tells the ingress its read is over, pressed or refused", async () => {
+    // Production's ingress remembers nothing, but an injected one may (`CandidateIngress`).
+    for (const opts of [{}, { isModalBlocking: () => true }]) {
+      const invalidate = vi.fn();
+      const ingress = {
+        getSnapshot: async (): Promise<ProviderResult> => ({ candidates: [{ ...candidate("OK"), rect: { x: 10, y: 10, width: 60, height: 20 } }], warnings: [] }),
+        invalidate,
+        subscribe: () => () => undefined,
+        dispose: () => undefined,
+      };
+      const facade = new DesktopFacade(async () => [], { ingress, executorFn: async () => "uia", ...opts });
+      const view = await facade.see({ target: { hwnd: "500" } });
+      expect(invalidate).not.toHaveBeenCalled();
+      await facade.touch({ lease: view.entities[0].lease });
+      expect(invalidate).toHaveBeenCalledWith("window:500", "manual");
+    }
   });
 });
 
-// ── When the read throws (ADR-036 item 8, internal #150) ──────────────────────
+// ── When the read throws (ADR-036 item 8, internal #150, #160) ────────────────
 
 describe("SnapshotIngress — when the read throws", () => {
-  it("says `staleCache`, dated to the read it remembers, with ingress_fetch_error", async () => {
-    vi.useFakeTimers();
-    try {
-      let fail = false;
-      let label = "A";
-      const ingress = new SnapshotIngress(async () => {
-        if (fail) throw new Error("boom");
-        return ok(label, ["some_prior_warning"]);
-      });
-      vi.setSystemTime(1_000);
-      await ingress.getSnapshot("window:1");
-      vi.setSystemTime(2_000);
-      label = "B";
-      await ingress.getSnapshot("window:1");
-      vi.setSystemTime(3_000);
-      fail = true;
-      const result = await ingress.getSnapshot("window:1");
-      // The LATEST read goes out, under its own date, and is not called a read.
-      expect(result.candidates[0].label).toBe("B");
-      expect(result.freshness).toEqual({ from: "staleCache", observedAtMs: 2_000 });
-      expect(result.warnings).toEqual(["some_prior_warning", "ingress_fetch_error"]);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("does not hand one target's read to another", async () => {
-    const ingress = new SnapshotIngress(async (key: string) => {
-      if (key === "window:B") throw new Error("boom");
-      return ok(key);
-    });
-    await ingress.getSnapshot("window:A");
-    expect((await ingress.getSnapshot("window:B")).freshness).toEqual({ from: "unavailable" });
-  });
-
-  it("says `unavailable` — never `read` — when nothing was read before", async () => {
+  it("hands back nothing it read before: no candidates, no target, `unavailable` (gate 2, #160)", async () => {
+    // The one throw on a shipped road is `WindowExcludedError`: an earlier read handed back here
+    // would be the excluded window's contents with new leases.
+    let fail = false;
     const ingress = new SnapshotIngress(async () => {
-      throw new Error("boom");
+      if (fail) throw new Error("WindowExcludedError");
+      return { ...ok("A", ["some_prior_warning"]), target: { hwnd: "500", windowTitle: "W" }, identityRead: true, origin: { kind: "measured" as const, rect: { x: 0, y: 0, width: 10, height: 10 } } };
     });
-    const result = await ingress.getSnapshot("window:1");
-    expect(result.candidates).toEqual([]);
-    expect(result.warnings).toEqual(["ingress_fetch_error"]);
-    // No date: there is no observation to date.
-    expect(result.freshness).toEqual({ from: "unavailable" });
+    await ingress.getSnapshot("window:500");
+    fail = true;
+    expect(await ingress.getSnapshot("window:500")).toEqual({ candidates: [], warnings: ["ingress_fetch_error"], freshness: { from: "unavailable" } });
   });
 
-  it("says `unavailable` after dispose, and forgets what it read", async () => {
+  it("reads again on the call after, and says `read` when it works", async () => {
+    let fail = true;
+    const ingress = new SnapshotIngress(async () => {
+      if (fail) throw new Error("boom");
+      return ok("A");
+    });
+    await ingress.getSnapshot("window:1");
+    fail = false;
+    const result = await ingress.getSnapshot("window:1");
+    expect(result.candidates[0].label).toBe("A");
+    expect(result.freshness?.from).toBe("read");
+  });
+
+  it("says `unavailable` after dispose, without reading", async () => {
     const fetch = vi.fn(async () => ok("A"));
     const ingress = new SnapshotIngress(fetch);
     await ingress.getSnapshot("window:1");
@@ -172,27 +161,5 @@ describe("SnapshotIngress — subscribe", () => {
     unsub();
     ingress.invalidate("window:1", "manual");
     expect(cb).not.toHaveBeenCalled();
-  });
-});
-
-// ── windowEventMatchesKey ─────────────────────────────────────────────────────
-
-describe("windowEventMatchesKey — matching logic", () => {
-  it("window: key matches by hwnd equality", () => {
-    expect(windowEventMatchesKey({ hwnd: "123" }, "window:123")).toBe(true);
-    expect(windowEventMatchesKey({ hwnd: "123" }, "window:456")).toBe(false);
-  });
-
-  it("title: key matches by case-insensitive substring", () => {
-    expect(windowEventMatchesKey({ windowTitle: "Notepad (modified)" }, "title:notepad")).toBe(true);
-    expect(windowEventMatchesKey({ windowTitle: "Chrome" }, "title:Notepad")).toBe(false);
-  });
-
-  it("tab: key is never matched by WinEvent", () => {
-    expect(windowEventMatchesKey({ hwnd: "123" }, "tab:abc")).toBe(false);
-  });
-
-  it("event missing hwnd does not match window: key", () => {
-    expect(windowEventMatchesKey({ windowTitle: "App" }, "window:123")).toBe(false);
   });
 });
