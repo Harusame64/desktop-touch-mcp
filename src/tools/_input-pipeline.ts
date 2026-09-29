@@ -641,6 +641,21 @@ export interface VisualMotionObservation {
     | "hit-negative-backoff"
     | "miss-init"
     | "miss-init-unavailable";
+  /**
+   * internal #211 (D) — how long `desktop_act` watched the window between `desktop_discover` (or the
+   * previous act) and this act, to learn whether it repaints on its own. Absent when it was not
+   * watched. A `no_change` says nothing of at least 500 px landed in the window from before the act
+   * to `totalElapsedMs` after it, not that the action did nothing: a WinForms button can take an
+   * Invoke and redraw nothing (win2, S1).
+   */
+  watchedBeforeMs?: number;
+  /**
+   * internal #211 (D) — the window repainted on its own (twice, 300 ms apart or more) between
+   * `desktop_discover` and the act, so
+   * a change seen after it cannot be told from its own noise, and the verdict is `indeterminate`
+   * (a console's cursor row, a WinForms or Swing client area every few hundred ms; S1).
+   */
+  selfRepainting?: true;
 }
 
 // ─── Resolver ────────────────────────────────────────────────────────────────

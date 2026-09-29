@@ -44,6 +44,14 @@ const mockVerifyLocalRepaint = vi.fn();
 const mockVerifyAnyChange = vi.fn();
 const mockGetWindowRect = vi.fn();
 const mockRunSomPipeline = vi.fn();
+// internal #211 (D) — the non-visual verdict reads a DXGI handle acquired before the action.
+const order: string[] = [];
+const fakeSub = { outputIndex: 0, isDisposed: false, next: vi.fn(async () => []), dispose: vi.fn(() => { order.push("dispose"); }) };
+const fakeBroker = {
+  acquire: vi.fn(() => { order.push("acquire"); return { sub: fakeSub, state: "hit-subscription" as const }; }),
+  subscribe: vi.fn(() => ({ unsubscribe: () => undefined, state: "hit-subscription" as const })),
+};
+const mockObserveAfterAct = vi.fn();
 
 vi.mock("../../src/engine/layer-buffer.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/layer-buffer.js")>();
@@ -55,7 +63,19 @@ vi.mock("../../src/engine/local-repaint.js", async (importOriginal) => {
 });
 vi.mock("../../src/engine/any-change.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/any-change.js")>();
-  return { ...actual, verifyAnyChange: (...a: unknown[]) => mockVerifyAnyChange(...a) };
+  return {
+    ...actual,
+    verifyAnyChange: (...a: unknown[]) => mockVerifyAnyChange(...a),
+    resolveOutputIndexForHwnd: () => ({ ok: true, outputIndex: 0, crossMonitor: false }),
+  };
+});
+vi.mock("../../src/engine/dxgi-broker.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/engine/dxgi-broker.js")>();
+  return { ...actual, getSharedDirtyRectBroker: () => fakeBroker };
+});
+vi.mock("../../src/engine/act-motion.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/engine/act-motion.js")>();
+  return { ...actual, observeAfterAct: (...a: unknown[]) => { order.push("observe"); return mockObserveAfterAct(...a); } };
 });
 vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
@@ -67,7 +87,7 @@ vi.mock("../../src/engine/ocr-bridge.js", async (importOriginal) => {
 });
 
 // Import the handler AFTER the mocks so it picks up the mocked module surface.
-const { desktopActRawHandler, getDesktopFacade, _resetFacadeForTest } = await import(
+const { desktopActRawHandler, desktopDiscoverRawHandler, getDesktopFacade, _resetFacadeForTest } = await import(
   "../../src/tools/desktop-register.js"
 );
 
@@ -306,12 +326,19 @@ describe("desktop_act frame-diff dispatch — legacy S5 path (S5b fold off)", ()
   });
 
   it("non-visual-only → no pre-frame capture, DXGI verdict, no roiCapture (structured target pays nothing)", async () => {
-    spyFacadeVisualOnly({ visualOnly: false });
-    mockVerifyAnyChange.mockResolvedValue({
-      motion: "any_change",
-      source: "dxgi_dirty_rect",
-      framesSampled: 1,
-      totalElapsedMs: 50,
+    const facade = spyFacadeVisualOnly({ visualOnly: false });
+    mockGetWindowRect.mockReturnValue(WINDOW_RECT);
+    order.length = 0;
+    fakeBroker.subscribe.mockClear();
+    const { PreActWatch } = await import("../../src/engine/act-motion.js");
+    const startSpy = vi.spyOn(PreActWatch.prototype, "start");
+    const takeSpy = vi.spyOn(PreActWatch.prototype, "take");
+    vi.mocked(facade.touch).mockImplementation(async () => {
+      order.push("touch");
+      return { ok: true, executor: "mouse", diff: [], next: "none" } as Awaited<ReturnType<typeof facade.touch>>;
+    });
+    mockObserveAfterAct.mockResolvedValue({
+      observation: { motion: "any_change", source: "dxgi_dirty_rect", framesSampled: 1, totalElapsedMs: 50, watchedMs: 50 },
       dirtyRects: [],
     });
 
@@ -321,8 +348,17 @@ describe("desktop_act frame-diff dispatch — legacy S5 path (S5b fold off)", ()
     // Structured targets never pay the frame-diff capture cost.
     expect(mockCaptureFrame).not.toHaveBeenCalled();
     expect(mockVerifyLocalRepaint).not.toHaveBeenCalled();
-    // DXGI Stage 5 path runs instead.
-    expect(mockVerifyAnyChange).toHaveBeenCalledTimes(1);
+    // internal #211 (D): the DXGI handle is taken BEFORE the action and read after it, then given
+    // back; the old after-the-fact poll does not run.
+    expect(order).toEqual(["acquire", "touch", "observe", "dispose"]);
+    // …and the window is watched again for an act that follows without a discover, with the act's
+    // own trailing repaint given its grace (gate 2).
+    expect(fakeBroker.subscribe).toHaveBeenCalledTimes(1);
+    expect(startSpy).toHaveBeenLastCalledWith("v1", 123n, WINDOW_RECT, { afterAct: true });
+    // The watch is checked against the window as it is now: moved or another, it is dropped.
+    expect(takeSpy).toHaveBeenCalledWith("v1", { hwnd: 123n, rect: WINDOW_RECT });
+    expect(mockObserveAfterAct.mock.calls[0][0]).toBe(fakeSub);
+    expect(mockVerifyAnyChange).not.toHaveBeenCalled();
 
     const observation = parsed["observation"] as Record<string, unknown>;
     expect(observation["motion"]).toBe("any_change");
@@ -331,6 +367,33 @@ describe("desktop_act frame-diff dispatch — legacy S5 path (S5b fold off)", ()
     expect(observation["source"]).toBe("dxgi_dirty_rect");
     // Gate hard-guards on visualOnly → no roiCapture for structured targets.
     expect(parsed["roiCapture"]).toBeUndefined();
+  });
+
+  it("gives the DXGI handle back when the action throws (gate 2)", async () => {
+    const facade = spyFacadeVisualOnly({ visualOnly: false });
+    mockGetWindowRect.mockReturnValue(WINDOW_RECT);
+    fakeSub.dispose.mockClear();
+    vi.mocked(facade.touch).mockRejectedValue(new Error("executor blew up"));
+    await expect(desktopActRawHandler({ lease: FAKE_LEASE, action: "click" })).rejects.toThrow("executor blew up");
+    expect(fakeSub.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts watching the window at discover, for the act that follows (internal #211 D)", async () => {
+    const facade = spyFacadeVisualOnly({ visualOnly: false });
+    mockGetWindowRect.mockReturnValue(WINDOW_RECT);
+    vi.spyOn(facade, "see").mockResolvedValue({ viewId: "v9", entities: [] } as never);
+    fakeBroker.subscribe.mockClear();
+    await desktopDiscoverRawHandler({ target: { hwnd: "123" } });
+    expect(fakeBroker.subscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not watch a visual-only view: it verifies by frame-diff", async () => {
+    const facade = spyFacadeVisualOnly({ visualOnly: true });
+    mockGetWindowRect.mockReturnValue(WINDOW_RECT);
+    vi.spyOn(facade, "see").mockResolvedValue({ viewId: "v9", entities: [] } as never);
+    fakeBroker.subscribe.mockClear();
+    await desktopDiscoverRawHandler({ target: { hwnd: "123" } });
+    expect(fakeBroker.subscribe).not.toHaveBeenCalled();
   });
 
   it("BitBlt-fallback demotion (motion but no roiBbox) → roiCapture present with FULL-WINDOW roi (P1-1 end-to-end)", async () => {

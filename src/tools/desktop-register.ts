@@ -96,10 +96,11 @@ import { compareAimIdentity, type Aim, type WindowIdentity } from "../engine/aim
 import { probeAim } from "../engine/aim-probe.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { pickPlainTopLevelWindowByTitle } from "./_resolve-window.js";
-import { verifyAnyChange } from "../engine/any-change.js";
+import { resolveOutputIndexForHwnd } from "../engine/any-change.js";
+import { observeAfterAct, PreActWatch, type QuietRecord } from "../engine/act-motion.js";
 import { captureFrame, type RawFrame } from "../engine/layer-buffer.js";
 import { verifyLocalRepaint } from "../engine/local-repaint.js";
-import { disposeSharedDirtyRectBroker } from "../engine/dxgi-broker.js";
+import { disposeSharedDirtyRectBroker, getSharedDirtyRectBroker, type BrokerSubscription, type CacheAcquireState } from "../engine/dxgi-broker.js";
 import type { VisualMotionObservation } from "./_input-pipeline.js";
 import { shouldReturnRoiCapture, type ReturnCaptureMode } from "./_roi-capture-gate.js";
 import { filterDirtyRectsToWindow, boundingBox, clampRectToWindow, resolveFoldOcrRoi } from "./_roi-region.js";
@@ -970,10 +971,37 @@ export function validateDesktopTouchTextRequirement(
 /** desktop_discover (query-axis) raw handler. Calls into the facade
  *  unchanged; the L5 query wrapper takes care of envelope assembly +
  *  compat hoist + per-call `include` opt-in. */
-const desktopDiscoverRawHandler = async (input: unknown): Promise<ToolResult> => {
-  const output = await getDesktopFacade().see(input as DesktopSeeInput);
+export const desktopDiscoverRawHandler = async (input: unknown): Promise<ToolResult> => {
+  const facade = getDesktopFacade();
+  const output = await facade.see(input as DesktopSeeInput);
+  // internal #211 (D) — watch the window from now to the act, to learn whether it repaints itself.
+  if (process.env["DESKTOP_TOUCH_STAGE5_DXGI"] !== "0") await startPreActWatch(facade, output.viewId);
   return { content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }] };
 };
+
+let preActWatch: PreActWatch | undefined;
+/** The shared pre-act watch; created on first use, so a server without DXGI never builds one. */
+function getPreActWatch(): PreActWatch {
+  return (preActWatch ??= new PreActWatch(getSharedDirtyRectBroker));
+}
+
+/**
+ * Start watching the window a view reads (not for a visual-only view, which verifies by frame-diff).
+ * The window is the TARGET, resolved as the frame-diff resolves it, not the foreground: at discover
+ * and before an act the foreground can be another window, such as the agent's terminal (gate 2).
+ */
+async function startPreActWatch(facade: DesktopFacade, viewId: string, opt: { afterAct?: boolean } = {}): Promise<void> {
+  try {
+    if (facade.resolveVisualOnlyForViewId(viewId)) return;
+    const hwnd = await facade.resolveTargetHwndForFrameDiff(viewId);
+    if (hwnd === null) return;
+    const rect = getWindowRectByHwnd(hwnd);
+    if (rect === null || rect.width <= 0 || rect.height <= 0) return;
+    getPreActWatch().start(viewId, hwnd, rect, opt);
+  } catch {
+    // Observation only: a watch that cannot start leaves the act's verdict as it was.
+  }
+}
 
 /** desktop_act (commit-axis) raw handler. Internal logic, Zod schema,
  *  and return shape are unchanged from before S4 (ADR-010 §1.5 spirit:
@@ -981,10 +1009,11 @@ const desktopDiscoverRawHandler = async (input: unknown): Promise<ToolResult> =>
  *  commit wrapper layers on lease pre-flight + ToolCall event emission +
  *  envelope assembly.
  *
- *  ADR-019 Stage 5 wiring (sub-plan §2.3.1): after a successful touch,
- *  resolve the target window's HWND from the issuing session's
- *  `lastTarget`, call `verifyAnyChange`, and attach the resulting
- *  `VisualMotionObservation` to `result.observation`. Gated on
+ *  ADR-019 Stage 5 wiring (sub-plan §2.3.1): resolve the target window's HWND
+ *  from the issuing session's `lastTarget`, acquire a DXGI handle BEFORE the
+ *  touch, and after a successful one read what it collected (`observeAfterAct`,
+ *  internal #211 D), attaching the resulting `VisualMotionObservation` to
+ *  `result.observation`. Gated on
  *  `DESKTOP_TOUCH_STAGE5_DXGI !== "0"` (default ON; opt-out by setting
  *  to `"0"`). Failures degrade silently — observation absence is
  *  bit-equal to the pre-Stage-5 envelope. */
@@ -1013,9 +1042,10 @@ export const desktopActRawHandler = async (
   // blind geometry filter) and F2 (the same-process DirtyRectRouter draining the
   // frame before the act polls). See adr-024-seed2-dogfood-findings. The pre-
   // action frame MUST be captured BEFORE the touch, so resolve the visual-only
-  // flag + window geometry up front. Non-visual-only targets are untouched: they
-  // keep the DXGI tryVerifyAnyChange path and their `result.observation` stays
-  // byte-equal (ADR-019 Stage 5 telemetry contract; S5c review R2-P1).
+  // flag + window geometry up front. Non-visual-only targets keep the DXGI path;
+  // since internal #211 D it reads a handle acquired before the touch
+  // (`prepareActMotion` / `finishActMotion`) and adds `watchedMs` /
+  // `selfRepainting` to `result.observation`.
   const postVerifyEnabled = process.env["DESKTOP_TOUCH_STAGE5_DXGI"] !== "0";
   // ADR-024 Seed-2 S5b — the order-trap fold. When ON (default) a visual-only
   // act folds its post-touch confirmation into a SINGLE ROI-OCR feeding BOTH the
@@ -1068,7 +1098,11 @@ export const desktopActRawHandler = async (
     frameDiffWindowRect !== null &&
     !facade.discoverHasVisualGpuForViewId(input.lease.viewId);
 
-  const result = await facade.touch({
+  // internal #211 (D) — the non-visual verdict reads a handle acquired BEFORE the action: the repaint
+  // lands when the executor returns (about 2 s into a UIA act), and a handle taken after it missed it.
+  const actMotion = postVerifyEnabled && !visualOnly ? await prepareActMotion(facade, input.lease.viewId) : null;
+
+  const result = await withActMotionHeld(actMotion, () => facade.touch({
     lease: input.lease,
     action: input.action,
     text: input.text,
@@ -1088,7 +1122,7 @@ export const desktopActRawHandler = async (
           ),
         }
       : {}),
-  });
+  }));
 
   if (fold) {
     // Fold path — the closure already ran the single ROI-OCR and assembled the
@@ -1159,7 +1193,7 @@ export const desktopActRawHandler = async (
         // Non-visual-only — existing DXGI Stage 5 path (byte-equal). `dirtyRects` is
         // an internal ROI-source channel for buildRoiCapture (S3a), kept off the
         // public `result.observation` telemetry by the split in tryVerifyAnyChange.
-        postVerify = await tryVerifyAnyChange(facade, input.lease.viewId);
+        postVerify = actMotion !== null ? await finishActMotion(actMotion) : null;
         if (postVerify !== null) {
           (result as { observation?: VisualMotionObservation }).observation = postVerify.observation;
         }
@@ -1193,6 +1227,13 @@ export const desktopActRawHandler = async (
         (result as { roiCapture?: RoiCapture }).roiCapture = roiCapture;
       }
     }
+  }
+
+  // internal #211 (D) — the handle is given back whatever the act did, and the window is watched again
+  // for the next act, which may follow without a discover.
+  if (actMotion !== null) {
+    actMotion.dispose();
+    await startPreActWatch(facade, input.lease.viewId, { afterAct: true });
   }
 
   // Issue #327 item G: GuardedTouchLoop.touch returns {ok:false,
@@ -1471,46 +1512,72 @@ export const desktopActRawHandler = async (
 };
 
 /**
- * Stage 5 sub-plan §2.3.1 — resolve the target HWND for the lease's session
- * (via `facade.resolveHwndForViewId`, which first tries the session's pinned
- * `lastTarget.hwnd` and then falls back to the production foreground
- * resolver), fetch the window rect, and run `verifyAnyChange`. Returns
- * `null` only when no HWND can be resolved at all (session evicted,
- * `BigInt(target.hwnd)` parse failure, AND no foreground resolver
- * available) or the window rect lookup failed. All other paths (DXGI
- * unsupported, AccessLost, etc.) return a degraded
- * `VisualMotionObservation` from `verifyAnyChange` itself rather than
- * `null`.
- *
- * Foreground fallback (this PR): the original PR #325 implementation only
- * consulted `lastTarget.hwnd` and therefore went dormant on the typical
- * `desktop_discover()` / `desktop_discover({ windowTitle })` flow where
- * the caller does not pin an HWND. `resolveHwndForViewId` reuses the same
- * foreground resolver `see()` consults for its Issue #295 stale check, so
- * the two paths agree on "which HWND belongs to this session".
+ * internal #211 (D) — the post-action motion verdict's setup, taken BEFORE the action: the window the
+ * view targets (`resolveTargetHwndForFrameDiff`: its pinned handle, else its title resolved, else the
+ * foreground — before the action the foreground can be another window), what the pre-act watch saw
+ * of it, and a DXGI handle whose
+ * queue fills from now — so the repaint that lands when the executor returns is in it. `null` when no
+ * window resolves (no observation, as before).
  */
-async function tryVerifyAnyChange(
-  facade: DesktopFacade,
-  viewId: string,
-): Promise<{ observation: VisualMotionObservation; dirtyRects: Rect[] } | null> {
-  const hwnd = facade.resolveHwndForViewId(viewId);
-  if (hwnd === null) return null;
-  const windowRect = getWindowRectByHwnd(hwnd);
-  if (windowRect === null || windowRect.width <= 0 || windowRect.height <= 0) {
+interface ActMotion {
+  hwnd: bigint;
+  quiet: QuietRecord | undefined;
+  sub: BrokerSubscription | null;
+  cacheState: CacheAcquireState | undefined;
+  dispose(): void;
+}
+
+/** Run the action; give the handle back if it throws (the normal path gives it back after the verdict). */
+async function withActMotionHeld<T>(m: ActMotion | null, act: () => Promise<T>): Promise<T> {
+  try {
+    return await act();
+  } catch (err) {
+    m?.dispose();
+    throw err;
+  }
+}
+
+async function prepareActMotion(facade: DesktopFacade, viewId: string): Promise<ActMotion | null> {
+  try {
+    const hwnd = await facade.resolveTargetHwndForFrameDiff(viewId);
+    if (hwnd === null) return null;
+    const rect = getWindowRectByHwnd(hwnd);
+    const quiet = getPreActWatch().take(viewId, rect !== null ? { hwnd, rect } : undefined);
+    const broker = getSharedDirtyRectBroker();
+    const where = rect !== null && rect.width > 0 && rect.height > 0 ? resolveOutputIndexForHwnd(hwnd, rect) : null;
+    if (broker === null || where === null || !where.ok) {
+      return { hwnd, quiet, sub: null, cacheState: undefined, dispose: () => undefined };
+    }
+    const acquired = broker.acquire(where.outputIndex);
+    const sub = acquired.sub;
+    return { hwnd, quiet, sub, cacheState: acquired.state, dispose: () => sub?.dispose() };
+  } catch {
     return null;
   }
+}
+
+/**
+ * internal #211 (D) — the verdict, from the handle `prepareActMotion` took. `dirtyRects` is an internal
+ * ROI-source channel for buildRoiCapture, split off so it never reaches `result.observation`.
+ */
+async function finishActMotion(m: ActMotion): Promise<{ observation: VisualMotionObservation; dirtyRects: Rect[] } | null> {
   try {
-    // ADR-024 Seed-2 S3a/S5 — opt into the dirty-rect surface so the SAME poll
-    // that produces `motion` also yields the ROI rects (no second DXGI acquire).
-    // Split `dirtyRects` off the observation here: it is an internal ROI-source
-    // channel for buildRoiCapture, not public observation telemetry, so it never
-    // reaches the serialized `result.observation`.
-    const obs = await verifyAnyChange({ hwnd, windowRect, includeDirtyRects: true });
-    const { dirtyRects, ...observation } = obs;
-    return { observation, dirtyRects: dirtyRects ?? [] };
+    const rect = getWindowRectByHwnd(m.hwnd);
+    if (rect === null || rect.width <= 0 || rect.height <= 0) return null;
+    if (m.sub === null) {
+      return {
+        observation: {
+          motion: "indeterminate",
+          source: "dxgi_dirty_rect_unavailable",
+          framesSampled: 0,
+          totalElapsedMs: 0,
+          ...(m.cacheState !== undefined && { cacheState: m.cacheState }),
+        },
+        dirtyRects: [],
+      };
+    }
+    return await observeAfterAct(m.sub, rect, m.quiet, m.cacheState !== undefined ? { cacheState: m.cacheState } : {});
   } catch {
-    // Defensive: orchestrator promises never to throw, but a bug there must
-    // not break the envelope.
     return null;
   }
 }

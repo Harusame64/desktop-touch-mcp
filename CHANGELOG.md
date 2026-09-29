@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **`desktop_act` sees the repaint its action caused.** Its `observation` came from the screen's
+  changed regions, read after the action had returned. A UI Automation press takes about 2 s, and
+  the window repainted as it returned, so the read missed it: 83 of 88 successful acts measured
+  said `no_change`. The regions are now collected from before the action, and for up to 150 ms
+  after it; a region of at least 500 px inside the window is a change (a blinking caret is not).
+  The window is also watched from `desktop_discover` (or the previous act) to the act, and
+  `observation.watchedBeforeMs` says for how long. A window seen repainting itself in that time —
+  twice, 300 ms or more apart (a console's cursor, some WinForms and Java windows) — is reported as
+  `motion: "indeterminate"` with `selfRepainting: true`, because its own repaints cannot be told
+  from the action's. The screen's regions do not say which window drew them, so another window
+  repainting over the target, or the target's own activation when the act brings it forward, still
+  counts as a change.
+
 - **Rich narration keeps the window an action renamed.** The diff read the window again by its
   title after the action. An action that changed the title — typing into Notepad makes it read
   `*… - メモ帳`, and opening a folder renames Explorer after it — left that read finding nothing,
