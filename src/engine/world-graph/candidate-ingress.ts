@@ -144,7 +144,7 @@ export type ProviderFreshness =
    *   sees it, so a failed read arrives as `read` with an empty `entities` and
    *   `uia_provider_failed` in `warnings` (measured on real hardware, 2026-09-22, arm D).
    *   **But the fetch itself does reject on a shipped road**: `normalizeTarget` rethrows
-   *   `WindowExcludedError` (`compose-providers.ts:257`, `:277`) before any lane runs, so a window
+   *   `WindowExcludedError` (both rethrows are in compose-providers.ts) before any lane runs, so a window
    *   that is discovered and then becomes excluded serves its remembered entry under this value
    *   (gate 2, 2026-09-22 — an earlier draft of this comment claimed it could not happen at all,
    *   and the tree says otherwise). On that path the exclusion was bypassed by the cache (internal

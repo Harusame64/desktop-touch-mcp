@@ -295,6 +295,22 @@ describe("the identity is the one from the read, not from the moment it was file
 });
 
 describe("the ingress carries the resolved target", () => {
+  it("hands back everything the read carried, identity and origin included (gate 2 on #218)", async () => {
+    // Every discover goes through here: a field dropped on the way loses the identity baseline
+    // (`_aimFor` would read one at file time — the recycled-handle hole) or the origin correction.
+    const read = {
+      candidates: [candidate("2624042")],
+      warnings: ["uia_tree_truncated"],
+      target: { hwnd: "2624042", windowTitle: "CELL BUTTONS" },
+      identity: { hwnd: 2624042n, pid: 1234, processName: "notepad.exe", processStartTimeMs: 111 },
+      identityRead: true,
+      origin: { kind: "measured" as const, rect: { x: 100, y: 200, width: 600, height: 400 } },
+      webArea: { x: 1, y: 2, width: 3, height: 4 },
+    };
+    const got = await new SnapshotIngress(async () => read).getSnapshot("window:2624042");
+    expect(got).toEqual({ ...read, freshness: { from: "read", observedAtMs: expect.any(Number) } });
+  });
+
   it("returns it on the fetch", async () => {
     const ingress = new SnapshotIngress(async () => ({
       candidates: [candidate("2624042")],

@@ -398,8 +398,8 @@ export async function composeCandidates(
   // ADR-036 — the resolution and the warnings it produced are applied HERE, once, rather than at
   // each lane's return. A lane added later inherits both instead of having to remember them,
   // which is the disease this ADR is about: identity that is carried by hand gets dropped by hand.
-  // ADR-036 — the identity is taken HERE, with the read, not later when the session files it. On a
-  // cache hit those are different moments, and a handle recycled in between would be baselined
+  // ADR-036 — the identity is taken HERE, with the read, not later when the session files it. After
+  // a slow or remembered read those are different moments, and a handle recycled in between would be baselined
   // against its new owner (gate 1, 2026-09-09). Taken before the lanes run rather than after, so
   // it describes the window they are about to be pointed at.
   const identity = readIdentityForTarget(normalized.target);

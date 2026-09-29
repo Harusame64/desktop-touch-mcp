@@ -670,13 +670,6 @@ export function getOnnxBackend(): OnnxBackend | undefined {
 }
 
 /**
- * Return the process-level DesktopFacade.
- * Created lazily on first call; no heavy initialization happens at import time.
- *
- * P2-B: uses composeCandidates() as the provider — routes to browser/terminal/uia
- * based on target type and merges results additively.
- */
-/**
  * P3-B: Attach a visual backend to the global VisualRuntime. Its dirty signals used to mark the
  * ingress's cached read for the target; since internal #218 every discover reads, so they are not
  * listened to here.
@@ -714,6 +707,13 @@ async function initVisualRuntime(): Promise<void> {
   }
 }
 
+/**
+ * Return the process-level DesktopFacade.
+ * Created lazily on first call; no heavy initialization happens at import time.
+ *
+ * P2-B: uses composeCandidates() as the provider — routes to browser/terminal/uia
+ * based on target type and merges results additively.
+ */
 export function getDesktopFacade(): DesktopFacade {
   if (!_facade) {
     const provider: CandidateProvider = async (input: DesktopSeeInput) =>
@@ -813,7 +813,7 @@ function targetKeyToSpec(key: string): TargetSpec | undefined {
 
 /**
  * Reset the facade singleton (for testing only).
- * Calls dispose() to close ingress event subscriptions before clearing.
+ * Calls dispose() on the facade and its ingress before clearing.
  */
 export function _resetFacadeForTest(): void {
   (_facade as unknown as { dispose?: () => void })?.dispose?.();

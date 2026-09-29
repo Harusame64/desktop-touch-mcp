@@ -625,8 +625,8 @@ export class DesktopFacade {
     // which the comparison reads as "cannot tell" rather than as "changed".
     session.lastAim = rawResult.identityRead
       // The read looked. Whatever it found — including nothing — is the baseline, and reading again
-      // here would replace "could not tell who owned it" with "here is who owns it NOW". On a cache
-      // hit that is a different window: the one that inherited the handle after the candidates were
+      // here would replace "could not tell who owned it" with "here is who owns it NOW". After a
+      // slow or remembered read that can be a different window: the one that inherited the handle after the candidates were
       // taken, recorded as though it had been discovered (PR 側 codex, 2026-09-09).
       // The origin rectangle rides with it, for the same reason: it is the window position these
       // candidates' coordinates were measured against, and item 5's correction is the difference
@@ -752,9 +752,9 @@ export class DesktopFacade {
 
     // ADR-036 item 8 — say whether this reply was observed or remembered (internal #150).
     //
-    // Read off `rawResult`, which is where the fact is known: the ingress hands back `cache` with
-    // the moment those candidates were read, `read` when it fetched for this call, and
-    // `staleCache` when the fetch threw and the remembered entry went out anyway. **An ingress
+    // Read off `rawResult`, which is where the fact is known: production's ingress hands back
+    // `read` when it fetched for this call and `unavailable` when the fetch threw; an injected one
+    // may say `cache` or `staleCache` for a remembered read (internal #218). **An ingress
     // that says nothing gets `unavailable`, not `read`** — "could not tell" belongs on the
     // not-read side, and an absent field would be read as "no signal" by a caller with no way to
     // check.
@@ -1255,7 +1255,7 @@ export class DesktopFacade {
     );
   }
 
-  /** Dispose the facade and its ingress (event subscriptions). */
+  /** Dispose the facade and its ingress. */
   dispose(): void {
     if (this._evictionTimer !== undefined) {
       clearInterval(this._evictionTimer);
