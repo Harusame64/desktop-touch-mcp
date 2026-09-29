@@ -21,13 +21,13 @@ type El = { name: string; controlType: string; isEnabled: boolean; boundingRect:
 const pane = (depth: number): El => ({ name: "Chrome Legacy Window", controlType: "Pane", isEnabled: true, boundingRect: { x: 0, y: 0, width: 900, height: 600 }, patterns: [], depth });
 const button = (name: string, depth: number): El => ({ name, automationId: name, controlType: "Button", isEnabled: true, boundingRect: { x: 10, y: 10, width: 60, height: 20 }, patterns: ["Invoke"], depth });
 
-async function read(opts: { tree: El[]; truncated?: boolean; via?: "native" | "powershell" }) {
+async function read(opts: { tree: El[]; truncated?: boolean; via?: "native" | "powershell"; windowRect?: { x: number; y: number; width: number; height: number } | null }) {
   vi.resetModules();
   const getUiElements = vi.fn(async (_title: string, maxDepth: number, maxElements: number, _t: number, _o?: unknown) => {
     const elements = opts.tree.filter((e) => e.depth <= maxDepth).slice(0, maxElements);
     return {
       windowTitle: "FX-HTML - Google Chrome",
-      windowRect: { x: 0, y: 0, width: 900, height: 600 },
+      windowRect: opts.windowRect === undefined ? { x: 0, y: 0, width: 900, height: 600 } : opts.windowRect,
       elementCount: elements.length,
       elements,
       ...(opts.truncated !== undefined && { truncated: opts.truncated }),
@@ -121,5 +121,31 @@ describe("discover's UIA read", () => {
     const bigPage = { ...pane(7), name: "FX-HTML", controlType: "Document", automationId: "RootWebArea", boundingRect: { x: 0, y: 100, width: 900, height: 320 } };
     const { result } = await read({ tree: [bigDev, bigPage] });
     expect(result.webArea).toEqual(bigPage.boundingRect);
+  });
+
+  // PR codex P2 on d27f94bd: docked DevTools sits BESIDE the page, splitting the content area under
+  // the toolbar. Window 900 x 600, content 900 x 500 from y = 100.
+  const web = (name: string, x: number, width: number): El => ({ ...pane(7), name, controlType: "Document", automationId: "RootWebArea", boundingRect: { x, y: 100, width, height: 500 } });
+
+  it("finds the page beside DevTools docked half and half, though neither half is half the window", async () => {
+    const page = web("FX-HTML", 0, 450);
+    const { result } = await read({ tree: [page, web("DevTools", 450, 450)] });
+    expect(result.webArea).toEqual(page.boundingRect);
+  });
+
+  it("finds the page by its title beside a DevTools that alone is over half the window", async () => {
+    const page = web("FX-HTML", 0, 300);
+    const { result } = await read({ tree: [web("DevTools", 300, 600), page] });
+    expect(result.webArea).toEqual(page.boundingRect);
+  });
+
+  it("reports no page for two small web panes that together are under half the window", async () => {
+    const { result } = await read({ tree: [button("OK", 1), web("Help", 0, 200), web("Tips", 600, 200)] });
+    expect(result.webArea).toBeUndefined();
+  });
+
+  it("reports no page when the window's bounds were not read: half of it cannot be told (PR codex P2)", async () => {
+    const { result } = await read({ tree: [web("FX-HTML", 0, 900)], windowRect: null });
+    expect(result.webArea).toBeUndefined();
   });
 });

@@ -18,6 +18,7 @@ import { parseTargetHwnd, type TargetSpec } from "../../engine/world-graph/sessi
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 import { UIA_PRESS_ONLY_CONTROL_TYPES } from "../../engine/world-graph/guarded-touch.js";
 import { WEB_AREA_AUTOMATION_ID } from "../_advisory.js";
+import type { UiElement } from "../../engine/uia-bridge.js";
 
 function uiaRoleFromControlType(ct: string): string {
   const map: Record<string, string> = {
@@ -226,17 +227,20 @@ export async function fetchUiaCandidates(
     }
 
     // internal #211 — the page, from the whole read and not the named candidates: a page with no
-    // <title> has a nameless root, which the filter above drops. Only a page that is most of the
-    // window counts — a small WebView2 pane in a native app is not what the window is (gate 2 on
-    // A2). Of several (docked DevTools beside the page), the one the window's title names — a
-    // browser titles itself after the page — and otherwise the largest.
+    // <title> has a nameless root, which the filter above drops. Only web content that is most of
+    // the window counts — a small WebView2 pane in a native app is not what the window is (gate 2
+    // on A2) — and without the window's bounds that cannot be told, so there is no page (PR codex
+    // P2). The half is of all the roots together: DevTools docked beside the page splits the
+    // content area, and either half alone can fall under it (PR codex P2). Of several, the one
+    // the window's title names — a browser titles itself after the page — and otherwise the largest.
     const window = result.windowRect;
+    const area = (el: UiElement) => el.boundingRect!.width * el.boundingRect!.height;
     const roots = result.elements
       .filter((el) => el.automationId === WEB_AREA_AUTOMATION_ID && el.boundingRect && el.boundingRect.width > 0 && el.boundingRect.height > 0)
-      .filter((el) => !window || el.boundingRect!.width * el.boundingRect!.height >= 0.5 * window.width * window.height)
-      .sort((a, b) => b.boundingRect!.width * b.boundingRect!.height - a.boundingRect!.width * a.boundingRect!.height);
+      .sort((a, b) => area(b) - area(a));
+    const isMostOfWindow = !!window && roots.reduce((sum, el) => sum + area(el), 0) >= 0.5 * window.width * window.height;
     const title = result.windowTitle ?? "";
-    const webArea = (roots.find((el) => el.name && title.includes(el.name)) ?? roots[0])?.boundingRect ?? undefined;
+    const webArea = isMostOfWindow ? (roots.find((el) => el.name && title.includes(el.name)) ?? roots[0])?.boundingRect ?? undefined : undefined;
 
     return probeLane("uia", "read", read, { candidates, warnings, ...(webArea && { webArea }) });
   } catch (err) {
