@@ -8,7 +8,7 @@
 //! Early exit on `maxElements` / `maxDepth` prevents Explorer.exe from
 //! performing unnecessary full-tree enumeration.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::time::Instant;
 
 use windows::Win32::Foundation::{HWND, RECT};
@@ -119,19 +119,18 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
                 &ctx.tree_cache_request,
             )
         };
-        let is_document = unsafe { parent.CachedControlType() }.ok() == Some(UIA_DocumentControlTypeId);
-        let mut kids: Vec<(IUIAutomationElement, i32)> = match children {
-            Ok(arr) => {
-                let count = unsafe { arr.Length() }.unwrap_or(0);
-                (0..count).filter_map(|i| unsafe { arr.GetElement(i) }.ok().map(|c| (c, i))).collect()
-            }
-            // A Document whose `FindAll` fails is navigated instead (gate 2 on internal #217).
-            Err(_) if is_document => Vec::new(),
+        let arr = match children {
+            Ok(a) => a,
             Err(_) => continue,
         };
-        if is_document {
-            document_children_by_navigation(ctx, &parent, &mut kids);
-        }
+        let kids: Vec<(IUIAutomationElement, i32)> = if elements.len() < max_elements as usize && is_word_document(&parent) {
+            // internal #217 — this Document does not answer `FindAll` with its pages. (A read already
+            // at its cap takes one child more at most, so it is not navigated for; gate 2.)
+            word_document_children(ctx, &parent)
+        } else {
+            let count = unsafe { arr.Length() }.unwrap_or(0);
+            (0..count).filter_map(|i| unsafe { arr.GetElement(i) }.ok().map(|c| (c, i))).collect()
+        };
 
         for (child, i) in kids {
             // Skip offscreen elements (prune subtree — don't enqueue).
@@ -176,88 +175,56 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
     })
 }
 
-/// How long the navigation pass of one Document may take: it is one RPC per child, in series.
-const NAVIGATION_BUDGET: std::time::Duration = std::time::Duration::from_millis(1500);
+/// How many children of Word's Document are navigated, whatever is found: one per page, plus a few.
+const MAX_WORD_DOCUMENT_CHILDREN: i32 = 2048;
 
-/// internal #217 — the children of a `Document` that `FindAll` did not return, found by navigation.
+/// Word's document area: a `Document` of class `_WwG`.
+fn is_word_document(elem: &IUIAutomationElement) -> bool {
+    unsafe {
+        elem.CachedControlType().ok() == Some(UIA_DocumentControlTypeId)
+            && elem.CachedClassName().ok().is_some_and(|c| c.to_string() == "_WwG")
+    }
+}
+
+/// internal #217 — the children of Word's Document, by navigation instead of `FindAll`.
 ///
 /// MEASURED win2 (2026-09-30): Word's `_WwG` Document answers `FindAll(Children)` with a 68x68 Pane
 /// alone, while `ControlViewWalker` navigation returns the Pane and one `Custom` per page, under
 /// which `FindAll` works again (the page's `Edit` body). Across Notepad, Explorer, Calculator,
-/// Chrome, an Edge PDF, VS Code, Excel and PowerPoint no parent disagreed.
+/// Chrome, an Edge PDF, VS Code, Excel and PowerPoint no parent disagreed. So only this Document is
+/// navigated, and its children come from navigation alone: one list, one index space (an earlier
+/// version merged the two lists for every Document, and each gate round found another way for the
+/// merge to double or misnumber a child).
 ///
-/// So the pass first asks whether this Document disagrees at all: when the first two children
-/// navigation returns are both ones `FindAll` returned, it stops there — two RPCs on a browser page,
-/// and no chance of adding a child twice when a live page rebuilds between the calls and its
-/// `RuntimeId`s change (gate 2). Otherwise every child `FindAll` did not return (by `RuntimeId`; one
-/// with none is left out rather than doubled) is added, and every child is numbered by its place in
-/// the navigation, so the path index is one index space (gate 2).
+/// A long document has one `Custom` per page, all but the visible ones offscreen and pruned by the
+/// walk: navigating every page cost 3–4x the read on 34 pages. So once a page has been onscreen, the
+/// next offscreen page ends the list. Only pages count: the Pane that comes first is onscreen (gate 2).
+/// An `IsOffscreen` that cannot be read neither starts nor stops anything. Pages scrolled past above
+/// the visible one are navigated, one RPC each, up to `MAX_WORD_DOCUMENT_CHILDREN` children.
 ///
-/// A long document has one child per page, all but the visible ones offscreen and pruned by the
-/// walk: walking every page cost 3–4x the read on 34 pages. So once an added child has been
-/// onscreen, the pass stops at the next added child that is offscreen. Only added children count:
-/// Word's own Pane is onscreen and comes first (gate 2). An `IsOffscreen` that cannot be read neither
-/// starts nor stops anything. The pass also stops after `NAVIGATION_BUDGET`, and a page past it is
-/// missed — recorded, not signalled.
-///
-/// Not applied in `get_element_children`, whose cache request carries no `RuntimeId`, nor on the
-/// PowerShell road, which reads to depth 4 and never reaches a page body (depth 5).
-fn document_children_by_navigation(
-    ctx: &UiaContext,
-    parent: &IUIAutomationElement,
-    kids: &mut Vec<(IUIAutomationElement, i32)>,
-) {
-    let started = Instant::now();
-    let found: Vec<Option<String>> = kids.iter().map(|(c, _)| cached_runtime_id(c)).collect();
-    let known: HashSet<&String> = found.iter().flatten().collect();
-    let mut nav_index_of: Vec<Option<i32>> = vec![None; kids.len()];
-    let mut added = Vec::new();
+/// Not applied in `get_element_children`, nor on the PowerShell road, which reads to depth 4 and never
+/// reaches a page body (depth 5).
+fn word_document_children(ctx: &UiaContext, parent: &IUIAutomationElement) -> Vec<(IUIAutomationElement, i32)> {
+    let mut kids = Vec::new();
     let mut next = unsafe { ctx.walker.GetFirstChildElementBuildCache(parent, &ctx.tree_cache_request) }.ok();
     let mut index: i32 = 0;
-    let mut known_in_a_row = 0;
-    let mut seen_on_screen = false;
+    let mut page_seen_on_screen = false;
     while let Some(child) = next {
-        if started.elapsed() >= NAVIGATION_BUDGET {
+        if index >= MAX_WORD_DOCUMENT_CHILDREN {
             break;
         }
-        let id = cached_runtime_id(&child);
-        match id.as_ref().filter(|id| known.contains(id)) {
-            Some(id) => {
-                if let Some(k) = found.iter().position(|f| f.as_ref() == Some(id)) {
-                    nav_index_of[k] = Some(index);
-                }
-                known_in_a_row += 1;
-                if added.is_empty() && known_in_a_row >= 2 {
-                    return; // `FindAll` agrees with navigation here: nothing to add, nothing renumbered.
-                }
-            }
-            None => {
-                known_in_a_row = 0;
-                match unsafe { child.CachedIsOffscreen() }.ok().map(|b| b == true) {
-                    Some(true) if seen_on_screen => break,
-                    Some(false) => seen_on_screen = true,
-                    _ => {}
-                }
-                if id.is_some() {
-                    added.push((child.clone(), index));
-                }
+        if unsafe { child.CachedControlType() }.ok() == Some(UIA_CustomControlTypeId) {
+            match unsafe { child.CachedIsOffscreen() }.ok().map(|b| b == true) {
+                Some(true) if page_seen_on_screen => break,
+                Some(false) => page_seen_on_screen = true,
+                _ => {}
             }
         }
         next = unsafe { ctx.walker.GetNextSiblingElementBuildCache(&child, &ctx.tree_cache_request) }.ok();
+        kids.push((child, index));
         index += 1;
     }
-    if added.is_empty() {
-        return;
-    }
-    // One index space: a child `FindAll` returned takes its navigation index when navigation reached
-    // it; one it did not reach keeps its own, which cannot collide with an added child's only if
-    // `FindAll` returned a prefix — Word's case, and the only one measured.
-    for (k, (_, i)) in kids.iter_mut().enumerate() {
-        if let Some(n) = nav_index_of[k] {
-            *i = n;
-        }
-    }
-    kids.extend(added);
+    kids
 }
 
 // ─── Window finding ──────────────────────────────────────────────────────────
