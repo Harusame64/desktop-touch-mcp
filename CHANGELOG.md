@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **`desktop_discover` says why a `query` found nothing.** A `query` that matched none of the
+  controls read used to return an empty list and nothing else. The list was the same when the text
+  was scrolled out of view, when it was a value UI Automation does not expose (a spreadsheet cell's
+  number, for example), and when the read had stopped at its element cap. The reply now carries the
+  constraint `query: "no_match"` (and `entityZeroReason: "query_no_match"` when the list is empty,
+  unless a lane failure explains it better). The description says what to do instead: scroll the
+  text into view and call again, or read visible text with `screenshot(detail: "ocr")`. The next
+  call reads the window again rather than serving the list from before the scroll. The description
+  also says what `uia_tree_truncated` means.
+
 - **`desktop_discover` reads deeper into a window's UI Automation tree.** Its UIA read stopped at
   depth 4. So Chrome, Edge and VS Code, which expose their page controls at depth 7–12, were
   reported as `uia_blind_single_pane`, and value labels in Explorer and Settings (depth 5–7) were

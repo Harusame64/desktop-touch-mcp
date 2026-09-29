@@ -115,8 +115,8 @@ export interface DesktopSeeOutput {
   /** Non-fatal warnings (e.g. provider unavailable, partial results). */
   warnings?: string[];
   /**
-   * Structured view-level constraints derived from warnings[].
-   * Absent when no provider signalled a constraint.
+   * Structured view-level constraints derived from warnings[], and from the call itself: a `query`
+   * that matched nothing read sets `query` (internal #211). Absent when neither signalled one.
    * Use these to decide fallback strategy without parsing warnings[] strings.
    * entityZeroReason explains why entities.length === 0 when set.
    */
@@ -653,9 +653,17 @@ export class DesktopFacade {
     });
     let resolved = resolveCandidates(rawResult.candidates, session.generation);
 
+    // internal #211 (S9, win2): a query that matches nothing says so, with why it may have missed —
+    // an empty list alone read the same whether the text was off-screen, a value UIA does not
+    // expose (a spreadsheet cell's number), cut by the read's cap, or simply absent.
+    // Only over a read that returned something: an empty or failed read is its own reason, and
+    // the lane warnings already say it (gate 2).
+    let queryFoundNothing = false;
     if (input.query) {
       const q = input.query.toLowerCase();
+      const read = resolved.length;
       resolved = resolved.filter((e) => e.label?.toLowerCase().includes(q));
+      queryFoundNothing = read > 0 && resolved.length === 0;
     }
 
     const max = input.maxEntities ?? (input.view === "explore" ? 50 : 20);
@@ -796,8 +804,17 @@ export class DesktopFacade {
     };
     if (rawResult.warnings.length > 0) output.warnings = rawResult.warnings;
 
-    // H2: derive structured constraints from warnings for LLM fallback decisions.
-    const constraints = deriveViewConstraints(rawResult.warnings, entityViews.length);
+    // H2: derive structured constraints from warnings for LLM fallback decisions. A query that
+    // matched nothing goes into the constraints only: `warnings[]` non-empty is documented as
+    // "results may be partial", and a complete read whose filter matched nothing is not (gate 2).
+    const constraints = deriveViewConstraints(
+      queryFoundNothing ? [...rawResult.warnings, "query_no_match"] : rawResult.warnings,
+      entityViews.length,
+    );
+    // …and the advice for it is "scroll it into view and call again", which a cached read would
+    // answer with the list from before the scroll: a scroll made with another tool does not mark
+    // the read stale. So the read that missed is ended here, and the next call reads again.
+    if (queryFoundNothing) this.opts.ingress?.invalidate(key, "manual");
     if (constraints) output.constraints = constraints;
 
     // Issue #296 — attach `capabilities` per entity, derived from the UIA

@@ -118,6 +118,8 @@ describe("Activation policy — V2 tool description contract", () => {
       "warnings[]",
       "no_provider_matched",
       "target_window_gone → the window target.hwnd named has closed",
+      "query_no_match → query matched nothing read",
+      "uia_tree_truncated → the read stopped early",
       "cdp_provider_failed",
       "visual_provider_unavailable",
       "uia_blind_single_pane",               // H4
@@ -137,7 +139,7 @@ describe("Activation policy — V2 tool description contract", () => {
     // a meta-test and fragile. The architectural lock is:
     //   "registerDesktopTools is called by default (v0.17+) unless DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1
     //    (enforced in src/server-windows.ts — this module itself has no flag guard)."
-    expect(expectedFragments).toHaveLength(11); // sentinel: keep list in sync with description
+    expect(expectedFragments).toHaveLength(13); // sentinel: keep list in sync with description
   });
 
   it("V1 tools registration is independent of V2 module import (escape hatch contract)", () => {
