@@ -8,7 +8,7 @@
 //! Early exit on `maxElements` / `maxDepth` prevents Explorer.exe from
 //! performing unnecessary full-tree enumeration.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::time::Instant;
 
 use windows::Win32::Foundation::{HWND, RECT};
@@ -124,12 +124,15 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
             Err(_) => continue,
         };
         let count = unsafe { arr.Length() }.unwrap_or(0);
+        let mut kids: Vec<(IUIAutomationElement, i32)> = (0..count)
+            .filter_map(|i| unsafe { arr.GetElement(i) }.ok().map(|c| (c, i)))
+            .collect();
+        if unsafe { parent.CachedControlType() }.ok() == Some(UIA_DocumentControlTypeId) {
+            let more = document_children_by_navigation(ctx, &parent, &kids);
+            kids.extend(more);
+        }
 
-        for i in 0..count {
-            let child = match unsafe { arr.GetElement(i) } {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
+        for (child, i) in kids {
 
             // Skip offscreen elements (prune subtree — don't enqueue).
             let is_offscreen = unsafe { child.CachedIsOffscreen() }
@@ -171,6 +174,56 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
         element_count: elements.len() as u32,
         elements,
     })
+}
+
+/// How many children of one Document the navigation pass looks at, whatever it finds.
+const MAX_NAVIGATED_CHILDREN: i32 = 256;
+
+/// internal #217 — the children of a `Document` that `FindAll` did not return, found by navigation.
+///
+/// MEASURED win2 (2026-09-30): Word's `_WwG` Document answers `FindAll(Children)` with a 68x68 Pane
+/// alone, while `ControlViewWalker` navigation returns the Pane and one `Custom` per page, under
+/// which `FindAll` works again (the page's `Edit` body). Across Notepad, Explorer, Calculator,
+/// Chrome, an Edge PDF, VS Code, Excel and PowerPoint no parent disagreed, so the pass is limited
+/// to Documents. What `FindAll` returned stays as it was; only children it did not return (by
+/// `RuntimeId`) are added, with their index among the navigated children.
+///
+/// A long document has one child per page, and all but the visible ones are offscreen and pruned
+/// by the walk anyway: walking every page cost 3–4x the read on 34 pages. So the pass stops at the
+/// first offscreen child after an onscreen one, and at `MAX_NAVIGATED_CHILDREN`. Pages scrolled
+/// past above the visible one are still navigated (and pruned).
+///
+/// Not applied in `get_element_children`, whose cache request carries no `RuntimeId` to tell the
+/// two lists apart.
+fn document_children_by_navigation(
+    ctx: &UiaContext,
+    parent: &IUIAutomationElement,
+    found: &[(IUIAutomationElement, i32)],
+) -> Vec<(IUIAutomationElement, i32)> {
+    let known: HashSet<String> = found.iter().filter_map(|(c, _)| cached_runtime_id(c)).collect();
+    let mut added = Vec::new();
+    let mut next = unsafe { ctx.walker.GetFirstChildElementBuildCache(parent, &ctx.tree_cache_request) }.ok();
+    let mut index: i32 = 0;
+    let mut seen_on_screen = false;
+    while let Some(child) = next {
+        if index >= MAX_NAVIGATED_CHILDREN {
+            break;
+        }
+        let offscreen = unsafe { child.CachedIsOffscreen() }.map(|b| b == true).unwrap_or(true);
+        if offscreen && seen_on_screen {
+            break;
+        }
+        seen_on_screen |= !offscreen;
+        next = unsafe { ctx.walker.GetNextSiblingElementBuildCache(&child, &ctx.tree_cache_request) }.ok();
+        // No RuntimeId, no way to tell it from what `FindAll` returned: left out rather than doubled.
+        if let Some(id) = cached_runtime_id(&child)
+            && !known.contains(&id)
+        {
+            added.push((child, index));
+        }
+        index += 1;
+    }
+    added
 }
 
 // ─── Window finding ──────────────────────────────────────────────────────────
