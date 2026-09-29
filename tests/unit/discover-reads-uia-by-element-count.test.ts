@@ -144,8 +144,48 @@ describe("discover's UIA read", () => {
     expect(result.webArea).toBeUndefined();
   });
 
+  it("finds the page in the geometry win2 measured: DevTools' root spans the content, the page's is its visible part", async () => {
+    // Chrome 1400 x 900 at (40, 40), DevTools docked right (win2, 2026-09-29, head bff8c354).
+    const devtools: El = { ...pane(7), name: "DevTools", controlType: "Document", automationId: "RootWebArea", boundingRect: { x: 48, y: 127, width: 1384, height: 805 } };
+    const page: El = { ...devtools, name: "FX-HTML", boundingRect: { x: 48, y: 127, width: 829, height: 805 } };
+    const { result } = await read({ tree: [devtools, page], windowRect: { x: 40, y: 40, width: 1400, height: 900 } });
+    expect(result.webArea).toEqual(page.boundingRect);
+  });
+
+  it("does not count twice what two overlapping roots share: two over the same 30% are 30% (PR codex P2)", async () => {
+    const a: El = { ...web("Help", 0, 324), boundingRect: { x: 0, y: 100, width: 324, height: 500 } };
+    const { result } = await read({ tree: [button("OK", 1), a, { ...a, name: "Help 2" }] });
+    expect(result.webArea).toBeUndefined();
+  });
+
+  it("counts only the part of a root inside the window", async () => {
+    const { result } = await read({ tree: [button("OK", 1), { ...web("Wide", -1200, 1500) }] });
+    expect(result.webArea).toBeUndefined();
+  });
+
   it("reports no page when the window's bounds were not read: half of it cannot be told (PR codex P2)", async () => {
     const { result } = await read({ tree: [web("FX-HTML", 0, 900)], windowRect: null });
     expect(result.webArea).toBeUndefined();
+  });
+});
+
+describe("coveredArea", () => {
+  const clip = { x: 0, y: 0, width: 100, height: 100 };
+  const r = (x: number, y: number, width: number, height: number) => ({ x, y, width, height });
+  it.each([
+    ["one rect", [r(0, 0, 10, 10)], 100],
+    ["disjoint rects add", [r(0, 0, 10, 10), r(50, 50, 10, 10)], 200],
+    ["a nested rect adds nothing", [r(0, 0, 50, 50), r(10, 10, 5, 5)], 2500],
+    ["a partial overlap counts once", [r(0, 0, 20, 10), r(10, 0, 20, 10)], 300],
+    ["side by side counts both", [r(0, 0, 50, 100), r(50, 0, 50, 100)], 10000],
+    ["the part left of the clip does not count", [r(-50, 0, 100, 10)], 500],
+    ["the part right of the clip does not count", [r(50, 0, 100, 10)], 500],
+    ["the part above the clip does not count", [r(0, -50, 10, 100)], 500],
+    ["the part below the clip does not count", [r(0, 50, 10, 100)], 500],
+    ["a rect wholly outside counts nothing", [r(200, 200, 10, 10)], 0],
+    ["stacked rows with a gap", [r(0, 0, 10, 10), r(0, 20, 10, 10), r(0, 5, 10, 10)], 250],
+  ])("%s", async (_name, rects, expected) => {
+    const { coveredArea } = await import("../../src/tools/desktop-providers/uia-provider.js");
+    expect(coveredArea(rects, clip)).toBe(expected);
   });
 });
