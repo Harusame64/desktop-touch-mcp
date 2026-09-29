@@ -17,6 +17,8 @@
  *   no_provider_matched               — target omitted and foreground window could not be resolved
  *   target_window_gone                — target.hwnd names no window any more (the OS said so); no
  *                                       lane runs
+ *   window_excluded                   — the target is excluded from every tool surface (the key
+ *                                       locker's own windows); no lane runs (internal #222)
  *   partial_results_only              — primary provider returned 0 entities; fallback attempted
  *   visual_not_attempted              — (H4) visual lane was unready (unavailable/warming) on a blind target
  *   visual_attempted_empty            — (H4) visual lane ran warm but produced no candidates on a blind target
@@ -308,11 +310,14 @@ async function normalizeTarget(
         warnings: resolved.warnings,
       };
     } catch (e) {
-      // R3 tool-exclusion: a WindowExcludedError must PROPAGATE, not be swallowed as a normal
-      // resolution miss — otherwise the original (excluded) hwnd flows on into the provider
-      // fan-out and the OCR lane reads the key-locker dialog by handle (Codex R1 P1-A). Other
-      // resolution errors keep the legacy tolerant passthrough.
-      if (e instanceof WindowExcludedError) throw e;
+      // R3 tool-exclusion: a WindowExcludedError must not be swallowed as a normal resolution miss
+      // — otherwise the original (excluded) hwnd flows on into the provider fan-out and the OCR
+      // lane reads the key-locker dialog by handle (Codex R1 P1-A). It is said, and no lane runs
+      // (internal #222: it used to be thrown, and arrived as the retryable `ingress_fetch_error`).
+      // The exclusion check fails closed on a PID it cannot read, which is what a window that has
+      // just closed reads as — so a handle the OS says is gone is `target_window_gone` (gate 2).
+      // Other resolution errors keep the legacy tolerant passthrough.
+      if (e instanceof WindowExcludedError) return { target, warnings: [handleIsGone(target.hwnd) ? "target_window_gone" : "window_excluded"] };
       // internal #211 item 9(3): a handle that names no window any more — a dialog that has
       // closed, the one a refusal named — read as nothing at all, and the caller who followed the
       // advice there got `entities: []` with no warning (win2, internal #212 arm 9c). Said only on
@@ -336,9 +341,9 @@ async function normalizeTarget(
         };
       }
     } catch (e) {
-      // R3: an excluded key-locker title must PROPAGATE (parity with the hwnd branch above);
-      // other resolution errors keep the tolerant fall-through.
-      if (e instanceof WindowExcludedError) throw e;
+      // R3: an excluded key-locker title is said, and no lane runs (parity with the hwnd branch
+      // above); other resolution errors keep the tolerant fall-through.
+      if (e instanceof WindowExcludedError) return { target, warnings: ["window_excluded"] };
       /* fall through */
     }
     return { target, warnings: [] };
@@ -360,7 +365,10 @@ async function normalizeTarget(
       },
       warnings: resolved.warnings,
     };
-  } catch {
+  } catch (e) {
+    // The foreground window is the key locker's own: say so, and name no window (gate 2 on #222 —
+    // it arrived as `no_provider_matched`, whose advice is to retry).
+    if (e instanceof WindowExcludedError) return { target: undefined, warnings: ["window_excluded"] };
     return { target: undefined, warnings: ["no_provider_matched"] };
   }
 }
@@ -391,7 +399,9 @@ export async function composeCandidates(
   // replays an earlier snapshot would hand back leases for the closed window (gate 2 on internal
   // #211 item 9(3)). The target stays — it is the window that was named — and its identity is
   // recorded as looked for and not found, so no later read baselines whoever inherits the handle.
-  if (normalized.warnings.includes("target_window_gone")) {
+  // The same for a window excluded from every tool surface (internal #222): nothing is read from
+  // it, its identity included.
+  if (normalized.warnings.includes("target_window_gone") || normalized.warnings.includes("window_excluded")) {
     return { candidates: [], warnings: normalized.warnings, target: normalized.target, identityRead: true };
   }
 

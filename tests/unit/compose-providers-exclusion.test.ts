@@ -1,10 +1,10 @@
 // ADR-014 v2 R3 Key Locker — normalizeTarget WindowExcludedError propagation (Codex R1 P1-A).
 //
 // When an explicit key-locker hwnd reaches desktop_discover, resolveWindowTarget throws
-// WindowExcludedError. normalizeTarget MUST re-throw it (not swallow it as a normal resolution
-// miss) — otherwise the original excluded hwnd flows into the provider fan-out and the OCR lane
-// reads the dialog by handle. This suite mocks resolveWindowTarget + all providers and asserts
-// composeCandidates propagates the refusal, while a PLAIN resolution error keeps the legacy
+// WindowExcludedError. normalizeTarget MUST NOT swallow it as a normal resolution miss — otherwise
+// the original excluded hwnd flows into the provider fan-out and the OCR lane reads the dialog by
+// handle. Since internal #222 it says `window_excluded` and runs no lane (it used to rethrow). This
+// suite mocks resolveWindowTarget + all providers, while a PLAIN resolution error keeps the legacy
 // tolerant passthrough.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -56,11 +56,15 @@ describe("composeCandidates — a handle that cannot be read (ADR-036, left open
 });
 
 describe("composeCandidates — R3 WindowExcludedError propagation", () => {
-  it("propagates WindowExcludedError from a hwnd target (does NOT swallow it)", async () => {
+  it("does NOT swallow WindowExcludedError from a hwnd target: it says window_excluded and runs no lane", async () => {
+    // internal #222: it used to propagate, and arrived at the caller as the retryable
+    // `ingress_fetch_error`. What this cell protects is unchanged — the refusal short-circuits
+    // BEFORE the OCR lane could read the dialog by handle.
     mockResolveWindowTarget.mockRejectedValue(new WindowExcludedError("WindowExcluded: key locker"));
-    await expect(composeCandidates({ hwnd: "500" })).rejects.toBeInstanceOf(WindowExcludedError);
-    // The refusal short-circuits BEFORE the OCR lane could read the dialog by handle.
+    expect((await composeCandidates({ hwnd: "500" })).warnings).toContain("window_excluded");
     expect(fetchOcrCandidates).not.toHaveBeenCalled();
+    expect(fetchUiaCandidates).not.toHaveBeenCalled();
+    expect(fetchVisualCandidates).not.toHaveBeenCalled();
   });
 
   it("keeps the legacy tolerant passthrough for a plain (non-excluded) resolution error", async () => {

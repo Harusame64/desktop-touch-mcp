@@ -208,12 +208,13 @@ export function deriveViewConstraints(
       // Window / hierarchy (failure path only)
       // H3 success notifications (dialog_resolved_via_owner_chain, parent_disabled_prefer_popup)
       // are NOT constraints — they remain in warnings[] as informational.
+      // `window_excluded` is never overwritten: its remedy (another window) is the one that holds.
       case "no_provider_matched":
-        c.window = "no_provider_matched";
+        if (c.window !== "window_excluded") c.window = "no_provider_matched";
         hasConstraint = true;
         break;
       case "target_window_gone":
-        c.window = "target_window_gone";
+        if (c.window !== "window_excluded") c.window = "target_window_gone";
         hasConstraint = true;
         break;
       case "window_excluded":

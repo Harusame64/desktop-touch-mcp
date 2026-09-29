@@ -93,7 +93,8 @@
   server keeps out of every tool, such as the key locker's own, used to answer
   `ingress_fetch_error`, whose advice is to retry. It now answers the warning `window_excluded`,
   with `constraints.window` and `constraints.entityZeroReason` set to the same value. Nothing is
-  read from the window, and calling again returns the same answer while it stays excluded.
+  read from the window, and calling again returns the same answer while it stays excluded. A call
+  with no target, while such a window is in front, says the same.
 
 - **`desktop_discover` reads the window on every call.** It used to answer from its last read for
   up to 30 seconds unless a window appeared or disappeared, and missed every change made inside a

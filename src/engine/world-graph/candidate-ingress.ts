@@ -8,7 +8,6 @@
 import type { UiEntityCandidate } from "../vision-gpu/types.js";
 import type { TargetSpec } from "./session-registry.js";
 import type { WindowIdentity, AimOrigin } from "../aim.js";
-import { WindowExcludedError } from "../tool-exclusion.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,7 +27,7 @@ export type IngressReason = "winevent" | "cdp" | "dirty-rect" | "startup" | "cac
  *   visual_provider_unavailable — visual GPU lane is a Phase 3 stub
  *   terminal_buffer_empty     — terminal window found but buffer was empty
  *   window_excluded           — the target is a window excluded from every tool surface (the key
- *                               locker's own); nothing was read (internal #222)
+ *                               locker's own); no lane runs (internal #222)
  *   ingress_fetch_error       — ingress fetchFn threw (nothing was read). Also added by
  *                               `DesktopFacade.see` when a result arrives with no usable
  *                               candidate list, or with entries that are not objects (#161)
@@ -219,9 +218,6 @@ export class SnapshotIngress implements CandidateIngress {
       const result = await this.fetchFn(targetKey);
       return { ...result, freshness: { from: "read", observedAtMs: now } };
     } catch (err) {
-      // internal #222 — a refusal, not a read that failed: retrying returns the same answer for as
-      // long as the window is excluded, so it must not arrive as the retryable fetch error.
-      if (err instanceof WindowExcludedError) return { candidates: [], warnings: ["window_excluded"], freshness: { from: "unavailable" } };
       console.error(`[candidate-ingress] Fetch error for "${targetKey}":`, err);
       return { candidates: [], warnings: ["ingress_fetch_error"], freshness: { from: "unavailable" } };
     }
