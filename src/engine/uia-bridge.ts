@@ -1412,6 +1412,12 @@ export async function getUiElements(
      */
     pinnedHwnd?: bigint;
     fetchValues?: boolean;
+    /**
+     * internal #211 — the depth and element cap for the PowerShell road, when it differs from the
+     * native one. A deep native read (discover: depth 64 / 500) is cheap; the same walk in
+     * PowerShell runs into its deadline, so a caller that asks deep gives the fallback its own caps.
+     */
+    fallbackLimits?: { maxDepth: number; maxElements: number };
   }
 ): Promise<UiElementsResult & { _cacheHit?: boolean }> {
   refuseUiaTitleIfExcluded(windowTitle, options?.pinnedHwnd);
@@ -1434,8 +1440,18 @@ export async function getUiElements(
     const cached = getCachedUia(cacheKey);
     if (cached) {
       try {
-        const parsed = JSON.parse(cached) as UiElementsResult;
-        return { ...parsed, _cacheHit: true };
+        const parsed = JSON.parse(cached) as UiElementsResult & { readLimits?: { maxDepth: number; maxElements: number } };
+        // internal #211 — a cached tree answers only a read it covers: one read at least as deep
+        // and to at least as many elements (only complete reads are cached). It is cut to the
+        // caller's caps: the walk is breadth-first, so the elements at or above the caller's depth,
+        // first `maxElements` of them, are what that read would have returned. A shallower tree
+        // (discover's 4 / 80 once answered screenshot's 6 / 120) is not an answer.
+        const limits = parsed.readLimits;
+        if (limits !== undefined && limits.maxDepth >= maxDepth && limits.maxElements >= maxElements) {
+          const { readLimits: _limits, ...tree } = parsed;
+          const elements = tree.elements.filter((e) => (e.depth ?? 0) <= maxDepth).slice(0, maxElements);
+          return { ...tree, elements, elementCount: elements.length, _cacheHit: true };
+        }
       } catch {
         // fall through to live fetch
       }
@@ -1499,8 +1515,12 @@ export async function getUiElements(
       // Reporting `truncated` from Rust is the real fix and is its own change, not this branch's.
       const maybeTruncated = normalised.elementCount >= maxElements;
       if (cacheKey !== undefined && !maybeTruncated) {
-        try { updateUiaCache(cacheKey, JSON.stringify(normalised)); } catch { /* ignore */ }
+        try { updateUiaCache(cacheKey, JSON.stringify({ ...normalised, readLimits: { maxDepth, maxElements } })); } catch { /* ignore */ }
       }
+      // Whether the walk stopped at its cap is NOT set as `truncated` here: `_narration` refuses a
+      // truncated tree outright, and a native read that fills narration's 80-element cap would switch
+      // narration off for every rich window (gate 2 on internal #211, round 2). discover says it on
+      // its own reads (`uia-provider.ts`).
       return normalised;
     } catch (e) {
       // Internal #144 — a timeout on a window that does not answer is not waited for a second time.
@@ -1511,10 +1531,12 @@ export async function getUiElements(
   }
 
   // PowerShell fallback (existing implementation)
+  const psMaxDepth = options?.fallbackLimits?.maxDepth ?? maxDepth;
+  const psMaxElements = options?.fallbackLimits?.maxElements ?? maxElements;
   const script = makeGetElementsScript(
     windowTitle,
-    maxDepth,
-    maxElements,
+    psMaxDepth,
+    psMaxElements,
     options?.fetchValues ?? false,
     scopeHwnd,
     timeoutMs,
@@ -1552,7 +1574,7 @@ export async function getUiElements(
   // A prefix of a window is not the window: caching it would serve it to `screenshot` for the
   // whole TTL as though it were complete.
   if (cacheKey !== undefined && !result.truncated) {
-    try { updateUiaCache(cacheKey, output); } catch { /* ignore */ }
+    try { updateUiaCache(cacheKey, JSON.stringify({ ...result, readLimits: { maxDepth: psMaxDepth, maxElements: psMaxElements } })); } catch { /* ignore */ }
   }
   return { ...(result as UiElementsResult), via: "powershell" };
 }

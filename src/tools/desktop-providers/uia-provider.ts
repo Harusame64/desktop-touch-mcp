@@ -56,6 +56,22 @@ export function normalizeUiaPatternNames(patterns: string[] | undefined): string
   return patterns.map((p) => (p.endsWith("Pattern") ? p : `${p}Pattern`));
 }
 
+/**
+ * internal #211 — how far discover's UIA read goes: capped by element count, not by depth.
+ *
+ * It was depth 4 / 80 elements. win2 measured (2026-09-29, 17 app types): web content in Chrome,
+ * Edge and VS Code sits at depth 7–12 — so those windows read as `uia_blind_single_pane` and went
+ * to OCR although plain UIA exposes every control — and Explorer's and Settings' value labels sit
+ * at depth 5–7. Walked breadth-first to depth 64 with a 500-element cap, every type stayed at or
+ * under 128 elements and 80–406 ms; none reached the cap. (The element-count cap, rather than a
+ * depth cap, is CursorTouch/Windows-MCP's approach; the idea only, not code.)
+ */
+export const UIA_DISCOVER_MAX_DEPTH = 64;
+export const UIA_DISCOVER_MAX_ELEMENTS = 500;
+/** The PowerShell road's read, unchanged: a deep walk there runs into its deadline. */
+export const UIA_DISCOVER_FALLBACK_DEPTH = 4;
+export const UIA_DISCOVER_FALLBACK_ELEMENTS = 80;
+
 export async function fetchUiaCandidates(
   target: TargetSpec | undefined
 ): Promise<ProviderResult> {
@@ -98,7 +114,17 @@ export async function fetchUiaCandidates(
     // a handle nobody scoped to. Passing `hwnd` as well was a way to prime the cache back when
     // the read could still go by title; now it would say nothing the scoped read does not.
     const options = pinned !== undefined ? { pinnedHwnd: pinned } : undefined;
-    const result  = await getUiElements(windowTitle, 4, 80, 8000, options);
+    // The deep read is the native walk's; the PowerShell road keeps the old caps, where a deep walk
+    // would run into its deadline — including when the native call fails and the bridge falls back.
+    const raw     = await getUiElements(windowTitle, UIA_DISCOVER_MAX_DEPTH, UIA_DISCOVER_MAX_ELEMENTS, 8000, {
+      ...options,
+      fallbackLimits: { maxDepth: UIA_DISCOVER_FALLBACK_DEPTH, maxElements: UIA_DISCOVER_FALLBACK_ELEMENTS },
+    });
+    // A read that filled its cap may have stopped early; it is published as a prefix, not judged
+    // for blindness as the window. Which cap it ran with depends on the road that answered. The
+    // PowerShell script's own flag covers only its deadline.
+    const cap = raw.via === "powershell" ? UIA_DISCOVER_FALLBACK_ELEMENTS : UIA_DISCOVER_MAX_ELEMENTS;
+    const result  = !raw.truncated && raw.elementCount >= cap ? { ...raw, truncated: true } : raw;
 
     // ADR-036 probe — what this lane actually asked for, and what it stamps on every candidate.
     // `scoped:false` with a `targetId` that looks like a handle is the read describing one window

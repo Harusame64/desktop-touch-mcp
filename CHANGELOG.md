@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **`desktop_discover` reads deeper into a window's UI Automation tree.** Its UIA read stopped at
+  depth 4. So Chrome, Edge and VS Code, which expose their page controls at depth 7–12, were
+  reported as `uia_blind_single_pane`, and value labels in Explorer and Settings (depth 5–7) were
+  missing. The read now goes to depth 64 and stops at 500 elements. Across the 17 kinds of app
+  measured (Win32, WinUI, UWP, WinForms, WPF, Electron, browsers, Explorer, consoles), the most any
+  returned was 128 elements, in at most about 0.4 s. A read that stops at its 500-element cap is
+  reported with `uia_tree_truncated`. When the native UIA engine is not available, the PowerShell
+  fallback keeps the old depth.
+
 - **`desktop_discover` says when the window `target.hwnd` names has closed.** A call with the handle
   of a window that is gone, such as a dialog named by an earlier refusal, used to return
   `entities: []` with no warning, or blamed the UIA lane (`uia_provider_failed`, with

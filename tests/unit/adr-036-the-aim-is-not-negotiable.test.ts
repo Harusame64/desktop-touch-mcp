@@ -627,7 +627,9 @@ describe("a cache hit does not pay for a question it did not need to ask", () =>
   it("probes the cache before sweeping every top-level window", async () => {
     // The scoping gate is an `enumWindowsInZOrder()` sweep — a handful of syscalls per window —
     // and it exists to decide how to READ. A hit does not read (2ゲート目の指摘).
-    h.cached = JSON.stringify({ windowTitle: "Untitled - Notepad", elementCount: 0, elements: [] });
+    // Filed with the caps it was read to, as every write does since internal #211: a tree read to
+    // other caps is not answered.
+    h.cached = JSON.stringify({ windowTitle: "Untitled - Notepad", elementCount: 0, elements: [], readLimits: { maxDepth: 3, maxElements: 50 } });
     const r = await getUiElements("Untitled - Notepad", 3, 50, 10000, {
       hwnd: NOTEPAD, pinnedHwnd: NOTEPAD, cached: true,
     });
