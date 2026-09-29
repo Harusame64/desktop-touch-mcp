@@ -1,22 +1,10 @@
 /**
- * candidate-ingress.ts — Event-driven candidate cache layer.
+ * candidate-ingress.ts — the layer between DesktopFacade.see() and the providers.
  *
- * Decouples DesktopFacade.see() from pull-based CandidateProvider.
- * Instead of fetching candidates on every see() call, the ingress:
- *   1. Caches candidates per target key
- *   2. Marks cache dirty when events arrive (WinEvent / CDP)
- *   3. Lazily refreshes only the dirty target on the NEXT see() call
- *   4. Never fetches in idle state — zero background polling cost
- *
- * Refresh policy:
- *   - Cache hit + clean + within TTL  → return immediately (0 fetches)
- *   - Cache hit + dirty or expired    → fetch, update cache
- *   - Cache miss (startup / new key)  → fetch (recovery path)
- *   - Fetch error                     → return stale cache, mark dirty for retry
- *
- * Target isolation:
- *   Each key (window:hwnd / tab:id / title:...) has its own cache entry and
- *   subscriber set. An event for key A never touches key B's cache.
+ * `SnapshotIngress` reads on every call and remembers the last read per target key, only to hand
+ * it back as `staleCache` when a read throws (internal #218: it used to serve that read for up to
+ * 30 s, and no event said when the window had changed inside). The event-source types and adapters
+ * below are what that cache was invalidated by; nothing in production drains them now.
  */
 
 import type { UiEntityCandidate } from "../vision-gpu/types.js";
@@ -150,6 +138,7 @@ export type ProviderFreshness =
    *   so a fetch that resolved is not an observation. What each lane did is in its own
    *   `provider.read` probe row, and `warnings` / `constraints` carry the caller-visible part.
    * - `cache` — the entry was fresh, so nothing was asked; these were read at `observedAtMs`.
+   *   `SnapshotIngress` no longer answers it (internal #218); an injected ingress still may.
    * - `staleCache` — the FETCH ITSELF rejected and the remembered entry was served instead.
    *   **A LANE failing is not that**: `settledLane` catches a lane's rejection before the ingress
    *   sees it, so a failed read arrives as `read` with an empty `entities` and
@@ -183,9 +172,9 @@ export type ProviderFreshness =
   | { from: "unavailable"; observedAtMs?: undefined };
 
 export interface CandidateIngress {
-  /** Return candidates + warnings for a target key. Refreshes if dirty or expired. */
+  /** Return candidates + warnings for a target key; `freshness` says whether they were read now. */
   getSnapshot(targetKey: string): Promise<ProviderResult>;
-  /** Mark a target's cache as dirty. Called by event adapters. */
+  /** The target changed (an act, a query that found nothing): anything remembered is out of date. */
   invalidate(targetKey: string, reason: IngressReason): void;
   /** Subscribe to invalidation events. Returns an unsubscribe function. */
   subscribe(targetKey: string, cb: () => void): () => void;
@@ -227,57 +216,37 @@ interface CacheEntry {
   /** ADR-036 item 5 — the window origin those candidates were measured against. */
   origin?: AimOrigin;
   fetchedAtMs: number;
-  dirty: boolean;
-}
-
-export interface SnapshotIngressOptions {
-  /** Cache TTL in ms — entries older than this are treated as dirty (default: 30 000). */
-  cacheTtlMs?: number;
 }
 
 /**
- * Default CandidateIngress implementation.
+ * Default CandidateIngress implementation: every call reads.
  *
- * Idle cost: zero — no background timers. Events are drained lazily on each
- * getSnapshot() call. Only dirty/expired entries trigger a refetch.
+ * internal #218 — this used to serve a target's last read for up to 30 s unless an event had marked
+ * it dirty. The events it could hear were a window appearing or disappearing and the foreground
+ * changing; a change made INSIDE a window by anyone but our own act raised none of them. Measured
+ * (win2): a field's text changed from outside, a control destroyed and a window moved were all
+ * served from cache (2026-09-12, `dev/lease-cost/RESULTS-warm-cache.md` in the internal repo), and
+ * so was an Excel sheet after COM changed its zoom and sheet (2026-09-29). A bare `desktop_discover()`
+ * was keyed `window:__default__`, which no window event matches, so after an Alt-Tab it kept serving
+ * the window that had been in front. Watching the window's pixels instead does not close it:
+ * Excel with `ScreenUpdating` off changes its values without a repaint, a covered part is not on
+ * screen, and a sleeping display delivers no frames (win2, 2026-09-29). What the cache saved was
+ * 60–350 ms a call (Notepad 65, Explorer 272, Excel 354 read against 2–5 cached), and there is no
+ * idle cost either way: nothing reads between calls.
+ *
+ * The last read is still kept, for one road: when the read itself throws, it goes out as
+ * `staleCache`, with `ingress_fetch_error` in `warnings`.
  */
 export class SnapshotIngress implements CandidateIngress {
-  private readonly cache     = new Map<string, CacheEntry>();
-  private readonly subs      = new Map<string, Set<() => void>>();
-  private readonly knownKeys = new Set<string>();
-  private readonly cacheTtlMs: number;
+  private readonly cache = new Map<string, CacheEntry>();
+  private readonly subs  = new Map<string, Set<() => void>>();
   private disposed = false;
 
-  constructor(
-    private readonly fetchFn: (targetKey: string) => Promise<ProviderResult>,
-    private readonly eventSource?: IngressEventSource,
-    opts: SnapshotIngressOptions = {}
-  ) {
-    this.cacheTtlMs = opts.cacheTtlMs ?? 30_000;
-  }
+  constructor(private readonly fetchFn: (targetKey: string) => Promise<ProviderResult>) {}
 
   async getSnapshot(targetKey: string): Promise<ProviderResult> {
     if (this.disposed) return { candidates: [], warnings: [], freshness: { from: "unavailable" } };
-    this.knownKeys.add(targetKey);
-
-    // Drain events lazily — no background polling needed.
-    if (this.eventSource) {
-      const pending = await this.eventSource.drain(this.knownKeys, this.drainContext);
-      for (const { key, reason } of pending) {
-        this._markDirty(key, reason);
-      }
-    }
-
-    const entry = this.cache.get(targetKey);
-    const now   = Date.now();
-    // A dirty mark that lands while the fetch below is in flight — an act's `invalidate`, an event
-    // drained by a concurrent call — is about a world newer than the read's start, so the entry this
-    // fetch writes stays dirty (gate 2 on internal #211 item 9(1)).
-    const marksAtStart = this.marks.get(targetKey) ?? 0;
-    const fresh = entry && !entry.dirty && (now - entry.fetchedAtMs) < this.cacheTtlMs;
-    if (fresh) return { candidates: entry!.candidates, warnings: entry!.warnings, target: entry!.target, identity: entry!.identity, identityRead: entry!.identityRead, origin: entry!.origin, freshness: { from: "cache", observedAtMs: entry!.fetchedAtMs } };
-
-    // Cache miss, dirty, or TTL expired → fetch.
+    const now = Date.now();
     try {
       const result = await this.fetchFn(targetKey);
       this.cache.set(targetKey, {
@@ -288,22 +257,21 @@ export class SnapshotIngress implements CandidateIngress {
         identityRead: result.identityRead,
         origin: result.origin,
         fetchedAtMs: now,
-        dirty: (this.marks.get(targetKey) ?? 0) !== marksAtStart,
       });
       return { ...result, freshness: { from: "read", observedAtMs: now } };
     } catch (err) {
       console.error(`[candidate-ingress] Fetch error for "${targetKey}":`, err);
-      // Stale cache fallback — mark dirty so next call retries.
+      const entry = this.cache.get(targetKey);
       if (entry) {
-        entry.dirty = true;
         return { candidates: entry.candidates, warnings: [...entry.warnings, "ingress_fetch_error"], target: entry.target, identity: entry.identity, identityRead: entry.identityRead, origin: entry.origin, freshness: { from: "staleCache", observedAtMs: entry.fetchedAtMs } };
       }
       return { candidates: [], warnings: ["ingress_fetch_error"], freshness: { from: "unavailable" } };
     }
   }
 
-  invalidate(targetKey: string, reason: IngressReason): void {
-    this._markDirty(targetKey, reason);
+  /** Nothing is served from memory, so there is nothing to mark; subscribers are still told. */
+  invalidate(targetKey: string, _reason: IngressReason): void {
+    this.subs.get(targetKey)?.forEach((cb) => cb());
   }
 
   subscribe(targetKey: string, cb: () => void): () => void {
@@ -313,35 +281,10 @@ export class SnapshotIngress implements CandidateIngress {
     return () => set!.delete(cb);
   }
 
-  markRecovered(targetKey: string): void {
-    const entry = this.cache.get(targetKey);
-    if (entry) entry.dirty = false;
-  }
-
   dispose(): void {
     this.disposed = true;
-    this.eventSource?.dispose();
     this.cache.clear();
     this.subs.clear();
-    this.knownKeys.clear();
-    this.marks.clear();
-  }
-
-  private readonly drainContext: IngressDrainContext = {
-    listsWindow: (targetKey, hwnd) => {
-      const candidates = this.cache.get(targetKey)?.candidates;
-      return Array.isArray(candidates) && candidates.some((c) => c?.locator?.uia?.nativeWindowHandle === hwnd);
-    },
-  };
-
-  /** How many times each key has been marked dirty — see `marksAtStart` in `getSnapshot`. */
-  private readonly marks = new Map<string, number>();
-
-  private _markDirty(targetKey: string, _reason: IngressReason): void {
-    this.marks.set(targetKey, (this.marks.get(targetKey) ?? 0) + 1);
-    const entry = this.cache.get(targetKey);
-    if (entry) entry.dirty = true;
-    this.subs.get(targetKey)?.forEach((cb) => cb());
   }
 }
 

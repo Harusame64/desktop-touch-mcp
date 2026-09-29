@@ -60,13 +60,7 @@ import {
   KeyboardTargetUnsafeRefusalError,
 } from "../errors/typed-errors.js";
 import type { WindowBlockAnswer, SnapshotWindowAnswer, TouchAction, RoiCapture, RoiCaptureMaterial, SemanticDiff, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
-import {
-  SnapshotIngress,
-  combineEventSources,
-  createWinEventIngressSource,
-} from "../engine/world-graph/candidate-ingress.js";
-import { createBrowserIngressSource } from "../engine/world-graph/browser-ingress.js";
-import { createTerminalIngressSource } from "../engine/world-graph/terminal-ingress.js";
+import { SnapshotIngress } from "../engine/world-graph/candidate-ingress.js";
 import { createVisualIngressSource, type VisualIngressSource } from "../engine/world-graph/visual-ingress.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
 import { composeCandidates } from "./desktop-providers/compose-providers.js";
@@ -702,11 +696,8 @@ export function getOnnxBackend(): OnnxBackend | undefined {
 /**
  * Return the process-level DesktopFacade.
  *
- * P2-E: uses a composite event source that combines:
- *   - WinEvent (window appear/disappear/foreground)  → native window keys
- *   - CDP lifecycle change detection                  → tab: keys
- *   - Terminal buffer fingerprint change              → title: terminal keys
- *   - Visual manual invalidation hook                 → any key (GPU pipeline)
+ * P2-E used to give the ingress a composite event source (WinEvent, CDP, terminal buffer, visual)
+ * to mark cached reads dirty. Since internal #218 every discover reads, so nothing is drained.
  */
 /**
  * P3-B: Attach PocVisualBackend to the global VisualRuntime and wire its dirty
@@ -717,7 +708,7 @@ export function getOnnxBackend(): OnnxBackend | undefined {
  *   PocVisualBackend.updateSnapshot(targetKey, candidates)
  *     → backend fires dirty listeners
  *     → VisualIngressSource.markDirty(targetKey)
- *     → next see() call: ingress.getSnapshot(targetKey) refreshes from visual provider
+ * The ingress no longer drains that source (internal #218): the next see() reads regardless.
  */
 async function initVisualRuntime(visualSource: VisualIngressSource): Promise<void> {
   // Phase 4a (ADR-005): prefer Rust-internal OnnxBackend when available and
@@ -761,15 +752,8 @@ export function getDesktopFacade(): DesktopFacade {
 
     _visualSource = createVisualIngressSource();
 
-    const ingress = new SnapshotIngress(
-      (key: string) => composeCandidates(targetKeyToSpec(key)),
-      combineEventSources([
-        createWinEventIngressSource(),
-        createBrowserIngressSource(),
-        createTerminalIngressSource(),
-        _visualSource,
-      ])
-    );
+    // internal #218: every discover reads; see `SnapshotIngress`.
+    const ingress = new SnapshotIngress((key: string) => composeCandidates(targetKeyToSpec(key)));
 
     _facade = new DesktopFacade(provider, {
       // Sweep stale sessions every 30s. The default sessionTtlMs is 120s
@@ -1988,9 +1972,8 @@ export function registerDesktopTools(server: McpServer): void {
       "response.freshness says whether these entities were READ for this call or REMEMBERED. " +
         "observedAtMs is when the read that produced them STARTED; ageMs is observedAtMs to this " +
         "reply. from='cache': nothing was asked this time, so the entities are ageMs old — read " +
-        "ageMs before acting on their positions, because a window that has stopped responding " +
-        "still answers in milliseconds from cache with a fresh generation and nothing else to " +
-        "notice. from='read': a fetch ran for this call, which is NOT a promise that it succeeded " +
+        "ageMs before acting on their positions. from='read': a fetch ran for this call, which " +
+        "is NOT a promise that it succeeded " +
         "or that any lane looked — ageMs is then how long that fetch took and says nothing about " +
         "how old the entities are, since a lane may replay an earlier snapshot; if entities is " +
         "empty, warnings[] and constraints say why. from='staleCache': the refresh FAILED and an " +

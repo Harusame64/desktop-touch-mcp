@@ -2,11 +2,10 @@ import { describe, it, expect, vi } from "vitest";
 import {
   SnapshotIngress,
   windowEventMatchesKey,
-  type IngressEventSource,
-  type IngressReason,
   type ProviderResult,
 } from "../../src/engine/world-graph/candidate-ingress.js";
 import type { UiEntityCandidate } from "../../src/engine/vision-gpu/types.js";
+import { DesktopFacade } from "../../src/tools/desktop.js";
 
 function candidate(label: string): UiEntityCandidate {
   return {
@@ -29,243 +28,131 @@ function failed(warnings: string[]): ProviderResult {
   return { candidates: [], warnings };
 }
 
-function noopSource(): IngressEventSource {
-  return { drain: async () => [], dispose: vi.fn() };
-}
+// ── Every call reads (internal #218) ─────────────────────────────────────────
 
-// (Helper `eventSource` was removed — was unused, see code-scanning #87.)
+describe("SnapshotIngress — every call reads (internal #218)", () => {
+  // Measured (win2, 2026-09-29): Excel's zoom and sheet changed through COM, and the next discover
+  // answered in 10 ms with the list from before. No event marks a change made inside a window.
 
-// ── Was it read, or remembered? (ADR-036 item 8, internal #150) ───────────────
-
-describe("SnapshotIngress — says whether the answer was read or remembered", () => {
-  // Measured on real hardware (internal #150, 2026-09-21): a window hung for 90 s got six entities
-  // back in 4 ms with a fresh generation, and the probe recorded no `provider.read` row — no lane
-  // ran. The ingress knew: the entry it served carried `fetchedAtMs`. It just never left this file.
-
-  it("says `read`, with the moment of the read, when it fetched for this call", async () => {
-    const ingress = new SnapshotIngress(async () => ok("A"), noopSource());
-    const before = Date.now();
-    const result = await ingress.getSnapshot("window:1");
-    expect(result.freshness?.from).toBe("read");
-    expect(result.freshness?.observedAtMs).toBeGreaterThanOrEqual(before);
+  it("reads again on the next call, and hands back what the window shows now", async () => {
+    let shown = "Sheet1";
+    const fetch = vi.fn(async () => ok(shown));
+    const ingress = new SnapshotIngress(fetch);
+    expect((await ingress.getSnapshot("title:Book1 - Excel")).candidates[0].label).toBe("Sheet1");
+    shown = "Sheet2"; // changed from outside: nothing is told
+    const second = await ingress.getSnapshot("title:Book1 - Excel");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(second.candidates[0].label).toBe("Sheet2");
+    expect(second.freshness?.from).toBe("read");
   });
 
-  it("says `cache`, and dates it to the FETCH rather than to this call", async () => {
-    // **The clock is moved between the two calls, and that is the whole cell.** Written without
-    // it, both calls land in the same millisecond, so `observedAtMs: Date.now()` on the cache-hit
-    // road is numerically identical to the fetch's own stamp: the mutation that re-dates a
-    // remembered answer to the moment it was served passed 107/107 green (measured, 2026-09-22).
-    // Two answers that are supposed to differ have to be made to look different first.
+  it("reads again for a bare discover, whose key no window event names (Alt-Tab)", async () => {
+    let front = "Notepad";
+    const ingress = new SnapshotIngress(async () => ok(front));
+    await ingress.getSnapshot("window:__default__");
+    front = "Explorer";
+    expect((await ingress.getSnapshot("window:__default__")).candidates[0].label).toBe("Explorer");
+  });
+
+  it("dates each read to its own start, not the first one", async () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(1_000);
-      const fetch = vi.fn(async () => ok("A"));
-      const ingress = new SnapshotIngress(fetch, noopSource());
-      const first = await ingress.getSnapshot("window:1");
-      vi.setSystemTime(6_000);                        // still inside the 30 s TTL
-      const second = await ingress.getSnapshot("window:1");
-
-      expect(fetch).toHaveBeenCalledOnce();           // CONTROL: the second call really did not read
-      expect(second.freshness?.from).toBe("cache");
-      // The date is the observation's, not the reply's. Stamping "now" here would make a
-      // remembered answer look freshly read — the defect, expressed as a timestamp instead of a
-      // word.
-      expect(first.freshness?.observedAtMs).toBe(1_000);
-      expect(second.freshness?.observedAtMs).toBe(1_000);
+      const ingress = new SnapshotIngress(async () => ok("A"));
+      await ingress.getSnapshot("window:1");
+      vi.setSystemTime(6_000);
+      expect((await ingress.getSnapshot("window:1")).freshness).toEqual({ from: "read", observedAtMs: 6_000 });
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("says `staleCache` when the fetch threw and the remembered entry went out anyway", async () => {
-    let fail = false;
-    const ingress = new SnapshotIngress(
-      async () => {
-        if (fail) throw new Error("boom");
-        return ok("A");
-      },
-      noopSource(),
-    );
-    const first = await ingress.getSnapshot("window:1");
-    fail = true;
-    ingress.invalidate("window:1", "winevent");
-    const second = await ingress.getSnapshot("window:1");
-
-    expect(second.candidates).toHaveLength(1);      // the remembered answer did go out…
-    expect(second.warnings).toContain("ingress_fetch_error");
-    expect(second.freshness?.from).toBe("staleCache");   // …and it is not called a read
-    expect(second.freshness?.observedAtMs).toBe(first.freshness?.observedAtMs);
-  });
-
-  it("says `unavailable` — never `read` — when the fetch threw with nothing remembered", async () => {
-    const ingress = new SnapshotIngress(async () => {
-      throw new Error("boom");
-    }, noopSource());
-    const result = await ingress.getSnapshot("window:1");
-    expect(result.candidates).toEqual([]);
-    expect(result.freshness).toEqual({ from: "unavailable" });
-    // No date: there is no observation to date. An `observedAtMs` here would be the moment of a
-    // read that did not happen.
-    expect(result.freshness?.observedAtMs).toBeUndefined();
-  });
-
-  it("says `unavailable` after dispose, where it used to say nothing at all", async () => {
-    const ingress = new SnapshotIngress(async () => ok("A"), noopSource());
-    ingress.dispose();
-    expect((await ingress.getSnapshot("window:1")).freshness).toEqual({ from: "unavailable" });
-  });
-});
-
-// ── Cache behavior ────────────────────────────────────────────────────────────
-
-describe("SnapshotIngress — cache behavior", () => {
-  it("fetches on cache miss (first call)", async () => {
-    const fetch = vi.fn(async () => ok("A"));
-    const ingress = new SnapshotIngress(fetch, noopSource());
-    const result = await ingress.getSnapshot("window:1");
-    expect(fetch).toHaveBeenCalledOnce();
-    expect(result.candidates[0].label).toBe("A");
-  });
-
-  it("returns cached result on second call without invalidation", async () => {
-    const fetch = vi.fn(async () => ok("A"));
-    const ingress = new SnapshotIngress(fetch, noopSource());
-    await ingress.getSnapshot("window:1");
-    await ingress.getSnapshot("window:1");
-    expect(fetch).toHaveBeenCalledOnce();
-  });
-
-  it("re-fetches after invalidate()", async () => {
-    const fetch = vi.fn(async (key: string) => ok(key));
-    const ingress = new SnapshotIngress(fetch, noopSource());
-    await ingress.getSnapshot("window:1");
-    ingress.invalidate("window:1", "winevent");
-    await ingress.getSnapshot("window:1");
+  it("through the facade: a second discover with no act between reads again", async () => {
+    const fetch = vi.fn(async (): Promise<ProviderResult> => ({ candidates: [{ ...candidate("OK"), rect: { x: 10, y: 10, width: 60, height: 20 } }], warnings: [] }));
+    const facade = new DesktopFacade(async () => [], { ingress: new SnapshotIngress(fetch), executorFn: async () => "uia" });
+    await facade.see({ target: { hwnd: "500" } });
+    const second = await facade.see({ target: { hwnd: "500" } });
     expect(fetch).toHaveBeenCalledTimes(2);
+    expect(second.freshness?.from).toBe("read");
   });
 
-  it("re-fetches after cache TTL expires", async () => {
-    let now = 0;
+  it("idle: nothing is read between calls", async () => {
     const fetch = vi.fn(async () => ok("A"));
-    const ingress = new SnapshotIngress(fetch, noopSource(), { cacheTtlMs: 100 });
-    vi.spyOn(Date, "now").mockImplementation(() => now);
-    await ingress.getSnapshot("window:1");
-    now = 200;
-    await ingress.getSnapshot("window:1");
-    vi.restoreAllMocks();
-    expect(fetch).toHaveBeenCalledTimes(2);
-  });
-
-  it("returns stale cache on fetch error", async () => {
-    let fail = false;
-    const fetch = vi.fn(async () => {
-      if (fail) throw new Error("network error");
-      return ok("Stale");
-    });
-    const ingress = new SnapshotIngress(fetch, noopSource());
-    await ingress.getSnapshot("window:1");
-    ingress.invalidate("window:1", "manual");
-    fail = true;
-    const result = await ingress.getSnapshot("window:1");
-    expect(result.candidates[0].label).toBe("Stale");
-  });
-
-  it("adds ingress_fetch_error warning when fetch throws and stale cache returned", async () => {
-    let fail = false;
-    const fetch = vi.fn(async () => {
-      if (fail) throw new Error("err");
-      return ok("Stale", ["some_prior_warning"]);
-    });
-    const ingress = new SnapshotIngress(fetch, noopSource());
-    await ingress.getSnapshot("window:1");
-    ingress.invalidate("window:1", "manual");
-    fail = true;
-    const result = await ingress.getSnapshot("window:1");
-    expect(result.warnings).toContain("ingress_fetch_error");
-    expect(result.candidates[0].label).toBe("Stale");
-  });
-
-  it("returns empty candidates and ingress_fetch_error when cache is empty on error", async () => {
-    const fetch = vi.fn(async () => { throw new Error("UIA unavailable"); });
     const ingress = new SnapshotIngress(fetch);
-    const result = await ingress.getSnapshot("window:1");
-    expect(result.candidates).toHaveLength(0);
-    expect(result.warnings).toContain("ingress_fetch_error");
-  });
-
-  it("returns [] candidates and [] warnings after dispose", async () => {
-    const ingress = new SnapshotIngress(async () => ok("A"));
-    await ingress.getSnapshot("window:1");
-    ingress.dispose();
-    const result = await ingress.getSnapshot("window:1");
-    expect(result.candidates).toHaveLength(0);
-    expect(result.warnings).toHaveLength(0);
-  });
-
-  it("cached warnings are returned on cache hit", async () => {
-    const fetch = vi.fn(async () => ok("A", ["visual_provider_unavailable"]));
-    const ingress = new SnapshotIngress(fetch, noopSource());
-    const first  = await ingress.getSnapshot("window:1");
-    const second = await ingress.getSnapshot("window:1"); // cache hit
-    expect(first.warnings).toEqual(["visual_provider_unavailable"]);
-    expect(second.warnings).toEqual(["visual_provider_unavailable"]);
-    expect(fetch).toHaveBeenCalledOnce(); // not re-fetched
-  });
-});
-
-// ── Target isolation ──────────────────────────────────────────────────────────
-
-describe("SnapshotIngress — target isolation", () => {
-  it("invalidate on A does NOT affect B's cache", async () => {
-    const fetch = vi.fn(async (key: string) => ok(key));
-    const ingress = new SnapshotIngress(fetch, noopSource());
-    await ingress.getSnapshot("window:A");
-    await ingress.getSnapshot("window:B");
-    ingress.invalidate("window:A", "winevent");
-    await ingress.getSnapshot("window:B");
-    const bCalls = (fetch.mock.calls as string[][]).filter((args) => args[0] === "window:B");
-    expect(bCalls).toHaveLength(1);
-  });
-
-  it("event source fires only for matching key (target isolation)", async () => {
-    const fetch = vi.fn(async (key: string) => ok(key));
-    let drainCount = 0;
-    const source: IngressEventSource = {
-      drain: async () => {
-        drainCount++;
-        if (drainCount === 3) return [{ key: "window:A", reason: "winevent" as IngressReason }];
-        return [];
-      },
-      dispose: vi.fn(),
-    };
-    const ingress = new SnapshotIngress(fetch, source);
-    await ingress.getSnapshot("window:A");
-    await ingress.getSnapshot("window:B");
-    await ingress.getSnapshot("window:A"); // event fires → re-fetch A
-    await ingress.getSnapshot("window:B"); // no event → cache hit for B
-    const aCalls = (fetch.mock.calls as string[][]).filter((a) => a[0] === "window:A");
-    const bCalls = (fetch.mock.calls as string[][]).filter((a) => a[0] === "window:B");
-    expect(aCalls).toHaveLength(2);
-    expect(bCalls).toHaveLength(1);
-  });
-
-  it("idle: no background fetch", async () => {
-    const fetch = vi.fn(async () => ok("A"));
-    const ingress = new SnapshotIngress(fetch, noopSource());
     await ingress.getSnapshot("window:1");
     await new Promise((r) => setTimeout(r, 10));
     expect(fetch).toHaveBeenCalledOnce();
   });
 });
 
-// ── Subscribe / markRecovered ─────────────────────────────────────────────────
+// ── When the read throws (ADR-036 item 8, internal #150) ──────────────────────
+
+describe("SnapshotIngress — when the read throws", () => {
+  it("says `staleCache`, dated to the read it remembers, with ingress_fetch_error", async () => {
+    vi.useFakeTimers();
+    try {
+      let fail = false;
+      let label = "A";
+      const ingress = new SnapshotIngress(async () => {
+        if (fail) throw new Error("boom");
+        return ok(label, ["some_prior_warning"]);
+      });
+      vi.setSystemTime(1_000);
+      await ingress.getSnapshot("window:1");
+      vi.setSystemTime(2_000);
+      label = "B";
+      await ingress.getSnapshot("window:1");
+      vi.setSystemTime(3_000);
+      fail = true;
+      const result = await ingress.getSnapshot("window:1");
+      // The LATEST read goes out, under its own date, and is not called a read.
+      expect(result.candidates[0].label).toBe("B");
+      expect(result.freshness).toEqual({ from: "staleCache", observedAtMs: 2_000 });
+      expect(result.warnings).toEqual(["some_prior_warning", "ingress_fetch_error"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not hand one target's read to another", async () => {
+    const ingress = new SnapshotIngress(async (key: string) => {
+      if (key === "window:B") throw new Error("boom");
+      return ok(key);
+    });
+    await ingress.getSnapshot("window:A");
+    expect((await ingress.getSnapshot("window:B")).freshness).toEqual({ from: "unavailable" });
+  });
+
+  it("says `unavailable` — never `read` — when nothing was read before", async () => {
+    const ingress = new SnapshotIngress(async () => {
+      throw new Error("boom");
+    });
+    const result = await ingress.getSnapshot("window:1");
+    expect(result.candidates).toEqual([]);
+    expect(result.warnings).toEqual(["ingress_fetch_error"]);
+    // No date: there is no observation to date.
+    expect(result.freshness).toEqual({ from: "unavailable" });
+  });
+
+  it("says `unavailable` after dispose, and forgets what it read", async () => {
+    const fetch = vi.fn(async () => ok("A"));
+    const ingress = new SnapshotIngress(fetch);
+    await ingress.getSnapshot("window:1");
+    ingress.dispose();
+    const result = await ingress.getSnapshot("window:1");
+    expect(result).toEqual({ candidates: [], warnings: [], freshness: { from: "unavailable" } });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+});
+
+// ── Subscribe ─────────────────────────────────────────────────────────────────
 
 describe("SnapshotIngress — subscribe", () => {
   it("subscriber fires on invalidate", () => {
     const ingress = new SnapshotIngress(async () => failed([]));
     const cb = vi.fn();
     ingress.subscribe("window:1", cb);
-    ingress.invalidate("window:1", "winevent");
+    ingress.invalidate("window:1", "manual");
     expect(cb).toHaveBeenCalledOnce();
   });
 
@@ -273,7 +160,7 @@ describe("SnapshotIngress — subscribe", () => {
     const ingress = new SnapshotIngress(async () => failed([]));
     const cb = vi.fn();
     ingress.subscribe("window:A", cb);
-    ingress.invalidate("window:B", "winevent");
+    ingress.invalidate("window:B", "manual");
     expect(cb).not.toHaveBeenCalled();
   });
 
@@ -282,29 +169,8 @@ describe("SnapshotIngress — subscribe", () => {
     const cb = vi.fn();
     const unsub = ingress.subscribe("window:1", cb);
     unsub();
-    ingress.invalidate("window:1", "winevent");
-    expect(cb).not.toHaveBeenCalled();
-  });
-});
-
-describe("SnapshotIngress — markRecovered", () => {
-  it("markRecovered clears dirty flag — no re-fetch on next getSnapshot", async () => {
-    const fetch = vi.fn(async () => ok("A"));
-    const ingress = new SnapshotIngress(fetch, noopSource());
-    await ingress.getSnapshot("window:1");
     ingress.invalidate("window:1", "manual");
-    ingress.markRecovered!("window:1");
-    await ingress.getSnapshot("window:1");
-    expect(fetch).toHaveBeenCalledOnce();
-  });
-});
-
-describe("SnapshotIngress — dispose", () => {
-  it("calls eventSource.dispose on ingress.dispose", () => {
-    const src = noopSource();
-    const ingress = new SnapshotIngress(async () => failed([]), src);
-    ingress.dispose();
-    expect(src.dispose).toHaveBeenCalled();
+    expect(cb).not.toHaveBeenCalled();
   });
 });
 

@@ -6,12 +6,11 @@
  * its cap. The caller could not tell which, and guessed between tools. The reply's constraints now
  * carry `query: "no_match"`, and the description names the two recoveries that worked in S9.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { UiEntityCandidate } from "../../src/engine/vision-gpu/types.js";
 import { DesktopFacade } from "../../src/tools/desktop.js";
 import { deriveViewConstraints } from "../../src/tools/desktop-constraints.js";
-import { SnapshotIngress } from "../../src/engine/world-graph/candidate-ingress.js";
 
 function candidate(label: string): UiEntityCandidate {
   return {
@@ -52,22 +51,31 @@ describe("a query that matches nothing", () => {
     expect(view.constraints?.query).toBeUndefined();
   });
 
+  // Since internal #218 `SnapshotIngress` reads on every call; an injected ingress may still remember,
+  // so the facade still tells it the read it missed on is over.
+  function spyIngress() {
+    const invalidate = vi.fn();
+    const ingress = {
+      getSnapshot: async () => ({ candidates: [candidate("A1")], warnings: [] }),
+      invalidate,
+      subscribe: () => () => undefined,
+      dispose: () => undefined,
+    };
+    return { ingress, invalidate };
+  }
+
   it("ends the read it missed on, so a call after scrolling reads again instead of the cache (gate 2)", async () => {
-    let reads = 0;
-    const ingress = new SnapshotIngress(async () => { reads++; return { candidates: [candidate("A1")], warnings: [] }; });
+    const { ingress, invalidate } = spyIngress();
     const f = new DesktopFacade(async () => [], { executorFn: async () => "uia", ingress });
     await f.see({ target: { hwnd: "500" }, query: "J40" });
-    await f.see({ target: { hwnd: "500" }, query: "J40" });
-    expect(reads).toBe(2);
+    expect(invalidate).toHaveBeenCalledWith("window:500", "manual");
   });
 
-  it("leaves the cache alone when the query matched (the control)", async () => {
-    let reads = 0;
-    const ingress = new SnapshotIngress(async () => { reads++; return { candidates: [candidate("A1")], warnings: [] }; });
+  it("leaves the read alone when the query matched (the control)", async () => {
+    const { ingress, invalidate } = spyIngress();
     const f = new DesktopFacade(async () => [], { executorFn: async () => "uia", ingress });
     await f.see({ target: { hwnd: "500" }, query: "A1" });
-    await f.see({ target: { hwnd: "500" }, query: "A1" });
-    expect(reads).toBe(1);
+    expect(invalidate).not.toHaveBeenCalled();
   });
 });
 

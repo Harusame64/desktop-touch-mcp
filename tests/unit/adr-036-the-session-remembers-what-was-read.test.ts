@@ -209,23 +209,23 @@ describe("the identity is the one from the read, not from the moment it was file
     expect(result.ok).toBe(true);
   });
 
-  it("keeps the window origin with the candidates, and hands it back on a hit", async () => {
+  it("keeps the window origin with the candidates, and hands it back with a stale entry", async () => {
     // ADR-036 item 5. The origin is what the entities' screen coordinates were measured against,
     // so it has to travel with them: read at store time instead, a cache hit would pair
     // coordinates from one moment with an origin from another, and the homing correction built on
-    // the difference would move the press by a delta that never happened.
+    // the difference would move the press by a delta that never happened. Since internal #218 the
+    // only road that hands a remembered read back is a read that threw.
     const origin = { kind: "measured" as const, rect: { x: 100, y: 200, width: 600, height: 400 } };
-    const fetchFn = vi.fn(async () => ({
-      candidates: [candidate("2624042")],
-      warnings: [],
-      target: { hwnd: "2624042", windowTitle: "CELL BUTTONS" },
-      origin,
-    }));
-    const ingress = new SnapshotIngress(fetchFn);
+    let fail = false;
+    const ingress = new SnapshotIngress(async () => {
+      if (fail) throw new Error("provider down");
+      return { candidates: [candidate("2624042")], warnings: [], target: { hwnd: "2624042", windowTitle: "CELL BUTTONS" }, origin };
+    });
     await ingress.getSnapshot("window:__default__");
-    const cached = await ingress.getSnapshot("window:__default__");
-    expect(fetchFn).toHaveBeenCalledTimes(1);
-    expect(cached.origin).toEqual(origin);
+    fail = true;
+    const stale = await ingress.getSnapshot("window:__default__");
+    expect(stale.freshness?.from).toBe("staleCache");
+    expect(stale.origin).toEqual(origin);
   });
 
   it("puts that origin on the aim the session keeps", async () => {
@@ -311,26 +311,26 @@ describe("the identity is the one from the read, not from the moment it was file
       .toEqual({ x: 458, y: 291 });
   });
 
-  it("keeps identity and candidates together in the cache", async () => {
+  it("keeps identity and candidates together in a stale entry", async () => {
     const identity = { hwnd: 2624042n, pid: 1234, processName: "notepad.exe", processStartTimeMs: 111 };
-    const fetchFn = vi.fn(async () => ({
-      candidates: [candidate("2624042")],
-      warnings: [],
-      target: { hwnd: "2624042", windowTitle: "CELL BUTTONS" },
-      identity,
-    }));
-    const ingress = new SnapshotIngress(fetchFn);
+    let fail = false;
+    const ingress = new SnapshotIngress(async () => {
+      if (fail) throw new Error("provider down");
+      return { candidates: [candidate("2624042")], warnings: [], target: { hwnd: "2624042", windowTitle: "CELL BUTTONS" }, identity, identityRead: true };
+    });
     await ingress.getSnapshot("window:__default__");
-    const cached = await ingress.getSnapshot("window:__default__");
+    fail = true;
+    const stale = await ingress.getSnapshot("window:__default__");
 
-    expect(fetchFn).toHaveBeenCalledTimes(1);
-    // The cache hit hands back the identity read WITH those candidates. Re-reading it here would
+    expect(stale.freshness?.from).toBe("staleCache");
+    // The stale entry hands back the identity read WITH those candidates. Re-reading it here would
     // describe whatever owns the handle now, which is the window the guard exists to refuse.
-    expect(cached.identity).toEqual(identity);
+    expect(stale.identity).toEqual(identity);
+    expect(stale.identityRead).toBe(true);
   });
 });
 
-describe("the ingress carries the resolved target, including out of its cache", () => {
+describe("the ingress carries the resolved target, including out of a stale entry", () => {
   it("returns it on the fetch", async () => {
     const ingress = new SnapshotIngress(async () => ({
       candidates: [candidate("2624042")],
@@ -339,23 +339,6 @@ describe("the ingress carries the resolved target, including out of its cache", 
     }));
     const first = await ingress.getSnapshot("window:__default__");
     expect(first.target).toEqual({ hwnd: "2624042", windowTitle: "CELL BUTTONS" });
-  });
-
-  it("returns it again from the cache, from the entry the candidates came from", async () => {
-    // The point of caching it rather than re-resolving: a cache hit hands back the window its
-    // candidates describe. If the foreground has moved on since, the aim still matches the view,
-    // which is the property the lease depends on.
-    const fetchFn = vi.fn(async () => ({
-      candidates: [candidate("2624042")],
-      warnings: [],
-      target: { hwnd: "2624042", windowTitle: "CELL BUTTONS" },
-    }));
-    const ingress = new SnapshotIngress(fetchFn);
-    await ingress.getSnapshot("window:__default__");
-    const second = await ingress.getSnapshot("window:__default__");
-
-    expect(fetchFn).toHaveBeenCalledTimes(1);          // the second call was served from cache
-    expect(second.target).toEqual({ hwnd: "2624042", windowTitle: "CELL BUTTONS" });
   });
 
   it("says nothing about the target when the fetch failed and only a stale entry is left", async () => {

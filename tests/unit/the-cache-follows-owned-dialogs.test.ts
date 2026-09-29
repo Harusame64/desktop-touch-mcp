@@ -7,18 +7,18 @@
  * WITHOUT the dialog for about 30 s after it appeared, and — the reverse — the closed dialog's
  * buttons as `observed` after it had gone, until the 30 s TTL ran out. The dialog is a top-level
  * window of its own; its events carried its own handle and never matched the owner's key.
+ *
+ * internal #218: the ingress no longer serves a cached read — every discover reads, a dialog's
+ * coming and going included — so nothing in production drains this source now. The cells below pin
+ * the adapter alone; what the ingress and the facade do is in `candidate-ingress.test.ts`.
  */
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  SnapshotIngress,
   combineEventSources,
   createWinEventIngressSource,
   type IngressDrainContext,
-  type ProviderResult,
 } from "../../src/engine/world-graph/candidate-ingress.js";
-import type { UiEntityCandidate } from "../../src/engine/vision-gpu/types.js";
-import { DesktopFacade } from "../../src/tools/desktop.js";
 
 type Ev = { type: string; hwnd?: string; windowTitle?: string };
 
@@ -104,114 +104,3 @@ describe("the WinEvent source dirties the owner's key", () => {
   });
 });
 
-// ── Through the ingress ───────────────────────────────────────────────────────
-
-function candidate(label: string, hwnd?: string): UiEntityCandidate {
-  return {
-    source: "uia",
-    target: { kind: "window", id: "Notepad" },
-    label,
-    role: "button",
-    rect: { x: 10, y: 10, width: 60, height: 20 },
-    actionability: ["click"],
-    confidence: 0.9,
-    observedAtMs: 0,
-    provisional: false,
-    ...(hwnd !== undefined && { locator: { uia: { name: label, nativeWindowHandle: hwnd } } }),
-  } as unknown as UiEntityCandidate;
-}
-
-function ingress(queue: Ev[], owners: Record<string, string>, read: () => UiEntityCandidate[]) {
-  const fetch = vi.fn(async (): Promise<ProviderResult> => ({ candidates: read(), warnings: [] }));
-  return { ingress: new SnapshotIngress(fetch, source(queue, owners)), fetch };
-}
-
-describe("the ingress reads again after an owned dialog comes or goes", () => {
-  it("reads again when the dialog appears, instead of serving the read without it", async () => {
-    const queue: Ev[] = [];
-    const { ingress: ing } = ingress(queue, { "777": "500" }, () => [candidate("Text")]);
-    await ing.getSnapshot("window:500");
-    queue.push({ type: "window_appeared", hwnd: "777" });
-    expect((await ing.getSnapshot("window:500")).freshness).toMatchObject({ from: "read" });
-  });
-
-  it("reads again when a dialog the read listed closes, instead of serving its buttons", async () => {
-    const queue: Ev[] = [];
-    const { ingress: ing } = ingress(queue, {}, () => [candidate("Text"), candidate("メモ帳", "777"), candidate("キャンセル", "790")]);
-    await ing.getSnapshot("window:500");
-    // The bus reports top-level windows only: the dialog's own handle, not its buttons'.
-    queue.push({ type: "window_disappeared", hwnd: "777" });
-    expect((await ing.getSnapshot("window:500")).freshness).toMatchObject({ from: "read" });
-  });
-
-  it("keeps a mark that lands while a read is in flight, instead of the read writing it off (gate 2)", async () => {
-    let release!: () => void;
-    let calls = 0;
-    const fetch = vi.fn(async (): Promise<ProviderResult> => {
-      calls++;
-      if (calls === 2) await new Promise<void>((r) => { release = r; });
-      return { candidates: [candidate("Text")], warnings: [] };
-    });
-    const ing = new SnapshotIngress(fetch);
-    await ing.getSnapshot("window:500");
-    ing.invalidate("window:500", "manual");
-    const inFlight = ing.getSnapshot("window:500");      // read #2 starts
-    await vi.waitFor(() => expect(calls).toBe(2));
-    ing.invalidate("window:500", "manual");              // the act lands mid-read
-    release();
-    await inFlight;
-    expect((await ing.getSnapshot("window:500")).freshness).toMatchObject({ from: "read" });
-    expect(fetch).toHaveBeenCalledTimes(3);
-  });
-
-  it("still serves the cache when an unrelated window comes and goes", async () => {
-    const queue: Ev[] = [];
-    const { ingress: ing, fetch } = ingress(queue, { "901": "600" }, () => [candidate("Text"), candidate("メモ帳", "777")]);
-    await ing.getSnapshot("window:500");
-    queue.push({ type: "window_appeared", hwnd: "901" }, { type: "window_disappeared", hwnd: "999" });
-    expect((await ing.getSnapshot("window:500")).freshness).toMatchObject({ from: "cache" });
-    expect(fetch).toHaveBeenCalledTimes(1);
-  });
-});
-
-// ── Through the facade ────────────────────────────────────────────────────────
-
-describe("an act ends the cached read it was made against", () => {
-  async function actThenSee(execute: () => Promise<"uia">, opts: Record<string, unknown> = {}) {
-    const fetch = vi.fn(async (): Promise<ProviderResult> => ({ candidates: [candidate("OK")], warnings: [] }));
-    const facade = new DesktopFacade(async () => [], { ingress: new SnapshotIngress(fetch), executorFn: execute, ...opts });
-    const view = await facade.see({ target: { hwnd: "500" } });
-    const result = await facade.touch({ lease: view.entities[0].lease });
-    const after = await facade.see({ target: { hwnd: "500" } });
-    return { result, after, fetch };
-  }
-
-  it("reads again after an act that pressed", async () => {
-    const { result, fetch } = await actThenSee(async () => "uia");
-    expect(result.ok).toBe(true);
-    expect(fetch).toHaveBeenCalledTimes(2);
-  });
-
-  it("reads again after an act that was refused, so the refusal is not repeated from the same read", async () => {
-    const { result, fetch } = await actThenSee(async () => "uia", { isModalBlocking: () => true });
-    expect(result).toMatchObject({ ok: false, reason: "modal_blocking" });
-    expect(fetch).toHaveBeenCalledTimes(2);
-  });
-
-  it("reads again after an act whose executor threw", async () => {
-    const fetch = vi.fn(async (): Promise<ProviderResult> => ({ candidates: [candidate("OK")], warnings: [] }));
-    const facade = new DesktopFacade(async () => [], { ingress: new SnapshotIngress(fetch), executorFn: async () => { throw new Error("boom"); } });
-    const view = await facade.see({ target: { hwnd: "500" } });
-    await facade.touch({ lease: view.entities[0].lease }).catch(() => undefined);
-    await facade.see({ target: { hwnd: "500" } });
-    expect(fetch).toHaveBeenCalledTimes(2);
-  });
-
-  it("serves the cache to a second read with no act between (the control)", async () => {
-    const fetch = vi.fn(async (): Promise<ProviderResult> => ({ candidates: [candidate("OK")], warnings: [] }));
-    const facade = new DesktopFacade(async () => [], { ingress: new SnapshotIngress(fetch), executorFn: async () => "uia" });
-    await facade.see({ target: { hwnd: "500" } });
-    await facade.see({ target: { hwnd: "500" } });
-    expect(fetch).toHaveBeenCalledTimes(1);
-  });
-});
