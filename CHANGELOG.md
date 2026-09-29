@@ -89,6 +89,12 @@
   of it is not returned with new leases. The warning appears only when Windows answers that the
   handle is not a window. A window that is only hidden, or a handle of zero, does not get it.
 
+- **`desktop_discover` says when the window it was asked about is excluded.** A window this
+  server keeps out of every tool, such as the key locker's own, used to answer
+  `ingress_fetch_error`, whose advice is to retry. It now answers the warning `window_excluded`,
+  with `constraints.window` and `constraints.entityZeroReason` set to the same value. Nothing is
+  read from the window, and calling again returns the same answer while it stays excluded.
+
 - **`desktop_discover` reads the window on every call.** It used to answer from its last read for
   up to 30 seconds unless a window appeared or disappeared, and missed every change made inside a
   window by something other than `desktop_act`: an Excel sheet switched or zoomed over COM, a field
