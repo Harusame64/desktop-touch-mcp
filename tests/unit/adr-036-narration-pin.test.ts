@@ -206,10 +206,65 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     const r = await narrated({
       windowTitle: SHARED_TITLE, hwnd: LIVE, name: "OK", narrate: "rich",
     } as never);
+    // A walk that ran out of time is a slow window, not a large one: `timeout`, not the
+    // `tree_truncated` a filled cap gets (internal #211 B, gate 2).
     expect(richOf(r).diffDegraded).toBe("timeout");
     expect(richOf(r).diffSource).toBe("none");
     // The write still happened; what is withheld is the description of it.
     expect(innerHandler).toHaveBeenCalled();
+  });
+
+  it("reads at discover's caps by element count, the PowerShell road at its own (internal #211 B)", async () => {
+    // Calculator's display sits at depth 4-5 and Explorer's status bar at 5 (win2 S3/S10), below
+    // the old depth 3 / 80 read.
+    await narrated({ windowTitle: SHARED_TITLE, name: "OK", narrate: "rich" } as never);
+    const [, depth, max, , options] = mockGetUiElements.mock.calls[0] as unknown as [string, number, number, number, Record<string, unknown>];
+    expect([depth, max]).toEqual([64, 500]);
+    expect(options).toMatchObject({ fetchValues: true, fallbackLimits: { maxDepth: 4, maxElements: 80 } });
+  });
+
+  it("withholds the diff when a native read filled its 500 cap: it is a prefix too (internal #211 B)", async () => {
+    mockGetUiElements.mockResolvedValueOnce({
+      ok: true, elementCount: 500, via: "native",
+      elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }],
+    } as never);
+    const r = await narrated({ windowTitle: SHARED_TITLE, name: "OK", narrate: "rich" } as never);
+    expect(richOf(r).diffDegraded).toBe("tree_truncated");
+    expect(innerHandler).toHaveBeenCalled();
+  });
+
+  it("does not withhold one element short of the cap", async () => {
+    const read = { ok: true, elementCount: 499, via: "native", elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }] };
+    mockGetUiElements.mockResolvedValueOnce(read as never).mockResolvedValueOnce(read as never);
+    const r = await narrated({ windowTitle: SHARED_TITLE, name: "OK", narrate: "rich" } as never);
+    expect(richOf(r).diffDegraded).toBeUndefined();
+  });
+
+  it("measures a PowerShell read against the PowerShell road's 80", async () => {
+    mockGetUiElements.mockResolvedValueOnce({
+      ok: true, elementCount: 80, via: "powershell",
+      elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }],
+    } as never);
+    const r = await narrated({ windowTitle: SHARED_TITLE, name: "OK", narrate: "rich" } as never);
+    expect(richOf(r).diffDegraded).toBe("tree_truncated");
+  });
+
+  it("withholds a diff across the two roads: they read to different caps (gate 2)", async () => {
+    mockGetUiElements
+      .mockResolvedValueOnce({ ok: true, elementCount: 1, via: "native", elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }] } as never)
+      .mockResolvedValueOnce({ ok: true, elementCount: 1, via: "powershell", elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }] } as never);
+    const r = await narrated({ windowTitle: SHARED_TITLE, name: "OK", narrate: "rich" } as never);
+    expect(richOf(r).diffDegraded).toBe("timeout");
+    expect(richOf(r).diffSource).toBe("none");
+  });
+
+  it("withholds when the AFTER read filled its cap", async () => {
+    mockGetUiElements
+      .mockResolvedValueOnce({ ok: true, elementCount: 1, via: "native", elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }] } as never)
+      .mockResolvedValueOnce({ ok: true, elementCount: 500, via: "native", elements: [{ name: "Field", controlType: "Edit", automationId: "f1", value: "" }] } as never);
+    const r = await narrated({ windowTitle: SHARED_TITLE, name: "OK", narrate: "rich" } as never);
+    expect(richOf(r).diffDegraded).toBe("tree_truncated");
+    expect(mockGetUiElements).toHaveBeenCalledTimes(2);
   });
 
   it("withholds when the enumeration cannot say whether the title is shared", async () => {

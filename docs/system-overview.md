@@ -48,7 +48,7 @@ desktop-touch-mcp (Node.js / TypeScript)
     │   │                     runSomPipeline(): Hybrid Non-CDP pipeline (8 stages)
     │   │                       capture → preprocess (Rust) → OCR → cluster → drawSomLabels (Rust)
     │   │                     clusterOcrWords(): 2-stage merge (char→word→element) via proximity heuristics
-    │   ├── uia-diff.ts     — UIA snapshot diff (appeared / disappeared / valueDeltas)
+    │   ├── uia-diff.ts     — UIA snapshot diff (appeared / disappeared / valueDeltas / nameDeltas)
     │   ├── image.ts        — image encode (sharp): PNG / WebP 1:1 / crop
     │   │                     + screen-capture choke point (native GDI default, nut-js fallback — ADR-031)
     │   ├── layer-buffer.ts — per-window layer buffer: frame-diff detection (MPEG P-frame style)
@@ -1077,7 +1077,7 @@ screenshot(diffMode=true)
 | window-cache TTL | 60 s — prevents stale-HWND mis-correction after reuse |
 | Homing Tier 3 gate | Fires only when `delta > 200px` or `sizeChanged=true` |
 | `post.focusedElement` timeout | 800 ms — cap for apps that don't answer UIA queries |
-| UIA diff caps | 5 for `appeared` / `disappeared`, 3 for `valueDeltas` — overflow count lives in `truncated` |
+| UIA diff caps | 5 for `appeared` / `disappeared`, 3 for `valueDeltas` and for `nameDeltas` — overflow count lives in `truncated` |
 | `narrate:"rich"` settle | 120 ms wait between the action and the after-snapshot |
 | tab-context cache (browser tools) | 500 ms keyed by `(port, tabId)` — chained calls share one `getTabContext` round-trip |
 | `--disable-extensions` exclusion | Chrome 147+ with this flag fails to bind the CDP port; removed from the E2E launcher |

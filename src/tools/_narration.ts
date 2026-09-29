@@ -20,7 +20,13 @@
 
 import { withPostState } from "./_post.js";
 import { resolveWindowTarget, withPinnedResolution } from "./_resolve-window.js";
-import { getUiElements } from "../engine/uia-bridge.js";
+import { getUiElements, type UiElement } from "../engine/uia-bridge.js";
+import {
+  UIA_DISCOVER_FALLBACK_DEPTH,
+  UIA_DISCOVER_FALLBACK_ELEMENTS,
+  UIA_DISCOVER_MAX_DEPTH,
+  UIA_DISCOVER_MAX_ELEMENTS,
+} from "./desktop-providers/uia-provider.js";
 import { enumWindowsInZOrder } from "../engine/win32.js";
 import { computeUiaDiff, degradedRichBlock } from "../engine/uia-diff.js";
 import type { RichBlock } from "../engine/uia-diff.js";
@@ -37,7 +43,8 @@ export const narrateParam = z
   .enum(["minimal", "rich"])
   .default("minimal")
   .describe(
-    'Narration level. "rich": include UIA diff in post.rich (appeared/disappeared/valueDeltas) — ' +
+    'Narration level. "rich": include UIA diff in post.rich (appeared/disappeared/valueDeltas, and ' +
+    "nameDeltas when an element's name changed, such as a calculator display) — " +
     "usually removes the need for a verification screenshot. It is withheld, with " +
     "post.rich.diffDegraded saying why, when the diff cannot be shown to describe the " +
     "window that was acted on. On click_element and keyboard (and set_element_value " +
@@ -51,7 +58,8 @@ export const narrateParam = z
     "keep their diff on a fixId retry, because theirs is a tab diff and does not depend " +
     "on a window title. mouse_click and mouse_drag accept an hwnd and still take their " +
     "snapshots by windowTitle, so nothing else is withheld for them: verify those with " +
-    "a screenshot. The action itself is unaffected in every case; only the diff is. " +
+    "a screenshot. A window too large to read whole is withheld too (\"tree_truncated\"). " +
+    "The action itself is unaffected in every case; only the diff is. " +
     "Default: \"minimal\"."
   );
 
@@ -105,19 +113,27 @@ const UI_SETTLE_MS = 120;
 // UIA snapshot helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function snapElements(windowTitle: string, useCache: boolean) {
+/** A read's elements with the road that read them, or why there is nothing to diff. */
+type Snapshot = { elements: UiElement[]; via: "native" | "powershell" | undefined };
+
+async function snapElements(windowTitle: string, useCache: boolean): Promise<Snapshot | "cut" | "slow" | null> {
   try {
-    const result = await getUiElements(windowTitle, 3, 80, 4000, {
+    // internal #211 (B) — the discover read's caps, by element count: Calculator's display sits at
+    // depth 4–5 and Explorer's status bar at depth 5 (win2 S3/S10), below the old depth 3 / 80.
+    const result = await getUiElements(windowTitle, UIA_DISCOVER_MAX_DEPTH, UIA_DISCOVER_MAX_ELEMENTS, 4000, {
       cached: useCache,
       fetchValues: true,
+      fallbackLimits: { maxDepth: UIA_DISCOVER_FALLBACK_DEPTH, maxElements: UIA_DISCOVER_FALLBACK_ELEMENTS },
     });
-    // ADR-036 — a tree the PowerShell walk cut short is a prefix, and this function's caller
-    // DIFFS two of them. Two prefixes that end in different places read as elements appearing
-    // and disappearing that never moved, so the narration would describe a change the user never
-    // made. `null` is the honest answer here: it suppresses narration, which is what a killed
-    // script used to do by accident (2ゲート目の指摘).
-    if (result.truncated) return null;
-    return result.elements;
+    // ADR-036 — a tree cut short is a prefix, and this function's caller DIFFS two of them. Two
+    // prefixes that end in different places read as elements appearing and disappearing that never
+    // moved, so the narration would describe a change the user never made. A walk that ran out of
+    // time says so (`truncated`: "slow"); one that stopped at its element cap does not, and is a
+    // prefix all the same ("cut", internal #211 B) — two different reasons, said apart (gate 2).
+    if (result.truncated) return "slow";
+    const cap = result.via === "powershell" ? UIA_DISCOVER_FALLBACK_ELEMENTS : UIA_DISCOVER_MAX_ELEMENTS;
+    if (result.elementCount >= cap) return "cut";
+    return { elements: result.elements, via: result.via };
   } catch {
     return null;
   }
@@ -564,8 +580,12 @@ export function withRichNarration<T extends Record<string, unknown>>(
 
     const result = await handoff(() => wrappedWithPost(args));
 
-    if (!snapBefore) {
+    if (!snapBefore || snapBefore === "slow") {
       spliceRich(result, degradedRichBlock("timeout"));
+      return result;
+    }
+    if (snapBefore === "cut") {
+      spliceRich(result, degradedRichBlock("tree_truncated"));
       return result;
     }
 
@@ -574,7 +594,19 @@ export function withRichNarration<T extends Record<string, unknown>>(
 
     try {
       const snapAfterElements = await snapElements(windowTitle, false);
-      if (!snapAfterElements) {
+      if (!snapAfterElements || snapAfterElements === "slow") {
+        spliceRich(result, degradedRichBlock("timeout"));
+        return result;
+      }
+      if (snapAfterElements === "cut") {
+        spliceRich(result, degradedRichBlock("tree_truncated"));
+        return result;
+      }
+      // The two roads read to different caps (native 64 / 500, PowerShell 4 / 80) and through
+      // different providers, so a diff across them would report everything the shallower one did
+      // not reach as gone. The after-read falls back when the native one fails, which is itself
+      // most often a timeout (gate 2).
+      if (snapBefore.via !== snapAfterElements.via) {
         spliceRich(result, degradedRichBlock("timeout"));
         return result;
       }
@@ -640,7 +672,7 @@ export function withRichNarration<T extends Record<string, unknown>>(
       }
 
 
-      const diff = computeUiaDiff(snapBefore, snapAfterElements);
+      const diff = computeUiaDiff(snapBefore.elements, snapAfterElements.elements);
       const richBlock: RichBlock = { ...diff, diffSource: "uia" };
       spliceRich(result, richBlock);
     } catch {

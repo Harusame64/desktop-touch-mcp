@@ -45,6 +45,16 @@ pub struct UiElement {
     /// control type, and for a window that does not support the pattern: a title bar and a UWP
     /// `CoreWindow` do not (win2 S6, 2026-09-29), and "not supported" is not "not modal".
     pub is_modal: Option<bool>,
+    /// internal #211 (B) — the element's UIA `RuntimeId`, its integers joined by `.`. Unique while
+    /// the element lives; win2 measured it unchanged across an act on elements updated in place
+    /// (Calculator's display, a Notepad toggle, a WPF label) and new on elements the app rebuilds
+    /// (Explorer's status bar, a Chrome text leaf) (S10, 2026-09-29). `None` when not read.
+    pub runtime_id: Option<String>,
+    /// internal #211 (B) — where the element sits in this read: for each level from the root,
+    /// `/<ControlType>[<index among the parent's ControlView children>]`. Rebuilt elements kept it
+    /// (Explorer's status bar, 4 of 4, S10) where their RuntimeId and their parent's did not. `None`
+    /// on a read that does not walk from a root.
+    pub path: Option<String>,
 }
 
 #[napi(object)]

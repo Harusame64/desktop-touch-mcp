@@ -461,7 +461,7 @@ $sw       = [System.Diagnostics.Stopwatch]::StartNew()
 # native walker's numbering, so the two roads agree on what depth means as well as on what the
 # tree contains.
 $queue = [System.Collections.Generic.Queue[object]]::new()
-$queue.Enqueue(@{ el=$target; depth=1 })
+$queue.Enqueue(@{ el=$target; depth=1; path='' })
 
 # Patterns we care about (subset of all UIA patterns)
 $wantedPats = [System.Collections.Generic.HashSet[string]]::new()
@@ -473,6 +473,7 @@ $wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $nu
     $item   = $queue.Dequeue()
     $parent = $item.el
     $depth  = $item.depth
+    $parentPath = $item.path
     if ($depth -gt ${maxDepth}) { continue }
 
     # One call per parent, like the native path. A parent that refuses to enumerate is skipped
@@ -481,7 +482,11 @@ $wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $nu
     try { $kids = $parent.FindAll($children, $cvCond) } catch { continue }
     if ($null -eq $kids) { continue }
 
+    # internal #211 (B) - the index among ALL the parent's ControlView children, offscreen ones
+    # included, as the native walk counts it.
+    $sib = -1
     foreach ($el in $kids) {
+    $sib++
     # Skip offscreen elements — prune subtree (children will also be offscreen)
     $offscreen = $false
     try { $offscreen = $el.Current.IsOffscreen } catch {}
@@ -526,6 +531,13 @@ $wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $nu
         else { $elHwndRead = 'zero' }
     } catch {}
 
+    # internal #211 (B) - where the element sits, and its RuntimeId, as the native walk writes them.
+    # No path when the type could not be read, nor under a parent without one - as the native walk.
+    $elPath = $null
+    if ($null -ne $parentPath -and $ctName) { $elPath = $parentPath + '/' + $ctName + '[' + $sib + ']' }
+    $elRid = $null
+    try { $elRid = ($el.GetRuntimeId() -join '.') } catch {}
+
     # internal #211 (C) - a Window's own IsModal, as the native road reads it; nothing for a window
     # that does not support the pattern.
     $elModal = $null
@@ -548,11 +560,13 @@ $wantedPats.Add('TogglePattern') > $null; $wantedPats.Add('ScrollPattern') > $nu
     if ($null -ne $elHwnd) { $elObj['nativeWindowHandle'] = $elHwnd }
     $elObj['nativeWindowHandleRead'] = $elHwndRead
     if ($null -ne $elModal) { $elObj['isModal'] = $elModal }
+    if ($null -ne $elPath) { $elObj['path'] = $elPath }
+    if ($elRid) { $elObj['runtimeId'] = $elRid }
     $results.Add($elObj)
     $count++
     if ($count -ge ${maxElements}) { break bfs }
 
-    if ($depth -lt ${maxDepth}) { $queue.Enqueue(@{ el=$el; depth=($depth+1) }) }
+    if ($depth -lt ${maxDepth}) { $queue.Enqueue(@{ el=$el; depth=($depth+1); path=$elPath }) }
     }
 }
 
@@ -1125,6 +1139,18 @@ export interface UiElement {
    * and on an addon older than the field: absence is "did not answer", never "not modal".
    */
   isModal?: boolean;
+  /**
+   * internal #211 (B) — the element's UIA `RuntimeId`, its integers joined by `.`. Unique while the
+   * element lives: unchanged across an act on an element updated in place, new on one the app
+   * rebuilt (win2 S10). Absent when the read did not take it.
+   */
+  runtimeId?: string;
+  /**
+   * internal #211 (B) — where the element sits in this read: `/<ControlType>[<index among the
+   * parent's ControlView children>]` per level from the read's root. A rebuilt element kept it where
+   * its RuntimeId did not (Explorer's status bar, 4 of 4, S10). Absent when the read did not take it.
+   */
+  path?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1522,10 +1548,10 @@ export async function getUiElements(
       if (cacheKey !== undefined && !maybeTruncated) {
         try { updateUiaCache(cacheKey, JSON.stringify({ ...normalised, readLimits: { maxDepth, maxElements } })); } catch { /* ignore */ }
       }
-      // Whether the walk stopped at its cap is NOT set as `truncated` here: `_narration` refuses a
-      // truncated tree outright, and a native read that fills narration's 80-element cap would switch
-      // narration off for every rich window (gate 2 on internal #211, round 2). discover says it on
-      // its own reads (`uia-provider.ts`).
+      // Whether the walk stopped at its cap is NOT set as `truncated` here: `truncated` means the walk
+      // ran out of time, and each caller judges a filled cap against its own caps — discover says it
+      // on its reads (`uia-provider.ts`), and `_narration` withholds a diff of such a read as
+      // `tree_truncated` (internal #211 B).
       return normalised;
     } catch (e) {
       // Internal #144 — a timeout on a window that does not answer is not waited for a second time.
@@ -2224,7 +2250,7 @@ foreach ($k in $kids) { Collect $k 0 }
  * to undefined. A build older than a field sends nothing, which stays absent rather than becoming a
  * guess. One function, so a new field cannot reach one read and not the other (gate 2 on #211 C).
  */
-function normalizeNativeElement({ nativeWindowHandle, nativeWindowHandleRead, isModal, ...el }: NativeUiElement): UiElement {
+function normalizeNativeElement({ nativeWindowHandle, nativeWindowHandleRead, isModal, runtimeId, path, ...el }: NativeUiElement): UiElement {
   return {
     ...el,
     boundingRect: el.boundingRect ?? null,
@@ -2232,6 +2258,8 @@ function normalizeNativeElement({ nativeWindowHandle, nativeWindowHandleRead, is
     // `internal#118` — and WHY it is absent, kept beside it.
     ...(nativeWindowHandleRead != null && { nativeWindowHandleRead: nativeWindowHandleRead as "value" | "zero" | "failed" }),
     ...(isModal != null && { isModal }),
+    ...(runtimeId != null && { runtimeId }),
+    ...(path != null && { path }),
   };
 }
 

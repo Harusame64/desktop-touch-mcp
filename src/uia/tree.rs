@@ -12,6 +12,7 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::System::Variant::{VARENUM, VARIANT, VT_ARRAY, VT_I4, VariantClear};
 use windows::Win32::UI::Accessibility::*;
 use windows::core::Interface;
 
@@ -99,12 +100,13 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
     // Each RPC fetches all ControlView children of one parent at once.
     // maxElements / maxDepth triggers early exit — no unnecessary RPCs.
     let mut elements: Vec<UiElement> = Vec::with_capacity(max_elements as usize);
-    let mut queue: VecDeque<(IUIAutomationElement, u32)> = VecDeque::with_capacity(64);
-    // Queue entries: (parent, depth_of_its_children).
-    // Root's children are at depth 1.
-    queue.push_back((root, 1));
+    let mut queue: VecDeque<(IUIAutomationElement, u32, Option<String>)> = VecDeque::with_capacity(64);
+    // Queue entries: (parent, depth_of_its_children, parent's path).
+    // Root's children are at depth 1; the root's own path is empty. A parent whose path could not
+    // be written gives its children none, rather than paths that restart at the root (gate 2).
+    queue.push_back((root, 1, Some(String::new())));
 
-    'bfs: while let Some((parent, child_depth)) = queue.pop_front() {
+    'bfs: while let Some((parent, child_depth, parent_path)) = queue.pop_front() {
         if child_depth > max_depth {
             continue;
         }
@@ -114,7 +116,7 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
             parent.FindAllBuildCache(
                 TreeScope_Children,
                 &ctx.control_view_condition,
-                &ctx.cache_request,
+                &ctx.tree_cache_request,
             )
         };
         let arr = match children {
@@ -137,7 +139,16 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
                 continue;
             }
 
-            if let Ok(ui_elem) = extract_element(&child, child_depth, fetch_values) {
+            // internal #211 (B) — the index among ALL the parent's ControlView children, offscreen
+            // ones included, so a sibling scrolling out of view does not renumber the rest.
+            let path = match (&parent_path, unsafe { child.CachedControlType() }) {
+                (Some(p), Ok(t)) => Some(format!("{p}/{}[{i}]", control_type_name(t))),
+                _ => None,
+            };
+
+            if let Ok(mut ui_elem) = extract_element(&child, child_depth, fetch_values) {
+                ui_elem.runtime_id = cached_runtime_id(&child);
+                ui_elem.path = path.clone();
                 elements.push(ui_elem);
             }
 
@@ -147,7 +158,7 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
 
             // Enqueue for next-level exploration.
             if child_depth < max_depth {
-                queue.push_back((child, child_depth + 1));
+                queue.push_back((child, child_depth + 1, path));
             }
         }
     }
@@ -341,7 +352,45 @@ fn extract_element(
             native_window_handle,
             native_window_handle_read,
             is_modal,
+            runtime_id: None,
+            path: None,
         })
+    }
+}
+
+/// internal #211 (B) — the element's cached `RuntimeId` as `a.b.c`. Only the element read's tree walk
+/// caches it (`tree_cache_request`); elsewhere the property is not cached and this answers `None`.
+fn cached_runtime_id(elem: &IUIAutomationElement) -> Option<String> {
+    unsafe {
+        let mut v = elem.GetCachedPropertyValue(UIA_RuntimeIdPropertyId).ok()?;
+        let read = runtime_id_from_variant(&v);
+        // The Win32 VARIANT has no Drop; the array it holds is freed here.
+        let _ = VariantClear(&mut v);
+        read
+    }
+}
+
+/// A `VT_ARRAY | VT_I4` VARIANT's integers joined by `.`; `None` for anything else.
+///
+/// # Safety
+/// `v` must be a VARIANT UIA returned, not yet cleared.
+unsafe fn runtime_id_from_variant(v: &VARIANT) -> Option<String> {
+    unsafe {
+        let inner = &v.Anonymous.Anonymous;
+        if inner.vt != VARENUM(VT_ARRAY.0 | VT_I4.0) {
+            return None;
+        }
+        let psa = inner.Anonymous.parray;
+        if psa.is_null() {
+            return None;
+        }
+        let sa = &*psa;
+        let n = sa.rgsabound[0].cElements as usize;
+        if sa.cDims != 1 || n == 0 || sa.pvData.is_null() {
+            return None;
+        }
+        let ids = std::slice::from_raw_parts(sa.pvData as *const i32, n);
+        Some(ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("."))
     }
 }
 

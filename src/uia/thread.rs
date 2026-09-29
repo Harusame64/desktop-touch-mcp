@@ -31,6 +31,10 @@ pub(crate) struct UiaContext {
     pub automation: IUIAutomation,
     pub walker: IUIAutomationTreeWalker,
     pub cache_request: IUIAutomationCacheRequest,
+    /// internal #211 (B) — the standard request plus `RuntimeId`, for the element read's tree walk
+    /// only. Kept apart from `cache_request`, which also serves the focus-event thread's slow-path
+    /// budget; win2 measured no difference in a 500-element read with `RuntimeId` added (S10).
+    pub tree_cache_request: IUIAutomationCacheRequest,
     /// ControlView filter for `FindAllBuildCache(TreeScope_Children)`.
     /// Created once and reused — matches the ControlViewWalker scope.
     pub control_view_condition: IUIAutomationCondition,
@@ -421,6 +425,11 @@ fn build_context() -> windows::core::Result<UiaContext> {
         configure_cache_properties(&cr)?;
         cr.SetTreeScope(TreeScope_Element)?;
 
+        let tree_cr = automation.CreateCacheRequest()?;
+        configure_cache_properties(&tree_cr)?;
+        tree_cr.AddProperty(UIA_RuntimeIdPropertyId)?;
+        tree_cr.SetTreeScope(TreeScope_Element)?;
+
         // ControlView condition — reused by BFS tree walks in tree.rs.
         // Equivalent to what ControlViewWalker uses internally.
         let cv_condition = automation.ControlViewCondition()?;
@@ -429,6 +438,7 @@ fn build_context() -> windows::core::Result<UiaContext> {
             automation,
             walker,
             cache_request: cr,
+            tree_cache_request: tree_cr,
             control_view_condition: cv_condition,
         })
     }

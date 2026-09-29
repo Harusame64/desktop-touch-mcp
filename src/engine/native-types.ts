@@ -31,6 +31,10 @@ export interface NativeUiElement {
   nativeWindowHandleRead?: string
   /** internal #211 (C) — a `Window` element's `WindowPattern.IsModal`; absent when it did not answer, and on an older addon. */
   isModal?: boolean | null
+  /** internal #211 (B) — the element's UIA RuntimeId, its integers joined by `.`; absent when not read. */
+  runtimeId?: string | null
+  /** internal #211 (B) — `/<ControlType>[<index among siblings>]` per level from the read's root. */
+  path?: string | null
 }
 
 export interface NativeUiElementsResult {

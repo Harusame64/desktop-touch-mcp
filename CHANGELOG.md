@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **Rich narration says when an element's name changed.** Some apps show a value in an element's
+  name rather than its value: a calculator's display, a status bar's item count. When such a name
+  changed, `narrate: "rich"` reported one element disappearing and another appearing, and
+  `valueDeltas` stayed empty. It now reports `post.rich.nameDeltas` (`type`, `before`, `after`,
+  up to 3). The elements before and after the action are matched by UI Automation's RuntimeId, and
+  an element the app rebuilt is matched by its position in the tree when exactly one element sits
+  there before and after. The read also goes deeper, to the same element-count cap as
+  `desktop_discover`, because such values sit below the old depth 3. A window whose read fills that
+  cap is too large to diff reliably, and the diff is withheld with `diffDegraded: "tree_truncated"`.
+  Rebuilt elements are matched by position only when they are the only change under their parent,
+  so a list refilled with other items is still reported as items appearing and disappearing. A
+  name change is reported only when the old name is gone and the new one is new, and never for the
+  rows of a list, grid or tree or what is inside them: those rows are reused for other files when
+  a list is refreshed or moves to another folder. A row renamed for real is reported as one item
+  disappearing and one appearing, and a row that appears or disappears is reported without the
+  cells inside it.
+
 - **A window that says it is not modal no longer blocks an act.** UI Automation lists a window's
   owned windows in its tree, and `desktop_act` refused an act when any of them was in the last read,
   unless the OS could say the element's own window takes input. For controls without a window of
