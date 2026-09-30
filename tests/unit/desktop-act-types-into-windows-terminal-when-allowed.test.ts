@@ -268,4 +268,28 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { dontAskAgain: { description: string } } } }])[0];
     expect(form.requestedSchema.properties.dontAskAgain.description).toBe(`Types: ${text}`);
   });
+
+  it("says Enter will be pressed, in the question and on the description line (PR codex round 4)", async () => {
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    await act("echo hi\n", ctx);
+    const form = (ask.mock.calls[0] as unknown as [{ message: string; requestedSchema: { properties: { dontAskAgain: { description: string } } } }])[0];
+    expect(form.message).toMatch(/"echo hi" \+ Enter/);
+    expect(form.requestedSchema.properties.dontAskAgain.description).toBe("Types: echo hi  — then presses Enter");
+  });
+
+  it("does not ask when the active tab cannot be read before the question (PR codex round 4)", async () => {
+    state.tab = undefined;
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await act("echo hi", ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/active tab could not be read/);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("does not type when a window that showed no tab shows one after the answer", async () => {
+    state.tab = null;
+    const ask = vi.fn(async () => { state.tab = { name: "x", runtimeId: "1" }; return { action: "accept" as const, content: {} }; });
+    const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/active tab changed/);
+    expect(mockFlash).not.toHaveBeenCalled();
+  });
 });

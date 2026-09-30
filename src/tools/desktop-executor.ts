@@ -385,7 +385,14 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
   // title, so only the selected tab's RuntimeId tells them apart (win2; PR codex on #764).
   const { getSelectedTab } = await import("../engine/uia-bridge.js");
   const tabBefore = await getSelectedTab(hwnd);
-  const answer = await askToTakeForeground({ windowTitle: before.windowTitle, text: line });
+  // A tab that cannot be read cannot be held to (PR codex on #764): refused before asking. A window
+  // that shows no tab (`null`) is held to showing none.
+  if (tabBefore === undefined) {
+    throw new TerminalForegroundRefusal(
+      "Nothing was typed: the terminal's active tab could not be read, so the user's answer could not be held to it.",
+    );
+  }
+  const answer = await askToTakeForeground({ windowTitle: before.windowTitle, text: line, pressEnter: trailing !== null });
   if (!answer.allowed) throw new TerminalForegroundRefusal(TERMINAL_FOREGROUND_REFUSALS[answer.why]);
   const channel = await whereIsIt();
   // The user agreed to the window the question named. Windows Terminal runs all its windows in one
@@ -397,14 +404,13 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
       `the user agreed to "${before.windowTitle}".`,
     );
   }
-  if (tabBefore) {
-    const tabAfter = await getSelectedTab(hwnd);
-    if (!tabAfter || tabAfter.runtimeId !== tabBefore.runtimeId) {
-      throw new TerminalForegroundRefusal(
-        "Nothing was typed: the terminal's active tab changed while the user was answering" +
-        (tabAfter ? "" : " (or could not be read again)") + `; the user agreed to the tab "${tabBefore.name}".`,
-      );
-    }
+  const tabAfter = await getSelectedTab(hwnd);
+  if (tabAfter === undefined || tabAfter?.runtimeId !== tabBefore?.runtimeId) {
+    throw new TerminalForegroundRefusal(
+      "Nothing was typed: the terminal's active tab changed while the user was answering" +
+      (tabAfter === undefined ? " (or could not be read again)" : "") +
+      (tabBefore ? `; the user agreed to the tab "${tabBefore.name}".` : "."),
+    );
   }
   if (callWasCancelled()) {
     throw new TerminalForegroundRefusal("Nothing was typed: the tool call was cancelled after the user answered.");

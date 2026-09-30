@@ -80,8 +80,8 @@ export const ALLOW_TERMINAL_FOREGROUND_ENV = "DESKTOP_TOUCH_ALLOW_TERMINAL_FOREG
 const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 /** The question's one line: what is typed, and into which window, when they are known. */
-export function foregroundQuestion(what: { windowTitle?: string; text?: string }): string {
-  const text = what.text ? ` "${clip(what.text, 20)}"` : "";
+export function foregroundQuestion(what: { windowTitle?: string; text?: string; pressEnter?: boolean }): string {
+  const text = what.text ? ` "${clip(what.text, 20)}"${what.pressEnter ? " + Enter" : ""}` : what.pressEnter ? " Enter" : "";
   const where = what.windowTitle ? ` (${clip(what.windowTitle, 16)})` : "";
   return `Type${text} into Windows Terminal${where}? Takes the foreground ~0.1 s.`;
 }
@@ -111,7 +111,9 @@ export type ForegroundAnswer =
  * May this call take the foreground for a moment to type into Windows Terminal? Asks the user when
  * it has to; never throws.
  */
-export async function askToTakeForeground(what: { windowTitle?: string; text?: string } = {}): Promise<ForegroundAnswer> {
+export async function askToTakeForeground(
+  what: { windowTitle?: string; text?: string; pressEnter?: boolean } = {},
+): Promise<ForegroundAnswer> {
   if (process.env[ALLOW_TERMINAL_FOREGROUND_ENV] === "1") return { allowed: true, how: "env" };
   if (allowedForProcess) return { allowed: true, how: "remembered" };
   const ctx = _askAls.getStore();
@@ -132,7 +134,10 @@ export async function askToTakeForeground(what: { windowTitle?: string; text?: s
               title: "Don't ask again (until the server restarts)",
               // The whole text, so two commands that start alike do not look alike (PR codex on #764).
               // The client wraps a long description rather than cutting it (win2: 600 characters, 6 lines).
-              description: what.text !== undefined ? `Types: ${what.text}` : "Allow this until the server restarts",
+              // Enter is said too: "echo hi" and "echo hi" + Enter must not look alike (PR codex on #764).
+              description: what.text !== undefined
+                ? `Types: ${what.text}${what.pressEnter ? "  — then presses Enter" : ""}`
+                : "Allow this until the server restarts",
               default: false,
             },
           },
