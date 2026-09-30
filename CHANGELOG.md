@@ -89,6 +89,13 @@
   of it is not returned with new leases. The warning appears only when Windows answers that the
   handle is not a window. A window that is only hidden, or a handle of zero, does not get it.
 
+- **`desktop_discover` reaches Word's document body.** Word answers UI Automation's request for all
+  children of its document area with one small pane, and the walk used that request, so it never
+  listed a page or the body. A read of Word now lists each visible page and its body, a `textbox`
+  that can be clicked. Pages scrolled past are left out, as other offscreen elements are. Other
+  applications read as before. Typing into the body with `desktop_act` is refused for now, after
+  a wait of several seconds: click the body, then use `keyboard`.
+
 - **`desktop_discover` says when the window it was asked about is excluded.** A window this
   server keeps out of every tool, such as the key locker's own, used to answer
   `ingress_fetch_error`, whose advice is to retry. It now answers the warning `window_excluded`,
