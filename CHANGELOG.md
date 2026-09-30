@@ -4,13 +4,17 @@
 
 - **A window on another virtual desktop is not brought forward.** A title search can pick a window
   on another virtual desktop: it can come ahead of a same-titled window on the screen. `keyboard`
-  brought it forward, which switched the user to that desktop, and typed nothing. `keyboard`
-  (type, press, sequence, `foreground_flash`), `terminal` send (focus and `foreground_flash`) and
-  `mouse_move` / `mouse_click` / `mouse_drag` / `scroll` now refuse with `WindowOnOtherDesktop`
-  before anything is focused or sent. `context.sameTitleOnScreen` says whether a window with that
-  title is on this desktop, so it can be named by `hwnd`. Which window a title picks is unchanged,
-  and routes that do not take the foreground (background input, screenshots) still reach such a
-  window. `focus_window` still brings it forward.
+  brought it forward, which switched the user to that desktop, and typed nothing. Now, when a tool
+  is about to bring such a window forward, it ends `WindowOnOtherDesktop` before anything is focused
+  or sent. This applies to `keyboard` (type, press, sequence; `foreground_flash` unless the window
+  takes posted characters), `terminal` send (focus and `foreground_flash`), and the mouse tools
+  when they bring the window forward for homing (`mouse_move`, `mouse_click`, `mouse_drag`,
+  `scroll`). `context.sameTitleOnScreen` says whether a window with that title is on this desktop,
+  so it can be named exactly. Whether a window is on another desktop is asked of Windows' virtual
+  desktop manager; a window its app has hidden is not refused. Which window a title picks is
+  unchanged, and routes that do not take the foreground (background input, screenshots) still reach
+  such a window. The mouse tools now bring forward the window named by `hwnd`, not the first window
+  with its title. `focus_window` still brings a window on another desktop forward.
 
 - **`desktop_act` sees the repaint its action caused.** Its `observation` came from the screen's
   changed regions, read after the action had returned. A UI Automation press takes about 2 s, and
