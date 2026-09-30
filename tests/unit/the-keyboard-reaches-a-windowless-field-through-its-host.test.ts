@@ -27,13 +27,14 @@ afterEach(() => {
   vi.doUnmock("../../src/engine/receiver-facts.js");
 });
 
-async function resolveWith(opts: { threadFocus: bigint; hostAlive?: boolean; hostRoot?: bigint; hostInjectable?: boolean }, refs: { entityHwnd?: bigint; hostHwnd?: bigint }) {
+async function resolveWith(opts: { threadFocus: bigint; hostAlive?: boolean; hostRoot?: bigint; hostInjectable?: boolean; hostClass?: string }, refs: { entityHwnd?: bigint; hostHwnd?: bigint }) {
   vi.resetModules();
   vi.doMock("../../src/engine/win32.js", async (orig) => ({
     ...(await orig<typeof import("../../src/engine/win32.js")>()),
     enumWindowsInZOrder: () => [{ hwnd: FRAME, title: "文書 1 - Word", region: { x: 0, y: 0, width: 800, height: 600 }, zOrder: 0, isMinimized: false, isMaximized: false, isActive: false }],
     getWindowRoot: (h: bigint) => (h === WWG ? (opts.hostRoot ?? FRAME) : h === RIBBON_BOX ? FRAME : h),
     windowIsAlive: (h: bigint) => (h === WWG ? (opts.hostAlive ?? true) : true),
+    getWindowClassName: (h: bigint) => (h === WWG ? (opts.hostClass ?? "_WwG") : h === FRAME ? "OpusApp" : "RICHEDIT60W"),
   }));
   vi.doMock("../../src/engine/bg-input.js", async (orig) => ({
     ...(await orig<typeof import("../../src/engine/bg-input.js")>()),
@@ -68,6 +69,10 @@ describe("the keyboard rung's receiver for a field with no window of its own", (
 
   it("stays the thread's focus when the host is under another top-level window", async () => {
     expect((await resolveWith({ threadFocus: RIBBON_BOX, hostRoot: ELSEWHERE }, { hostHwnd: WWG })).receiverHwnd).toBe(RIBBON_BOX);
+  });
+
+  it("stays the thread's focus when the handle now names a window of another class (reused; codex on #758)", async () => {
+    expect((await resolveWith({ threadFocus: RIBBON_BOX, hostClass: "RICHEDIT60W" }, { hostHwnd: WWG })).receiverHwnd).toBe(RIBBON_BOX);
   });
 
   it("stays the thread's focus when the host fails the inject check (gate 2)", async () => {

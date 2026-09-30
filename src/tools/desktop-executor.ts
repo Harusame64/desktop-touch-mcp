@@ -59,7 +59,7 @@ import {
 // ADR-036 family 2 — the Edit-family read-only rule lives beside the receiver reader, because the
 // `keyboard` tool's road judges the same bit on the same classes (arm A, 2026-09-16).
 import { editReadOnlyOf, hwnd32, sameHwnd } from "../engine/receiver-facts.js";
-import { keyboardHostOf } from "../engine/keyboard-hosts.js";
+import { KEYBOARD_HOST_CLASSES, keyboardHostOf } from "../engine/keyboard-hosts.js";
 
 // ── Injectable backend interface ──────────────────────────────────────────────
 
@@ -2814,7 +2814,7 @@ function getSharedRealDeps(): ExecutorDeps {
     },
 
     async keyboardResolve(windowTitle, hwnd, refs) {
-      const { enumWindowsInZOrder, getWindowRoot, windowIsAlive } = await import("../engine/win32.js");
+      const { enumWindowsInZOrder, getWindowRoot, windowIsAlive, getWindowClassName } = await import("../engine/win32.js");
       const { resolveKeyTarget, canInjectViaPostMessage } = await import("../engine/bg-input.js");
       const wins = enumWindowsInZOrder();
       // As `keyboardTypeBg` looks the window up, except that a handle is compared in its low 32 bits
@@ -2854,10 +2854,14 @@ function getSharedRealDeps(): ExecutorDeps {
       // is every control in the window, not this one's. The rule then judges the child as it would
       // any receiver, and says it cannot confirm the named control (step 7, `entity_windowless`).
       // The rung hands a host only for a measured class (`keyboard-hosts.ts`); a host the inject check
-      // refuses is not taken, and the receiver is the one it was before (gate 2).
+      // refuses is not taken, and the receiver is the one it was before (gate 2). Nor is a handle whose
+      // class is not a measured host any more: Word can destroy its `_WwG` and Windows can hand the
+      // number to another child of the same frame, which is alive, under the same root and injectable
+      // (codex on public #758).
       const hostIsChild = refs.hostHwnd !== undefined
         && !sameHwnd(refs.hostHwnd, win.hwnd)
         && windowIsAlive(refs.hostHwnd) === true
+        && KEYBOARD_HOST_CLASSES.has(getWindowClassName(refs.hostHwnd))
         && sameHwnd(getWindowRoot(refs.hostHwnd) ?? 0n, getWindowRoot(win.hwnd) ?? win.hwnd)
         && canInjectViaPostMessage(refs.hostHwnd).supported;
       const receiver = hostIsChild ? refs.hostHwnd as bigint : resolveKeyTarget(win.hwnd);
