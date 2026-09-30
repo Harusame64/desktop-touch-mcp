@@ -60,6 +60,15 @@ export const INSTANT_CANCEL_MS = 500;
 
 export const ALLOW_TERMINAL_FOREGROUND_ENV = "DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND";
 
+const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/** The question's one line: what is typed, and into which window, when they are known. */
+export function foregroundQuestion(what: { windowTitle?: string; text?: string }): string {
+  const text = what.text ? ` "${clip(what.text, 20)}"` : "";
+  const where = what.windowTitle ? ` (${clip(what.windowTitle, 16)})` : "";
+  return `Type${text} into Windows Terminal${where}? Takes the foreground ~0.1 s.`;
+}
+
 /** Set by an Accept with "Don't ask again"; lives as long as this server process. */
 let allowedForProcess = false;
 
@@ -85,7 +94,7 @@ export type ForegroundAnswer =
  * May this call take the foreground for a moment to type into Windows Terminal? Asks the user when
  * it has to; never throws.
  */
-export async function askToTakeForeground(): Promise<ForegroundAnswer> {
+export async function askToTakeForeground(what: { windowTitle?: string; text?: string } = {}): Promise<ForegroundAnswer> {
   if (process.env[ALLOW_TERMINAL_FOREGROUND_ENV] === "1") return { allowed: true, how: "env" };
   if (allowedForProcess) return { allowed: true, how: "remembered" };
   const ctx = _askAls.getStore();
@@ -95,8 +104,9 @@ export async function askToTakeForeground(): Promise<ForegroundAnswer> {
   try {
     answer = await ctx.ask(
       {
-        // One line: the client cuts the rest (win2).
-        message: "Type into Windows Terminal? It takes the foreground for about 0.1 s.",
+        // One line: the client cuts the rest (win2). It names what is typed and where, so the user
+        // does not agree blind (gate 2 on #764), each cut short to keep the line.
+        message: foregroundQuestion(what),
         requestedSchema: {
           type: "object",
           properties: {

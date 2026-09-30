@@ -5,7 +5,7 @@
 - **`desktop_act` can type into Windows Terminal, after asking.** Windows Terminal ignores
   characters sent to it in the background, so `desktop_act` typing into its terminal input always
   ended `executor_failed`. Now the server asks the user through the MCP client's question form
-  ("Type into Windows Terminal? It takes the foreground for about 0.1 s.", with a "Don't ask again"
+  (what will be typed, into which window, with a "Don't ask again"
   box). On Accept it pastes through the foreground, as `terminal` send's `foreground_flash` does,
   and puts the previous window back. Decline, Esc, no answer within 60 s, or a client that cannot
   show the question (`claude -p`, or the HTTP transport) type nothing; the act ends with the new

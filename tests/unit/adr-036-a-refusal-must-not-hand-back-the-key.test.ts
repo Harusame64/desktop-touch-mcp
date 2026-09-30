@@ -148,8 +148,8 @@ describe("the loop keeps each refusal's own name", () => {
     }
   });
 
-  it("keeps a failed paste the user allowed as executor_failed (control, internal #227)", async () => {
-    const failed = Object.assign(new Error("x"), { name: "TerminalForegroundPasteFailed", callerDetail: "The paste … failed" });
+  it("keeps an error of another name as executor_failed (control, internal #227)", async () => {
+    const failed = Object.assign(new Error("x"), { name: "TerminalSendSomethingElse", callerDetail: "…" });
     const { loop, lease } = loopThatThrows(failed);
     const result = await loop.touch({ lease });
     expect(!result.ok && result.reason).toBe("executor_failed");

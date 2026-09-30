@@ -270,11 +270,19 @@ export class AimBlockedByExcludedRefusalError extends HandlerError {
  * `reason` (derived by `pascalToSnake`) is the `keyboard_target_unsafe` the catalogue documents, and
  * the SUGGESTS key matches. The engine-side throw is `KeyboardTargetUnsafeError`.
  */
+export class KeyboardTargetUnsafeRefusalError extends HandlerError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "KeyboardTargetUnsafe";
+  }
+}
+
 /**
  * internal #227 — `desktop_act` would have typed into Windows Terminal through the foreground, and
  * that was not allowed: the user declined or dismissed the question, did not answer, or could not be
- * asked; or the paste could not be made without asking about something else (the window is on
- * another virtual desktop, the text is more than one line). Nothing was typed.
+ * asked; or the paste could not be made (the window is on another virtual desktop or has closed, the
+ * text is more than one line or too long for one paste); or the paste the user allowed failed, and
+ * the detail says whether anything was typed.
  *
  * Its own code because `executor_failed`'s advice is to type through the foreground, which would
  * work around the user's no. `name` is `"ForegroundNotAllowed"`, so the raw shape's `reason` is
@@ -284,13 +292,6 @@ export class ForegroundNotAllowedRefusalError extends HandlerError {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "ForegroundNotAllowed";
-  }
-}
-
-export class KeyboardTargetUnsafeRefusalError extends HandlerError {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "KeyboardTargetUnsafe";
   }
 }
 

@@ -163,7 +163,8 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
 
   it("does not ask about text longer than one paste takes", async () => {
     const { ctx, ask } = asking({ action: "accept", content: {} });
-    const err = await act("x".repeat(2561), ctx).catch((e) => e);
+    // 2560 UTF-16 units is 5120 bytes, which the flash refuses (`validate_input`: at the limit).
+    const err = await act("x".repeat(2560), ctx).catch((e) => e);
     expect(err?.callerDetail).toMatch(/longer than one paste/);
     expect(ask).not.toHaveBeenCalled();
   });
@@ -178,7 +179,22 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
   it("says nothing was typed when the flash failed before taking the foreground", async () => {
     mockFlash.mockReturnValueOnce({ ok: false, reason: "foreground_steal_denied" } as never);
     const err = await act("echo hi", asking({ action: "accept", content: {} }).ctx).catch((e) => e);
-    expect(err?.name).toBe("TerminalForegroundPasteFailed");
+    // Refused (foreground_not_allowed), not executor_failed: that advice would type it again.
+    expect(err?.name).toBe("TerminalForegroundRefusal");
     expect(err?.callerDetail).toMatch(/nothing was typed/);
+  });
+
+  it("asks about what is typed and where, on one line", async () => {
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    await act("echo hi", ctx);
+    const form = (ask.mock.calls[0] as unknown as [{ message: string }])[0];
+    expect(form.message).toBe('Type "echo hi" into Windows Terminal (PowerShell)? Takes the foreground ~0.1 s.');
+  });
+
+  it("says a failed paste after an Accept may have typed, under the reason that forbids another road", async () => {
+    mockFlash.mockReturnValueOnce({ ok: false, reason: "send_input_failed" } as never);
+    const err = await act("echo hi", asking({ action: "accept", content: {} }).ctx).catch((e) => e);
+    expect(err?.name).toBe("TerminalForegroundRefusal");
+    expect(err?.callerDetail).toMatch(/not known/);
   });
 });

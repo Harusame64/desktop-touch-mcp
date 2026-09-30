@@ -20,7 +20,7 @@
 
 import type { UiEntity, ExecutorKind, ExecutorOutcome } from "../engine/world-graph/types.js";
 import { logResolve, logDispatchSink } from "./_resolve-log.js";
-import { askToTakeForeground, ALLOW_TERMINAL_FOREGROUND_ENV, type ForegroundRefusal } from "./_ask-user.js";
+import { askToTakeForeground, ALLOW_TERMINAL_FOREGROUND_ENV, ASK_TIMEOUT_MS, type ForegroundRefusal } from "./_ask-user.js";
 import { offDesktopTarget } from "./_off-desktop.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
@@ -284,14 +284,6 @@ class TerminalForegroundRefusal extends Error {
   }
 }
 
-/** The user allowed the paste, and it failed: an ordinary `executor_failed`, with its sentence. */
-class TerminalForegroundPasteFailed extends Error {
-  constructor(readonly callerDetail: string) {
-    super(callerDetail);
-    this.name = "TerminalForegroundPasteFailed";
-  }
-}
-
 const TERMINAL_FOREGROUND_REFUSALS: Record<ForegroundRefusal, string> = {
   declined:
     "Nothing was typed: Windows Terminal takes input only through the foreground, and the user " +
@@ -301,7 +293,7 @@ const TERMINAL_FOREGROUND_REFUSALS: Record<ForegroundRefusal, string> = {
     "was dismissed. Ask the user in the conversation before typing into it.",
   timed_out:
     "Nothing was typed: Windows Terminal takes input only through the foreground, and no one " +
-    "answered within 60 s. Ask the user in the conversation before typing into it.",
+    `answered within ${ASK_TIMEOUT_MS / 1000} s. Ask the user in the conversation before typing into it.`,
   cannot_ask:
     "Nothing was typed: Windows Terminal takes input only through the foreground, and this client " +
     "cannot ask the user. With the user's agreement, terminal(action:'send', method:'foreground_flash') " +
@@ -354,29 +346,34 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
         `Nothing was typed: this terminal cannot be pasted into through the foreground (${channel.kind}).`,
       );
     }
-    return channel;
+    return { ...channel, windowTitle: win.title };
   };
 
   const before = await whereIsIt();
-  // The flash measures UTF-16 bytes; a longer paste would be refused by it after the user said yes.
-  if (line.length * 2 > before.constraints.maxBytes) {
+  // The flash measures UTF-16 bytes and refuses at the limit (`validate_input`), after the user said yes.
+  if (line.length * 2 >= before.constraints.maxBytes) {
     throw new TerminalForegroundRefusal(
       `Nothing was typed: the text is longer than one paste into Windows Terminal takes ` +
       `(${before.constraints.maxBytes} bytes of UTF-16). Send it in shorter pieces.`,
     );
   }
-  const answer = await askToTakeForeground();
+  const answer = await askToTakeForeground({ windowTitle: before.windowTitle, text: line });
   if (!answer.allowed) throw new TerminalForegroundRefusal(TERMINAL_FOREGROUND_REFUSALS[answer.why]);
   const channel = await whereIsIt();
 
   logDispatchSink({ sink: "foreground_flash", tool: "desktop_act:terminal_send", targetHwnd: channel.hwnd });
   const r = injectViaForegroundFlash(channel.hwnd, channel.pid, line, { pressEnter: trailing !== null });
   if (!r.ok) {
-    // These fail before the foreground is taken or anything is pasted; the rest may have typed.
+    // These fail before Ctrl+V is sent (`foreground_flash.rs`: validate, save the clipboard, take
+    // the foreground, wait for focus, then paste); the rest may have typed. Refused, not
+    // `executor_failed`: that code's advice is to type through the foreground, which would run the
+    // command a second time if the paste did land (gate 2 on #764).
     const nothingTyped = r.reason === "input_contains_newline" ||
       r.reason === "input_exceeds_paste_warning_threshold" ||
-      r.reason === "foreground_steal_denied";
-    throw new TerminalForegroundPasteFailed(
+      r.reason === "clipboard_lock_contention" ||
+      r.reason === "foreground_steal_denied" ||
+      r.reason === "focus_wait_timeout";
+    throw new TerminalForegroundRefusal(
       `The paste through the foreground failed (${r.reason ?? "unknown"}); ` +
       (nothingTyped ? "nothing was typed." : "whether anything was typed is not known. Read the terminal before retrying."),
     );
