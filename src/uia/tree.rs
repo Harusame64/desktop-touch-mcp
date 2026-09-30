@@ -191,7 +191,7 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
                     )
                 {
                     let started = Instant::now();
-                    ui_elem.visible_text = visible_text(&child);
+                    ui_elem.visible_text = visible_text(&child, started + (BODY_TEXT_BUDGET - body_text_spent));
                     body_text_spent += started.elapsed();
                 }
                 elements.push(ui_elem);
@@ -228,15 +228,16 @@ const BODY_TEXT_BUDGET: std::time::Duration = std::time::Duration::from_millis(5
 /// `GetVisibleRanges` gives one range per visible paragraph, in 1–2 ms with each range's text read.
 /// The walk has already pruned offscreen pages, so only the bodies on screen are read. `None` when
 /// the element does not answer, the count included; an empty string when nothing of it is visible.
-/// A range whose text does not answer is left out.
-fn visible_text(elem: &IUIAutomationElement) -> Option<String> {
+/// A range whose text does not answer is left out, and so are the ranges left when `deadline` passes:
+/// the budget is checked between ranges, not only after a body (codex on #759).
+fn visible_text(elem: &IUIAutomationElement, deadline: Instant) -> Option<String> {
     unsafe {
         let pat = elem.GetCurrentPattern(UIA_TextPatternId).ok()?;
         let tp: IUIAutomationTextPattern = pat.cast().ok()?;
         let ranges = tp.GetVisibleRanges().ok()?;
         let count = ranges.Length().ok()?;
         let cap = word_pages::BODY_TEXT_CAP as i32;
-        let lines = (0..count).filter_map(|i| {
+        let lines = (0..count).take_while(|_| Instant::now() < deadline).filter_map(|i| {
             let range = ranges.GetElement(i).ok()?;
             range.GetText(cap).ok().map(|t| t.to_string())
         });
