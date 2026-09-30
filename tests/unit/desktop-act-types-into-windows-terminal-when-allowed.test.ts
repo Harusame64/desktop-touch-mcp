@@ -232,7 +232,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
   });
 
   it("says a failed paste after an Accept may have typed, under the reason that forbids another road", async () => {
-    mockFlash.mockReturnValueOnce({ ok: false, reason: "send_input_failed" } as never);
+    mockFlash.mockReturnValueOnce({ ok: false, reason: "wt_paste_warning_intercepted" } as never);
     const err = await act("echo hi", asking({ action: "accept", content: {} }).ctx).catch((e) => e);
     expect(err?.name).toBe("TerminalForegroundRefusal");
     expect(err?.callerDetail).toMatch(/not known/);
@@ -520,6 +520,12 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     await act("echo hi", ctx);
     const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { typeIt: { description: string } } } }])[0];
     expect(form.requestedSchema.properties.typeIt.description).toBe("Into: PowerShell (tab: build) — Types: echo hi");
+  });
+
+  it("says the terminal was left in front, and typing unknown, after SendInput failed (PR codex)", async () => {
+    mockFlash.mockReturnValueOnce({ ok: false, reason: "send_input_failed" } as never);
+    const err = await act("echo hi", asking({ action: "accept", content: {} }).ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/send_input_failed\); whether anything was typed is not known, and the terminal was left in front/);
   });
 
   it("says the terminal was left in front after a focus-wait timeout", async () => {

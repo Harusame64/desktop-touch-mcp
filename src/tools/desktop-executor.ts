@@ -608,6 +608,15 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
         "the window the user was in is behind it. Tell the user before anything else.",
       );
     }
+    // SendInput failing on Ctrl+V or Enter returns from the same place, before the restore
+    // (`foreground_flash.rs` steps 6 and 8), so the terminal is left in front too (PR codex on #764).
+    if (r.reason === "send_input_failed") {
+      throw new TerminalForegroundRefusal(
+        "The paste through the foreground failed (send_input_failed); whether anything was typed is not known, " +
+        "and the terminal was left in front, with the window the user was in behind it. Tell the user, and " +
+        "read the terminal before any retry.",
+      );
+    }
     if (r.reason === "foreground_restore_failed") {
       throw new TerminalForegroundRefusal(
         "The paste was sent" + (trailing !== null ? " with Enter" : "") + " and has most likely been typed, but the " +
