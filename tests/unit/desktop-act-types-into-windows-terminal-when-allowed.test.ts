@@ -14,7 +14,7 @@ const wtWindow = (extra: Record<string, unknown> = {}) => ({
   hwnd: WT, title: "PowerShell", region: { x: 0, y: 0, width: 100, height: 100 }, zOrder: 0,
   isMinimized: false, isMaximized: false, isActive: false, className: "CASCADIA_HOSTING_WINDOW_CLASS", ownerHwnd: null, ...extra,
 });
-const { state } = vi.hoisted(() => ({ state: { cloaked: false, reason: "wt_xaml_pipeline" } }));
+const { state } = vi.hoisted(() => ({ state: { cloaked: false, reason: "wt_xaml_pipeline", pid: 11 } }));
 
 vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
@@ -23,7 +23,7 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
     enumWindowsInZOrder: vi.fn(() => [wtWindow({ isCloaked: state.cloaked })]),
     getForegroundHwnd: vi.fn(() => 0x999n),
     getWindowTitleW: vi.fn(() => "PowerShell"),
-    getWindowIdentity: vi.fn(() => ({ pid: 11, processName: "WindowsTerminal.exe", processStartTimeMs: 0 })),
+    getWindowIdentity: vi.fn(() => ({ pid: state.pid, processName: "WindowsTerminal", processStartTimeMs: 1000 })),
   };
 });
 
@@ -77,6 +77,7 @@ beforeEach(() => {
   resetRememberedTerminalForeground();
   state.cloaked = false;
   state.reason = "wt_xaml_pipeline";
+  state.pid = 11;
   delete process.env.DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND;
 });
 
@@ -196,5 +197,12 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const err = await act("echo hi", asking({ action: "accept", content: {} }).ctx).catch((e) => e);
     expect(err?.name).toBe("TerminalForegroundRefusal");
     expect(err?.callerDetail).toMatch(/not known/);
+  });
+
+  it("does not type into another window that took the handle while the user was answering (PR codex P1)", async () => {
+    const ask = vi.fn(async () => { state.pid = 77; return { action: "accept" as const, content: {} }; });
+    const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/handle now names another window/);
+    expect(mockFlash).not.toHaveBeenCalled();
   });
 });

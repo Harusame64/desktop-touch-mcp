@@ -315,7 +315,7 @@ const TERMINAL_FOREGROUND_REFUSALS: Record<ForegroundRefusal, string> = {
  * (gate 2 on #764).
  */
 export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: string): Promise<void> {
-  const { enumWindowsInZOrder } = await import("../engine/win32.js");
+  const { enumWindowsInZOrder, getWindowIdentity } = await import("../engine/win32.js");
   const { injectViaForegroundFlash } = await import("../engine/bg-input.js");
   const { resolveBackgroundInputChannel } = await import("../engine/background-channel-resolver.js");
 
@@ -327,12 +327,30 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
       "has more than one line. Send one line per act.",
     );
   }
+  /**
+   * The process behind the handle when the user was asked. A window that closed during the wait can
+   * leave its handle to another window, even another WT (PR codex P1 on #764), so the answer is
+   * held to the same process: same pid, same start time.
+   */
+  let askedAbout: { pid: number; processStartTimeMs: number } | undefined;
+  let asked = false;
   /** Where the terminal is now, or the sentence that refuses it. */
   const whereIsIt = async () => {
     const wins = enumWindowsInZOrder();
     const win = wins.find((w) => w.hwnd === hwnd);
     if (!win) {
       throw new TerminalForegroundRefusal("Nothing was typed: the terminal window is no longer open.");
+    }
+    let who: { pid: number; processStartTimeMs: number } | undefined;
+    try { who = getWindowIdentity(hwnd); } catch { who = undefined; }
+    if (!asked) {
+      asked = true;
+      askedAbout = who;
+    } else if (askedAbout && (!who || who.pid !== askedAbout.pid || who.processStartTimeMs !== askedAbout.processStartTimeMs)) {
+      // (An identity that could not be read before the question cannot be held to; the other checks still run.)
+      throw new TerminalForegroundRefusal(
+        "Nothing was typed: the terminal window the user was asked about has closed, and its handle now names another window.",
+      );
     }
     if (await offDesktopTarget(win, wins, undefined)) {
       throw new TerminalForegroundRefusal(
