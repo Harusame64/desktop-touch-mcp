@@ -20,6 +20,7 @@
 
 import type { UiEntity, ExecutorKind, ExecutorOutcome } from "../engine/world-graph/types.js";
 import { logResolve, logDispatchSink } from "./_resolve-log.js";
+import { windowsTitled } from "../engine/title-match.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 import { classifyUiaRouteFailure, describeUiaRouteFailure } from "../engine/uia-route-failure.js";
@@ -2716,7 +2717,8 @@ function getSharedRealDeps(): ExecutorDeps {
             }
             return named[0];
           }
-          const matches = wins.filter((w) => w.title.toLowerCase().includes(title.toLowerCase()));
+          // internal #221: among the windows on the screen — a cloaked one is on another desktop.
+          const matches = windowsTitled(wins, title);
           logResolve({
             resolver: "desktopActTerminalSend",
             query: title,
@@ -2766,7 +2768,7 @@ function getSharedRealDeps(): ExecutorDeps {
       const byHandle = hwnd !== undefined;
       const matches = byHandle
         ? wins.filter((w) => w.hwnd === hwnd)
-        : wins.filter((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
+        : windowsTitled(wins, windowTitle);
       const win = matches[0];
       logResolve({
         resolver: "desktopActKeyboardType",
@@ -2823,7 +2825,7 @@ function getSharedRealDeps(): ExecutorDeps {
       const byHandle = hwnd !== undefined;
       const matches = byHandle
         ? wins.filter((w) => sameHwnd(w.hwnd, hwnd))
-        : wins.filter((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
+        : windowsTitled(wins, windowTitle);
       const win = matches[0];
       // The same act's lookup, under the name the resolve log already knows it by.
       logResolve({

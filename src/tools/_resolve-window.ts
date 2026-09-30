@@ -22,6 +22,9 @@ import {
 } from "../engine/win32.js";
 import { WindowExcludedError } from "../engine/tool-exclusion.js";
 import { logResolve } from "./_resolve-log.js";
+import { windowsTitled, titleIsOnlyOffScreen } from "../engine/title-match.js";
+// Re-exported so callers of the resolver can reach the same predicate from here.
+export { windowsTitled, titleIsOnlyOffScreen };
 import type { ResolveResolver } from "../engine/diagnostic-log.js";
 
 /**
@@ -192,14 +195,13 @@ export function matchPlainTopLevelWindowsByTitle(
 ): ReturnType<typeof enumWindowsInZOrder> {
   if (!title) return [];
   const { excludeMinimized = false, excludeDialogsAndOwned = false } = opts;
-  const q = title.toLowerCase();
-  return windows.filter((w) => {
+  return windowsTitled(windows, title).filter((w) => {
     if (excludeMinimized && w.isMinimized) return false;
     if (excludeDialogsAndOwned) {
       if (DIALOG_CLASSNAMES.has(w.className ?? "")) return false;
       if (w.ownerHwnd != null) return false;
     }
-    return w.title.toLowerCase().includes(q);
+    return true;
   });
 }
 
@@ -218,6 +220,7 @@ function findCommonDialogByTitle(
   const owned: DialogCandidate[] = [];
   for (const w of wins) {
     if (w.isMinimized) continue;                              // skip minimised dialogs
+    if (w.isCloaked) continue;                                // internal #221: not on the screen
     if (!w.title.toLowerCase().includes(q)) continue;
     if (DIALOG_CLASSNAMES.has(w.className ?? "")) {
       classed.push({ hwnd: w.hwnd, title: w.title });
@@ -477,6 +480,7 @@ export async function resolveWindowTarget(params: {
         `which is not addressable by automation tools`,
       );
     }
+    let offScreenOnly = false;
     try {
       // Case 3: plain match exists — preserve existing pass-through behaviour.
       // ADR-018 Phase 5: delegated to the shared `findPlainTopLevelWindowByTitle`
@@ -532,7 +536,19 @@ export async function resolveWindowTarget(params: {
         query: params.windowTitle,
         matches: [],
       });
+      offScreenOnly = titleIsOnlyOffScreen(wins, params.windowTitle);
     } catch { /* enumWindowsInZOrder unavailable → fall through */ }
+    // internal #221: the title is worn, but only by windows that are not on the screen. Said here,
+    // before any handler searches by title on its own: bringing such a window forward switches the
+    // user's virtual desktop (win2, 2026-09-30), and "no such window" would send the caller to look
+    // for one that exists. Thrown outside the try above, which swallows.
+    if (offScreenOnly) {
+      throw new Error(
+        `WindowNotFound: no window titled "${params.windowTitle}" is on the screen — the ones with ` +
+        `that title are on another virtual desktop, or hidden by the system. Nothing was done, and ` +
+        `this server does not switch desktops. Switch to that desktop or move the window here, then retry.`,
+      );
+    }
   }
 
   return null;
