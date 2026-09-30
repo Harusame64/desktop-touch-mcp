@@ -41,20 +41,44 @@ function deps(): ExecutorDeps {
   };
 }
 
+const detailFor = (routes: string, instead: string) =>
+  `Nothing was typed, and no route was tried: no route here can carry text to "ページ 1 のコンテンツ" (${routes}). ${instead}`;
+const TYPE_INSTEAD = "Put the caret where the text should go (click there, or move it with keyboard keys such as ctrl+End), then keyboard({action:'type', text, method:'foreground'}).";
+const SET_INSTEAD = "To replace its contents, click it, select them with keyboard ctrl+a, then keyboard({action:'type', text, method:'foreground'}).";
+const WORD_BODY_ROUTES = "UI Automation: ruled out for this element; browser: no page selector for it; terminal: not how this element was read; keyboard: not offered for this element";
+
+async function refusal(e: UiEntity, action: "type" | "setValue") {
+  const d = deps();
+  const err = await createDesktopExecutor({ hwnd: "500" }, d)(e, action, "x").then(() => undefined, (x: unknown) => x);
+  return { err: err as { name?: string; callerDetail?: string; message?: string }, d };
+}
+
 describe("a type no route can carry", () => {
-  it("is refused with a sentence for the caller: nothing typed, nothing tried, and what to do", async () => {
-    const d = deps();
-    const err = await createDesktopExecutor({ hwnd: "500" }, d)(body, "type", "x").then(() => undefined, (e: unknown) => e);
-    expect((err as { callerDetail?: string }).callerDetail).toBe(
-      `Nothing was typed, and no way of typing was tried: "ページ 1 のコンテンツ" offers no UI Automation value ` +
-      `to write and no keyboard route. Click it, then type with keyboard({action:'type', text, method:'foreground'}).`,
-    );
+  it("is refused with a sentence for the caller: nothing typed, nothing tried, each route's state, what to do", async () => {
+    const { err, d } = await refusal(body, "type");
+    expect(err.name).toBe("NoTextRouteError");
+    expect(err.callerDetail).toBe(detailFor(WORD_BODY_ROUTES, TYPE_INSTEAD));
     expect(d.uiaSetValue).not.toHaveBeenCalled();
     expect(d.keyboardTypeBg).not.toHaveBeenCalled();
     expect(d.mouseClick).not.toHaveBeenCalled();
   });
 
-  it("reaches the reply as detail", async () => {
+  it("says to select the contents first for a setValue, which replaces (gate 2)", async () => {
+    expect((await refusal(body, "setValue")).err.callerDetail).toBe(detailFor(WORD_BODY_ROUTES, SET_INSTEAD));
+  });
+
+  it("says 'not offered' for a route the element has but was left out of, not 'no source' (gate 2)", async () => {
+    const { err } = await refusal({ ...body, unsupportedExecutors: undefined }, "type");
+    expect(err.callerDetail).toContain("UI Automation: not offered for this element;");
+    expect(err.message).toContain("uia=not-in-preferred");
+  });
+
+  it("says 'blocked' for a terminal route that is ruled out", async () => {
+    const { err } = await refusal({ ...body, sources: ["terminal"], unsupportedExecutors: ["terminal"] }, "type");
+    expect(err.callerDetail).toContain("UI Automation: not how this element was read; browser: no page selector for it; terminal: ruled out for this element;");
+  });
+
+  it("reaches the reply as action_not_offered with that detail: no road was taken", async () => {
     const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
     const lease = store.issue(body, "v1");
     const exec = createDesktopExecutor({ hwnd: "500" }, deps());
@@ -66,15 +90,12 @@ describe("a type no route can carry", () => {
       execute: (e, action, text) => exec(e, action, text),
     };
     const result = await new GuardedTouchLoop(store, env).touch({ lease, action: "type", text: "x" });
-    expect(result).toMatchObject({ ok: false, reason: "executor_failed" });
-    expect(result.ok === false && result.detail).toMatch(/^Nothing was typed, and no way of typing was tried/);
+    expect(result).toEqual({ ok: false, reason: "action_not_offered", diff: [], detail: detailFor(WORD_BODY_ROUTES, TYPE_INSTEAD) });
   });
 });
 
-describe("the executor_failed advice", () => {
-  it("no longer says UIA setValue and background WM_CHAR were tried whatever happened", () => {
-    const text = JSON.stringify(getSuggestsForCode("ExecutorFailed"));
-    expect(text).not.toContain("has already tried");
-    expect(text).toContain("only where the entity offers them");
+describe("the advice", () => {
+  it("action_not_offered names this case", () => {
+    expect(JSON.stringify(getSuggestsForCode("ActionNotOffered"))).toContain("an element no route here can carry text to");
   });
 });

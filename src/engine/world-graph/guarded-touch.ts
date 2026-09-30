@@ -894,6 +894,12 @@ export class GuardedTouchLoop {
       // "You may not touch that window" — a security refusal, not a route that failed. Flattened,
       // it told the caller to press the rect the excluded window occupies, which is the one
       // outcome the exclusion exists to prevent (`tool-exclusion.ts` R3).
+      // internal #224 — no route here can carry text to this element, and none was tried: the
+      // target, as this server can reach it, does not offer the action (`executor_failed` says a
+      // road ran and failed, and its advice says which).
+      if (err instanceof Error && err.name === "NoTextRouteError") {
+        return { ok: false, reason: "action_not_offered", diff: [], ...(detail !== undefined && { detail }) };
+      }
       if (err instanceof Error && err.name === "WindowExcludedError") {
         return { ok: false, reason: "window_excluded", diff: [], ...(detail !== undefined && { detail }) };
       }

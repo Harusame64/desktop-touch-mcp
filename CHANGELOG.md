@@ -96,11 +96,12 @@
   applications read as before. Typing into the body with `desktop_act` is refused for now: click
   the body, then use `keyboard`.
 
-- **`desktop_act` says why it refuses a `type` that nothing here can carry.** An element with no UI
-  Automation value and no keyboard route, such as Word's body, got a bare `executor_failed`
-  with no `detail`, and the advice said UIA setValue and background WM_CHAR had been tried. Neither
-  had run. `detail` now says nothing was typed or tried, and what to do instead, and the advice
-  no longer claims the two were tried.
+- **`desktop_act` says why it refuses a `type` that nothing here can carry.** An element no route
+  here can type into, such as Word's body, got `executor_failed` with no `detail`, and the advice
+  said UIA setValue and background WM_CHAR had been tried. Neither had run. It is now refused as
+  `action_not_offered`: nothing was done. `detail` says why each route could not carry the text,
+  and what to do instead. For `type`, place the caret yourself and type with `keyboard`. For
+  `setValue`, select the contents first.
 
 - **`desktop_discover` says when the window it was asked about is excluded.** A window this
   server keeps out of every tool, such as the key locker's own, used to answer
