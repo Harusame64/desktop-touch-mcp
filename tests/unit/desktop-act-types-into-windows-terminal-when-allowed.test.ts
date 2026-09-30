@@ -255,10 +255,12 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     expect(mockFlash).not.toHaveBeenCalled();
   });
 
-  it("types when the window shows no tab to compare (control)", async () => {
+  it("does not ask when the window shows no tab: two absent identities would compare equal (PR codex round 8)", async () => {
     state.tab = null;
-    await act("echo hi", asking({ action: "accept", content: {} }).ctx);
-    expect(mockFlash).toHaveBeenCalledTimes(1);
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await act("echo hi", ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/active tab could not be read/);
+    expect(ask).not.toHaveBeenCalled();
   });
 
   it("does not ask about text longer than the question can show in full", async () => {
@@ -292,13 +294,6 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     expect(ask).not.toHaveBeenCalled();
   });
 
-  it("does not type when a window that showed no tab shows one after the answer", async () => {
-    state.tab = null;
-    const ask = vi.fn(async () => { state.tab = { name: "x", runtimeId: "1", paneCount: 1 }; return { action: "accept" as const, content: {} }; });
-    const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
-    expect(err?.callerDetail).toMatch(/active tab changed/);
-    expect(mockFlash).not.toHaveBeenCalled();
-  });
 
   it.each([["a TAB", "echo\tx"], ["ESC", "echo \u001b[2J"], ["a bidi override", "echo \u202eabc"], ["a zero-width space", "echo a\u200bb"]])(
     "does not ask about text with %s, which the question would not show as the terminal gets it", async (_what, text) => {

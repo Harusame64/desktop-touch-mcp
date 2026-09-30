@@ -423,9 +423,9 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
   // title, so only the selected tab's RuntimeId tells them apart (win2; PR codex on #764).
   const { getSelectedTab } = await import("../engine/uia-bridge.js");
   const tabBefore = await getSelectedTab(hwnd);
-  // A tab that cannot be read cannot be held to (PR codex on #764): refused before asking. A window
-  // that shows no tab (`null`) is held to showing none.
-  if (tabBefore === undefined) {
+  // A tab that cannot be read, or a window that shows none, cannot be held to (PR codex on #764):
+  // two absent identities would compare equal, and a replacement window with no tab would pass.
+  if (!tabBefore) {
     throw new TerminalForegroundRefusal(
       "Nothing was typed: the terminal's active tab could not be read, so the user's answer could not be held to it.",
     );
@@ -438,7 +438,7 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
       "cannot be read while the user answers. Use a tab that is not split.",
     );
   };
-  if (tabBefore && tabBefore.paneCount > 1) refuseSplit();
+  if (tabBefore.paneCount > 1) refuseSplit();
   const answer = await askToTakeForeground({ windowTitle: before.windowTitle, text: line, pressEnter: trailing !== null });
   if (!answer.allowed) throw new TerminalForegroundRefusal(TERMINAL_FOREGROUND_REFUSALS[answer.why]);
   const channel = await whereIsIt();
@@ -454,11 +454,11 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
   if (isInFront()) refuseInFront();
   const tabAfter = await getSelectedTab(hwnd);
   if (tabAfter && tabAfter.paneCount > 1) refuseSplit();
-  if (tabAfter === undefined || tabAfter?.runtimeId !== tabBefore?.runtimeId) {
+  if (!tabAfter || tabAfter.runtimeId !== tabBefore.runtimeId) {
     throw new TerminalForegroundRefusal(
       "Nothing was typed: the terminal's active tab changed while the user was answering" +
-      (tabAfter === undefined ? " (or could not be read again)" : "") +
-      (tabBefore ? `; the user agreed to the tab "${tabBefore.name}".` : "."),
+      (!tabAfter ? " (or could not be read again)" : "") +
+      `; the user agreed to the tab "${tabBefore.name}".`,
     );
   }
   if (callWasCancelled()) {
