@@ -526,6 +526,8 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
       KeyLockerNoSuchBinding: "mixed line split by hand",
       AimRouteFailed:
         "internal #126: the title-only road now refuses a disabled element with this code too, so two lines that said 'named its window by handle' were made road-neutral",
+      ExecutorFailed:
+        "internal #224: the type line said UIA setValue and background WM_CHAR had been tried, and on an entity that offers neither nothing had run",
       KeyboardTargetUnsafe:
         "the fourth ground, disabled (the user's decision 2026-09-19): named in the ground list, with a way back of its own — a disabled field takes no click",
       ForegroundFlashNotApplicableToKeyPress:

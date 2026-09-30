@@ -2390,9 +2390,19 @@ export function createDesktopExecutor(
       // ADR-020 SR-5 PR-SR5-2: keyboard executor が advertised に昇格したので
       // diagnostic string にも keyboard 経路の skip 理由を含める。
       const keyboardBlocked = blocked.includes("keyboard");
-      throw new Error(
-        `setValue/type requested for "${entity.label ?? entity.entityId}" but no text-capable executor available ` +
-        `(uia${uiaBlocked ? "=blocked" : "=no-source"}, cdp${cdpBlocked ? "=blocked" : "=no-selector"}, terminal${terminalBlocked ? "=blocked" : "=no-source-or-text"}, keyboard${keyboardBlocked ? "=blocked" : "=not-in-preferred"}) — mouse fallback would drop the text payload`
+      // internal #224 — said to the caller: without it the reply was the generic `executor_failed`,
+      // whose advice claimed UIA setValue and background WM_CHAR had been tried, and neither ran
+      // (win2 measured on Word's body, which offers no UIA value: refused in 3–10 ms).
+      throw Object.assign(
+        new Error(
+          `setValue/type requested for "${entity.label ?? entity.entityId}" but no text-capable executor available ` +
+          `(uia${uiaBlocked ? "=blocked" : "=no-source"}, cdp${cdpBlocked ? "=blocked" : "=no-selector"}, terminal${terminalBlocked ? "=blocked" : "=no-source-or-text"}, keyboard${keyboardBlocked ? "=blocked" : "=not-in-preferred"}) — mouse fallback would drop the text payload`,
+        ),
+        {
+          callerDetail:
+            `Nothing was typed, and no way of typing was tried: "${quotedLabel(entity)}" offers no UI Automation value ` +
+            `to write and no keyboard route. Click it, then type with keyboard({action:'type', text, method:'foreground'}).`,
+        },
       );
     }
     if (mouseBlocked) {
