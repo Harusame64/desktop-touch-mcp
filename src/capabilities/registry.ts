@@ -111,6 +111,15 @@ const TOGGLE_PATTERN = "TogglePattern";
  */
 const SELECTION_ONLY_CONTROLS = new Set(["ListItem", "TabItem", "TreeItem"]);
 
+/**
+ * internal #224 — text fields UI Automation offers no value for. Word's body is an `Edit` with only
+ * Text and ScrollItem: no route could type into it, and `desktop_act(type)` was refused. The keyboard
+ * rung can (a WM_CHAR posted to the window it is drawn in, win2 2026-09-30), so it is offered beside
+ * the mouse. Only `Edit`: a `Document` is also a browser page, whose characters would go wherever the
+ * page's focus is.
+ */
+const TEXT_FIELD_WITHOUT_VALUE = new Set(["Edit"]);
+
 function lookupDefault(
   entity: UiEntity,
   viewConstraints?: ViewConstraints,
@@ -168,6 +177,11 @@ function lookupDefault(
       // 明示する。`hasInvoke` ブランチ (line 144-145) は SR-5 で touch しない
       // (Phase 2 E contract test bit-equal 維持、sub-plan §1.4 P1-2 確定)。
       cap = { preferredExecutors: ["uia", "keyboard"] };
+    } else if (hasRect && controlType !== undefined && TEXT_FIELD_WITHOUT_VALUE.has(controlType)) {
+      cap = {
+        preferredExecutors: ["mouse", "keyboard"],
+        unsupportedExecutors: ["uia"],
+      };
     } else if (hasRect) {
       cap = {
         preferredExecutors: ["mouse"],

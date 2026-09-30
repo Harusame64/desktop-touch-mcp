@@ -178,7 +178,7 @@ export interface ExecutorDeps {
   keyboardResolve?(
     windowTitle: string,
     hwnd: bigint | undefined,
-    refs: { entityHwnd?: bigint; originHwnd?: bigint },
+    refs: { entityHwnd?: bigint; originHwnd?: bigint; hostHwnd?: bigint },
   ): Promise<KeyboardReceipt>;
   /** Post `text` to exactly `receipt.receiverHwnd`, the handle that was judged, without asking the focus again. */
   keyboardPost?(receipt: KeyboardReceipt, text: string): Promise<void>;
@@ -1481,7 +1481,9 @@ async function keyboardRung(
     });
     throw goneError("native_not_found");
   }
-  const receipt = await d.keyboardResolve(winTitle, aimHwnd, { entityHwnd, originHwnd });
+  // internal #224 — the window a windowless control is drawn in, for the resolve to post into.
+  const hostHwnd = entityHwnd === undefined ? parseHandle(entity.locator?.uia?.hostWindowHandle) ?? undefined : undefined;
+  const receipt = await d.keyboardResolve(winTitle, aimHwnd, { entityHwnd, originHwnd, ...(hostHwnd !== undefined && { hostHwnd }) });
   if (valueRoadNotFound && entityHwnd !== undefined && receipt.entityWindowAlive === false) {
     probeRefusal("keyboard", "entity_not_found", aimHwnd, entity, {
       why,
@@ -2766,7 +2768,21 @@ function getSharedRealDeps(): ExecutorDeps {
       // Resolved once: this is the handle the rule judges and `keyboardPost` posts to. It is always a
       // handle — the window itself when its thread has no focus, or when the question could not be
       // asked — which the rule reads as "cannot say" (step 4), not as an unknown receiver.
-      const receiver = resolveKeyTarget(win.hwnd);
+      //
+      // internal #224 — except for a control with no window of its own that is drawn in a CHILD
+      // window of this one: the receiver is that child window. MEASURED win2 (2026-09-30), Word's
+      // body in `_WwG`: a WM_CHAR posted to `_WwG` is typed at the body's caret in the foreground and
+      // the background alike, and whatever holds Word's focus — with the ribbon's font-size box
+      // focused, the thread's focus was that box and the characters went into it. The window itself
+      // as host (a WPF window, anything drawn in the top level) keeps the thread's focus: that host
+      // is every control in the window, not this one's. The rule then judges the child as it would
+      // any receiver, and says it cannot confirm the named control (step 7, `entity_windowless`).
+      const hostIsChild = refs.hostHwnd !== undefined
+        && refs.entityHwnd === undefined
+        && !sameHwnd(refs.hostHwnd, win.hwnd)
+        && windowIsAlive(refs.hostHwnd) === true
+        && sameHwnd(getWindowRoot(refs.hostHwnd) ?? 0n, getWindowRoot(win.hwnd) ?? win.hwnd);
+      const receiver = hostIsChild ? refs.hostHwnd as bigint : resolveKeyTarget(win.hwnd);
       const check = canInjectViaPostMessage(receiver);
       if (!check.supported) {
         throw new Error(
