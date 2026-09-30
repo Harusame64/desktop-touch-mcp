@@ -1522,7 +1522,7 @@ async function keyboardRung(
       probeRefusal("keyboard", "keyboard_target_unsafe", aimHwnd, entity, { why, ground: "disabled", referenceFrom: "entity", addressedWindowBy, ...keyboardLanding(entity, receipt, valueRoadError) });
       throw new KeyboardTargetUnsafeError(
         "disabled",
-        "window",
+        "host_window",
         aimHwnd !== undefined ? "handle" : "title",
         `Refusing to type for entity ${entity.entityId}: disabled, the window it is drawn in (${hostHwnd}) does not take input`,
       );

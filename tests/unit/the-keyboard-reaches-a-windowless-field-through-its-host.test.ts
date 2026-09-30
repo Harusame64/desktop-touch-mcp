@@ -189,6 +189,11 @@ describe("the executor hands the rung the host", () => {
   it("refuses as disabled when the host does not take input (a modal dialog is up; gate 2)", async () => {
     const { out, keyboardPost } = await typeInto(bodyOf({ hostWindowHandle: String(WWG), hostWindowClass: "_WwG" }), "type", { hostTakesInput: false });
     expect(out).toMatchObject({ name: "KeyboardTargetUnsafeError", ground: "disabled" });
+    // Only what the window answered: no UI Automation write was tried, and the field was listed (codex on #758).
+    expect((out as { callerDetail?: string }).callerDetail).toBe(
+      "Nothing was typed (disabled): the window the field is drawn in does not take input now — a dialog open over it is the usual cause. " +
+      "Answer or close the dialog, then type again.",
+    );
     expect(keyboardPost).not.toHaveBeenCalled();
   });
 });

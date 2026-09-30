@@ -40,13 +40,14 @@ export type LandingWhy =
 /**
  * Whom a refusal is about, so its sentence does not blame the wrong control. `window` is the window
  * the entity was captured in, for a `disabled` refusal about a control with no window of its own.
+ * `host_window` is the window a field is typed into through (internal #224), on the OS's word alone.
  */
 /**
  * Whom the refusal is about, and on whose word. `reported_named` is the named field on UI Automation's
  * word alone (internal #190: a field with no window of its own, which the OS cannot be asked about) —
  * so its sentence says who reported it, and does not claim the field is missing from discover.
  */
-export type RefusalSubject = "named" | "reported_named" | "focused_inside_named" | "focused" | "window";
+export type RefusalSubject = "named" | "reported_named" | "focused_inside_named" | "focused" | "window" | "host_window";
 
 /**
  * How the act named its window. The way back differs: a text field has no UIA invoke, so the click
@@ -334,6 +335,13 @@ function callerSentence(ground: KeyboardGround, subject: RefusalSubject, road: K
           "Answer or wait out whatever disabled it (a form being submitted, a dialog, a step not yet done), then re-run desktop_discover and type again. " +
           "If desktop_discover lists the field and this refusal repeats, the answer may have come from another element whose name contains this one's: " +
           "name the field by its automationId if it has one.";
+      }
+      if (subject === "host_window") {
+        // internal #224: a field typed into through the window it is drawn in, whose window refuses input
+        // (a modal dialog over Word disables the frame). No UI Automation write was tried, and the field
+        // was listed when read, so this says only what the window answered (codex on public #758).
+        return "Nothing was typed (disabled): the window the field is drawn in does not take input now — a dialog open over it is the usual cause. " +
+          "Answer or close the dialog, then type again.";
       }
       return (subject === "window"
         ? "Nothing was typed (disabled): UI Automation reported the field disabled, and the window it was read from does not take input now. "
