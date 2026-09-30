@@ -1931,7 +1931,8 @@ export function registerDesktopTools(server: McpServer): void {
       "visual_attempted_empty → visual lane ran but produced no stable candidates; consider screenshot(ocrFallback=always) or V1 tools;",
       "visual_attempted_empty_cdp_fallback → CDP failed and visual also empty (browser); check --remote-debugging-port=9222 and retry;",
       "dialog_resolved_via_owner_chain → common dialog (Save As/Open) found via owner chain; targeting is now hwnd-based;",
-      "parent_disabled_prefer_popup → parent window blocked by a modal; switched to targeting the active popup dialog.",
+      "parent_disabled_prefer_popup → parent window blocked by a modal; switched to targeting the active popup dialog;",
+      "target_title_mismatch → you sent target.hwnd and target.windowTitle, and that window's title does not contain the title you sent; the hwnd's window was read, so check it is the window you meant.",
       // ADR-036 item 8 — the shipped sentence for the field #150 added. Without it the field
       // exists and nobody reads it: the caller that needs it is a model reading this description.
       "response.freshness says whether these entities were READ for this call. Every call " +

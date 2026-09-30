@@ -100,6 +100,11 @@
   Now the text visible on each page shown is matched as well. The text is only matched: it is not
   in the reply, and no other tool returns it. Text scrolled out of view is still not matched.
 
+- **`desktop_discover` says when `target.hwnd` and `target.windowTitle` name different windows.**
+  With both, the handle's window was read and the title was dropped without a word, even when it
+  named another open window. The handle still wins; the reply now carries the warning
+  `target_title_mismatch` when that window's title does not contain the one sent.
+
 - **`desktop_discover` tells a terminal by its window, not its title.** A browser page titled
   "Bash scripting" (or any title naming a shell) was read as a terminal: a terminal lane ran on it,
   the page's own controls fell to the bottom of the list, and OCR was skipped. Most real terminals,

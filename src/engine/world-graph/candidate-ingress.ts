@@ -31,6 +31,9 @@ export type IngressReason = "winevent" | "cdp" | "dirty-rect" | "startup" | "cac
  *                               candidate list, or with entries that are not objects (#161)
  *   no_provider_matched       — target omitted and foreground window could not be resolved
  *   target_window_gone        — target.hwnd names no window any more (internal #211 item 9(3))
+ *   target_title_mismatch     — added by `DesktopFacade.see`: the call named a handle and a title,
+ *                               and the handle's window does not carry that title; the handle's
+ *                               window was read (internal #223)
  *   window_excluded           — the target is a window excluded from every tool surface (the key
  *                               locker's own); no lane runs (internal #222)
  *   partial_results_only      — primary provider returned 0 entities; fallback used

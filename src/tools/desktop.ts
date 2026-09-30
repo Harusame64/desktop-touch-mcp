@@ -435,8 +435,10 @@ function targetTitle(
   if (!target) return "(current)";
   const pinned = parseTargetHwnd(target);
   if (pinned !== undefined) {
-    // Only a title the ingress resolved counts: when the caller sent a windowTitle along with the
-    // handle, the ingress hands that target back unchanged, and its title is the caller's text.
+    // Only a title the ingress resolved for a handle alone counts. When the caller sent a windowTitle
+    // along with the handle, the title is the caller's text: production's ingress fetches by the
+    // session key (`window:<hwnd>`), which drops it, so its target carries the handle's real title
+    // (internal #223) — and a direct provider hands the caller's target back — so neither is used.
     if (target.windowTitle === undefined && resolved?.windowTitle && parseTargetHwnd(resolved) === pinned) {
       return resolved.windowTitle;
     }
@@ -444,6 +446,23 @@ function targetTitle(
     return title ? title : target.hwnd!;
   }
   return target.windowTitle ?? target.hwnd ?? target.tabId ?? "(current)";
+}
+
+/**
+ * internal #223 — whether a call that named both a handle and a title named two different windows:
+ * the handle's window, as this reply's `windows` list holds it, does not have the title in its own
+ * (case-insensitively, the substring rule a title lookup uses). The handle wins, as it always has —
+ * it is an identity, and a title can be stale — and the reply says so (the user's choice,
+ * 2026-09-30). MEASURED win2 (`101f43b8`): `{hwnd: Notepad A, windowTitle: "QB23"}` read A with no
+ * warning while "QB23" was another open window. False when the list does not hold the handle: then
+ * nothing says what its title is.
+ */
+function titleDisagreesWithHandle(target: TargetSpec | undefined, windows: readonly DesktopWindowMeta[]): boolean {
+  const pinned = parseTargetHwnd(target);
+  const asked = target?.windowTitle;
+  if (pinned === undefined || !asked) return false;
+  const own = windows.find((w) => parseHwnd(w.hwnd) === pinned)?.title;
+  return own !== undefined && !own.toLowerCase().includes(asked.toLowerCase());
 }
 
 function parseHwnd(hwnd: string): bigint | undefined {
@@ -804,7 +823,10 @@ export class DesktopFacade {
               ...(ageMs !== undefined && { ageMs }),
             },
     };
-    if (rawResult.warnings.length > 0) output.warnings = rawResult.warnings;
+    const warnings = titleDisagreesWithHandle(input.target, windows)
+      ? [...rawResult.warnings, "target_title_mismatch"]
+      : rawResult.warnings;
+    if (warnings.length > 0) output.warnings = warnings;
 
     // H2: derive structured constraints from warnings for LLM fallback decisions. A query that
     // matched nothing goes into the constraints only: `warnings[]` non-empty is documented as
