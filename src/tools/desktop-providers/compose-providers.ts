@@ -37,11 +37,11 @@ import { fetchBrowserCandidates }  from "./browser-provider.js";
 import { fetchTerminalCandidates } from "./terminal-provider.js";
 import { fetchVisualCandidates }   from "./visual-provider.js";
 import { fetchOcrCandidates }      from "./ocr-provider.js";
-import { resolveWindowTarget }     from "../_resolve-window.js";
+import { resolveWindowTarget, findPlainTopLevelWindowsByTitle } from "../_resolve-window.js";
 import { WindowExcludedError }     from "../../engine/tool-exclusion.js";
 import { probeAim, probeLane, type ProbeLane } from "../../engine/aim-probe.js";
 import { containsPoint, toAim, readWindowIdentityFields, type WindowIdentity, type WindowRect, type AimOrigin } from "../../engine/aim.js";
-import { enumWindowsInZOrder, getForegroundHwnd, getWindowIdentity, getWindowClassName, getWindowTitleW, getWindowRectByHwnd, windowIsAlive } from "../../engine/win32.js";
+import { getWindowIdentity, getWindowClassName, getWindowTitleW, getWindowRectByHwnd, windowIsAlive } from "../../engine/win32.js";
 
 // ── G4: transient visual warnings trigger a single 200ms retry ────────────────
 // Covers the first-request race where VisualRuntime.attach() (fire-and-forget in
@@ -98,28 +98,34 @@ export interface TerminalLook {
   classOf(hwnd: bigint): string;
 }
 
+/**
+ * A title is looked up as `resolveWindowTarget` looked it up a moment earlier in `normalizeTarget`
+ * (plain top-level windows, dialogs and owned windows left out), so the two cannot disagree within
+ * one discover (gate 2: a console's owned Properties dialog in front of it was found instead).
+ * `@active` is not a title: `normalizeTarget` resolves it, and when it could not, nothing here
+ * guesses the foreground, which no lane would read either (gate 2).
+ */
 const OS_LOOK: TerminalLook = {
   windowByTitle(title) {
-    try {
-      if (title === "@active") return getForegroundHwnd() ?? undefined;
-      const needle = title.toLowerCase();
-      return enumWindowsInZOrder().find((w) => w.title.toLowerCase().includes(needle))?.hwnd;
-    } catch {
-      return undefined;
-    }
+    if (title === "@active") return undefined;
+    return findPlainTopLevelWindowsByTitle(title, { excludeDialogsAndOwned: true, logAs: "off" })[0]?.hwnd;
   },
   classOf: (hwnd) => getWindowClassName(hwnd),
 };
 
 /**
- * Whether the target's window is a terminal: its handle when it names one, else the first window
- * answering to its title, as the UIA lane finds it. A window that cannot be found or whose class
- * cannot be read is not a terminal — the native road, which reads it with UIA as before.
+ * The target's window when it is a terminal: its handle when it names one, else the first plain
+ * window answering to its title. `undefined` for any other window, and for one that cannot be found
+ * or whose class cannot be read — the native road, which reads it with UIA as before.
  */
-export function isTerminalTarget(target: TargetSpec | undefined, look: TerminalLook = OS_LOOK): boolean {
-  if (!target || target.tabId) return false;
+export function terminalWindowOf(target: TargetSpec | undefined, look: TerminalLook = OS_LOOK): bigint | undefined {
+  if (!target || target.tabId) return undefined;
   const hwnd = parseTargetHwnd(target) ?? (target.windowTitle ? look.windowByTitle(target.windowTitle) : undefined);
-  return hwnd !== undefined && TERMINAL_READ_CLASSES.has(look.classOf(hwnd));
+  return hwnd !== undefined && TERMINAL_READ_CLASSES.has(look.classOf(hwnd)) ? hwnd : undefined;
+}
+
+export function isTerminalTarget(target: TargetSpec | undefined, look: TerminalLook = OS_LOOK): boolean {
+  return terminalWindowOf(target, look) !== undefined;
 }
 
 export function isBrowserTarget(target: TargetSpec | undefined): boolean {
@@ -587,11 +593,16 @@ async function composeCandidatesInner(target: TargetSpec): Promise<ProviderResul
     return addWarningIfPartial(finalMerged, browserResult.candidates.length);
   }
 
-  if (isTerminalTarget(target)) {
+  const terminalHwnd = terminalWindowOf(target);
+  if (terminalHwnd !== undefined) {
+    // The road was chosen on this window, so the lanes read it: a title-only target is pinned to
+    // the handle the class came from, rather than each lane finding the title again in its own
+    // order (gate 2: "npm" answering both a console and a browser page).
+    const onWindow: TargetSpec = target!.hwnd !== undefined ? target! : { ...target!, hwnd: terminalHwnd.toString() };
     const [terminal, uia, visual] = await Promise.allSettled([
-      fetchTerminalCandidates(target),
-      fetchUiaCandidates(target),
-      fetchVisualCandidatesWithRetry(target),
+      fetchTerminalCandidates(onWindow),
+      fetchUiaCandidates(onWindow),
+      fetchVisualCandidatesWithRetry(onWindow),
     ]);
     const termResult   = settledLane("terminal", terminal, "terminal_provider_failed");
     const uiaResult    = settledLane("uia", uia, "uia_provider_failed");
