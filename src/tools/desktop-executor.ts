@@ -59,7 +59,7 @@ import {
 // ADR-036 family 2 — the Edit-family read-only rule lives beside the receiver reader, because the
 // `keyboard` tool's road judges the same bit on the same classes (arm A, 2026-09-16).
 import { editReadOnlyOf, hwnd32, sameHwnd } from "../engine/receiver-facts.js";
-import { isKeyboardHostClass } from "../engine/keyboard-hosts.js";
+import { keyboardHostOf } from "../engine/keyboard-hosts.js";
 
 // ── Injectable backend interface ──────────────────────────────────────────────
 
@@ -1482,11 +1482,10 @@ async function keyboardRung(
     });
     throw goneError("native_not_found");
   }
-  // internal #224 — the window a windowless control is drawn in, for the resolve to post into: only a
-  // window of a class it was measured on (`keyboard-hosts.ts`, gate 2).
-  const hostHwnd = entityHwnd === undefined && isKeyboardHostClass(entity.locator?.uia?.hostWindowClass)
-    ? parseHandle(entity.locator?.uia?.hostWindowHandle) ?? undefined
-    : undefined;
+  // internal #224 — the window a field is drawn in, for the resolve to post into: only a field this
+  // route was measured on (`keyboard-hosts.ts`), and only on its own road. A field whose value road
+  // failed keeps the receiver it had (gate 2).
+  const hostHwnd = why === "keyboard_only_entity" ? keyboardHostOf(entity) : undefined;
   const receipt = await d.keyboardResolve(winTitle, aimHwnd, { entityHwnd, originHwnd, ...(hostHwnd !== undefined && { hostHwnd }) });
   if (valueRoadNotFound && entityHwnd !== undefined && receipt.entityWindowAlive === false) {
     probeRefusal("keyboard", "entity_not_found", aimHwnd, entity, {
@@ -1504,6 +1503,24 @@ async function keyboardRung(
   // asked (no backend, no handle) is null, never "takes input" and never "does not".
   const takesInput = async (h: bigint | undefined): Promise<boolean | null> =>
     h === undefined || !d.windowTakesInput ? null : ((await d.windowTakesInput(h)) ?? null);
+  if (hostHwnd !== undefined) {
+    // Its only road is the host: a receiver that is not the host is whatever holds the focus (Word's
+    // ribbon box, measured), so it is refused rather than typed into (gate 2).
+    if (receipt.receiverHwnd == null || !sameHwnd(receipt.receiverHwnd, hostHwnd)) {
+      throw new KeyboardHostUnavailableError(entity);
+    }
+    // A posted WM_CHAR ignores a disabled window: with a modal dialog up, Word's document window is
+    // disabled and the characters would go behind it (gate 2).
+    if ((await takesInput(hostHwnd)) === false) {
+      probeRefusal("keyboard", "keyboard_target_unsafe", aimHwnd, entity, { why, ground: "disabled", referenceFrom: "entity", addressedWindowBy, ...keyboardLanding(entity, receipt, valueRoadError) });
+      throw new KeyboardTargetUnsafeError(
+        "disabled",
+        "window",
+        aimHwnd !== undefined ? "handle" : "title",
+        `Refusing to type for entity ${entity.entityId}: disabled, the window it is drawn in (${hostHwnd}) does not take input`,
+      );
+    }
+  }
   const verdict = judgeKeyboardTarget(
     keyboardFactsOf(entity, receipt, { entity: await takesInput(entityHwnd), origin: await takesInput(originHwnd) }, valueRoadError),
     sw.disabled,
@@ -1561,7 +1578,26 @@ export class KeyboardCannotReplaceError extends Error implements CallerFacingRef
     this.name = "KeyboardCannotReplaceError";
     this.callerDetail =
       `Nothing was typed: "${quotedLabel(entity)}" can only be typed into at its caret, which inserts rather than replaces. ` +
-      `To replace its contents, click it, select them with keyboard ctrl+a, then desktop_act(action:'type') with the new text.`;
+      `To replace text, select it first — by mouse drag or shift+arrow keys; in Word, ctrl+a selects the whole document, not this page — ` +
+      `then desktop_act(action:'type') with the new text.`;
+  }
+}
+
+/**
+ * internal #224 — a field whose only road is the window it is drawn in, when that window is not usable
+ * now (closed or recreated since discover, moved under another window, or refusing injected input).
+ * Typing to whatever holds the focus instead is the defect the road exists to avoid, so nothing is
+ * typed. `executor_failed`, with this sentence as its `detail`; no probe row, for the reason
+ * `NoTextRouteError` has none.
+ */
+export class KeyboardHostUnavailableError extends Error implements CallerFacingRefusal {
+  readonly callerDetail: string;
+  constructor(entity: UiEntity) {
+    super(`the window "${entity.label ?? entity.entityId}" is drawn in is not usable now`);
+    this.name = "KeyboardHostUnavailableError";
+    this.callerDetail =
+      `Nothing was typed: the window "${quotedLabel(entity)}" was drawn in when it was read is not usable now, ` +
+      `and typing to whatever holds the focus instead could land in another control. Run desktop_discover again, then type.`;
   }
 }
 
@@ -2442,11 +2478,7 @@ export function createDesktopExecutor(
       // setValue asked for its contents to be replaced, and the keyboard cannot do that (gate 2).
       // Only the fields whose keyboard route is the host's (`keyboard-hosts.ts`): a field offered the
       // keyboard for another reason keeps what setValue did for it.
-      if (
-        action === "setValue" &&
-        entity.locator?.uia?.nativeWindowHandle === undefined &&
-        isKeyboardHostClass(entity.locator?.uia?.hostWindowClass)
-      ) {
+      if (action === "setValue" && keyboardHostOf(entity) !== undefined) {
         throw new KeyboardCannotReplaceError(entity);
       }
       return await keyboardRung(d, entity, winTitle, aimHwnd, text, "keyboard_only_entity");
