@@ -72,6 +72,9 @@ export const ASK_TIMEOUT_MS = 120_000;
  */
 export const ASK_TEXT_SHOWN_MAX = 600;
 
+/** The longest window title the description line carries with the text (both shown in full). */
+export const ASK_TITLE_SHOWN_MAX = 200;
+
 /** A cancel sooner than this was not a person reading the question. */
 export const INSTANT_CANCEL_MS = 500;
 
@@ -135,8 +138,11 @@ export async function askToTakeForeground(
               // The whole text, so two commands that start alike do not look alike (PR codex on #764).
               // The client wraps a long description rather than cutting it (win2: 600 characters, 6 lines).
               // Enter is said too: "echo hi" and "echo hi" + Enter must not look alike (PR codex on #764).
+              // And the whole window title: the one-line question cuts it, and two terminals whose
+              // titles start alike must not look alike either (PR codex on #764).
               description: what.text !== undefined
-                ? `Types: ${what.text}${what.pressEnter ? "  — then presses Enter" : ""}`
+                ? `${what.windowTitle !== undefined ? `Into: ${what.windowTitle} — ` : ""}` +
+                  `Types: ${what.text}${what.pressEnter ? "  — then presses Enter" : ""}`
                 : "Allow this until the server restarts",
               default: false,
             },

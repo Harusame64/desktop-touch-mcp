@@ -273,7 +273,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const text = `echo ${"a".repeat(40)} && rm -rf ./x`;
     await act(text, ctx);
     const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { dontAskAgain: { description: string } } } }])[0];
-    expect(form.requestedSchema.properties.dontAskAgain.description).toBe(`Types: ${text}`);
+    expect(form.requestedSchema.properties.dontAskAgain.description).toBe(`Into: PowerShell — Types: ${text}`);
   });
 
   it("says Enter will be pressed, in the question and on the description line (PR codex round 4)", async () => {
@@ -281,7 +281,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     await act("echo hi\n", ctx);
     const form = (ask.mock.calls[0] as unknown as [{ message: string; requestedSchema: { properties: { dontAskAgain: { description: string } } } }])[0];
     expect(form.message).toMatch(/"echo hi" \+ Enter/);
-    expect(form.requestedSchema.properties.dontAskAgain.description).toBe("Types: echo hi  — then presses Enter");
+    expect(form.requestedSchema.properties.dontAskAgain.description).toBe("Into: PowerShell — Types: echo hi  — then presses Enter");
   });
 
   it("does not ask when the active tab cannot be read before the question (PR codex round 4)", async () => {
@@ -343,4 +343,22 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     expect(err?.callerDetail).toMatch(/window in front/);
     expect(mockFlash).not.toHaveBeenCalled();
   });
+
+  it("shows the whole window title, which the one-line question cuts (PR codex round 7)", async () => {
+    state.title = "C:\\Users\\someone\\projects\\alpha-service - PowerShell";
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    await act("echo hi", ctx);
+    const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { dontAskAgain: { description: string } } } }])[0];
+    expect(form.requestedSchema.properties.dontAskAgain.description).toBe(`Into: ${state.title} — Types: echo hi`);
+  });
+
+  // Each title still contains "PowerShell", the title the act looks the window up by.
+  it.each([["too long", `PowerShell ${"x".repeat(190)}`], ["a bidi override", "PowerShell \u202eadmin"]])(
+    "does not ask about a terminal whose title is %s to show", async (_what, title) => {
+      state.title = title;
+      const { ctx, ask } = asking({ action: "accept", content: {} });
+      const err = await act("echo hi", ctx).catch((e) => e);
+      expect(err?.callerDetail).toMatch(/title cannot be shown in full/);
+      expect(ask).not.toHaveBeenCalled();
+    });
 });

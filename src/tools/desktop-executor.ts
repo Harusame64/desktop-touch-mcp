@@ -20,7 +20,7 @@
 
 import type { UiEntity, ExecutorKind, ExecutorOutcome } from "../engine/world-graph/types.js";
 import { logResolve, logDispatchSink } from "./_resolve-log.js";
-import { askToTakeForeground, callWasCancelled, ALLOW_TERMINAL_FOREGROUND_ENV, ASK_TIMEOUT_MS, ASK_TEXT_SHOWN_MAX, type ForegroundRefusal } from "./_ask-user.js";
+import { askToTakeForeground, callWasCancelled, ALLOW_TERMINAL_FOREGROUND_ENV, ASK_TIMEOUT_MS, ASK_TEXT_SHOWN_MAX, ASK_TITLE_SHOWN_MAX, type ForegroundRefusal } from "./_ask-user.js";
 import { offDesktopTarget } from "./_off-desktop.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
@@ -400,11 +400,17 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
   // Characters the question would show differently from what the shell receives — controls (TAB,
   // ESC, …), bidi overrides, zero-width marks — would let the user agree to text they did not see
   // (win2's Opus review on #764).
-  // eslint-disable-next-line no-control-regex -- matching control characters is the point
-  if (/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/.test(line)) {
+  if (UNSHOWABLE.test(line)) {
     throw new TerminalForegroundRefusal(
       "Nothing was typed: the text has a control, bidirectional or zero-width character, which the question " +
       "would not show as the terminal receives it. Send plain text.",
+    );
+  }
+  // The destination too is shown in full, so it is held to the same rules (PR codex on #764).
+  if (before.windowTitle.length > ASK_TITLE_SHOWN_MAX || UNSHOWABLE.test(before.windowTitle)) {
+    throw new TerminalForegroundRefusal(
+      `Nothing was typed: the terminal's title cannot be shown in full in the question (longer than ${ASK_TITLE_SHOWN_MAX} ` +
+      "characters, or it has a control, bidirectional or zero-width character), and the user is not asked to agree to a destination they cannot read.",
     );
   }
   if (line.length > ASK_TEXT_SHOWN_MAX) {
@@ -522,6 +528,13 @@ export function terminalBgExecute(
     );
   }
 }
+
+/**
+ * Characters the question would show differently from what the shell receives — controls (TAB,
+ * ESC, …), bidi overrides, zero-width marks.
+ */
+// eslint-disable-next-line no-control-regex -- matching control characters is the point
+const UNSHOWABLE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
