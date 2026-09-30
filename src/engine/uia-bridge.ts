@@ -3161,6 +3161,8 @@ export function detectUiaBlind(
   return { blind: false };
 }
 
+let warnedNoSelectedTab = false;
+
 /**
  * internal #227 — the selected tab of a Windows Terminal window: its name and UIA RuntimeId, `null`
  * when the window shows no selected tab, `undefined` when it could not be asked (no native engine,
@@ -3170,7 +3172,14 @@ export function detectUiaBlind(
 export async function getSelectedTab(
   hwnd: bigint,
 ): Promise<{ name: string; runtimeId: string; paneCount: number } | null | undefined> {
-  if (!nativeUia?.uiaGetSelectedTab) return undefined;
+  if (!nativeUia?.uiaGetSelectedTab) {
+    // Said once, so an old addon is not mistaken for a terminal whose tab cannot be read (gate 2 on #764).
+    if (!warnedNoSelectedTab) {
+      warnedNoSelectedTab = true;
+      console.error("[uia-bridge] native uiaGetSelectedTab is missing — rebuild the addon (npm run build:rs); typing into Windows Terminal is refused until then");
+    }
+    return undefined;
+  }
   try {
     return await nativeUia.uiaGetSelectedTab(String(hwnd));
   } catch {

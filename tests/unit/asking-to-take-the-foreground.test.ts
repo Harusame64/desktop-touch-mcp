@@ -91,4 +91,9 @@ describe("askToTakeForeground", () => {
       delete process.env.DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND;
     }
   });
+
+  it("cuts the question by characters, never splitting an emoji into half", () => {
+    const q = foregroundQuestion({ windowTitle: "repo 12345678901\u{1f680} main" });
+    expect(q).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
+  });
 });

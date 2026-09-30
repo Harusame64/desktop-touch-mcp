@@ -23,6 +23,8 @@ const { state } = vi.hoisted(() => ({
     fg: 0x999n as bigint | null,
     /** The terminal window has closed (the enumeration no longer lists it). */
     gone: false,
+    /** A second window wears the same title. */
+    twin: false,
     /** Runs on each tab read: lets a cell move the foreground while the read is awaited. */
     onTabRead: undefined as undefined | (() => void),
   },
@@ -32,7 +34,10 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
   return {
     ...actual,
-    enumWindowsInZOrder: vi.fn(() => (state.gone ? [] : [wtWindow({ isCloaked: state.cloaked, title: state.title })])),
+    enumWindowsInZOrder: vi.fn(() => (state.gone ? [] : [
+      wtWindow({ isCloaked: state.cloaked, title: state.title }),
+      ...(state.twin ? [wtWindow({ hwnd: 0x200n, title: state.title })] : []),
+    ])),
     getForegroundHwnd: vi.fn(() => state.fg),
     getWindowRoot: vi.fn((h: bigint) => (h === 0x101n ? WT : h)),
     getWindowTitleW: vi.fn(() => "PowerShell"),
@@ -101,6 +106,7 @@ beforeEach(() => {
   state.fg = 0x999n;
   state.onTabRead = undefined;
   state.gone = false;
+  state.twin = false;
   failsafe.tripped = false;
 });
 
@@ -338,7 +344,8 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const { ctx, ask } = asking({ action: "accept", content: {} });
     await act("echo hi", ctx);
     const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { typeIt: { description: string } } } }])[0];
-    expect(form.requestedSchema.properties.typeIt.description).toBe(`Into: ${state.title} — Types: echo hi`);
+    // The tab's name differs from this title, so it is named too.
+    expect(form.requestedSchema.properties.typeIt.description).toBe(`Into: ${state.title} (tab: PowerShell) — Types: echo hi`);
   });
 
   // Each title still contains "PowerShell", the title the act looks the window up by.
@@ -416,7 +423,9 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
   it("does not paste when the emergency stop was tripped while the user was answering (gate 2)", async () => {
     const ask = vi.fn(async () => { failsafe.tripped = true; return { action: "accept" as const, content: {} }; });
     const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
-    expect(err?.name).toBe("FailsafeError");
+    // A refusal (foreground_not_allowed), not executor_failed, whose advice is another road (gate 2).
+    expect(err?.name).toBe("TerminalForegroundRefusal");
+    expect(err?.callerDetail).toMatch(/emergency stop was triggered/);
     expect(mockFlash).not.toHaveBeenCalled();
   });
 
@@ -425,5 +434,41 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     await act('git commit -m "\u2714\ufe0f fix \u{1f468}\u200d\u{1f4bb}"', ctx);
     expect(ask).toHaveBeenCalledTimes(1);
     expect(mockFlash).toHaveBeenCalledTimes(1);
+  });
+
+  it("says the text was typed when only restoring the foreground failed (it comes after Ctrl+V and Enter)", async () => {
+    mockFlash.mockReturnValueOnce({ ok: false, reason: "foreground_restore_failed" } as never);
+    const err = await act("echo hi\n", asking({ action: "accept", content: {} }).ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/The text was typed and Enter pressed.*Do not type it again/);
+  });
+
+  it.each([["an NBSP", "rm\u00a0-rf x"], ["an ideographic space", "echo\u3000x"], ["a stray zero-width joiner", "rm -rf ./b\u200d/x"]])(
+    "does not ask about text with %s, which looks like something else", async (_what, text) => {
+      const { ctx, ask } = asking({ action: "accept", content: {} });
+      const err = await act(text, ctx).catch((e) => e);
+      expect(err?.callerDetail).toMatch(/control, bidirectional or zero-width/);
+      expect(ask).not.toHaveBeenCalled();
+    });
+
+  it("does not ask when two windows wear the title the act found its terminal by (no handle)", async () => {
+    state.twin = true;
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await act("echo hi", ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/more than one window is titled like/);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("names the tab when it differs from the window title (a fixed-title WT window, PR codex)", async () => {
+    state.tab = { name: "build", runtimeId: "42.1.4.263", paneCount: 1 };
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    await act("echo hi", ctx);
+    const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { typeIt: { description: string } } } }])[0];
+    expect(form.requestedSchema.properties.typeIt.description).toBe("Into: PowerShell (tab: build) — Types: echo hi");
+  });
+
+  it("says the terminal was left in front after a focus-wait timeout", async () => {
+    mockFlash.mockReturnValueOnce({ ok: false, reason: "focus_wait_timeout" } as never);
+    const err = await act("echo hi", asking({ action: "accept", content: {} }).ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/Nothing was typed \(focus_wait_timeout\), but the terminal was brought in front and left there/);
   });
 });

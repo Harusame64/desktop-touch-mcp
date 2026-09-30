@@ -456,7 +456,16 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
     );
   };
   if (tabBefore.paneCount !== 1) refuseSplit(tabBefore.paneCount);
-  const answer = await askToTakeForeground({ windowTitle: before.windowTitle, text: line, pressEnter: trailing !== null });
+  // The tab's own name too: a WT window with a fixed title shows the same title for every tab
+  // (PR codex on #764). Held to the same rules as the title, since it is shown.
+  if (tabBefore.name.length > ASK_TITLE_SHOWN_MAX || UNSHOWABLE.test(tabBefore.name)) {
+    throw new TerminalForegroundRefusal(
+      "Nothing was typed: the terminal's tab name cannot be shown in full in the question, and the user is not asked to agree to a destination they cannot read.",
+    );
+  }
+  const answer = await askToTakeForeground({
+    windowTitle: before.windowTitle, tabName: tabBefore.name, text: line, pressEnter: trailing !== null,
+  });
   if (!answer.allowed) throw new TerminalForegroundRefusal(TERMINAL_FOREGROUND_REFUSALS[answer.why]);
   const channel = await whereIsIt();
   // The window's title is NOT compared: WT takes it from the active tab, and a prompt or a running
@@ -477,8 +486,15 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
   }
   // The emergency stop is checked when the call starts; the paste can come up to two minutes later,
   // and it takes the foreground, so it is checked again (gate 2 on #764). Throws FailsafeError.
+  // Kept a refusal: as executor_failed, its advice would be to type another way (gate 2 on #764).
   const { checkFailsafe } = await import("../utils/failsafe.js");
-  await checkFailsafe("per-tool");
+  try {
+    await checkFailsafe("per-tool");
+  } catch (e) {
+    throw new TerminalForegroundRefusal(
+      `Nothing was typed: the emergency stop was triggered (${e instanceof Error ? e.name : "FailsafeError"}). Stop.`,
+    );
+  }
   // Last, after every await: the user may have brought the terminal in front while the tab was
   // being read, and the flash would then paste into it without taking or restoring anything
   // (PR codex on #764). Nothing awaits between here and the paste.
@@ -496,6 +512,21 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
       r.reason === "clipboard_lock_contention" ||
       r.reason === "foreground_steal_denied" ||
       r.reason === "focus_wait_timeout";
+    // Restoring the foreground comes last, after Ctrl+V and Enter: that failure means it was typed
+    // (gate 2 on #764). A focus-wait timeout returns after the terminal was brought forward and before
+    // the restore, so nothing was typed but the terminal is left in front (PR codex on #764).
+    if (r.reason === "focus_wait_timeout") {
+      throw new TerminalForegroundRefusal(
+        "Nothing was typed (focus_wait_timeout), but the terminal was brought in front and left there; " +
+        "the window the user was in is behind it. Tell the user before anything else.",
+      );
+    }
+    if (r.reason === "foreground_restore_failed") {
+      throw new TerminalForegroundRefusal(
+        "The text was typed" + (trailing !== null ? " and Enter pressed" : "") + ", but the previous window " +
+        "could not be put back in front (foreground_restore_failed). Do not type it again.",
+      );
+    }
     throw new TerminalForegroundRefusal(
       `The paste through the foreground failed (${r.reason ?? "unknown"}); ` +
       (nothingTyped ? "nothing was typed." : "whether anything was typed is not known. Read the terminal before retrying."),
@@ -558,13 +589,17 @@ export function terminalBgExecute(
  * Characters the question would show differently from what the shell receives — controls (TAB,
  * ESC, …), bidi overrides, zero-width marks.
  */
-// Also soft hyphen, combining grapheme joiner, Arabic letter mark, Hangul fillers, Mongolian and
+// Also look-alike spaces (NBSP, the U+2000 set, ideographic space: shown as a space, not split on by
+// the shell), soft hyphen, combining grapheme joiner, Arabic letter mark, Hangul fillers, Mongolian and
 // Khmer invisibles, line/paragraph separators, variation selectors, Unicode tags (gate 2 on #764).
 // Not the zero-width joiner (U+200D) or VS16 (U+FE0F): emoji are made of them (👨‍💻, ✔️), and prompt
 // titles and commit messages carry emoji; both show as part of the emoji they belong to.
-const UNSHOWABLE =
+const UNSHOWABLE_CHARS =
   // eslint-disable-next-line no-control-regex, no-misleading-character-class -- matching these characters is the point
-  /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b\u200c\u200e\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0e\ufeff\uffa0\ufff0-\ufffb\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/u;
+  /[\u0000-\u001f\u007f-\u009f\u00a0\u00ad\u034f\u061c\u115f\u1160\u1680\u17b4\u17b5\u180b-\u180f\u2000-\u200c\u200e\u200f\u2028-\u202f\u205f-\u206f\u3000\u3164\ufe00-\ufe0e\ufeff\uffa0\ufff0-\ufffb\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/u;
+/** A zero-width joiner not between two emoji: shown as nothing, received as a character. */
+const STRAY_ZWJ = /(?<!\p{Extended_Pictographic}\ufe0f?)\u200d|\u200d(?!\p{Extended_Pictographic})/u;
+const UNSHOWABLE = { test: (s: string): boolean => UNSHOWABLE_CHARS.test(s) || STRAY_ZWJ.test(s) };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -2998,6 +3033,15 @@ function getSharedRealDeps(): ExecutorDeps {
       } catch (err) {
         // internal #227: Windows Terminal takes no posted characters; with the user's yes, paste.
         if (!(err instanceof BackgroundTerminalUnsupportedError) || err.reason !== "wt_xaml_pipeline" || typeof err.hwnd !== "bigint") throw err;
+        // Found by title (no handle), the window is the first that wears it, and the question can
+        // name only that title: with two such windows the user could not tell which one they allow
+        // (gate 2 on #764).
+        if (hwnd === undefined && wins.filter((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase())).length > 1) {
+          throw new TerminalForegroundRefusal(
+            `Nothing was typed: more than one window is titled like "${windowTitle}", and the question could not ` +
+            "say which one it types into. Re-run desktop_discover with the window's hwnd (target.hwnd).",
+          );
+        }
         await pasteIntoTerminalThroughForeground(err.hwnd, text);
       }
     },

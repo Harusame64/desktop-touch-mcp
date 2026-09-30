@@ -80,7 +80,11 @@ export const ASK_TITLE_SHOWN_MAX = 200;
 /** A cancel sooner than this was not a person reading the question. */
 export const INSTANT_CANCEL_MS = 500;
 
-const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+/** Cut to `n` characters (code points, so an emoji is never split into a lone surrogate). */
+const clip = (s: string, n: number): string => {
+  const cps = Array.from(s);
+  return cps.length > n ? `${cps.slice(0, n - 1).join("")}…` : s;
+};
 
 /** The question's one line: what is typed, and into which window, when they are known. */
 export function foregroundQuestion(what: { windowTitle?: string; text?: string; pressEnter?: boolean }): string {
@@ -107,7 +111,7 @@ export type ForegroundAnswer =
  * it has to; never throws.
  */
 export async function askToTakeForeground(
-  what: { windowTitle?: string; text?: string; pressEnter?: boolean } = {},
+  what: { windowTitle?: string; tabName?: string; text?: string; pressEnter?: boolean } = {},
 ): Promise<ForegroundAnswer> {
   const ctx = _askAls.getStore();
   if (!ctx) return { allowed: false, why: "cannot_ask" };
@@ -133,7 +137,9 @@ export async function askToTakeForeground(
               // And the whole window title: the one-line question cuts it, and two terminals whose
               // titles start alike must not look alike either (PR codex on #764).
               description: what.text !== undefined
-                ? `${what.windowTitle !== undefined ? `Into: ${what.windowTitle} — ` : ""}` +
+                ? `${what.windowTitle !== undefined ? `Into: ${what.windowTitle}` : ""}` +
+                  `${what.tabName !== undefined && what.tabName !== what.windowTitle ? ` (tab: ${what.tabName})` : ""}` +
+                  `${what.windowTitle !== undefined ? " — " : ""}` +
                   `Types: ${what.text}${what.pressEnter ? "  — then presses Enter" : ""}`
                 : "Accept to type it; untick or Decline to refuse",
               default: true,
