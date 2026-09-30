@@ -296,8 +296,9 @@ const TERMINAL_FOREGROUND_REFUSALS: Record<ForegroundRefusal, string> = {
     `answered within ${ASK_TIMEOUT_MS / 1000} s. Ask the user in the conversation before typing into it.`,
   cannot_ask:
     "Nothing was typed: Windows Terminal takes input only through the foreground, and this client " +
-    "cannot ask the user. With the user's agreement, terminal(action:'send', method:'foreground_flash') " +
-    `pastes through the foreground, or ${ALLOW_TERMINAL_FOREGROUND_ENV}=1 allows it here.`,
+    // Not terminal(send, foreground_flash): that road has none of the checks here (window in front,
+    // tab, panes), so naming it would undo them (gate 2 on #764). The env var keeps every check.
+    `cannot ask the user. The user can allow it with ${ALLOW_TERMINAL_FOREGROUND_ENV}=1; every other check still applies.`,
 };
 
 /**
@@ -342,11 +343,13 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
    * another window, or a client in another app, is not in front.
    */
   const isInFront = (): boolean => {
+    // Fails closed, as every other check here does: a foreground that cannot be read (no native
+    // binding, or none during a focus change) counts as this terminal (gate 2 on #764).
     try {
       const fg = getForegroundHwnd();
-      return fg !== null && (fg === hwnd || getWindowRoot(fg) === hwnd);
+      return fg === null || fg === hwnd || getWindowRoot(fg) === hwnd;
     } catch {
-      return false;
+      return true;
     }
   };
   const refuseInFront = (): never => {
@@ -437,29 +440,28 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
       "Nothing was typed: the terminal's active tab could not be read, so the user's answer could not be held to it.",
     );
   }
-  // A split tab: which pane takes the paste can be read only while WT is in front, and it is not
-  // while the user answers (win2, #764) — so it cannot be shown or held to.
-  const refuseSplit = (): never => {
+  // Exactly one pane. A split tab: which pane takes the paste can be read only while WT is in front,
+  // and it is not while the user answers (win2, #764). No pane: the tab is not a terminal (WT's
+  // Settings tab), and the paste and Enter would go to whatever control it has (gate 2 on #764).
+  const refuseSplit = (panes: number): never => {
     throw new TerminalForegroundRefusal(
-      "Nothing was typed: the terminal's tab is split into panes, and which pane would receive the text " +
-      "cannot be read while the user answers. Use a tab that is not split.",
+      panes > 1
+        ? "Nothing was typed: the terminal's tab is split into panes, and which pane would receive the text " +
+          "cannot be read while the user answers. Use a tab that is not split."
+        : "Nothing was typed: the selected tab is not a terminal (no terminal pane, e.g. WT's Settings tab). " +
+          "Select a terminal tab.",
     );
   };
-  if (tabBefore.paneCount > 1) refuseSplit();
+  if (tabBefore.paneCount !== 1) refuseSplit(tabBefore.paneCount);
   const answer = await askToTakeForeground({ windowTitle: before.windowTitle, text: line, pressEnter: trailing !== null });
   if (!answer.allowed) throw new TerminalForegroundRefusal(TERMINAL_FOREGROUND_REFUSALS[answer.why]);
   const channel = await whereIsIt();
-  // The user agreed to the window the question named. Windows Terminal runs all its windows in one
-  // process, so the process check above cannot tell a reused handle or a switched tab apart; the
-  // title the question showed can (PR codex P1 on #764).
-  if (channel.windowTitle !== before.windowTitle) {
-    throw new TerminalForegroundRefusal(
-      `Nothing was typed: the terminal's title changed while the user was answering (another tab or window); ` +
-      `the user agreed to "${before.windowTitle}".`,
-    );
-  }
+  // The window's title is NOT compared: WT takes it from the active tab, and a prompt or a running
+  // program retitles the tab by itself, which refused every such Accept. A switched tab, and a
+  // handle reused by another WT window, both change the selected tab's RuntimeId, which is compared
+  // below (gate 2 on #764).
   const tabAfter = await getSelectedTab(hwnd);
-  if (tabAfter && tabAfter.paneCount > 1) refuseSplit();
+  if (tabAfter && tabAfter.paneCount !== 1) refuseSplit(tabAfter.paneCount);
   if (!tabAfter || tabAfter.runtimeId !== tabBefore.runtimeId) {
     throw new TerminalForegroundRefusal(
       "Nothing was typed: the terminal's active tab changed while the user was answering" +
@@ -550,7 +552,10 @@ export function terminalBgExecute(
  * ESC, …), bidi overrides, zero-width marks.
  */
 // eslint-disable-next-line no-control-regex -- matching control characters is the point
-const UNSHOWABLE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/;
+// Also soft hyphen, combining grapheme joiner, Arabic letter mark, Hangul fillers, Mongolian and
+// Khmer invisibles, line/paragraph separators, variation selectors, Unicode tags (gate 2 on #764).
+const UNSHOWABLE =
+  /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufffb\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/u;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

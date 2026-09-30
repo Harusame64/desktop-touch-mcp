@@ -125,9 +125,10 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     expect(mockFlash).not.toHaveBeenCalled();
   });
 
-  it("types nothing when the call cannot ask, and names the ways the user can allow it", async () => {
+  it("types nothing when the call cannot ask, and names only the env var, which keeps every check", async () => {
     const err = await act("echo hi", null).catch((e) => e);
-    expect(err?.callerDetail).toMatch(/cannot ask the user.*foreground_flash.*DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND=1/);
+    expect(err?.callerDetail).toMatch(/cannot ask the user\. The user can allow it with DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND=1; every other check still applies/);
+    expect(err?.callerDetail).not.toMatch(/foreground_flash/);
     expect(mockFlash).not.toHaveBeenCalled();
   });
 
@@ -226,11 +227,10 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     expect(mockFlash).not.toHaveBeenCalled();
   });
 
-  it("does not type when the terminal's title changed while the user was answering (another tab or a reused handle)", async () => {
-    const ask = vi.fn(async () => { state.title = "Administrator: PowerShell"; return { action: "accept" as const, content: {} }; });
-    const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
-    expect(err?.callerDetail).toMatch(/title changed while the user was answering.*"PowerShell"/);
-    expect(mockFlash).not.toHaveBeenCalled();
+  it("types when only the window title changed while the user was answering (a prompt retitles its tab); the tab is the same", async () => {
+    const ask = vi.fn(async () => { state.title = "PowerShell - C:\\work"; return { action: "accept" as const, content: {} }; });
+    await act("echo hi", { ask } as AskContext);
+    expect(mockFlash).toHaveBeenCalledTimes(1);
   });
 
   it("does not type when the tool call was cancelled after the answer (PR codex P2)", async () => {
@@ -398,4 +398,27 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     expect(err?.callerDetail).toMatch(/cannot be pasted into through the foreground \(unsupported\)/);
     expect(ask).not.toHaveBeenCalled();
   });
+
+  it("does not ask about a selected tab that is not a terminal (no pane: WT's Settings tab, gate 2)", async () => {
+    state.tab = { name: "Settings", runtimeId: "42.1.4.300", paneCount: 0 };
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await act("echo hi", ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/not a terminal/);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the foreground cannot be read: the in-front check fails closed (gate 2)", async () => {
+    state.fg = null;
+    const err = await act("echo hi", asking({ action: "accept", content: {} }).ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/window in front/);
+    expect(mockFlash).not.toHaveBeenCalled();
+  });
+
+  it.each([["a soft hyphen", "rm\u00ad -rf x"], ["a Unicode tag", "echo \u{e0041}hi"], ["a variation selector", "echo a\ufe0f"], ["a line separator", "echo a\u2028b"]])(
+    "does not ask about text with %s, which the question would not show (gate 2)", async (_what, text) => {
+      const { ctx, ask } = asking({ action: "accept", content: {} });
+      const err = await act(text, ctx).catch((e) => e);
+      expect(err?.callerDetail).toMatch(/control, bidirectional or zero-width/);
+      expect(ask).not.toHaveBeenCalled();
+    });
 });
