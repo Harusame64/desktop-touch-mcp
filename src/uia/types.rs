@@ -55,6 +55,12 @@ pub struct UiElement {
     /// (Explorer's status bar, 4 of 4, S10) where their RuntimeId and their parent's did not. `None`
     /// on a read that does not walk from a root.
     pub path: Option<String>,
+    /// internal #224 — the window this element is drawn in: its own `native_window_handle` when it has
+    /// one, otherwise the nearest ancestor's in this read (the read's root window at the top). Word's
+    /// body has no window of its own and lives in the `_WwG` child window, where a posted WM_CHAR is
+    /// typed at Word's caret even with Word in the background (win2, 2026-09-30). `None` on a read that
+    /// does not walk from a root.
+    pub host_window_handle: Option<String>,
 }
 
 #[napi(object)]

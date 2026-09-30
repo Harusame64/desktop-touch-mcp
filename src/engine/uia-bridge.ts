@@ -1146,6 +1146,12 @@ export interface UiElement {
    */
   runtimeId?: string;
   /**
+   * internal #224 — the window the element is drawn in: its own handle when it has one, otherwise
+   * the nearest ancestor's in this read. Absent on a read that does not walk from a root, and on an
+   * older addon.
+   */
+  hostWindowHandle?: string;
+  /**
    * internal #211 (B) — where the element sits in this read: `/<ControlType>[<index among the
    * parent's ControlView children>]` per level from the read's root. A rebuilt element kept it where
    * its RuntimeId did not (Explorer's status bar, 4 of 4, S10). Absent when the read did not take it.
@@ -2250,7 +2256,7 @@ foreach ($k in $kids) { Collect $k 0 }
  * to undefined. A build older than a field sends nothing, which stays absent rather than becoming a
  * guess. One function, so a new field cannot reach one read and not the other (gate 2 on #211 C).
  */
-function normalizeNativeElement({ nativeWindowHandle, nativeWindowHandleRead, isModal, runtimeId, path, ...el }: NativeUiElement): UiElement {
+function normalizeNativeElement({ nativeWindowHandle, nativeWindowHandleRead, isModal, runtimeId, path, hostWindowHandle, ...el }: NativeUiElement): UiElement {
   return {
     ...el,
     boundingRect: el.boundingRect ?? null,
@@ -2260,6 +2266,7 @@ function normalizeNativeElement({ nativeWindowHandle, nativeWindowHandleRead, is
     ...(isModal != null && { isModal }),
     ...(runtimeId != null && { runtimeId }),
     ...(path != null && { path }),
+    ...(hostWindowHandle != null && { hostWindowHandle }),
   };
 }
 

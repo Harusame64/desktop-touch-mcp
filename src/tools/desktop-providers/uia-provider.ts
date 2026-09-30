@@ -163,6 +163,9 @@ export async function fetchUiaCandidates(
             ...(result.via !== undefined && { via: result.via }),
             ...(el.nativeWindowHandle !== undefined && { nativeWindowHandle: el.nativeWindowHandle }),
             ...(el.isModal !== undefined && { isModal: el.isModal }),
+            // internal #224 — the window it is drawn in, for the keyboard rung when its thread has no
+            // focus (Word's body lives in the `_WwG` child window).
+            ...(el.hostWindowHandle !== undefined && { hostWindowHandle: el.hostWindowHandle }),
           },
         },
         role: uiaRoleFromControlType(el.controlType),

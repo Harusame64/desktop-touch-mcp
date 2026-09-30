@@ -44,6 +44,13 @@ export interface EntityLocator {
      */
     nativeWindowHandleRead?: "value" | "zero" | "failed";
     /**
+     * internal #224 — the window the element is drawn in: its own `nativeWindowHandle` when it has
+     * one, otherwise the nearest ancestor's in the read. Word's body has no window of its own and
+     * lives in the `_WwG` child window. Only the keyboard rung's choice of receiver reads it, when
+     * the window's thread has no focus; it is never taken as the element's own window.
+     */
+    hostWindowHandle?: string;
+    /**
      * internal #211 (C) — a `Window` element's own `WindowPattern.IsModal`, as the read answered it.
      * Absent when it did not answer (another control type, a window without the pattern, an older
      * addon): absence is "not said", never "not modal".

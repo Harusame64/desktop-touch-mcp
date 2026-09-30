@@ -101,13 +101,14 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
     // Each RPC fetches all ControlView children of one parent at once.
     // maxElements / maxDepth triggers early exit — no unnecessary RPCs.
     let mut elements: Vec<UiElement> = Vec::with_capacity(max_elements as usize);
-    let mut queue: VecDeque<(IUIAutomationElement, u32, Option<String>)> = VecDeque::with_capacity(64);
+    // Queue entries also carry the parent's host window (internal #224): the root's is the window read.
+    let mut queue: VecDeque<(IUIAutomationElement, u32, Option<String>, Option<String>)> = VecDeque::with_capacity(64);
     // Queue entries: (parent, depth_of_its_children, parent's path).
     // Root's children are at depth 1; the root's own path is empty. A parent whose path could not
     // be written gives its children none, rather than paths that restart at the root (gate 2).
-    queue.push_back((root, 1, Some(String::new())));
+    queue.push_back((root, 1, Some(String::new()), window_hwnd.clone()));
 
-    'bfs: while let Some((parent, child_depth, parent_path)) = queue.pop_front() {
+    'bfs: while let Some((parent, child_depth, parent_path, parent_host)) = queue.pop_front() {
         if child_depth > max_depth {
             continue;
         }
@@ -152,9 +153,19 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
                 _ => None,
             };
 
+            // Its own window when it has one (read as `window_hwnd` is: `as usize as u32`, zero dropped),
+            // otherwise the window it is drawn in, inherited.
+            let own = unsafe { child.CachedNativeWindowHandle() }
+                .ok()
+                .map(|h| h.0 as usize as u32)
+                .filter(|h| *h != 0)
+                .map(|h| h.to_string());
+            let host = own.or_else(|| parent_host.clone());
+
             if let Ok(mut ui_elem) = extract_element(&child, child_depth, fetch_values) {
                 ui_elem.runtime_id = cached_runtime_id(&child);
                 ui_elem.path = path.clone();
+                ui_elem.host_window_handle = host.clone();
                 elements.push(ui_elem);
             }
 
@@ -164,7 +175,7 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
 
             // Enqueue for next-level exploration.
             if child_depth < max_depth {
-                queue.push_back((child, child_depth + 1, path));
+                queue.push_back((child, child_depth + 1, path, host));
             }
         }
     }
@@ -413,6 +424,7 @@ fn extract_element(
             is_modal,
             runtime_id: None,
             path: None,
+            host_window_handle: None,
         })
     }
 }
