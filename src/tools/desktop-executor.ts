@@ -312,7 +312,7 @@ const TERMINAL_FOREGROUND_REFUSALS: Record<ForegroundRefusal, string> = {
  * that is then refused: the window must be on this virtual desktop (internal #221), and the text one
  * line (a single trailing newline — `\n`, `\r\n` or `\r`, as terminal send reads it — becomes Enter)
  * within the flash's size limit. The window is checked AGAIN after the answer: the question can wait
- * up to a minute, and the user may have moved the terminal to another desktop or closed it meanwhile
+ * up to two minutes (ASK_TIMEOUT_MS), and the user may have moved the terminal to another desktop or closed it meanwhile
  * (gate 2 on #764).
  */
 export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: string): Promise<void> {
@@ -472,6 +472,10 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
   if (callWasCancelled()) {
     throw new TerminalForegroundRefusal("Nothing was typed: the tool call was cancelled after the user answered.");
   }
+  // The emergency stop is checked when the call starts; the paste can come up to two minutes later,
+  // and it takes the foreground, so it is checked again (gate 2 on #764). Throws FailsafeError.
+  const { checkFailsafe } = await import("../utils/failsafe.js");
+  await checkFailsafe("per-tool");
   // Last, after every await: the user may have brought the terminal in front while the tab was
   // being read, and the flash would then paste into it without taking or restoring anything
   // (PR codex on #764). Nothing awaits between here and the paste.

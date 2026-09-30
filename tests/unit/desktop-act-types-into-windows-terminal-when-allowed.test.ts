@@ -52,6 +52,11 @@ vi.mock("../../src/engine/bg-input.js", async (importOriginal) => {
   };
 });
 
+const { failsafe } = vi.hoisted(() => ({ failsafe: { tripped: false } }));
+vi.mock("../../src/utils/failsafe.js", () => ({
+  checkFailsafe: vi.fn(async () => { if (failsafe.tripped) throw Object.assign(new Error("FailsafeError"), { name: "FailsafeError" }); }),
+}));
+
 vi.mock("../../src/engine/background-channel-resolver.js", () => ({
   resolveBackgroundInputChannel: vi.fn((hwnd: bigint) => ({ kind: "clipboard_flash", hwnd, pid: 42, constraints: { maxBytes: 5120, singleLineOnly: true } })),
 }));
@@ -97,6 +102,7 @@ beforeEach(() => {
   state.fg = 0x999n;
   state.onTabRead = undefined;
   state.gone = false;
+  failsafe.tripped = false;
   delete process.env.DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND;
 });
 
@@ -421,4 +427,11 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
       expect(err?.callerDetail).toMatch(/control, bidirectional or zero-width/);
       expect(ask).not.toHaveBeenCalled();
     });
+
+  it("does not paste when the emergency stop was tripped while the user was answering (gate 2)", async () => {
+    const ask = vi.fn(async () => { failsafe.tripped = true; return { action: "accept" as const, content: {} }; });
+    const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
+    expect(err?.name).toBe("FailsafeError");
+    expect(mockFlash).not.toHaveBeenCalled();
+  });
 });

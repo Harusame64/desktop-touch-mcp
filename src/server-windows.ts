@@ -131,7 +131,9 @@ function wrapHandlerArgWithAsk(toolArgs: any[], s: McpServer, canAsk: boolean): 
     const ctx: AskContext | null = canAsk
       ? {
           ask: async (form, timeoutMs) => {
-            const answer = await s.server.elicitInput(
+            let answer;
+            try {
+              answer = await s.server.elicitInput(
               // The form is built in `_ask-user.ts` to the SDK's primitive-field schema.
               { mode: "form", ...form } as Parameters<typeof s.server.elicitInput>[0],
               {
@@ -141,7 +143,13 @@ function wrapHandlerArgWithAsk(toolArgs: any[], s: McpServer, canAsk: boolean): 
                 ...(extra?.signal && { signal: extra.signal }),
                 ...(extra?.requestId !== undefined && { relatedRequestId: extra.requestId }),
               },
-            );
+              );
+            } catch (err) {
+              // An abort rejects with the client's own reason, whatever its words: said as a cancel by
+              // the signal, not guessed from the text (gate 2 on #764).
+              if (extra?.signal?.aborted) throw new Error("The tool call was cancelled while the question was up", { cause: err });
+              throw err;
+            }
             if (extra?.signal?.aborted) throw new Error("The tool call was cancelled while the question was up");
             return answer as AskAnswer;
           },
