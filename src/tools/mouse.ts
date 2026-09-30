@@ -44,6 +44,7 @@ import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/re
 import { runActionGuard, isAutoGuardEnabled } from "./_action-guard.js";
 import { detectTabDragRisk } from "../engine/perception/tab-drag-heuristic.js";
 import { resolveWindowTarget, findPlainTopLevelWindowByTitle } from "./_resolve-window.js";
+import { offDesktopTarget, offDesktopFailure, type OffDesktopTarget } from "./_off-desktop.js";
 import {
   resolveInputDestination,
   dispatchScrollWheel,
@@ -92,6 +93,11 @@ interface HomingResult {
   x: number;
   y: number;
   notes: string[];
+  /**
+   * internal #221 — the window this call would bring forward is on another virtual desktop.
+   * Nothing was focused; the caller refuses rather than switch the user's desktop.
+   */
+  offDesktop?: OffDesktopTarget;
 }
 
 /**
@@ -146,6 +152,10 @@ async function applyHoming(
       const target = windows.find((w) =>
         w.title.toLowerCase().includes(windowTitle.toLowerCase())
       );
+      // internal #221: bringing a window on another virtual desktop forward switches the user's
+      // desktop. Refused before anything is focused or corrected.
+      const away = target ? offDesktopTarget(target, windows, windowTitle) : null;
+      if (away) return { x, y, notes, offDesktop: away };
       if (target) {
         // Issue #202 P1-1 (Opus Round 1): default → 100ms wait → re-enum →
         // not-foreground → force escalate → re-enum ladder (mirror
@@ -482,6 +492,7 @@ export const mouseMoveHandler = async ({
     const warnings: string[] = [...(resolved?.warnings ?? [])];
     if (homing) {
       const result = await applyHoming(x, y, effectiveTitle);
+      if (result.offDesktop) return offDesktopFailure("mouse_move", result.offDesktop);
       tx = result.x; ty = result.y;
       homingNotes.push(...result.notes);
     }
@@ -576,6 +587,10 @@ export const mouseClickHandler = async ({
     const notes: string[] = [];
     if (homing) {
       const result = await applyHoming(screenX, screenY, effectiveTitle, elementName, elementId, force);
+      if (result.offDesktop) {
+        const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "mouse_click" }) : null;
+        return offDesktopFailure("mouse_click", result.offDesktop, earlyEnv ? { _perceptionForPost: earlyEnv } : {});
+      }
       tx = result.x; ty = result.y;
       notes.push(...result.notes);
 
@@ -816,6 +831,10 @@ export const mouseDragHandler = async ({
       // Homing result gives us (correctedX, correctedY) and the underlying delta.
       // Apply the same (dx, dy) to the end point so the drag vector is preserved.
       const result = await applyHoming(startX, startY, effectiveTitle);
+      if (result.offDesktop) {
+        const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "mouse_drag" }) : null;
+        return offDesktopFailure("mouse_drag", result.offDesktop, earlyEnv ? { _perceptionForPost: earlyEnv } : {});
+      }
       const dx = result.x - startX;
       const dy = result.y - startY;
       tsx = result.x; tsy = result.y;
@@ -1496,6 +1515,7 @@ export const scrollHandler = async ({
     const notes: string[] = [];
     if (homing && x !== undefined && y !== undefined) {
       const result = await applyHoming(x, y, effectiveTitle);
+      if (result.offDesktop) return offDesktopFailure("scroll", result.offDesktop);
       tx = result.x; ty = result.y;
       notes.push(...result.notes);
     }

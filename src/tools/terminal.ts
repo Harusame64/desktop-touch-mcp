@@ -1,3 +1,4 @@
+import { offDesktopTarget, offDesktopFailure } from "./_off-desktop.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { createHash, randomBytes } from "node:crypto";
@@ -1280,6 +1281,10 @@ export const terminalSendHandler = async ({
       // ただし caller が pressEnter 明示し、かつ将来 native side で改行許容に
       // 変わる可能性に備えて防御的に guard も書いておく。
       const flashPressEnter = pressEnter && !/[\r\n]$/.test(input);
+      // internal #221: the flash takes the foreground — refused for a window on another virtual
+      // desktop. (The wm_char branch above does not take it, and reaches such a window.)
+      const flashAway = offDesktopTarget(win, enumWindowsInZOrder(), paneId === undefined ? windowTitle : undefined);
+      if (flashAway) return offDesktopFailure("terminal:send", flashAway, { method: "foreground_flash" });
       // ADR-035 Phase 1 — see the keyboard twin: the foreground-flash channel
       // steals focus to paste, which is the route a mis-resolved terminal
       // destination turns into a command run in the wrong shell.
@@ -1676,6 +1681,10 @@ export const terminalSendHandler = async ({
     const homingNotes: string[] = [];
 
     let foregrounded = !focusFirst; // when not requested, treat as success
+    // internal #221: bringing a window on another virtual desktop forward switches the user's
+    // desktop. Refused before anything is focused or pasted.
+    const away = focusFirst ? offDesktopTarget(win, allBefore, paneId === undefined ? windowTitle : undefined) : null;
+    if (away) return offDesktopFailure("terminal:send", away);
     if (focusFirst) {
       // Windows SetForegroundWindow is racy under load — retry until the target
       // really is in the foreground (or give up after 5 tries).

@@ -353,6 +353,13 @@ const SUGGESTS: Record<string, string[]> = {
     "If the call originates from a background process or service, the OS suppresses foreground transfers — proxy the focus request via the foreground app.",
     "Skip explicit focus_window: tools that accept windowTitle directly (keyboard / desktop_act / browser_click) handle focus internally and may succeed where focus_window cannot.",
   ],
+  // internal #221: the window the call would bring forward is on another virtual desktop. Refused
+  // by `_off-desktop.ts` so the user's desktop is not switched; the message carries this code.
+  WindowOnOtherDesktop: [
+    "Nothing was sent: the window is on another virtual desktop, and bringing it forward would switch the user's desktop.",
+    "If context.sameTitleOnScreen is true, a window with that title is on this desktop — pass its hwnd (from desktop_discover) to act on it.",
+    "To act on the window itself, ask the user to switch to its desktop or move it here, then retry.",
+  ],
   // ADR-029: a click / move / drag aimed at a point that is on no monitor.
   // Since Phase 2a mouse input reaches every monitor, so this is almost always
   // stale coordinates; the primary-monitor-only wording applies to an

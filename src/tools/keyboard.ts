@@ -68,6 +68,7 @@ function toResolvedDestination(
   };
 }
 import { resolveWindowTarget } from "./_resolve-window.js";
+import { offDesktopTarget, offDesktopFailure, type OffDesktopTarget } from "./_off-desktop.js";
 import {
   makeCommitWrapper,
   withEnvelopeIncludeForUnion,
@@ -1208,6 +1209,11 @@ interface FocusForKeyboardResult {
    * unsaved marker) is not misclassified as focus loss.
    */
   targetHwnd: bigint | null;
+  /**
+   * internal #221 — set when the window this call would bring forward is on another virtual
+   * desktop. Nothing was focused: the caller refuses rather than switch the user's desktop.
+   */
+  offDesktop?: OffDesktopTarget;
 }
 
 async function focusWindowForKeyboard(
@@ -1227,6 +1233,7 @@ async function focusWindowForKeyboard(
   let foregroundVerified = false;
   let forceRefused = false;
   let targetHwnd: bigint | null = null;
+  let offDesktop: OffDesktopTarget | undefined;
   const needle = windowTitle.toLowerCase();
   // Match by hwnd when supplied, else fall back to title-substring.
   const matches = (w: { title: string; hwnd: bigint }): boolean =>
@@ -1262,7 +1269,12 @@ async function focusWindowForKeyboard(
       targetHwnd = active.hwnd;
     } else {
       const target = windows.find(matches);
-      if (target) {
+      // internal #221: bringing a window on another virtual desktop forward switches the user's
+      // desktop. Refused before anything is focused.
+      const away = target ? offDesktopTarget(target, windows, explicitHwnd === undefined ? windowTitle : undefined) : null;
+      if (away) {
+        offDesktop = away;
+      } else if (target) {
         // Always verify foreground after focus so the auto-guard does not block
         // on a stale/foreground-steal-prevented SetForegroundWindow. If the first
         // attempt (honoring caller's `force` flag) fails to transfer the foreground,
@@ -1296,7 +1308,7 @@ async function focusWindowForKeyboard(
   } catch {
     // best-effort
   }
-  return { warnings, homingNotes, foregroundVerified, forceRefused, targetHwnd };
+  return { warnings, homingNotes, foregroundVerified, forceRefused, targetHwnd, ...(offDesktop && { offDesktop }) };
 }
 
 /**
@@ -1717,6 +1729,10 @@ export const keyboardTypeHandler = async ({
           { windowTitle: effectiveWindowTitle }
         );
       }
+      // internal #221: the flash takes the foreground for the target — refused when it is on
+      // another virtual desktop, before the fix is spent.
+      const ffAway = offDesktopTarget(target, wins, explicitHwnd === undefined ? effectiveWindowTitle : undefined);
+      if (ffAway) return offDesktopFailure("keyboard:type", ffAway, { method: "foreground_flash" });
       // Past both flash refusals — the call is going ahead (ADR-038 P3).
       spendFix();
       // Lens / auto-guard: foregroundVerified=false because flash will steal
@@ -2401,6 +2417,11 @@ export const keyboardTypeHandler = async ({
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
       foregroundVerified = fw.foregroundVerified;
+      // internal #221: the window is on another virtual desktop — refused, nothing focused or sent.
+      if (fw.offDesktop) {
+        const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "keyboard:type" }) : null;
+        return offDesktopFailure("keyboard:type", fw.offDesktop, earlyEnv ? { _perceptionForPost: earlyEnv } : {});
+      }
       // Issue #202: when both default and force escalation refused, surface
       // ForegroundRestricted typed code + ok:false (mirror window.ts:170-185
       // contract from PR #201). Returning ok:true with just a warning was
@@ -3028,6 +3049,11 @@ export const keyboardPressHandler = async ({
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
       foregroundVerified = fw.foregroundVerified;
+      // internal #221: the window is on another virtual desktop — refused, nothing focused or sent.
+      if (fw.offDesktop) {
+        const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "keyboard:press" }) : null;
+        return offDesktopFailure("keyboard:press", fw.offDesktop, earlyEnv ? { _perceptionForPost: earlyEnv } : {});
+      }
       // Issue #202: same contract as keyboard:type above — typed
       // ForegroundRestricted on dual refusal (mirror window.ts:170-185).
       if (fw.forceRefused) {
@@ -3246,6 +3272,11 @@ export const keyboardSequenceHandler = async ({
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
       foregroundVerified = fw.foregroundVerified;
+      // internal #221: the window is on another virtual desktop — refused, nothing focused or sent.
+      if (fw.offDesktop) {
+        const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "keyboard:sequence" }) : null;
+        return offDesktopFailure("keyboard:sequence", fw.offDesktop, earlyEnv ? { _perceptionForPost: earlyEnv } : {});
+      }
       targetHwnd = fw.targetHwnd;
       if (fw.forceRefused) {
         const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "keyboard:sequence" }) : null;
