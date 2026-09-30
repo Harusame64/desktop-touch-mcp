@@ -30,6 +30,9 @@ const { state } = vi.hoisted(() => ({
     maximized: false,
     monitorsThrow: false,
     twinCloaked: false,
+    /** The twin is listed first (in front of the terminal). */
+    twinFirst: false,
+    twinMaximized: false,
     minimized: false,
     /** Runs on each tab read: lets a cell move the foreground while the read is awaited. */
     onTabRead: undefined as undefined | (() => void),
@@ -40,11 +43,14 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
   return {
     ...actual,
-    enumWindowsInZOrder: vi.fn(() => (state.gone ? [] : [
-      wtWindow({ isCloaked: state.cloaked, title: state.title, isMinimized: state.minimized,
-        ...(state.maximized && { isMaximized: true, region: { x: -8, y: -8, width: 1016, height: 1016 } }) }),
-      ...(state.twin ? [wtWindow({ hwnd: 0x200n, title: state.title, region: state.twinRegion, isCloaked: state.twinCloaked })] : []),
-    ])),
+    enumWindowsInZOrder: vi.fn(() => {
+      if (state.gone) return [];
+      const max = { isMaximized: true, region: { x: -8, y: -8, width: 1016, height: 1016 } };
+      const term = wtWindow({ isCloaked: state.cloaked, title: state.title, isMinimized: state.minimized, ...(state.maximized && max) });
+      const twin = wtWindow({ hwnd: 0x200n, title: state.title, region: state.twinRegion, isCloaked: state.twinCloaked, ...(state.twinMaximized && max) });
+      const list = !state.twin ? [term] : state.twinFirst ? [twin, term] : [term, twin];
+      return list.map((w, i) => ({ ...w, zOrder: i }));
+    }),
     enumMonitors: vi.fn(() => { if (state.monitorsThrow) throw new Error("no monitors"); return [{ id: 0, handle: 1n, primary: true, bounds: { x: 0, y: 0, width: 1000, height: 1000 },
       workArea: { x: 0, y: 0, width: 1000, height: 1000 }, dpi: 96, scale: 1 }]; }),
     getForegroundHwnd: vi.fn(() => state.fg),
@@ -131,6 +137,8 @@ beforeEach(() => {
   state.maximized = false;
   state.monitorsThrow = false;
   state.twinCloaked = false;
+  state.twinFirst = false;
+  state.twinMaximized = false;
   state.gone = false;
   state.twin = false;
   state.minimized = false;
@@ -519,6 +527,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     state.twin = true;
     state.maximized = true;
     state.twinRegion = { x: 400, y: 400, width: 200, height: 200 };
+    state.twinFirst = true;
     const { ctx, ask } = asking({ action: "accept", content: {} });
     await actByHandle("echo hi", ctx);
     const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { typeIt: { description: string } } } }])[0];
@@ -534,6 +543,16 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const err = await actByHandle("echo hi", ctx).catch((e) => e);
     expect(err?.name).toBe("TerminalForegroundRefusal");
     expect(err?.callerDetail).toMatch(/monitors could not be read/);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("does not ask when the terminal is behind a maximized window with its title: the user sees only that one (gate 2)", async () => {
+    state.twin = true;
+    state.twinFirst = true;
+    state.twinMaximized = true;
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await actByHandle("echo hi", ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/sits in the same place on screen/);
     expect(ask).not.toHaveBeenCalled();
   });
 

@@ -358,14 +358,17 @@ export function placeOnScreen(
 }
 
 /**
- * Two shown windows whose overlap covers half the smaller one or more. A maximized window and one
- * that is not are told apart by "maximized", however they overlap (gate 2 on 49e6c778).
+ * A same-titled window (`a`) whose overlap with the terminal (`b`) covers half the smaller one or
+ * more. When only one is maximized, "maximized" tells them apart (gate 2 on 49e6c778) — unless the
+ * terminal is the other one and sits behind it, where the user cannot see it (gate 2 on 58043b90).
+ * `zOrder` 0 is frontmost.
  */
 export function mostlyOverlap(
-  a: { region: { x: number; y: number; width: number; height: number }; isMinimized: boolean; isMaximized: boolean },
-  b: { region: { x: number; y: number; width: number; height: number }; isMinimized: boolean; isMaximized: boolean },
+  a: { region: { x: number; y: number; width: number; height: number }; isMinimized: boolean; isMaximized: boolean; zOrder: number },
+  b: { region: { x: number; y: number; width: number; height: number }; isMinimized: boolean; isMaximized: boolean; zOrder: number },
 ): boolean {
-  if (a.isMinimized || b.isMinimized || a.isMaximized !== b.isMaximized) return false;
+  if (a.isMinimized || b.isMinimized) return false;
+  if (a.isMaximized !== b.isMaximized && !(a.isMaximized && b.zOrder > a.zOrder)) return false;
   const w = Math.min(a.region.x + a.region.width, b.region.x + b.region.width) - Math.max(a.region.x, b.region.x);
   const h = Math.min(a.region.y + a.region.height, b.region.y + b.region.height) - Math.max(a.region.y, b.region.y);
   if (w <= 0 || h <= 0) return false;
@@ -575,9 +578,11 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
   }
   const shown = { windowTitle: before.windowTitle, tabName: tabBefore.name, place: before.place, text: line, pressEnter: trailing !== null };
   // The line as a whole, not the text alone: title, tab and place share it (PR codex on #764).
-  if (Array.from(foregroundDescription(shown)).length > ASK_DESCRIPTION_SHOWN_MAX) {
+  // UTF-16 units, as the text check above: never fewer than code points, so an emoji-heavy line is not
+  // let past a limit win2 measured in plain characters (gate 2 on 58043b90).
+  if (foregroundDescription(shown).length > ASK_DESCRIPTION_SHOWN_MAX) {
     throw new TerminalForegroundRefusal(
-      `Nothing was typed: the question's line (the text with the terminal's title and tab) is longer than it can show in full ` +
+      `Nothing was typed: the question's line (the text with the terminal's title, tab and place) is longer than it can show in full ` +
       `(${ASK_DESCRIPTION_SHOWN_MAX} characters), and the user is not asked to agree to what they cannot read. Send shorter text.`,
     );
   }
