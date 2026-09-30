@@ -13,6 +13,7 @@
  */
 
 import type {
+  NativeSelectedTab,
   NativeUiElementsResult,
   NativeFocusAndPointResult,
   NativeUiaFocusInfo,
@@ -421,6 +422,8 @@ export interface NativeUia {
   uiaGetVirtualDesktopStatus?(
     hwndIntegers: string[],
   ): Promise<Record<string, boolean>>;
+  /** internal #227 — the selected tab of a Windows Terminal window, or null. */
+  uiaGetSelectedTab?(hwnd: string): Promise<NativeSelectedTab | null>;
 }
 
 // ─── Visual GPU surface (ADR-005 Phase 4a/4b-1) ──────────────────────────────

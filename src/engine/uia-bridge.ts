@@ -3160,3 +3160,18 @@ export function detectUiaBlind(
 
   return { blind: false };
 }
+
+/**
+ * internal #227 — the selected tab of a Windows Terminal window: its name and UIA RuntimeId, `null`
+ * when the window shows no selected tab, `undefined` when it could not be asked (no native engine,
+ * or the read failed). There is no PowerShell road: the caller holds a user's answer to this, and a
+ * slow answer is not better than none.
+ */
+export async function getSelectedTab(hwnd: bigint): Promise<{ name: string; runtimeId: string } | null | undefined> {
+  if (!nativeUia?.uiaGetSelectedTab) return undefined;
+  try {
+    return await nativeUia.uiaGetSelectedTab(String(hwnd));
+  } catch {
+    return undefined;
+  }
+}

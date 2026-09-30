@@ -64,7 +64,13 @@ export function runWithAskContext<T>(ctx: AskContext | null | undefined, fn: () 
 }
 
 /** How long the question waits for an answer before it counts as a no. */
-export const ASK_TIMEOUT_MS = 60_000;
+export const ASK_TIMEOUT_MS = 120_000;
+
+/**
+ * The longest text the question shows in full: win2 saw 600 characters wrap to six lines, uncut,
+ * and nothing longer was measured. Longer text is refused rather than agreed to unseen.
+ */
+export const ASK_TEXT_SHOWN_MAX = 600;
 
 /** A cancel sooner than this was not a person reading the question. */
 export const INSTANT_CANCEL_MS = 500;
@@ -123,8 +129,10 @@ export async function askToTakeForeground(what: { windowTitle?: string; text?: s
           properties: {
             dontAskAgain: {
               type: "boolean",
-              title: "Don't ask again",
-              description: "Allow this until the server restarts",
+              title: "Don't ask again (until the server restarts)",
+              // The whole text, so two commands that start alike do not look alike (PR codex on #764).
+              // The client wraps a long description rather than cutting it (win2: 600 characters, 6 lines).
+              description: what.text !== undefined ? `Types: ${what.text}` : "Allow this until the server restarts",
               default: false,
             },
           },

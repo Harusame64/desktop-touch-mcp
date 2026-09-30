@@ -463,6 +463,12 @@ export declare function uiaScrollByWheelAtHwnd(opts: { hwnd: string; wheelDeltaY
  */
 export declare function uiaReadScrollPercentAtHwnd(opts: { hwnd: string; axis: "vertical" | "horizontal" }): Promise<number | null>
 export declare function uiaGetVirtualDesktopStatus(hwndIntegers: Array<string>): Promise<Record<string, boolean>>
+/** internal #227 — the selected tab of a Windows Terminal window, or null. */
+export declare function uiaGetSelectedTab(hwnd: string): Promise<SelectedTab | null>
+export interface SelectedTab {
+  name: string
+  runtimeId: string
+}
 
 export declare function preprocessImage(opts: NativePreprocessOptions): Promise<NativeImageProcessingResult>
 export declare function drawSomLabels(opts: NativeDrawSomLabelsOptions): Promise<NativeDrawSomLabelsResult>

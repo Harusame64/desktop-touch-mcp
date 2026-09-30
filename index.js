@@ -63,6 +63,7 @@ export const uiaScrollByWheelAtHwnd = nativeBinding.uiaScrollByWheelAtHwnd;
 // ADR-019 MVP-1 (Stage 1) — read-only ScrollPercent observation
 export const uiaReadScrollPercentAtHwnd = nativeBinding.uiaReadScrollPercentAtHwnd;
 export const uiaGetVirtualDesktopStatus = nativeBinding.uiaGetVirtualDesktopStatus;
+export const uiaGetSelectedTab = nativeBinding.uiaGetSelectedTab;
 export const uiaClickElement = nativeBinding.uiaClickElement;
 export const uiaSetValue = nativeBinding.uiaSetValue;
 export const uiaInsertText = nativeBinding.uiaInsertText;

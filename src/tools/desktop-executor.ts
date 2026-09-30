@@ -20,7 +20,7 @@
 
 import type { UiEntity, ExecutorKind, ExecutorOutcome } from "../engine/world-graph/types.js";
 import { logResolve, logDispatchSink } from "./_resolve-log.js";
-import { askToTakeForeground, callWasCancelled, ALLOW_TERMINAL_FOREGROUND_ENV, ASK_TIMEOUT_MS, type ForegroundRefusal } from "./_ask-user.js";
+import { askToTakeForeground, callWasCancelled, ALLOW_TERMINAL_FOREGROUND_ENV, ASK_TIMEOUT_MS, ASK_TEXT_SHOWN_MAX, type ForegroundRefusal } from "./_ask-user.js";
 import { offDesktopTarget } from "./_off-desktop.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
@@ -375,6 +375,16 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
       `(${before.constraints.maxBytes} bytes of UTF-16). Send it in shorter pieces.`,
     );
   }
+  if (line.length > ASK_TEXT_SHOWN_MAX) {
+    throw new TerminalForegroundRefusal(
+      `Nothing was typed: the text is longer than the question can show in full (${ASK_TEXT_SHOWN_MAX} ` +
+      "characters), and the user is not asked to agree to text they cannot read. Send it in shorter pieces.",
+    );
+  }
+  // The tab the user is agreeing to: a WT window's tabs share its process and, when same-titled, its
+  // title, so only the selected tab's RuntimeId tells them apart (win2; PR codex on #764).
+  const { getSelectedTab } = await import("../engine/uia-bridge.js");
+  const tabBefore = await getSelectedTab(hwnd);
   const answer = await askToTakeForeground({ windowTitle: before.windowTitle, text: line });
   if (!answer.allowed) throw new TerminalForegroundRefusal(TERMINAL_FOREGROUND_REFUSALS[answer.why]);
   const channel = await whereIsIt();
@@ -386,6 +396,15 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
       `Nothing was typed: the terminal's title changed while the user was answering (another tab or window); ` +
       `the user agreed to "${before.windowTitle}".`,
     );
+  }
+  if (tabBefore) {
+    const tabAfter = await getSelectedTab(hwnd);
+    if (!tabAfter || tabAfter.runtimeId !== tabBefore.runtimeId) {
+      throw new TerminalForegroundRefusal(
+        "Nothing was typed: the terminal's active tab changed while the user was answering" +
+        (tabAfter ? "" : " (or could not be read again)") + `; the user agreed to the tab "${tabBefore.name}".`,
+      );
+    }
   }
   if (callWasCancelled()) {
     throw new TerminalForegroundRefusal("Nothing was typed: the tool call was cancelled after the user answered.");

@@ -502,7 +502,7 @@ fn cached_runtime_id(elem: &IUIAutomationElement) -> Option<String> {
 ///
 /// # Safety
 /// `v` must be a VARIANT UIA returned, not yet cleared.
-unsafe fn runtime_id_from_variant(v: &VARIANT) -> Option<String> {
+pub(crate) unsafe fn runtime_id_from_variant(v: &VARIANT) -> Option<String> {
     unsafe {
         let inner = &v.Anonymous.Anonymous;
         if inner.vt != VARENUM(VT_ARRAY.0 | VT_I4.0) {

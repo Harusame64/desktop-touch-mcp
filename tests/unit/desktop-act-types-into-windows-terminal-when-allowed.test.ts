@@ -14,7 +14,13 @@ const wtWindow = (extra: Record<string, unknown> = {}) => ({
   hwnd: WT, title: "PowerShell", region: { x: 0, y: 0, width: 100, height: 100 }, zOrder: 0,
   isMinimized: false, isMaximized: false, isActive: false, className: "CASCADIA_HOSTING_WINDOW_CLASS", ownerHwnd: null, ...extra,
 });
-const { state } = vi.hoisted(() => ({ state: { cloaked: false, reason: "wt_xaml_pipeline", pid: 11, title: "PowerShell" } }));
+const { state } = vi.hoisted(() => ({
+  state: {
+    cloaked: false, reason: "wt_xaml_pipeline", pid: 11, title: "PowerShell",
+    /** The selected tab UIA reports; `undefined` = could not be read. */
+    tab: { name: "PowerShell", runtimeId: "42.1.4.263" } as { name: string; runtimeId: string } | null | undefined,
+  },
+}));
 
 vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
@@ -47,6 +53,7 @@ vi.mock("../../src/engine/uia-bridge.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/engine/uia-bridge.js")>()),
   // A cloaked window here is on another desktop (internal #221).
   getVirtualDesktopStatus: vi.fn(async (hs: string[]) => Object.fromEntries(hs.map((h) => [h, false]))),
+  getSelectedTab: vi.fn(async () => state.tab),
 }));
 
 const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
@@ -79,6 +86,7 @@ beforeEach(() => {
   state.reason = "wt_xaml_pipeline";
   state.pid = 11;
   state.title = "PowerShell";
+  state.tab = { name: "PowerShell", runtimeId: "42.1.4.263" };
   delete process.env.DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND;
 });
 
@@ -165,9 +173,10 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
 
   it("does not ask about text longer than one paste takes", async () => {
     const { ctx, ask } = asking({ action: "accept", content: {} });
-    // 2560 UTF-16 units is 5120 bytes, which the flash refuses (`validate_input`: at the limit).
+    // 2560 UTF-16 units is 5120 bytes, which the flash refuses (`validate_input`: at the limit); the
+    // question's own limit (600) is lower and answers first.
     const err = await act("x".repeat(2560), ctx).catch((e) => e);
-    expect(err?.callerDetail).toMatch(/longer than one paste/);
+    expect(err?.callerDetail).toMatch(/longer than (one paste|the question can show)/);
     expect(ask).not.toHaveBeenCalled();
   });
 
@@ -223,5 +232,40 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const err = await act("echo hi", ctx).catch((e) => e);
     expect(err?.callerDetail).toMatch(/cancelled after the user answered/);
     expect(mockFlash).not.toHaveBeenCalled();
+  });
+
+  it("does not type when the active tab changed while the user was answering (same-titled tabs)", async () => {
+    const ask = vi.fn(async () => { state.tab = { name: "PowerShell", runtimeId: "42.1.4.268" }; return { action: "accept" as const, content: {} }; });
+    const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/active tab changed while the user was answering; the user agreed to the tab "PowerShell"/);
+    expect(mockFlash).not.toHaveBeenCalled();
+  });
+
+  it("does not type when the active tab cannot be read again after the answer", async () => {
+    const ask = vi.fn(async () => { state.tab = undefined; return { action: "accept" as const, content: {} }; });
+    const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/could not be read again/);
+    expect(mockFlash).not.toHaveBeenCalled();
+  });
+
+  it("types when the window shows no tab to compare (control)", async () => {
+    state.tab = null;
+    await act("echo hi", asking({ action: "accept", content: {} }).ctx);
+    expect(mockFlash).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not ask about text longer than the question can show in full", async () => {
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await act("x".repeat(601), ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/longer than the question can show in full \(600/);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("shows the whole text on the question's description line", async () => {
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const text = `echo ${"a".repeat(40)} && rm -rf ./x`;
+    await act(text, ctx);
+    const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { dontAskAgain: { description: string } } } }])[0];
+    expect(form.requestedSchema.properties.dontAskAgain.description).toBe(`Types: ${text}`);
   });
 });

@@ -176,3 +176,12 @@ pub struct ElementBounds {
     pub bounding_rect: Option<BoundingRect>,
     pub value: Option<String>,
 }
+
+/// internal #227 — a Windows Terminal window's selected tab (`uia_get_selected_tab`).
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct SelectedTab {
+    pub name: String,
+    /// The tab's UIA RuntimeId, joined by `.`; not reused by a tab opened after it closed (win2).
+    pub runtime_id: String,
+}

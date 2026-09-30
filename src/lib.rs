@@ -337,6 +337,23 @@ impl Task for UiaReadScrollPercentAtHwndTask {
 }
 
 #[cfg(windows)]
+pub struct UiaGetSelectedTabTask(String);
+
+#[cfg(windows)]
+impl Task for UiaGetSelectedTabTask {
+    type Output = Option<uia::types::SelectedTab>;
+    type JsValue = Option<uia::types::SelectedTab>;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        uia::tabs::get_selected_tab(self.0.clone())
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[cfg(windows)]
 pub struct UiaGetVirtualDesktopStatusTask(Vec<String>);
 
 #[cfg(windows)]
@@ -412,6 +429,13 @@ pub fn uia_read_scroll_percent_at_hwnd(
     opts: uia::scroll::ReadScrollPercentAtHwndOptions,
 ) -> AsyncTask<UiaReadScrollPercentAtHwndTask> {
     AsyncTask::new(UiaReadScrollPercentAtHwndTask(opts))
+}
+
+/// internal #227 — the selected tab of a Windows Terminal window, or null.
+#[cfg(windows)]
+#[napi]
+pub fn uia_get_selected_tab(hwnd: String) -> AsyncTask<UiaGetSelectedTabTask> {
+    AsyncTask::new(UiaGetSelectedTabTask(hwnd))
 }
 
 /// Query which HWNDs are on the current virtual desktop.
