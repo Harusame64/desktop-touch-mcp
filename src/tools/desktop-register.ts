@@ -1394,8 +1394,9 @@ export const desktopActRawHandler = async (
   if (!result.ok && result.reason === "foreground_not_allowed") {
     const failure = toFailureEnvelope(
       Err(new ForegroundNotAllowedRefusalError(
-        "ForegroundNotAllowed: Windows Terminal takes input only through the foreground, and that was not allowed — nothing was typed. " +
-        "if_unexpected.detail says why"
+        // Not "nothing was typed": a paste that failed after Ctrl+V may have typed (PR codex on #764).
+        "ForegroundNotAllowed: Windows Terminal takes input only through the foreground, and the paste did not go through. " +
+        "if_unexpected.detail says why, and whether anything was typed — read the terminal before any retry"
       )),
       { optIn: false, detail: result.detail },
     );

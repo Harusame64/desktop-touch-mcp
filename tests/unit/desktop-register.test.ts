@@ -686,6 +686,10 @@ describe("desktopActRawHandler — executor_failed if_unexpected attach (#327 it
     const ifUnexpected = parsed["if_unexpected"] as { most_likely_cause?: unknown; try_next?: unknown } | undefined;
     expect(ifUnexpected?.most_likely_cause).toBe("ForegroundNotAllowed");
     expect(JSON.stringify(parsed)).toContain("and the user declined");
+    // The envelope's own sentence does not claim nothing was typed: a paste that failed after
+    // Ctrl+V may have typed, and only the detail knows which (PR codex on #764).
+    expect(JSON.stringify(parsed)).toContain("whether anything was typed");
+    expect(JSON.stringify(parsed)).not.toContain("that was not allowed — nothing was typed");
     const advice = ((ifUnexpected?.try_next as Array<{ action?: unknown }> | undefined) ?? []).map((a) => String(a.action));
     expect(advice.length).toBeGreaterThan(0);
     // Any line naming another road into the terminal says not to take it after a no.
