@@ -551,10 +551,10 @@ export function terminalBgExecute(
  * Characters the question would show differently from what the shell receives — controls (TAB,
  * ESC, …), bidi overrides, zero-width marks.
  */
-// eslint-disable-next-line no-control-regex -- matching control characters is the point
 // Also soft hyphen, combining grapheme joiner, Arabic letter mark, Hangul fillers, Mongolian and
 // Khmer invisibles, line/paragraph separators, variation selectors, Unicode tags (gate 2 on #764).
 const UNSHOWABLE =
+  // eslint-disable-next-line no-control-regex, no-misleading-character-class -- matching these characters is the point
   /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufffb\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/u;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
