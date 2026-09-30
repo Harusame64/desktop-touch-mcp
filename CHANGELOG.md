@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- **`desktop_act` can type into Windows Terminal, after asking.** Windows Terminal ignores
+  characters sent to it in the background, so `desktop_act` typing into its terminal input always
+  ended `executor_failed`. Now the server asks the user through the MCP client's question form
+  ("Type into Windows Terminal? It takes the foreground for about 0.1 s.", with a "Don't ask again"
+  box). On Accept it pastes through the foreground, as `terminal` send's `foreground_flash` does,
+  and puts the previous window back. Decline, Esc, no answer within 60 s, or a client that cannot
+  show the question (`claude -p`, or the HTTP transport) type nothing; the act ends
+  `executor_failed` with a `detail` that says why. "Don't ask again" lasts until the server
+  restarts, and `DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND=1` allows it without asking. The text must
+  be one line; one trailing newline is sent as Enter.
+
 - **A window on another virtual desktop is not brought forward.** A title search can pick a window
   on another virtual desktop: it can come ahead of a same-titled window on the screen. `keyboard`
   brought it forward, which switched the user to that desktop, and typed nothing. Now, when a tool

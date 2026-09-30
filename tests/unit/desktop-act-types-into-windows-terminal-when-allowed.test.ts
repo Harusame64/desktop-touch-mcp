@@ -14,7 +14,7 @@ const wtWindow = (extra: Record<string, unknown> = {}) => ({
   hwnd: WT, title: "PowerShell", region: { x: 0, y: 0, width: 100, height: 100 }, zOrder: 0,
   isMinimized: false, isMaximized: false, isActive: false, className: "CASCADIA_HOSTING_WINDOW_CLASS", ownerHwnd: null, ...extra,
 });
-const { state } = vi.hoisted(() => ({ state: { cloaked: false } }));
+const { state } = vi.hoisted(() => ({ state: { cloaked: false, reason: "wt_xaml_pipeline" } }));
 
 vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
@@ -33,7 +33,7 @@ vi.mock("../../src/engine/bg-input.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/bg-input.js")>();
   return {
     ...actual,
-    canInjectViaPostMessage: vi.fn(() => ({ supported: false, reason: "wt_xaml_pipeline", className: "CASCADIA_HOSTING_WINDOW_CLASS" })),
+    canInjectViaPostMessage: vi.fn(() => ({ supported: false, reason: state.reason, className: "CASCADIA_HOSTING_WINDOW_CLASS" })),
     postCharsToHwnd: (...a: unknown[]) => mockPostChars(...a),
     injectViaForegroundFlash: (...a: unknown[]) => mockFlash(...a),
   };
@@ -72,6 +72,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   resetRememberedTerminalForeground();
   state.cloaked = false;
+  state.reason = "wt_xaml_pipeline";
   delete process.env.DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND;
 });
 
@@ -133,5 +134,14 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     await act("echo hi", ctx);
     expect(ask).not.toHaveBeenCalled();
     expect(mockFlash).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not ask, or paste, for a window refused for another reason (not Windows Terminal)", async () => {
+    state.reason = "class_unknown";
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await act("echo hi", ctx).catch((e) => e);
+    expect(err?.name).toBe("BackgroundTerminalUnsupportedError");
+    expect(ask).not.toHaveBeenCalled();
+    expect(mockFlash).not.toHaveBeenCalled();
   });
 });
