@@ -5,11 +5,14 @@
 //! share its title, so neither tells the tab the user agreed to from one they switched to meanwhile
 //! (PR codex on #764). The selected `TabItem` does: win2 measured (2026-09-30) exactly one tab with
 //! `SelectionItem.IsSelected` true at every read, following `Select()` and a real Ctrl+Tab, and a
-//! `RuntimeId` per tab that a closed tab's successor did not reuse. The read took 18–44 ms.
+//! `RuntimeId` per tab that a closed tab's successor did not reuse. The read took 18–44 ms. A split
+//! tab's panes are one `TermControl` each, but the active one cannot be told while WT is not in
+//! front, so the pane count is returned for the caller to refuse a split tab.
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Variant::{VARIANT, VariantClear};
 use windows::Win32::UI::Accessibility::*;
+use windows::core::BSTR;
 
 use super::thread::{self, UiaContext, win_err};
 use super::tree::runtime_id_from_variant;
@@ -59,5 +62,16 @@ fn selected_tab_impl(ctx: &UiaContext, hwnd: &str) -> napi::Result<Option<Select
     // A selected tab whose RuntimeId cannot be read cannot be compared: a failure, not "no tab".
     let runtime_id = runtime_id
         .ok_or_else(|| napi::Error::from_reason("uia_get_selected_tab: the selected tab's RuntimeId could not be read"))?;
-    Ok(Some(SelectedTab { name, runtime_id }))
+    // The panes of the selected tab: one `TermControl` each. Only the selected tab's panes are in the
+    // tree, and which of them is active is readable only while WT is in front (win2, 2026-09-30),
+    // which it is not while the user answers — so the caller refuses a split tab.
+    let pane_count = unsafe {
+        let is_pane = ctx
+            .automation
+            .CreatePropertyCondition(UIA_ClassNamePropertyId, &VARIANT::from(BSTR::from("TermControl")))
+            .map_err(win_err)?;
+        let panes = root.FindAll(TreeScope_Descendants, &is_pane).map_err(win_err)?;
+        panes.Length().map_err(win_err)?
+    };
+    Ok(Some(SelectedTab { name, runtime_id, pane_count: pane_count.max(0) as u32 }))
 }

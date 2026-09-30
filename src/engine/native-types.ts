@@ -64,6 +64,8 @@ export interface NativeUiElementsResult {
 export interface NativeSelectedTab {
   name: string;
   runtimeId: string;
+  /** How many panes the selected tab shows; more than one is a split tab. */
+  paneCount: number;
 }
 
 export interface NativeScrollResult {

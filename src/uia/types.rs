@@ -184,4 +184,6 @@ pub struct SelectedTab {
     pub name: String,
     /// The tab's UIA RuntimeId, joined by `.`; not reused by a tab opened after it closed (win2).
     pub runtime_id: String,
+    /// How many panes (`TermControl`) the selected tab shows; more than one is a split tab.
+    pub pane_count: u32,
 }

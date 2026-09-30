@@ -18,7 +18,7 @@ const { state } = vi.hoisted(() => ({
   state: {
     cloaked: false, reason: "wt_xaml_pipeline", pid: 11, title: "PowerShell",
     /** The selected tab UIA reports; `undefined` = could not be read. */
-    tab: { name: "PowerShell", runtimeId: "42.1.4.263" } as { name: string; runtimeId: string } | null | undefined,
+    tab: { name: "PowerShell", runtimeId: "42.1.4.263", paneCount: 1 } as { name: string; runtimeId: string; paneCount: number } | null | undefined,
     /** The window in front: another app's (0x999) by default. */
     fg: 0x999n as bigint | null,
     /** Runs on each tab read: lets a cell move the foreground while the read is awaited. */
@@ -91,7 +91,7 @@ beforeEach(() => {
   state.reason = "wt_xaml_pipeline";
   state.pid = 11;
   state.title = "PowerShell";
-  state.tab = { name: "PowerShell", runtimeId: "42.1.4.263" };
+  state.tab = { name: "PowerShell", runtimeId: "42.1.4.263", paneCount: 1 };
   state.fg = 0x999n;
   state.onTabRead = undefined;
   delete process.env.DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND;
@@ -242,7 +242,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
   });
 
   it("does not type when the active tab changed while the user was answering (same-titled tabs)", async () => {
-    const ask = vi.fn(async () => { state.tab = { name: "PowerShell", runtimeId: "42.1.4.268" }; return { action: "accept" as const, content: {} }; });
+    const ask = vi.fn(async () => { state.tab = { name: "PowerShell", runtimeId: "42.1.4.268", paneCount: 1 }; return { action: "accept" as const, content: {} }; });
     const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
     expect(err?.callerDetail).toMatch(/active tab changed while the user was answering; the user agreed to the tab "PowerShell"/);
     expect(mockFlash).not.toHaveBeenCalled();
@@ -294,7 +294,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
 
   it("does not type when a window that showed no tab shows one after the answer", async () => {
     state.tab = null;
-    const ask = vi.fn(async () => { state.tab = { name: "x", runtimeId: "1" }; return { action: "accept" as const, content: {} }; });
+    const ask = vi.fn(async () => { state.tab = { name: "x", runtimeId: "1", paneCount: 1 }; return { action: "accept" as const, content: {} }; });
     const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
     expect(err?.callerDetail).toMatch(/active tab changed/);
     expect(mockFlash).not.toHaveBeenCalled();
@@ -361,4 +361,19 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
       expect(err?.callerDetail).toMatch(/title cannot be shown in full/);
       expect(ask).not.toHaveBeenCalled();
     });
+
+  it("does not ask about a tab split into panes: the active pane cannot be read while the user answers", async () => {
+    state.tab = { name: "PowerShell", runtimeId: "42.1.4.263", paneCount: 2 };
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await act("echo hi", ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/split into panes/);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("does not type when the tab was split while the user was answering", async () => {
+    const ask = vi.fn(async () => { state.tab = { name: "PowerShell", runtimeId: "42.1.4.263", paneCount: 2 }; return { action: "accept" as const, content: {} }; });
+    const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/split into panes/);
+    expect(mockFlash).not.toHaveBeenCalled();
+  });
 });

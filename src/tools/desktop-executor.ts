@@ -430,6 +430,15 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
       "Nothing was typed: the terminal's active tab could not be read, so the user's answer could not be held to it.",
     );
   }
+  // A split tab: which pane takes the paste can be read only while WT is in front, and it is not
+  // while the user answers (win2, #764) — so it cannot be shown or held to.
+  const refuseSplit = (): never => {
+    throw new TerminalForegroundRefusal(
+      "Nothing was typed: the terminal's tab is split into panes, and which pane would receive the text " +
+      "cannot be read while the user answers. Use a tab that is not split.",
+    );
+  };
+  if (tabBefore && tabBefore.paneCount > 1) refuseSplit();
   const answer = await askToTakeForeground({ windowTitle: before.windowTitle, text: line, pressEnter: trailing !== null });
   if (!answer.allowed) throw new TerminalForegroundRefusal(TERMINAL_FOREGROUND_REFUSALS[answer.why]);
   const channel = await whereIsIt();
@@ -444,6 +453,7 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
   }
   if (isInFront()) refuseInFront();
   const tabAfter = await getSelectedTab(hwnd);
+  if (tabAfter && tabAfter.paneCount > 1) refuseSplit();
   if (tabAfter === undefined || tabAfter?.runtimeId !== tabBefore?.runtimeId) {
     throw new TerminalForegroundRefusal(
       "Nothing was typed: the terminal's active tab changed while the user was answering" +

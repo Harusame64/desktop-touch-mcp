@@ -468,6 +468,7 @@ export declare function uiaGetSelectedTab(hwnd: string): Promise<SelectedTab | n
 export interface SelectedTab {
   name: string
   runtimeId: string
+  paneCount: number
 }
 
 export declare function preprocessImage(opts: NativePreprocessOptions): Promise<NativeImageProcessingResult>

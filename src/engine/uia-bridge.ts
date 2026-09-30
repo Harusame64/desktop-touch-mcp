@@ -3167,7 +3167,9 @@ export function detectUiaBlind(
  * or the read failed). There is no PowerShell road: the caller holds a user's answer to this, and a
  * slow answer is not better than none.
  */
-export async function getSelectedTab(hwnd: bigint): Promise<{ name: string; runtimeId: string } | null | undefined> {
+export async function getSelectedTab(
+  hwnd: bigint,
+): Promise<{ name: string; runtimeId: string; paneCount: number } | null | undefined> {
   if (!nativeUia?.uiaGetSelectedTab) return undefined;
   try {
     return await nativeUia.uiaGetSelectedTab(String(hwnd));
