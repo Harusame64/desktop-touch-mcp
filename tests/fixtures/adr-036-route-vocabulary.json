@@ -91,6 +91,7 @@
     "entity_not_found",
     "entity_outside_viewport",
     "executor_failed",
+    "foreground_not_allowed",
     "keyboard_target_unsafe",
     "lease_digest_mismatch",
     "lease_expired",

@@ -55,6 +55,9 @@ export function runWithAskContext<T>(ctx: AskContext | null | undefined, fn: () 
 /** How long the question waits for an answer before it counts as a no. */
 export const ASK_TIMEOUT_MS = 60_000;
 
+/** A cancel sooner than this was not a person reading the question. */
+export const INSTANT_CANCEL_MS = 500;
+
 export const ALLOW_TERMINAL_FOREGROUND_ENV = "DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND";
 
 /** Set by an Accept with "Don't ask again"; lives as long as this server process. */
@@ -88,6 +91,7 @@ export async function askToTakeForeground(): Promise<ForegroundAnswer> {
   const ctx = _askAls.getStore();
   if (!ctx) return { allowed: false, why: "cannot_ask" };
   let answer: AskAnswer;
+  const askedAt = Date.now();
   try {
     answer = await ctx.ask(
       {
@@ -108,11 +112,18 @@ export async function askToTakeForeground(): Promise<ForegroundAnswer> {
       ASK_TIMEOUT_MS,
     );
   } catch (err) {
-    const timedOut = /timed? ?out/i.test(err instanceof Error ? err.message : String(err));
-    return { allowed: false, why: timedOut ? "timed_out" : "cannot_ask" };
+    const message = err instanceof Error ? err.message : String(err);
+    if (/timed? ?out/i.test(message)) return { allowed: false, why: "timed_out" };
+    if (/cancel|abort/i.test(message)) return { allowed: false, why: "cancelled" };
+    return { allowed: false, why: "cannot_ask" };
   }
   if (answer.action === "decline") return { allowed: false, why: "declined" };
-  if (answer.action !== "accept") return { allowed: false, why: "cancelled" };
+  if (answer.action !== "accept") {
+    // `claude -p` declares the capability and cancels in 4 ms without showing anything; the
+    // quickest a person dismissed it was 8 s (win2). A cancel too quick for anyone to have read the
+    // question is a client that cannot ask, whose advice differs (gate 2 on #764).
+    return { allowed: false, why: Date.now() - askedAt < INSTANT_CANCEL_MS ? "cannot_ask" : "cancelled" };
+  }
   if (answer.content?.dontAskAgain === true) allowedForProcess = true;
   return { allowed: true, how: "asked" };
 }

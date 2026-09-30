@@ -40,7 +40,7 @@ vi.mock("../../src/engine/bg-input.js", async (importOriginal) => {
 });
 
 vi.mock("../../src/engine/background-channel-resolver.js", () => ({
-  resolveBackgroundInputChannel: vi.fn((hwnd: bigint) => ({ kind: "clipboard_flash", hwnd, pid: 42 })),
+  resolveBackgroundInputChannel: vi.fn((hwnd: bigint) => ({ kind: "clipboard_flash", hwnd, pid: 42, constraints: { maxBytes: 5120, singleLineOnly: true } })),
 }));
 
 vi.mock("../../src/engine/uia-bridge.js", async (importOriginal) => ({
@@ -60,8 +60,12 @@ const terminalInput = {
   generation: "gen-1", evidenceDigest: "d-e1",
 } as unknown as UiEntity;
 
-function asking(answer: Awaited<ReturnType<AskContext["ask"]>>) {
-  const ask = vi.fn(async () => answer);
+/** `readMs`: how long the person took to answer (a cancel sooner than 500 ms is a client that cannot ask). */
+function asking(answer: Awaited<ReturnType<AskContext["ask"]>>, readMs = 0) {
+  const ask = vi.fn(async () => {
+    if (readMs > 0) vi.spyOn(Date, "now").mockReturnValue(Date.now() + readMs);
+    return answer;
+  });
   return { ctx: { ask } as AskContext, ask };
 }
 
@@ -94,7 +98,9 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     [{ action: "decline" as const }, /the user declined/],
     [{ action: "cancel" as const }, /the question was dismissed/],
   ])("types nothing, and says why, on %o", async (answer, detail) => {
-    const err = await act("echo hi", asking(answer).ctx).catch((e) => e);
+    const err = await act("echo hi", asking(answer, 8_000).ctx).catch((e) => e);
+    vi.restoreAllMocks();
+    expect(err?.name).toBe("TerminalForegroundRefusal");
     expect(err?.callerDetail).toMatch(detail);
     expect(mockFlash).not.toHaveBeenCalled();
   });
@@ -123,9 +129,9 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
   });
 
   it("says the paste failed, without claiming nothing was typed", async () => {
-    mockFlash.mockReturnValueOnce({ ok: false, reason: "foreground_steal_denied" } as never);
+    mockFlash.mockReturnValueOnce({ ok: false, reason: "foreground_restore_failed" } as never);
     const err = await act("echo hi", asking({ action: "accept", content: {} }).ctx).catch((e) => e);
-    expect(err?.callerDetail).toMatch(/failed \(foreground_steal_denied\).*not known/);
+    expect(err?.callerDetail).toMatch(/failed \(foreground_restore_failed\).*not known/);
   });
 
   it("does not ask when DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND=1", async () => {
@@ -143,5 +149,36 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     expect(err?.name).toBe("BackgroundTerminalUnsupportedError");
     expect(ask).not.toHaveBeenCalled();
     expect(mockFlash).not.toHaveBeenCalled();
+  });
+
+  it("reads an instant cancel (claude -p) as a client that cannot ask", async () => {
+    const err = await act("echo hi", asking({ action: "cancel" }).ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/cannot ask the user/);
+  });
+
+  it("accepts a trailing \\r alone as Enter, as terminal send does", async () => {
+    await act("dir\r", asking({ action: "accept", content: {} }).ctx);
+    expect(mockFlash).toHaveBeenCalledWith(WT, 42, "dir", { pressEnter: true });
+  });
+
+  it("does not ask about text longer than one paste takes", async () => {
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await act("x".repeat(2561), ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/longer than one paste/);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("looks again after the answer: a terminal moved to another desktop meanwhile is not brought forward", async () => {
+    const ask = vi.fn(async () => { state.cloaked = true; return { action: "accept" as const, content: {} }; });
+    const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/another virtual desktop/);
+    expect(mockFlash).not.toHaveBeenCalled();
+  });
+
+  it("says nothing was typed when the flash failed before taking the foreground", async () => {
+    mockFlash.mockReturnValueOnce({ ok: false, reason: "foreground_steal_denied" } as never);
+    const err = await act("echo hi", asking({ action: "accept", content: {} }).ctx).catch((e) => e);
+    expect(err?.name).toBe("TerminalForegroundPasteFailed");
+    expect(err?.callerDetail).toMatch(/nothing was typed/);
   });
 });

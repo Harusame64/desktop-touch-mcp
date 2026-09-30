@@ -30,6 +30,7 @@ import {
   WindowExcludedRefusalError,
   AimBlockedByExcludedRefusalError,
   KeyboardTargetUnsafeRefusalError,
+  ForegroundNotAllowedRefusalError,
   CursorPlacementBlockedError,
   CoordinateOutsideReachableBoundsError,
 } from "../../src/errors/typed-errors.js";
@@ -135,6 +136,25 @@ describe("the loop keeps each refusal's own name", () => {
     }
   });
 
+  it("says the user did not allow the foreground paste into Windows Terminal, not that the executor failed (internal #227)", async () => {
+    // Flattened to `executor_failed`, its advice is a foreground type: around the user's no.
+    const refusal = Object.assign(new Error("x"), { name: "TerminalForegroundRefusal", callerDetail: "Nothing was typed: … the user declined." });
+    const { loop, lease } = loopThatThrows(refusal);
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("foreground_not_allowed");
+      expect(result.detail).toMatch(/the user declined/);
+    }
+  });
+
+  it("keeps a failed paste the user allowed as executor_failed (control, internal #227)", async () => {
+    const failed = Object.assign(new Error("x"), { name: "TerminalForegroundPasteFailed", callerDetail: "The paste … failed" });
+    const { loop, lease } = loopThatThrows(failed);
+    const result = await loop.touch({ lease });
+    expect(!result.ok && result.reason).toBe("executor_failed");
+  });
+
   it("publishes the same reason the loop reported, which the class name alone decides", async () => {
     // Two surfaces, one refusal. `desktop_act`'s catalogue documents the reason the loop reports,
     // while the RAW (non-opt-in) shape derives its `reason` from the typed error's name through
@@ -144,6 +164,7 @@ describe("the loop keeps each refusal's own name", () => {
     const raw = (e: Error) => (toFailureEnvelope(Err(e), { optIn: false }) as { reason?: string }).reason;
     expect(raw(new AimBlockedByExcludedRefusalError("x"))).toBe("aim_blocked_by_excluded_window");
     expect(raw(new KeyboardTargetUnsafeRefusalError("x"))).toBe("keyboard_target_unsafe");
+    expect(raw(new ForegroundNotAllowedRefusalError("x"))).toBe("foreground_not_allowed");
     // The control: the same derivation on the refusals that were already right. Without these the
     // assertion above could be satisfied by a special case rather than by the naming rule.
     expect(raw(new WindowExcludedRefusalError("x"))).toBe("window_excluded");

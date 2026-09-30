@@ -8,8 +8,10 @@
   ("Type into Windows Terminal? It takes the foreground for about 0.1 s.", with a "Don't ask again"
   box). On Accept it pastes through the foreground, as `terminal` send's `foreground_flash` does,
   and puts the previous window back. Decline, Esc, no answer within 60 s, or a client that cannot
-  show the question (`claude -p`, or the HTTP transport) type nothing; the act ends
-  `executor_failed` with a `detail` that says why. "Don't ask again" lasts until the server
+  show the question (`claude -p`, or the HTTP transport) type nothing; the act ends with the new
+  reason `foreground_not_allowed` and a `detail` that says why. Its advice does not send the caller
+  around the user's no, as `executor_failed`'s foreground advice would. The terminal is checked
+  again after the answer, and a question whose tool call was cancelled does not type. "Don't ask again" lasts until the server
   restarts, and `DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND=1` allows it without asking. The text must
   be one line; one trailing newline is sent as Enter.
 

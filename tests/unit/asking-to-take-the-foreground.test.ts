@@ -13,11 +13,13 @@ import {
   type AskContext, type AskForm,
 } from "../../src/tools/_ask-user.js";
 
-const answering = (answer: Awaited<ReturnType<AskContext["ask"]>> | Error) => {
+/** `readMs`: how long the person took (a cancel sooner than INSTANT_CANCEL_MS is a client that cannot ask). */
+const answering = (answer: Awaited<ReturnType<AskContext["ask"]>> | Error, readMs = 0) => {
   const asked: Array<{ form: AskForm; timeoutMs: number }> = [];
   const ctx: AskContext = {
     ask: vi.fn(async (form, timeoutMs) => {
       asked.push({ form, timeoutMs });
+      if (readMs > 0) vi.spyOn(Date, "now").mockReturnValue(Date.now() + readMs);
       if (answer instanceof Error) throw answer;
       return answer;
     }),
@@ -29,7 +31,7 @@ beforeEach(() => {
   resetRememberedTerminalForeground();
   delete process.env.DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND;
 });
-afterEach(() => { delete process.env.DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND; });
+afterEach(() => { delete process.env.DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND; vi.restoreAllMocks(); });
 
 describe("askToTakeForeground", () => {
   it("allows on Accept, and asks one line with one 'Don't ask again' box and its own timeout", async () => {
@@ -61,9 +63,10 @@ describe("askToTakeForeground", () => {
     [{ action: "decline" as const }, "declined"],
     [{ action: "cancel" as const }, "cancelled"],
     [new Error("MCP error -32001: Request timed out"), "timed_out"],
+    [new Error("The tool call was cancelled while the question was up"), "cancelled"],
     [new Error("Client does not support form elicitation."), "cannot_ask"],
   ])("says no, and why, for %o", async (answer, why) => {
-    const { ctx } = answering(answer);
+    const { ctx } = answering(answer, 8_000);
     expect(await runWithAskContext(ctx, askToTakeForeground)).toEqual({ allowed: false, why });
   });
 
@@ -90,5 +93,10 @@ describe("askToTakeForeground", () => {
     const { ctx } = answering({ action: "accept", content: { dontAskAgain: false } });
     const nested = await runWithAskContext(ctx, () => runWithAskContext(undefined, askToTakeForeground));
     expect(nested.allowed).toBe(true);
+  });
+
+  it("reads a cancel too quick for anyone to have read the question (claude -p: 4 ms) as cannot_ask", async () => {
+    const { ctx } = answering({ action: "cancel" });
+    expect(await runWithAskContext(ctx, askToTakeForeground)).toEqual({ allowed: false, why: "cannot_ask" });
   });
 });

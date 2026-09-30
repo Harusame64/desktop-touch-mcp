@@ -284,6 +284,14 @@ class TerminalForegroundRefusal extends Error {
   }
 }
 
+/** The user allowed the paste, and it failed: an ordinary `executor_failed`, with its sentence. */
+class TerminalForegroundPasteFailed extends Error {
+  constructor(readonly callerDetail: string) {
+    super(callerDetail);
+    this.name = "TerminalForegroundPasteFailed";
+  }
+}
+
 const TERMINAL_FOREGROUND_REFUSALS: Record<ForegroundRefusal, string> = {
   declined:
     "Nothing was typed: Windows Terminal takes input only through the foreground, and the user " +
@@ -305,25 +313,21 @@ const TERMINAL_FOREGROUND_REFUSALS: Record<ForegroundRefusal, string> = {
  *
  * WT's TerminalControl reads XAML key events, not posted WM_CHAR, so the background send cannot
  * reach it (`wt_xaml_pipeline`). `terminal(send, method:'foreground_flash')` takes the foreground
- * for a moment and pastes; this is the same road, taken only on the user's yes. Checked first, so
- * the user is not asked for a paste that would then be refused: the window must be on this virtual
- * desktop (internal #221), and the text must be one line (the flash rejects a newline; one trailing
- * newline is sent as Enter, as the background send's `\n` would be).
+ * for a moment and pastes; this is the same road, taken only on the user's yes.
+ *
+ * What would make the paste refused is checked before asking, so the user is not asked for a paste
+ * that is then refused: the window must be on this virtual desktop (internal #221), and the text one
+ * line (a single trailing newline — `\n`, `\r\n` or `\r`, as terminal send reads it — becomes Enter)
+ * within the flash's size limit. The window is checked AGAIN after the answer: the question can wait
+ * up to a minute, and the user may have moved the terminal to another desktop or closed it meanwhile
+ * (gate 2 on #764).
  */
 export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: string): Promise<void> {
   const { enumWindowsInZOrder } = await import("../engine/win32.js");
   const { injectViaForegroundFlash } = await import("../engine/bg-input.js");
   const { resolveBackgroundInputChannel } = await import("../engine/background-channel-resolver.js");
-  const wins = enumWindowsInZOrder();
-  const win = wins.find((w) => w.hwnd === hwnd);
-  const away = win ? await offDesktopTarget(win, wins, undefined) : null;
-  if (away) {
-    throw new TerminalForegroundRefusal(
-      "Nothing was typed: the terminal is on another virtual desktop, and bringing it forward would " +
-      "switch the user's desktop.",
-    );
-  }
-  const trailing = /\r?\n$/.exec(text);
+
+  const trailing = /(?:\r\n|\r|\n)$/.exec(text);
   const line = trailing ? text.slice(0, trailing.index) : text;
   if (/[\r\n]/.test(line)) {
     throw new TerminalForegroundRefusal(
@@ -331,20 +335,50 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
       "has more than one line. Send one line per act.",
     );
   }
-  const channel = resolveBackgroundInputChannel(hwnd, { allowedChannels: ["clipboard_flash"] });
-  if (channel.kind !== "clipboard_flash") {
+  /** Where the terminal is now, or the sentence that refuses it. */
+  const whereIsIt = async () => {
+    const wins = enumWindowsInZOrder();
+    const win = wins.find((w) => w.hwnd === hwnd);
+    if (!win) {
+      throw new TerminalForegroundRefusal("Nothing was typed: the terminal window is no longer open.");
+    }
+    if (await offDesktopTarget(win, wins, undefined)) {
+      throw new TerminalForegroundRefusal(
+        "Nothing was typed: the terminal is on another virtual desktop, and bringing it forward would " +
+        "switch the user's desktop.",
+      );
+    }
+    const channel = resolveBackgroundInputChannel(hwnd, { allowedChannels: ["clipboard_flash"] });
+    if (channel.kind !== "clipboard_flash") {
+      throw new TerminalForegroundRefusal(
+        `Nothing was typed: this terminal cannot be pasted into through the foreground (${channel.kind}).`,
+      );
+    }
+    return channel;
+  };
+
+  const before = await whereIsIt();
+  // The flash measures UTF-16 bytes; a longer paste would be refused by it after the user said yes.
+  if (line.length * 2 > before.constraints.maxBytes) {
     throw new TerminalForegroundRefusal(
-      `Nothing was typed: this terminal cannot be pasted into through the foreground (${channel.kind}).`,
+      `Nothing was typed: the text is longer than one paste into Windows Terminal takes ` +
+      `(${before.constraints.maxBytes} bytes of UTF-16). Send it in shorter pieces.`,
     );
   }
   const answer = await askToTakeForeground();
   if (!answer.allowed) throw new TerminalForegroundRefusal(TERMINAL_FOREGROUND_REFUSALS[answer.why]);
+  const channel = await whereIsIt();
+
   logDispatchSink({ sink: "foreground_flash", tool: "desktop_act:terminal_send", targetHwnd: channel.hwnd });
   const r = injectViaForegroundFlash(channel.hwnd, channel.pid, line, { pressEnter: trailing !== null });
   if (!r.ok) {
-    throw new TerminalForegroundRefusal(
-      `The paste through the foreground failed (${r.reason ?? "unknown"}); whether anything was typed is not known. ` +
-      "Read the terminal before retrying.",
+    // These fail before the foreground is taken or anything is pasted; the rest may have typed.
+    const nothingTyped = r.reason === "input_contains_newline" ||
+      r.reason === "input_exceeds_paste_warning_threshold" ||
+      r.reason === "foreground_steal_denied";
+    throw new TerminalForegroundPasteFailed(
+      `The paste through the foreground failed (${r.reason ?? "unknown"}); ` +
+      (nothingTyped ? "nothing was typed." : "whether anything was typed is not known. Read the terminal before retrying."),
     );
   }
 }
@@ -370,7 +404,8 @@ export interface TerminalBgDeps {
  *   - Background injection not supported (Chromium, UWP, etc.)
  *   - Send incomplete (partial write)
  *
- * Never falls back to foreground focus-steal (G2 contract).
+ * Never takes the foreground itself (G2 contract). Its production caller does, for Windows Terminal
+ * only and only with the user's permission (`pasteIntoTerminalThroughForeground`, internal #227).
  */
 export function terminalBgExecute(
   windowTitle: string,

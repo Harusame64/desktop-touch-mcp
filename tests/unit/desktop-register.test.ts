@@ -674,6 +674,28 @@ describe("desktopActRawHandler — executor_failed if_unexpected attach (#327 it
     }
   });
 
+  // internal #227 — the user did not allow the foreground paste into Windows Terminal. A dropped
+  // branch would publish executor_failed's advice to type through the foreground: around the user's no.
+  it("publishes foreground_not_allowed under its own cause, with the reason's sentence and no other road into the terminal", async () => {
+    const detail = "Nothing was typed: Windows Terminal takes input only through the foreground, and the user declined. Do not type into it another way without asking the user.";
+    vi.spyOn(getDesktopFacade(), "touch").mockResolvedValue({ ok: false, reason: "foreground_not_allowed", diff: [], detail });
+    const parsed = parseHandlerResult((await desktopActRawHandler({ lease: fakeLease, action: "type", text: "echo hi" })).content);
+
+    expect(parsed["ok"]).toBe(false);
+    expect(parsed["reason"]).toBe("foreground_not_allowed");
+    const ifUnexpected = parsed["if_unexpected"] as { most_likely_cause?: unknown; try_next?: unknown } | undefined;
+    expect(ifUnexpected?.most_likely_cause).toBe("ForegroundNotAllowed");
+    expect(JSON.stringify(parsed)).toContain("and the user declined");
+    const advice = ((ifUnexpected?.try_next as Array<{ action?: unknown }> | undefined) ?? []).map((a) => String(a.action));
+    expect(advice.length).toBeGreaterThan(0);
+    // Any line naming another road into the terminal says not to take it after a no.
+    for (const line of advice) {
+      if (!/method:\s*'foreground'|keyboard\(\{/.test(line)) continue;
+      expect(line).toMatch(/do not/i);
+    }
+    expect(advice.join(" ")).toMatch(/do NOT type into the terminal another way/);
+  });
+
   // internal #182 — the value road wrote and nothing changed. The handler's branch, pinned as the
   // keyboard rung's is above: a dropped branch would publish `executor_failed`'s foreground advice.
   it("publishes value_not_applied under its own cause, with no foreground type in the advice", async () => {

@@ -521,6 +521,13 @@ const SUGGESTS: Record<string, string[]> = {
   // which buys nothing at a corner that cannot exist. Producer reachability is the
   // argument, and it is the same one the floor exception and `ui-elements.ts` use — so
   // it is written here rather than left as the reason a line looks unconverted.
+  // internal #227 — desktop_act and Windows Terminal: the foreground paste was not allowed.
+  ForegroundNotAllowed: [
+    "Nothing was typed. Windows Terminal takes input only through the foreground; if_unexpected.detail says why that was not allowed: the user declined, dismissed the question, or did not answer; this client cannot ask; the terminal is on another virtual desktop; or the text is more than one line.",
+    "If the user declined or dismissed it, do NOT type into the terminal another way (keyboard, terminal send, clipboard): that works around their answer. Ask in the conversation first.",
+    "If this client cannot ask, the user can allow it with DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND=1; with their agreement in the conversation, terminal(action:'send', method:'foreground_flash') pastes the same way.",
+    "More than one line: send one line per act. On another virtual desktop: ask the user to switch to it, or move the terminal here.",
+  ],
   KeyboardTargetUnsafe: [
     "Nothing was typed. if_unexpected.detail names the ground: other_control (the focus is on a different control in the same window), other_window (the focus is in a different window from the field you named), read_only (the control that would have received the characters does not take typed text), or disabled (the field you named, or its window, does not take input now).",
     "other_control / other_window: put the focus on the field you named, then type again — the background write goes to whatever holds the focus. if_unexpected.detail names the way back for the road this act took. When it named its window by title, desktop_act action='click' on the same entity does it: a text field has no UIA invoke, so it is clicked at its position — checked against the window it was captured in when that window's handle was recorded. When it named its window by handle, no route here moves the focus to a text field yet (that click answers aim_route_failed): re-run desktop_discover by the window's title and click the field from there — except for a common dialog (Save As, Open), whose title resolves to a handle as well, so that road does not open there either.",
