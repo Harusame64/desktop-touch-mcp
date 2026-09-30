@@ -102,8 +102,8 @@
   may be on another page than the body named. The reply says the landing could not be confirmed.
   Word's AutoCorrect applies to the text as it does to typing. `setValue` is refused, because
   keystrokes insert rather than replace: select the text first, then `type`. In Word, ctrl+a
-  selects the whole document. If Word's document window is disabled (a dialog is open) or has
-  changed since the read, nothing is typed. Other text fields with no value are refused as before.
+  selects the whole document. If a dialog is open over Word, or Word's document window has changed
+  since the read, nothing is typed. Other text fields with no value are refused as before.
 
 - **`desktop_act` says why it refuses a `type` that nothing here can carry.** An element no route
   here can type into got `executor_failed` with no `detail`, and the advice

@@ -1509,8 +1509,10 @@ async function keyboardRung(
     if (receipt.receiverHwnd == null || !sameHwnd(receipt.receiverHwnd, hostHwnd)) {
       throw new KeyboardHostUnavailableError(entity);
     }
-    // A posted WM_CHAR ignores a disabled window: with a modal dialog up, Word's document window is
-    // disabled and the characters would go behind it (gate 2).
+    // A posted WM_CHAR ignores a disabled window. With a modal dialog up Word disables its frame, not
+    // `_WwG` (win2, 2026-09-30, the Font dialog), and `windowTakesInput` answers false for a window whose
+    // top-level window is disabled, so the characters are not posted behind the dialog (gate 2). The
+    // act's modal check refused that case first on hardware; this does not rely on it.
     if ((await takesInput(hostHwnd)) === false) {
       probeRefusal("keyboard", "keyboard_target_unsafe", aimHwnd, entity, { why, ground: "disabled", referenceFrom: "entity", addressedWindowBy, ...keyboardLanding(entity, receipt, valueRoadError) });
       throw new KeyboardTargetUnsafeError(
