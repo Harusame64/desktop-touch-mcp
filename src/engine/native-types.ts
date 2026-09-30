@@ -39,6 +39,8 @@ export interface NativeUiElement {
   hostWindowHandle?: string | null
   /** internal #224 — the class of that window; absent when not read, and on an older addon. */
   hostWindowClass?: string | null
+  /** internal #217 — a Word page body's visible text, when the read asked (`readBodyText`); for `query` only. */
+  visibleText?: string | null
 }
 
 export interface NativeUiElementsResult {

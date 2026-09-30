@@ -662,7 +662,9 @@ export class DesktopFacade {
     if (input.query) {
       const q = input.query.toLowerCase();
       const read = resolved.length;
-      resolved = resolved.filter((e) => e.label?.toLowerCase().includes(q));
+      // internal #217 part 2 — a Word page body also by the lines visible on it; its label is its name.
+      resolved = resolved.filter((e) =>
+        e.label?.toLowerCase().includes(q) || e.locator?.uia?.visibleText?.toLowerCase().includes(q));
       queryFoundNothing = read > 0 && resolved.length === 0;
     }
 

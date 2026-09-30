@@ -95,6 +95,11 @@
   that can be clicked. Pages scrolled past are left out, as other offscreen elements are. Other
   applications read as before.
 
+- **`desktop_discover`'s `query` finds a Word page by the words on it.** A page's body is listed
+  under its name ("ページ 1 のコンテンツ"), so a query for words in the document matched nothing.
+  Now the text visible on each page shown is matched as well. The text is only matched: it is not
+  in the reply, and no other tool returns it. Text scrolled out of view is still not matched.
+
 - **`desktop_act` types into Word's body.** The body offers UI Automation no value to write, so
   `desktop_act(type)` had no route into it and was refused. It is now offered the keyboard, and the
   characters are posted to Word's document window. They land at Word's caret whether Word is in front

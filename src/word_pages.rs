@@ -10,6 +10,42 @@ pub(crate) fn is_word_page(automation_id: &str) -> bool {
     automation_id.starts_with("UIA_AutomationId_Word_Page_")
 }
 
+/// internal #217 part 2 — a page's body: an `Edit` named `Body` with no window of its own, drawn in
+/// Word's `_WwG` document window (measured, win2, 2026-09-30). Its TextPattern answers that page's
+/// text alone, not the document's.
+pub(crate) fn is_word_body(control_type: &str, automation_id: &str, own_window: bool, host_class: Option<&str>) -> bool {
+    control_type == "Edit" && automation_id == "Body" && !own_window && host_class == Some("_WwG")
+}
+
+/// The most characters a body's visible text is kept to. Only `query` matching reads it; a page at
+/// 50% shows about 450 characters (win2), so this is several pages' worth.
+pub(crate) const BODY_TEXT_CAP: usize = 4000;
+
+/// The visible lines of a body, one per range (win2: one range per visible line), joined by a line
+/// feed and cut to `BODY_TEXT_CAP` characters. A range that ends in its own line break keeps it
+/// rather than adding a second.
+pub(crate) fn join_visible_lines<I: IntoIterator<Item = String>>(lines: I) -> String {
+    let mut out = String::new();
+    let mut count = 0usize;
+    for line in lines {
+        if count >= BODY_TEXT_CAP {
+            break;
+        }
+        if !out.is_empty() && !out.ends_with(['\r', '\n']) {
+            out.push('\n');
+            count += 1;
+        }
+        for ch in line.chars() {
+            if count >= BODY_TEXT_CAP {
+                break;
+            }
+            out.push(ch);
+            count += 1;
+        }
+    }
+    out
+}
+
 /// Pages come in document order: offscreen ones above the view, the visible ones, offscreen ones
 /// below. Once a page has been onscreen, the next offscreen page ends the list — the rest are below
 /// the view and would be pruned by the walk. An offscreen state that could not be read neither starts
@@ -75,6 +111,35 @@ mod tests {
     #[test]
     fn keeps_everything_when_no_page_is_visible() {
         assert_eq!(kept(&[PANE_ON, OFF, OFF, OFF]), 4);
+    }
+
+    #[test]
+    fn a_body_is_an_edit_named_body_without_its_own_window_in_wwg() {
+        assert!(is_word_body("Edit", "Body", false, Some("_WwG")));
+        assert!(!is_word_body("Edit", "Body", true, Some("_WwG")));
+        assert!(!is_word_body("Edit", "Body", false, Some("OpusApp")));
+        assert!(!is_word_body("Edit", "Body", false, None));
+        assert!(!is_word_body("Edit", "body", false, Some("_WwG")));
+        assert!(!is_word_body("Document", "Body", false, Some("_WwG")));
+    }
+
+    #[test]
+    fn joins_visible_lines_with_one_line_break_between() {
+        let lines = ["Page 1 QA1X".to_string(), "Filler\r".to_string(), "End".to_string()];
+        assert_eq!(join_visible_lines(lines), "Page 1 QA1X\nFiller\rEnd");
+    }
+
+    #[test]
+    fn cuts_the_text_at_the_cap_in_characters() {
+        let line = "あ".repeat(BODY_TEXT_CAP + 10);
+        let out = join_visible_lines([line, "later".to_string()]);
+        assert_eq!(out.chars().count(), BODY_TEXT_CAP);
+        assert!(!out.contains("later"));
+    }
+
+    #[test]
+    fn no_lines_is_empty() {
+        assert_eq!(join_visible_lines(Vec::<String>::new()), "");
     }
 
     #[test]

@@ -46,6 +46,9 @@ pub struct GetElementsOptions {
     /// a window's frame without registering MSAA clientside providers, which gives the frame
     /// English names this one does not use.
     pub hwnd: Option<String>,
+    /// internal #217 part 2 — read the visible text of each Word page body the walk keeps
+    /// (`UiElement::visible_text`). Only `desktop_discover` asks, and only to match its `query`.
+    pub read_body_text: Option<bool>,
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -64,6 +67,7 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
     let max_depth = opts.max_depth.unwrap_or(DEFAULT_MAX_DEPTH);
     let max_elements = opts.max_elements.unwrap_or(DEFAULT_MAX_ELEMENTS);
     let fetch_values = opts.fetch_values.unwrap_or(false);
+    let read_body_text = opts.read_body_text.unwrap_or(false);
 
     let root = resolve_root(ctx, opts.hwnd.as_deref(), &opts.window_title)?;
 
@@ -173,6 +177,16 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
                 ui_elem.path = path.clone();
                 ui_elem.host_window_handle = host.as_ref().map(|(h, _)| h.clone());
                 ui_elem.host_window_class = host.as_ref().and_then(|(_, c)| c.clone());
+                if read_body_text
+                    && word_pages::is_word_body(
+                        &ui_elem.control_type,
+                        &ui_elem.automation_id,
+                        ui_elem.native_window_handle.is_some(),
+                        ui_elem.host_window_class.as_deref(),
+                    )
+                {
+                    ui_elem.visible_text = visible_text(&child);
+                }
                 elements.push(ui_elem);
             }
 
@@ -195,6 +209,27 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
         element_count: elements.len() as u32,
         elements,
     })
+}
+
+/// internal #217 part 2 — the text of the lines visible in a Word page body, one range per line.
+///
+/// MEASURED win2 (2026-09-30): a page body's TextPattern answers that page alone (not the document);
+/// `GetVisibleRanges` gives one range per visible line, in 1–2 ms with each range's text read. The
+/// walk has already pruned offscreen pages, so only the bodies on screen are read. `None` when the
+/// element does not answer; an empty string when nothing of it is visible.
+fn visible_text(elem: &IUIAutomationElement) -> Option<String> {
+    unsafe {
+        let pat = elem.GetCurrentPattern(UIA_TextPatternId).ok()?;
+        let tp: IUIAutomationTextPattern = pat.cast().ok()?;
+        let ranges = tp.GetVisibleRanges().ok()?;
+        let count = ranges.Length().unwrap_or(0);
+        let cap = word_pages::BODY_TEXT_CAP as i32;
+        let lines = (0..count).filter_map(|i| {
+            let range = ranges.GetElement(i).ok()?;
+            range.GetText(cap).ok().map(|t| t.to_string())
+        });
+        Some(word_pages::join_visible_lines(lines))
+    }
 }
 
 /// How long the navigation of Word's document area may take: one RPC per child, in series, and the
@@ -433,6 +468,7 @@ fn extract_element(
             path: None,
             host_window_handle: None,
             host_window_class: None,
+            visible_text: None,
         })
     }
 }

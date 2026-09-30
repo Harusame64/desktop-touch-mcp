@@ -64,6 +64,10 @@ pub struct UiElement {
     /// internal #224 — the class of that window, as the element that IS it was read (`_WwG` for Word's
     /// document window). The keyboard rung posts into a host only for a class it was measured on.
     pub host_window_class: Option<String>,
+    /// internal #217 part 2 — for a Word page body, the text of its visible lines, cut to a few
+    /// thousand characters; `None` for every other element and on a read that did not ask. Only
+    /// `desktop_discover`'s `query` reads it: it is not returned by any tool.
+    pub visible_text: Option<String>,
 }
 
 #[napi(object)]

@@ -53,6 +53,12 @@ export interface EntityLocator {
     /** internal #224 — the class of that window, as read (`_WwG` for Word's document window). */
     hostWindowClass?: string;
     /**
+     * internal #217 part 2 — a Word page body's visible lines, as read. `desktop_discover` matches its
+     * `query` against it as well as the label (the user's choice, 2026-09-30: for `query` only). Never
+     * in a reply: the body's label stays its name ("ページ 1 のコンテンツ").
+     */
+    visibleText?: string;
+    /**
      * internal #211 (C) — a `Window` element's own `WindowPattern.IsModal`, as the read answered it.
      * Absent when it did not answer (another control type, a window without the pattern, an older
      * addon): absence is "not said", never "not modal".

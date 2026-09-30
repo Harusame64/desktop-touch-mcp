@@ -1154,6 +1154,12 @@ export interface UiElement {
   /** internal #224 — the class of that window (`_WwG` for Word's document window). */
   hostWindowClass?: string;
   /**
+   * internal #217 part 2 — a Word page body's visible lines, cut to a few thousand characters. Only a
+   * native read that passed `readBodyText` has it, and only `desktop_discover`'s `query` reads it:
+   * no tool returns it, and it is not kept in the UIA cache.
+   */
+  visibleText?: string;
+  /**
    * internal #211 (B) — where the element sits in this read: `/<ControlType>[<index among the
    * parent's ControlView children>]` per level from the read's root. A rebuilt element kept it where
    * its RuntimeId did not (Explorer's status bar, 4 of 4, S10). Absent when the read did not take it.
@@ -1461,6 +1467,11 @@ export async function getUiElements(
     pinnedHwnd?: bigint;
     fetchValues?: boolean;
     /**
+     * internal #217 part 2 — also read each Word page body's visible text (`UiElement.visibleText`).
+     * Native road only. Such a read is not answered from the cache, and its text is not cached.
+     */
+    readBodyText?: boolean;
+    /**
      * internal #211 — the depth and element cap for the PowerShell road, when it differs from the
      * native one. A deep native read (discover: depth 64 / 500) is cheap; the same walk in
      * PowerShell runs into its deadline, so a caller that asks deep gives the fallback its own caps.
@@ -1484,7 +1495,7 @@ export async function getUiElements(
   // looked under the other — a permanent miss, and a title-derived tree answering a scoped
   // request (2ゲート目の指摘).
   const cacheKey = options?.pinnedHwnd ?? options?.hwnd;
-  if (options?.cached && cacheKey !== undefined && !options.fetchValues) {
+  if (options?.cached && cacheKey !== undefined && !options.fetchValues && !options.readBodyText) {
     const cached = getCachedUia(cacheKey);
     if (cached) {
       try {
@@ -1528,6 +1539,7 @@ export async function getUiElements(
         maxElements,
         fetchValues: options?.fetchValues ?? false,
         ...(scopeHwnd !== undefined && { hwnd: scopeHwnd.toString() }),
+        ...(options?.readBodyText && { readBodyText: true }),
       });
       // Normalise: Rust returns Option<T> as undefined; TS expects null for rects
       const normalised: UiElementsResult = {
@@ -1554,7 +1566,9 @@ export async function getUiElements(
       // Reporting `truncated` from Rust is the real fix and is its own change, not this branch's.
       const maybeTruncated = normalised.elementCount >= maxElements;
       if (cacheKey !== undefined && !maybeTruncated) {
-        try { updateUiaCache(cacheKey, JSON.stringify({ ...normalised, readLimits: { maxDepth, maxElements } })); } catch { /* ignore */ }
+        // A body's text is for the caller's `query` alone: the cache answers other tools (gate: #217).
+        const elements = normalised.elements.map(({ visibleText: _text, ...e }) => e);
+        try { updateUiaCache(cacheKey, JSON.stringify({ ...normalised, elements, readLimits: { maxDepth, maxElements } })); } catch { /* ignore */ }
       }
       // Whether the walk stopped at its cap is NOT set as `truncated` here: `truncated` means the walk
       // ran out of time, and each caller judges a filled cap against its own caps — discover says it
@@ -2258,7 +2272,7 @@ foreach ($k in $kids) { Collect $k 0 }
  * to undefined. A build older than a field sends nothing, which stays absent rather than becoming a
  * guess. One function, so a new field cannot reach one read and not the other (gate 2 on #211 C).
  */
-function normalizeNativeElement({ nativeWindowHandle, nativeWindowHandleRead, isModal, runtimeId, path, hostWindowHandle, hostWindowClass, ...el }: NativeUiElement): UiElement {
+function normalizeNativeElement({ nativeWindowHandle, nativeWindowHandleRead, isModal, runtimeId, path, hostWindowHandle, hostWindowClass, visibleText, ...el }: NativeUiElement): UiElement {
   return {
     ...el,
     boundingRect: el.boundingRect ?? null,
@@ -2270,6 +2284,7 @@ function normalizeNativeElement({ nativeWindowHandle, nativeWindowHandleRead, is
     ...(path != null && { path }),
     ...(hostWindowHandle != null && { hostWindowHandle }),
     ...(hostWindowClass != null && { hostWindowClass }),
+    ...(visibleText != null && { visibleText }),
   };
 }
 

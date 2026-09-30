@@ -121,6 +121,8 @@ export async function fetchUiaCandidates(
     const raw     = await getUiElements(windowTitle, UIA_DISCOVER_MAX_DEPTH, UIA_DISCOVER_MAX_ELEMENTS, 8000, {
       ...options,
       fallbackLimits: { maxDepth: UIA_DISCOVER_FALLBACK_DEPTH, maxElements: UIA_DISCOVER_FALLBACK_ELEMENTS },
+      // internal #217 part 2 — a Word page body's visible text, for `query` to match (desktop.ts).
+      readBodyText: true,
     });
     // A read that filled its cap may have stopped early; it is published as a prefix, not judged
     // for blindness as the window.
@@ -167,6 +169,7 @@ export async function fetchUiaCandidates(
             // focus (Word's body lives in the `_WwG` child window).
             ...(el.hostWindowHandle !== undefined && { hostWindowHandle: el.hostWindowHandle }),
             ...(el.hostWindowClass !== undefined && { hostWindowClass: el.hostWindowClass }),
+            ...(el.visibleText !== undefined && { visibleText: el.visibleText }),
           },
         },
         role: uiaRoleFromControlType(el.controlType),
