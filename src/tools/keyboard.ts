@@ -775,6 +775,29 @@ export async function typeViaClipboard(
 }
 
 /**
+ * internal #225 — said on a paste made while the foreground window's IME was open. MEASURED win2
+ * (2026-09-30, ATOK 36): with a composition pending (a keystroke ATOK held unconverted), the paste
+ * went to the IME and nothing reached Word's body or Notepad, 3 of 3, while the call answered
+ * `ok:true` and restored the clipboard; with the IME open and nothing pending, and with it closed,
+ * the paste landed every time. Whether a composition is pending cannot be read from outside Word's
+ * body (no TextEditPattern, no composition window, and WM_IME_CONTROL answers on/off only), so this
+ * is a note, not a refusal (the user's choice, 2026-09-30).
+ */
+export const IME_OPEN_PASTE_NOTE =
+  "The IME was on when this pasted. If a composition was pending, the paste went to the IME and nothing was inserted, " +
+  "though this still answers ok. Commit (Enter) or cancel (Esc) any pending composition, then check the text.";
+
+/** Whether the IME of this window is open; false when it cannot be asked. */
+export function imeOpenAt(hwnd: bigint | null): boolean {
+  if (hwnd == null || typeof nativeWin32?.win32GetImeOpenStatus !== "function") return false;
+  try {
+    return nativeWin32.win32GetImeOpenStatus(hwnd) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The `hints.clipboard` block for a call that pasted — and, on a failure, the
  * `context.clipboard` block, built from the same outcome so both read alike.
  *
@@ -1058,7 +1081,8 @@ export const keyboardTypeSchema = {
       "Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — " +
       "pasted text is not run through IME conversion. Note this does not help while an IME " +
       "composition is already in progress: the paste keystroke is consumed by the IME and " +
-      "nothing is inserted, so commit or cancel the composition first. Your clipboard is " +
+      "nothing is inserted, though the call still answers ok, so commit or cancel the composition first; " +
+      "when the IME was on at the paste, hints.ime says so. Your clipboard is " +
       "replaced for the duration of the call and put back afterwards; hints.clipboard reports " +
       "which backend served the paste and whether the restore ran. On builds without the native " +
       "addon this path is capped at about 12000 characters and fails with " +
@@ -2465,6 +2489,7 @@ export const keyboardTypeHandler = async ({
     // `forceKeystrokes: true`.
     let effectiveClipboard = use_clipboard;
     let autoClipboardReason: string | undefined;
+    let pasteImeOpen = false;
     if (!use_clipboard && !forceKeystrokes) {
       if (NON_ASCII_SYMBOL_RE.test(effectiveText)) {
         effectiveClipboard = true;
@@ -2482,6 +2507,8 @@ export const keyboardTypeHandler = async ({
     // inside `typeViaClipboard`, the keystroke one on a focus-leash abort at
     // the very first chunk (Opus Round 2 P1).
     if (effectiveClipboard) {
+      // internal #225 — read before the paste: a composition pending at that moment takes the paste.
+      pasteImeOpen = imeOpenAt(getForegroundHwnd());
       clipboardOutcome = await typeViaClipboard(
         effectiveText, "ctrl+v", "keyboard:type", explicitHwnd !== undefined);
     } else {
@@ -2613,6 +2640,7 @@ export const keyboardTypeHandler = async ({
     const hints = {
       ...(warnings.length > 0 ? { warnings } : {}),
       ...(clipboardOutcome ? { clipboard: clipboardPasteHints(clipboardOutcome) } : {}),
+      ...(pasteImeOpen && { ime: { open: true, note: IME_OPEN_PASTE_NOTE } }),
     };
 
     return ok({
@@ -3454,7 +3482,8 @@ export const keyboardSchema = z.discriminatedUnion("action", [
         "Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — " +
         "pasted text is not run through IME conversion. Note this does not help while an IME " +
         "composition is already in progress: the paste keystroke is consumed by the IME and " +
-        "nothing is inserted, so commit or cancel the composition first. Your clipboard is " +
+        "nothing is inserted, though the call still answers ok, so commit or cancel the composition first; " +
+        "when the IME was on at the paste, hints.ime says so. Your clipboard is " +
         "replaced for the duration of the call and put back afterwards; hints.clipboard reports " +
         "which backend served the paste and whether the restore ran. On builds without the native " +
         "addon this path is capped at about 12000 characters and fails with " +
