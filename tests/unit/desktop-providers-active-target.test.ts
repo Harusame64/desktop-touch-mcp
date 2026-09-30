@@ -303,6 +303,23 @@ describe("composeCandidates — active target fallback", () => {
     expect(mocks.fetchUiaCandidates).toHaveBeenCalledWith({ windowTitle: "npm", hwnd: "50" });
   });
 
+  it("returns that handle as the target read, so the session and desktop_act hold it (codex P1)", async () => {
+    mocks.resolveWindowTarget.mockResolvedValue(null);
+    desktop(
+      { hwnd: 50n, title: "npm run dev", className: "ConsoleWindowClass" },
+      { hwnd: 51n, title: "npm - Google Chrome", className: "Chrome_WidgetWin_1" },
+    );
+    const result = await composeCandidates({ windowTitle: "npm" });
+    expect(result.target).toEqual({ windowTitle: "npm", hwnd: "50" });
+  });
+
+  it("returns a title-only target that is not a terminal as it came (the control)", async () => {
+    mocks.resolveWindowTarget.mockResolvedValue(null);
+    desktop({ hwnd: 51n, title: "npm - Google Chrome", className: "Chrome_WidgetWin_1" });
+    const result = await composeCandidates({ windowTitle: "npm" });
+    expect(result.target).toEqual({ windowTitle: "npm" });
+  });
+
   it("does not pin a title-only target that is not a terminal (the control)", async () => {
     mocks.resolveWindowTarget.mockResolvedValue(null);
     desktop({ hwnd: 51n, title: "npm - Google Chrome", className: "Chrome_WidgetWin_1" });

@@ -457,6 +457,13 @@ export async function composeCandidates(
     return { candidates: [], warnings: normalized.warnings, target: normalized.target, identityRead: true };
   }
 
+  // internal #220 — a title-only terminal is read by the handle its class came from, and that handle
+  // is what the observation says it read: the identity, the origin and the returned target, so the
+  // session holds it and `desktop_act` writes to the window the entities came from rather than
+  // finding the title again (codex P1 on #761).
+  const terminalHwnd = normalized.target.hwnd === undefined ? terminalWindowOf(normalized.target) : undefined;
+  const aimed: TargetSpec = terminalHwnd !== undefined ? { ...normalized.target, hwnd: terminalHwnd.toString() } : normalized.target;
+
   // ADR-036 — the resolution and the warnings it produced are applied HERE, once, rather than at
   // each lane's return. A lane added later inherits both instead of having to remember them,
   // which is the disease this ADR is about: identity that is carried by hand gets dropped by hand.
@@ -464,7 +471,7 @@ export async function composeCandidates(
   // a slow or remembered read those are different moments, and a handle recycled in between would be baselined
   // against its new owner (gate 1, 2026-09-09). Taken before the lanes run rather than after, so
   // it describes the window they are about to be pointed at.
-  const identity = readIdentityForTarget(normalized.target);
+  const identity = readIdentityForTarget(aimed);
   // ADR-036 item 5 — and where that window was, so a press taken from these coordinates can be
   // moved with the window instead of staying where the screen used to be.
   //
@@ -487,9 +494,9 @@ export async function composeCandidates(
   // measured against — so the aim records none and no correction runs. Unlike the identity beside
   // it, which fails SAFE when it goes stale (the act-time comparison answers "changed" and the act
   // is refused), a stale origin fails dangerous, which is why only this one is read twice.
-  const originBefore = readOriginRectForTarget(normalized.target);
-  const result = await composeCandidatesInner(normalized.target);
-  const originAfter = readOriginRectForTarget(normalized.target);
+  const originBefore = readOriginRectForTarget(aimed);
+  const result = await composeCandidatesInner(aimed);
+  const originAfter = readOriginRectForTarget(aimed);
   const origin: AimOrigin | undefined =
     originBefore && originAfter
       ? (sameRect(originBefore, originAfter)
@@ -504,7 +511,7 @@ export async function composeCandidates(
       : undefined;
   return {
     ...withPrependedWarnings(result, normalized.warnings),
-    target: normalized.target,
+    target: aimed,
     identity,
     origin,
     // Looked for, whether or not it was found. A later read cannot stand in for this one: it would
