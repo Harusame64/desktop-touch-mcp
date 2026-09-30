@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { keyboard, withKeyboardLock, rawKeyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
-import { enumWindowsInZOrder, getWindowClassName, restoreAndFocusWindow, getWindowRectByHwnd, getForegroundHwnd } from "../engine/win32.js";
+import { enumWindowsInZOrder, getWindowClassName, restoreAndFocusWindow, getWindowRectByHwnd, getForegroundHwnd, getThreadFocus } from "../engine/win32.js";
 import { nativeWin32, hasNativeTypeViaClipboard } from "../engine/native-engine.js";
 import type { NativeTypeViaClipboardResult } from "../engine/native-types.js";
 // ADR-033: the fallback's command-line ceiling, the shared give-up budget and
@@ -784,9 +784,17 @@ export async function typeViaClipboard(
  * `terminal`) say it, and on the native path inside the keyboard lock, just before the chord: read
  * earlier, a queued sequence could switch windows in between (gate 2 on #760). The fallback spawns
  * PowerShell before its chord, so its read is earlier by that much.
+ *
+ * The window asked is the one holding the foreground thread's focus, not the foreground window: its
+ * IME is the one the chord meets. MEASURED win2 (2026-09-30, #760 at `beaaa8d5`): Win11 Notepad's
+ * frame and its RichEdit are on different threads with separate IME windows, so the frame read
+ * `false` with the edit's IME on (and the reverse), while `getThreadFocus(frame).focus` returned the
+ * RichEdit. In Word `_WwG` shares `OpusApp`'s thread, and both agree. Without a focus, the
+ * foreground window is asked.
  */
 async function withImeState(paste: () => Promise<TypeViaClipboardOutcome>): Promise<TypeViaClipboardOutcome> {
-  const imeOpen = imeOpenAt(getForegroundHwnd());
+  const fg = getForegroundHwnd();
+  const imeOpen = imeOpenAt(fg == null ? null : (getThreadFocus(fg)?.focus ?? fg));
   const outcome = await paste();
   return imeOpen ? { ...outcome, imeOpen: true } : outcome;
 }

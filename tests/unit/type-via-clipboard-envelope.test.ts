@@ -74,6 +74,7 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
     ]),
     getWindowClassName: vi.fn(() => "Notepad"),
     getForegroundHwnd: vi.fn(() => 0x100n),
+    getThreadFocus: vi.fn(() => ({ focus: 0x200n, active: 0x100n })),
     restoreAndFocusWindow: vi.fn(),
     getWindowProcessId: vi.fn(() => 4242),
     getProcessIdentityByPid: vi.fn(() => ({
@@ -632,8 +633,17 @@ describe("internal #225 — a paste made while the IME was on says it may not ha
     const r = body(await keyboardTypeHandler(keyboardArgs));
     expect(r.ok).toBe(true);
     expect(clipboardHints(r)).toEqual({ backend: "native", restored: true, imeOpen: true, imeNote: NOTE });
-    expect(nativeState.imeOpen).toHaveBeenCalledWith(0x100n);
+    // The foreground thread's focus (Notepad's RichEdit), not the frame (win2 on #760).
+    expect(nativeState.imeOpen).toHaveBeenCalledWith(0x200n);
     expect(order).toEqual(["ime", "paste"]);
+  });
+
+  it("asks the foreground window itself when its thread has no focus to name", async () => {
+    vi.mocked(win32.getThreadFocus).mockReturnValueOnce(undefined);
+    nativeState.imeOpen.mockImplementation(() => true);
+    nativeState.composite.mockResolvedValue(nativeResult());
+    await keyboardTypeHandler(keyboardArgs);
+    expect(nativeState.imeOpen).toHaveBeenCalledWith(0x100n);
   });
 
   it("asks inside the keyboard lock, so a queued sequence cannot switch windows in between (gate 2)", async () => {
