@@ -357,6 +357,19 @@ export function placeOnScreen(
   return `at the ${where} of ${monitorWords}`;
 }
 
+/** Two shown windows whose overlap covers half the smaller one or more. */
+export function mostlyOverlap(
+  a: { region: { x: number; y: number; width: number; height: number }; isMinimized: boolean },
+  b: { region: { x: number; y: number; width: number; height: number }; isMinimized: boolean },
+): boolean {
+  if (a.isMinimized || b.isMinimized) return false;
+  const w = Math.min(a.region.x + a.region.width, b.region.x + b.region.width) - Math.max(a.region.x, b.region.x);
+  const h = Math.min(a.region.y + a.region.height, b.region.y + b.region.height) - Math.max(a.region.y, b.region.y);
+  if (w <= 0 || h <= 0) return false;
+  const smaller = Math.min(a.region.width * a.region.height, b.region.width * b.region.height);
+  return smaller > 0 && w * h * 2 >= smaller;
+}
+
 export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: string): Promise<void> {
   const { enumWindowsInZOrder, enumMonitors, getWindowIdentity, getForegroundHwnd, getWindowRoot } = await import("../engine/win32.js");
   const { injectViaForegroundFlash } = await import("../engine/bg-input.js");
@@ -462,9 +475,16 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
     const twins = wins.filter((w) => w.hwnd !== hwnd && w.title === win.title);
     let place: string | undefined;
     if (twins.length > 0) {
-      const monitors = enumMonitors();
+      let monitors: ReturnType<typeof enumMonitors>;
+      try { monitors = enumMonitors(); } catch {
+        throw new TerminalForegroundRefusal(
+          `Nothing was typed: another window is titled "${win.title}", and the monitors could not be read to say which one this is.`,
+        );
+      }
       place = placeOnScreen(win, monitors);
-      if (twins.some((t) => placeOnScreen(t, monitors) === place)) {
+      // Same words, or mostly on top of each other: cascaded windows a few pixels either side of a
+      // third get different words and still look like one place (gate 2 on 0c35f15e).
+      if (twins.some((t) => placeOnScreen(t, monitors) === place || mostlyOverlap(t, win))) {
         throw new TerminalForegroundRefusal(
           `Nothing was typed: another window is titled "${win.title}" and sits in the same place on screen ` +
           `(${place}), so the question could not show which one it types into. Move one of them, or rename a tab.`,

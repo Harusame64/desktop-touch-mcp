@@ -497,6 +497,17 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     expect(mockFlash).not.toHaveBeenCalled();
   });
 
+  it("does not ask when a same-titled window cascades over it, though the thirds give them different words (gate 2)", async () => {
+    state.twin = true;
+    // The terminal's centre (50,50) is in the left third; this one's (370,60) is in the middle third,
+    // and it covers 72% of the terminal.
+    state.twinRegion = { x: 20, y: 10, width: 700, height: 100 };
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await actByHandle("echo hi", ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/sits in the same place on screen/);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
   it("refuses when a window with the terminal's title opens while the user answers", async () => {
     state.twinRegion = { x: 800, y: 800, width: 100, height: 100 };
     const ask = vi.fn(async () => { state.twin = true; return { action: "accept" as const, content: {} }; });
