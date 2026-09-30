@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **A window on another virtual desktop is not brought forward.** A title search can pick a window
+  on another virtual desktop: it can come ahead of a same-titled window on the screen. `keyboard`
+  brought it forward, which switched the user to that desktop, and typed nothing. `keyboard`
+  (type, press, sequence, `foreground_flash`), `terminal` send (focus and `foreground_flash`) and
+  `mouse_move` / `mouse_click` / `mouse_drag` / `scroll` now refuse with `WindowOnOtherDesktop`
+  before anything is focused or sent. `context.sameTitleOnScreen` says whether a window with that
+  title is on this desktop, so it can be named by `hwnd`. Which window a title picks is unchanged,
+  and routes that do not take the foreground (background input, screenshots) still reach such a
+  window. `focus_window` still brings it forward.
+
 - **`desktop_act` sees the repaint its action caused.** Its `observation` came from the screen's
   changed regions, read after the action had returned. A UI Automation press takes about 2 s, and
   the window repainted as it returned, so the read missed it: 83 of 88 successful acts measured
