@@ -18,7 +18,8 @@ use super::types::SelectedTab;
 const TIMEOUT_MS: u32 = 2_000;
 
 /// The selected tab of the window `hwnd` (a decimal handle), or `None` when it has no selected
-/// `TabItem` (a window without tabs, or one UIA does not show them for).
+/// `TabItem` (a window without tabs, or one UIA does not show them for). A read that fails is an
+/// error, never `None`.
 pub fn get_selected_tab(hwnd: String) -> napi::Result<Option<SelectedTab>> {
     thread::execute_with_timeout(move |ctx| selected_tab_impl(ctx, &hwnd), TIMEOUT_MS)
 }
@@ -39,9 +40,14 @@ fn selected_tab_impl(ctx: &UiaContext, hwnd: &str) -> napi::Result<Option<Select
             .map_err(win_err)?;
         ctx.automation.CreateAndCondition(&is_tab, &is_selected).map_err(win_err)?
     };
-    // No match comes back as an error (a null element), which is an answer here, not a failure.
-    let Ok(tab) = (unsafe { root.FindFirst(TreeScope_Descendants, &condition) }) else {
-        return Ok(None);
+    // No match comes back as a null element, which windows-rs reports as an EMPTY error (code 0):
+    // that is the answer "no selected tab". Any other error is a failed read, and is raised: the
+    // caller holds a user's answer to this, and a failed read must not look like a window without
+    // tabs, whose check would then pass (win2's Opus review on #764).
+    let tab = match unsafe { root.FindFirst(TreeScope_Descendants, &condition) } {
+        Ok(tab) => tab,
+        Err(e) if e.code().is_ok() => return Ok(None),
+        Err(e) => return Err(win_err(e)),
     };
     let name = unsafe { tab.CurrentName() }.map(|b| b.to_string()).unwrap_or_default();
     let runtime_id = unsafe {
@@ -50,5 +56,8 @@ fn selected_tab_impl(ctx: &UiaContext, hwnd: &str) -> napi::Result<Option<Select
         let _ = VariantClear(&mut v);
         read
     };
-    Ok(runtime_id.map(|runtime_id| SelectedTab { name, runtime_id }))
+    // A selected tab whose RuntimeId cannot be read cannot be compared: a failure, not "no tab".
+    let runtime_id = runtime_id
+        .ok_or_else(|| napi::Error::from_reason("uia_get_selected_tab: the selected tab's RuntimeId could not be read"))?;
+    Ok(Some(SelectedTab { name, runtime_id }))
 }

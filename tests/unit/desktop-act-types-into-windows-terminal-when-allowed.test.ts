@@ -292,4 +292,18 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     expect(err?.callerDetail).toMatch(/active tab changed/);
     expect(mockFlash).not.toHaveBeenCalled();
   });
+
+  it.each([["a TAB", "echo\tx"], ["ESC", "echo \u001b[2J"], ["a bidi override", "echo \u202eabc"], ["a zero-width space", "echo a\u200bb"]])(
+    "does not ask about text with %s, which the question would not show as the terminal gets it", async (_what, text) => {
+      const { ctx, ask } = asking({ action: "accept", content: {} });
+      const err = await act(text, ctx).catch((e) => e);
+      expect(err?.callerDetail).toMatch(/control, bidirectional or zero-width/);
+      expect(ask).not.toHaveBeenCalled();
+    });
+
+  it("asks about plain text with non-ASCII letters (control)", async () => {
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    await act("echo こんにちは", ctx);
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
 });

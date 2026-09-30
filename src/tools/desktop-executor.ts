@@ -375,6 +375,16 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
       `(${before.constraints.maxBytes} bytes of UTF-16). Send it in shorter pieces.`,
     );
   }
+  // Characters the question would show differently from what the shell receives — controls (TAB,
+  // ESC, …), bidi overrides, zero-width marks — would let the user agree to text they did not see
+  // (win2's Opus review on #764).
+  // eslint-disable-next-line no-control-regex -- matching control characters is the point
+  if (/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/.test(line)) {
+    throw new TerminalForegroundRefusal(
+      "Nothing was typed: the text has a control, bidirectional or zero-width character, which the question " +
+      "would not show as the terminal receives it. Send plain text.",
+    );
+  }
   if (line.length > ASK_TEXT_SHOWN_MAX) {
     throw new TerminalForegroundRefusal(
       `Nothing was typed: the text is longer than the question can show in full (${ASK_TEXT_SHOWN_MAX} ` +
