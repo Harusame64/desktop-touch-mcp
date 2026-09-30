@@ -78,6 +78,7 @@ import { SERVER_VERSION } from "./version.js";
 import { resolveV2Activation } from "./tools/desktop-activation.js";
 import { uiPatternStore } from "./store/ui-pattern-store.js";
 import { macroOutcomeStore } from "./store/macro-outcome-store.js";
+import { runWithAskContext, type AskContext, type AskAnswer } from "./tools/_ask-user.js";
 
 // Resolve assets/icons directory (works both in dev: dist/ and release: dist/)
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -112,7 +113,34 @@ const _desktopV2 = _v2Enabled
 // ─── MCP server factory ───────────────────────────────────────────────────────
 // Returns a fully-configured McpServer with all tools registered.
 // Called once for STDIO mode, and once per HTTP request for stateless HTTP mode.
-function createMcpServer(): McpServer {
+/**
+ * internal #227 — every tool call runs with a way to ask the user (MCP elicitation), or with
+ * `null` when this transport cannot carry a request to the client. The handler is the LAST
+ * argument; a tool without an input schema is called with `extra` alone, so the arguments are
+ * passed through as they come and `extra` is the last of them.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function wrapHandlerArgWithAsk(toolArgs: any[], s: McpServer, canAsk: boolean): any[] {
+  const last = toolArgs.length - 1;
+  const handler = toolArgs[last];
+  if (typeof handler !== "function") return toolArgs;
+  const wrapped = (...handlerArgs: unknown[]) => {
+    const extra = handlerArgs[handlerArgs.length - 1] as { requestId?: string | number } | undefined;
+    const ctx: AskContext | null = canAsk
+      ? {
+          ask: (form, timeoutMs) => s.server.elicitInput(
+            // The form is built in `_ask-user.ts` to the SDK's primitive-field schema.
+            { mode: "form", ...form } as Parameters<typeof s.server.elicitInput>[0],
+            { timeout: timeoutMs, ...(extra?.requestId !== undefined && { relatedRequestId: extra.requestId }) },
+          ) as Promise<AskAnswer>,
+        }
+      : null;
+    return runWithAskContext(ctx, () => handler(...handlerArgs));
+  };
+  return [...toolArgs.slice(0, last), wrapped];
+}
+
+function createMcpServer(opts: { canAsk: boolean }): McpServer {
   const s = new McpServer(
     { name: "desktop-touch", version: SERVER_VERSION },
     {
@@ -227,8 +255,12 @@ function createMcpServer(): McpServer {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (s as any).tool = function (...toolArgs: any[]) {
     return _originalTool(
-      ...wrapHandlerArgWithCallId(
-        wrapHandlerArgWithTiming(wrapHandlerArg(toolArgs, checkFailsafe)),
+      ...wrapHandlerArgWithAsk(
+        wrapHandlerArgWithCallId(
+          wrapHandlerArgWithTiming(wrapHandlerArg(toolArgs, checkFailsafe)),
+        ),
+        s,
+        opts.canAsk,
       ),
     );
   };
@@ -238,8 +270,12 @@ function createMcpServer(): McpServer {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (s as any).registerTool = function (...toolArgs: any[]) {
     return _originalRegisterTool(
-      ...wrapHandlerArgWithCallId(
-        wrapHandlerArgWithTiming(wrapHandlerArg(toolArgs, checkFailsafe)),
+      ...wrapHandlerArgWithAsk(
+        wrapHandlerArgWithCallId(
+          wrapHandlerArgWithTiming(wrapHandlerArg(toolArgs, checkFailsafe)),
+        ),
+        s,
+        opts.canAsk,
       ),
     );
   };
@@ -673,7 +709,8 @@ if (useHttp) {
       // label.
       recordRpcReceived("http");
       wakePerceptionRuntime();
-      const reqServer = createMcpServer();
+      // internal #227: JSON-response mode has no stream to carry a question to the client.
+      const reqServer = createMcpServer({ canAsk: false });
       // Stateless mode (`sessionIdGenerator: undefined`):
       // per-request McpServer 構造 (上の comment 参照) と SDK の stateful 設計
       // (sessionIdGenerator が UUID 発行する mode) は両立不能 — stateful mode は
@@ -722,7 +759,7 @@ if (useHttp) {
     console.error(`[desktop-touch] MCP server running (http) on ${httpUrl}`);
   });
 } else {
-  const server = createMcpServer();
+  const server = createMcpServer({ canAsk: true });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 

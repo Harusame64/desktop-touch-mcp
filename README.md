@@ -689,6 +689,12 @@ Setting `DESKTOP_TOUCH_FORCE_FOCUS=1` makes `forceFocus: true` the default for a
 - During the ~10ms `AttachThreadInput` window, key state and mouse capture are shared between the two threads. In rapid macro sequences this can cause a race condition (rare in practice).
 - Disable `forceFocus` (or unset the env var) when the user is manually operating another app to avoid unexpected focus shifts.
 
+### Typing into Windows Terminal from `desktop_act`
+
+Windows Terminal takes keyboard input only through the foreground: it ignores characters posted to it in the background. When `desktop_act` types into a Windows Terminal window, the server asks the user first, through the MCP client's question form ("Type into Windows Terminal? It takes the foreground for about 0.1 s."). On Accept, it pastes the text through the foreground and puts the previous window back. Ticking "Don't ask again" allows it until the server restarts. Decline, Esc, no answer within 60 s, or a client that cannot show the question (such as `claude -p`) all mean no: nothing is typed, and the act ends `executor_failed` with a `detail` that says why. The text must be one line; a single trailing newline is sent as Enter.
+
+Setting `DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND=1` allows it without asking.
+
 ---
 
 ## Auto Guard

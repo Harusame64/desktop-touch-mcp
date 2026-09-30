@@ -9,6 +9,9 @@
     "DESKTOP_TOUCH_ALLOWLIST": [
       "src:ts"
     ],
+    "DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND": [
+      "src:ts"
+    ],
     "DESKTOP_TOUCH_AUTO_GUARD": [
       "src:ts"
     ],
@@ -359,7 +362,8 @@
     "length": "unclassified",
     "toLowerCase": "unclassified",
     "trim": "unclassified",
-    "some": "unclassified"
+    "some": "unclassified",
+    "DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND": "axis"
   },
   "allowDynamic": [
     "src/utils/launch.ts:name"
@@ -374,6 +378,7 @@
   "maxUnclassified": 58,
   "documented": [
     "DESKTOP_TOUCH_ALLOWLIST",
+    "DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND",
     "DESKTOP_TOUCH_AUTO_GUARD",
     "DESKTOP_TOUCH_CAPTURE_BACKEND",
     "DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE",

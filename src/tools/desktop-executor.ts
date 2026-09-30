@@ -20,6 +20,8 @@
 
 import type { UiEntity, ExecutorKind, ExecutorOutcome } from "../engine/world-graph/types.js";
 import { logResolve, logDispatchSink } from "./_resolve-log.js";
+import { askToTakeForeground, ALLOW_TERMINAL_FOREGROUND_ENV, type ForegroundRefusal } from "./_ask-user.js";
+import { offDesktopTarget } from "./_off-desktop.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 import { classifyUiaRouteFailure, describeUiaRouteFailure } from "../engine/uia-route-failure.js";
@@ -264,6 +266,90 @@ export interface ElementAtPoint {
 // ── G2: Background terminal send — injectable for testing ─────────────────────
 
 /**
+ * The window does not take posted characters. Carries the reason, so the production send can tell
+ * Windows Terminal (`wt_xaml_pipeline`, internal #227) from a window no route here can type into.
+ */
+export class BackgroundTerminalUnsupportedError extends Error {
+  constructor(message: string, readonly hwnd: unknown, readonly reason: string | undefined) {
+    super(message);
+    this.name = "BackgroundTerminalUnsupportedError";
+  }
+}
+
+/** A refusal whose sentence reaches the caller as `detail` (`guarded-touch.ts` reads `callerDetail`). */
+class TerminalForegroundRefusal extends Error {
+  constructor(readonly callerDetail: string) {
+    super(callerDetail);
+    this.name = "TerminalForegroundRefusal";
+  }
+}
+
+const TERMINAL_FOREGROUND_REFUSALS: Record<ForegroundRefusal, string> = {
+  declined:
+    "Nothing was typed: Windows Terminal takes input only through the foreground, and the user " +
+    "declined. Do not type into it another way without asking the user.",
+  cancelled:
+    "Nothing was typed: Windows Terminal takes input only through the foreground, and the question " +
+    "was dismissed. Ask the user in the conversation before typing into it.",
+  timed_out:
+    "Nothing was typed: Windows Terminal takes input only through the foreground, and no one " +
+    "answered within 60 s. Ask the user in the conversation before typing into it.",
+  cannot_ask:
+    "Nothing was typed: Windows Terminal takes input only through the foreground, and this client " +
+    "cannot ask the user. With the user's agreement, terminal(action:'send', method:'foreground_flash') " +
+    `pastes through the foreground, or ${ALLOW_TERMINAL_FOREGROUND_ENV}=1 allows it here.`,
+};
+
+/**
+ * internal #227 — type into Windows Terminal through the foreground, once the user has allowed it.
+ *
+ * WT's TerminalControl reads XAML key events, not posted WM_CHAR, so the background send cannot
+ * reach it (`wt_xaml_pipeline`). `terminal(send, method:'foreground_flash')` takes the foreground
+ * for a moment and pastes; this is the same road, taken only on the user's yes. Checked first, so
+ * the user is not asked for a paste that would then be refused: the window must be on this virtual
+ * desktop (internal #221), and the text must be one line (the flash rejects a newline; one trailing
+ * newline is sent as Enter, as the background send's `\n` would be).
+ */
+export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: string): Promise<void> {
+  const { enumWindowsInZOrder } = await import("../engine/win32.js");
+  const { injectViaForegroundFlash } = await import("../engine/bg-input.js");
+  const { resolveBackgroundInputChannel } = await import("../engine/background-channel-resolver.js");
+  const wins = enumWindowsInZOrder();
+  const win = wins.find((w) => w.hwnd === hwnd);
+  const away = win ? await offDesktopTarget(win, wins, undefined) : null;
+  if (away) {
+    throw new TerminalForegroundRefusal(
+      "Nothing was typed: the terminal is on another virtual desktop, and bringing it forward would " +
+      "switch the user's desktop.",
+    );
+  }
+  const trailing = /\r?\n$/.exec(text);
+  const line = trailing ? text.slice(0, trailing.index) : text;
+  if (/[\r\n]/.test(line)) {
+    throw new TerminalForegroundRefusal(
+      "Nothing was typed: Windows Terminal takes input only through a one-line paste, and the text " +
+      "has more than one line. Send one line per act.",
+    );
+  }
+  const channel = resolveBackgroundInputChannel(hwnd, { allowedChannels: ["clipboard_flash"] });
+  if (channel.kind !== "clipboard_flash") {
+    throw new TerminalForegroundRefusal(
+      `Nothing was typed: this terminal cannot be pasted into through the foreground (${channel.kind}).`,
+    );
+  }
+  const answer = await askToTakeForeground();
+  if (!answer.allowed) throw new TerminalForegroundRefusal(TERMINAL_FOREGROUND_REFUSALS[answer.why]);
+  logDispatchSink({ sink: "foreground_flash", tool: "desktop_act:terminal_send", targetHwnd: channel.hwnd });
+  const r = injectViaForegroundFlash(channel.hwnd, channel.pid, line, { pressEnter: trailing !== null });
+  if (!r.ok) {
+    throw new TerminalForegroundRefusal(
+      `The paste through the foreground failed (${r.reason ?? "unknown"}); whether anything was typed is not known. ` +
+      "Read the terminal before retrying.",
+    );
+  }
+}
+
+/**
  * Injectable deps for the background terminal send path.
  * Exported so unit tests can exercise the routing logic without OS bindings.
  */
@@ -296,10 +382,12 @@ export function terminalBgExecute(
 
   const check = deps.canBgSend(win.hwnd);
   if (!check.supported) {
-    throw new Error(
+    throw new BackgroundTerminalUnsupportedError(
       `Background terminal send not supported for "${windowTitle}" ` +
       `(${check.reason ?? "unknown"}, class: ${check.className ?? "?"}).` +
-      ` Use V1 terminal(action='send') as fallback.`
+      ` Use V1 terminal(action='send') as fallback.`,
+      win.hwnd,
+      check.reason,
     );
   }
 
@@ -2675,70 +2763,76 @@ function getSharedRealDeps(): ExecutorDeps {
       const { enumWindowsInZOrder, isWindowGone: isWindowGoneSync } = await import("../engine/win32.js");
       const { canInjectViaPostMessage, postCharsToHwnd } = await import("../engine/bg-input.js");
       const wins = enumWindowsInZOrder();
-      terminalBgExecute(windowTitle, text, {
-        // ADR-035 Phase 1 — the same unfiltered, silently-first-match shape the
-        // v1 resolvers have, reached through `desktop_act` instead. Instrumented
-        // so the observation window covers BOTH public dispatchers; leaving it
-        // out would put a hole in the H2 evidence exactly where a v2 caller
-        // writes (Opus Round 2 P2).
-        findWindow: (title) => {
-          // ADR-036 — when the caller resolved a handle, this is no longer a lookup: the
-          // enumeration is consulted only to fetch that window's record, and a same-titled
-          // sibling cannot be returned instead. `pinnedByHwnd` keeps the ADR-035 evidence
-          // able to count the two shapes apart.
-          if (hwnd !== undefined) {
-            const named = wins.filter((w) => w.hwnd === hwnd);
+      try {
+        terminalBgExecute(windowTitle, text, {
+          // ADR-035 Phase 1 — the same unfiltered, silently-first-match shape the
+          // v1 resolvers have, reached through `desktop_act` instead. Instrumented
+          // so the observation window covers BOTH public dispatchers; leaving it
+          // out would put a hole in the H2 evidence exactly where a v2 caller
+          // writes (Opus Round 2 P2).
+          findWindow: (title) => {
+            // ADR-036 — when the caller resolved a handle, this is no longer a lookup: the
+            // enumeration is consulted only to fetch that window's record, and a same-titled
+            // sibling cannot be returned instead. `pinnedByHwnd` keeps the ADR-035 evidence
+            // able to count the two shapes apart.
+            if (hwnd !== undefined) {
+              const named = wins.filter((w) => w.hwnd === hwnd);
+              logResolve({
+                resolver: "desktopActTerminalSend",
+                query: title,
+                matches: named,
+                pinnedByHwnd: true,
+                identity: "lookup",
+                intent: "write",
+              });
+              // ADR-036 — a by-handle miss is ordinary (`enumWindowsInZOrder` drops untitled,
+              // sub-50 px and excluded windows), and the throw downstream only knows the title,
+              // so it named a window that is plainly on screen. Thrown here, AFTER the resolve
+              // is logged: an earlier pre-check said the same sentence but left the miss out of
+              // the H2 evidence, counting handle successes and not handle failures (2ゲート目).
+              if (!named[0]) {
+                // ADR-036 — and say WHICH kind of miss it is. A generic Error becomes
+                // `executor_failed`, whose published terminal recovery is "use V1
+                // terminal(action='send')" — a title-based road that can type into a same-titled
+                // sibling or into the replacement window. That advice is right for a window that
+                // is merely filtered out of the enumeration (untitled, sub-50 px, excluded) and
+                // wrong for one that has been destroyed, so the two stop sharing an answer
+                // (PR 側 codex の P1).
+                if (isWindowGoneSync(hwnd)) throw new AimedWindowGoneError(hwnd);
+                throw new Error(
+                  `Terminal window not found: hwnd ${hwnd} is not in the enumeration (title was "${title}")`,
+                );
+              }
+              return named[0];
+            }
+            const matches = wins.filter((w) => w.title.toLowerCase().includes(title.toLowerCase()));
             logResolve({
               resolver: "desktopActTerminalSend",
               query: title,
-              matches: named,
-              pinnedByHwnd: true,
+              matches,
               identity: "lookup",
               intent: "write",
             });
-            // ADR-036 — a by-handle miss is ordinary (`enumWindowsInZOrder` drops untitled,
-            // sub-50 px and excluded windows), and the throw downstream only knows the title,
-            // so it named a window that is plainly on screen. Thrown here, AFTER the resolve
-            // is logged: an earlier pre-check said the same sentence but left the miss out of
-            // the H2 evidence, counting handle successes and not handle failures (2ゲート目).
-            if (!named[0]) {
-              // ADR-036 — and say WHICH kind of miss it is. A generic Error becomes
-              // `executor_failed`, whose published terminal recovery is "use V1
-              // terminal(action='send')" — a title-based road that can type into a same-titled
-              // sibling or into the replacement window. That advice is right for a window that
-              // is merely filtered out of the enumeration (untitled, sub-50 px, excluded) and
-              // wrong for one that has been destroyed, so the two stop sharing an answer
-              // (PR 側 codex の P1).
-              if (isWindowGoneSync(hwnd)) throw new AimedWindowGoneError(hwnd);
-              throw new Error(
-                `Terminal window not found: hwnd ${hwnd} is not in the enumeration (title was "${title}")`,
-              );
-            }
-            return named[0];
-          }
-          const matches = wins.filter((w) => w.title.toLowerCase().includes(title.toLowerCase()));
-          logResolve({
-            resolver: "desktopActTerminalSend",
-            query: title,
-            matches,
-            identity: "lookup",
-            intent: "write",
-          });
-          return matches[0];
-        },
-        canBgSend:  (hwnd) => canInjectViaPostMessage(hwnd),
-        bgSend:     (hwnd, t) => {
-          // `TerminalBgDeps` types the handle as `unknown` (it is a test seam);
-          // the concrete value here is the `bigint` from the enumeration above.
-          logDispatchSink({
-            sink: "wm_char",
-            tool: "desktop_act:terminal_send",
-            targetHwnd: typeof hwnd === "bigint" ? hwnd : null,
-            payloadChars: t.length,
-          });
-          return postCharsToHwnd(hwnd, t);
-        },
-      });
+            return matches[0];
+          },
+          canBgSend:  (hwnd) => canInjectViaPostMessage(hwnd),
+          bgSend:     (hwnd, t) => {
+            // `TerminalBgDeps` types the handle as `unknown` (it is a test seam);
+            // the concrete value here is the `bigint` from the enumeration above.
+            logDispatchSink({
+              sink: "wm_char",
+              tool: "desktop_act:terminal_send",
+              targetHwnd: typeof hwnd === "bigint" ? hwnd : null,
+              payloadChars: t.length,
+            });
+            return postCharsToHwnd(hwnd, t);
+          },
+        });
+      } catch (err) {
+        // internal #227: Windows Terminal takes no posted characters; with the user's yes, paste.
+        if (!(err instanceof BackgroundTerminalUnsupportedError) || err.reason !== "wt_xaml_pipeline" || typeof err.hwnd !== "bigint") throw err;
+        await pasteIntoTerminalThroughForeground(err.hwnd, text);
+      }
     },
 
     async keyboardTypeBg(windowTitle, text, hwnd) {

@@ -572,6 +572,12 @@ Windows のフォアグラウンド保護機能により、ピン固定された
 - `AttachThreadInput` が有効な約 10ms の間、2 スレッド間でキー状態とマウスキャプチャが共有されます。高速なマクロ連打では稀にレース状態が発生する可能性があります。
 - ユーザーが別のアプリを手動操作している間は `forceFocus` を無効にするか、環境変数の設定を解除してください。予期しないフォーカス移動を防ぐためです。
 
+### `desktop_act` から Windows Terminal に打つ
+
+Windows Terminal は、前面からのキー入力しか受け取りません。裏から送った文字は無視されます。`desktop_act` が Windows Terminal の窓に打つときは、MCP クライアントの質問画面で先に利用者へ訊きます（"Type into Windows Terminal? It takes the foreground for about 0.1 s."）。Accept なら、前面を一瞬借りて貼り付け、元の窓に戻します。"Don't ask again" にチェックを入れると、サーバーを再起動するまで訊きません。Decline・Esc・60 秒以内に答えがない・質問を出せないクライアント（`claude -p` など）は、どれも「許可なし」です。何も打たず、`executor_failed` と、理由を書いた `detail` を返します。文字は1行に限ります。末尾の改行1つは Enter として送ります。
+
+`DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND=1` を設定すると、訊かずに許可します。
+
 ---
 
 ## UI オペレーティングレイヤー (V2)
