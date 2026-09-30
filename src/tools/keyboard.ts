@@ -186,6 +186,11 @@ export type TypeViaClipboardBackend = "native" | "powershell";
 export interface TypeViaClipboardOutcome {
   backend: TypeViaClipboardBackend;
   /**
+   * internal #225 — the foreground window's IME was on just before the paste chord, so a pending
+   * composition may have taken the paste. Present only when true. See `IME_OPEN_PASTE_NOTE`.
+   */
+  imeOpen?: true;
+  /**
    * The call never changed the user's clipboard, so there was nothing to put
    * back. Present only when true.
    *
@@ -770,8 +775,20 @@ export async function typeViaClipboard(
   // in `nutjs.ts` describes. So: native = the whole transaction, fallback = the
   // chord only.
   return hasNativeTypeViaClipboard()
-    ? withKeyboardLock(() => nativeTypeViaClipboard(text, pasteCombo, tool, byHandle))
-    : powershellTypeViaClipboard(text, pasteCombo, tool, byHandle);
+    ? withKeyboardLock(() => withImeState(() => nativeTypeViaClipboard(text, pasteCombo, tool, byHandle)))
+    : withImeState(() => powershellTypeViaClipboard(text, pasteCombo, tool, byHandle));
+}
+
+/**
+ * internal #225 — the IME is read here, in the paste transaction, so both callers (`keyboard` and
+ * `terminal`) say it, and on the native path inside the keyboard lock, just before the chord: read
+ * earlier, a queued sequence could switch windows in between (gate 2 on #760). The fallback spawns
+ * PowerShell before its chord, so its read is earlier by that much.
+ */
+async function withImeState(paste: () => Promise<TypeViaClipboardOutcome>): Promise<TypeViaClipboardOutcome> {
+  const imeOpen = imeOpenAt(getForegroundHwnd());
+  const outcome = await paste();
+  return imeOpen ? { ...outcome, imeOpen: true } : outcome;
 }
 
 /**
@@ -830,6 +847,7 @@ export function clipboardPasteHints(outcome: TypeViaClipboardOutcome): Record<st
     backend: outcome.backend,
     ...(outcome.untouched ? { untouched: true } : {}),
     restored: outcome.clipboardRestored,
+    ...(outcome.imeOpen ? { imeOpen: true, imeNote: IME_OPEN_PASTE_NOTE } : {}),
     ...(outcome.restoreSkippedRace ? { restoreSkippedRace: true } : {}),
     ...(outcome.restoreSkippedTooLarge ? { restoreSkippedTooLarge: true } : {}),
     ...(outcome.restoreUnavailable ? { restoreUnavailable: true } : {}),
@@ -1082,7 +1100,7 @@ export const keyboardTypeSchema = {
       "pasted text is not run through IME conversion. Note this does not help while an IME " +
       "composition is already in progress: the paste keystroke is consumed by the IME and " +
       "nothing is inserted, though the call still answers ok, so commit or cancel the composition first; " +
-      "when the IME was on at the paste, hints.ime says so. Your clipboard is " +
+      "when the IME was on at the paste, hints.clipboard.imeOpen says so. Your clipboard is " +
       "replaced for the duration of the call and put back afterwards; hints.clipboard reports " +
       "which backend served the paste and whether the restore ran. On builds without the native " +
       "addon this path is capped at about 12000 characters and fails with " +
@@ -2489,7 +2507,6 @@ export const keyboardTypeHandler = async ({
     // `forceKeystrokes: true`.
     let effectiveClipboard = use_clipboard;
     let autoClipboardReason: string | undefined;
-    let pasteImeOpen = false;
     if (!use_clipboard && !forceKeystrokes) {
       if (NON_ASCII_SYMBOL_RE.test(effectiveText)) {
         effectiveClipboard = true;
@@ -2507,8 +2524,6 @@ export const keyboardTypeHandler = async ({
     // inside `typeViaClipboard`, the keystroke one on a focus-leash abort at
     // the very first chunk (Opus Round 2 P1).
     if (effectiveClipboard) {
-      // internal #225 — read before the paste: a composition pending at that moment takes the paste.
-      pasteImeOpen = imeOpenAt(getForegroundHwnd());
       clipboardOutcome = await typeViaClipboard(
         effectiveText, "ctrl+v", "keyboard:type", explicitHwnd !== undefined);
     } else {
@@ -2640,7 +2655,6 @@ export const keyboardTypeHandler = async ({
     const hints = {
       ...(warnings.length > 0 ? { warnings } : {}),
       ...(clipboardOutcome ? { clipboard: clipboardPasteHints(clipboardOutcome) } : {}),
-      ...(pasteImeOpen && { ime: { open: true, note: IME_OPEN_PASTE_NOTE } }),
     };
 
     return ok({
@@ -3483,7 +3497,7 @@ export const keyboardSchema = z.discriminatedUnion("action", [
         "pasted text is not run through IME conversion. Note this does not help while an IME " +
         "composition is already in progress: the paste keystroke is consumed by the IME and " +
         "nothing is inserted, though the call still answers ok, so commit or cancel the composition first; " +
-        "when the IME was on at the paste, hints.ime says so. Your clipboard is " +
+        "when the IME was on at the paste, hints.clipboard.imeOpen says so. Your clipboard is " +
         "replaced for the duration of the call and put back afterwards; hints.clipboard reports " +
         "which backend served the paste and whether the restore ran. On builds without the native " +
         "addon this path is capped at about 12000 characters and fails with " +

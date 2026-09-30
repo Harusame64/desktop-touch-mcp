@@ -622,7 +622,8 @@ describe("internal #225 — a paste made while the IME was on says it may not ha
   afterAll(() => { if (prev === undefined) delete process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION; else process.env.DESKTOP_TOUCH_REQUIRE_DESTINATION = prev; });
   afterEach(() => { nativeState.imeOpen.mockReset(); nativeState.imeOpen.mockImplementation(() => false); });
 
-  const ime = (r: Record<string, unknown>) => (r.hints as Record<string, unknown> | undefined)?.ime;
+  const NOTE = "The IME was on when this pasted. If a composition was pending, the paste went to the IME and nothing was inserted, " +
+    "though this still answers ok. Commit (Enter) or cancel (Esc) any pending composition, then check the text.";
 
   it("notes it, still ok, when the foreground window's IME was open, asking before the paste", async () => {
     const order: string[] = [];
@@ -630,20 +631,29 @@ describe("internal #225 — a paste made while the IME was on says it may not ha
     nativeState.composite.mockImplementation(async () => { order.push("paste"); return nativeResult(); });
     const r = body(await keyboardTypeHandler(keyboardArgs));
     expect(r.ok).toBe(true);
-    expect(ime(r)).toEqual({
-      open: true,
-      note: "The IME was on when this pasted. If a composition was pending, the paste went to the IME and nothing was inserted, " +
-        "though this still answers ok. Commit (Enter) or cancel (Esc) any pending composition, then check the text.",
-    });
+    expect(clipboardHints(r)).toEqual({ backend: "native", restored: true, imeOpen: true, imeNote: NOTE });
     expect(nativeState.imeOpen).toHaveBeenCalledWith(0x100n);
     expect(order).toEqual(["ime", "paste"]);
+  });
+
+  it("asks inside the keyboard lock, so a queued sequence cannot switch windows in between (gate 2)", async () => {
+    let inLock = false;
+    vi.mocked(nutjs.withKeyboardLock).mockImplementationOnce(async (fn: () => Promise<unknown>) => {
+      inLock = true;
+      try { return await fn(); } finally { inLock = false; }
+    });
+    let askedInLock: boolean | undefined;
+    nativeState.imeOpen.mockImplementation(() => { askedInLock = inLock; return true; });
+    nativeState.composite.mockResolvedValue(nativeResult());
+    await keyboardTypeHandler(keyboardArgs);
+    expect(askedInLock).toBe(true);
   });
 
   it("says nothing when the IME was off (the control)", async () => {
     nativeState.composite.mockResolvedValue(nativeResult());
     const r = body(await keyboardTypeHandler(keyboardArgs));
     expect(r.ok).toBe(true);
-    expect(ime(r)).toBeUndefined();
+    expect(clipboardHints(r)).toEqual({ backend: "native", restored: true });
   });
 
   it("says nothing when the IME could not be asked", async () => {
@@ -651,13 +661,21 @@ describe("internal #225 — a paste made while the IME was on says it may not ha
     nativeState.composite.mockResolvedValue(nativeResult());
     const r = body(await keyboardTypeHandler(keyboardArgs));
     expect(r.ok).toBe(true);
-    expect(ime(r)).toBeUndefined();
+    expect(clipboardHints(r)).toEqual({ backend: "native", restored: true });
   });
 
-  it("does not ask when the text was typed, not pasted", async () => {
+  it("does not ask at all when the text was typed, not pasted (gate 2)", async () => {
     nativeState.imeOpen.mockImplementation(() => true);
     const r = body(await keyboardTypeHandler({ ...keyboardArgs, use_clipboard: false }));
     expect(r.ok).toBe(true);
-    expect(ime(r)).toBeUndefined();
+    expect(clipboardHints(r)).toBeUndefined();
+    expect(nativeState.imeOpen).not.toHaveBeenCalled();
+  });
+
+  it("says it on terminal(send)'s paste too, which is the same transaction (gate 2)", async () => {
+    nativeState.imeOpen.mockImplementation(() => true);
+    nativeState.composite.mockResolvedValue(nativeResult());
+    const r = body(await terminalSendHandler(terminalArgs));
+    expect(clipboardHints(r)).toMatchObject({ imeOpen: true, imeNote: NOTE });
   });
 });

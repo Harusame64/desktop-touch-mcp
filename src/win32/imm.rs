@@ -18,7 +18,7 @@ use napi::bindgen_prelude::BigInt;
 use napi_derive::napi;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
-use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+use windows::Win32::UI::WindowsAndMessaging::{SMTO_ABORTIFHUNG, SendMessageTimeoutW, SendMessageW};
 
 use super::safety::napi_safe_call;
 
@@ -27,6 +27,11 @@ use super::safety::napi_safe_call;
 // the message + sub-commands here. See MSDN: WM_IME_CONTROL.
 const WM_IME_CONTROL: u32 = 0x0283;
 const IMC_GETOPENSTATUS: usize = 0x0005;
+
+/// How long the read waits for the target thread. It runs on Node's main thread, and since internal
+/// #225 before every clipboard paste: a plain `SendMessageW` to a thread that has stopped pumping
+/// blocked the whole server (gate 2 on #760). A hung window answers at once under `SMTO_ABORTIFHUNG`.
+const IME_READ_TIMEOUT_MS: u32 = 200;
 const IMC_SETOPENSTATUS: usize = 0x0006;
 
 fn hwnd_from_bigint(b: BigInt) -> HWND {
@@ -37,7 +42,8 @@ fn hwnd_from_bigint(b: BigInt) -> HWND {
 /// Query whether the target window's IME is currently open (composition ON).
 ///
 /// Returns `false` when the window has no associated IME (NULL default-IME
-/// window — typically an ASCII layout or a non-IME thread).
+/// window — typically an ASCII layout or a non-IME thread), and when its thread
+/// does not answer within `IME_READ_TIMEOUT_MS` or is hung.
 #[napi]
 pub fn win32_get_ime_open_status(hwnd: BigInt) -> napi::Result<bool> {
     napi_safe_call("win32_get_ime_open_status", || {
@@ -46,15 +52,19 @@ pub fn win32_get_ime_open_status(hwnd: BigInt) -> napi::Result<bool> {
         if ime_wnd.0.is_null() {
             return Ok(false);
         }
-        let result = unsafe {
-            SendMessageW(
+        let mut result: usize = 0;
+        let answered = unsafe {
+            SendMessageTimeoutW(
                 ime_wnd,
                 WM_IME_CONTROL,
-                Some(WPARAM(IMC_GETOPENSTATUS)),
-                Some(LPARAM(0)),
+                WPARAM(IMC_GETOPENSTATUS),
+                LPARAM(0),
+                SMTO_ABORTIFHUNG,
+                IME_READ_TIMEOUT_MS,
+                Some(&mut result),
             )
         };
-        Ok(result.0 != 0)
+        Ok(answered.0 != 0 && result != 0)
     })
 }
 
