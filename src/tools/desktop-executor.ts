@@ -2436,7 +2436,8 @@ export function createDesktopExecutor(
         terminal: state(entity.sources.includes("terminal"), terminalBlocked, "terminal", "no-source"),
         keyboard: blocked.includes("keyboard") ? "blocked" : "not-in-preferred",
       };
-      probeRefusal("text_route", "no_text_route", aimHwnd, entity, { routes });
+      // No probe row: a new rung and refusal value would add a slot to ADR-036's completion grid
+      // (`check:route-vocabulary`), which is the user's decision, not this fix's.
       throw new NoTextRouteError(entity, action, routes);
     }
     if (mouseBlocked) {
