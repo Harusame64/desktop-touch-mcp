@@ -59,6 +59,7 @@ import {
 // ADR-036 family 2 — the Edit-family read-only rule lives beside the receiver reader, because the
 // `keyboard` tool's road judges the same bit on the same classes (arm A, 2026-09-16).
 import { editReadOnlyOf, hwnd32, sameHwnd } from "../engine/receiver-facts.js";
+import { isKeyboardHostClass } from "../engine/keyboard-hosts.js";
 
 // ── Injectable backend interface ──────────────────────────────────────────────
 
@@ -1481,8 +1482,11 @@ async function keyboardRung(
     });
     throw goneError("native_not_found");
   }
-  // internal #224 — the window a windowless control is drawn in, for the resolve to post into.
-  const hostHwnd = entityHwnd === undefined ? parseHandle(entity.locator?.uia?.hostWindowHandle) ?? undefined : undefined;
+  // internal #224 — the window a windowless control is drawn in, for the resolve to post into: only a
+  // window of a class it was measured on (`keyboard-hosts.ts`, gate 2).
+  const hostHwnd = entityHwnd === undefined && isKeyboardHostClass(entity.locator?.uia?.hostWindowClass)
+    ? parseHandle(entity.locator?.uia?.hostWindowHandle) ?? undefined
+    : undefined;
   const receipt = await d.keyboardResolve(winTitle, aimHwnd, { entityHwnd, originHwnd, ...(hostHwnd !== undefined && { hostHwnd }) });
   if (valueRoadNotFound && entityHwnd !== undefined && receipt.entityWindowAlive === false) {
     probeRefusal("keyboard", "entity_not_found", aimHwnd, entity, {
@@ -1545,6 +1549,22 @@ function centerInside(
   return cx >= outer.x && cx < outer.x + outer.width && cy >= outer.y && cy < outer.y + outer.height;
 }
 
+/**
+ * internal #224 — a `setValue` on a field whose only route is the keyboard. Keystrokes insert at the
+ * caret; they do not replace the contents, so nothing is typed and the caller is told how to replace
+ * them. `executor_failed`, with this sentence as its `detail`.
+ */
+export class KeyboardCannotReplaceError extends Error implements CallerFacingRefusal {
+  readonly callerDetail: string;
+  constructor(entity: UiEntity) {
+    super(`setValue requested for "${entity.label ?? entity.entityId}", whose only route is the keyboard, which inserts rather than replaces`);
+    this.name = "KeyboardCannotReplaceError";
+    this.callerDetail =
+      `Nothing was typed: "${quotedLabel(entity)}" can only be typed into at its caret, which inserts rather than replaces. ` +
+      `To replace its contents, click it, select them with keyboard ctrl+a, then desktop_act(action:'type') with the new text.`;
+  }
+}
+
 type NoTextRouteState = "no-source" | "no-selector" | "blocked" | "not-in-preferred";
 
 const NO_TEXT_ROUTE_WORDS: Record<NoTextRouteState, string> = {
@@ -1560,7 +1580,8 @@ const NO_TEXT_ROUTE_WORDS: Record<NoTextRouteState, string> = {
  * reason would add a slot to ADR-036's grid, and `action_not_offered` contradicts an element that
  * advertises `type`), so the sentence says what the reason's advice cannot. MEASURED win2
  * (2026-09-30): Word's body, an Edit with no UI Automation value, was refused this way in 3–10 ms
- * with no `detail`, under advice saying UIA setValue and background WM_CHAR had been tried.
+ * with no `detail`, under advice saying UIA setValue and background WM_CHAR had been tried. (Word's
+ * body has a keyboard route since; a value-less field drawn in an unmeasured window still lands here.)
  */
 export class NoTextRouteError extends Error implements CallerFacingRefusal {
   readonly callerDetail: string;
@@ -2417,6 +2438,11 @@ export function createDesktopExecutor(
       text !== undefined &&
       (action === "type" || action === "setValue")
     ) {
+      // internal #224 — a field with no value to write takes keystrokes at its caret, which inserts: a
+      // setValue asked for its contents to be replaced, and the keyboard cannot do that (gate 2).
+      if (action === "setValue" && !(entity.patterns ?? []).includes("ValuePattern")) {
+        throw new KeyboardCannotReplaceError(entity);
+      }
       return await keyboardRung(d, entity, winTitle, aimHwnd, text, "keyboard_only_entity");
     }
 
@@ -2777,11 +2803,13 @@ function getSharedRealDeps(): ExecutorDeps {
       // as host (a WPF window, anything drawn in the top level) keeps the thread's focus: that host
       // is every control in the window, not this one's. The rule then judges the child as it would
       // any receiver, and says it cannot confirm the named control (step 7, `entity_windowless`).
+      // The rung hands a host only for a measured class (`keyboard-hosts.ts`); a host the inject check
+      // refuses is not taken, and the receiver is the one it was before (gate 2).
       const hostIsChild = refs.hostHwnd !== undefined
-        && refs.entityHwnd === undefined
         && !sameHwnd(refs.hostHwnd, win.hwnd)
         && windowIsAlive(refs.hostHwnd) === true
-        && sameHwnd(getWindowRoot(refs.hostHwnd) ?? 0n, getWindowRoot(win.hwnd) ?? win.hwnd);
+        && sameHwnd(getWindowRoot(refs.hostHwnd) ?? 0n, getWindowRoot(win.hwnd) ?? win.hwnd)
+        && canInjectViaPostMessage(refs.hostHwnd).supported;
       const receiver = hostIsChild ? refs.hostHwnd as bigint : resolveKeyTarget(win.hwnd);
       const check = canInjectViaPostMessage(receiver);
       if (!check.supported) {

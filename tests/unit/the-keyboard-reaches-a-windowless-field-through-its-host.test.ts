@@ -27,7 +27,7 @@ afterEach(() => {
   vi.doUnmock("../../src/engine/receiver-facts.js");
 });
 
-async function resolveWith(opts: { threadFocus: bigint; hostAlive?: boolean; hostRoot?: bigint }, refs: { entityHwnd?: bigint; hostHwnd?: bigint }) {
+async function resolveWith(opts: { threadFocus: bigint; hostAlive?: boolean; hostRoot?: bigint; hostInjectable?: boolean }, refs: { entityHwnd?: bigint; hostHwnd?: bigint }) {
   vi.resetModules();
   vi.doMock("../../src/engine/win32.js", async (orig) => ({
     ...(await orig<typeof import("../../src/engine/win32.js")>()),
@@ -38,7 +38,7 @@ async function resolveWith(opts: { threadFocus: bigint; hostAlive?: boolean; hos
   vi.doMock("../../src/engine/bg-input.js", async (orig) => ({
     ...(await orig<typeof import("../../src/engine/bg-input.js")>()),
     resolveKeyTarget: () => opts.threadFocus,
-    canInjectViaPostMessage: () => ({ supported: true }),
+    canInjectViaPostMessage: (h: bigint) => ({ supported: h === WWG ? (opts.hostInjectable ?? true) : true }),
   }));
   vi.doMock("../../src/engine/receiver-facts.js", async (orig) => ({
     ...(await orig<typeof import("../../src/engine/receiver-facts.js")>()),
@@ -70,8 +70,8 @@ describe("the keyboard rung's receiver for a field with no window of its own", (
     expect((await resolveWith({ threadFocus: RIBBON_BOX, hostRoot: ELSEWHERE }, { hostHwnd: WWG })).receiverHwnd).toBe(RIBBON_BOX);
   });
 
-  it("ignores a host when the field has a window of its own: that window is the rule's to judge", async () => {
-    expect((await resolveWith({ threadFocus: RIBBON_BOX }, { entityHwnd: 4242n, hostHwnd: WWG })).receiverHwnd).toBe(RIBBON_BOX);
+  it("stays the thread's focus when the host fails the inject check (gate 2)", async () => {
+    expect((await resolveWith({ threadFocus: RIBBON_BOX, hostInjectable: false }, { hostHwnd: WWG })).receiverHwnd).toBe(RIBBON_BOX);
   });
 
   it("is the thread's focus when no host was recorded (the control)", async () => {
@@ -79,38 +79,79 @@ describe("the keyboard rung's receiver for a field with no window of its own", (
   });
 });
 
+const bodyOf = (uia: Record<string, unknown>, extra: Partial<UiEntity> = {}): UiEntity => ({
+  entityId: "body", role: "textbox", label: "ページ 1 のコンテンツ", controlType: "Edit", confidence: 0.9,
+  sources: ["uia"], affordances: [], generation: "gen-1", evidenceDigest: "d",
+  rect: { x: 141, y: 369, width: 793, height: 361 }, patterns: ["TextPattern", "ScrollItemPattern"],
+  preferredExecutors: ["mouse", "keyboard"], unsupportedExecutors: ["uia"],
+  locator: { uia: { name: "ページ 1 のコンテンツ", nativeWindowHandleRead: "zero", ...uia } },
+  ...extra,
+});
+
+async function typeInto(entity: UiEntity, action: "type" | "setValue" = "type") {
+  const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
+  const receipt = { windowHwnd: FRAME, receiverHwnd: WWG, receiverRootHwnd: FRAME, receiverAncestors: [FRAME], ancestorsComplete: true, originRootHwnd: FRAME, aimRootHwnd: FRAME, lookupRootHwnd: FRAME, ownerChain: [] };
+  const keyboardResolve = vi.fn(async () => receipt);
+  const keyboardPost = vi.fn(async () => {});
+  const exec = createDesktopExecutor({ hwnd: String(FRAME) }, {
+    uiaClick: vi.fn(), uiaSetValue: vi.fn(), cdpClick: vi.fn(), cdpFill: vi.fn(), terminalSend: vi.fn(),
+    keyboardTypeBg: vi.fn(), mouseClick: vi.fn(), keyboardResolve, keyboardPost,
+  });
+  const out = await exec(entity, action, "abc").then((v) => v, (e: unknown) => e);
+  return { out, keyboardResolve, keyboardPost, receipt };
+}
+
 describe("the executor hands the rung the host", () => {
-  it("of a windowless field, and posts to the receiver the resolve chose, unconfirmed", async () => {
-    const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
-    const receipt = { windowHwnd: FRAME, receiverHwnd: WWG, receiverRootHwnd: FRAME, receiverAncestors: [FRAME], ancestorsComplete: true, originRootHwnd: FRAME, aimRootHwnd: FRAME, lookupRootHwnd: FRAME, ownerChain: [] };
-    const keyboardResolve = vi.fn(async () => receipt);
-    const keyboardPost = vi.fn(async () => {});
-    const body: UiEntity = {
-      entityId: "body", role: "textbox", label: "ページ 1 のコンテンツ", controlType: "Edit", confidence: 0.9,
-      sources: ["uia"], affordances: [], generation: "gen-1", evidenceDigest: "d",
-      rect: { x: 141, y: 369, width: 793, height: 361 },
-      preferredExecutors: ["mouse", "keyboard"], unsupportedExecutors: ["uia"],
-      locator: { uia: { name: "ページ 1 のコンテンツ", nativeWindowHandleRead: "zero", hostWindowHandle: String(WWG) } },
-    };
-    const exec = createDesktopExecutor({ hwnd: String(FRAME) }, {
-      uiaClick: vi.fn(), uiaSetValue: vi.fn(), cdpClick: vi.fn(), cdpFill: vi.fn(), terminalSend: vi.fn(),
-      keyboardTypeBg: vi.fn(), mouseClick: vi.fn(), keyboardResolve, keyboardPost,
-    });
-    const out = await exec(body, "type", "abc");
+  it("of a windowless field drawn in Word's document window, and posts to the receiver the resolve chose, unconfirmed", async () => {
+    const { out, keyboardResolve, keyboardPost, receipt } = await typeInto(bodyOf({ hostWindowHandle: String(WWG), hostWindowClass: "_WwG" }));
     expect(keyboardResolve).toHaveBeenCalledWith(expect.any(String), FRAME, expect.objectContaining({ hostHwnd: WWG }));
     expect(keyboardPost).toHaveBeenCalledWith(receipt, "abc");
     expect(out).toMatchObject({ kind: "keyboard", landing: { confirmed: false } });
   });
+
+  it("not of a host of a class nobody measured (gate 2)", async () => {
+    const { keyboardResolve } = await typeInto(bodyOf({ hostWindowHandle: String(WWG), hostWindowClass: "Chrome_RenderWidgetHostHWND" }));
+    expect(keyboardResolve).toHaveBeenCalledWith(expect.any(String), FRAME, expect.not.objectContaining({ hostHwnd: expect.anything() }));
+  });
+
+  it("not when the field has a window of its own: that window is the rule's to judge", async () => {
+    const { keyboardResolve } = await typeInto(bodyOf({ nativeWindowHandle: "4242", nativeWindowHandleRead: "value", hostWindowHandle: "4242", hostWindowClass: "_WwG" }));
+    expect(keyboardResolve).toHaveBeenCalledWith(expect.any(String), FRAME, expect.not.objectContaining({ hostHwnd: expect.anything() }));
+  });
+
+  it("refuses a setValue: keystrokes insert at the caret, they do not replace (gate 2)", async () => {
+    const { out, keyboardPost } = await typeInto(bodyOf({ hostWindowHandle: String(WWG), hostWindowClass: "_WwG" }), "setValue");
+    expect((out as { name?: string }).name).toBe("KeyboardCannotReplaceError");
+    expect((out as { callerDetail?: string }).callerDetail).toBe(
+      `Nothing was typed: "ページ 1 のコンテンツ" can only be typed into at its caret, which inserts rather than replaces. ` +
+      `To replace its contents, click it, select them with keyboard ctrl+a, then desktop_act(action:'type') with the new text.`,
+    );
+    expect(keyboardPost).not.toHaveBeenCalled();
+  });
 });
 
 describe("the capability a text field with no value gets", () => {
-  const edit = (patterns: string[]): UiEntity => ({
+  const edit = (patterns: string[], uia: Record<string, unknown> = { hostWindowHandle: String(WWG), hostWindowClass: "_WwG" }): UiEntity => ({
     entityId: "e", role: "textbox", label: "L", controlType: "Edit", confidence: 0.9, sources: ["uia"], affordances: [],
     generation: "g", evidenceDigest: "d", rect: { x: 0, y: 0, width: 10, height: 10 }, patterns,
+    locator: { uia: { name: "L", ...uia } },
+  });
+  const MOUSE_ONLY = { preferredExecutors: ["mouse"], unsupportedExecutors: ["uia"] };
+
+  it("offers the keyboard beside the mouse, for an Edit with no Value drawn in Word's document window", () => {
+    expect(lookupDefault(edit(["TextPattern"]))).toEqual({ preferredExecutors: ["mouse", "keyboard"], unsupportedExecutors: ["uia"] });
   });
 
-  it("offers the keyboard beside the mouse, for an Edit with no Value", () => {
-    expect(lookupDefault(edit(["TextPattern"]))).toEqual({ preferredExecutors: ["mouse", "keyboard"], unsupportedExecutors: ["uia"] });
+  it("does not, drawn in a window of a class nobody measured (gate 2)", () => {
+    expect(lookupDefault(edit(["TextPattern"], { hostWindowHandle: "9", hostWindowClass: "HwndWrapper[App]" }))).toEqual(MOUSE_ONLY);
+  });
+
+  it("does not, with no host recorded (the PowerShell road, an older addon)", () => {
+    expect(lookupDefault(edit(["TextPattern"], {}))).toEqual(MOUSE_ONLY);
+  });
+
+  it("does not, for a field with a window of its own", () => {
+    expect(lookupDefault(edit(["TextPattern"], { nativeWindowHandle: "4242", hostWindowHandle: "4242", hostWindowClass: "_WwG" }))).toEqual(MOUSE_ONLY);
   });
 
   it("keeps an Edit with a Value on the UIA road (the control)", () => {
@@ -118,6 +159,6 @@ describe("the capability a text field with no value gets", () => {
   });
 
   it("does not offer the keyboard for a Document (a browser page)", () => {
-    expect(lookupDefault({ ...edit([]), controlType: "Document" })).toEqual({ preferredExecutors: ["mouse"], unsupportedExecutors: ["uia"] });
+    expect(lookupDefault({ ...edit([]), controlType: "Document" })).toEqual(MOUSE_ONLY);
   });
 });

@@ -37,6 +37,8 @@ export interface NativeUiElement {
   path?: string | null
   /** internal #224 — the window the element is drawn in: its own handle, else the nearest ancestor's in this read; absent on an older addon. */
   hostWindowHandle?: string | null
+  /** internal #224 — the class of that window; absent when not read, and on an older addon. */
+  hostWindowClass?: string | null
 }
 
 export interface NativeUiElementsResult {

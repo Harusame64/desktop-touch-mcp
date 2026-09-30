@@ -1151,6 +1151,8 @@ export interface UiElement {
    * older addon.
    */
   hostWindowHandle?: string;
+  /** internal #224 — the class of that window (`_WwG` for Word's document window). */
+  hostWindowClass?: string;
   /**
    * internal #211 (B) — where the element sits in this read: `/<ControlType>[<index among the
    * parent's ControlView children>]` per level from the read's root. A rebuilt element kept it where
@@ -2256,7 +2258,7 @@ foreach ($k in $kids) { Collect $k 0 }
  * to undefined. A build older than a field sends nothing, which stays absent rather than becoming a
  * guess. One function, so a new field cannot reach one read and not the other (gate 2 on #211 C).
  */
-function normalizeNativeElement({ nativeWindowHandle, nativeWindowHandleRead, isModal, runtimeId, path, hostWindowHandle, ...el }: NativeUiElement): UiElement {
+function normalizeNativeElement({ nativeWindowHandle, nativeWindowHandleRead, isModal, runtimeId, path, hostWindowHandle, hostWindowClass, ...el }: NativeUiElement): UiElement {
   return {
     ...el,
     boundingRect: el.boundingRect ?? null,
@@ -2267,6 +2269,7 @@ function normalizeNativeElement({ nativeWindowHandle, nativeWindowHandleRead, is
     ...(runtimeId != null && { runtimeId }),
     ...(path != null && { path }),
     ...(hostWindowHandle != null && { hostWindowHandle }),
+    ...(hostWindowClass != null && { hostWindowClass }),
   };
 }
 

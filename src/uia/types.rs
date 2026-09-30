@@ -61,6 +61,9 @@ pub struct UiElement {
     /// typed at Word's caret even with Word in the background (win2, 2026-09-30). `None` on a read that
     /// does not walk from a root.
     pub host_window_handle: Option<String>,
+    /// internal #224 — the class of that window, as the element that IS it was read (`_WwG` for Word's
+    /// document window). The keyboard rung posts into a host only for a class it was measured on.
+    pub host_window_class: Option<String>,
 }
 
 #[napi(object)]

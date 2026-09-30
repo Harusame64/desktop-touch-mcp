@@ -101,12 +101,15 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
     // Each RPC fetches all ControlView children of one parent at once.
     // maxElements / maxDepth triggers early exit — no unnecessary RPCs.
     let mut elements: Vec<UiElement> = Vec::with_capacity(max_elements as usize);
-    // Queue entries also carry the parent's host window (internal #224): the root's is the window read.
-    let mut queue: VecDeque<(IUIAutomationElement, u32, Option<String>, Option<String>)> = VecDeque::with_capacity(64);
+    // Queue entries also carry the parent's host window and its class (internal #224): the root's is
+    // the window read.
+    type Host = Option<(String, Option<String>)>;
+    let mut queue: VecDeque<(IUIAutomationElement, u32, Option<String>, Host)> = VecDeque::with_capacity(64);
     // Queue entries: (parent, depth_of_its_children, parent's path).
     // Root's children are at depth 1; the root's own path is empty. A parent whose path could not
     // be written gives its children none, rather than paths that restart at the root (gate 2).
-    queue.push_back((root, 1, Some(String::new()), window_hwnd.clone()));
+    let root_host: Host = window_hwnd.clone().map(|h| (h, window_class_name.clone()));
+    queue.push_back((root, 1, Some(String::new()), root_host));
 
     'bfs: while let Some((parent, child_depth, parent_path, parent_host)) = queue.pop_front() {
         if child_depth > max_depth {
@@ -153,19 +156,23 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
                 _ => None,
             };
 
-            // Its own window when it has one (read as `window_hwnd` is: `as usize as u32`, zero dropped),
-            // otherwise the window it is drawn in, inherited.
-            let own = unsafe { child.CachedNativeWindowHandle() }
-                .ok()
-                .map(|h| h.0 as usize as u32)
-                .filter(|h| *h != 0)
-                .map(|h| h.to_string());
-            let host = own.or_else(|| parent_host.clone());
+            // Its own window when it has one (read as `window_hwnd` is: `as usize as u32`), the window it
+            // is drawn in when UIA says it has none (zero), and nothing when the read failed: a failed
+            // read is not "no window of its own" (internal#118; gate 2).
+            let host: Host = match unsafe { child.CachedNativeWindowHandle() } {
+                Ok(h) if h.0 as usize as u32 != 0 => Some((
+                    (h.0 as usize as u32).to_string(),
+                    unsafe { child.CachedClassName() }.ok().map(|c| c.to_string()),
+                )),
+                Ok(_) => parent_host.clone(),
+                Err(_) => None,
+            };
 
             if let Ok(mut ui_elem) = extract_element(&child, child_depth, fetch_values) {
                 ui_elem.runtime_id = cached_runtime_id(&child);
                 ui_elem.path = path.clone();
-                ui_elem.host_window_handle = host.clone();
+                ui_elem.host_window_handle = host.as_ref().map(|(h, _)| h.clone());
+                ui_elem.host_window_class = host.as_ref().and_then(|(_, c)| c.clone());
                 elements.push(ui_elem);
             }
 
@@ -425,6 +432,7 @@ fn extract_element(
             runtime_id: None,
             path: None,
             host_window_handle: None,
+            host_window_class: None,
         })
     }
 }

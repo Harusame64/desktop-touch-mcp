@@ -50,6 +50,8 @@ export interface EntityLocator {
      * the window's thread has no focus; it is never taken as the element's own window.
      */
     hostWindowHandle?: string;
+    /** internal #224 — the class of that window, as read (`_WwG` for Word's document window). */
+    hostWindowClass?: string;
     /**
      * internal #211 (C) — a `Window` element's own `WindowPattern.IsModal`, as the read answered it.
      * Absent when it did not answer (another control type, a window without the pattern, an older
