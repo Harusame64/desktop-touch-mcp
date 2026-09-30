@@ -20,7 +20,7 @@
 
 import type { UiEntity, ExecutorKind, ExecutorOutcome } from "../engine/world-graph/types.js";
 import { logResolve, logDispatchSink } from "./_resolve-log.js";
-import { askToTakeForeground, ALLOW_TERMINAL_FOREGROUND_ENV, ASK_TIMEOUT_MS, type ForegroundRefusal } from "./_ask-user.js";
+import { askToTakeForeground, callWasCancelled, ALLOW_TERMINAL_FOREGROUND_ENV, ASK_TIMEOUT_MS, type ForegroundRefusal } from "./_ask-user.js";
 import { offDesktopTarget } from "./_off-desktop.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
@@ -378,6 +378,18 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
   const answer = await askToTakeForeground({ windowTitle: before.windowTitle, text: line });
   if (!answer.allowed) throw new TerminalForegroundRefusal(TERMINAL_FOREGROUND_REFUSALS[answer.why]);
   const channel = await whereIsIt();
+  // The user agreed to the window the question named. Windows Terminal runs all its windows in one
+  // process, so the process check above cannot tell a reused handle or a switched tab apart; the
+  // title the question showed can (PR codex P1 on #764).
+  if (channel.windowTitle !== before.windowTitle) {
+    throw new TerminalForegroundRefusal(
+      `Nothing was typed: the terminal's title changed while the user was answering (another tab or window); ` +
+      `the user agreed to "${before.windowTitle}".`,
+    );
+  }
+  if (callWasCancelled()) {
+    throw new TerminalForegroundRefusal("Nothing was typed: the tool call was cancelled after the user answered.");
+  }
 
   logDispatchSink({ sink: "foreground_flash", tool: "desktop_act:terminal_send", targetHwnd: channel.hwnd });
   const r = injectViaForegroundFlash(channel.hwnd, channel.pid, line, { pressEnter: trailing !== null });

@@ -39,6 +39,17 @@ export interface AskForm {
 export interface AskContext {
   /** Sends one form to the client and resolves with its answer; rejects on timeout or failure. */
   ask(form: AskForm, timeoutMs: number): Promise<AskAnswer>;
+  /** True once the client has cancelled the tool call this context belongs to. */
+  cancelled?(): boolean;
+}
+
+/**
+ * Has the tool call been cancelled since it asked? Read again just before acting on a yes: checks
+ * that run after the answer (the virtual-desktop question can fall back to PowerShell) take time,
+ * and a cancel in that time must still stop the act (PR codex P2 on #764).
+ */
+export function callWasCancelled(): boolean {
+  return _askAls.getStore()?.cancelled?.() === true;
 }
 
 const _askAls = new AsyncLocalStorage<AskContext | null>();

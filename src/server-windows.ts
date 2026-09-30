@@ -145,6 +145,7 @@ function wrapHandlerArgWithAsk(toolArgs: any[], s: McpServer, canAsk: boolean): 
             if (extra?.signal?.aborted) throw new Error("The tool call was cancelled while the question was up");
             return answer as AskAnswer;
           },
+          cancelled: () => extra?.signal?.aborted === true,
         }
       : null;
     return runWithAskContext(ctx, () => handler(...handlerArgs));

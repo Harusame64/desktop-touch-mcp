@@ -14,13 +14,13 @@ const wtWindow = (extra: Record<string, unknown> = {}) => ({
   hwnd: WT, title: "PowerShell", region: { x: 0, y: 0, width: 100, height: 100 }, zOrder: 0,
   isMinimized: false, isMaximized: false, isActive: false, className: "CASCADIA_HOSTING_WINDOW_CLASS", ownerHwnd: null, ...extra,
 });
-const { state } = vi.hoisted(() => ({ state: { cloaked: false, reason: "wt_xaml_pipeline", pid: 11 } }));
+const { state } = vi.hoisted(() => ({ state: { cloaked: false, reason: "wt_xaml_pipeline", pid: 11, title: "PowerShell" } }));
 
 vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
   return {
     ...actual,
-    enumWindowsInZOrder: vi.fn(() => [wtWindow({ isCloaked: state.cloaked })]),
+    enumWindowsInZOrder: vi.fn(() => [wtWindow({ isCloaked: state.cloaked, title: state.title })]),
     getForegroundHwnd: vi.fn(() => 0x999n),
     getWindowTitleW: vi.fn(() => "PowerShell"),
     getWindowIdentity: vi.fn(() => ({ pid: state.pid, processName: "WindowsTerminal", processStartTimeMs: 1000 })),
@@ -78,6 +78,7 @@ beforeEach(() => {
   state.cloaked = false;
   state.reason = "wt_xaml_pipeline";
   state.pid = 11;
+  state.title = "PowerShell";
   delete process.env.DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND;
 });
 
@@ -203,6 +204,24 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const ask = vi.fn(async () => { state.pid = 77; return { action: "accept" as const, content: {} }; });
     const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
     expect(err?.callerDetail).toMatch(/handle now names another window/);
+    expect(mockFlash).not.toHaveBeenCalled();
+  });
+
+  it("does not type when the terminal's title changed while the user was answering (another tab or a reused handle)", async () => {
+    const ask = vi.fn(async () => { state.title = "Administrator: PowerShell"; return { action: "accept" as const, content: {} }; });
+    const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/title changed while the user was answering.*"PowerShell"/);
+    expect(mockFlash).not.toHaveBeenCalled();
+  });
+
+  it("does not type when the tool call was cancelled after the answer (PR codex P2)", async () => {
+    let cancelled = false;
+    const ctx: AskContext = {
+      ask: vi.fn(async () => { cancelled = true; return { action: "accept" as const, content: {} }; }),
+      cancelled: () => cancelled,
+    };
+    const err = await act("echo hi", ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/cancelled after the user answered/);
     expect(mockFlash).not.toHaveBeenCalled();
   });
 });
