@@ -22,10 +22,13 @@ pub(crate) fn is_word_body(control_type: &str, automation_id: &str, own_window: 
 /// several such pages' worth.
 pub(crate) const BODY_TEXT_CAP: usize = 16_000;
 
-/// The visible lines of a body, one per range (win2: one range per visible line), put back together
-/// as they stand in the page and cut to `BODY_TEXT_CAP` characters. Nothing is put between them: a
-/// paragraph's last line carries its own `\r`, so a line without one wraps into the next, and a
-/// separator there would split a word the query is looking for ("コンテン" | "ツ"; gate 2).
+/// The visible text of a body, one piece per range, put back together as it stands in the page and
+/// cut to `BODY_TEXT_CAP` characters. MEASURED win2 (2026-09-30, re-check on `3393622f`): Word gives
+/// one range per visible PARAGRAPH, wrapped lines included, each ending in its own `\r` (an earlier
+/// report of one range per line came from a document whose paragraphs were one line each). Nothing is
+/// put between the pieces: the text already carries its breaks, and a separator added where a range
+/// ends without one would split a word the query is looking for ("コンテン" | "ツ"; gate 2). Where a
+/// paragraph only partly on screen is cut is not measured.
 pub(crate) fn join_visible_lines<I: IntoIterator<Item = String>>(lines: I) -> String {
     let mut out = String::new();
     let mut count = 0usize;

@@ -3,7 +3,7 @@
  *
  * MEASURED win2 (2026-09-30): each page's body (`Edit`, automationId `Body`, no window of its own, in
  * `_WwG`) answers TextPattern with that page's text alone, and `GetVisibleRanges` with one range per
- * visible line, in 1–2 ms. Its label is its name ("ページ 1 のコンテンツ"), so a query for words on
+ * visible paragraph, in 1–2 ms. Its label is its name ("ページ 1 のコンテンツ"), so a query for words on
  * the page matched nothing. The user chose (2026-09-30) to use the text for `query` only: it is
  * matched, and not returned by any tool, nor kept in the UIA cache that other tools read.
  */

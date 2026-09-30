@@ -219,13 +219,13 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
 /// 1–2 ms a body; a body read after this is left without text, as though it had not been asked.
 const BODY_TEXT_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// internal #217 part 2 — the text of the lines visible in a Word page body, one range per line.
+/// internal #217 part 2 — the text visible in a Word page body.
 ///
 /// MEASURED win2 (2026-09-30): a page body's TextPattern answers that page alone (not the document);
-/// `GetVisibleRanges` gives one range per visible line, in 1–2 ms with each range's text read. The
-/// walk has already pruned offscreen pages, so only the bodies on screen are read. `None` when the
-/// element does not answer, the count included; an empty string when nothing of it is visible. A
-/// line whose text does not answer is left out.
+/// `GetVisibleRanges` gives one range per visible paragraph, in 1–2 ms with each range's text read.
+/// The walk has already pruned offscreen pages, so only the bodies on screen are read. `None` when
+/// the element does not answer, the count included; an empty string when nothing of it is visible.
+/// A range whose text does not answer is left out.
 fn visible_text(elem: &IUIAutomationElement) -> Option<String> {
     unsafe {
         let pat = elem.GetCurrentPattern(UIA_TextPatternId).ok()?;
