@@ -1566,8 +1566,10 @@ export async function getUiElements(
       // Reporting `truncated` from Rust is the real fix and is its own change, not this branch's.
       const maybeTruncated = normalised.elementCount >= maxElements;
       if (cacheKey !== undefined && !maybeTruncated) {
-        // A body's text is for the caller's `query` alone: the cache answers other tools (gate: #217).
-        const elements = normalised.elements.map(({ visibleText: _text, ...e }) => e);
+        // A body's text is for the caller's `query` alone: the cache answers other tools (#217).
+        const elements = options?.readBodyText
+          ? normalised.elements.map(({ visibleText: _text, ...e }) => e)
+          : normalised.elements;
         try { updateUiaCache(cacheKey, JSON.stringify({ ...normalised, elements, readLimits: { maxDepth, maxElements } })); } catch { /* ignore */ }
       }
       // Whether the walk stopped at its cap is NOT set as `truncated` here: `truncated` means the walk

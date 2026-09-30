@@ -17,23 +17,21 @@ pub(crate) fn is_word_body(control_type: &str, automation_id: &str, own_window: 
     control_type == "Edit" && automation_id == "Body" && !own_window && host_class == Some("_WwG")
 }
 
-/// The most characters a body's visible text is kept to. Only `query` matching reads it; a page at
-/// 50% shows about 450 characters (win2), so this is several pages' worth.
-pub(crate) const BODY_TEXT_CAP: usize = 4000;
+/// The most characters a body's visible text is kept to. Only `query` matching reads it. A dense
+/// page shown whole (two columns of 9pt, tables) can pass 4000 characters (gate 2), so this is
+/// several such pages' worth.
+pub(crate) const BODY_TEXT_CAP: usize = 16_000;
 
-/// The visible lines of a body, one per range (win2: one range per visible line), joined by a line
-/// feed and cut to `BODY_TEXT_CAP` characters. A range that ends in its own line break keeps it
-/// rather than adding a second.
+/// The visible lines of a body, one per range (win2: one range per visible line), put back together
+/// as they stand in the page and cut to `BODY_TEXT_CAP` characters. Nothing is put between them: a
+/// paragraph's last line carries its own `\r`, so a line without one wraps into the next, and a
+/// separator there would split a word the query is looking for ("コンテン" | "ツ"; gate 2).
 pub(crate) fn join_visible_lines<I: IntoIterator<Item = String>>(lines: I) -> String {
     let mut out = String::new();
     let mut count = 0usize;
     for line in lines {
         if count >= BODY_TEXT_CAP {
             break;
-        }
-        if !out.is_empty() && !out.ends_with(['\r', '\n']) {
-            out.push('\n');
-            count += 1;
         }
         for ch in line.chars() {
             if count >= BODY_TEXT_CAP {
@@ -124,9 +122,12 @@ mod tests {
     }
 
     #[test]
-    fn joins_visible_lines_with_one_line_break_between() {
-        let lines = ["Page 1 QA1X".to_string(), "Filler\r".to_string(), "End".to_string()];
-        assert_eq!(join_visible_lines(lines), "Page 1 QA1X\nFiller\rEnd");
+    fn joins_visible_lines_as_they_stand_so_a_wrapped_word_stays_whole() {
+        let lines = ["確認するコンテン".to_string(), "ツです。\r".to_string(), "hello ".to_string(), "world\r".to_string()];
+        let out = join_visible_lines(lines);
+        assert_eq!(out, "確認するコンテンツです。\rhello world\r");
+        assert!(out.contains("コンテンツ"));
+        assert!(out.contains("hello world"));
     }
 
     #[test]

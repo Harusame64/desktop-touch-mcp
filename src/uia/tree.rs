@@ -68,6 +68,9 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
     let max_elements = opts.max_elements.unwrap_or(DEFAULT_MAX_ELEMENTS);
     let fetch_values = opts.fetch_values.unwrap_or(false);
     let read_body_text = opts.read_body_text.unwrap_or(false);
+    // Word's text reads share the read's 8 s timeout with everything else; past this budget the
+    // remaining bodies are left unread rather than the whole read lost (gate 2).
+    let body_text_started = Instant::now();
 
     let root = resolve_root(ctx, opts.hwnd.as_deref(), &opts.window_title)?;
 
@@ -178,6 +181,7 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
                 ui_elem.host_window_handle = host.as_ref().map(|(h, _)| h.clone());
                 ui_elem.host_window_class = host.as_ref().and_then(|(_, c)| c.clone());
                 if read_body_text
+                    && body_text_started.elapsed() < BODY_TEXT_BUDGET
                     && word_pages::is_word_body(
                         &ui_elem.control_type,
                         &ui_elem.automation_id,
@@ -211,18 +215,23 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
     })
 }
 
+/// How long the walk may spend reading Word page bodies' text, all of them together. win2 measured
+/// 1–2 ms a body; a body read after this is left without text, as though it had not been asked.
+const BODY_TEXT_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// internal #217 part 2 — the text of the lines visible in a Word page body, one range per line.
 ///
 /// MEASURED win2 (2026-09-30): a page body's TextPattern answers that page alone (not the document);
 /// `GetVisibleRanges` gives one range per visible line, in 1–2 ms with each range's text read. The
 /// walk has already pruned offscreen pages, so only the bodies on screen are read. `None` when the
-/// element does not answer; an empty string when nothing of it is visible.
+/// element does not answer, the count included; an empty string when nothing of it is visible. A
+/// line whose text does not answer is left out.
 fn visible_text(elem: &IUIAutomationElement) -> Option<String> {
     unsafe {
         let pat = elem.GetCurrentPattern(UIA_TextPatternId).ok()?;
         let tp: IUIAutomationTextPattern = pat.cast().ok()?;
         let ranges = tp.GetVisibleRanges().ok()?;
-        let count = ranges.Length().unwrap_or(0);
+        let count = ranges.Length().ok()?;
         let cap = word_pages::BODY_TEXT_CAP as i32;
         let lines = (0..count).filter_map(|i| {
             let range = ranges.GetElement(i).ok()?;
