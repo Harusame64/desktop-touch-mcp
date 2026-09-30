@@ -83,7 +83,7 @@
     },
     {
       "file": "src/tools/_off-desktop.ts",
-      "line": 54,
+      "line": 82,
       "tool": "(dynamic)",
       "errKind": "new-error",
       "contextShape": "object-plain"
@@ -307,98 +307,98 @@
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 1922,
+      "line": 1925,
       "tool": "keyboard:type",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2373,
+      "line": 2376,
       "tool": "keyboard:type",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3089,
+      "line": 3086,
       "tool": "keyboard:press",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3163,
+      "line": 3160,
       "tool": "keyboard:press",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3217,
+      "line": 3214,
       "tool": "keyboard:sequence",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3506,
+      "line": 3500,
       "tool": "keyboard:sequence",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 506,
+      "line": 514,
       "tool": "mouse_move",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 535,
+      "line": 543,
       "tool": "mouse_click",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 667,
+      "line": 672,
       "tool": "mouse_click",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 881,
+      "line": 883,
       "tool": "mouse_drag",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 943,
+      "line": 945,
       "tool": "mouse_drag",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1772,
+      "line": 1774,
       "tool": "scroll",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1865,
+      "line": 1867,
       "tool": "scroll",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 2025,
+      "line": 2027,
       "tool": "get_cursor_position",
       "errKind": "identifier",
       "contextShape": "none"

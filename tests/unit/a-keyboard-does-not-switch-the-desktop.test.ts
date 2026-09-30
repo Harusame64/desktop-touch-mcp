@@ -47,6 +47,12 @@ vi.mock("../../src/engine/nutjs.js", () => ({
   keyboard: { pressKey: vi.fn(), releaseKey: vi.fn() },
 }));
 
+/** Which channel `foreground_flash` resolves to; wm_char posts without taking the foreground. */
+const { flashChannel } = vi.hoisted(() => ({ flashChannel: { kind: "clipboard_flash" as string } }));
+vi.mock("../../src/engine/background-channel-resolver.js", () => ({
+  resolveBackgroundInputChannel: vi.fn((hwnd: bigint) => ({ kind: flashChannel.kind, hwnd, pid: 42 })),
+}));
+
 vi.mock("../../src/tools/_focus.js", () => ({
   detectFocusLoss: vi.fn(() => Promise.resolve(undefined)),
   checkForegroundOnce: vi.fn(),
@@ -98,7 +104,7 @@ describe("internal #221 — keyboard and a window on another virtual desktop", (
     expect(r.ok).toBe(false);
     expect(r.code).toBe("WindowOnOtherDesktop");
     expect(r.context).toMatchObject({ hwnd: "100", sameTitleOnScreen: true });
-    expect(r.suggest.join(" ")).toMatch(/pass its hwnd/);
+    expect(r.suggest.join(" ")).toMatch(/name that one exactly/);
     expect(mockRestore).not.toHaveBeenCalled();
   });
 
@@ -138,5 +144,16 @@ describe("internal #221 — keyboard and a window on another virtual desktop", (
     const r = parseResult(await keyboardSequenceHandler({ steps: [{ keys: "ctrl+n" }], windowTitle: "QV221", trackFocus: false, settleMs: 0 } as never));
     expect(r.code).toBe("WindowOnOtherDesktop");
     expect(mockRestore).not.toHaveBeenCalled();
+  });
+
+  it("does not refuse foreground_flash when the channel is wm_char, which does not take the foreground", async () => {
+    flashChannel.kind = "wm_char";
+    try {
+      mockEnum.mockReturnValue([offDesktop(100n), onScreen(200n)]);
+      const r = parseResult(await keyboardTypeHandler({ text: "x", windowTitle: "QV221", method: "foreground_flash", trackFocus: false, settleMs: 0 } as never));
+      expect(r.code).not.toBe("WindowOnOtherDesktop");
+    } finally {
+      flashChannel.kind = "clipboard_flash";
+    }
   });
 });

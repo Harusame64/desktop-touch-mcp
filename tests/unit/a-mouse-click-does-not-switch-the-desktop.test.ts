@@ -153,4 +153,31 @@ describe("internal #221 — mouse_click and a window on another virtual desktop"
     expect(r.code).toBe("WindowOnOtherDesktop");
     expect(mockRestore).not.toHaveBeenCalled();
   });
+
+  it("focuses the window named by hwnd, not a same-titled one on another desktop ahead of it (gate 2 on #763)", async () => {
+    const resolver = vi.mocked((await import("../../src/tools/_resolve-window.js")).resolveWindowTarget);
+    resolver.mockResolvedValueOnce({ title: "QV221", hwnd: 200n, warnings: [] } as never);
+    mockEnum
+      .mockReturnValueOnce([offDesktop(100n), onScreen(200n)])
+      .mockReturnValue([offDesktop(100n), { ...onScreen(200n), isActive: true }]);
+    const r = parseResult(await mouseClickHandler({
+      x: 400, y: 300, hwnd: "200", windowTitle: "QV221", button: "left", doubleClick: false, tripleClick: false,
+      homing: true, speed: 0, trackFocus: false, settleMs: 0, verifyDelivery: false,
+    } as never));
+    expect(r.code).not.toBe("WindowOnOtherDesktop");
+    expect(mockRestore).toHaveBeenCalledWith(200n, { force: false });
+  });
+
+  it("refuses a hwnd that names the window on another desktop", async () => {
+    const resolver = vi.mocked((await import("../../src/tools/_resolve-window.js")).resolveWindowTarget);
+    resolver.mockResolvedValueOnce({ title: "QV221", hwnd: 100n, warnings: [] } as never);
+    mockEnum.mockReturnValue([offDesktop(100n), onScreen(200n)]);
+    const r = parseResult(await mouseClickHandler({
+      x: 400, y: 300, hwnd: "100", windowTitle: "QV221", button: "left", doubleClick: false, tripleClick: false,
+      homing: true, speed: 0, trackFocus: false, settleMs: 0, verifyDelivery: false,
+    } as never));
+    expect(r.code).toBe("WindowOnOtherDesktop");
+    expect(r.context).toMatchObject({ hwnd: "100", sameTitleOnScreen: false });
+    expect(mockRestore).not.toHaveBeenCalled();
+  });
 });

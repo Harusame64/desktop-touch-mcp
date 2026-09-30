@@ -357,7 +357,7 @@ const SUGGESTS: Record<string, string[]> = {
   // by `_off-desktop.ts` so the user's desktop is not switched; the message carries this code.
   WindowOnOtherDesktop: [
     "Nothing was sent: the window is on another virtual desktop, and bringing it forward would switch the user's desktop.",
-    "If context.sameTitleOnScreen is true, a window with that title is on this desktop — pass its hwnd (from desktop_discover) to act on it.",
+    "If context.sameTitleOnScreen is true, a window with that title is on this desktop — name that one exactly (its hwnd, where the tool takes one, or a more specific windowTitle) to act on it.",
     "To act on the window itself, ask the user to switch to its desktop or move it here, then retry.",
   ],
   // ADR-029: a click / move / drag aimed at a point that is on no monitor.

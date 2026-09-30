@@ -18,6 +18,8 @@
 
 import { failWith } from "./_errors.js";
 import type { ToolResult } from "./_types.js";
+import { nativeUia } from "../engine/native-engine.js";
+import { buildEnvelopeFor } from "../engine/perception/registry.js";
 
 export interface OffDesktopTarget {
   hwnd: bigint;
@@ -29,28 +31,54 @@ export interface OffDesktopTarget {
 type Listed = { hwnd: bigint; title: string; isCloaked?: boolean };
 
 /**
+ * Is this cloaked window on another virtual desktop? A cloak alone does not say so: DWM also cloaks
+ * a window its app hid, and a UWP frame the system keeps (gate 2 on #763). `IVirtualDesktopManager`
+ * answers the question itself. When it cannot be asked (no native engine), the window is taken to
+ * be elsewhere: the refusal is the side that cannot switch the user's desktop.
+ */
+async function isOnAnotherDesktop(hwnd: bigint): Promise<boolean> {
+  const ask = nativeUia?.uiaGetVirtualDesktopStatus;
+  if (!ask) return true;
+  try {
+    const key = String(hwnd);
+    const answer = (await ask.call(nativeUia, [key]))[key];
+    // The native side answers "on the current desktop" when COM fails, as its other caller wants.
+    return answer === false;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * The target, when it is on another virtual desktop; null otherwise. `named` is the title the call
  * searched by (undefined for a handle-only call), used to say whether a same-titled window is here.
+ * Costs nothing for a window that is not cloaked, which is nearly every call.
  */
-export function offDesktopTarget(
+export async function offDesktopTarget(
   target: Listed,
-  windows: readonly Listed[],
+  windows: readonly Listed[] | (() => readonly Listed[]),
   named: string | undefined,
-): OffDesktopTarget | null {
+): Promise<OffDesktopTarget | null> {
   if (!target.isCloaked) return null;
+  if (!(await isOnAnotherDesktop(target.hwnd))) return null;
   const q = named?.toLowerCase();
-  const sameTitleOnScreen = q !== undefined && q !== "" && windows.some(
+  const list = typeof windows === "function" ? windows() : windows;
+  const sameTitleOnScreen = q !== undefined && q !== "" && list.some(
     (w) => w.hwnd !== target.hwnd && !w.isCloaked && w.title.toLowerCase().includes(q),
   );
   return { hwnd: target.hwnd, title: target.title, sameTitleOnScreen };
 }
 
-/** The refusal: nothing was sent, and the desktop was not switched. */
+/**
+ * The refusal: nothing was sent, and the desktop was not switched. `lensId` adds the perception
+ * envelope, as the tools' other early refusals do.
+ */
 export function offDesktopFailure(
   toolName: string,
   off: OffDesktopTarget,
-  extra: Record<string, unknown> = {},
+  opts: { lensId?: string; extra?: Record<string, unknown> } = {},
 ): ToolResult {
+  const env = opts.lensId ? buildEnvelopeFor(opts.lensId, { toolName }) : null;
   return failWith(
     new Error(
       "WindowOnOtherDesktop: the target window is on another virtual desktop. Bringing it forward " +
@@ -61,7 +89,8 @@ export function offDesktopFailure(
       hwnd: String(off.hwnd),
       windowTitle: off.title,
       sameTitleOnScreen: off.sameTitleOnScreen,
-      ...extra,
+      ...opts.extra,
+      ...(env && { _perceptionForPost: env }),
     },
   );
 }

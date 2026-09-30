@@ -116,6 +116,13 @@ async function applyHoming(
   elementName?: string,
   elementId?: string,
   force?: boolean,
+  /**
+   * internal #221 — the window the caller named by `hwnd`. Focus is asked of that window, not of
+   * the first one wearing its title: with a same-titled window on another virtual desktop ahead of
+   * it, the title search picked that one, and the call was refused while naming the right window
+   * (gate 2 on #763).
+   */
+  pinnedHwnd?: bigint,
 ): Promise<HomingResult> {
   const notes: string[] = [];
 
@@ -148,13 +155,14 @@ async function applyHoming(
   if (windowTitle) {
     const windows = enumWindowsInZOrder();
     const active = windows.find((w) => w.isActive);
-    if (!active || !active.title.toLowerCase().includes(windowTitle.toLowerCase())) {
-      const target = windows.find((w) =>
-        w.title.toLowerCase().includes(windowTitle.toLowerCase())
-      );
+    const isTarget = (w: { hwnd: bigint; title: string }): boolean => pinnedHwnd !== undefined
+      ? w.hwnd === pinnedHwnd
+      : w.title.toLowerCase().includes(windowTitle.toLowerCase());
+    if (!active || !isTarget(active)) {
+      const target = windows.find(isTarget);
       // internal #221: bringing a window on another virtual desktop forward switches the user's
       // desktop. Refused before anything is focused or corrected.
-      const away = target ? offDesktopTarget(target, windows, windowTitle) : null;
+      const away = target ? await offDesktopTarget(target, windows, pinnedHwnd === undefined ? windowTitle : undefined) : null;
       if (away) return { x, y, notes, offDesktop: away };
       if (target) {
         // Issue #202 P1-1 (Opus Round 1): default → 100ms wait → re-enum →
@@ -491,7 +499,7 @@ export const mouseMoveHandler = async ({
     const effectiveTitle = resolved?.title ?? windowTitle;
     const warnings: string[] = [...(resolved?.warnings ?? [])];
     if (homing) {
-      const result = await applyHoming(x, y, effectiveTitle);
+      const result = await applyHoming(x, y, effectiveTitle, undefined, undefined, undefined, hwnd !== undefined ? resolved?.hwnd : undefined);
       if (result.offDesktop) return offDesktopFailure("mouse_move", result.offDesktop);
       tx = result.x; ty = result.y;
       homingNotes.push(...result.notes);
@@ -586,11 +594,8 @@ export const mouseClickHandler = async ({
     let tx = screenX, ty = screenY;
     const notes: string[] = [];
     if (homing) {
-      const result = await applyHoming(screenX, screenY, effectiveTitle, elementName, elementId, force);
-      if (result.offDesktop) {
-        const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "mouse_click" }) : null;
-        return offDesktopFailure("mouse_click", result.offDesktop, earlyEnv ? { _perceptionForPost: earlyEnv } : {});
-      }
+      const result = await applyHoming(screenX, screenY, effectiveTitle, elementName, elementId, force, hwnd !== undefined ? resolvedWin?.hwnd : undefined);
+      if (result.offDesktop) return offDesktopFailure("mouse_click", result.offDesktop, { lensId });
       tx = result.x; ty = result.y;
       notes.push(...result.notes);
 
@@ -830,11 +835,8 @@ export const mouseDragHandler = async ({
     if (homing) {
       // Homing result gives us (correctedX, correctedY) and the underlying delta.
       // Apply the same (dx, dy) to the end point so the drag vector is preserved.
-      const result = await applyHoming(startX, startY, effectiveTitle);
-      if (result.offDesktop) {
-        const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "mouse_drag" }) : null;
-        return offDesktopFailure("mouse_drag", result.offDesktop, earlyEnv ? { _perceptionForPost: earlyEnv } : {});
-      }
+      const result = await applyHoming(startX, startY, effectiveTitle, undefined, undefined, undefined, hwnd !== undefined ? resolvedWin?.hwnd : undefined);
+      if (result.offDesktop) return offDesktopFailure("mouse_drag", result.offDesktop, { lensId });
       const dx = result.x - startX;
       const dy = result.y - startY;
       tsx = result.x; tsy = result.y;
@@ -1514,7 +1516,7 @@ export const scrollHandler = async ({
     let tx = x, ty = y;
     const notes: string[] = [];
     if (homing && x !== undefined && y !== undefined) {
-      const result = await applyHoming(x, y, effectiveTitle);
+      const result = await applyHoming(x, y, effectiveTitle, undefined, undefined, undefined, hwnd !== undefined ? resolvedWin?.hwnd : undefined);
       if (result.offDesktop) return offDesktopFailure("scroll", result.offDesktop);
       tx = result.x; ty = result.y;
       notes.push(...result.notes);
@@ -2107,13 +2109,13 @@ export function registerMouseTools(server: McpServer): void {
   // (memory: feedback_disable_via_entry_block.md)
   server.tool(
     "mouse_click",
-    "Click at screen coordinates. Normally pass windowTitle so the server auto-guards the click (verifies target identity, foreground, coordinate is inside the target rect) and returns post.perception without a confirmation screenshot. origin+scale from dotByDot=true screenshots are converted to screen coords before guarding. doubleClick:true for double-click; tripleClick:true for triple-click (selects a full line of text). Prefer click_element (UIA) for native apps, prefer browser_click for Chrome. Examples: mouse_click({windowTitle:'Notepad', x:200, y:150}) // guarded — post.perception.status='ok'. mouse_click({x:100, y:100}) // unguarded — post.perception.status='unguarded'. If a guard failure returns a suggestedFix, pass its fixId to approve the fix: mouse_click({fixId:'fix-...'}) // one-shot, expires in 15s. lensId is optional and only for advanced pinned-target workflows; omit it for normal use. Caveats: origin+scale are meaningful ONLY with dotByDot=true screenshot responses. hints.verifyDelivery:{status:'delivered'|'focus_only'|'unverifiable', reason} reports the post-click observation; the status is decided from three signals — focused-element shift, the element under the cursor changing between two readable reads, and window-foreground change — or from none of them firing. Win11 foreground refusal during the homing path (UIPI cross-elevation / admin-only target / call from a background process or service) returns code:'ForegroundRestricted' ok:false rather than landing the click on the wrong window — recover by switching to a tool that accepts windowTitle directly (click_element / desktop_act) — browser_* tools target by tabId/selector, not windowTitle. MouseClickNotDelivered is reserved-only (false-positive risk is too high to emit a typed code), so degradation is expressed via the 'unverifiable' status, not a separate error.",
+    "Click at screen coordinates. Normally pass windowTitle so the server auto-guards the click (verifies target identity, foreground, coordinate is inside the target rect) and returns post.perception without a confirmation screenshot. origin+scale from dotByDot=true screenshots are converted to screen coords before guarding. doubleClick:true for double-click; tripleClick:true for triple-click (selects a full line of text). Prefer click_element (UIA) for native apps, prefer browser_click for Chrome. Examples: mouse_click({windowTitle:'Notepad', x:200, y:150}) // guarded — post.perception.status='ok'. mouse_click({x:100, y:100}) // unguarded — post.perception.status='unguarded'. If a guard failure returns a suggestedFix, pass its fixId to approve the fix: mouse_click({fixId:'fix-...'}) // one-shot, expires in 15s. lensId is optional and only for advanced pinned-target workflows; omit it for normal use. Caveats: origin+scale are meaningful ONLY with dotByDot=true screenshot responses. hints.verifyDelivery:{status:'delivered'|'focus_only'|'unverifiable', reason} reports the post-click observation; the status is decided from three signals — focused-element shift, the element under the cursor changing between two readable reads, and window-foreground change — or from none of them firing. Win11 foreground refusal during the homing path (UIPI cross-elevation / admin-only target / call from a background process or service) returns code:'ForegroundRestricted' ok:false rather than landing the click on the wrong window — recover by switching to a tool that accepts windowTitle directly (click_element / desktop_act) — browser_* tools target by tabId/selector, not windowTitle. A window on another virtual desktop returns WindowOnOtherDesktop and nothing is sent — the user's desktop is not switched. MouseClickNotDelivered is reserved-only (false-positive risk is too high to emit a typed code), so degradation is expressed via the 'unverifiable' status, not a separate error.",
     mouseClickRegistrationSchema,
     mouseClickRegistrationHandler as typeof mouseClickHandler
   );
   server.tool(
     "mouse_drag",
-    "Click and drag from (startX, startY) to (endX, endY) holding the left mouse button — for sliders, drag-and-drop, canvas drawing, and window resizing. Pass windowTitle so the server auto-guards the start coordinate and returns post.perception. Examples: mouse_drag({windowTitle:'Notepad', startX:50, startY:50, endX:200, endY:200}). lensId is optional and only for advanced pinned-target workflows. Caveats: Left button only. Both start and endpoint are guarded. Cross-window and desktop drags are blocked by default — pass allowCrossWindowDrag:true to confirm intent; that refusal is code:'CrossWindowDragBlocked'. A drag starting in a tabbed application's tab strip returns code:'TabDragBlocked' — pass allowTabDrag:true when tearing off or rearranging a tab is intended. hints.verifyDelivery:{status:'delivered'|'focus_only'|'unverifiable', reason} reports the post-drop observation in the same 3-value shape as mouse_click. MouseDragNotDelivered is SUGGESTS-registered but reserved-only (not emitted) — degradation is expressed via the 'unverifiable' status rather than a typed code. Win11 foreground refusal (UIPI cross-elevation / admin-only target / call from a background process or service) returns code:'ForegroundRestricted' ok:false from the homing path.",
+    "Click and drag from (startX, startY) to (endX, endY) holding the left mouse button — for sliders, drag-and-drop, canvas drawing, and window resizing. Pass windowTitle so the server auto-guards the start coordinate and returns post.perception. Examples: mouse_drag({windowTitle:'Notepad', startX:50, startY:50, endX:200, endY:200}). lensId is optional and only for advanced pinned-target workflows. Caveats: Left button only. Both start and endpoint are guarded. Cross-window and desktop drags are blocked by default — pass allowCrossWindowDrag:true to confirm intent; that refusal is code:'CrossWindowDragBlocked'. A drag starting in a tabbed application's tab strip returns code:'TabDragBlocked' — pass allowTabDrag:true when tearing off or rearranging a tab is intended. hints.verifyDelivery:{status:'delivered'|'focus_only'|'unverifiable', reason} reports the post-drop observation in the same 3-value shape as mouse_click. MouseDragNotDelivered is SUGGESTS-registered but reserved-only (not emitted) — degradation is expressed via the 'unverifiable' status rather than a typed code. Win11 foreground refusal (UIPI cross-elevation / admin-only target / call from a background process or service) returns code:'ForegroundRestricted' ok:false from the homing path. A window on another virtual desktop returns WindowOnOtherDesktop and nothing is sent — the user's desktop is not switched.",
     mouseDragRegistrationSchema,
     mouseDragRegistrationHandler as typeof mouseDragHandler
   );
