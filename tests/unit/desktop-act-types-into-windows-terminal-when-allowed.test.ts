@@ -19,6 +19,8 @@ const { state } = vi.hoisted(() => ({
     cloaked: false, reason: "wt_xaml_pipeline", pid: 11, title: "PowerShell",
     /** The selected tab UIA reports; `undefined` = could not be read. */
     tab: { name: "PowerShell", runtimeId: "42.1.4.263" } as { name: string; runtimeId: string } | null | undefined,
+    /** The window in front: another app's (0x999) by default. */
+    fg: 0x999n as bigint | null,
   },
 }));
 
@@ -27,7 +29,8 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   return {
     ...actual,
     enumWindowsInZOrder: vi.fn(() => [wtWindow({ isCloaked: state.cloaked, title: state.title })]),
-    getForegroundHwnd: vi.fn(() => 0x999n),
+    getForegroundHwnd: vi.fn(() => state.fg),
+    getWindowRoot: vi.fn((h: bigint) => (h === 0x101n ? WT : h)),
     getWindowTitleW: vi.fn(() => "PowerShell"),
     getWindowIdentity: vi.fn(() => ({ pid: state.pid, processName: "WindowsTerminal", processStartTimeMs: 1000 })),
   };
@@ -87,6 +90,7 @@ beforeEach(() => {
   state.pid = 11;
   state.title = "PowerShell";
   state.tab = { name: "PowerShell", runtimeId: "42.1.4.263" };
+  state.fg = 0x999n;
   delete process.env.DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND;
 });
 
@@ -305,5 +309,27 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const { ctx, ask } = asking({ action: "accept", content: {} });
     await act("echo こんにちは", ctx);
     expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not ask when the terminal is the window in front (the client runs in one of its tabs, #764 P1-2)", async () => {
+    state.fg = WT;
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await act("echo hi\n", ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/this terminal is the window in front/);
+    expect(ask).not.toHaveBeenCalled();
+    expect(mockFlash).not.toHaveBeenCalled();
+  });
+
+  it("counts a child of the terminal holding the foreground as the terminal in front (WT's input site)", async () => {
+    state.fg = 0x101n;
+    const err = await act("echo hi", asking({ action: "accept", content: {} }).ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/window in front/);
+  });
+
+  it("does not type when the user brought the terminal in front while answering", async () => {
+    const ask = vi.fn(async () => { state.fg = WT; return { action: "accept" as const, content: {} }; });
+    const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/window in front/);
+    expect(mockFlash).not.toHaveBeenCalled();
   });
 });

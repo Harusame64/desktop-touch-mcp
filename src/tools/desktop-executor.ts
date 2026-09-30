@@ -315,7 +315,7 @@ const TERMINAL_FOREGROUND_REFUSALS: Record<ForegroundRefusal, string> = {
  * (gate 2 on #764).
  */
 export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: string): Promise<void> {
-  const { enumWindowsInZOrder, getWindowIdentity } = await import("../engine/win32.js");
+  const { enumWindowsInZOrder, getWindowIdentity, getForegroundHwnd, getWindowRoot } = await import("../engine/win32.js");
   const { injectViaForegroundFlash } = await import("../engine/bg-input.js");
   const { resolveBackgroundInputChannel } = await import("../engine/background-channel-resolver.js");
 
@@ -334,6 +334,27 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
    */
   let askedAbout: { pid: number; processStartTimeMs: number } | undefined;
   let asked = false;
+  /**
+   * The terminal must not be the window in front. While the user answers, the window in front is
+   * the one showing the question; when that is this terminal, the tab selected is the one the user
+   * is working in — Claude Code's own, when it runs in another tab of this window, and the paste and
+   * Enter arrive as the user's next message (win2 measured exactly that, #764 P1-2). A terminal in
+   * another window, or a client in another app, is not in front.
+   */
+  const isInFront = (): boolean => {
+    try {
+      const fg = getForegroundHwnd();
+      return fg !== null && (fg === hwnd || getWindowRoot(fg) === hwnd);
+    } catch {
+      return false;
+    }
+  };
+  const refuseInFront = (): never => {
+    throw new TerminalForegroundRefusal(
+      "Nothing was typed: this terminal is the window in front, where the user is working — when the " +
+      "client runs in one of its tabs, the paste would arrive there. Type into a terminal in another window.",
+    );
+  };
   /** Where the terminal is now, or the sentence that refuses it. */
   const whereIsIt = async () => {
     const wins = enumWindowsInZOrder();
@@ -368,6 +389,7 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
   };
 
   const before = await whereIsIt();
+  if (isInFront()) refuseInFront();
   // The flash measures UTF-16 bytes and refuses at the limit (`validate_input`), after the user said yes.
   if (line.length * 2 >= before.constraints.maxBytes) {
     throw new TerminalForegroundRefusal(
@@ -414,6 +436,7 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
       `the user agreed to "${before.windowTitle}".`,
     );
   }
+  if (isInFront()) refuseInFront();
   const tabAfter = await getSelectedTab(hwnd);
   if (tabAfter === undefined || tabAfter?.runtimeId !== tabBefore?.runtimeId) {
     throw new TerminalForegroundRefusal(

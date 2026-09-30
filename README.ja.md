@@ -574,7 +574,7 @@ Windows のフォアグラウンド保護機能により、ピン固定された
 
 ### `desktop_act` から Windows Terminal に打つ
 
-Windows Terminal は、前面からのキー入力しか受け取りません。裏から送った文字は無視されます。`desktop_act` が Windows Terminal の窓に打つときは、MCP クライアントの質問画面で先に利用者へ訊きます（例："Type "echo hi" into Windows Terminal (PowerShell)? Takes the foreground ~0.1 s."）。Accept なら、前面を一瞬借りて貼り付け、元の窓に戻します。"Don't ask again" にチェックを入れると、サーバーを再起動するまで訊きません。Decline・Esc・120 秒以内に答えがない・質問を出せないクライアント（`claude -p` など）は、どれも「許可なし」です。何も打たず、`foreground_not_allowed` と、理由を書いた `detail` を返します。「許可なし」の後に、利用者に訊かずに別の道で打たないでください。質問に全文を出すため、文字は1行・600 文字以内に限ります。答えるまでの間に窓や選ばれているタブが変わった場合は、何も打ちません。末尾の改行1つは Enter として送ります。
+Windows Terminal は、前面からのキー入力しか受け取りません。裏から送った文字は無視されます。`desktop_act` が Windows Terminal の窓に打つときは、MCP クライアントの質問画面で先に利用者へ訊きます（例："Type "echo hi" into Windows Terminal (PowerShell)? Takes the foreground ~0.1 s."）。Accept なら、前面を一瞬借りて貼り付け、元の窓に戻します。"Don't ask again" にチェックを入れると、サーバーを再起動するまで訊きません。Decline・Esc・120 秒以内に答えがない・質問を出せないクライアント（`claude -p` など）は、どれも「許可なし」です。何も打たず、`foreground_not_allowed` と、理由を書いた `detail` を返します。「許可なし」の後に、利用者に訊かずに別の道で打たないでください。質問に全文を出すため、文字は1行・600 文字以内に限ります。答えるまでの間に窓や選ばれているタブが変わった場合は、何も打ちません。前面にある端末には打ちません（クライアントがそのタブで動いていると、そこに入るため）。別の窓の端末を使ってください。末尾の改行1つは Enter として送ります。
 
 `DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND=1` を設定すると、訊かずに許可します。
 

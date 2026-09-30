@@ -15,7 +15,8 @@
   restarts, and `DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND=1` allows it without asking. The question
   shows the whole text, so it must be one line of at most 600 characters; one trailing newline is
   sent as Enter. If the terminal's window or active tab changed while the user was answering,
-  nothing is typed.
+  nothing is typed. A terminal that is the window in front is refused: when the client runs in one of
+  its tabs, the paste would arrive as the user's next message.
 
 - **A window on another virtual desktop is not brought forward.** A title search can pick a window
   on another virtual desktop: it can come ahead of a same-titled window on the screen. `keyboard`
