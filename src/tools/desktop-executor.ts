@@ -20,7 +20,7 @@
 
 import type { UiEntity, ExecutorKind, ExecutorOutcome } from "../engine/world-graph/types.js";
 import { logResolve, logDispatchSink } from "./_resolve-log.js";
-import { askToTakeForeground, callWasCancelled, ALLOW_TERMINAL_FOREGROUND_ENV, ASK_TIMEOUT_MS, ASK_TEXT_SHOWN_MAX, ASK_TITLE_SHOWN_MAX, type ForegroundRefusal } from "./_ask-user.js";
+import { askToTakeForeground, callWasCancelled, ASK_TIMEOUT_MS, ASK_TEXT_SHOWN_MAX, ASK_TITLE_SHOWN_MAX, type ForegroundRefusal } from "./_ask-user.js";
 import { offDesktopTarget } from "./_off-desktop.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
@@ -297,8 +297,9 @@ const TERMINAL_FOREGROUND_REFUSALS: Record<ForegroundRefusal, string> = {
   cannot_ask:
     "Nothing was typed: Windows Terminal takes input only through the foreground, and this client " +
     // Not terminal(send, foreground_flash): that road has none of the checks here (window in front,
-    // tab, panes), so naming it would undo them (gate 2 on #764). The env var keeps every check.
-    `cannot ask the user. The user can allow it with ${ALLOW_TERMINAL_FOREGROUND_ENV}=1; every other check still applies.`,
+    // tab, panes), so naming it would undo them (gate 2 on #764). There is no way to allow it unasked.
+    "cannot ask the user (it cannot show questions, or no one is there). Typing into Windows Terminal " +
+    "needs the user's answer; tell the user, who can type it themselves.",
 };
 
 /**

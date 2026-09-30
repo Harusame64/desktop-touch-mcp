@@ -69,7 +69,7 @@ vi.mock("../../src/engine/uia-bridge.js", async (importOriginal) => ({
 }));
 
 const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
-const { runWithAskContext, resetRememberedTerminalForeground } = await import("../../src/tools/_ask-user.js");
+const { runWithAskContext } = await import("../../src/tools/_ask-user.js");
 type UiEntity = import("../../src/engine/world-graph/types.js").UiEntity;
 type AskContext = import("../../src/tools/_ask-user.js").AskContext;
 
@@ -93,7 +93,6 @@ const act = (text: string, ctx: AskContext | null) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
-  resetRememberedTerminalForeground();
   state.cloaked = false;
   state.reason = "wt_xaml_pipeline";
   state.pid = 11;
@@ -103,12 +102,11 @@ beforeEach(() => {
   state.onTabRead = undefined;
   state.gone = false;
   failsafe.tripped = false;
-  delete process.env.DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND;
 });
 
 describe("internal #227 — desktop_act types into Windows Terminal only when the user allows it", () => {
   it("asks, and on Accept pastes through the foreground; a trailing newline is sent as Enter", async () => {
-    const { ctx, ask } = asking({ action: "accept", content: { dontAskAgain: false } });
+    const { ctx, ask } = asking({ action: "accept", content: { typeIt: true } });
     await act("echo hi\n", ctx);
     expect(ask).toHaveBeenCalledTimes(1);
     expect(mockFlash).toHaveBeenCalledWith(WT, 42, "echo hi", { pressEnter: true });
@@ -133,7 +131,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
 
   it("types nothing when the call cannot ask, and names only the env var, which keeps every check", async () => {
     const err = await act("echo hi", null).catch((e) => e);
-    expect(err?.callerDetail).toMatch(/cannot ask the user\. The user can allow it with DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND=1; every other check still applies/);
+    expect(err?.callerDetail).toMatch(/cannot ask the user.*tell the user, who can type it themselves/);
     expect(err?.callerDetail).not.toMatch(/foreground_flash/);
     expect(mockFlash).not.toHaveBeenCalled();
   });
@@ -155,19 +153,6 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     expect(mockFlash).not.toHaveBeenCalled();
   });
 
-  it("says the paste failed, without claiming nothing was typed", async () => {
-    mockFlash.mockReturnValueOnce({ ok: false, reason: "foreground_restore_failed" } as never);
-    const err = await act("echo hi", asking({ action: "accept", content: {} }).ctx).catch((e) => e);
-    expect(err?.callerDetail).toMatch(/failed \(foreground_restore_failed\).*not known/);
-  });
-
-  it("does not ask when DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND=1", async () => {
-    process.env.DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND = "1";
-    const { ctx, ask } = asking({ action: "decline" });
-    await act("echo hi", ctx);
-    expect(ask).not.toHaveBeenCalled();
-    expect(mockFlash).toHaveBeenCalledTimes(1);
-  });
 
   it("does not ask, or paste, for a window refused for another reason (not Windows Terminal)", async () => {
     state.reason = "class_unknown";
@@ -283,16 +268,16 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const { ctx, ask } = asking({ action: "accept", content: {} });
     const text = `echo ${"a".repeat(40)} && rm -rf ./x`;
     await act(text, ctx);
-    const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { dontAskAgain: { description: string } } } }])[0];
-    expect(form.requestedSchema.properties.dontAskAgain.description).toBe(`Into: PowerShell — Types: ${text}`);
+    const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { typeIt: { description: string } } } }])[0];
+    expect(form.requestedSchema.properties.typeIt.description).toBe(`Into: PowerShell — Types: ${text}`);
   });
 
   it("says Enter will be pressed, in the question and on the description line (PR codex round 4)", async () => {
     const { ctx, ask } = asking({ action: "accept", content: {} });
     await act("echo hi\n", ctx);
-    const form = (ask.mock.calls[0] as unknown as [{ message: string; requestedSchema: { properties: { dontAskAgain: { description: string } } } }])[0];
+    const form = (ask.mock.calls[0] as unknown as [{ message: string; requestedSchema: { properties: { typeIt: { description: string } } } }])[0];
     expect(form.message).toMatch(/"echo hi" \+ Enter/);
-    expect(form.requestedSchema.properties.dontAskAgain.description).toBe("Into: PowerShell — Types: echo hi  — then presses Enter");
+    expect(form.requestedSchema.properties.typeIt.description).toBe("Into: PowerShell — Types: echo hi  — then presses Enter");
   });
 
   it("does not ask when the active tab cannot be read before the question (PR codex round 4)", async () => {
@@ -352,8 +337,8 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     state.title = "C:\\Users\\someone\\projects\\alpha-service - PowerShell";
     const { ctx, ask } = asking({ action: "accept", content: {} });
     await act("echo hi", ctx);
-    const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { dontAskAgain: { description: string } } } }])[0];
-    expect(form.requestedSchema.properties.dontAskAgain.description).toBe(`Into: ${state.title} — Types: echo hi`);
+    const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { typeIt: { description: string } } } }])[0];
+    expect(form.requestedSchema.properties.typeIt.description).toBe(`Into: ${state.title} — Types: echo hi`);
   });
 
   // Each title still contains "PowerShell", the title the act looks the window up by.

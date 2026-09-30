@@ -5,14 +5,13 @@
 - **`desktop_act` can type into Windows Terminal, after asking.** Windows Terminal ignores
   characters sent to it in the background, so `desktop_act` typing into its terminal input always
   ended `executor_failed`. Now the server asks the user through the MCP client's question form
-  (what will be typed, into which window, with a "Don't ask again"
-  box). On Accept it pastes through the foreground, as `terminal` send's `foreground_flash` does,
+  (what will be typed, and into which window), every time. On Accept it pastes through the foreground, as `terminal` send's `foreground_flash` does,
   and puts the previous window back. Decline, Esc, no answer within 120 s, or a client that cannot
   show the question (`claude -p`, or the HTTP transport) type nothing; the act ends with the new
   reason `foreground_not_allowed` and a `detail` that says why. Its advice does not send the caller
   around the user's no, as `executor_failed`'s foreground advice would. The terminal is checked
-  again after the answer, and a question whose tool call was cancelled does not type. "Don't ask again" lasts until the server
-  restarts, and `DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND=1` allows it without asking. The question
+  again after the answer, and a question whose tool call was cancelled does not type. There is no
+  way to allow it without the question. The question
   shows the whole text, so it must be one line of at most 600 characters; one trailing newline is
   sent as Enter. If the terminal's window or active tab changed while the user was answering,
   nothing is typed. A tab split into panes is refused. A terminal that is the window in front is refused: when the client runs in one of

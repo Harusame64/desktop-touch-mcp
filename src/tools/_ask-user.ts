@@ -15,8 +15,10 @@
  *   the question carries its own timeout.
  * - `claude -p` (no one there) declares the capability and answers `cancel` at once.
  *
- * Anything but an explicit Accept is a no. "Don't ask again" lasts for this server process, and
- * `DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND=1` says yes without asking.
+ * Anything but an explicit Accept is a no, and every paste is asked about. There is no "Don't ask
+ * again" and no switch that says yes without asking (user, 2026-09-30): the question is what brings
+ * the client in front, and a terminal in front is refused — without it, a paste into the tab the
+ * client itself runs in could not be told from any other (gate 2 on #764).
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -78,8 +80,6 @@ export const ASK_TITLE_SHOWN_MAX = 200;
 /** A cancel sooner than this was not a person reading the question. */
 export const INSTANT_CANCEL_MS = 500;
 
-export const ALLOW_TERMINAL_FOREGROUND_ENV = "DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND";
-
 const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 /** The question's one line: what is typed, and into which window, when they are known. */
@@ -89,25 +89,17 @@ export function foregroundQuestion(what: { windowTitle?: string; text?: string; 
   return `Type${text} into Windows Terminal${where}? Takes the foreground ~0.1 s.`;
 }
 
-/** Set by an Accept with "Don't ask again"; lives as long as this server process. */
-let allowedForProcess = false;
-
-/** Test seam: forget a remembered "Don't ask again". */
-export function resetRememberedTerminalForeground(): void {
-  allowedForProcess = false;
-}
-
 /**
  * Why the answer was no, in words a caller can act on:
  * - `cannot_ask`: this client or transport cannot show the question (and `claude -p` answers at once).
- * - `declined`: the user chose Decline.
+ * - `declined`: the user chose Decline, or unticked "Type it" and accepted.
  * - `cancelled`: the user dismissed it (Esc), or the client cancelled it without showing it.
  * - `timed_out`: no answer within `ASK_TIMEOUT_MS`.
  */
 export type ForegroundRefusal = "cannot_ask" | "declined" | "cancelled" | "timed_out";
 
 export type ForegroundAnswer =
-  | { allowed: true; how: "env" | "remembered" | "asked" }
+  | { allowed: true }
   | { allowed: false; why: ForegroundRefusal };
 
 /**
@@ -117,8 +109,6 @@ export type ForegroundAnswer =
 export async function askToTakeForeground(
   what: { windowTitle?: string; text?: string; pressEnter?: boolean } = {},
 ): Promise<ForegroundAnswer> {
-  if (process.env[ALLOW_TERMINAL_FOREGROUND_ENV] === "1") return { allowed: true, how: "env" };
-  if (allowedForProcess) return { allowed: true, how: "remembered" };
   const ctx = _askAls.getStore();
   if (!ctx) return { allowed: false, why: "cannot_ask" };
   let answer: AskAnswer;
@@ -132,9 +122,11 @@ export async function askToTakeForeground(
         requestedSchema: {
           type: "object",
           properties: {
-            dontAskAgain: {
+            // One field, ticked: Accept types. It exists to carry the description line, which is the
+            // only place the client shows long text in full (win2).
+            typeIt: {
               type: "boolean",
-              title: "Don't ask again (until the server restarts)",
+              title: "Type it",
               // The whole text, so two commands that start alike do not look alike (PR codex on #764).
               // The client wraps a long description rather than cutting it (win2: 600 characters, 6 lines).
               // Enter is said too: "echo hi" and "echo hi" + Enter must not look alike (PR codex on #764).
@@ -143,8 +135,8 @@ export async function askToTakeForeground(
               description: what.text !== undefined
                 ? `${what.windowTitle !== undefined ? `Into: ${what.windowTitle} — ` : ""}` +
                   `Types: ${what.text}${what.pressEnter ? "  — then presses Enter" : ""}`
-                : "Allow this until the server restarts",
-              default: false,
+                : "Accept to type it; untick or Decline to refuse",
+              default: true,
             },
           },
         },
@@ -164,6 +156,6 @@ export async function askToTakeForeground(
     // question is a client that cannot ask, whose advice differs (gate 2 on #764).
     return { allowed: false, why: Date.now() - askedAt < INSTANT_CANCEL_MS ? "cannot_ask" : "cancelled" };
   }
-  if (answer.content?.dontAskAgain === true) allowedForProcess = true;
-  return { allowed: true, how: "asked" };
+  if (answer.content?.typeIt === false) return { allowed: false, why: "declined" };
+  return { allowed: true };
 }

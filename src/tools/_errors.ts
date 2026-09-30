@@ -534,7 +534,7 @@ const SUGGESTS: Record<string, string[]> = {
   ForegroundNotAllowed: [
     "Windows Terminal takes input only through the foreground; if_unexpected.detail says why that did not happen: the user declined, dismissed the question, or did not answer; this client cannot ask; the terminal is on another virtual desktop or no longer open, or its window, process or active tab changed or could not be read, or it is the window in front (the client may run in one of its tabs — use a terminal in another window), or its selected tab is split into panes or is not a terminal; the text or the window title cannot be shown in full (more than one line, over 600 / 200 characters, or a control, bidirectional or invisible character); or the paste itself failed, in which case the detail says whether anything was typed — read the terminal before any retry.",
     "If the user declined or dismissed it, do NOT type into the terminal another way (keyboard, terminal send, clipboard): that works around their answer. Ask in the conversation first.",
-    "If this client cannot ask, the user can allow it with DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND=1, which keeps every other check. Do not use terminal(action:'send', method:'foreground_flash') instead: it has none of these checks.",
+    "If this client cannot ask, typing into Windows Terminal is not possible here: tell the user, who can type it themselves. Do not use terminal(action:'send', method:'foreground_flash') instead: it has none of these checks.",
     "More than one line: send one line per act. Too long: send it in shorter pieces. On another virtual desktop: ask the user to switch to it, or move the terminal here.",
   ],
   // ADR-036 item 16 — the entity could not be found: missing from the live view (or the view has
