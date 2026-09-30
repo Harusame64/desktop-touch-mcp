@@ -357,12 +357,15 @@ export function placeOnScreen(
   return `at the ${where} of ${monitorWords}`;
 }
 
-/** Two shown windows whose overlap covers half the smaller one or more. */
+/**
+ * Two shown windows whose overlap covers half the smaller one or more. A maximized window and one
+ * that is not are told apart by "maximized", however they overlap (gate 2 on 49e6c778).
+ */
 export function mostlyOverlap(
-  a: { region: { x: number; y: number; width: number; height: number }; isMinimized: boolean },
-  b: { region: { x: number; y: number; width: number; height: number }; isMinimized: boolean },
+  a: { region: { x: number; y: number; width: number; height: number }; isMinimized: boolean; isMaximized: boolean },
+  b: { region: { x: number; y: number; width: number; height: number }; isMinimized: boolean; isMaximized: boolean },
 ): boolean {
-  if (a.isMinimized || b.isMinimized) return false;
+  if (a.isMinimized || b.isMinimized || a.isMaximized !== b.isMaximized) return false;
   const w = Math.min(a.region.x + a.region.width, b.region.x + b.region.width) - Math.max(a.region.x, b.region.x);
   const h = Math.min(a.region.y + a.region.height, b.region.y + b.region.height) - Math.max(a.region.y, b.region.y);
   if (w <= 0 || h <= 0) return false;

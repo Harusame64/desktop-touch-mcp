@@ -27,6 +27,8 @@ const { state } = vi.hoisted(() => ({
     twin: false,
     /** Where the twin sits (the terminal is at 0,0 100x100 on a 1000x1000 monitor). */
     twinRegion: { x: 0, y: 0, width: 100, height: 100 },
+    maximized: false,
+    monitorsThrow: false,
     minimized: false,
     /** Runs on each tab read: lets a cell move the foreground while the read is awaited. */
     onTabRead: undefined as undefined | (() => void),
@@ -38,11 +40,12 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   return {
     ...actual,
     enumWindowsInZOrder: vi.fn(() => (state.gone ? [] : [
-      wtWindow({ isCloaked: state.cloaked, title: state.title, isMinimized: state.minimized }),
+      wtWindow({ isCloaked: state.cloaked, title: state.title, isMinimized: state.minimized,
+        ...(state.maximized && { isMaximized: true, region: { x: -8, y: -8, width: 1016, height: 1016 } }) }),
       ...(state.twin ? [wtWindow({ hwnd: 0x200n, title: state.title, region: state.twinRegion })] : []),
     ])),
-    enumMonitors: vi.fn(() => [{ id: 0, handle: 1n, primary: true, bounds: { x: 0, y: 0, width: 1000, height: 1000 },
-      workArea: { x: 0, y: 0, width: 1000, height: 1000 }, dpi: 96, scale: 1 }]),
+    enumMonitors: vi.fn(() => { if (state.monitorsThrow) throw new Error("no monitors"); return [{ id: 0, handle: 1n, primary: true, bounds: { x: 0, y: 0, width: 1000, height: 1000 },
+      workArea: { x: 0, y: 0, width: 1000, height: 1000 }, dpi: 96, scale: 1 }]; }),
     getForegroundHwnd: vi.fn(() => state.fg),
     getWindowRoot: vi.fn((h: bigint) => (h === 0x101n ? WT : h)),
     getWindowTitleW: vi.fn(() => "PowerShell"),
@@ -124,6 +127,8 @@ beforeEach(() => {
   state.onTabRead = undefined;
   state.twin = false;
   state.twinRegion = { x: 0, y: 0, width: 100, height: 100 };
+  state.maximized = false;
+  state.monitorsThrow = false;
   state.gone = false;
   state.twin = false;
   state.minimized = false;
@@ -505,6 +510,28 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const { ctx, ask } = asking({ action: "accept", content: {} });
     const err = await actByHandle("echo hi", ctx).catch((e) => e);
     expect(err?.callerDetail).toMatch(/sits in the same place on screen/);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("asks when the terminal is maximized and a same-titled window sits inside it: \"maximized\" tells them apart", async () => {
+    state.twin = true;
+    state.maximized = true;
+    state.twinRegion = { x: 400, y: 400, width: 200, height: 200 };
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    await actByHandle("echo hi", ctx);
+    const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { typeIt: { description: string } } } }])[0];
+    expect(form.requestedSchema.properties.typeIt.description)
+      .toBe("Into: PowerShell, maximized on the screen (2 windows have this title) — Types: echo hi");
+  });
+
+  it("refuses, as nothing typed, when the monitors cannot be read to say which window it is", async () => {
+    state.twin = true;
+    state.twinRegion = { x: 800, y: 800, width: 100, height: 100 };
+    state.monitorsThrow = true;
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await actByHandle("echo hi", ctx).catch((e) => e);
+    expect(err?.name).toBe("TerminalForegroundRefusal");
+    expect(err?.callerDetail).toMatch(/monitors could not be read/);
     expect(ask).not.toHaveBeenCalled();
   });
 
