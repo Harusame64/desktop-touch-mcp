@@ -160,6 +160,7 @@ V1 ツール群（56 tools）は以下の役割で当面残す。削除しない
 | `visual_provider_warming` | GPU backend は attach 済みだが warm 前 | 200-500ms 後に retry / structured lane で継続。G4 retry の対象（`unavailable` と同様に扱う） |
 | `uia_provider_failed` | UIA プロバイダーが失敗 | V1 `get_ui_elements` / `click_element` で代替 |
 | `terminal_provider_failed` | terminal プロバイダーが失敗 | V1 `terminal_read` / `terminal_send` で代替 |
+| `target_title_mismatch` | `target.hwnd` と `target.windowTitle` を両方渡し、hwnd の窓の題名が渡した題名を含まない（internal #223）。読んだのは hwnd の窓 | 意図した窓か確かめる。題名の窓を読みたいなら `target.hwnd` を外して呼び直す |
 
 ### 7.2. desktop_touch — fail reason への対応
 

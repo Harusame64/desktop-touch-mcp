@@ -1911,7 +1911,7 @@ export function registerDesktopTools(server: McpServer): void {
       "Supports multiple source lanes: UIA (native), CDP (browser), terminal buffer, and visual GPU.",
       "Returns entities with leases — pass a lease to desktop_act to interact.",
       "Raw screen coordinates are NOT returned in normal mode (debug=true only).",
-      "If response.warnings[] is non-empty, results may be partial.",
+      "If response.warnings[] is non-empty, results may be partial — except dialog_resolved_via_owner_chain, parent_disabled_prefer_popup and target_title_mismatch, which say which window was read.",
       "response.constraints (when present) is a structured summary of provider limitations — use it to decide fallback without parsing warnings[] strings.",
       "constraints.entityZeroReason (when entities is empty) explains WHY: foreground_unresolved → add target.windowTitle; query_no_match → query matched nothing read (off-screen text, and text UIA does not expose — spreadsheet cell values, some document bodies and Java windows — are never in the list; a Word page is matched by the lines visible on it; with uia_tree_truncated it may also lie past the cap): scroll it into view and call again, or read visible text with screenshot(detail='ocr'); target_window_gone → the window target.hwnd named has closed; discover the window it belonged to, or call without target.hwnd; window_excluded → the target is excluded from every tool surface of this server (the key locker's own windows): nothing was read, and calling again returns the same, so target another window;",
       "uia_blind_visual_incapable → the attached visual backend recognises nothing (the default build); waiting never changes it, so enable a recognising backend or use screenshot(ocrFallback=always) / V1 tools;",
@@ -1932,7 +1932,7 @@ export function registerDesktopTools(server: McpServer): void {
       "visual_attempted_empty_cdp_fallback → CDP failed and visual also empty (browser); check --remote-debugging-port=9222 and retry;",
       "dialog_resolved_via_owner_chain → common dialog (Save As/Open) found via owner chain; targeting is now hwnd-based;",
       "parent_disabled_prefer_popup → parent window blocked by a modal; switched to targeting the active popup dialog;",
-      "target_title_mismatch → you sent target.hwnd and target.windowTitle, and that window's title does not contain the title you sent; the hwnd's window was read, so check it is the window you meant.",
+      "target_title_mismatch → you sent target.hwnd and target.windowTitle, and that window's title does not contain the title you sent; the hwnd's window was read (the hwnd wins), so check it is the window you meant.",
       // ADR-036 item 8 — the shipped sentence for the field #150 added. Without it the field
       // exists and nobody reads it: the caller that needs it is a model reading this description.
       "response.freshness says whether these entities were READ for this call. Every call " +

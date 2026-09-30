@@ -450,18 +450,28 @@ function targetTitle(
 
 /**
  * internal #223 — whether a call that named both a handle and a title named two different windows:
- * the handle's window, as this reply's `windows` list holds it, does not have the title in its own
- * (case-insensitively, the substring rule a title lookup uses). The handle wins, as it always has —
- * it is an identity, and a title can be stale — and the reply says so (the user's choice,
- * 2026-09-30). MEASURED win2 (`101f43b8`): `{hwnd: Notepad A, windowTitle: "QB23"}` read A with no
- * warning while "QB23" was another open window. False when the list does not hold the handle: then
- * nothing says what its title is.
+ * the title the read resolved for the handle does not contain the one sent (case-insensitively, the
+ * substring rule a title lookup uses). The handle wins, as it always has — it is an identity, and a
+ * title can be stale — and the reply says so (the user's choice, 2026-09-30). MEASURED win2
+ * (`101f43b8`): `{hwnd: Notepad A, windowTitle: "QB23"}` read A with no warning while "QB23" was
+ * another open window.
+ *
+ * The title compared is the READ's (`resolved`, when it is for this handle), not the `windows`
+ * list's: the read may have moved to the popup blocking the window, whose title is the one the caller
+ * sent, and the list leaves out untitled and small windows (gate 2). The list answers only when the
+ * read did not resolve a title. `@active` is a keyword, not a title, and a blank title names nothing.
  */
-function titleDisagreesWithHandle(target: TargetSpec | undefined, windows: readonly DesktopWindowMeta[]): boolean {
+function titleDisagreesWithHandle(
+  target: TargetSpec | undefined,
+  windows: readonly DesktopWindowMeta[],
+  resolved: TargetSpec | undefined,
+): boolean {
   const pinned = parseTargetHwnd(target);
-  const asked = target?.windowTitle;
-  if (pinned === undefined || !asked) return false;
-  const own = windows.find((w) => parseHwnd(w.hwnd) === pinned)?.title;
+  const asked = target?.windowTitle?.trim();
+  if (pinned === undefined || !asked || asked === "@active") return false;
+  const own = parseTargetHwnd(resolved) === pinned && resolved?.windowTitle
+    ? resolved.windowTitle
+    : windows.find((w) => parseHwnd(w.hwnd) === pinned)?.title;
   return own !== undefined && !own.toLowerCase().includes(asked.toLowerCase());
 }
 
@@ -823,7 +833,7 @@ export class DesktopFacade {
               ...(ageMs !== undefined && { ageMs }),
             },
     };
-    const warnings = titleDisagreesWithHandle(input.target, windows)
+    const warnings = titleDisagreesWithHandle(input.target, windows, rawResult.target)
       ? [...rawResult.warnings, "target_title_mismatch"]
       : rawResult.warnings;
     if (warnings.length > 0) output.warnings = warnings;
