@@ -454,7 +454,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
   it("says the text was typed when only restoring the foreground failed (it comes after Ctrl+V and Enter)", async () => {
     mockFlash.mockReturnValueOnce({ ok: false, reason: "foreground_restore_failed" } as never);
     const err = await act("echo hi\n", asking({ action: "accept", content: {} }).ctx).catch((e) => e);
-    expect(err?.callerDetail).toMatch(/The text was typed and Enter pressed.*Do not type it again/);
+    expect(err?.callerDetail).toMatch(/most likely been typed.*Read the terminal before any retry/);
   });
 
   it.each([["an NBSP", "rm\u00a0-rf x"], ["an ideographic space", "echo\u3000x"], ["a stray zero-width joiner", "rm -rf ./b\u200d/x"]])(
@@ -507,5 +507,22 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const err = await act("echo hi", ctx).catch((e) => e);
     expect(err?.callerDetail).toMatch(/no foreground paste/);
     expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("does not ask about a variation selector that follows no emoji (file\\ufe0f looks like file; PR codex)", async () => {
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await act("cat file\ufe0f", ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/control, bidirectional or zero-width/);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("does not paste when the call was cancelled during the emergency-stop check (PR codex)", async () => {
+    let cancelled = false;
+    const failsafeMod = await import("../../src/utils/failsafe.js");
+    vi.mocked(failsafeMod.checkFailsafe).mockImplementationOnce(async () => { cancelled = true; });
+    const ctx: AskContext = { ask: vi.fn(async () => ({ action: "accept" as const, content: {} })), cancelled: () => cancelled };
+    const err = await act("echo hi", ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/cancelled after the user answered/);
+    expect(mockFlash).not.toHaveBeenCalled();
   });
 });

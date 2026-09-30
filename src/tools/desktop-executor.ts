@@ -494,9 +494,6 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
       `; the user agreed to the tab "${tabBefore.name}".`,
     );
   }
-  if (callWasCancelled()) {
-    throw new TerminalForegroundRefusal("Nothing was typed: the tool call was cancelled after the user answered.");
-  }
   // The emergency stop is checked when the call starts; the paste can come up to two minutes later,
   // and it takes the foreground, so it is checked again (gate 2 on #764). Throws FailsafeError.
   // Kept a refusal: as executor_failed, its advice would be to type another way (gate 2 on #764).
@@ -507,6 +504,10 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
     throw new TerminalForegroundRefusal(
       `Nothing was typed: the emergency stop was triggered (${e instanceof Error ? e.name : "FailsafeError"}). Stop.`,
     );
+  }
+  // After the last await, so a cancel during the failsafe check is not missed (PR codex on #764).
+  if (callWasCancelled()) {
+    throw new TerminalForegroundRefusal("Nothing was typed: the tool call was cancelled after the user answered.");
   }
   // Last, after every await: the user may have brought the terminal in front while the tab was
   // being read, and the flash would then paste into it without taking or restoring anything
@@ -525,8 +526,9 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
       r.reason === "clipboard_lock_contention" ||
       r.reason === "foreground_steal_denied" ||
       r.reason === "focus_wait_timeout";
-    // Restoring the foreground comes last, after Ctrl+V and Enter: that failure means it was typed
-    // (gate 2 on #764). A focus-wait timeout returns after the terminal was brought forward and before
+    // Restoring the foreground comes last, after Ctrl+V and Enter — but the paste may have been caught
+    // by WT's paste warning, which the flash reports only when the restore succeeds (PR codex on
+    // #764). So: probably typed, not certainly. A focus-wait timeout returns after the terminal was brought forward and before
     // the restore, so nothing was typed but the terminal is left in front (PR codex on #764).
     if (r.reason === "focus_wait_timeout") {
       throw new TerminalForegroundRefusal(
@@ -536,8 +538,8 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
     }
     if (r.reason === "foreground_restore_failed") {
       throw new TerminalForegroundRefusal(
-        "The text was typed" + (trailing !== null ? " and Enter pressed" : "") + ", but the previous window " +
-        "could not be put back in front (foreground_restore_failed). Do not type it again.",
+        "The paste was sent" + (trailing !== null ? " with Enter" : "") + " and has most likely been typed, but the " +
+        "previous window could not be put back in front (foreground_restore_failed). Read the terminal before any retry: typing it again may run it twice.",
       );
     }
     throw new TerminalForegroundRefusal(
@@ -614,7 +616,9 @@ const UNSHOWABLE_CHARS =
 // An emoji before the joiner may carry VS16 or a skin-tone modifier (👩🏽‍💻, 🏃🏻‍♀️; gate 2 on #764).
 // eslint-disable-next-line no-misleading-character-class -- the class lists modifiers on purpose
 const STRAY_ZWJ = /(?<!\p{Extended_Pictographic}[\ufe0f\u{1f3fb}-\u{1f3ff}]?)\u200d|\u200d(?!\p{Extended_Pictographic})/u;
-const UNSHOWABLE = { test: (s: string): boolean => UNSHOWABLE_CHARS.test(s) || STRAY_ZWJ.test(s) };
+/** VS16 not after an emoji: shown as nothing, received as a character (`file\ufe0f`; PR codex on #764). */
+const STRAY_VS16 = /(?<!\p{Extended_Pictographic})\ufe0f/u;
+const UNSHOWABLE = { test: (s: string): boolean => UNSHOWABLE_CHARS.test(s) || STRAY_ZWJ.test(s) || STRAY_VS16.test(s) };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
