@@ -152,6 +152,35 @@ describe("the executor hands the rung the host", () => {
     expect(keyboardPost).not.toHaveBeenCalled();
   });
 
+  describe("refuses rather than type to the focus when nothing here can post into the host (codex on #758)", () => {
+    const CANNOT_POST = /^Nothing was typed: "ページ 1 のコンテンツ" can only be typed into through the window it is drawn in/;
+
+    it("a backend without the resolve and the post", async () => {
+      const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
+      const keyboardTypeBg = vi.fn();
+      const exec = createDesktopExecutor({ hwnd: String(FRAME) }, {
+        uiaClick: vi.fn(), uiaSetValue: vi.fn(), cdpClick: vi.fn(), cdpFill: vi.fn(), terminalSend: vi.fn(), keyboardTypeBg, mouseClick: vi.fn(),
+      });
+      const out = await exec(bodyOf({ hostWindowHandle: String(WWG), hostWindowClass: "_WwG" }), "type", "abc").then((v) => v, (e: unknown) => e);
+      expect((out as { name?: string }).name).toBe("KeyboardHostUnavailableError");
+      expect((out as { callerDetail?: string }).callerDetail).toMatch(CANNOT_POST);
+      expect(keyboardTypeBg).not.toHaveBeenCalled();
+    });
+
+    it("the rung's unchecked switch", async () => {
+      vi.stubEnv("DESKTOP_TOUCH_KEYBOARD_RUNG_UNCHECKED", "1");
+      try {
+        const { out, keyboardResolve, keyboardPost } = await typeInto(bodyOf({ hostWindowHandle: String(WWG), hostWindowClass: "_WwG" }));
+        expect((out as { name?: string }).name).toBe("KeyboardHostUnavailableError");
+        expect((out as { callerDetail?: string }).callerDetail).toMatch(CANNOT_POST);
+        expect(keyboardResolve).not.toHaveBeenCalled();
+        expect(keyboardPost).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+  });
+
   it("refuses as disabled when the host does not take input (a modal dialog is up; gate 2)", async () => {
     const { out, keyboardPost } = await typeInto(bodyOf({ hostWindowHandle: String(WWG), hostWindowClass: "_WwG" }), "type", { hostTakesInput: false });
     expect(out).toMatchObject({ name: "KeyboardTargetUnsafeError", ground: "disabled" });

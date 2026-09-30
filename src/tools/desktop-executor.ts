@@ -1414,6 +1414,15 @@ async function keyboardRung(
   // Internal #157: from the two values this rung hands its backends, so the row cannot say one window
   // while the lookup used another (gate 2 on public #721).
   const addressedWindowBy = addressedWindowByOf(winTitle, aimHwnd);
+  // internal #224 — the window a field is drawn in, for the resolve to post into: only a field this
+  // route was measured on (`keyboard-hosts.ts`), and only on its own road. A field whose value road
+  // failed keeps the receiver it had (gate 2).
+  const hostHwnd = why === "keyboard_only_entity" ? keyboardHostOf(entity) : undefined;
+  // Neither road below can post into the host: both type to whatever holds the focus, which in Word can
+  // be a ribbon box (codex on public #758). Before the host road there was no road for such a field.
+  if (hostHwnd !== undefined && (sw.unchecked || !d.keyboardResolve || !d.keyboardPost)) {
+    throw new KeyboardHostUnavailableError(entity, "cannot_post");
+  }
   // The switch's whole form: today's path exactly — no check, a bare "keyboard".
   if (sw.unchecked) {
     const receipt = await d.keyboardTypeBg(winTitle, text, aimHwnd);
@@ -1482,10 +1491,6 @@ async function keyboardRung(
     });
     throw goneError("native_not_found");
   }
-  // internal #224 — the window a field is drawn in, for the resolve to post into: only a field this
-  // route was measured on (`keyboard-hosts.ts`), and only on its own road. A field whose value road
-  // failed keeps the receiver it had (gate 2).
-  const hostHwnd = why === "keyboard_only_entity" ? keyboardHostOf(entity) : undefined;
   const receipt = await d.keyboardResolve(winTitle, aimHwnd, { entityHwnd, originHwnd, ...(hostHwnd !== undefined && { hostHwnd }) });
   if (valueRoadNotFound && entityHwnd !== undefined && receipt.entityWindowAlive === false) {
     probeRefusal("keyboard", "entity_not_found", aimHwnd, entity, {
@@ -1587,19 +1592,24 @@ export class KeyboardCannotReplaceError extends Error implements CallerFacingRef
 
 /**
  * internal #224 — a field whose only road is the window it is drawn in, when that window is not usable
- * now (closed or recreated since discover, moved under another window, or refusing injected input).
- * Typing to whatever holds the focus instead is the defect the road exists to avoid, so nothing is
- * typed. `executor_failed`, with this sentence as its `detail`; no probe row, for the reason
- * `NoTextRouteError` has none.
+ * now (closed or recreated since discover, moved under another window, or refusing injected input), or
+ * when this server cannot post into a given window at all (a backend without the resolve, or the
+ * rung's unchecked switch). Typing to whatever holds the focus instead is the defect the road exists
+ * to avoid, so nothing is typed. `executor_failed`, with this sentence as its `detail`; no probe row,
+ * for the reason `NoTextRouteError` has none.
  */
 export class KeyboardHostUnavailableError extends Error implements CallerFacingRefusal {
   readonly callerDetail: string;
-  constructor(entity: UiEntity) {
-    super(`the window "${entity.label ?? entity.entityId}" is drawn in is not usable now`);
+  constructor(entity: UiEntity, cause: "not_usable" | "cannot_post" = "not_usable") {
+    super(cause === "cannot_post"
+      ? `cannot post into the window "${entity.label ?? entity.entityId}" is drawn in`
+      : `the window "${entity.label ?? entity.entityId}" is drawn in is not usable now`);
     this.name = "KeyboardHostUnavailableError";
-    this.callerDetail =
-      `Nothing was typed: the window "${quotedLabel(entity)}" was drawn in when it was read is not usable now, ` +
-      `and typing to whatever holds the focus instead could land in another control. Run desktop_discover again, then type.`;
+    this.callerDetail = cause === "cannot_post"
+      ? `Nothing was typed: "${quotedLabel(entity)}" can only be typed into through the window it is drawn in, ` +
+        `and this server is not set up to type into a given window, only into whatever holds the focus, which could be another control.`
+      : `Nothing was typed: the window "${quotedLabel(entity)}" was drawn in when it was read is not usable now, ` +
+        `and typing to whatever holds the focus instead could land in another control. Run desktop_discover again, then type.`;
   }
 }
 
