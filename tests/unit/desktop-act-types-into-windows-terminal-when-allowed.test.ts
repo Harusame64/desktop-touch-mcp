@@ -371,4 +371,12 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     expect(err?.callerDetail).toMatch(/split into panes/);
     expect(mockFlash).not.toHaveBeenCalled();
   });
+
+  it("does not ask when the terminal's process cannot be identified (pid 0 is the read's failure answer, PR codex round 9)", async () => {
+    state.pid = 0;
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await act("echo hi", ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/process could not be identified/);
+    expect(ask).not.toHaveBeenCalled();
+  });
 });

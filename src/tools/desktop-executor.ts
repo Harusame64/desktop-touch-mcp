@@ -364,11 +364,17 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
     }
     let who: { pid: number; processStartTimeMs: number } | undefined;
     try { who = getWindowIdentity(hwnd); } catch { who = undefined; }
+    // `getWindowIdentity` answers pid 0 / start 0 when it cannot read, rather than throwing: two
+    // such reads would compare equal, so an unreadable identity is refused (PR codex on #764).
+    if (!who || who.pid === 0 || who.processStartTimeMs === 0) {
+      throw new TerminalForegroundRefusal(
+        "Nothing was typed: the terminal's process could not be identified, so the user's answer could not be held to it.",
+      );
+    }
     if (!asked) {
       asked = true;
       askedAbout = who;
-    } else if (askedAbout && (!who || who.pid !== askedAbout.pid || who.processStartTimeMs !== askedAbout.processStartTimeMs)) {
-      // (An identity that could not be read before the question cannot be held to; the other checks still run.)
+    } else if (!askedAbout || who.pid !== askedAbout.pid || who.processStartTimeMs !== askedAbout.processStartTimeMs) {
       throw new TerminalForegroundRefusal(
         "Nothing was typed: the terminal window the user was asked about has closed, and its handle now names another window.",
       );
