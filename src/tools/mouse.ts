@@ -44,7 +44,6 @@ import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/re
 import { runActionGuard, isAutoGuardEnabled } from "./_action-guard.js";
 import { detectTabDragRisk } from "../engine/perception/tab-drag-heuristic.js";
 import { resolveWindowTarget, findPlainTopLevelWindowByTitle } from "./_resolve-window.js";
-import { windowsTitled } from "../engine/title-match.js";
 import {
   resolveInputDestination,
   dispatchScrollWheel,
@@ -144,8 +143,9 @@ async function applyHoming(
     const windows = enumWindowsInZOrder();
     const active = windows.find((w) => w.isActive);
     if (!active || !active.title.toLowerCase().includes(windowTitle.toLowerCase())) {
-      // internal #221: among the windows on the screen — a cloaked one is on another desktop.
-      const target = windowsTitled(windows, windowTitle)[0];
+      const target = windows.find((w) =>
+        w.title.toLowerCase().includes(windowTitle.toLowerCase())
+      );
       if (target) {
         // Issue #202 P1-1 (Opus Round 1): default → 100ms wait → re-enum →
         // not-foreground → force escalate → re-enum ladder (mirror

@@ -39,7 +39,6 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
         region: { x: 0, y: 0, width: 800, height: 600 },
         isMinimized: false, isMaximized: false,
         className: "Chrome_WidgetWin_1", ownerHwnd: null,
-        isCloaked: cloaked.includes(w.hwnd),
       }));
     }),
     // internal #211 B2 — the handle is asked what the enumeration cannot say: a window it drops
@@ -846,56 +845,6 @@ describe("ADR-036 — rich narration does not describe a window it cannot addres
     windows = [{ hwnd: 0x2222n, title: "Ledger" }];
     innerHandler.mockImplementationOnce(async () => {
       cloaked = [0x2222n];
-      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
-    });
-    const r = await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
-    expect(richOf(r).diffDegraded).toBe("window_closed");
-  });
-
-  // internal #221 — win2's cells b and c: a same-titled window on another virtual desktop was
-  // counted as a sibling. Each case is paired with the same desktop and the sibling on the screen.
-  it("narrates a named window whose only same-titled sibling is on another virtual desktop (internal #221 b)", async () => {
-    windows = [{ hwnd: 0x1111n, title: SHARED_TITLE }, { hwnd: 0x2222n, title: SHARED_TITLE }];
-    cloaked = [0x1111n];
-    const r = await narrated({ windowTitle: SHARED_TITLE, hwnd: LIVE, name: "OK", narrate: "rich" } as never);
-    expect(richOf(r).diffDegraded).toBeUndefined();
-    expect(richOf(r).diffSource).toBe("uia");
-  });
-
-  it("still withholds it when that sibling is on the screen (internal #221 d)", async () => {
-    windows = [{ hwnd: 0x1111n, title: SHARED_TITLE }, { hwnd: 0x2222n, title: SHARED_TITLE }];
-    const r = await narrated({ windowTitle: SHARED_TITLE, hwnd: LIVE, name: "OK", narrate: "rich" } as never);
-    expect(richOf(r).diffDegraded).toBe("ambiguous_title");
-  });
-
-  it("says window_closed when the named window closes and its sibling is on another virtual desktop (internal #221 c)", async () => {
-    windows = [{ hwnd: 0x1111n, title: "Ledger" }, { hwnd: 0x2222n, title: "Ledger" }];
-    cloaked = [0x1111n];
-    innerHandler.mockImplementationOnce(async () => {
-      windows = [{ hwnd: 0x1111n, title: "Ledger" }];
-      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
-    });
-    const r = await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
-    expect(richOf(r).diffDegraded).toBe("window_closed");
-  });
-
-  it("says target_changed for the same close when the sibling is on the screen (internal #221 c, control)", async () => {
-    // Two windows wear the title before the action, so the pinned call is withheld up front; the
-    // sibling arrives with the action instead, which is the shape `target_changed` answers.
-    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
-    innerHandler.mockImplementationOnce(async () => {
-      windows = [{ hwnd: 0x1111n, title: "Ledger" }];
-      return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
-    });
-    const r = await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);
-    expect(richOf(r).diffDegraded).toBe("target_changed");
-  });
-
-  it("says window_closed, not target_changed, when the window that arrives is on another virtual desktop (internal #221)", async () => {
-    windows = [{ hwnd: 0x2222n, title: "Ledger" }];
-    innerHandler.mockImplementationOnce(async () => {
-      windows = [{ hwnd: 0x1111n, title: "Ledger" }];
-      cloaked = [0x1111n];
       return { content: [{ type: "text", text: JSON.stringify({ ok: true, post: {} }) }] } as never;
     });
     const r = await narrated({ windowTitle: "Ledger", hwnd: LIVE, name: "OK", narrate: "rich" } as never);

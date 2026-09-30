@@ -20,7 +20,6 @@
 
 import { withPostState } from "./_post.js";
 import { resolveWindowTarget, withPinnedResolution } from "./_resolve-window.js";
-import { windowsTitled } from "../engine/title-match.js";
 import { getUiElements, type UiElement } from "../engine/uia-bridge.js";
 import {
   UIA_DISCOVER_FALLBACK_DEPTH,
@@ -279,12 +278,9 @@ export const UIA_WRITE_NARRATION: RichNarrationOptions = {
  * kept for what is not known, not as decoration for a case that cannot happen.
  */
 /** Of these visible top-level windows, those whose title contains this one, case folded. */
-function matchingTitle<W extends { title: string; isCloaked?: boolean }>(wins: W[], windowTitle: string): W[] {
-  // internal #221 — the windows on the screen only. A cloaked one (another virtual desktop) was
-  // counted here, and made a pinned call's diff `ambiguous_title` and a closed target's
-  // `target_changed`. It cannot take the keys any more: `keyboard`'s title searches go through the
-  // same `windowsTitled`, so the window counted here and the window the keys can reach are the same.
-  return windowsTitled(wins, windowTitle);
+function matchingTitle<W extends { title: string }>(wins: W[], windowTitle: string): W[] {
+  const q = windowTitle.toLowerCase();
+  return wins.filter((w) => w.title.toLowerCase().includes(q));
 }
 
 /** The visible top-level windows whose title contains this one; throws as the enumeration does. */

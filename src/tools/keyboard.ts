@@ -68,7 +68,6 @@ function toResolvedDestination(
   };
 }
 import { resolveWindowTarget } from "./_resolve-window.js";
-import { windowsTitled } from "../engine/title-match.js";
 import {
   makeCommitWrapper,
   withEnvelopeIncludeForUnion,
@@ -1228,12 +1227,12 @@ async function focusWindowForKeyboard(
   let foregroundVerified = false;
   let forceRefused = false;
   let targetHwnd: bigint | null = null;
-  // Match by hwnd when supplied, else fall back to title-substring among the windows on the
-  // screen (internal #221: a cloaked one is on another virtual desktop).
-  const matches = (w: { title: string; hwnd: bigint; isCloaked?: boolean }): boolean =>
+  const needle = windowTitle.toLowerCase();
+  // Match by hwnd when supplied, else fall back to title-substring.
+  const matches = (w: { title: string; hwnd: bigint }): boolean =>
     explicitHwnd !== undefined
       ? w.hwnd === explicitHwnd
-      : windowsTitled([w], windowTitle).length > 0;
+      : w.title.toLowerCase().includes(needle);
   try {
     const windows = enumWindowsInZOrder();
     const active = windows.find((w) => w.isActive);
@@ -1498,7 +1497,8 @@ export function resolveEffectiveInputMethod(
   if (effectiveWindowTitle) {
     try {
       const wins = enumWindowsInZOrder();
-      const target = windowsTitled(wins, effectiveWindowTitle)[0];
+      const needle = effectiveWindowTitle.toLowerCase();
+      const target = wins.find((w) => w.title.toLowerCase().includes(needle));
       if (target) {
         const cls = getWindowClassName(target.hwnd);
         if (cls && TERMINAL_WINDOW_CLASSES.has(cls)) {
@@ -1559,7 +1559,8 @@ export const keyboardTypeHandler = async ({
       if (hwnd) {
         resolvedHwndForIme = BigInt(hwnd);
       } else if (windowTitle) {
-        const w = windowsTitled(enumWindowsInZOrder(), windowTitle)[0];
+        const needle = windowTitle.toLowerCase();
+        const w = enumWindowsInZOrder().find((x) => x.title.toLowerCase().includes(needle));
         if (w) resolvedHwndForIme = BigInt(w.hwnd);
       }
       if (resolvedHwndForIme != null && typeof nativeWin32?.win32GetImeOpenStatus === "function") {
@@ -1694,7 +1695,9 @@ export const keyboardTypeHandler = async ({
       // pinned handle it is made on the handle.
       const ffMatches = explicitHwnd !== undefined
         ? wins.filter((w) => w.hwnd === explicitHwnd)
-        : windowsTitled(wins, effectiveWindowTitle!);
+        : wins.filter((w) =>
+            w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase())
+          );
       const target = ffMatches[0];
       logResolve({
         resolver: "keyboardForegroundFlash",
@@ -1911,7 +1914,7 @@ export const keyboardTypeHandler = async ({
       // then lose the delivery itself: the keys went to the sibling.
       const bgMatches = explicitHwnd !== undefined
         ? wins.filter(w => w.hwnd === explicitHwnd)
-        : windowsTitled(wins, effectiveWindowTitle!);
+        : wins.filter(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
       // ADR-036 — the delivery below is addressed to a HANDLE, but the UIA
       // read-back that judges it asks for a window BY TITLE. With two windows
       // carrying that title the read can land on the sibling, and a verdict
@@ -1923,9 +1926,6 @@ export const keyboardTypeHandler = async ({
       // when the readers learn to take a handle (ADR-036 I-6).
       const readBackCanAddressTarget =
         explicitHwnd === undefined ||
-        // Every window wearing the title, cloaked ones too (internal #221): the read-back finds
-        // its window by name among UIA's top-level windows, and whether those include a window
-        // on another virtual desktop has not been measured.
         wins.filter(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase())).length <= 1;
       const target = bgMatches[0];
       logResolve({
@@ -2787,7 +2787,7 @@ export const keyboardPressHandler = async ({
       // ADR-036 I-4 — same handle pin as keyboard:type's background path.
       const bgPressMatches = explicitHwnd !== undefined
         ? wins.filter(w => w.hwnd === explicitHwnd)
-        : windowsTitled(wins, effectiveWindowTitle!);
+        : wins.filter(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase()));
       // ADR-036 — the delivery below is addressed to a HANDLE, but the UIA
       // read-back that judges it asks for a window BY TITLE. With two windows
       // carrying that title the read can land on the sibling, and a verdict
@@ -2799,9 +2799,6 @@ export const keyboardPressHandler = async ({
       // when the readers learn to take a handle (ADR-036 I-6).
       const readBackCanAddressTarget =
         explicitHwnd === undefined ||
-        // Every window wearing the title, cloaked ones too (internal #221): the read-back finds
-        // its window by name among UIA's top-level windows, and whether those include a window
-        // on another virtual desktop has not been measured.
         wins.filter(w => w.title.toLowerCase().includes(effectiveWindowTitle!.toLowerCase())).length <= 1;
       const target = bgPressMatches[0];
       logResolve({
