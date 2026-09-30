@@ -120,6 +120,20 @@ describe("the executor hands the rung the host", () => {
     expect(keyboardResolve).toHaveBeenCalledWith(expect.any(String), FRAME, expect.not.objectContaining({ hostHwnd: expect.anything() }));
   });
 
+  it("not on the value road's fallback: a field whose UIA setValue failed keeps its receiver (gate 2)", async () => {
+    const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
+    const receipt = { windowHwnd: FRAME, receiverHwnd: RIBBON_BOX, receiverRootHwnd: FRAME, receiverAncestors: [FRAME], ancestorsComplete: true, originRootHwnd: FRAME, aimRootHwnd: FRAME, lookupRootHwnd: FRAME, ownerChain: [] };
+    const keyboardResolve = vi.fn(async () => receipt);
+    const exec = createDesktopExecutor({ hwnd: String(FRAME) }, {
+      uiaClick: vi.fn(), uiaSetValue: vi.fn(async () => { throw new Error("no ValuePattern"); }), cdpClick: vi.fn(), cdpFill: vi.fn(), terminalSend: vi.fn(),
+      keyboardTypeBg: vi.fn(), mouseClick: vi.fn(), keyboardResolve, keyboardPost: vi.fn(async () => {}),
+    });
+    // The UIA road is open for it (no capability baked), so the keyboard is reached as the value road's fallback.
+    await exec(bodyOf({ hostWindowHandle: String(WWG), hostWindowClass: "_WwG" }, { preferredExecutors: undefined, unsupportedExecutors: undefined }), "type", "abc").catch(() => undefined);
+    expect(keyboardResolve).toHaveBeenCalled();
+    expect(keyboardResolve).toHaveBeenCalledWith(expect.any(String), FRAME, expect.not.objectContaining({ hostHwnd: expect.anything() }));
+  });
+
   it("refuses a setValue: keystrokes insert at the caret, they do not replace (gate 2)", async () => {
     const { out, keyboardPost } = await typeInto(bodyOf({ hostWindowHandle: String(WWG), hostWindowClass: "_WwG" }), "setValue");
     expect((out as { name?: string }).name).toBe("KeyboardCannotReplaceError");

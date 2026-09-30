@@ -106,8 +106,8 @@ function spreadSites(): Array<{ line: number; keys: string[] }> {
 }
 
 describe("internal #130 ⑧ — the landing facts cannot overwrite the row", () => {
-  it("finds the spread sites — four when the waive row counted them, six since the rung's two \"gone\" refusals (t1) — and the producers' own keys", () => {
-    expect(spreadSites()).toHaveLength(6);
+  it("finds the spread sites — four when the waive row counted them, six since the rung's two \"gone\" refusals (t1), seven since #224's disabled-host refusal — and the producers' own keys", () => {
+    expect(spreadSites()).toHaveLength(7);
     expect(producerKeys("probeRoute")).toEqual(["route", "hasAim", "aimHwnd", "entityId", "entityLabel"]);
     expect(producerKeys("probeRefusal")).toEqual(["rung", "refused"]);
     expect(rowWriterKeys()).toEqual(["seq", "tsMs", "pid", "seam"]);
