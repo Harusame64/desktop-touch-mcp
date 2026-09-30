@@ -111,7 +111,7 @@ export type ForegroundAnswer =
  * it has to; never throws.
  */
 export async function askToTakeForeground(
-  what: { windowTitle?: string; tabName?: string; text?: string; pressEnter?: boolean } = {},
+  what: { windowTitle?: string; tabName?: string; place?: string; text?: string; pressEnter?: boolean } = {},
 ): Promise<ForegroundAnswer> {
   const ctx = _askAls.getStore();
   if (!ctx) return { allowed: false, why: "cannot_ask" };
@@ -139,6 +139,8 @@ export async function askToTakeForeground(
               description: what.text !== undefined
                 ? `${what.windowTitle !== undefined ? `Into: ${what.windowTitle}` : ""}` +
                   `${what.tabName !== undefined && what.tabName !== what.windowTitle ? ` (tab: ${what.tabName})` : ""}` +
+                  // Where it is, when another window wears the same title (#764, win2).
+                  `${what.place !== undefined ? `, ${what.place}` : ""}` +
                   `${what.windowTitle !== undefined ? " — " : ""}` +
                   `Types: ${what.text}${what.pressEnter ? "  — then presses Enter" : ""}`
                 : "Accept to type it; untick or Decline to refuse",

@@ -317,8 +317,48 @@ const TERMINAL_FOREGROUND_REFUSALS: Record<ForegroundRefusal, string> = {
  * up to two minutes (ASK_TIMEOUT_MS), and the user may have moved the terminal to another desktop or closed it meanwhile
  * (gate 2 on #764).
  */
+/**
+ * Where a window is, in the words a person uses to find it: "at the upper left of the main monitor",
+ * "maximized on the right monitor", "minimized". The screen is cut in thirds each way by the window's
+ * centre; the monitor is named only when there is more than one, by where it sits from the main one.
+ * Two windows given the same words cannot be told apart by them (the caller refuses then).
+ */
+export function placeOnScreen(
+  w: { region: { x: number; y: number; width: number; height: number }; isMinimized: boolean; isMaximized: boolean },
+  monitors: ReadonlyArray<{ primary: boolean; bounds: { x: number; y: number; width: number; height: number } }>,
+): string {
+  if (w.isMinimized) return "minimized";
+  const cx = w.region.x + w.region.width / 2;
+  const cy = w.region.y + w.region.height / 2;
+  const centre = (b: { x: number; y: number; width: number; height: number }) => ({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
+  const inside = (b: { x: number; y: number; width: number; height: number }) =>
+    cx >= b.x && cx < b.x + b.width && cy >= b.y && cy < b.y + b.height;
+  // The monitor holding the centre, else the nearest one (a window mostly off screen).
+  const mon = monitors.find((m) => inside(m.bounds)) ?? [...monitors].sort((a, b) => {
+    const da = centre(a.bounds), db = centre(b.bounds);
+    return Math.hypot(da.x - cx, da.y - cy) - Math.hypot(db.x - cx, db.y - cy);
+  })[0];
+  let monitorWords = "the screen";
+  if (monitors.length > 1 && mon) {
+    const main = monitors.find((m) => m.primary) ?? monitors[0]!;
+    if (mon === main) monitorWords = "the main monitor";
+    else {
+      const a = centre(main.bounds), b = centre(mon.bounds);
+      const dx = b.x - a.x, dy = b.y - a.y;
+      monitorWords = Math.abs(dx) >= Math.abs(dy) ? (dx < 0 ? "the left monitor" : "the right monitor") : (dy < 0 ? "the upper monitor" : "the lower monitor");
+    }
+  }
+  if (w.isMaximized) return `maximized on ${monitorWords}`;
+  if (!mon) return "somewhere off screen";
+  const b = mon.bounds;
+  const col = cx < b.x + b.width / 3 ? "left" : cx >= b.x + (2 * b.width) / 3 ? "right" : "";
+  const row = cy < b.y + b.height / 3 ? "top" : cy >= b.y + (2 * b.height) / 3 ? "bottom" : "";
+  const where = row && col ? `${row === "top" ? "upper" : "lower"} ${col}` : row || col || "centre";
+  return `at the ${where} of ${monitorWords}`;
+}
+
 export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: string): Promise<void> {
-  const { enumWindowsInZOrder, getWindowIdentity, getForegroundHwnd, getWindowRoot } = await import("../engine/win32.js");
+  const { enumWindowsInZOrder, enumMonitors, getWindowIdentity, getForegroundHwnd, getWindowRoot } = await import("../engine/win32.js");
   const { injectViaForegroundFlash } = await import("../engine/bg-input.js");
   const { nativeWin32 } = await import("../engine/native-engine.js");
   // Checked before asking: without the native flash, the user would be asked for nothing (gate 2 on #764).
@@ -344,6 +384,14 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
    */
   let askedAbout: { pid: number; processStartTimeMs: number } | undefined;
   let asked = false;
+  /**
+   * Where the terminal was on screen when the user was asked, said only when another window wears the
+   * same title: the question shows the title, and two same-titled windows would look alike (win2
+   * measured the paste landing in the upper of two, #764; the user chose to say where rather than
+   * refuse). Held to after the answer, since the user found the window by it.
+   */
+  let askedPlace: string | undefined;
+  let placeRead = false;
   /**
    * The terminal must not be the window in front. While the user answers, the window in front is
    * the one showing the question; when that is this terminal, the tab selected is the one the user
@@ -410,7 +458,31 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
         `Nothing was typed: this terminal cannot be pasted into through the foreground (${channel.kind}).`,
       );
     }
-    return { ...channel, windowTitle: win.title };
+    // Only windows wearing exactly the title the question shows can be mistaken for it.
+    const twins = wins.filter((w) => w.hwnd !== hwnd && w.title === win.title);
+    let place: string | undefined;
+    if (twins.length > 0) {
+      const monitors = enumMonitors();
+      place = placeOnScreen(win, monitors);
+      if (twins.some((t) => placeOnScreen(t, monitors) === place)) {
+        throw new TerminalForegroundRefusal(
+          `Nothing was typed: another window is titled "${win.title}" and sits in the same place on screen ` +
+          `(${place}), so the question could not show which one it types into. Move one of them, or rename a tab.`,
+        );
+      }
+      place = `${place} (${twins.length + 1} windows have this title)`;
+    }
+    if (!placeRead) {
+      placeRead = true;
+      askedPlace = place;
+    } else if (place !== askedPlace) {
+      // Includes a twin that appeared or left: the question said, or did not say, where it was.
+      throw new TerminalForegroundRefusal(
+        "Nothing was typed: while the user was answering, the terminal moved or a window with its title " +
+        "opened, closed or moved, so where the question said it was no longer holds.",
+      );
+    }
+    return { ...channel, windowTitle: win.title, place };
   };
 
   const before = await whereIsIt();
@@ -477,7 +549,7 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
     );
   }
   const answer = await askToTakeForeground({
-    windowTitle: before.windowTitle, tabName: tabBefore.name, text: line, pressEnter: trailing !== null,
+    windowTitle: before.windowTitle, tabName: tabBefore.name, place: before.place, text: line, pressEnter: trailing !== null,
   });
   if (!answer.allowed) throw new TerminalForegroundRefusal(TERMINAL_FOREGROUND_REFUSALS[answer.why]);
   const channel = await whereIsIt();
@@ -3052,15 +3124,9 @@ function getSharedRealDeps(): ExecutorDeps {
       } catch (err) {
         // internal #227: Windows Terminal takes no posted characters; with the user's yes, paste.
         if (!(err instanceof BackgroundTerminalUnsupportedError) || err.reason !== "wt_xaml_pipeline" || typeof err.hwnd !== "bigint") throw err;
-        // Found by title (no handle), the window is the first that wears it, and the question can
-        // name only that title: with two such windows the user could not tell which one they allow
-        // (gate 2 on #764).
-        if (hwnd === undefined && wins.filter((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase())).length > 1) {
-          throw new TerminalForegroundRefusal(
-            `Nothing was typed: more than one window is titled like "${windowTitle}", and the question could not ` +
-            "say which one it types into. Re-run desktop_discover with the window's hwnd (target.hwnd).",
-          );
-        }
+        // A second window wearing the same title is handled there, by saying where this one is: the
+        // handle here comes from discover even when the caller named a title, so "no handle" never
+        // told the two apart (win2 measured the paste landing in the upper of two, #764).
         await pasteIntoTerminalThroughForeground(err.hwnd, text);
       }
     },

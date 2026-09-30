@@ -25,6 +25,8 @@ const { state } = vi.hoisted(() => ({
     gone: false,
     /** A second window wears the same title. */
     twin: false,
+    /** Where the twin sits (the terminal is at 0,0 100x100 on a 1000x1000 monitor). */
+    twinRegion: { x: 0, y: 0, width: 100, height: 100 },
     minimized: false,
     /** Runs on each tab read: lets a cell move the foreground while the read is awaited. */
     onTabRead: undefined as undefined | (() => void),
@@ -37,8 +39,10 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
     ...actual,
     enumWindowsInZOrder: vi.fn(() => (state.gone ? [] : [
       wtWindow({ isCloaked: state.cloaked, title: state.title, isMinimized: state.minimized }),
-      ...(state.twin ? [wtWindow({ hwnd: 0x200n, title: state.title })] : []),
+      ...(state.twin ? [wtWindow({ hwnd: 0x200n, title: state.title, region: state.twinRegion })] : []),
     ])),
+    enumMonitors: vi.fn(() => [{ id: 0, handle: 1n, primary: true, bounds: { x: 0, y: 0, width: 1000, height: 1000 },
+      workArea: { x: 0, y: 0, width: 1000, height: 1000 }, dpi: 96, scale: 1 }]),
     getForegroundHwnd: vi.fn(() => state.fg),
     getWindowRoot: vi.fn((h: bigint) => (h === 0x101n ? WT : h)),
     getWindowTitleW: vi.fn(() => "PowerShell"),
@@ -118,6 +122,8 @@ beforeEach(() => {
   state.tab = { name: "PowerShell", runtimeId: "42.1.4.263", paneCount: 1 };
   state.fg = 0x999n;
   state.onTabRead = undefined;
+  state.twin = false;
+  state.twinRegion = { x: 0, y: 0, width: 100, height: 100 };
   state.gone = false;
   state.twin = false;
   state.minimized = false;
@@ -465,12 +471,47 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
       expect(ask).not.toHaveBeenCalled();
     });
 
-  it("does not ask when two windows wear the title the act found its terminal by (no handle)", async () => {
+  // win2 on 8587774d: the act always carries the handle discover resolved, so a check on "no handle"
+  // never ran and the paste landed in the upper of two same-titled windows. Both cells aim by handle.
+  const actByHandle = (text: string, ctx: AskContext | null) =>
+    runWithAskContext(ctx, () => createDesktopExecutor({ windowTitle: "PowerShell", hwnd: String(WT) })(terminalInput, "type", text));
+
+  it("says where the terminal is when another window wears its title (#764, win2)", async () => {
     state.twin = true;
+    state.twinRegion = { x: 800, y: 800, width: 100, height: 100 };
     const { ctx, ask } = asking({ action: "accept", content: {} });
-    const err = await act("echo hi", ctx).catch((e) => e);
-    expect(err?.callerDetail).toMatch(/more than one window is titled like/);
+    await actByHandle("echo hi", ctx);
+    const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { typeIt: { description: string } } } }])[0];
+    expect(form.requestedSchema.properties.typeIt.description)
+      .toBe("Into: PowerShell, at the upper left of the screen (2 windows have this title) — Types: echo hi");
+    expect(mockFlash).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not ask when another window wears its title in the same place (#764, win2)", async () => {
+    state.twin = true;
+    state.twinRegion = { x: 10, y: 10, width: 100, height: 100 };
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await actByHandle("echo hi", ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/sits in the same place on screen \(at the upper left of the screen\)/);
     expect(ask).not.toHaveBeenCalled();
+    expect(mockFlash).not.toHaveBeenCalled();
+  });
+
+  it("refuses when a window with the terminal's title opens while the user answers", async () => {
+    state.twinRegion = { x: 800, y: 800, width: 100, height: 100 };
+    const ask = vi.fn(async () => { state.twin = true; return { action: "accept" as const, content: {} }; });
+    const err = await actByHandle("echo hi", { ask } as AskContext).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/where the question said it was no longer holds/);
+    expect(mockFlash).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the same-titled window moves to where the question said the terminal was", async () => {
+    state.twin = true;
+    state.twinRegion = { x: 800, y: 800, width: 100, height: 100 };
+    const ask = vi.fn(async () => { state.twinRegion = { x: 10, y: 10, width: 100, height: 100 }; return { action: "accept" as const, content: {} }; });
+    const err = await actByHandle("echo hi", { ask } as AskContext).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/sits in the same place on screen/);
+    expect(mockFlash).not.toHaveBeenCalled();
   });
 
   it("names the tab when it differs from the window title (a fixed-title WT window, PR codex)", async () => {
@@ -524,5 +565,32 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const err = await act("echo hi", ctx).catch((e) => e);
     expect(err?.callerDetail).toMatch(/cancelled after the user answered/);
     expect(mockFlash).not.toHaveBeenCalled();
+  });
+});
+
+describe("placeOnScreen — the words the question uses to tell two same-titled windows apart", () => {
+  const mon = (x: number, primary: boolean) => ({ primary, bounds: { x, y: 0, width: 900, height: 900 } });
+  const win = (x: number, y: number, extra: Partial<{ isMinimized: boolean; isMaximized: boolean }> = {}) =>
+    ({ region: { x, y, width: 100, height: 100 }, isMinimized: false, isMaximized: false, ...extra });
+
+  it.each([
+    [win(0, 0), "at the upper left of the screen"],
+    [win(400, 0), "at the top of the screen"],
+    [win(800, 400), "at the right of the screen"],
+    [win(400, 400), "at the centre of the screen"],
+    [win(800, 800), "at the lower right of the screen"],
+    [win(0, 0, { isMaximized: true }), "maximized on the screen"],
+    [win(0, 0, { isMinimized: true }), "minimized"],
+  ])("one monitor: %o → %s", async (w, words) => {
+    const { placeOnScreen } = await import("../../src/tools/desktop-executor.js");
+    expect(placeOnScreen(w, [mon(0, true)])).toBe(words);
+  });
+
+  it("names the monitor by where it sits from the main one, only when there are several", async () => {
+    const { placeOnScreen } = await import("../../src/tools/desktop-executor.js");
+    const two = [mon(0, true), mon(-900, false)];
+    expect(placeOnScreen(win(0, 0), two)).toBe("at the upper left of the main monitor");
+    expect(placeOnScreen(win(-900, 0), two)).toBe("at the upper left of the left monitor");
+    expect(placeOnScreen(win(-900, 0, { isMaximized: true }), two)).toBe("maximized on the left monitor");
   });
 });
