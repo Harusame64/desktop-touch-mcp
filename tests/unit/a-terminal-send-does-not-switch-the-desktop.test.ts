@@ -30,8 +30,13 @@ vi.mock("../../src/engine/bg-input.js", () => ({
   canInjectViaPostMessage: vi.fn(() => ({ supported: false, reason: "class_unknown" })),
   postCharsToHwnd: vi.fn(),
   postEnterToHwnd: vi.fn(),
+  injectViaForegroundFlash: vi.fn(() => ({ ok: true, result: {} })),
   isBgAutoEnabled: vi.fn(() => false),
   TERMINAL_WINDOW_CLASSES: new Set<string>(),
+}));
+
+vi.mock("../../src/engine/background-channel-resolver.js", () => ({
+  resolveBackgroundInputChannel: vi.fn((hwnd: bigint) => ({ kind: "clipboard_flash", hwnd, pid: 42 })),
 }));
 
 vi.mock("../../src/tools/_focus.js", () => ({
@@ -119,5 +124,17 @@ describe("internal #221 — terminal:send and a window on another virtual deskto
     const r = parseResult(await send());
     expect(r.code).not.toBe("WindowOnOtherDesktop");
     expect(mockRestore).toHaveBeenCalledWith(100n);
+  });
+
+  it("refuses method:'foreground_flash' to a terminal on another desktop, and does not flash", async () => {
+    const bg = await import("../../src/engine/bg-input.js");
+    mockEnum.mockReturnValue([offDesktop(100n), onScreen(200n)]);
+    const r = parseResult(await terminalSendHandler({
+      windowTitle: "PowerShell", input: "echo hi", method: "foreground_flash", pressEnter: false, focusFirst: true,
+      restoreFocus: false, preferClipboard: false, pasteKey: "auto", trackFocus: false, settleMs: 0,
+    }));
+    expect(r.code).toBe("WindowOnOtherDesktop");
+    expect(r.context).toMatchObject({ hwnd: "100", method: "foreground_flash" });
+    expect(vi.mocked(bg.injectViaForegroundFlash)).not.toHaveBeenCalled();
   });
 });

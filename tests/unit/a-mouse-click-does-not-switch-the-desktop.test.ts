@@ -85,7 +85,7 @@ vi.mock("../../src/tools/_resolve-window.js", () => ({
   })),
 }));
 
-import { mouseClickHandler } from "../../src/tools/mouse.js";
+import { mouseClickHandler, mouseMoveHandler, mouseDragHandler, scrollHandler } from "../../src/tools/mouse.js";
 import * as win32 from "../../src/engine/win32.js";
 import * as nutjs from "../../src/engine/nutjs.js";
 
@@ -141,5 +141,16 @@ describe("internal #221 — mouse_click and a window on another virtual desktop"
     const r = parseResult(await click());
     expect(r.code).not.toBe("WindowOnOtherDesktop");
     expect(mockRestore).toHaveBeenCalledWith(100n, { force: false });
+  });
+
+  it.each([
+    ["mouse_move", () => mouseMoveHandler({ x: 400, y: 300, speed: 0, homing: true, windowTitle: "QV221" })],
+    ["mouse_drag", () => mouseDragHandler({ startX: 400, startY: 300, endX: 500, endY: 300, speed: 0, homing: true, windowTitle: "QV221" })],
+    ["scroll", () => scrollHandler({ direction: "down", amount: 1, x: 400, y: 300, speed: 0, homing: true, windowTitle: "QV221" })],
+  ])("%s refuses the same way", async (_name, call) => {
+    mockEnum.mockReturnValue([offDesktop(100n), onScreen(200n)]);
+    const r = parseResult(await call());
+    expect(r.code).toBe("WindowOnOtherDesktop");
+    expect(mockRestore).not.toHaveBeenCalled();
   });
 });
