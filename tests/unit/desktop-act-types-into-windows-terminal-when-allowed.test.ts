@@ -556,6 +556,23 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     expect(ask).not.toHaveBeenCalled();
   });
 
+  it("asks when a maximized window with its title is behind the terminal: the terminal is seen in front (gate 2)", async () => {
+    state.twin = true;
+    state.twinMaximized = true;
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    await actByHandle("echo hi", ctx);
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(mockFlash).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts the whole line in UTF-16 units, so emoji do not stretch it past what was measured (gate 2)", async () => {
+    // "Into: PowerShell (its selected tab) — Types: " is 46 units; 300 astral emoji are 300 code points, 600 units.
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await actByHandle("\u{1f600}".repeat(300), ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/question's line .* is longer than it can show in full/);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
   it("does not ask when the whole line, not the text alone, is longer than the question shows in full (PR codex)", async () => {
     state.title = "t".repeat(150);
     state.tab = { name: "b".repeat(150), runtimeId: "42.1.4.263", paneCount: 1 };
