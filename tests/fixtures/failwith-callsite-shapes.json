@@ -83,7 +83,7 @@
     },
     {
       "file": "src/tools/_off-desktop.ts",
-      "line": 82,
+      "line": 79,
       "tool": "(dynamic)",
       "errKind": "new-error",
       "contextShape": "object-plain"
@@ -307,42 +307,42 @@
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 1925,
+      "line": 1923,
       "tool": "keyboard:type",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2376,
+      "line": 2374,
       "tool": "keyboard:type",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3086,
+      "line": 3084,
       "tool": "keyboard:press",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3160,
+      "line": 3158,
       "tool": "keyboard:press",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3214,
+      "line": 3212,
       "tool": "keyboard:sequence",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3500,
+      "line": 3498,
       "tool": "keyboard:sequence",
       "errKind": "identifier",
       "contextShape": "none"
