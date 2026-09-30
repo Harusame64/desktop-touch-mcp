@@ -2440,7 +2440,13 @@ export function createDesktopExecutor(
     ) {
       // internal #224 — a field with no value to write takes keystrokes at its caret, which inserts: a
       // setValue asked for its contents to be replaced, and the keyboard cannot do that (gate 2).
-      if (action === "setValue" && !(entity.patterns ?? []).includes("ValuePattern")) {
+      // Only the fields whose keyboard route is the host's (`keyboard-hosts.ts`): a field offered the
+      // keyboard for another reason keeps what setValue did for it.
+      if (
+        action === "setValue" &&
+        entity.locator?.uia?.nativeWindowHandle === undefined &&
+        isKeyboardHostClass(entity.locator?.uia?.hostWindowClass)
+      ) {
         throw new KeyboardCannotReplaceError(entity);
       }
       return await keyboardRung(d, entity, winTitle, aimHwnd, text, "keyboard_only_entity");
