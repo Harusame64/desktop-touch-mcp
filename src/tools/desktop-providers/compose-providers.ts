@@ -41,7 +41,7 @@ import { resolveWindowTarget }     from "../_resolve-window.js";
 import { WindowExcludedError }     from "../../engine/tool-exclusion.js";
 import { probeAim, probeLane, type ProbeLane } from "../../engine/aim-probe.js";
 import { containsPoint, toAim, readWindowIdentityFields, type WindowIdentity, type WindowRect, type AimOrigin } from "../../engine/aim.js";
-import { getWindowIdentity, getWindowClassName, getWindowTitleW, getWindowRectByHwnd, windowIsAlive } from "../../engine/win32.js";
+import { enumWindowsInZOrder, getForegroundHwnd, getWindowIdentity, getWindowClassName, getWindowTitleW, getWindowRectByHwnd, windowIsAlive } from "../../engine/win32.js";
 
 // ── G4: transient visual warnings trigger a single 200ms retry ────────────────
 // Covers the first-request race where VisualRuntime.attach() (fire-and-forget in
@@ -78,21 +78,48 @@ function settledLane(lane: ProbeLane, s: PromiseSettledResult<ProviderResult>, f
 }
 
 /**
- * Heuristic terminal title patterns.
+ * internal #220 — the top-level window classes the terminal lane reads, decided by the window and not
+ * by its title. MEASURED win2 (2026-09-30, `101f43b8`): a regex over the title sent a Chrome page
+ * titled "Bash scripting" down the terminal road (hwnd targets too, since their real title is filled
+ * in), pushing the page's own controls to entries 14–18 and skipping OCR, while of eight real
+ * terminals only a Windows Terminal tab titled "PowerShell" matched. Their classes: conhost
+ * (cmd, PowerShell, WSL) `ConsoleWindowClass`, Windows Terminal (and cmd.exe when it is the default
+ * terminal app) `CASCADIA_HOSTING_WINDOW_CLASS`. Not here: Git Bash's `mintty` (whether the lane can
+ * read it is not measured) and VS Code's integrated terminal (a page inside `Chrome_WidgetWin_1`).
  *
- * Design notes:
- * - Use word boundaries (\b) for short tokens like "sh", "wsl", "cmd" to avoid
- *   matching "Photoshop", "Dashboard", "cmd inside longer title", etc.
- * - "cmd.exe" doesn't appear in window titles — use "Command Prompt" instead.
- * - "terminal" is a common substring — anchor with \b to reduce false positives.
- *
- * A future improvement: prefer processName checks (more reliable than title).
+ * Not `bg-input.ts`'s `TERMINAL_WINDOW_CLASSES`: that set answers "takes a posted WM_CHAR", which
+ * Windows Terminal does not, and this one answers "has a buffer the lane reads".
  */
-const TERMINAL_TITLE_PATTERN =
-  /powershell|\bcommand prompt\b|\bterminal\b|\bbash\b|\b(wsl|zsh|fish|ksh|sh)\b|git.?bash|conemu|mintty/i;
+const TERMINAL_READ_CLASSES: ReadonlySet<string> = new Set(["ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS"]);
 
-export function isTerminalTarget(target: TargetSpec | undefined): boolean {
-  return TERMINAL_TITLE_PATTERN.test(target?.windowTitle ?? "");
+/** How `isTerminalTarget` finds a target's window and its class; injectable for tests. */
+export interface TerminalLook {
+  windowByTitle(title: string): bigint | undefined;
+  classOf(hwnd: bigint): string;
+}
+
+const OS_LOOK: TerminalLook = {
+  windowByTitle(title) {
+    try {
+      if (title === "@active") return getForegroundHwnd() ?? undefined;
+      const needle = title.toLowerCase();
+      return enumWindowsInZOrder().find((w) => w.title.toLowerCase().includes(needle))?.hwnd;
+    } catch {
+      return undefined;
+    }
+  },
+  classOf: (hwnd) => getWindowClassName(hwnd),
+};
+
+/**
+ * Whether the target's window is a terminal: its handle when it names one, else the first window
+ * answering to its title, as the UIA lane finds it. A window that cannot be found or whose class
+ * cannot be read is not a terminal — the native road, which reads it with UIA as before.
+ */
+export function isTerminalTarget(target: TargetSpec | undefined, look: TerminalLook = OS_LOOK): boolean {
+  if (!target || target.tabId) return false;
+  const hwnd = parseTargetHwnd(target) ?? (target.windowTitle ? look.windowByTitle(target.windowTitle) : undefined);
+  return hwnd !== undefined && TERMINAL_READ_CLASSES.has(look.classOf(hwnd));
 }
 
 export function isBrowserTarget(target: TargetSpec | undefined): boolean {

@@ -31,13 +31,9 @@ export async function fetchTerminalCandidates(
   // buffer of the window it writes to rather than the first one answering to the title. That
   // half is live.
   //
-  // The handle-ONLY half is not, and the door below is open ahead of it: nothing reaches this
-  // provider except through `isTerminalTarget`, which is a regex over `target.windowTitle`
-  // alone (`compose-providers.ts`) — so a session known only by handle is never a terminal, no
-  // matter what class its window is. Deciding that by window class instead changes WHICH
-  // provider runs for a given target, so it moves on its own rather than riding here
-  // (2ゲート目の指摘: this branch is unreachable today, and saying so is cheaper than pretending
-  // it is not there).
+  // Nothing reaches this provider except through `isTerminalTarget` (`compose-providers.ts`),
+  // which decides by the window's class since internal #220, so a session known only by handle
+  // reaches it too; `normalizeTarget` has usually filled in its title by then.
   const pinned = parseTargetHwnd(target);
   if (!target?.windowTitle && pinned === undefined) {
     return probeLane("terminal", "skipped", { why: "no_target" }, { candidates: [], warnings: [] });

@@ -48,21 +48,52 @@ describe("isBrowserTarget", () => {
   });
 });
 
-describe("isTerminalTarget", () => {
-  it("detects PowerShell, bash, terminal, WSL, zsh", () => {
-    expect(isTerminalTarget({ windowTitle: "Windows PowerShell" })).toBe(true);
-    expect(isTerminalTarget({ windowTitle: "PowerShell 7" })).toBe(true);
-    expect(isTerminalTarget({ windowTitle: "Git Bash" })).toBe(true);
-    expect(isTerminalTarget({ windowTitle: "WSL: Ubuntu" })).toBe(true);
-    expect(isTerminalTarget({ windowTitle: "Windows Terminal" })).toBe(true);
-    expect(isTerminalTarget({ windowTitle: "Command Prompt" })).toBe(true);
+// internal #220 — a terminal is decided by its window's class, not its title. The desktop win2 measured
+// (2026-09-30), as title → [handle, class].
+const DESKTOP: Record<string, [bigint, string]> = {
+  "FX-WT": [11n, "CASCADIA_HOSTING_WINDOW_CLASS"],
+  "PowerShell": [12n, "CASCADIA_HOSTING_WINDOW_CLASS"],
+  "FX-CON": [13n, "ConsoleWindowClass"],
+  "user@host: /mnt/d/src": [14n, "ConsoleWindowClass"],
+  "MINGW64:D:/git": [15n, "mintty"],
+  "Bash scripting QT20X - Google Chrome": [16n, "Chrome_WidgetWin_1"],
+  "Visual Studio Code": [17n, "Chrome_WidgetWin_1"],
+  "Notepad": [18n, "Notepad"],
+};
+const look = {
+  windowByTitle: (t: string) => Object.entries(DESKTOP).find(([title]) => title.toLowerCase().includes(t.toLowerCase()))?.[1][0],
+  classOf: (h: bigint) => Object.values(DESKTOP).find(([hwnd]) => hwnd === h)?.[1] ?? "",
+};
+
+describe("isTerminalTarget (internal #220: by the window's class)", () => {
+  it("is true for conhost and Windows Terminal windows, whatever their title says", () => {
+    expect(isTerminalTarget({ windowTitle: "FX-WT" }, look)).toBe(true);
+    expect(isTerminalTarget({ windowTitle: "PowerShell" }, look)).toBe(true);
+    expect(isTerminalTarget({ windowTitle: "FX-CON" }, look)).toBe(true);
+    expect(isTerminalTarget({ windowTitle: "user@host" }, look)).toBe(true);
   });
-  it("false for non-terminal windows — no false positives", () => {
-    expect(isTerminalTarget({ windowTitle: "Notepad" })).toBe(false);
-    expect(isTerminalTarget({ windowTitle: "Chrome" })).toBe(false);
-    expect(isTerminalTarget({ windowTitle: "Photoshop 2024" })).toBe(false);
-    expect(isTerminalTarget({ windowTitle: "Dashboard" })).toBe(false);
-    expect(isTerminalTarget(undefined)).toBe(false);
+
+  it("is false for a browser page whose title names a shell (the defect)", () => {
+    expect(isTerminalTarget({ windowTitle: "Bash scripting" }, look)).toBe(false);
+    expect(isTerminalTarget({ hwnd: "16", windowTitle: "Bash scripting QT20X - Google Chrome" }, look)).toBe(false);
+  });
+
+  it("decides a handle by its own window, not by the title beside it", () => {
+    expect(isTerminalTarget({ hwnd: "13" }, look)).toBe(true);
+    expect(isTerminalTarget({ hwnd: "13", windowTitle: "Bash scripting" }, look)).toBe(true);
+    expect(isTerminalTarget({ hwnd: "16", windowTitle: "PowerShell" }, look)).toBe(false);
+  });
+
+  it("is false for mintty and VS Code (not measured / not a terminal window) and ordinary windows", () => {
+    expect(isTerminalTarget({ windowTitle: "MINGW64" }, look)).toBe(false);
+    expect(isTerminalTarget({ windowTitle: "Visual Studio Code" }, look)).toBe(false);
+    expect(isTerminalTarget({ windowTitle: "Notepad" }, look)).toBe(false);
+  });
+
+  it("is false when no window answers, and for no target or a tab", () => {
+    expect(isTerminalTarget({ windowTitle: "Nothing like this" }, look)).toBe(false);
+    expect(isTerminalTarget(undefined, look)).toBe(false);
+    expect(isTerminalTarget({ tabId: "tab-1", windowTitle: "FX-WT" }, look)).toBe(false);
   });
 });
 
@@ -75,7 +106,7 @@ describe("composeCandidates — routing policy (P2-B)", () => {
   });
 
   it("terminal target routes to terminal path (not browser)", () => {
-    expect(isTerminalTarget({ windowTitle: "PowerShell" })).toBe(true);
+    expect(isTerminalTarget({ windowTitle: "PowerShell" }, look)).toBe(true);
     expect(isBrowserTarget({ windowTitle: "PowerShell" })).toBe(false);
   });
 

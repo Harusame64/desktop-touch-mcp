@@ -100,6 +100,13 @@
   Now the text visible on each page shown is matched as well. The text is only matched: it is not
   in the reply, and no other tool returns it. Text scrolled out of view is still not matched.
 
+- **`desktop_discover` tells a terminal by its window, not its title.** A browser page titled
+  "Bash scripting" (or any title naming a shell) was read as a terminal: a terminal lane ran on it,
+  the page's own controls fell to the bottom of the list, and OCR was skipped. Most real terminals,
+  meanwhile, were not read as one unless their title named a shell. A window is now a terminal when
+  it is a console window (cmd, PowerShell, WSL) or a Windows Terminal window, whatever its title.
+  Git Bash (mintty) and VS Code's integrated terminal are read as ordinary windows, as before.
+
 - **A paste made while the IME was on says it may not have landed.** With an IME composition
   pending, `keyboard(action:'type', use_clipboard:true)` and `terminal(action:'send')` pasted into
   the IME, inserted nothing, and answered `ok:true`. Whether a composition is pending cannot be read
