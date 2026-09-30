@@ -102,15 +102,16 @@ describe("fetchUiaCandidates — what it asks the bridge for (ADR-036)", () => {
     // title; with the read always scoped that said nothing the scoping did not.
     uiaBridgeMocks.getUiElements.mockClear();
     await fetchUiaCandidates({ windowTitle: "Untitled - Notepad", hwnd: "4919" });
-    // internal #211: the PowerShell road's own caps travel with every read.
-    expect(uiaBridgeMocks.getUiElements.mock.lastCall![4]).toEqual({ pinnedHwnd: 4919n, fallbackLimits: { maxDepth: 4, maxElements: 80 } });
+    // internal #211: the PowerShell road's own caps travel with every read, and internal #217's ask
+    // for a Word page's visible text.
+    expect(uiaBridgeMocks.getUiElements.mock.lastCall![4]).toEqual({ pinnedHwnd: 4919n, fallbackLimits: { maxDepth: 4, maxElements: 80 }, readBodyText: true });
   });
 
   it("asks for nothing when the target carries no handle", async () => {
     uiaBridgeMocks.getUiElements.mockClear();
     await fetchUiaCandidates({ windowTitle: "Untitled - Notepad" });
     // No scoping: nothing beyond the PowerShell road's caps (internal #211).
-    expect(uiaBridgeMocks.getUiElements.mock.lastCall![4]).toEqual({ fallbackLimits: { maxDepth: 4, maxElements: 80 } });
+    expect(uiaBridgeMocks.getUiElements.mock.lastCall![4]).toEqual({ fallbackLimits: { maxDepth: 4, maxElements: 80 }, readBodyText: true });
   });
 
   it("says so when the handle cannot be read, as the OCR lane does", async () => {
@@ -121,7 +122,7 @@ describe("fetchUiaCandidates — what it asks the bridge for (ADR-036)", () => {
     uiaBridgeMocks.getUiElements.mockClear();
     const r = await fetchUiaCandidates({ windowTitle: "Untitled - Notepad", hwnd: "0" });
     // No scoping: nothing beyond the PowerShell road's caps (internal #211).
-    expect(uiaBridgeMocks.getUiElements.mock.lastCall![4]).toEqual({ fallbackLimits: { maxDepth: 4, maxElements: 80 } });
+    expect(uiaBridgeMocks.getUiElements.mock.lastCall![4]).toEqual({ fallbackLimits: { maxDepth: 4, maxElements: 80 }, readBodyText: true });
     expect(r.warnings).toContain("target_hwnd_unparseable");
   });
 });
