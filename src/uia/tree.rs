@@ -69,8 +69,9 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
     let fetch_values = opts.fetch_values.unwrap_or(false);
     let read_body_text = opts.read_body_text.unwrap_or(false);
     // Word's text reads share the read's 8 s timeout with everything else; past this budget the
-    // remaining bodies are left unread rather than the whole read lost (gate 2).
-    let body_text_started = Instant::now();
+    // remaining bodies are left unread rather than the whole read lost (gate 2). Only the reads
+    // themselves count: the navigation to the pages has its own budget (codex on #759).
+    let mut body_text_spent = std::time::Duration::ZERO;
 
     let root = resolve_root(ctx, opts.hwnd.as_deref(), &opts.window_title)?;
 
@@ -181,7 +182,7 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
                 ui_elem.host_window_handle = host.as_ref().map(|(h, _)| h.clone());
                 ui_elem.host_window_class = host.as_ref().and_then(|(_, c)| c.clone());
                 if read_body_text
-                    && body_text_started.elapsed() < BODY_TEXT_BUDGET
+                    && body_text_spent < BODY_TEXT_BUDGET
                     && word_pages::is_word_body(
                         &ui_elem.control_type,
                         &ui_elem.automation_id,
@@ -189,7 +190,9 @@ fn get_elements_impl(ctx: &UiaContext, opts: &GetElementsOptions) -> napi::Resul
                         ui_elem.host_window_class.as_deref(),
                     )
                 {
+                    let started = Instant::now();
                     ui_elem.visible_text = visible_text(&child);
+                    body_text_spent += started.elapsed();
                 }
                 elements.push(ui_elem);
             }
