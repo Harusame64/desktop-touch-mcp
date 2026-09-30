@@ -47,6 +47,12 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
 });
 
 import { composeCandidates } from "../../src/tools/desktop-providers/compose-providers.js";
+import { getWindowClassName } from "../../src/engine/win32.js";
+
+/** internal #220 — the terminal road is taken by the window's class; these handles are terminals. */
+function classes(byHandle: Record<string, string>) {
+  vi.mocked(getWindowClassName).mockImplementation((h: unknown) => byHandle[String(h)] ?? "Notepad");
+}
 
 function candidate(
   label: string,
@@ -225,6 +231,7 @@ describe("composeCandidates — H4 visual escalation (uia-blind + visual state)"
 
 describe("composeCandidates — active target fallback", () => {
   it("hwnd-only target resolves the live title before terminal routing", async () => {
+    classes({ "321": "CASCADIA_HOSTING_WINDOW_CLASS" });
     mocks.resolveWindowTarget.mockResolvedValue({
       title: "Windows Terminal",
       hwnd: 321n,
@@ -252,7 +259,8 @@ describe("composeCandidates — active target fallback", () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it("resolved active terminal title routes through the terminal path", async () => {
+  it("resolved active terminal window routes through the terminal path", async () => {
+    classes({ "456": "ConsoleWindowClass" });
     mocks.resolveWindowTarget.mockResolvedValue({
       title: "PowerShell 7",
       hwnd: 456n,
@@ -265,6 +273,20 @@ describe("composeCandidates — active target fallback", () => {
     expect(mocks.fetchUiaCandidates).toHaveBeenCalledWith({ hwnd: "456", windowTitle: "PowerShell 7" });
     expect(mocks.fetchVisualCandidates).toHaveBeenCalledWith({ hwnd: "456", windowTitle: "PowerShell 7" });
     expect(mocks.fetchBrowserCandidates).not.toHaveBeenCalled();
+  });
+
+  it("does not take a browser page titled after a shell down the terminal road (internal #220)", async () => {
+    classes({ "789": "Chrome_WidgetWin_1" });
+    mocks.resolveWindowTarget.mockResolvedValue({
+      title: "Bash scripting QT20X - Google Chrome",
+      hwnd: 789n,
+      warnings: [],
+    });
+
+    await composeCandidates({ hwnd: "789" });
+
+    expect(mocks.fetchTerminalCandidates).not.toHaveBeenCalled();
+    expect(mocks.fetchUiaCandidates).toHaveBeenCalledWith({ hwnd: "789", windowTitle: "Bash scripting QT20X - Google Chrome" });
   });
 
   it("prepends active-target resolution warnings ahead of provider warnings", async () => {
