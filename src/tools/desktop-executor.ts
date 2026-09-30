@@ -397,6 +397,7 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
   const before = await whereIsIt();
   if (isInFront()) refuseInFront();
   // The flash measures UTF-16 bytes and refuses at the limit (`validate_input`), after the user said yes.
+  // Unreachable while ASK_TEXT_SHOWN_MAX (600) is below it; kept for the day that limit is raised.
   if (line.length * 2 >= before.constraints.maxBytes) {
     throw new TerminalForegroundRefusal(
       `Nothing was typed: the text is longer than one paste into Windows Terminal takes ` +
@@ -457,7 +458,6 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
       `the user agreed to "${before.windowTitle}".`,
     );
   }
-  if (isInFront()) refuseInFront();
   const tabAfter = await getSelectedTab(hwnd);
   if (tabAfter && tabAfter.paneCount > 1) refuseSplit();
   if (!tabAfter || tabAfter.runtimeId !== tabBefore.runtimeId) {

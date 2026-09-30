@@ -21,6 +21,8 @@ const { state } = vi.hoisted(() => ({
     tab: { name: "PowerShell", runtimeId: "42.1.4.263", paneCount: 1 } as { name: string; runtimeId: string; paneCount: number } | null | undefined,
     /** The window in front: another app's (0x999) by default. */
     fg: 0x999n as bigint | null,
+    /** The terminal window has closed (the enumeration no longer lists it). */
+    gone: false,
     /** Runs on each tab read: lets a cell move the foreground while the read is awaited. */
     onTabRead: undefined as undefined | (() => void),
   },
@@ -30,7 +32,7 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
   return {
     ...actual,
-    enumWindowsInZOrder: vi.fn(() => [wtWindow({ isCloaked: state.cloaked, title: state.title })]),
+    enumWindowsInZOrder: vi.fn(() => (state.gone ? [] : [wtWindow({ isCloaked: state.cloaked, title: state.title })])),
     getForegroundHwnd: vi.fn(() => state.fg),
     getWindowRoot: vi.fn((h: bigint) => (h === 0x101n ? WT : h)),
     getWindowTitleW: vi.fn(() => "PowerShell"),
@@ -94,6 +96,7 @@ beforeEach(() => {
   state.tab = { name: "PowerShell", runtimeId: "42.1.4.263", paneCount: 1 };
   state.fg = 0x999n;
   state.onTabRead = undefined;
+  state.gone = false;
   delete process.env.DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND;
 });
 
@@ -377,6 +380,22 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const { ctx, ask } = asking({ action: "accept", content: {} });
     const err = await act("echo hi", ctx).catch((e) => e);
     expect(err?.callerDetail).toMatch(/process could not be identified/);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("does not type when the terminal closed while the user was answering (a hardware cell, now a unit one)", async () => {
+    const ask = vi.fn(async () => { state.gone = true; return { action: "accept" as const, content: {} }; });
+    const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/no longer open/);
+    expect(mockFlash).not.toHaveBeenCalled();
+  });
+
+  it("does not ask about a terminal the flash cannot paste into (channel is not clipboard_flash)", async () => {
+    const { resolveBackgroundInputChannel } = await import("../../src/engine/background-channel-resolver.js");
+    vi.mocked(resolveBackgroundInputChannel).mockReturnValueOnce({ kind: "unsupported", reason: "class_unknown" } as never);
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await act("echo hi", ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/cannot be pasted into through the foreground \(unsupported\)/);
     expect(ask).not.toHaveBeenCalled();
   });
 });
