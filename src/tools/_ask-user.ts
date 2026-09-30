@@ -77,6 +77,28 @@ export const ASK_TEXT_SHOWN_MAX = 600;
 /** The longest window title the description line carries with the text (both shown in full). */
 export const ASK_TITLE_SHOWN_MAX = 200;
 
+/**
+ * The whole description line is held to what was measured uncut, not the text alone: the title, tab
+ * name and place ride on the same line (PR codex on #764).
+ */
+export const ASK_DESCRIPTION_SHOWN_MAX = ASK_TEXT_SHOWN_MAX;
+
+/**
+ * The description line under "Type it": where (window, its selected tab, and where on screen when
+ * another window wears the title) and the whole text. The selected tab is named even when it wears
+ * the window's title: two tabs named "PowerShell" would otherwise leave "Into: PowerShell" not saying
+ * which session (PR codex on #764) — the selected one is the one WT highlights.
+ */
+export function foregroundDescription(what: { windowTitle?: string; tabName?: string; place?: string; text: string; pressEnter?: boolean }): string {
+  const tab = what.tabName === undefined ? ""
+    : what.tabName !== what.windowTitle ? ` (selected tab: ${what.tabName})` : " (its selected tab)";
+  return `${what.windowTitle !== undefined ? `Into: ${what.windowTitle}${tab}` : ""}` +
+    // Where it is, when another window wears the same title (#764, win2).
+    `${what.windowTitle !== undefined && what.place !== undefined ? `, ${what.place}` : ""}` +
+    `${what.windowTitle !== undefined ? " — " : ""}` +
+    `Types: ${what.text}${what.pressEnter ? "  — then presses Enter" : ""}`;
+}
+
 /** A cancel sooner than this was not a person reading the question. */
 export const INSTANT_CANCEL_MS = 500;
 
@@ -137,12 +159,7 @@ export async function askToTakeForeground(
               // And the whole window title: the one-line question cuts it, and two terminals whose
               // titles start alike must not look alike either (PR codex on #764).
               description: what.text !== undefined
-                ? `${what.windowTitle !== undefined ? `Into: ${what.windowTitle}` : ""}` +
-                  `${what.tabName !== undefined && what.tabName !== what.windowTitle ? ` (tab: ${what.tabName})` : ""}` +
-                  // Where it is, when another window wears the same title (#764, win2).
-                  `${what.place !== undefined ? `, ${what.place}` : ""}` +
-                  `${what.windowTitle !== undefined ? " — " : ""}` +
-                  `Types: ${what.text}${what.pressEnter ? "  — then presses Enter" : ""}`
+                ? foregroundDescription({ ...what, text: what.text })
                 : "Accept to type it; untick or Decline to refuse",
               default: true,
             },

@@ -12,8 +12,9 @@
   around the user's no, as `executor_failed`'s foreground advice would. The terminal is checked
   again after the answer, and a question whose tool call was cancelled does not type. There is no
   way to allow it without the question. The question
-  shows the whole text, so it must be one line of at most 600 characters; one trailing newline is
-  sent as Enter. If the terminal's window or active tab changed while the user was answering,
+  shows the whole text with the window's title and selected tab, so it must be one line and all of
+  it at most 600 characters; one trailing newline is sent as Enter. When another window has the
+  same title, the question says where the terminal is on screen; two in the same place are refused. If the terminal's window or active tab changed while the user was answering,
   nothing is typed. A tab split into panes is refused. A terminal that is the window in front is refused: when the client runs in one of
   its tabs, the paste would arrive as the user's next message.
 

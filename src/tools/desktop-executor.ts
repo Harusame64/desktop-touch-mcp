@@ -21,7 +21,7 @@
 
 import type { UiEntity, ExecutorKind, ExecutorOutcome } from "../engine/world-graph/types.js";
 import { logResolve, logDispatchSink } from "./_resolve-log.js";
-import { askToTakeForeground, callWasCancelled, ASK_TIMEOUT_MS, ASK_TEXT_SHOWN_MAX, ASK_TITLE_SHOWN_MAX, type ForegroundRefusal } from "./_ask-user.js";
+import { askToTakeForeground, foregroundDescription, callWasCancelled, ASK_TIMEOUT_MS, ASK_TEXT_SHOWN_MAX, ASK_TITLE_SHOWN_MAX, ASK_DESCRIPTION_SHOWN_MAX, type ForegroundRefusal } from "./_ask-user.js";
 import { offDesktopTarget } from "./_off-desktop.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
@@ -474,8 +474,10 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
         `Nothing was typed: this terminal cannot be pasted into through the foreground (${channel.kind}).`,
       );
     }
-    // Only windows wearing exactly the title the question shows can be mistaken for it.
-    const twins = wins.filter((w) => w.hwnd !== hwnd && w.title === win.title);
+    // Only windows wearing exactly the title the question shows can be mistaken for it, and only ones
+    // the user can see: a cloaked window (another virtual desktop, a hidden UWP frame) was refused as
+    // "in the same place" with nothing to move, or counted in "2 windows" (win2 Y2/Y2b).
+    const twins = wins.filter((w) => w.hwnd !== hwnd && w.title === win.title && !w.isCloaked);
     let place: string | undefined;
     if (twins.length > 0) {
       let monitors: ReturnType<typeof enumMonitors>;
@@ -571,9 +573,15 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
       "Nothing was typed: the terminal's tab name cannot be shown in full in the question, and the user is not asked to agree to a destination they cannot read.",
     );
   }
-  const answer = await askToTakeForeground({
-    windowTitle: before.windowTitle, tabName: tabBefore.name, place: before.place, text: line, pressEnter: trailing !== null,
-  });
+  const shown = { windowTitle: before.windowTitle, tabName: tabBefore.name, place: before.place, text: line, pressEnter: trailing !== null };
+  // The line as a whole, not the text alone: title, tab and place share it (PR codex on #764).
+  if (Array.from(foregroundDescription(shown)).length > ASK_DESCRIPTION_SHOWN_MAX) {
+    throw new TerminalForegroundRefusal(
+      `Nothing was typed: the question's line (the text with the terminal's title and tab) is longer than it can show in full ` +
+      `(${ASK_DESCRIPTION_SHOWN_MAX} characters), and the user is not asked to agree to what they cannot read. Send shorter text.`,
+    );
+  }
+  const answer = await askToTakeForeground(shown);
   if (!answer.allowed) throw new TerminalForegroundRefusal(TERMINAL_FOREGROUND_REFUSALS[answer.why]);
   const channel = await whereIsIt();
   // The window's title is NOT compared: WT takes it from the active tab, and a prompt or a running

@@ -29,6 +29,7 @@ const { state } = vi.hoisted(() => ({
     twinRegion: { x: 0, y: 0, width: 100, height: 100 },
     maximized: false,
     monitorsThrow: false,
+    twinCloaked: false,
     minimized: false,
     /** Runs on each tab read: lets a cell move the foreground while the read is awaited. */
     onTabRead: undefined as undefined | (() => void),
@@ -42,7 +43,7 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
     enumWindowsInZOrder: vi.fn(() => (state.gone ? [] : [
       wtWindow({ isCloaked: state.cloaked, title: state.title, isMinimized: state.minimized,
         ...(state.maximized && { isMaximized: true, region: { x: -8, y: -8, width: 1016, height: 1016 } }) }),
-      ...(state.twin ? [wtWindow({ hwnd: 0x200n, title: state.title, region: state.twinRegion })] : []),
+      ...(state.twin ? [wtWindow({ hwnd: 0x200n, title: state.title, region: state.twinRegion, isCloaked: state.twinCloaked })] : []),
     ])),
     enumMonitors: vi.fn(() => { if (state.monitorsThrow) throw new Error("no monitors"); return [{ id: 0, handle: 1n, primary: true, bounds: { x: 0, y: 0, width: 1000, height: 1000 },
       workArea: { x: 0, y: 0, width: 1000, height: 1000 }, dpi: 96, scale: 1 }]; }),
@@ -129,6 +130,7 @@ beforeEach(() => {
   state.twinRegion = { x: 0, y: 0, width: 100, height: 100 };
   state.maximized = false;
   state.monitorsThrow = false;
+  state.twinCloaked = false;
   state.gone = false;
   state.twin = false;
   state.minimized = false;
@@ -301,7 +303,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const text = `echo ${"a".repeat(40)} && rm -rf ./x`;
     await act(text, ctx);
     const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { typeIt: { description: string } } } }])[0];
-    expect(form.requestedSchema.properties.typeIt.description).toBe(`Into: PowerShell — Types: ${text}`);
+    expect(form.requestedSchema.properties.typeIt.description).toBe(`Into: PowerShell (its selected tab) — Types: ${text}`);
   });
 
   it("says Enter will be pressed, in the question and on the description line (PR codex round 4)", async () => {
@@ -309,7 +311,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     await act("echo hi\n", ctx);
     const form = (ask.mock.calls[0] as unknown as [{ message: string; requestedSchema: { properties: { typeIt: { description: string } } } }])[0];
     expect(form.message).toMatch(/"echo hi" \+ Enter/);
-    expect(form.requestedSchema.properties.typeIt.description).toBe("Into: PowerShell — Types: echo hi  — then presses Enter");
+    expect(form.requestedSchema.properties.typeIt.description).toBe("Into: PowerShell (its selected tab) — Types: echo hi  — then presses Enter");
   });
 
   it("does not ask when the active tab cannot be read before the question (PR codex round 4)", async () => {
@@ -371,7 +373,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     await act("echo hi", ctx);
     const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { typeIt: { description: string } } } }])[0];
     // The tab's name differs from this title, so it is named too.
-    expect(form.requestedSchema.properties.typeIt.description).toBe(`Into: ${state.title} (tab: PowerShell) — Types: echo hi`);
+    expect(form.requestedSchema.properties.typeIt.description).toBe(`Into: ${state.title} (selected tab: PowerShell) — Types: echo hi`);
   });
 
   // Each title still contains "PowerShell", the title the act looks the window up by.
@@ -488,7 +490,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     await actByHandle("echo hi", ctx);
     const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { typeIt: { description: string } } } }])[0];
     expect(form.requestedSchema.properties.typeIt.description)
-      .toBe("Into: PowerShell, at the upper left of the screen (2 windows have this title) — Types: echo hi");
+      .toBe("Into: PowerShell (its selected tab), at the upper left of the screen (2 windows have this title) — Types: echo hi");
     expect(mockFlash).toHaveBeenCalledTimes(1);
   });
 
@@ -521,7 +523,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     await actByHandle("echo hi", ctx);
     const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { typeIt: { description: string } } } }])[0];
     expect(form.requestedSchema.properties.typeIt.description)
-      .toBe("Into: PowerShell, maximized on the screen (2 windows have this title) — Types: echo hi");
+      .toBe("Into: PowerShell (its selected tab), maximized on the screen (2 windows have this title) — Types: echo hi");
   });
 
   it("refuses, as nothing typed, when the monitors cannot be read to say which window it is", async () => {
@@ -533,6 +535,26 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     expect(err?.name).toBe("TerminalForegroundRefusal");
     expect(err?.callerDetail).toMatch(/monitors could not be read/);
     expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("does not ask when the whole line, not the text alone, is longer than the question shows in full (PR codex)", async () => {
+    state.title = "t".repeat(150);
+    state.tab = { name: "b".repeat(150), runtimeId: "42.1.4.263", paneCount: 1 };
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    // 400 characters of text is under the text limit (600); with the title and tab, the line is not.
+    const err = await actByHandle(`echo ${"a".repeat(395)}`, ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/question's line .* is longer than it can show in full \(600 characters\)/);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("does not count a cloaked window with the terminal's title: the user cannot see it (win2 Y2)", async () => {
+    state.twin = true;
+    state.twinCloaked = true;
+    state.twinRegion = { x: 10, y: 10, width: 100, height: 100 };
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    await actByHandle("echo hi", ctx);
+    const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { typeIt: { description: string } } } }])[0];
+    expect(form.requestedSchema.properties.typeIt.description).toBe("Into: PowerShell (its selected tab) — Types: echo hi");
   });
 
   it("refuses when a window with the terminal's title opens while the user answers", async () => {
@@ -557,7 +579,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const { ctx, ask } = asking({ action: "accept", content: {} });
     await act("echo hi", ctx);
     const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { typeIt: { description: string } } } }])[0];
-    expect(form.requestedSchema.properties.typeIt.description).toBe("Into: PowerShell (tab: build) — Types: echo hi");
+    expect(form.requestedSchema.properties.typeIt.description).toBe("Into: PowerShell (selected tab: build) — Types: echo hi");
   });
 
   it("says the terminal was left in front, and typing unknown, after SendInput failed (PR codex)", async () => {
