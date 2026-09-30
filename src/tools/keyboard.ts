@@ -1729,13 +1729,6 @@ export const keyboardTypeHandler = async ({
           { windowTitle: effectiveWindowTitle }
         );
       }
-      // internal #221: the flash takes the foreground for the target — refused when it is on
-      // another virtual desktop, before the fix is spent. Not when the channel will be wm_char,
-      // which posts to the window without taking the foreground (gate 2 on #763).
-      const ffAway = await offDesktopTarget(target, wins, explicitHwnd === undefined ? effectiveWindowTitle : undefined);
-      if (ffAway && resolveBackgroundInputChannel(target.hwnd, { allowedChannels: ["wm_char", "clipboard_flash"] }).kind !== "wm_char") {
-        return offDesktopFailure("keyboard:type", ffAway, { lensId, extra: { method: "foreground_flash" } });
-      }
       // Past both flash refusals — the call is going ahead (ADR-038 P3).
       spendFix();
       // Lens / auto-guard: foregroundVerified=false because flash will steal
@@ -1840,6 +1833,11 @@ export const keyboardTypeHandler = async ({
       // `SendInput(Ctrl+V)` で送るべき (native scope の改修、別 follow-up PR)。
       // 当面 (本 PR scope): clipboard_flash 経路では replaceAll を **silent
       // ignore せず warning で caller に明示** (`ReplaceAllNotSupportedOnClipboardFlash`)。
+      // internal #221: the flash takes the foreground for the target — refused when it is on
+      // another virtual desktop. Placed after the unsupported and wm_char branches (wm_char posts
+      // without taking the foreground), as terminal's twin is (gate 2 on #763).
+      const ffAway = await offDesktopTarget(target, wins, explicitHwnd === undefined ? effectiveWindowTitle : undefined);
+      if (ffAway) return offDesktopFailure("keyboard:type", ffAway, { lensId, extra: { method: "foreground_flash" } });
       const ffWarnings = [...warnings];
       if (replaceAll) {
         ffWarnings.push("ReplaceAllNotSupportedOnClipboardFlash");

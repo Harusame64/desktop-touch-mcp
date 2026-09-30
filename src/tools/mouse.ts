@@ -187,7 +187,7 @@ async function applyHoming(
         await new Promise<void>((r) => setTimeout(r, 100));
         let postWindows = enumWindowsInZOrder();
         let postActive = postWindows.find((w) => w.isActive);
-        let reached = !!postActive && postActive.title.toLowerCase().includes(windowTitle.toLowerCase());
+        let reached = !!postActive && isTarget(postActive);
 
         if (!reached && !force) {
           // Auto-escalate to force=true (AttachThreadInput bypass) — caller
@@ -198,7 +198,7 @@ async function applyHoming(
           await new Promise<void>((r) => setTimeout(r, 100));
           postWindows = enumWindowsInZOrder();
           postActive = postWindows.find((w) => w.isActive);
-          reached = !!postActive && postActive.title.toLowerCase().includes(windowTitle.toLowerCase());
+          reached = !!postActive && isTarget(postActive);
         }
 
         // Refresh cache after restore + escalation; the window may have

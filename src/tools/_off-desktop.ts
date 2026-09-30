@@ -18,7 +18,7 @@
 
 import { failWith } from "./_errors.js";
 import type { ToolResult } from "./_types.js";
-import { nativeUia } from "../engine/native-engine.js";
+import { getVirtualDesktopStatus } from "../engine/uia-bridge.js";
 import { buildEnvelopeFor } from "../engine/perception/registry.js";
 
 export interface OffDesktopTarget {
@@ -33,17 +33,14 @@ type Listed = { hwnd: bigint; title: string; isCloaked?: boolean };
 /**
  * Is this cloaked window on another virtual desktop? A cloak alone does not say so: DWM also cloaks
  * a window its app hid, and a UWP frame the system keeps (gate 2 on #763). `IVirtualDesktopManager`
- * answers the question itself. When it cannot be asked (no native engine), the window is taken to
- * be elsewhere: the refusal is the side that cannot switch the user's desktop.
+ * answers the question itself, through the helper `get_windows` already uses (native, else
+ * PowerShell). That helper answers "on this desktop" when the manager fails; a throw here is taken
+ * as "elsewhere", the side that cannot switch the user's desktop.
  */
 async function isOnAnotherDesktop(hwnd: bigint): Promise<boolean> {
-  const ask = nativeUia?.uiaGetVirtualDesktopStatus;
-  if (!ask) return true;
   try {
     const key = String(hwnd);
-    const answer = (await ask.call(nativeUia, [key]))[key];
-    // The native side answers "on the current desktop" when COM fails, as its other caller wants.
-    return answer === false;
+    return (await getVirtualDesktopStatus([key]))[key] === false;
   } catch {
     return true;
   }

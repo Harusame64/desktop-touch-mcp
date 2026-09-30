@@ -55,6 +55,8 @@ vi.mock("../../src/engine/perception/tab-drag-heuristic.js", () => ({
 
 vi.mock("../../src/engine/uia-bridge.js", () => ({
   getElementBounds: vi.fn(() => ({ found: null, why: "element_not_found", via: "powershell" })),
+  // internal #221: the desktop manager says the fixture's cloaked windows are on another desktop.
+  getVirtualDesktopStatus: vi.fn(async (hs: string[]) => Object.fromEntries(hs.map((h) => [h, false]))),
 }));
 
 vi.mock("../../src/engine/nutjs.js", () => ({
@@ -179,5 +181,19 @@ describe("internal #221 — mouse_click and a window on another virtual desktop"
     expect(r.code).toBe("WindowOnOtherDesktop");
     expect(r.context).toMatchObject({ hwnd: "100", sameTitleOnScreen: false });
     expect(mockRestore).not.toHaveBeenCalled();
+  });
+
+  it("does not take a same-titled window left in front for the one named by hwnd (gate 2 on #763)", async () => {
+    // Focus to 200 is refused and 300, another "QV221" on this desktop, stays in front. By title it
+    // looked reached, and the click would land on 300.
+    const resolver = vi.mocked((await import("../../src/tools/_resolve-window.js")).resolveWindowTarget);
+    resolver.mockResolvedValueOnce({ title: "QV221", hwnd: 200n, warnings: [] } as never);
+    mockEnum.mockReturnValue([{ ...onScreen(300n), isActive: true }, onScreen(200n)]);
+    const r = parseResult(await mouseClickHandler({
+      x: 400, y: 300, hwnd: "200", windowTitle: "QV221", button: "left", doubleClick: false, tripleClick: false,
+      homing: true, speed: 0, trackFocus: false, settleMs: 0, verifyDelivery: false,
+    } as never));
+    expect(r.code).toBe("ForegroundRestricted");
+    expect(mockClick).not.toHaveBeenCalled();
   });
 });

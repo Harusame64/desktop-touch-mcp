@@ -5,23 +5,15 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-/** What `IVirtualDesktopManager` answers per handle; `undefined` models an engine without it. */
+/** What `IVirtualDesktopManager` answers per handle; `undefined` models a helper that throws. */
 const { vdm } = vi.hoisted(() => ({ vdm: { answer: undefined as undefined | ((h: string) => boolean), calls: 0 } }));
-vi.mock("../../src/engine/native-engine.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../src/engine/native-engine.js")>();
-  return {
-    ...actual,
-    get nativeUia() {
-      if (!vdm.answer) return null;
-      return {
-        uiaGetVirtualDesktopStatus: async (hs: string[]) => {
-          vdm.calls++;
-          return Object.fromEntries(hs.map((h) => [h, vdm.answer!(h)]));
-        },
-      };
-    },
-  };
-});
+vi.mock("../../src/engine/uia-bridge.js", () => ({
+  getVirtualDesktopStatus: async (hs: string[]) => {
+    vdm.calls++;
+    if (!vdm.answer) throw new Error("no desktop manager");
+    return Object.fromEntries(hs.map((h) => [h, vdm.answer!(h)]));
+  },
+}));
 
 const { offDesktopTarget, offDesktopFailure } = await import("../../src/tools/_off-desktop.js");
 
@@ -46,7 +38,7 @@ describe("offDesktopTarget", () => {
     expect(await offDesktopTarget(w(1n, "A", true), [], "A")).toEqual({ hwnd: 1n, title: "A", sameTitleOnScreen: false });
   });
 
-  it("takes a cloaked window to be elsewhere when the desktop manager cannot be asked", async () => {
+  it("takes a cloaked window to be elsewhere when asking the desktop manager throws", async () => {
     vdm.answer = undefined;
     expect(await offDesktopTarget(w(1n, "A", true), [], "A")).not.toBeNull();
   });

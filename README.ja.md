@@ -549,7 +549,7 @@ Windows のフォアグラウンド保護機能により、ピン固定された
 
 強制フォーカスが拒否された場合、応答は `ok:false` + `code: "ForegroundRestricted"` (Issue #202 統一 — `focus_window` / `keyboard` / `terminal_send` / `mouse_click` で共通の shape) になります。当該操作自体は **抑止** され、誤ったウィンドウへキーストローク / クリックが届くことはありません。`focus_window` の auto-escalate ladder で先に focus を取得してから retry してください。旧 `hints.warnings: ["ForceFocusRefused"]` shape はもう発火しません。
 
-別の仮想デスクトップにある窓は、前面に出しません（利用者のデスクトップが切り替わるため）。`keyboard` / `terminal` の send / マウス系（homing で前面に出すとき）は `code: "WindowOnOtherDesktop"` で断り、何も送りません。`context.sameTitleOnScreen: true` は、同じ題名の窓がいまのデスクトップにあるという意味です。その窓の `hwnd` を渡してください。`focus_window` はこれまでどおり前面に出します。
+別の仮想デスクトップにある窓は、前面に出しません（利用者のデスクトップが切り替わるため）。`keyboard` / `terminal` の send / マウス系（homing で前面に出すとき）は `code: "WindowOnOtherDesktop"` で断り、何も送りません。`context.sameTitleOnScreen: true` は、同じ題名の窓がいまのデスクトップにあるという意味です。その窓を正確に指定してください（道具が受け取るなら `hwnd`、そうでなければより詳しい `windowTitle`）。`focus_window` はこれまでどおり前面に出します。
 
 **環境変数でグローバルデフォルトを設定する:**
 

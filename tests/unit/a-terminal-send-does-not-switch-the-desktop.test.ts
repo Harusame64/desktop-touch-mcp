@@ -45,6 +45,8 @@ vi.mock("../../src/tools/_focus.js", () => ({
 
 vi.mock("../../src/engine/uia-bridge.js", () => ({
   getTextViaTextPattern: vi.fn(() => Promise.resolve(null)),
+  // internal #221: the desktop manager says the fixture's cloaked windows are on another desktop.
+  getVirtualDesktopStatus: vi.fn(async (hs: string[]) => Object.fromEntries(hs.map((h) => [h, false]))),
 }));
 
 vi.mock("../../src/engine/ocr-bridge.js", () => ({
