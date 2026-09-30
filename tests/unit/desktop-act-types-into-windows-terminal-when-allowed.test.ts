@@ -25,6 +25,7 @@ const { state } = vi.hoisted(() => ({
     gone: false,
     /** A second window wears the same title. */
     twin: false,
+    minimized: false,
     /** Runs on each tab read: lets a cell move the foreground while the read is awaited. */
     onTabRead: undefined as undefined | (() => void),
   },
@@ -35,7 +36,7 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   return {
     ...actual,
     enumWindowsInZOrder: vi.fn(() => (state.gone ? [] : [
-      wtWindow({ isCloaked: state.cloaked, title: state.title }),
+      wtWindow({ isCloaked: state.cloaked, title: state.title, isMinimized: state.minimized }),
       ...(state.twin ? [wtWindow({ hwnd: 0x200n, title: state.title })] : []),
     ])),
     getForegroundHwnd: vi.fn(() => state.fg),
@@ -54,6 +55,18 @@ vi.mock("../../src/engine/bg-input.js", async (importOriginal) => {
     canInjectViaPostMessage: vi.fn(() => ({ supported: false, reason: state.reason, className: "CASCADIA_HOSTING_WINDOW_CLASS" })),
     postCharsToHwnd: (...a: unknown[]) => mockPostChars(...a),
     injectViaForegroundFlash: (...a: unknown[]) => mockFlash(...a),
+  };
+});
+
+/** The addon has the native flash (checked before asking); the flash itself is mocked in bg-input. */
+const { native } = vi.hoisted(() => ({ native: { hasFlash: true } }));
+vi.mock("../../src/engine/native-engine.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/engine/native-engine.js")>();
+  return {
+    ...actual,
+    get nativeWin32() {
+      return native.hasFlash ? { ...(actual.nativeWin32 ?? {}), win32ForegroundFlashInject: () => ({}) } : null;
+    },
   };
 });
 
@@ -107,6 +120,8 @@ beforeEach(() => {
   state.onTabRead = undefined;
   state.gone = false;
   state.twin = false;
+  state.minimized = false;
+  native.hasFlash = true;
   failsafe.tripped = false;
 });
 
@@ -470,5 +485,27 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     mockFlash.mockReturnValueOnce({ ok: false, reason: "focus_wait_timeout" } as never);
     const err = await act("echo hi", asking({ action: "accept", content: {} }).ctx).catch((e) => e);
     expect(err?.callerDetail).toMatch(/Nothing was typed \(focus_wait_timeout\), but the terminal was brought in front and left there/);
+  });
+
+  it("asks about skin-toned emoji joined by a zero-width joiner (gate 2)", async () => {
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    await act('git commit -m "\u{1f469}\u{1f3fd}\u200d\u{1f4bb} \u{1f3c3}\u{1f3fb}\u200d\u2640\ufe0f"', ctx);
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not ask about a minimized terminal: the flash does not restore it (gate 2)", async () => {
+    state.minimized = true;
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await act("echo hi", ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/minimized/);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("does not ask when this build has no native foreground paste (gate 2)", async () => {
+    native.hasFlash = false;
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await act("echo hi", ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/no foreground paste/);
+    expect(ask).not.toHaveBeenCalled();
   });
 });

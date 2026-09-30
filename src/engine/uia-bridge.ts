@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { getCachedUia, updateUiaCache } from "./layer-buffer.js";
 import { AIM_WINDOW_GONE, AimedWindowGoneError } from "./aim.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
-import { nativeUia, type NativeUiElement } from "./native-engine.js";
+import { nativeUia, nativeUiaState, type NativeUiElement } from "./native-engine.js";
 import { isExcludedTitle, isExcludedWindowHandle, isWindowGone, windowAnswers, windowsWhoseTitleContains } from "./win32.js";
 import { WindowExcludedError, hasExcludedPids } from "./tool-exclusion.js";
 
@@ -3176,7 +3176,9 @@ export async function getSelectedTab(
     // Said once, so an old addon is not mistaken for a terminal whose tab cannot be read (gate 2 on #764).
     if (!warnedNoSelectedTab) {
       warnedNoSelectedTab = true;
-      console.error("[uia-bridge] native uiaGetSelectedTab is missing — rebuild the addon (npm run build:rs); typing into Windows Terminal is refused until then");
+      console.error(nativeUiaState() === "disabled"
+        ? "[uia-bridge] native UIA is disabled (DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1), so a Windows Terminal tab cannot be read; typing into Windows Terminal is refused"
+        : "[uia-bridge] native uiaGetSelectedTab is missing — rebuild the addon (npm run build:rs); typing into Windows Terminal is refused until then");
     }
     return undefined;
   }

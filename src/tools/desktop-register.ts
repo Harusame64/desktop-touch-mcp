@@ -2034,7 +2034,7 @@ export function registerDesktopTools(server: McpServer): void {
       "  value_not_applied → a type or setValue went through the native UI Automation client to a control that is not a text field (not Edit or Document), the control said yes, and its value read back unchanged for a moment after the write; nothing else was tried. Do not retry it or type into the same control another way (on a WinForms NumericUpDown a keystroke landed at its caret); re-call desktop_discover and check the field before writing again;",
       "  window_excluded → this window is excluded from every tool surface of this server (the key locker's own windows are); nothing was clicked and no route here can click it. Act on another window;",
       "  executor_failed → fall back to V1 tools (click_element / mouse_click / browser_click);",
-      "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead;",
+      "  executor_failed on terminal textbox (action=type) → use V1 terminal(action='send') instead — but never after foreground_not_allowed: terminal send pastes into Windows Terminal without asking;",
       "  unknown → the handler threw before any road named a cause; it is NOT a refusal this tool decided, so it does NOT say the act was skipped — it may have taken effect before the throw. Observe the target again before acting, and do not repeat the call as a retry until you have; if_unexpected.try_next names the instrument for the kind of target.",
       "Check desktop_discover response.constraints for pre-emptive fallback hints before calling desktop_act.",
       "[EXPERIMENTAL] On visual-only targets (UIA-blind / RDP / canvas), a successful act may attach a",

@@ -4,7 +4,8 @@
  * Priority order:
  *   1. uia      → clickElement / setElementValue (UIA Invoke/ValuePattern)
  *   2. cdp      → CDP click via screen coords / evaluateInTab fill
- *   3. terminal → background WM_CHAR injection (no focus steal); explicit fail if unsupported
+ *   3. terminal → background WM_CHAR injection (no focus steal); for Windows Terminal, which takes no
+ *                 posted characters, a foreground paste after asking the user (internal #227)
  *   4. mouse    → mouse click at entity rect center (visual-only fallback)
  *
  * All deps are injectable so tests can mock every route without OS bindings.
@@ -319,6 +320,13 @@ const TERMINAL_FOREGROUND_REFUSALS: Record<ForegroundRefusal, string> = {
 export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: string): Promise<void> {
   const { enumWindowsInZOrder, getWindowIdentity, getForegroundHwnd, getWindowRoot } = await import("../engine/win32.js");
   const { injectViaForegroundFlash } = await import("../engine/bg-input.js");
+  const { nativeWin32 } = await import("../engine/native-engine.js");
+  // Checked before asking: without the native flash, the user would be asked for nothing (gate 2 on #764).
+  if (typeof nativeWin32?.win32ForegroundFlashInject !== "function") {
+    throw new TerminalForegroundRefusal(
+      "Nothing was typed: this build's native addon has no foreground paste (win32ForegroundFlashInject). Rebuild it (npm run build:rs).",
+    );
+  }
   const { resolveBackgroundInputChannel } = await import("../engine/background-channel-resolver.js");
 
   const trailing = /(?:\r\n|\r|\n)$/.exec(text);
@@ -367,6 +375,11 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
     const win = wins.find((w) => w.hwnd === hwnd);
     if (!win) {
       throw new TerminalForegroundRefusal("Nothing was typed: the terminal window is no longer open.");
+    }
+    // The flash does not restore a minimized window; the user would be asked for a paste that cannot
+    // land (gate 2 on #764).
+    if (win.isMinimized) {
+      throw new TerminalForegroundRefusal("Nothing was typed: the terminal window is minimized. Restore it, then try again.");
     }
     let who: { pid: number; processStartTimeMs: number } | undefined;
     try { who = getWindowIdentity(hwnd); } catch { who = undefined; }
@@ -598,7 +611,9 @@ const UNSHOWABLE_CHARS =
   // eslint-disable-next-line no-control-regex, no-misleading-character-class -- matching these characters is the point
   /[\u0000-\u001f\u007f-\u009f\u00a0\u00ad\u034f\u061c\u115f\u1160\u1680\u17b4\u17b5\u180b-\u180f\u2000-\u200c\u200e\u200f\u2028-\u202f\u205f-\u206f\u3000\u3164\ufe00-\ufe0e\ufeff\uffa0\ufff0-\ufffb\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/u;
 /** A zero-width joiner not between two emoji: shown as nothing, received as a character. */
-const STRAY_ZWJ = /(?<!\p{Extended_Pictographic}\ufe0f?)\u200d|\u200d(?!\p{Extended_Pictographic})/u;
+// An emoji before the joiner may carry VS16 or a skin-tone modifier (👩🏽‍💻, 🏃🏻‍♀️; gate 2 on #764).
+// eslint-disable-next-line no-misleading-character-class -- the class lists modifiers on purpose
+const STRAY_ZWJ = /(?<!\p{Extended_Pictographic}[\ufe0f\u{1f3fb}-\u{1f3ff}]?)\u200d|\u200d(?!\p{Extended_Pictographic})/u;
 const UNSHOWABLE = { test: (s: string): boolean => UNSHOWABLE_CHARS.test(s) || STRAY_ZWJ.test(s) };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -2958,10 +2973,10 @@ function getSharedRealDeps(): ExecutorDeps {
     },
 
     async terminalSend(windowTitle, text, hwnd) {
-      // G2: Background WM_CHAR path — no focus steal.
-      // canInjectViaPostMessage() gates supported terminals (Windows Terminal, conhost).
-      // Unsupported windows (Chromium, UWP) throw explicitly — caller gets executor_failed
-      // and the LLM description directs them to V1 terminal({action:'send'}) as fallback.
+      // G2: Background WM_CHAR path — no focus steal. canInjectViaPostMessage() gates it. Windows
+      // Terminal (wt_xaml_pipeline) takes no posted characters: it is pasted through the foreground
+      // after asking the user, and every refusal there is foreground_not_allowed (internal #227).
+      // Other unsupported windows (Chromium, UWP) throw — the caller gets executor_failed.
       const { enumWindowsInZOrder, isWindowGone: isWindowGoneSync } = await import("../engine/win32.js");
       const { canInjectViaPostMessage, postCharsToHwnd } = await import("../engine/bg-input.js");
       const wins = enumWindowsInZOrder();
