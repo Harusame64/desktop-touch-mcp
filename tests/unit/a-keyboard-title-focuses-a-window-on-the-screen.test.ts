@@ -76,9 +76,6 @@ function fakeWindow(title: string, isActive: boolean, hwnd = 100n) {
   };
 }
 
-function parseResult(r: { content: { type: string; text: string }[] }) {
-  return JSON.parse(r.content[0]!.text);
-}
 
 beforeEach(() => {
   vi.clearAllMocks();

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- **A window title no longer reaches a window on another virtual desktop.** `enumWindowsInZOrder`
+  lists windows on other virtual desktops (cloaked by DWM), and they can come first in Z-order. A
+  `keyboard` call naming a title shared with such a window brought that window forward, which
+  switched the user to its desktop, and nothing was typed. Title searches now leave those windows
+  out, and a window with that title on the screen is used instead. When the only windows with the
+  title are on another desktop, a tool that takes `windowTitle` ends `WindowNotFound` and says so;
+  the desktop is not switched. `focus_window` is unchanged, and `desktop_discover` still falls back
+  to its own readers. Rich narration no longer counts such a window as a sibling: a call that
+  names a handle is narrated instead of `ambiguous_title`, and a closed target is `window_closed`
+  rather than `target_changed`.
+
 - **`desktop_act` sees the repaint its action caused.** Its `observation` came from the screen's
   changed regions, read after the action had returned. A UI Automation press takes about 2 s, and
   the window repainted as it returned, so the read missed it: 83 of 88 successful acts measured
