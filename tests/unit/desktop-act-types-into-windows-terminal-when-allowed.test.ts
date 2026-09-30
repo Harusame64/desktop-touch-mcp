@@ -201,7 +201,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const { ctx, ask } = asking({ action: "accept", content: {} });
     await act("echo hi", ctx);
     const form = (ask.mock.calls[0] as unknown as [{ message: string }])[0];
-    expect(form.message).toBe('Type "echo hi" into Windows Terminal (PowerShell)? Takes the foreground ~0.1 s.');
+    expect(form.message).toBe('Type "echo hi" into Windows Terminal (PowerShell)? Takes the foreground ~0.2 s.');
   });
 
   it("says a failed paste after an Accept may have typed, under the reason that forbids another road", async () => {
@@ -405,7 +405,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     expect(mockFlash).not.toHaveBeenCalled();
   });
 
-  it.each([["a soft hyphen", "rm\u00ad -rf x"], ["a Unicode tag", "echo \u{e0041}hi"], ["a variation selector", "echo a\ufe0f"], ["a line separator", "echo a\u2028b"]])(
+  it.each([["a soft hyphen", "rm\u00ad -rf x"], ["a Unicode tag", "echo \u{e0041}hi"], ["a variation selector", "echo a\ufe01"], ["a line separator", "echo a\u2028b"]])(
     "does not ask about text with %s, which the question would not show (gate 2)", async (_what, text) => {
       const { ctx, ask } = asking({ action: "accept", content: {} });
       const err = await act(text, ctx).catch((e) => e);
@@ -418,5 +418,12 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
     expect(err?.name).toBe("FailsafeError");
     expect(mockFlash).not.toHaveBeenCalled();
+  });
+
+  it("asks about text with emoji, whose zero-width joiner and VS16 show as part of the emoji", async () => {
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    await act('git commit -m "\u2714\ufe0f fix \u{1f468}\u200d\u{1f4bb}"', ctx);
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(mockFlash).toHaveBeenCalledTimes(1);
   });
 });

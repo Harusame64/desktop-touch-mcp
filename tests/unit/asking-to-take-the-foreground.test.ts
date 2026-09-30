@@ -70,7 +70,7 @@ describe("askToTakeForeground", () => {
   });
 
   it("names the text and the window in the question, cut short to keep one line", () => {
-    expect(foregroundQuestion({})).toBe("Type into Windows Terminal? Takes the foreground ~0.1 s.");
+    expect(foregroundQuestion({})).toBe("Type into Windows Terminal? Takes the foreground ~0.2 s.");
     const long = foregroundQuestion({ text: "x".repeat(100), windowTitle: "y".repeat(100) });
     expect(long).toMatch(/^Type "x{19}…" into Windows Terminal \(y{15}…\)\?/);
     expect(long.length).toBeLessThanOrEqual(100);

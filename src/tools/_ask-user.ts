@@ -86,7 +86,7 @@ const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n -
 export function foregroundQuestion(what: { windowTitle?: string; text?: string; pressEnter?: boolean }): string {
   const text = what.text ? ` "${clip(what.text, 20)}"${what.pressEnter ? " + Enter" : ""}` : what.pressEnter ? " Enter" : "";
   const where = what.windowTitle ? ` (${clip(what.windowTitle, 16)})` : "";
-  return `Type${text} into Windows Terminal${where}? Takes the foreground ~0.1 s.`;
+  return `Type${text} into Windows Terminal${where}? Takes the foreground ~0.2 s.`;
 }
 
 /**

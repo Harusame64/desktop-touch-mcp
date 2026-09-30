@@ -293,7 +293,7 @@ const TERMINAL_FOREGROUND_REFUSALS: Record<ForegroundRefusal, string> = {
     "was dismissed. Ask the user in the conversation before typing into it.",
   timed_out:
     "Nothing was typed: Windows Terminal takes input only through the foreground, and no one " +
-    `answered within ${ASK_TIMEOUT_MS / 1000} s. Ask the user in the conversation before typing into it.`,
+    `answered within ${ASK_TIMEOUT_MS / 1000} s. Ask the user in the conversation before typing into it; do not repeat the act.`,
   cannot_ask:
     "Nothing was typed: Windows Terminal takes input only through the foreground, and this client " +
     // Not terminal(send, foreground_flash): that road has none of the checks here (window in front,
@@ -355,8 +355,10 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
   };
   const refuseInFront = (): never => {
     throw new TerminalForegroundRefusal(
-      "Nothing was typed: this terminal is the window in front, where the user is working — when the " +
-      "client runs in one of its tabs, the paste would arrive there. Type into a terminal in another window.",
+      "Nothing was typed: this terminal is the window in front, where the user is working. If the client " +
+      "runs in another window, the user can switch back to it and the act can be tried once more; if it " +
+      "runs in a tab of this window, the paste would arrive there — the user can move that tab to a new " +
+      "window (right-click the tab), or use a terminal in another window.",
     );
   };
   /** Where the terminal is now, or the sentence that refuses it. */
@@ -558,9 +560,11 @@ export function terminalBgExecute(
  */
 // Also soft hyphen, combining grapheme joiner, Arabic letter mark, Hangul fillers, Mongolian and
 // Khmer invisibles, line/paragraph separators, variation selectors, Unicode tags (gate 2 on #764).
+// Not the zero-width joiner (U+200D) or VS16 (U+FE0F): emoji are made of them (👨‍💻, ✔️), and prompt
+// titles and commit messages carry emoji; both show as part of the emoji they belong to.
 const UNSHOWABLE =
   // eslint-disable-next-line no-control-regex, no-misleading-character-class -- matching these characters is the point
-  /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufffb\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/u;
+  /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b\u200c\u200e\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0e\ufeff\uffa0\ufff0-\ufffb\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/u;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
