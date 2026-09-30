@@ -448,6 +448,10 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
   if (callWasCancelled()) {
     throw new TerminalForegroundRefusal("Nothing was typed: the tool call was cancelled after the user answered.");
   }
+  // Last, after every await: the user may have brought the terminal in front while the tab was
+  // being read, and the flash would then paste into it without taking or restoring anything
+  // (PR codex on #764). Nothing awaits between here and the paste.
+  if (isInFront()) refuseInFront();
 
   logDispatchSink({ sink: "foreground_flash", tool: "desktop_act:terminal_send", targetHwnd: channel.hwnd });
   const r = injectViaForegroundFlash(channel.hwnd, channel.pid, line, { pressEnter: trailing !== null });

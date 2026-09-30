@@ -21,6 +21,8 @@ const { state } = vi.hoisted(() => ({
     tab: { name: "PowerShell", runtimeId: "42.1.4.263" } as { name: string; runtimeId: string } | null | undefined,
     /** The window in front: another app's (0x999) by default. */
     fg: 0x999n as bigint | null,
+    /** Runs on each tab read: lets a cell move the foreground while the read is awaited. */
+    onTabRead: undefined as undefined | (() => void),
   },
 }));
 
@@ -56,7 +58,7 @@ vi.mock("../../src/engine/uia-bridge.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/engine/uia-bridge.js")>()),
   // A cloaked window here is on another desktop (internal #221).
   getVirtualDesktopStatus: vi.fn(async (hs: string[]) => Object.fromEntries(hs.map((h) => [h, false]))),
-  getSelectedTab: vi.fn(async () => state.tab),
+  getSelectedTab: vi.fn(async () => { const tab = state.tab; state.onTabRead?.(); return tab; }),
 }));
 
 const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
@@ -91,6 +93,7 @@ beforeEach(() => {
   state.title = "PowerShell";
   state.tab = { name: "PowerShell", runtimeId: "42.1.4.263" };
   state.fg = 0x999n;
+  state.onTabRead = undefined;
   delete process.env.DESKTOP_TOUCH_ALLOW_TERMINAL_FOREGROUND;
 });
 
@@ -329,6 +332,14 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
   it("does not type when the user brought the terminal in front while answering", async () => {
     const ask = vi.fn(async () => { state.fg = WT; return { action: "accept" as const, content: {} }; });
     const err = await act("echo hi", { ask } as AskContext).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/window in front/);
+    expect(mockFlash).not.toHaveBeenCalled();
+  });
+
+  it("does not type when the terminal came in front during the last tab read (PR codex)", async () => {
+    let reads = 0;
+    state.onTabRead = () => { if (++reads === 2) state.fg = WT; };
+    const err = await act("echo hi", asking({ action: "accept", content: {} }).ctx).catch((e) => e);
     expect(err?.callerDetail).toMatch(/window in front/);
     expect(mockFlash).not.toHaveBeenCalled();
   });
