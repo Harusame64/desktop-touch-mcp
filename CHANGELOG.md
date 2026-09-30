@@ -98,10 +98,10 @@
 
 - **`desktop_act` says why it refuses a `type` that nothing here can carry.** An element no route
   here can type into, such as Word's body, got `executor_failed` with no `detail`, and the advice
-  said UIA setValue and background WM_CHAR had been tried. Neither had run. It is now refused as
-  `action_not_offered`: nothing was done. `detail` says why each route could not carry the text,
-  and what to do instead. For `type`, place the caret yourself and type with `keyboard`. For
-  `setValue`, select the contents first.
+  said UIA setValue and background WM_CHAR had been tried. Neither had run. `detail` now says that
+  nothing was tried, why each route could not carry the text, and what to do instead. For `type`,
+  place the caret yourself and type with `keyboard`. For `setValue`, select the contents first.
+  The advice defers to `detail` in that case.
 
 - **`desktop_discover` says when the window it was asked about is excluded.** A window this
   server keeps out of every tool, such as the key locker's own, used to answer

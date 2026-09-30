@@ -78,7 +78,7 @@ describe("a type no route can carry", () => {
     expect(err.callerDetail).toContain("UI Automation: not how this element was read; browser: no page selector for it; terminal: ruled out for this element;");
   });
 
-  it("reaches the reply as action_not_offered with that detail: no road was taken", async () => {
+  it("reaches the reply as executor_failed with that detail (the user's choice, 2026-09-30)", async () => {
     const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
     const lease = store.issue(body, "v1");
     const exec = createDesktopExecutor({ hwnd: "500" }, deps());
@@ -90,12 +90,25 @@ describe("a type no route can carry", () => {
       execute: (e, action, text) => exec(e, action, text),
     };
     const result = await new GuardedTouchLoop(store, env).touch({ lease, action: "type", text: "x" });
-    expect(result).toEqual({ ok: false, reason: "action_not_offered", diff: [], detail: detailFor(WORD_BODY_ROUTES, TYPE_INSTEAD) });
+    expect(result).toEqual({ ok: false, reason: "executor_failed", diff: [], detail: detailFor(WORD_BODY_ROUTES, TYPE_INSTEAD) });
   });
 });
 
 describe("the advice", () => {
-  it("action_not_offered names this case", () => {
-    expect(JSON.stringify(getSuggestsForCode("ActionNotOffered"))).toContain("an element no route here can carry text to");
+  it("defers to detail when no route was tried, and says whose the two rungs are", () => {
+    const line = getSuggestsForCode("ExecutorFailed").find((l) => l.startsWith("For action='type'"));
+    expect(line).toMatch(/^For action='type' or action='setValue': when detail says no route was tried, follow it\. Otherwise, on a UI Automation element desktop_act has already tried/);
+  });
+});
+
+describe("the view's reason", () => {
+  it("is carried when the view gave one (gate 2)", async () => {
+    const { err } = await refusal({ ...body, fallbackHint: "use mouse_click — UIA provider failed for this view" }, "type");
+    expect(err.callerDetail).toContain(`(${WORD_BODY_ROUTES}). The view says: use mouse_click — UIA provider failed for this view. Put the caret`);
+  });
+
+  it("a CDP element with an empty selector is 'no page selector', as the route itself reads it (gate 2)", async () => {
+    const { err } = await refusal({ ...body, sources: ["cdp"], unsupportedExecutors: undefined, locator: { cdp: { selector: "" } } } as UiEntity, "type");
+    expect(err.callerDetail).toContain("browser: no page selector for it;");
   });
 });

@@ -595,7 +595,6 @@ const SUGGESTS: Record<string, string[]> = {
     "If you meant to press it, ask for it: desktop_act(action='click') or action='invoke'. Do NOT assume the two are interchangeable — before this refusal existed, a substituted press answered ok:true and looked exactly like a requested one.",
     "The entity's affordances in the desktop_discover response say which actions it offers; action='auto' picks one of them for you.",
     "A type or setValue on a control UI Automation reports as a button, check box, radio button, hyperlink or menu item is this refusal too: none of them takes text, so nothing was typed — if you meant to press it, ask for click or invoke.",
-    "So is a type or setValue on an element no route here can carry text to (detail says why for each route): place the caret or select the contents yourself, then keyboard({action:'type', text, method:'foreground'}).",
     "desktop_discover never offers 'select' on any target, so asking for it is always this refusal — reach a list item, combo entry or tab by clicking it. NOTE: screenshot(detail='elements') and workspace_snapshot DO print action:'select' on list items; that is a different reader's word for the same click, and desktop_act does not take it.",
   ],
   // internal #182. The value road wrote, UI Automation answered success, and the control's value
@@ -879,7 +878,7 @@ const SUGGESTS: Record<string, string[]> = {
   // matching the wiring the dogfood confirmed actually works.
   ExecutorFailed: [
     "For action='click', fall back to mouse_click({clickAt}) using the entity rect center from {tool:reidentify_element} — common when UIA InvokePattern is missing on the control",
-    "For action='type' or action='setValue': desktop_act has already tried UIA setValue and background WM_CHAR (post-#327 E ladder) before reporting executor_failed. The remaining rung is keyboard({action:'type', text, method:'foreground'}) — foreground SendInput uses the OS input queue and bypasses BG injection blocks that stopped the internal ladder (Chromium hosts, WT-XAML, etc.). Focus the target window first with focus_window or mouse_click",
+    "For action='type' or action='setValue': when detail says no route was tried, follow it. Otherwise, on a UI Automation element desktop_act has already tried UIA setValue and background WM_CHAR (post-#327 E ladder) before reporting executor_failed. The remaining rung is keyboard({action:'type', text, method:'foreground'}) — foreground SendInput uses the OS input queue and bypasses BG injection blocks that stopped the internal ladder (Chromium hosts, WT-XAML, etc.). Focus the target window first with focus_window or mouse_click",
     "If the entity has a stable name or automationId, try click_element({name|automationId}) — uses a different UIA path than desktop_act and may succeed where this executor threw",
     "Re-run {tool:reidentify_element} — the entity may have moved or been re-keyed between discover and act, in which case the executor saw a stale locator",
   ],
