@@ -685,6 +685,8 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     ["a keycap", 'git commit -m "step 1\ufe0f\u20e3"'],
     ["a subdivision flag", "echo \u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}"],
     ["the Scotland flag", "echo \u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}"],
+    // Its prefix (man, boy) is a sequence too: removed whole, not as the prefix plus a stray joiner.
+    ["a family whose first two members form a sequence (man, boy, boy)", "echo \u{1f468}\u200d\u{1f466}\u200d\u{1f466}"],
     ["a ZWJ sequence through VS16 (heart on fire)", "echo \u2764\ufe0f\u200d\u{1f525}"],
     ["a ZWJ sequence with a skin tone (person with skin tone at a laptop)", "echo \u{1f9d1}\u{1f3fd}\u200d\u{1f4bb}"],
     ["a ZWJ sequence ending in VS16 (rainbow flag)", "echo \u{1f3f3}\ufe0f\u200d\u{1f308}"],
@@ -706,11 +708,19 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     ["a zero-width joiner between two non-emoji pictographs", "echo \u00a9\u200d\u00a9"],
     ["a zero-width joiner from an emoji to a non-emoji pictograph", "echo \u{1f9d1}\u200d\u00a9"],
     // PR codex on #766: regional indicators and lone skin tones are Emoji_Presentation, not ZWJ elements.
+    // PR codex on #766 (round 4): two emoji that Unicode does not join (cat, dog) still carry the joiner.
+    ["a zero-width joiner between two emoji that form no sequence", "echo \u{1f431}\u200d\u{1f436}"],
+    ["a recognized family with a joiner left over at the end", "echo \u{1f468}\u200d\u{1f469}\u200d\u{1f467}\u200d"],
     ["a zero-width joiner between two regional indicators", "echo \u{1f1e6}\u200d\u{1f1e7}"],
     ["a zero-width joiner between two lone skin tones", "echo \u{1f3fb}\u200d\u{1f3fb}"],
     ["a zero-width joiner from an emoji to a regional indicator", "echo \u{1f9d1}\u200d\u{1f1e6}"],
     ["a zero-width joiner from a regional indicator to an emoji", "echo \u{1f1e6}\u200d\u{1f9d1}"],
     ["VS15 after an emoji with no text style (grinning face)", "echo \u{1f600}\ufe0e"],
+    // gate 2 round 3 on #766: each side of the skin-tone rule on its own, and VS16 after a non-base.
+    ["a skin tone after a letter, then a zero-width joiner", "echo a\u{1f3fb}\u200d\u{1f600}"],
+    ["a zero-width joiner after a lone skin tone", "echo \u{1f3fb}\u200d\u{1f600}"],
+    ["a zero-width joiner before a lone skin tone", "echo \u{1f44d}\u200d\u{1f3fb}"],
+    ["VS16 after an emoji with no text style (grinning face)", "echo \u{1f600}\ufe0f"],
     ["the musical null notehead U+1D159, which draws as blank", "echo a\u{1d159}b"],
     ["a noncharacter U+FFFE", "echo a\ufffeb"],
   ])("does not ask about %s, which shows as nothing (internal #230)", async (_what, text) => {
