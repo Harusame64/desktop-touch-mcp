@@ -712,6 +712,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     ["a zero-width joiner between two emoji that form no sequence", "echo \u{1f431}\u200d\u{1f436}"],
     ["a recognized family with a joiner left over at the end", "echo \u{1f468}\u200d\u{1f469}\u200d\u{1f467}\u200d"],
     ["a recognized couple followed by a skin tone, which is no listed sequence", "echo \u{1f468}\u200d\u2764\ufe0f\u200d\u{1f468}\u{1f3fb}"],
+    ["a recognized sequence followed by a variation selector (man technologist + VS16)", "echo \u{1f468}\u200d\u{1f4bb}\ufe0f"],
     ["a zero-width joiner between two regional indicators", "echo \u{1f1e6}\u200d\u{1f1e7}"],
     ["a zero-width joiner between two lone skin tones", "echo \u{1f3fb}\u200d\u{1f3fb}"],
     ["a zero-width joiner from an emoji to a regional indicator", "echo \u{1f9d1}\u200d\u{1f1e6}"],
