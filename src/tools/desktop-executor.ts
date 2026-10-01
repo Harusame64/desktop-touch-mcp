@@ -744,24 +744,38 @@ export function terminalBgExecute(
 }
 
 /**
- * Characters the question would show differently from what the shell receives — controls (TAB,
- * ESC, …), bidi overrides, zero-width marks.
+ * Characters the question would show differently from what the shell receives, named by Unicode
+ * property rather than listed: a hand-written list kept missing some (U+2800, the musical and
+ * shorthand format controls, U+13430, lone surrogates; gate 2 on #764, internal #230).
+ * - controls (`Cc`: TAB, ESC, C1) and format characters (`Cf`: bidi marks and overrides, ZWSP, soft
+ *   hyphen, Arabic letter mark, …);
+ * - default-ignorable code points: drawn as nothing (variation selectors, tags, Hangul fillers,
+ *   Mongolian and Khmer invisibles, combining grapheme joiner, …);
+ * - line and paragraph separators, and every space but U+0020 (`Zs`: NBSP, the U+2000 set,
+ *   ideographic space), plus the braille blank U+2800 (a symbol, not a space, by property): shown as
+ *   a space, not split on by the shell;
+ * - lone surrogates.
+ * Private-use characters are allowed (Nerd Font icons in prompts and titles), and so are unassigned
+ * ones (a newer emoji than this runtime's Unicode data must not be refused).
  */
-// Also look-alike spaces (NBSP, the U+2000 set, ideographic space: shown as a space, not split on by
-// the shell), soft hyphen, combining grapheme joiner, Arabic letter mark, Hangul fillers, Mongolian and
-// Khmer invisibles, line/paragraph separators, variation selectors, Unicode tags (gate 2 on #764).
-// Not the zero-width joiner (U+200D) or VS16 (U+FE0F): emoji are made of them (👨‍💻, ✔️), and prompt
-// titles and commit messages carry emoji; both show as part of the emoji they belong to.
-const UNSHOWABLE_CHARS =
-  // eslint-disable-next-line no-control-regex, no-misleading-character-class -- matching these characters is the point
-  /[\u0000-\u001f\u007f-\u009f\u00a0\u00ad\u034f\u061c\u115f\u1160\u1680\u17b4\u17b5\u180b-\u180f\u2000-\u200c\u200e\u200f\u2028-\u202f\u205f-\u206f\u3000\u3164\ufe00-\ufe0e\ufeff\uffa0\ufff0-\ufffb\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/u;
-/** A zero-width joiner not between two emoji: shown as nothing, received as a character. */
-// An emoji before the joiner may carry VS16 or a skin-tone modifier (👩🏽‍💻, 🏃🏻‍♀️; gate 2 on #764).
-// eslint-disable-next-line no-misleading-character-class -- the class lists modifiers on purpose
-const STRAY_ZWJ = /(?<!\p{Extended_Pictographic}[\ufe0f\u{1f3fb}-\u{1f3ff}]?)\u200d|\u200d(?!\p{Extended_Pictographic})/u;
-/** VS16 not after an emoji: shown as nothing, received as a character (`file\ufe0f`; PR codex on #764). */
-const STRAY_VS16 = /(?<!\p{Extended_Pictographic})\ufe0f/u;
-const UNSHOWABLE = { test: (s: string): boolean => UNSHOWABLE_CHARS.test(s) || STRAY_ZWJ.test(s) || STRAY_VS16.test(s) };
+const UNSHOWABLE_CHARS = /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}\p{Cs}\u2800]|(?! )\p{Zs}/u;
+/**
+ * Sequences made of those characters that show as one emoji, removed before the check: a zero-width
+ * joiner between two emoji (👨‍💻; the first may carry VS16 or a skin tone, 👩🏽‍💻), VS16 or VS15 after
+ * an emoji (✔️, ☺︎), a keycap (1️⃣: digit, VS16, U+20E3), and a subdivision flag (🏴 + tag letters +
+ * cancel tag). Anywhere else they are shown as nothing and received as characters (`file\ufe0f`).
+ */
+const SHOWN_AS_EMOJI = new RegExp(
+  // eslint-disable-next-line no-misleading-character-class -- the classes list VS16 and skin-tone modifiers on purpose
+  [
+    String.raw`(?<=\p{Extended_Pictographic}[\ufe0f\u{1f3fb}-\u{1f3ff}]?)\u200d(?=\p{Extended_Pictographic})`,
+    String.raw`(?<=\p{Extended_Pictographic})[\ufe0e\ufe0f]`,
+    String.raw`[0-9#*]\ufe0f\u20e3`,
+    String.raw`\u{1f3f4}[\u{e0020}-\u{e007e}]+\u{e007f}`,
+  ].join("|"),
+  "gu",
+);
+const UNSHOWABLE = { test: (s: string): boolean => UNSHOWABLE_CHARS.test(s.replace(SHOWN_AS_EMOJI, "")) };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

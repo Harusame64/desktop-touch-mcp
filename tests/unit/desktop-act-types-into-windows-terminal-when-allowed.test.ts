@@ -666,6 +666,44 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     expect(ask).not.toHaveBeenCalled();
   });
 
+  // internal #230 — by Unicode property, not a list: these got past the list (gate 2 on #764).
+  it.each([
+    ["the braille blank U+2800, which looks like a space", "rm -rf ./build\u2800old"],
+    ["a musical format control U+1D173", "echo a\u{1d173}b"],
+    ["a shorthand format control U+1BCA0", "echo a\u{1bca0}b"],
+    ["an Egyptian format control U+13430", "echo a\u{13430}b"],
+    ["a lone surrogate", "echo a\ud800b"],
+    ["an Arabic number sign U+0600", "echo \u0600x"],
+  ])("does not ask about text with %s (internal #230)", async (_what, text) => {
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await act(text, ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/control, bidirectional or zero-width/);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a keycap", 'git commit -m "step 1\ufe0f\u20e3"'],
+    ["a subdivision flag", "echo \u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}"],
+    ["a text-style emoji (VS15)", "echo \u263a\ufe0e"],
+    ["a private-use icon (a Nerd Font glyph)", "echo \ue0b0"],
+  ])("asks about text with %s, which shows as what it is (internal #230)", async (_what, text) => {
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    await act(text, ctx);
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(mockFlash).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["a stray keycap VS16 (no U+20E3)", "echo 1\ufe0fx"],
+    ["tag letters without the black flag", "echo a\u{e0067}\u{e0062}\u{e007f}"],
+    ["an unterminated subdivision flag", "echo \u{1f3f4}\u{e0067}\u{e0062}"],
+  ])("does not ask about %s, which shows as nothing (internal #230)", async (_what, text) => {
+    const { ctx, ask } = asking({ action: "accept", content: {} });
+    const err = await act(text, ctx).catch((e) => e);
+    expect(err?.callerDetail).toMatch(/control, bidirectional or zero-width/);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
   it("does not ask about a variation selector that follows no emoji (file\\ufe0f looks like file; PR codex)", async () => {
     const { ctx, ask } = asking({ action: "accept", content: {} });
     const err = await act("cat file\ufe0f", ctx).catch((e) => e);
