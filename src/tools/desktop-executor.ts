@@ -645,8 +645,9 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
     // Raised after the foreground and clipboard were put back (`foreground_flash.rs`, internal #230).
     if (r.reason === "terminal_focus_failed") {
       throw new TerminalForegroundRefusal(
-        "Nothing was typed (terminal_focus_failed): the terminal's input would not take the keyboard focus, so " +
-        "the paste was not sent — it would have gone to another control (an open find box, a tab). If the " +
+        "Nothing was typed (terminal_focus_failed): the terminal's input did not take the keyboard focus in time " +
+        "(or UI Automation was busy), so the paste was not sent — it would have gone to another control (an open " +
+        "find box, a tab). If the " +
         "terminal is still in front, the previous window could not be put back.",
       );
     }

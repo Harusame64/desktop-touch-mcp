@@ -29,15 +29,23 @@ const UIA_THREAD_BUFFER_MS: u32 = 200;
 /// element, up to `timeout_ms`. `false` when there is not exactly one pane, the UIA thread is
 /// unavailable, or focus did not arrive: the caller must not paste then.
 pub fn focus_terminal_pane(target_hwnd_raw: isize, timeout_ms: u32) -> bool {
+    // The deadline is fixed here, not when the UIA thread picks the task up. The wait below gives up
+    // after it, but the task stays queued; a busy UIA thread could run it later, after the flash has
+    // put the foreground back, and SetFocus activates WT — it would take the user's next keys
+    // (gate 2 on #765). So the task does nothing once its deadline has passed.
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
     thread::execute_with_timeout(
-        move |ctx: &UiaContext| -> napi::Result<bool> { Ok(focus_inner(ctx, target_hwnd_raw, timeout_ms)) },
+        move |ctx: &UiaContext| -> napi::Result<bool> { Ok(focus_inner(ctx, target_hwnd_raw, deadline)) },
         timeout_ms + UIA_THREAD_BUFFER_MS,
     )
     .unwrap_or(false)
 }
 
-fn focus_inner(ctx: &UiaContext, target_hwnd_raw: isize, timeout_ms: u32) -> bool {
+fn focus_inner(ctx: &UiaContext, target_hwnd_raw: isize, deadline: Instant) -> bool {
     let target = HWND(target_hwnd_raw as *mut std::ffi::c_void);
+    if Instant::now() >= deadline {
+        return false;
+    }
     unsafe {
         let Ok(root) = ctx.automation.ElementFromHandle(target) else { return false };
         let variant: VARIANT = BSTR::from(TERMINAL_PANE_CLASS_NAME).into();
@@ -51,18 +59,18 @@ fn focus_inner(ctx: &UiaContext, target_hwnd_raw: isize, timeout_ms: u32) -> boo
             return false;
         }
         let Ok(pane) = panes.GetElement(0) else { return false };
-        if pane.SetFocus().is_err() {
+        // Checked again right before the call with the side effect: the tree reads above take time.
+        if Instant::now() >= deadline || pane.SetFocus().is_err() {
             return false;
         }
         // SetFocus returning is not focus arriving: wait for UIA to report this pane focused.
-        let start = Instant::now();
         loop {
             if let Ok(focused) = ctx.automation.GetFocusedElement() {
                 if ctx.automation.CompareElements(&focused, &pane).map(|b| b.as_bool()).unwrap_or(false) {
                     return true;
                 }
             }
-            if start.elapsed() >= Duration::from_millis(timeout_ms as u64) {
+            if Instant::now() >= deadline {
                 return false;
             }
             std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
