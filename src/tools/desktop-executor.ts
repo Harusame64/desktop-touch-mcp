@@ -21,6 +21,7 @@
 
 import type { UiEntity, ExecutorKind, ExecutorOutcome } from "../engine/world-graph/types.js";
 import { logResolve, logDispatchSink } from "./_resolve-log.js";
+import { EMOJI_VARIATION_BASES } from "./_emoji-variation-bases.js";
 import { askToTakeForeground, foregroundDescription, callWasCancelled, ASK_TIMEOUT_MS, ASK_TEXT_SHOWN_MAX, ASK_TITLE_SHOWN_MAX, ASK_DESCRIPTION_SHOWN_MAX, type ForegroundRefusal } from "./_ask-user.js";
 import { offDesktopTarget } from "./_off-desktop.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
@@ -765,17 +766,25 @@ const UNSHOWABLE_CHARS =
   /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\p{Noncharacter_Code_Point}\p{Zl}\p{Zp}\p{Cs}\u2800\u{1d159}\u{16fe4}\u{1bc9d}]|(?! )\p{Zs}/u;
 /**
  * Sequences made of those characters that show as one emoji, removed before the check: a zero-width
- * joiner between two emoji (👨‍💻, 👩🏽‍💻, 🏃‍♀️ — each side an emoji-presentation character, or a
- * pictograph made one by VS16; `©‍©` is not, gate 2 on #766), VS16 or VS15 after a pictograph (✔️,
- * ☺︎), a keycap (1️⃣: digit, VS16, U+20E3), and the three subdivision flags that exist (England,
+ * joiner between two emoji (👨‍💻, 👩🏽‍💻, 🏃‍♀️ — each side an emoji-presentation character other
+ * than a regional indicator or a lone skin tone, or a character made emoji by VS16; `©‍©` and
+ * `🇦‍🇧` are not, gate 2 and PR codex on #766), VS16 or VS15 after a character Unicode gives both
+ * styles (✔️, ☺︎; not 😀︎), a keycap (1️⃣: digit, VS16, U+20E3), and the three subdivision flags that exist (England,
  * Scotland, Wales). Not any tag run after 🏴: tags spell invisible ASCII, which is how text is
  * smuggled past a reader (gate 2 on #766). Anywhere else these characters are shown as nothing and
  * received as characters (`file\ufe0f`).
  */
+// Regional indicators and skin-tone modifiers are Emoji_Presentation, but neither starts or ends a
+// ZWJ element on its own: a modifier only after its base (PR codex on #766).
+const RI_OR_MODIFIER = String.raw`[\u{1f1e6}-\u{1f1ff}\u{1f3fb}-\u{1f3ff}]`;
+const ZWJ_ELEMENT_BEFORE = String.raw`(?:\p{Emoji_Presentation}(?<!${RI_OR_MODIFIER})|${EMOJI_VARIATION_BASES}\ufe0f|\p{Emoji_Modifier_Base}[\u{1f3fb}-\u{1f3ff}])`;
+const ZWJ_ELEMENT_AFTER = String.raw`(?:(?!${RI_OR_MODIFIER})\p{Emoji_Presentation}|${EMOJI_VARIATION_BASES}\ufe0f)`;
 const SHOWN_AS_EMOJI = new RegExp(
   [
-    String.raw`(?<=\p{Emoji_Presentation}|\p{Extended_Pictographic}\ufe0f)\u200d(?=\p{Emoji_Presentation}|\p{Extended_Pictographic}\ufe0f)`,
-    String.raw`(?<=\p{Extended_Pictographic})[\ufe0e\ufe0f]`,
+    String.raw`(?<=${ZWJ_ELEMENT_BEFORE})\u200d(?=${ZWJ_ELEMENT_AFTER})`,
+    // Only after a character with a standardized text and emoji style (Unicode's own list); after
+    // 😀 a VS15 draws as nothing (PR codex on #766).
+    String.raw`(?<=${EMOJI_VARIATION_BASES})[\ufe0e\ufe0f]`,
     String.raw`[0-9#*]\ufe0f\u20e3`,
     String.raw`\u{1f3f4}(?:\u{e0067}\u{e0062}(?:\u{e0065}\u{e006e}\u{e0067}|\u{e0073}\u{e0063}\u{e0074}|\u{e0077}\u{e006c}\u{e0073}))\u{e007f}`,
   ].join("|"),

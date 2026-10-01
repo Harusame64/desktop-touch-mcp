@@ -705,6 +705,12 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     ["tags spelling text after the black flag", "echo \u{1f3f4}\u{e0072}\u{e006d}\u{e0020}\u{e002d}\u{e0072}\u{e0066}\u{e007f}"],
     ["a zero-width joiner between two non-emoji pictographs", "echo \u00a9\u200d\u00a9"],
     ["a zero-width joiner from an emoji to a non-emoji pictograph", "echo \u{1f9d1}\u200d\u00a9"],
+    // PR codex on #766: regional indicators and lone skin tones are Emoji_Presentation, not ZWJ elements.
+    ["a zero-width joiner between two regional indicators", "echo \u{1f1e6}\u200d\u{1f1e7}"],
+    ["a zero-width joiner between two lone skin tones", "echo \u{1f3fb}\u200d\u{1f3fb}"],
+    ["a zero-width joiner from an emoji to a regional indicator", "echo \u{1f9d1}\u200d\u{1f1e6}"],
+    ["a zero-width joiner from a regional indicator to an emoji", "echo \u{1f1e6}\u200d\u{1f9d1}"],
+    ["VS15 after an emoji with no text style (grinning face)", "echo \u{1f600}\ufe0e"],
     ["the musical null notehead U+1D159, which draws as blank", "echo a\u{1d159}b"],
     ["a noncharacter U+FFFE", "echo a\ufffeb"],
   ])("does not ask about %s, which shows as nothing (internal #230)", async (_what, text) => {
