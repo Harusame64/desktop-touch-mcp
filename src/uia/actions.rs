@@ -179,6 +179,14 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
         let name = elem.CurrentName().map(|b| b.to_string()).unwrap_or_default();
 
         let control_type = elem.CurrentControlType().map(|t| t.0).unwrap_or(0);
+        {
+            // DIAG (internal #216, not for release): which element, and whether the list takes it.
+            let rect = elem.CurrentBoundingRectangle().map(|r| format!("{},{},{},{}", r.left, r.top, r.right, r.bottom)).unwrap_or_else(|e| format!("err 0x{:08X}", e.code().0 as u32));
+            let class = elem.CurrentClassName().map(|b| b.to_string()).unwrap_or_default();
+            let fw = elem.CurrentFrameworkId().map(|b| b.to_string()).unwrap_or_default();
+            let hwnd = elem.CurrentNativeWindowHandle().map(|h| h.0 as isize).unwrap_or(0);
+            eprintln!("[uia-click-diag] element name={name:?} controlType={control_type} class={class:?} framework={fw:?} hwnd={hwnd} rect={rect} listed={}", presses_by_default_action(control_type));
+        }
         if presses_by_default_action(control_type) {
             match press_by_default_action(&elem) {
                 DefaultAction::Pressed => return Ok(pressed(name, PRESSED_BY_DEFAULT_ACTION)),
@@ -259,22 +267,51 @@ enum DefaultAction {
 /// `DoDefaultAction` with nothing changed in UIA, and pressing again there would press twice.
 /// In the spike no `DoDefaultAction` returned an error (0 of 33).
 unsafe fn press_by_default_action(elem: &IUIAutomationElement) -> DefaultAction {
+    // DIAG (internal #216, not for release): every step's outcome on stderr.
     unsafe {
-        let Ok(pattern) = elem.GetCurrentPattern(UIA_LegacyIAccessiblePatternId) else {
-            return DefaultAction::NotAvailable;
+        let pattern = match elem.GetCurrentPattern(UIA_LegacyIAccessiblePatternId) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[uia-click-diag] step=get_pattern hr=0x{:08X} msg={}", e.code().0 as u32, e.message());
+                return DefaultAction::NotAvailable;
+            }
         };
-        let Ok(legacy) = pattern.cast::<IUIAutomationLegacyIAccessiblePattern>() else {
-            return DefaultAction::NotAvailable;
+        let legacy = match pattern.cast::<IUIAutomationLegacyIAccessiblePattern>() {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("[uia-click-diag] step=cast hr=0x{:08X} msg={}", e.code().0 as u32, e.message());
+                return DefaultAction::NotAvailable;
+            }
         };
-        // An element with no default action is not asked to do one.
         match legacy.CurrentDefaultAction() {
-            Ok(action) if !action.is_empty() => {}
-            _ => return DefaultAction::NotAvailable,
+            Ok(action) if !action.is_empty() => {
+                eprintln!("[uia-click-diag] step=default_action value={:?}", action.to_string());
+            }
+            Ok(_) => {
+                eprintln!("[uia-click-diag] step=default_action value=empty");
+                return DefaultAction::NotAvailable;
+            }
+            Err(e) => {
+                eprintln!("[uia-click-diag] step=default_action hr=0x{:08X} msg={}", e.code().0 as u32, e.message());
+                return DefaultAction::NotAvailable;
+            }
         }
-        match legacy.DoDefaultAction() {
-            Ok(()) => DefaultAction::Pressed,
-            Err(e) if default_action_not_done(e.code().0) => DefaultAction::NotAvailable,
-            Err(e) => DefaultAction::Failed(e),
+        let started = std::time::Instant::now();
+        let r = legacy.DoDefaultAction();
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        match r {
+            Ok(()) => {
+                eprintln!("[uia-click-diag] step=do_default_action ok ms={ms:.1}");
+                DefaultAction::Pressed
+            }
+            Err(e) if default_action_not_done(e.code().0) => {
+                eprintln!("[uia-click-diag] step=do_default_action not_done hr=0x{:08X} ms={ms:.1} msg={}", e.code().0 as u32, e.message());
+                DefaultAction::NotAvailable
+            }
+            Err(e) => {
+                eprintln!("[uia-click-diag] step=do_default_action failed hr=0x{:08X} ms={ms:.1} msg={}", e.code().0 as u32, e.message());
+                DefaultAction::Failed(e)
+            }
         }
     }
 }
