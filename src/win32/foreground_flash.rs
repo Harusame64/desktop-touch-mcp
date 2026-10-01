@@ -45,9 +45,10 @@ use super::wt_focus::focus_terminal_pane;
 /// `>= 5120` で fail)。WT default 1KiB より余裕、user 設定で変動可なので 5KiB。
 const MAX_TEXT_UTF16_BYTES: usize = 5120;
 
-/// internal #230: how long the terminal pane has to report focus after `SetFocus` (win2 measured
-/// about 100 ms).
-const TERMINAL_FOCUS_TIMEOUT_MS: u32 = 500;
+/// internal #230: how long the terminal pane has to report focus after `SetFocus`. win2 measured
+/// about 100 ms, but one first paste with the find box open held the foreground 511 ms in all; the
+/// wait only runs this long when focus is slow, and a timeout refuses the paste.
+const TERMINAL_FOCUS_TIMEOUT_MS: u32 = 1_000;
 const DEFAULT_FOCUS_WAIT_MS: u32 = 30;
 const DEFAULT_FOREGROUND_RESTORE_RETRIES: u32 = 2;
 const FOREGROUND_RESTORE_VERIFY_TIMEOUT_MS: u32 = 10;
