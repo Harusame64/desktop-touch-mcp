@@ -626,7 +626,13 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
   // The paste and Enter go to WT's focused control: its find box, or a tab item that lets Ctrl+V
   // through and not Enter, both reported as success (win2, internal #230). The flash puts focus on
   // the terminal pane first, once WT is in front, and pastes nothing when it cannot.
-  const r = injectViaForegroundFlash(channel.hwnd, channel.pid, line, { pressEnter: trailing !== null, focusTerminalPane: true });
+  const r = injectViaForegroundFlash(channel.hwnd, channel.pid, line, {
+    pressEnter: trailing !== null, focusTerminalPane: true,
+    // Only the selected tab's pane is in the tree: a tab switched after the check above would have
+    // its pane focused and pasted into, so the flash checks the tab again around the focus (PR codex
+    // on #765).
+    expectedTabRuntimeId: tabBefore.runtimeId,
+  });
   if (!r.ok) {
     // These fail before Ctrl+V is sent (`foreground_flash.rs`: validate, save the clipboard, take
     // the foreground, wait for focus, then paste); the rest may have typed. Refused, not
@@ -637,7 +643,8 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
       r.reason === "clipboard_lock_contention" ||
       r.reason === "foreground_steal_denied" ||
       r.reason === "focus_wait_timeout" ||
-      r.reason === "terminal_focus_failed";
+      r.reason === "terminal_focus_failed" ||
+      r.reason === "terminal_tab_changed";
     // Restoring the foreground comes last, after Ctrl+V and Enter — but the paste may have been caught
     // by WT's paste warning, which the flash reports only when the restore succeeds (PR codex on
     // #764). So: probably typed, not certainly. A focus-wait timeout returns after the terminal was brought forward and before
@@ -649,6 +656,12 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
         "(or UI Automation was busy), so the paste was not sent — it would have gone to another control (an open " +
         "find box, a tab). If the " +
         "terminal is still in front, the previous window could not be put back.",
+      );
+    }
+    if (r.reason === "terminal_tab_changed") {
+      throw new TerminalForegroundRefusal(
+        `Nothing was typed (terminal_tab_changed): the terminal's selected tab changed just before the paste; ` +
+        `the user agreed to the tab "${tabBefore.name}".`,
       );
     }
     if (r.reason === "focus_wait_timeout") {

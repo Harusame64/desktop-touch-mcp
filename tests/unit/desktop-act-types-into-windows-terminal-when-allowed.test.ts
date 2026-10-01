@@ -151,13 +151,13 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     const { ctx, ask } = asking({ action: "accept", content: { typeIt: true } });
     await act("echo hi\n", ctx);
     expect(ask).toHaveBeenCalledTimes(1);
-    expect(mockFlash).toHaveBeenCalledWith(WT, 42, "echo hi", { pressEnter: true, focusTerminalPane: true });
+    expect(mockFlash).toHaveBeenCalledWith(WT, 42, "echo hi", { pressEnter: true, focusTerminalPane: true, expectedTabRuntimeId: "42.1.4.263" });
     expect(mockPostChars).not.toHaveBeenCalled();
   });
 
   it("pastes without Enter when the text has no trailing newline", async () => {
     await act("echo hi", asking({ action: "accept", content: {} }).ctx);
-    expect(mockFlash).toHaveBeenCalledWith(WT, 42, "echo hi", { pressEnter: false, focusTerminalPane: true });
+    expect(mockFlash).toHaveBeenCalledWith(WT, 42, "echo hi", { pressEnter: false, focusTerminalPane: true, expectedTabRuntimeId: "42.1.4.263" });
   });
 
   it.each([
@@ -212,7 +212,7 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
 
   it("accepts a trailing \\r alone as Enter, as terminal send does", async () => {
     await act("dir\r", asking({ action: "accept", content: {} }).ctx);
-    expect(mockFlash).toHaveBeenCalledWith(WT, 42, "dir", { pressEnter: true, focusTerminalPane: true });
+    expect(mockFlash).toHaveBeenCalledWith(WT, 42, "dir", { pressEnter: true, focusTerminalPane: true, expectedTabRuntimeId: "42.1.4.263" });
   });
 
   it("does not ask about text longer than one paste takes", async () => {
@@ -616,6 +616,13 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     await act("echo hi", ctx);
     const form = (ask.mock.calls[0] as unknown as [{ requestedSchema: { properties: { typeIt: { description: string } } } }])[0];
     expect(form.requestedSchema.properties.typeIt.description).toBe("Into: PowerShell (selected tab: build) — Types: echo hi");
+  });
+
+  it("says nothing was typed when the selected tab changed just before the paste (PR codex on #765)", async () => {
+    mockFlash.mockReturnValueOnce({ ok: false, reason: "terminal_tab_changed" } as never);
+    const err = await act("echo hi\n", asking({ action: "accept", content: {} }).ctx).catch((e) => e);
+    expect(err?.name).toBe("TerminalForegroundRefusal");
+    expect(err?.callerDetail).toMatch(/^Nothing was typed \(terminal_tab_changed\).*the tab "PowerShell"/);
   });
 
   it("says nothing was typed when the terminal pane would not take focus (internal #230)", async () => {

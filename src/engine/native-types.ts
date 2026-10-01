@@ -456,6 +456,9 @@ export interface NativeForegroundFlashOptions {
    *  with `terminal_focus_failed` (nothing pasted, foreground put back) when it will not take it
    *  (default false). */
   focusTerminalPane?: boolean
+  /** With `focusTerminalPane`: the RuntimeId of the tab the user agreed to (as `uiaGetSelectedTab`
+   *  returns it). A different selected tab fails with `terminal_tab_changed`, nothing pasted. */
+  expectedTabRuntimeId?: string
 }
 
 /** One entry in `ForegroundFlashResult.clipboardSkippedFormats`. */

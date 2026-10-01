@@ -234,6 +234,7 @@ export interface NativeForegroundFlashOptions {
   scanPasteWarningDialog?: boolean
   pressEnter?: boolean
   focusTerminalPane?: boolean
+  expectedTabRuntimeId?: string
 }
 
 export interface NativeForegroundFlashSkippedFormat {

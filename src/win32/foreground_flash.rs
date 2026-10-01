@@ -37,7 +37,7 @@ use super::clipboard_snapshot::{
 use super::kbd_hook::{install_low_level_keyboard_block, HookGuard};
 use super::safety::napi_safe_call;
 use super::wt_dialog_scan::scan_and_dismiss_paste_warning;
-use super::wt_focus::focus_terminal_pane;
+use super::wt_focus::{focus_terminal_pane, FocusOutcome};
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -85,6 +85,10 @@ pub struct ForegroundFlashOptions {
     /// (default false). When it cannot, nothing is pasted, the foreground is put back, and the call
     /// fails with `terminal_focus_failed`.
     pub focus_terminal_pane: Option<bool>,
+    /// With `focus_terminal_pane`: the RuntimeId (as `uia_get_selected_tab` returns it) of the tab
+    /// the user agreed to. The selected tab is checked against it before and after the focus; a
+    /// different one fails with `terminal_tab_changed`, nothing pasted (PR codex on #765).
+    pub expected_tab_runtime_id: Option<String>,
 }
 
 /// `win32_foreground_flash_inject` の成功結果。
@@ -159,6 +163,9 @@ pub enum ForegroundFlashErrorReason {
     /// internal #230: `focus_terminal_pane` was asked for and the terminal pane did not take focus.
     /// Raised after the foreground and clipboard are put back; nothing was pasted.
     TerminalFocusFailed,
+    /// internal #230: the selected tab is no longer `expected_tab_runtime_id`. Raised after the
+    /// foreground and clipboard are put back; nothing was pasted.
+    TerminalTabChanged,
 }
 
 impl ForegroundFlashErrorReason {
@@ -174,6 +181,7 @@ impl ForegroundFlashErrorReason {
             WtPasteWarningIntercepted => "wt_paste_warning_intercepted",
             SendInputFailed => "send_input_failed",
             TerminalFocusFailed => "terminal_focus_failed",
+            TerminalTabChanged => "terminal_tab_changed",
         }
     }
 }
@@ -398,6 +406,7 @@ pub fn win32_foreground_flash_inject(
             .unwrap_or(DEFAULT_FOREGROUND_RESTORE_RETRIES);
         let press_enter = options.press_enter.unwrap_or(false);
         let focus_terminal = options.focus_terminal_pane.unwrap_or(false);
+        let expected_tab = options.expected_tab_runtime_id.clone();
         // block_keyboard_during_flash: option > env > default false
         let block_keyboard = options.block_keyboard_during_flash.unwrap_or(false)
             || std::env::var("DESKTOP_TOUCH_FOREGROUND_FLASH_BLOCK_KEYBOARD")
@@ -444,7 +453,7 @@ pub fn win32_foreground_flash_inject(
             let mut paste_warning_detected = false;
             // internal #230: set when the terminal pane would not take focus; Ctrl+V and Enter are
             // then skipped, the foreground is still put back, and the call fails after cleanup.
-            let mut terminal_focus_failed = false;
+            let mut terminal_focus_failed: Option<ForegroundFlashErrorReason> = None;
             // Returns: (steal_method, restore_retries_used, restore_method) — Opus Round 1
             // P1-2 反映で restore 側 ladder 段別を hints に出す対称化。
             let inner: napi::Result<(&'static str, u32, &'static str)> = (|| {
@@ -468,11 +477,15 @@ pub fn win32_foreground_flash_inject(
                 //      or a tab item that lets Ctrl+V through but not Enter), so put focus on the
                 //      terminal pane first. Only now: SetFocus activates the window, and which
                 //      control has focus can be read only while WT is in front (win2, i230 spike).
-                if focus_terminal && !focus_terminal_pane(target.0 as isize, TERMINAL_FOCUS_TIMEOUT_MS) {
-                    terminal_focus_failed = true;
+                if focus_terminal {
+                    terminal_focus_failed = match focus_terminal_pane(target.0 as isize, TERMINAL_FOCUS_TIMEOUT_MS, expected_tab.clone()) {
+                        FocusOutcome::Focused => None,
+                        FocusOutcome::TabChanged => Some(ForegroundFlashErrorReason::TerminalTabChanged),
+                        FocusOutcome::NotFocused => Some(ForegroundFlashErrorReason::TerminalFocusFailed),
+                    };
                 }
 
-                if !terminal_focus_failed {
+                if terminal_focus_failed.is_none() {
                     // 6. SendInput Ctrl+V
                     if !send_ctrl_v() {
                         return Err(err(ForegroundFlashErrorReason::SendInputFailed));
@@ -543,8 +556,8 @@ pub fn win32_foreground_flash_inject(
                 if !foreground_restored {
                     // Nothing was pasted when the terminal pane would not take focus; reporting
                     // foreground_restore_failed would read as "probably typed" (internal #230).
-                    if terminal_focus_failed {
-                        return Err(err(ForegroundFlashErrorReason::TerminalFocusFailed));
+                    if let Some(reason) = terminal_focus_failed {
+                        return Err(err(reason));
                     }
                     return Err(err(ForegroundFlashErrorReason::ForegroundRestoreFailed));
                 }
@@ -562,8 +575,8 @@ pub fn win32_foreground_flash_inject(
             let (steal_method, restore_retries_used, restore_method) = inner?;
 
             // Nothing was pasted; raised after the foreground and the clipboard were put back.
-            if terminal_focus_failed {
-                return Err(err(ForegroundFlashErrorReason::TerminalFocusFailed));
+            if let Some(reason) = terminal_focus_failed {
+                return Err(err(reason));
             }
 
             // Paste warning が detected なら全 cleanup 後に typed reason で fail。
@@ -701,6 +714,7 @@ mod tests {
         );
         assert_eq!(SendInputFailed.as_str(), "send_input_failed");
         assert_eq!(TerminalFocusFailed.as_str(), "terminal_focus_failed");
+        assert_eq!(TerminalTabChanged.as_str(), "terminal_tab_changed");
     }
 
     #[test]
