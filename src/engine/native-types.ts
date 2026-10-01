@@ -452,6 +452,10 @@ export interface NativeForegroundFlashOptions {
   scanPasteWarningDialog?: boolean
   /** Paste 完了後に SendInput(VK_RETURN) を別送信 (default false)。 */
   pressEnter?: boolean
+  /** internal #230: focus the window's one Windows Terminal pane (UIA) before Ctrl+V, and fail
+   *  with `terminal_focus_failed` (nothing pasted, foreground put back) when it will not take it
+   *  (default false). */
+  focusTerminalPane?: boolean
 }
 
 /** One entry in `ForegroundFlashResult.clipboardSkippedFormats`. */

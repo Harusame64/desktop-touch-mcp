@@ -37,12 +37,17 @@ use super::clipboard_snapshot::{
 use super::kbd_hook::{install_low_level_keyboard_block, HookGuard};
 use super::safety::napi_safe_call;
 use super::wt_dialog_scan::scan_and_dismiss_paste_warning;
+use super::wt_focus::focus_terminal_pane;
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
 /// 5KiB threshold for `largePasteWarning` 構造的回避 (UTF-16 byte count、
 /// `>= 5120` で fail)。WT default 1KiB より余裕、user 設定で変動可なので 5KiB。
 const MAX_TEXT_UTF16_BYTES: usize = 5120;
+
+/// internal #230: how long the terminal pane has to report focus after `SetFocus` (win2 measured
+/// about 100 ms).
+const TERMINAL_FOCUS_TIMEOUT_MS: u32 = 500;
 const DEFAULT_FOCUS_WAIT_MS: u32 = 30;
 const DEFAULT_FOREGROUND_RESTORE_RETRIES: u32 = 2;
 const FOREGROUND_RESTORE_VERIFY_TIMEOUT_MS: u32 = 10;
@@ -74,6 +79,11 @@ pub struct ForegroundFlashOptions {
     /// Paste 完了後に SendInput(VK_RETURN) を別送信する (default false)。
     /// caller が明示的に Enter を送りたい場合に true。
     pub press_enter: Option<bool>,
+    /// internal #230: after the window is in front and before Ctrl+V, put keyboard focus on the
+    /// window's one Windows Terminal pane (`TermControl`) through UIA and wait until it is there
+    /// (default false). When it cannot, nothing is pasted, the foreground is put back, and the call
+    /// fails with `terminal_focus_failed`.
+    pub focus_terminal_pane: Option<bool>,
 }
 
 /// `win32_foreground_flash_inject` の成功結果。
@@ -145,6 +155,9 @@ pub enum ForegroundFlashErrorReason {
     WtPasteWarningIntercepted,
     /// `SendInput` が想定より少ない数しか inject できなかった (Win11 input restriction 等)。
     SendInputFailed,
+    /// internal #230: `focus_terminal_pane` was asked for and the terminal pane did not take focus.
+    /// Raised after the foreground and clipboard are put back; nothing was pasted.
+    TerminalFocusFailed,
 }
 
 impl ForegroundFlashErrorReason {
@@ -159,6 +172,7 @@ impl ForegroundFlashErrorReason {
             ForegroundRestoreFailed => "foreground_restore_failed",
             WtPasteWarningIntercepted => "wt_paste_warning_intercepted",
             SendInputFailed => "send_input_failed",
+            TerminalFocusFailed => "terminal_focus_failed",
         }
     }
 }
@@ -382,6 +396,7 @@ pub fn win32_foreground_flash_inject(
             .foreground_restore_retries
             .unwrap_or(DEFAULT_FOREGROUND_RESTORE_RETRIES);
         let press_enter = options.press_enter.unwrap_or(false);
+        let focus_terminal = options.focus_terminal_pane.unwrap_or(false);
         // block_keyboard_during_flash: option > env > default false
         let block_keyboard = options.block_keyboard_during_flash.unwrap_or(false)
             || std::env::var("DESKTOP_TOUCH_FOREGROUND_FLASH_BLOCK_KEYBOARD")
@@ -426,6 +441,9 @@ pub fn win32_foreground_flash_inject(
             // step 12.5 へ前倒し: WT が foreground のうちに Esc が dismiss
             // 先と一致するため。Phase 5 docs で deviation 言及予定)。
             let mut paste_warning_detected = false;
+            // internal #230: set when the terminal pane would not take focus; Ctrl+V and Enter are
+            // then skipped, the foreground is still put back, and the call fails after cleanup.
+            let mut terminal_focus_failed = false;
             // Returns: (steal_method, restore_retries_used, restore_method) — Opus Round 1
             // P1-2 反映で restore 側 ladder 段別を hints に出す対称化。
             let inner: napi::Result<(&'static str, u32, &'static str)> = (|| {
@@ -445,37 +463,47 @@ pub fn win32_foreground_flash_inject(
                     return Err(err(ForegroundFlashErrorReason::FocusWaitTimeout));
                 }
 
-                // 6. SendInput Ctrl+V
-                if !send_ctrl_v() {
-                    return Err(err(ForegroundFlashErrorReason::SendInputFailed));
+                // 5.5. internal #230 — the paste and Enter go to WT's focused control (its find box,
+                //      or a tab item that lets Ctrl+V through but not Enter), so put focus on the
+                //      terminal pane first. Only now: SetFocus activates the window, and which
+                //      control has focus can be read only while WT is in front (win2, i230 spike).
+                if focus_terminal && !focus_terminal_pane(target.0 as isize, TERMINAL_FOCUS_TIMEOUT_MS) {
+                    terminal_focus_failed = true;
                 }
 
-                // 7. Paste reflect delay
-                std::thread::sleep(Duration::from_millis(PASTE_REFLECT_DELAY_MS));
+                if !terminal_focus_failed {
+                    // 6. SendInput Ctrl+V
+                    if !send_ctrl_v() {
+                        return Err(err(ForegroundFlashErrorReason::SendInputFailed));
+                    }
 
-                // 8. Optional Enter (text に \n を含めない構造的回避と paired)
-                if press_enter && !send_enter() {
-                    return Err(err(ForegroundFlashErrorReason::SendInputFailed));
-                }
+                    // 7. Paste reflect delay
+                    std::thread::sleep(Duration::from_millis(PASTE_REFLECT_DELAY_MS));
 
-                // 8.5. WT paste warning ContentDialog scan (Phase 1e、§3.3.3
-                //      保険)。WT が foreground のうちに UIA scan + Esc を実行、
-                //      detected + escape_sent を outcome として観測、cleanup は
-                //      共通 (Opus Round 1 P2-3 反映: escape_sent も設計に組込み)。
-                if scan_paste_warning {
-                    let target_raw = target.0 as isize;
-                    let outcome = scan_and_dismiss_paste_warning(
-                        target_raw,
-                        PASTE_WARNING_SCAN_TIMEOUT_MS,
-                    );
-                    if outcome.detected {
-                        paste_warning_detected = true;
-                        // escape_sent = false なら dialog 残置 risk、しかし caller
-                        // は wt_paste_warning_intercepted で fail を受け取るので
-                        // 「intercept したが Esc 失敗」という区別は当面 hint で
-                        // surface しない (将来 docs follow-up、§5.4.1 acceptance
-                        // hot path 既に detected で typed reason fail)。
-                        let _ = outcome.escape_sent;
+                    // 8. Optional Enter (text に \n を含めない構造的回避と paired)
+                    if press_enter && !send_enter() {
+                        return Err(err(ForegroundFlashErrorReason::SendInputFailed));
+                    }
+
+                    // 8.5. WT paste warning ContentDialog scan (Phase 1e、§3.3.3
+                    //      保険)。WT が foreground のうちに UIA scan + Esc を実行、
+                    //      detected + escape_sent を outcome として観測、cleanup は
+                    //      共通 (Opus Round 1 P2-3 反映: escape_sent も設計に組込み)。
+                    if scan_paste_warning {
+                        let target_raw = target.0 as isize;
+                        let outcome = scan_and_dismiss_paste_warning(
+                            target_raw,
+                            PASTE_WARNING_SCAN_TIMEOUT_MS,
+                        );
+                        if outcome.detected {
+                            paste_warning_detected = true;
+                            // escape_sent = false なら dialog 残置 risk、しかし caller
+                            // は wt_paste_warning_intercepted で fail を受け取るので
+                            // 「intercept したが Esc 失敗」という区別は当面 hint で
+                            // surface しない (将来 docs follow-up、§5.4.1 acceptance
+                            // hot path 既に detected で typed reason fail)。
+                            let _ = outcome.escape_sent;
+                        }
                     }
                 }
 
@@ -512,6 +540,11 @@ pub fn win32_foreground_flash_inject(
                     }
                 }
                 if !foreground_restored {
+                    // Nothing was pasted when the terminal pane would not take focus; reporting
+                    // foreground_restore_failed would read as "probably typed" (internal #230).
+                    if terminal_focus_failed {
+                        return Err(err(ForegroundFlashErrorReason::TerminalFocusFailed));
+                    }
                     return Err(err(ForegroundFlashErrorReason::ForegroundRestoreFailed));
                 }
                 Ok((steal_method, restore_retries_used, restore_method))
@@ -526,6 +559,11 @@ pub fn win32_foreground_flash_inject(
 
             // Propagate inner error AFTER restore attempt
             let (steal_method, restore_retries_used, restore_method) = inner?;
+
+            // Nothing was pasted; raised after the foreground and the clipboard were put back.
+            if terminal_focus_failed {
+                return Err(err(ForegroundFlashErrorReason::TerminalFocusFailed));
+            }
 
             // Paste warning が detected なら全 cleanup 後に typed reason で fail。
             // 構造的回避が破られた fail-safe path (§3.3.3)。
@@ -661,6 +699,7 @@ mod tests {
             "wt_paste_warning_intercepted"
         );
         assert_eq!(SendInputFailed.as_str(), "send_input_failed");
+        assert_eq!(TerminalFocusFailed.as_str(), "terminal_focus_failed");
     }
 
     #[test]

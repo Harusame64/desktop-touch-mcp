@@ -16,7 +16,9 @@
   it at most 600 characters; one trailing newline is sent as Enter. When another window has the
   same title, the question says where the terminal is on screen; two in the same place are refused. If the terminal's window or active tab changed while the user was answering,
   nothing is typed. A tab split into panes is refused. A terminal that is the window in front is refused: when the client runs in one of
-  its tabs, the paste would arrive as the user's next message.
+  its tabs, the paste would arrive as the user's next message. Before pasting, the server puts the
+  terminal's keyboard focus on its input, so an open find box does not take the text; when it
+  cannot, nothing is typed (`terminal_focus_failed` in the detail).
 
 - **A window on another virtual desktop is not brought forward.** A title search can pick a window
   on another virtual desktop: it can come ahead of a same-titled window on the screen. `keyboard`

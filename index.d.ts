@@ -233,6 +233,7 @@ export interface NativeForegroundFlashOptions {
   blockKeyboardDuringFlash?: boolean
   scanPasteWarningDialog?: boolean
   pressEnter?: boolean
+  focusTerminalPane?: boolean
 }
 
 export interface NativeForegroundFlashSkippedFormat {

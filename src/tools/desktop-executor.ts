@@ -623,7 +623,10 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
   if (isInFront()) refuseInFront();
 
   logDispatchSink({ sink: "foreground_flash", tool: "desktop_act:terminal_send", targetHwnd: channel.hwnd });
-  const r = injectViaForegroundFlash(channel.hwnd, channel.pid, line, { pressEnter: trailing !== null });
+  // The paste and Enter go to WT's focused control: its find box, or a tab item that lets Ctrl+V
+  // through and not Enter, both reported as success (win2, internal #230). The flash puts focus on
+  // the terminal pane first, once WT is in front, and pastes nothing when it cannot.
+  const r = injectViaForegroundFlash(channel.hwnd, channel.pid, line, { pressEnter: trailing !== null, focusTerminalPane: true });
   if (!r.ok) {
     // These fail before Ctrl+V is sent (`foreground_flash.rs`: validate, save the clipboard, take
     // the foreground, wait for focus, then paste); the rest may have typed. Refused, not
@@ -633,11 +636,20 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
       r.reason === "input_exceeds_paste_warning_threshold" ||
       r.reason === "clipboard_lock_contention" ||
       r.reason === "foreground_steal_denied" ||
-      r.reason === "focus_wait_timeout";
+      r.reason === "focus_wait_timeout" ||
+      r.reason === "terminal_focus_failed";
     // Restoring the foreground comes last, after Ctrl+V and Enter — but the paste may have been caught
     // by WT's paste warning, which the flash reports only when the restore succeeds (PR codex on
     // #764). So: probably typed, not certainly. A focus-wait timeout returns after the terminal was brought forward and before
     // the restore, so nothing was typed but the terminal is left in front (PR codex on #764).
+    // Raised after the foreground and clipboard were put back (`foreground_flash.rs`, internal #230).
+    if (r.reason === "terminal_focus_failed") {
+      throw new TerminalForegroundRefusal(
+        "Nothing was typed (terminal_focus_failed): the terminal's input would not take the keyboard focus, so " +
+        "the paste was not sent — it would have gone to another control (an open find box, a tab). If the " +
+        "terminal is still in front, the previous window could not be put back.",
+      );
+    }
     if (r.reason === "focus_wait_timeout") {
       throw new TerminalForegroundRefusal(
         "Nothing was typed (focus_wait_timeout), but the terminal was brought in front and left there; " +
