@@ -782,7 +782,9 @@ const ZWJ_SEQUENCES = [...EMOJI_ZWJ_SEQUENCES]
   .join("|");
 const SHOWN_AS_EMOJI = new RegExp(
   [
-    ZWJ_SEQUENCES,
+    // Not when a skin tone follows: 👨‍❤️‍👨🏻 is not a listed sequence, and removing the plain couple
+    // would leave its joiners unchecked (gate 2 on #766).
+    String.raw`(?:${ZWJ_SEQUENCES})(?![\u{1f3fb}-\u{1f3ff}])`,
     // Only after a character with a standardized text and emoji style (Unicode's own list); after
     // 😀 a VS15 draws as nothing (PR codex on #766).
     String.raw`(?<=${EMOJI_VARIATION_BASES})[\ufe0e\ufe0f]`,
