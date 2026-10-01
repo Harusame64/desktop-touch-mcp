@@ -684,6 +684,10 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
   it.each([
     ["a keycap", 'git commit -m "step 1\ufe0f\u20e3"'],
     ["a subdivision flag", "echo \u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}"],
+    ["the Scotland flag", "echo \u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}"],
+    ["a ZWJ sequence through VS16 (heart on fire)", "echo \u2764\ufe0f\u200d\u{1f525}"],
+    ["a ZWJ sequence with a skin tone (person with skin tone at a laptop)", "echo \u{1f9d1}\u{1f3fd}\u200d\u{1f4bb}"],
+    ["a ZWJ sequence ending in VS16 (rainbow flag)", "echo \u{1f3f3}\ufe0f\u200d\u{1f308}"],
     ["a text-style emoji (VS15)", "echo \u263a\ufe0e"],
     ["a private-use icon (a Nerd Font glyph)", "echo \ue0b0"],
   ])("asks about text with %s, which shows as what it is (internal #230)", async (_what, text) => {
@@ -697,6 +701,12 @@ describe("internal #227 — desktop_act types into Windows Terminal only when th
     ["a stray keycap VS16 (no U+20E3)", "echo 1\ufe0fx"],
     ["tag letters without the black flag", "echo a\u{e0067}\u{e0062}\u{e007f}"],
     ["an unterminated subdivision flag", "echo \u{1f3f4}\u{e0067}\u{e0062}"],
+    // gate 2 on #766: a tag run after the black flag spells invisible ASCII ("rm -rf").
+    ["tags spelling text after the black flag", "echo \u{1f3f4}\u{e0072}\u{e006d}\u{e0020}\u{e002d}\u{e0072}\u{e0066}\u{e007f}"],
+    ["a zero-width joiner between two non-emoji pictographs", "echo \u00a9\u200d\u00a9"],
+    ["a zero-width joiner from an emoji to a non-emoji pictograph", "echo \u{1f9d1}\u200d\u00a9"],
+    ["the musical null notehead U+1D159, which draws as blank", "echo a\u{1d159}b"],
+    ["a noncharacter U+FFFE", "echo a\ufffeb"],
   ])("does not ask about %s, which shows as nothing (internal #230)", async (_what, text) => {
     const { ctx, ask } = asking({ action: "accept", content: {} });
     const err = await act(text, ctx).catch((e) => e);

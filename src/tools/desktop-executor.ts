@@ -754,24 +754,30 @@ export function terminalBgExecute(
  * - line and paragraph separators, and every space but U+0020 (`Zs`: NBSP, the U+2000 set,
  *   ideographic space), plus the braille blank U+2800 (a symbol, not a space, by property): shown as
  *   a space, not split on by the shell;
- * - lone surrogates.
+ * - characters that draw as blank without a property saying so: the musical null notehead U+1D159,
+ *   the Khitan filler U+16FE4, the Duployan selector U+1BC9D (gate 2 on #766);
+ * - lone surrogates and noncharacters.
  * Private-use characters are allowed (Nerd Font icons in prompts and titles), and so are unassigned
  * ones (a newer emoji than this runtime's Unicode data must not be refused).
  */
-const UNSHOWABLE_CHARS = /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}\p{Cs}\u2800]|(?! )\p{Zs}/u;
+const UNSHOWABLE_CHARS =
+  // eslint-disable-next-line no-misleading-character-class -- combining marks that draw nothing are listed on purpose
+  /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\p{Noncharacter_Code_Point}\p{Zl}\p{Zp}\p{Cs}\u2800\u{1d159}\u{16fe4}\u{1bc9d}]|(?! )\p{Zs}/u;
 /**
  * Sequences made of those characters that show as one emoji, removed before the check: a zero-width
- * joiner between two emoji (👨‍💻; the first may carry VS16 or a skin tone, 👩🏽‍💻), VS16 or VS15 after
- * an emoji (✔️, ☺︎), a keycap (1️⃣: digit, VS16, U+20E3), and a subdivision flag (🏴 + tag letters +
- * cancel tag). Anywhere else they are shown as nothing and received as characters (`file\ufe0f`).
+ * joiner between two emoji (👨‍💻, 👩🏽‍💻, 🏃‍♀️ — each side an emoji-presentation character, or a
+ * pictograph made one by VS16; `©‍©` is not, gate 2 on #766), VS16 or VS15 after a pictograph (✔️,
+ * ☺︎), a keycap (1️⃣: digit, VS16, U+20E3), and the three subdivision flags that exist (England,
+ * Scotland, Wales). Not any tag run after 🏴: tags spell invisible ASCII, which is how text is
+ * smuggled past a reader (gate 2 on #766). Anywhere else these characters are shown as nothing and
+ * received as characters (`file\ufe0f`).
  */
 const SHOWN_AS_EMOJI = new RegExp(
-  // eslint-disable-next-line no-misleading-character-class -- the classes list VS16 and skin-tone modifiers on purpose
   [
-    String.raw`(?<=\p{Extended_Pictographic}[\ufe0f\u{1f3fb}-\u{1f3ff}]?)\u200d(?=\p{Extended_Pictographic})`,
+    String.raw`(?<=\p{Emoji_Presentation}|\p{Extended_Pictographic}\ufe0f)\u200d(?=\p{Emoji_Presentation}|\p{Extended_Pictographic}\ufe0f)`,
     String.raw`(?<=\p{Extended_Pictographic})[\ufe0e\ufe0f]`,
     String.raw`[0-9#*]\ufe0f\u20e3`,
-    String.raw`\u{1f3f4}[\u{e0020}-\u{e007e}]+\u{e007f}`,
+    String.raw`\u{1f3f4}(?:\u{e0067}\u{e0062}(?:\u{e0065}\u{e006e}\u{e0067}|\u{e0073}\u{e0063}\u{e0074}|\u{e0077}\u{e006c}\u{e0073}))\u{e007f}`,
   ].join("|"),
   "gu",
 );
