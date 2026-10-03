@@ -16,9 +16,10 @@ import path from "node:path";
 import crypto from "node:crypto";
 
 // ─── Hoisted mocks ────────────────────────────────────────────────────────────
-const { mockEnumWindowsInZOrder, mockGetWindowTitleW, mockHasBuffer, mockCaptureAllLayers, mockCaptureAndDiff, mockUpdateWindowCache, mockSaveSnapshot, mockGetWindows, mockResolveWindowTarget, mockCaptureWindowBackground, mockCaptureWindowWithFallback } = vi.hoisted(() => ({
+const { mockEnumWindowsInZOrder, mockGetWindowTitleW, mockGetWindowRectByHwnd, mockHasBuffer, mockCaptureAllLayers, mockCaptureAndDiff, mockUpdateWindowCache, mockSaveSnapshot, mockGetWindows, mockResolveWindowTarget, mockCaptureWindowBackground, mockCaptureWindowWithFallback } = vi.hoisted(() => ({
   mockEnumWindowsInZOrder: vi.fn(),
   mockGetWindowTitleW: vi.fn(),
+  mockGetWindowRectByHwnd: vi.fn(),
   mockHasBuffer: vi.fn(),
   mockCaptureAllLayers: vi.fn(),
   mockCaptureAndDiff: vi.fn(),
@@ -32,7 +33,12 @@ const { mockEnumWindowsInZOrder, mockGetWindowTitleW, mockHasBuffer, mockCapture
 
 vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
-  return { ...actual, enumWindowsInZOrder: mockEnumWindowsInZOrder, getWindowTitleW: mockGetWindowTitleW };
+  return {
+    ...actual,
+    enumWindowsInZOrder: mockEnumWindowsInZOrder,
+    getWindowTitleW: mockGetWindowTitleW,
+    getWindowRectByHwnd: mockGetWindowRectByHwnd,
+  };
 });
 vi.mock("../../src/engine/layer-buffer.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/layer-buffer.js")>();
@@ -117,6 +123,44 @@ describe("diffMode — ADR-026 §3 per-frame by-ref", () => {
     expect(result.content.some((c) => c.type === "image")).toBe(false);
     expect(result.content.some((c) => c.type === "resource_link")).toBe(false);
     expect(result.content.some((c) => c.type === "text" && /\[MOVED\]/.test((c as { text: string }).text))).toBe(true);
+  });
+});
+
+// Internal #243 (win2, 2026-10-04): every background capture failed "screenshot failed: " since at
+// least 1.16.0. The handler matched the resolved window's title again over nut-js's list and handed
+// nut-js's handle — a number — to natives that take a BigInt, which threw with an empty message.
+describe("mode='background' — captures the window it resolved (internal #243)", () => {
+  it("hands the resolved BigInt handle to the capture, and does not walk nut-js's list", async () => {
+    mockResolveWindowTarget.mockResolvedValue({ title: "Target", hwnd: 4242n, warnings: [] });
+    mockGetWindowRectByHwnd.mockReturnValue({ x: 10, y: 20, width: 300, height: 200 });
+    mockGetWindows.mockClear();
+    mockCaptureWindowBackground.mockClear();
+    mockCaptureWindowBackground.mockResolvedValue({ base64: B64, mimeType: "image/png", width: 300, height: 200 });
+
+    const result = await screenshotBgHandler({
+      hwnd: "4242", maxDimension: 768, dotByDot: false, grayscale: false, webpQuality: 60, fullContent: true,
+    });
+    expect(result.content[0].type).toBe("image");
+    expect(mockCaptureWindowBackground).toHaveBeenCalledTimes(1);
+    expect(mockCaptureWindowBackground.mock.calls[0][0]).toBe(4242n);
+    expect(mockGetWindows).not.toHaveBeenCalled();
+  });
+
+  it("without a resolved window, turns nut-js's number handle into a BigInt before any native call", async () => {
+    mockResolveWindowTarget.mockResolvedValue(null);
+    mockGetWindows.mockResolvedValue([
+      { windowHandle: 777, title: Promise.resolve("Other"), region: Promise.resolve({ left: 0, top: 0, width: 640, height: 480 }) },
+    ]);
+    mockGetWindowTitleW.mockClear();
+    mockGetWindowTitleW.mockReturnValue("Other");
+    mockCaptureWindowBackground.mockClear();
+    mockCaptureWindowBackground.mockResolvedValue({ base64: B64, mimeType: "image/png", width: 640, height: 480 });
+
+    await screenshotBgHandler({
+      windowTitle: "Other", maxDimension: 768, dotByDot: false, grayscale: false, webpQuality: 60, fullContent: true,
+    });
+    expect(mockGetWindowTitleW.mock.calls[0][0]).toBe(777n);
+    expect(mockCaptureWindowBackground.mock.calls[0][0]).toBe(777n);
   });
 });
 

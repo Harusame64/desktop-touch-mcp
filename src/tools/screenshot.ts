@@ -5,7 +5,7 @@ import type { CaptureSource, CaptureFallbackReason } from "../engine/image.js";
 import { captureAndDiff, captureAllLayers, hasBuffer } from "../engine/layer-buffer.js";
 import type { WindowInfo } from "../engine/layer-buffer.js";
 import { getWindows } from "../engine/nutjs.js";
-import { enumMonitors, getVirtualScreen, getWindowTitleW, enumWindowsInZOrder } from "../engine/win32.js";
+import { enumMonitors, getVirtualScreen, getWindowTitleW, getWindowRectByHwnd, enumWindowsInZOrder } from "../engine/win32.js";
 import { getUiElements, extractActionableElements, WINUI3_CLASS_RE, detectUiaBlind } from "../engine/uia-bridge.js";
 import type { UiElementsResult } from "../engine/uia-bridge.js";
 import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords, runSomPipeline, snapToDictionary, detectOcrLanguage } from "../engine/ocr-bridge.js";
@@ -1075,20 +1075,30 @@ export const screenshotBgHandler = async ({
     const effectiveTitle = resolvedWin?.title ?? windowTitle;
     const bgWarnings: string[] = [...(resolvedWin?.warnings ?? [])];
 
-    const windows = await getWindows();
-    let hwnd: unknown = null;
+    let hwnd: bigint | null = null;
     let foundTitle = "";
     let windowScreenRegion: { x: number; y: number; width: number; height: number } | null = null;
 
-    for (const win of windows) {
-      const h = (win as unknown as { windowHandle: unknown }).windowHandle;
-      const title = h ? getWindowTitleW(h) : await win.title;
-      if (title.toLowerCase().includes(effectiveTitle.toLowerCase())) {
-        hwnd = h;
-        foundTitle = title;
-        const reg = await win.region;
-        windowScreenRegion = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
-        break;
+    // Internal #243: the window resolved above is the one captured. Matching its title again over
+    // nut-js's window list could pick another window with the same text first, and handed nut-js's
+    // handle — a number — to natives that take a BigInt, which threw with an empty message, so
+    // every background capture failed as "screenshot failed: " (win2, 2026-10-04, since 1.16.0).
+    if (resolvedWin) {
+      hwnd = resolvedWin.hwnd;
+      foundTitle = resolvedWin.title;
+      windowScreenRegion = getWindowRectByHwnd(hwnd);
+    } else {
+      for (const win of await getWindows()) {
+        const raw = (win as unknown as { windowHandle: unknown }).windowHandle;
+        const h = typeof raw === "number" || typeof raw === "bigint" ? BigInt(raw) : null;
+        const title = h ? getWindowTitleW(h) : await win.title;
+        if (title.toLowerCase().includes(effectiveTitle.toLowerCase())) {
+          hwnd = h;
+          foundTitle = title;
+          const reg = await win.region;
+          windowScreenRegion = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
+          break;
+        }
       }
     }
 
