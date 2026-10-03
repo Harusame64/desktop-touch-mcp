@@ -357,7 +357,7 @@ export async function captureWindowBackground(
   hwnd: unknown,
   optsOrMaxDim: CaptureOptions | number = 1280,
   printWindowFlags = 2
-): Promise<CaptureResult & { captureBlocked?: boolean; source?: "wgc" | "printwindow" }> {
+): Promise<CaptureResult & { captureBlocked?: boolean; source: "wgc" | "printwindow" }> {
   const opts: CaptureOptions =
     typeof optsOrMaxDim === "number" ? { maxDimension: optsOrMaxDim } : optsOrMaxDim;
   // ADR-027 — for windows DWM is compositing (visible, non-minimised,

@@ -1141,7 +1141,10 @@ export const screenshotBgHandler = async ({
         `Background capture (dot-by-dot) of "${foundTitle}": ${result.width}x${result.height}px` +
         (result.scale !== undefined ? ` | scale: ${result.scale.toFixed(4)}` : "") +
         " | no screen origin: this image starts at the window's visible frame, which this capture does not measure." +
-        " For screen coordinates use mode='normal' with dotByDot, or desktop_discover.";
+        " For screen coordinates use desktop_discover." +
+        (region
+          ? ` [sub-crop applied: (${region.x},${region.y}) ${region.width}x${region.height}, relative to the visible frame]`
+          : "");
     } else if (dotByDot && windowScreenRegion) {
       // Compute screen-space origin: window position + region offset (approximate, ignores DPI scale)
       const regionOffsetX = region ? region.x : 0;

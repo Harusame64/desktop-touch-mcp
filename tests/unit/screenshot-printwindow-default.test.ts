@@ -515,6 +515,8 @@ describe("captureWindowBackground — WGC primary (ADR-027 Phase 2)", () => {
 
     const result = await captureWindowBackground(hwnd, 1280);
     expect(result).toBeTruthy();
+    // Which rung served: a WGC frame starts at the visible frame, so the handler gives it no origin.
+    expect(result.source).toBe("wgc");
     expect(mockCaptureWindowWgc).toHaveBeenCalledTimes(1);
     expect(mockPrintWindowToBuffer).not.toHaveBeenCalled();
   });
@@ -525,6 +527,7 @@ describe("captureWindowBackground — WGC primary (ADR-027 Phase 2)", () => {
 
     const result = await captureWindowBackground(hwnd, 1280);
     expect(result).toBeTruthy();
+    expect(result.source).toBe("printwindow");
     expect(mockCaptureWindowWgc).not.toHaveBeenCalled();
     expect(mockPrintWindowToBuffer).toHaveBeenCalledTimes(1);
   });
@@ -558,6 +561,7 @@ describe("captureWindowBackground — WGC primary (ADR-027 Phase 2)", () => {
     expect(result).toBeTruthy();
     expect(mockCaptureWindowWgc).toHaveBeenCalledTimes(1);
     expect(mockPrintWindowToBuffer).toHaveBeenCalledTimes(1); // WGC blank rejected → PrintWindow
+    expect(result.source).toBe("printwindow");
   });
 });
 
