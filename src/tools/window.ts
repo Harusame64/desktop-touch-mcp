@@ -88,7 +88,9 @@ export const getActiveWindowHandler = async (): Promise<ToolResult> => {
         "get_active_window",
       );
     }
-    const title = hwnd ? getWindowTitleW(hwnd) : await win.title;
+    // nut-js's handle is a number; the native takes a BigInt (internal #243, the same defect).
+    const title =
+      typeof hwnd === "number" || typeof hwnd === "bigint" ? getWindowTitleW(BigInt(hwnd)) : await win.title;
     const reg = await win.region;
     const info = {
       title,

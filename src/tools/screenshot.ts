@@ -1079,10 +1079,12 @@ export const screenshotBgHandler = async ({
     let foundTitle = "";
     let windowScreenRegion: { x: number; y: number; width: number; height: number } | null = null;
 
-    // Internal #243: the window resolved above is the one captured. Matching its title again over
-    // nut-js's window list could pick another window with the same text first, and handed nut-js's
-    // handle — a number — to natives that take a BigInt, which threw with an empty message, so
-    // every background capture failed as "screenshot failed: " (win2, 2026-10-04, since 1.16.0).
+    // Internal #243: a window resolved above (by hwnd, @active or a dialog rescue) is the one
+    // captured, without matching its title again over nut-js's list, where another window with the
+    // same text could come first. A plain title that matches a top-level window resolves to null and
+    // is still matched here. That loop handed nut-js's handle — a number — to natives that take a
+    // BigInt, which threw with an empty message, so every background capture failed as
+    // "screenshot failed: " (win2, 2026-10-04, since at least 1.16.0); it is a BigInt first now.
     if (resolvedWin) {
       hwnd = resolvedWin.hwnd;
       foundTitle = resolvedWin.title;

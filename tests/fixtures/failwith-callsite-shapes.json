@@ -468,21 +468,21 @@
     },
     {
       "file": "src/tools/screenshot.ts",
-      "line": 1107,
+      "line": 1109,
       "tool": "screenshot",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/screenshot.ts",
-      "line": 1214,
+      "line": 1216,
       "tool": "screenshot",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/screenshot.ts",
-      "line": 1310,
+      "line": 1312,
       "tool": "get_screen_info",
       "errKind": "identifier",
       "contextShape": "none"
@@ -622,14 +622,14 @@
     },
     {
       "file": "src/tools/window.ts",
-      "line": 186,
+      "line": 188,
       "tool": "focus_window",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/window.ts",
-      "line": 218,
+      "line": 220,
       "tool": "focus_window",
       "errKind": "string-literal",
       "contextShape": "object-plain"

@@ -146,6 +146,18 @@ describe("mode='background' — captures the window it resolved (internal #243)"
     expect(mockGetWindows).not.toHaveBeenCalled();
   });
 
+  it("takes the dot-by-dot origin from the resolved window's own rect", async () => {
+    mockResolveWindowTarget.mockResolvedValue({ title: "Target", hwnd: 4242n, warnings: [] });
+    mockGetWindowRectByHwnd.mockReturnValue({ x: 10, y: 20, width: 300, height: 200 });
+    mockCaptureWindowBackground.mockResolvedValue({ base64: B64, mimeType: "image/png", width: 300, height: 200 });
+
+    const result = await screenshotBgHandler({
+      hwnd: "4242", maxDimension: 768, dotByDot: true, grayscale: false, webpQuality: 60, fullContent: true,
+    });
+    const text = result.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("\n");
+    expect(text).toContain("origin: (10, 20)");
+  });
+
   it("without a resolved window, turns nut-js's number handle into a BigInt before any native call", async () => {
     mockResolveWindowTarget.mockResolvedValue(null);
     mockGetWindows.mockResolvedValue([
