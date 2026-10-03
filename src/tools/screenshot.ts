@@ -81,7 +81,7 @@ export const screenshotSchema = {
     .describe(
       "1:1 pixel mode — no scaling, WebP compression. " +
       "Window captures include 'origin: (x,y)' so you can compute screen position: screen_x = origin_x + image_x. " +
-      "Except mode='background' when the frame comes from the window's composition surface (a visible window with fullContent): " +
+      "Except mode='background' when the frame comes from the window's composition surface (WGC, used when it can be for a visible, non-minimised window with fullContent): " +
       "it starts at the window's visible frame, which is not measured, so no origin is given — the text says so; use desktop_discover for coordinates. " +
       "When dotByDotMaxDimension is also set, scale factor is included: screen_x = origin_x + image_x / scale."
     ),
@@ -137,7 +137,7 @@ export const screenshotSchema = {
     .describe(
       "Capture mode.\n" +
       "  'normal'     — default. Window-targeted captures (windowTitle / hwnd) use Win32 PrintWindow with automatic BitBlt fallback when PrintWindow returns no data or an all-black frame; the route used is reported in hints.captureSource. Fullscreen / displayId captures use BitBlt.\n" +
-      "  'background' — a capture of the window itself, not of the screen: its composition surface (WGC) for a visible window with fullContent, else Win32 PrintWindow. Requires windowTitle (or hwnd). Pair with fullContent for GPU-rendered apps."
+      "  'background' — a capture of the window itself, not of the screen: its composition surface (WGC) when it can be for a visible, non-minimised window with fullContent, else Win32 PrintWindow. Requires windowTitle (or hwnd). Pair with fullContent for GPU-rendered apps."
     ),
   fullContent: coercedBoolean()
     .default(true)
@@ -971,7 +971,7 @@ export const screenshotHandler = async (args: {
           );
         } else if (result.fallbackReason === "printwindow-all-black") {
           localWarnings.push(
-            "PrintWindow returned an all-black frame; capture fell back to a BitBlt of the on-screen region. If the target window is legitimately black (terminal, dark editor, video), pass mode='background' to force the PrintWindow result."
+            "PrintWindow returned an all-black frame; capture fell back to a BitBlt of the on-screen region. If the target window is legitimately black (terminal, dark editor, video), pass mode='background' with fullContent=false to force the PrintWindow result."
           );
         }
       }
@@ -1397,8 +1397,8 @@ export function registerScreenshotTools(server: McpServer): void {
         "detail='som' returns OCR-detected elements with IDs plus a Set-of-Marks annotated image delivered by-ref by default (bypasses UIA entirely). " +
         "detail='ocr' returns Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr — use when UIA is sparse and you want to force OCR unconditionally). " +
         "detail='image' and detail='som' both return a cheap by-ref resource_link by default (no inline base64); pass confirmImage=true to also embed the inline image (the annotated bitmap for som). " +
-        "mode='background' captures hidden/minimised/occluded windows via PrintWindow (Phase 4: absorbs former screenshot_background) — pair with windowTitle/hwnd. " +
-        "dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response). " +
+        "mode='background' captures the window itself, hidden/minimised/occluded too — from its composition surface (WGC) when it can, else via PrintWindow (Phase 4: absorbs former screenshot_background) — pair with windowTitle/hwnd. " +
+        "dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response); a background WGC frame prints no origin. " +
         "diffMode=true returns only changed windows after the first call (~160 tok). " +
         "region={x,y,width,height} captures a sub-rectangle (Phase 4: absorbs former scope_element when paired with windowTitle/hwnd — discover element bounds via desktop_discover, then pass region here). " +
         "Data reduction: grayscale=true (−50%), dotByDotMaxDimension=1280 (caps longest edge), windowTitle+region (sub-crop to exclude browser chrome — e.g. region={x:0, y:120, width:1920, height:900}).",
