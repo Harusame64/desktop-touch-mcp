@@ -1131,7 +1131,18 @@ export const screenshotBgHandler = async ({
     const result = await captureWindowBackground(hwnd, captureOpts, pwFlags);
 
     let dimensionText: string;
-    if (dotByDot && windowScreenRegion) {
+    // A WGC frame starts at the window's visible (DWM) frame, not at GetWindowRect's corner, which
+    // includes the invisible resize border: win2 measured the image 7 px right of that corner
+    // (2026-10-04, internal #243), so an origin from the rect would put a click 7 px left. Until the
+    // visible frame is read, a WGC frame gets no origin; PrintWindow renders the whole rect.
+    const visibleFrameOnly = result.source === "wgc";
+    if (dotByDot && visibleFrameOnly) {
+      dimensionText =
+        `Background capture (dot-by-dot) of "${foundTitle}": ${result.width}x${result.height}px` +
+        (result.scale !== undefined ? ` | scale: ${result.scale.toFixed(4)}` : "") +
+        " | no screen origin: this image starts at the window's visible frame, which this capture does not measure." +
+        " For screen coordinates use mode='normal' with dotByDot, or desktop_discover.";
+    } else if (dotByDot && windowScreenRegion) {
       // Compute screen-space origin: window position + region offset (approximate, ignores DPI scale)
       const regionOffsetX = region ? region.x : 0;
       const regionOffsetY = region ? region.y : 0;

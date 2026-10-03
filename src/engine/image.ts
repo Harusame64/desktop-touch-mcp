@@ -357,7 +357,7 @@ export async function captureWindowBackground(
   hwnd: unknown,
   optsOrMaxDim: CaptureOptions | number = 1280,
   printWindowFlags = 2
-): Promise<CaptureResult & { captureBlocked?: boolean }> {
+): Promise<CaptureResult & { captureBlocked?: boolean; source?: "wgc" | "printwindow" }> {
   const opts: CaptureOptions =
     typeof optsOrMaxDim === "number" ? { maxDimension: optsOrMaxDim } : optsOrMaxDim;
   // ADR-027 — for windows DWM is compositing (visible, non-minimised,
@@ -380,7 +380,7 @@ export async function captureWindowBackground(
       ? isLikelyBlankCapture(wgc.rawPixels, wgc.width, wgc.height, 4, opts.crop).isBlank
       : false;
     const encodedWgc = await encode(wgc.rawPixels, wgc.width, wgc.height, 4, opts);
-    return { ...encodedWgc, captureBlocked };
+    return { ...encodedWgc, captureBlocked, source: "wgc" as const };
   }
   // Call printWindowToBuffer directly so the original native error (driver
   // failure, DRM-protected surface, etc.) propagates to OCR / SoM callers
@@ -401,7 +401,7 @@ export async function captureWindowBackground(
   // dark-but-varied editor / video as blank.)
   const captureBlocked = isLikelyBlankCapture(data, width, height, 4, opts.crop).isBlank;
   const encoded = await encode(data, width, height, 4, opts);
-  return { ...encoded, captureBlocked };
+  return { ...encoded, captureBlocked, source: "printwindow" as const };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
