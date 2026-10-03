@@ -1302,7 +1302,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "default": 768
         },
         "dotByDot": {
-          "description": "1:1 pixel mode — no scaling, WebP compression. Window captures include 'origin: (x,y)' so you can compute screen position: screen_x = origin_x + image_x. When dotByDotMaxDimension is also set, scale factor is included: screen_x = origin_x + image_x / scale.",
+          "description": "1:1 pixel mode — no scaling, WebP compression. Window captures include 'origin: (x,y)' so you can compute screen position: screen_x = origin_x + image_x. Except mode='background' when the frame comes from the window's composition surface (a visible window with fullContent): it starts at the window's visible frame, which is not measured, so no origin is given — the text says so; use desktop_discover for coordinates. When dotByDotMaxDimension is also set, scale factor is included: screen_x = origin_x + image_x / scale.",
           "type": "boolean",
           "default": false
         },
@@ -1339,7 +1339,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "mode": {
-          "description": "Capture mode.\n  'normal'     — default. Window-targeted captures (windowTitle / hwnd) use Win32 PrintWindow with automatic BitBlt fallback when PrintWindow returns no data or an all-black frame; the route used is reported in hints.captureSource. Fullscreen / displayId captures use BitBlt.\n  'background' — explicit Win32 PrintWindow capture, retained for back-compat and explicit selection. Requires windowTitle (or hwnd). Pair with fullContent for GPU-rendered apps.",
+          "description": "Capture mode.\n  'normal'     — default. Window-targeted captures (windowTitle / hwnd) use Win32 PrintWindow with automatic BitBlt fallback when PrintWindow returns no data or an all-black frame; the route used is reported in hints.captureSource. Fullscreen / displayId captures use BitBlt.\n  'background' — a capture of the window itself, not of the screen: its composition surface (WGC) for a visible window with fullContent, else Win32 PrintWindow. Requires windowTitle (or hwnd). Pair with fullContent for GPU-rendered apps.",
           "type": "string",
           "enum": [
             "normal",
