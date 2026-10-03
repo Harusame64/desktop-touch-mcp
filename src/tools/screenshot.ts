@@ -1136,6 +1136,7 @@ export const screenshotBgHandler = async ({
     // (2026-10-04, internal #243), so an origin from the rect would put a click 7 px left. Until the
     // visible frame is read, a WGC frame gets no origin; PrintWindow renders the whole rect.
     const visibleFrameOnly = result.source === "wgc";
+    let originPrinted = false;
     if (dotByDot && visibleFrameOnly) {
       dimensionText =
         `Background capture (dot-by-dot) of "${foundTitle}": ${result.width}x${result.height}px` +
@@ -1146,6 +1147,7 @@ export const screenshotBgHandler = async ({
           ? ` [sub-crop applied: (${region.x},${region.y}) ${region.width}x${region.height}, relative to the visible frame]`
           : "");
     } else if (dotByDot && windowScreenRegion) {
+      originPrinted = true;
       // Compute screen-space origin: window position + region offset (approximate, ignores DPI scale)
       const regionOffsetX = region ? region.x : 0;
       const regionOffsetY = region ? region.y : 0;
@@ -1174,13 +1176,13 @@ export const screenshotBgHandler = async ({
       height: result.height,
       wantInline: true,
       meta: { tag: foundTitle || effectiveTitle },
-      // The default description says the text above carries click coordinates; a WGC frame's does
-      // not (win2 on 9ca8f5a4, internal #243).
-      ...(visibleFrameOnly && {
+      // The default description says the text carries click coordinates; only the branch that
+      // prints an origin does (win2 on 9ca8f5a4, internal #243; gate 2 on 2bee92aa).
+      ...(!originPrinted && {
         describe: (info: { width: number; height: number; mimeType: string; bytes: number }) =>
           `Screenshot ${info.width}×${info.height} (${info.mimeType}, ${info.bytes} bytes). ` +
-          "Open this resource only if you need to inspect the pixels again; it has no screen origin " +
-          "(see the text above) — use desktop_discover for coordinates.",
+          "Open this resource only if you need to inspect the pixels again. This capture gives no " +
+          "screen origin for clicking — use desktop_discover for coordinates.",
       }),
     });
     const allBgWarnings = warning ? [...bgWarnings, warning] : [...bgWarnings];

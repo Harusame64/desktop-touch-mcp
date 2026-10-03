@@ -156,6 +156,9 @@ describe("mode='background' — captures the window it resolved (internal #243)"
     });
     const text = result.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("\n");
     expect(text).toContain("origin: (10, 20)");
+    // Only the branch that prints an origin keeps the default link text, which promises coordinates.
+    const link = result.content.find((c) => c.type === "resource_link") as { description?: string } | undefined;
+    expect(link?.description).toContain("click coordinates");
   });
 
   it("gives a WGC frame no screen origin: it starts at the visible frame, 7 px inside the rect", async () => {
@@ -175,7 +178,22 @@ describe("mode='background' — captures the window it resolved (internal #243)"
     const link = result.content.find((c) => c.type === "resource_link") as { description?: string } | undefined;
     expect(link?.description).toBeDefined();
     expect(link?.description).not.toContain("click coordinates");
-    expect(link?.description).toContain("no screen origin");
+    expect(link?.description).toContain("no screen origin for clicking");
+  });
+
+  it("does not promise click coordinates in the link when no origin was printed (PrintWindow, scaled)", async () => {
+    mockResolveWindowTarget.mockResolvedValue({ title: "Target", hwnd: 4242n, warnings: [] });
+    mockGetWindowRectByHwnd.mockReturnValue({ x: 10, y: 20, width: 300, height: 200 });
+    mockCaptureWindowBackground.mockResolvedValue({
+      base64: B64, mimeType: "image/png", width: 300, height: 200, source: "printwindow",
+    });
+
+    const result = await screenshotBgHandler({
+      hwnd: "4242", maxDimension: 768, dotByDot: false, grayscale: false, webpQuality: 60, fullContent: false,
+    });
+    const link = result.content.find((c) => c.type === "resource_link") as { description?: string } | undefined;
+    expect(link?.description).toBeDefined();
+    expect(link?.description).not.toContain("click coordinates");
   });
 
   it("without a resolved window, turns nut-js's number handle into a BigInt before any native call", async () => {
