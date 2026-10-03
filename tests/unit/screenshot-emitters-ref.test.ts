@@ -172,6 +172,10 @@ describe("mode='background' — captures the window it resolved (internal #243)"
     expect(text).not.toContain("origin: (");
     expect(text).not.toContain("screen_x");
     expect(text).toContain("no screen origin");
+    const link = result.content.find((c) => c.type === "resource_link") as { description?: string } | undefined;
+    expect(link?.description).toBeDefined();
+    expect(link?.description).not.toContain("click coordinates");
+    expect(link?.description).toContain("no screen origin");
   });
 
   it("without a resolved window, turns nut-js's number handle into a BigInt before any native call", async () => {

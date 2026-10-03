@@ -1174,6 +1174,14 @@ export const screenshotBgHandler = async ({
       height: result.height,
       wantInline: true,
       meta: { tag: foundTitle || effectiveTitle },
+      // The default description says the text above carries click coordinates; a WGC frame's does
+      // not (win2 on 9ca8f5a4, internal #243).
+      ...(visibleFrameOnly && {
+        describe: (info: { width: number; height: number; mimeType: string; bytes: number }) =>
+          `Screenshot ${info.width}×${info.height} (${info.mimeType}, ${info.bytes} bytes). ` +
+          "Open this resource only if you need to inspect the pixels again; it has no screen origin " +
+          "(see the text above) — use desktop_discover for coordinates.",
+      }),
     });
     const allBgWarnings = warning ? [...bgWarnings, warning] : [...bgWarnings];
     // ADR-027 R9/AC8 — captureBlocked means no capture rung produced non-black
