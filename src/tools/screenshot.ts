@@ -971,7 +971,7 @@ export const screenshotHandler = async (args: {
           );
         } else if (result.fallbackReason === "printwindow-all-black") {
           localWarnings.push(
-            "PrintWindow returned an all-black frame; capture fell back to a BitBlt of the on-screen region. If the target window is legitimately black (terminal, dark editor, video), pass mode='background' with fullContent=false to force the PrintWindow result."
+            "PrintWindow returned an all-black frame; capture fell back to a BitBlt of the on-screen region. If the target window is legitimately black (terminal, dark editor, video), pass mode='background' to force the PrintWindow result."
           );
         }
       }
