@@ -668,8 +668,12 @@ export const desktopStateHandler = async (args: {
       }
     }
 
-    // Cursor-over-window: Z-order hit test (cheap, always available)
+    // Cursor-over-window: Z-order hit test (cheap, always available). A hidden window (cloaked: on
+    // another virtual desktop, or a packaged app's content while not shown) or a minimised one is
+    // not under the cursor, though its rect may be (llm22 drive F19, win2, 2026-10-04: a notepad on
+    // another desktop and minimised Settings' content were named).
     for (const w of wins) {
+      if (w.isCloaked === true || w.isMinimized) continue;
       const r = w.region;
       if (
         cursor.x >= r.x && cursor.x < r.x + r.width &&
