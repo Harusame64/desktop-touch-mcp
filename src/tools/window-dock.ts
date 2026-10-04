@@ -34,7 +34,7 @@ export const windowDockSchema = z.discriminatedUnion("action", [
     title: z
       .string()
       .describe(
-        "Partial window title to dock (case-insensitive). Matches the first visible window containing this text. " +
+        "Partial window title to dock (case-insensitive). Matches the first shown window containing this text (a minimised one counts; a hidden one — on another virtual desktop, or a minimised packaged app's content — does not). " +
         "Example: 'Claude Code', 'メモ帳'."
       ),
     corner: z

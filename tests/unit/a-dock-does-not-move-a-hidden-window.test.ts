@@ -84,3 +84,17 @@ describe("window_dock pin / unpin", () => {
     expect(mocks.unpin.mock.calls.map((c) => c[0])).toEqual([4131504n]);
   });
 });
+
+describe("window_dock pin / unpin — gate 2 on #772", () => {
+  it("says a pinned window is minimised, instead of a bare ok", async () => {
+    mocks.enumWindowsInZOrder.mockReturnValue([frame]);
+    const body = JSON.parse(((await pinWindowHandler({ title: "電卓" })).content[0] as { text: string }).text) as Record<string, unknown>;
+    expect(body).toMatchObject({ ok: true, minimized: true });
+  });
+
+  it("unpins the hidden match that carries the flag, even while the shown frame matches too", async () => {
+    mocks.enumWindowsInZOrder.mockReturnValue([{ ...content, exStyle: 0x200008 }, { ...frame, exStyle: 0x200000 }]);
+    await unpinWindowHandler({ title: "電卓" });
+    expect(mocks.unpin.mock.calls.map((c) => c[0])).toEqual([4131504n]);
+  });
+});

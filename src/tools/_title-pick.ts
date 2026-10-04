@@ -8,8 +8,12 @@
  * answered ok while the Calculator the user sees stayed minimised; `focus_window` aimed at the same
  * content and failed. A window that is shown is taken before a hidden one with the same title.
  *
- * Only for tools that move or bring forward. The readers keep their own pick (`_off-desktop.ts`
- * explains why they must agree with one another).
+ * Used by window_dock (dock, pin) and focus_window. NOT by keyboard, mouse or scroll: there a title
+ * whose first window is on another desktop is refused with "one with that title is here"
+ * (internal #221, `_off-desktop.ts`) so the caller chooses — taking the shown one silently would act
+ * on a window the caller did not single out, and those tools act right after. When their first match
+ * is a minimised app's frozen content they fail to bring it forward and say so, which harms nothing.
+ * The readers keep their own pick (`_off-desktop.ts` says why they must agree).
  */
 export function titleMatchesShownFirst<T extends { title: string; isCloaked?: boolean }>(
   windows: readonly T[],
@@ -19,3 +23,4 @@ export function titleMatchesShownFirst<T extends { title: string; isCloaked?: bo
   const matches = windows.filter((w) => w.title.toLowerCase().includes(query));
   return [...matches.filter((w) => w.isCloaked !== true), ...matches.filter((w) => w.isCloaked === true)];
 }
+

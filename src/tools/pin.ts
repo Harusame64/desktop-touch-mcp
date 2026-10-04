@@ -13,7 +13,7 @@ import { titleMatchesShownFirst } from "./_title-pick.js";
 function findWindowHwnd(
   titleQuery: string,
   opt: { allowHidden: boolean },
-): { found: { hwnd: unknown; title: string } | null; hiddenOnly: boolean } {
+): { found: { hwnd: unknown; title: string; isMinimized: boolean } | null; hiddenOnly: boolean } {
   let hidden = false;
   for (const win of titleMatchesShownFirst(enumWindowsInZOrder(), titleQuery)) {
     if (!win.isMinimized && (win.region.width < 50 || win.region.height < 50)) continue;
@@ -21,7 +21,7 @@ function findWindowHwnd(
       hidden = true;
       continue;
     }
-    return { found: { hwnd: win.hwnd, title: win.title }, hiddenOnly: false };
+    return { found: { hwnd: win.hwnd, title: win.title, isMinimized: win.isMinimized }, hiddenOnly: false };
   }
   return { found: null, hiddenOnly: hidden };
 }
@@ -82,7 +82,16 @@ export const pinWindowHandler = async ({
     return {
       content: [{
         type: "text" as const,
-        text: JSON.stringify({ ok: true, title: found.title, action: "pinned (call window_dock(action='unpin') to remove)" }),
+        text: JSON.stringify({
+          ok: true,
+          title: found.title,
+          action: "pinned (call window_dock(action='unpin') to remove)",
+          // A minimised window keeps the flag but is not on screen until restored (gate 2 on #772).
+          ...(found.isMinimized && {
+            minimized: true,
+            hint: "The window is minimised: it stays topmost once restored, but nothing shows until then (focus_window restores it).",
+          }),
+        }),
       }],
     };
   } catch (err) {
@@ -90,9 +99,17 @@ export const pinWindowHandler = async ({
   }
 };
 
+/** WS_EX_TOPMOST. */
+const WS_EX_TOPMOST = 0x0000_0008;
+
 export const unpinWindowHandler = async ({ title }: { title: string }): Promise<ToolResult> => {
   try {
-    const { found } = findWindowHwnd(title, { allowHidden: true });
+    // The match that carries the flag first, shown or hidden: a flag set on a minimised app's hidden
+    // content (as llm22 F5 did) is taken off even while its shown frame matches too (gate 2 on #772).
+    const topmost = titleMatchesShownFirst(enumWindowsInZOrder(), title).find((w) => ((w.exStyle ?? 0) & WS_EX_TOPMOST) !== 0);
+    const { found } = topmost
+      ? { found: { hwnd: topmost.hwnd, title: topmost.title, isMinimized: topmost.isMinimized } }
+      : findWindowHwnd(title, { allowHidden: true });
     if (!found) {
       return failWith(new Error(`No window found matching: "${title}"`), "window_dock");
     }

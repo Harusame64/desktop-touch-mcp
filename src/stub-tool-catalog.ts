@@ -773,7 +773,6 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "type": "object",
       "properties": {
         "title": {
-          "description": "Partial window title to search for (case-insensitive)",
           "type": "string"
         },
         "chromeTabUrlContains": {

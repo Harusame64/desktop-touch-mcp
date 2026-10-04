@@ -21,7 +21,9 @@ export const getWindowsSchema = {};
 export const getActiveWindowSchema = {};
 
 export const focusWindowSchema = {
-  title: z.string().describe("Partial window title to search for (case-insensitive)"),
+  title: z.string().describe(
+    "Partial window title to search for (case-insensitive). A shown window (a minimised one counts) is taken before a hidden one with the same text; a hidden one — on another virtual desktop — only when nothing shown matches.",
+  ),
   chromeTabUrlContains: z.string().optional().describe(
     "When set, activate the Chrome/Edge tab whose URL contains this substring before focusing the window. " +
     "Requires Chrome/Edge running with --remote-debugging-port (default 9222). " +

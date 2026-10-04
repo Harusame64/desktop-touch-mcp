@@ -615,21 +615,21 @@
     },
     {
       "file": "src/tools/window.ts",
-      "line": 87,
+      "line": 89,
       "tool": "get_active_window",
       "errKind": "string-literal",
       "contextShape": "none"
     },
     {
       "file": "src/tools/window.ts",
-      "line": 190,
+      "line": 192,
       "tool": "focus_window",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/window.ts",
-      "line": 222,
+      "line": 224,
       "tool": "focus_window",
       "errKind": "string-literal",
       "contextShape": "object-plain"
