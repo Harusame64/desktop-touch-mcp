@@ -199,3 +199,13 @@ describe("title-bar buttons are named (2026-10-04)", () => {
     expect(toCandidate(close, 7, "W", 1).label).toBe("Close window");
   });
 });
+
+describe("sheet warnings (2026-10-04)", () => {
+  it("says a sheet whose controls live in another process is open", async () => {
+    const sheet: any = { id: "a.0.7", rootKey: "R", elementKey: "K", depth: 1, role: "AXSheet", actions: [], valueSettable: false, childCount: 1 };
+    const notes = { warnings: [] as string[] };
+    await readMacAxCandidates({ listWindows: vi.fn(() => []), getFocus: vi.fn(async () => ({ pid: 7 })),
+      axTree: vi.fn(async () => ({ pid: 7, elements: [sheet], truncated: false, selfReference: false, displayAsleep: false, elapsedMs: 1 })), now: () => 1 } as any, undefined, notes);
+    expect(notes.warnings).toEqual(["sheet_open_in_other_process"]);
+  });
+});

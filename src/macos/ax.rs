@@ -541,12 +541,14 @@ pub struct MacAxTarget {
 pub struct MacActResult {
     pub ok: bool,
     /// Why the act was refused or failed: `element_not_found`,
-    /// `element_changed`, `action_not_advertised`, `value_not_settable`,
+    /// `element_changed`, `modal_blocking`, `action_not_advertised`, `value_not_settable`,
     /// `selection_not_settable`, `length_unknown`, or the AX error name.
     pub reason: Option<String>,
     /// The element's value read back after a write (capped).
     pub value_after: Option<String>,
     pub role: Option<String>,
+    /// For `modal_blocking`: `sheet:<title>` or `modal_window:<title>`.
+    pub blocker: Option<String>,
 }
 
 fn refused(reason: &str) -> MacActResult {
@@ -567,7 +569,46 @@ fn locate(t: &MacAxTarget) -> Result<CFRetained<AXUIElement>, MacActResult> {
     if element_key(&e) != t.expected_element_key {
         return Err(MacActResult { role: Some(role), ..refused("element_changed") });
     }
+    if let Some(blocker) = modal_blocker(&app, &root, &t.id, timeout) {
+        return Err(MacActResult { role: Some(role), blocker: Some(blocker), ..refused("modal_blocking") });
+    }
     Ok(e)
+}
+
+/// What blocks an act on the element at `id` under `root`, if anything (measured 2026-10-04:
+/// with TextEdit's save sheet open, AXValue and AXPress on the window behind it both took effect).
+/// - a sheet on the element's window that the element is not inside (`sheet:<title>`); a sheet
+///   whose contents live in another process (the open/save panel) blocks everything here;
+/// - another window of the app that says it is modal (`AXModal`), e.g. an app-modal alert
+///   (`modal_window:<title>`).
+fn modal_blocker(app: &AXUIElement, root: &AXUIElement, id: &str, timeout: f32) -> Option<String> {
+    let mut parts = id.split('.');
+    let root_id = match parts.next() {
+        Some("a") => format!("a.{}", parts.next().unwrap_or("")),
+        Some(other) => other.to_string(),
+        None => return None,
+    };
+    for (i, child) in children(root, timeout).iter().enumerate() {
+        if attr_string(child, "AXRole").as_deref() != Some("AXSheet") {
+            continue;
+        }
+        let sheet_id = format!("{root_id}.{i}");
+        if id != sheet_id && !id.starts_with(&format!("{sheet_id}.")) {
+            return Some(format!("sheet:{}", attr_string(child, "AXTitle").unwrap_or_default()));
+        }
+    }
+    if let Ok(v) = attr(app, "AXWindows")
+        && let Ok(arr) = v.downcast::<CFArray>()
+    {
+        let arr: CFRetained<CFArray<CFType>> = unsafe { CFRetained::cast_unchecked(arr) };
+        for w in arr.iter().filter_map(|w| w.downcast::<AXUIElement>().ok()) {
+            let w = with_timeout(w, timeout);
+            if !same(&w, root) && attr_bool(&w, "AXModal") == Some(true) {
+                return Some(format!("modal_window:{}", attr_string(&w, "AXTitle").unwrap_or_default()));
+            }
+        }
+    }
+    None
 }
 
 /// Perform an AX action, but only one the element advertises: Chrome's web

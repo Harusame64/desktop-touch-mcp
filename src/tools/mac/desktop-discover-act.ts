@@ -53,7 +53,9 @@ export const macDiscoverDescription = buildDesc({
     "(button/textbox/link/menuitem/label) and primaryAction; buttons offer click, settable text fields offer type, texts only read. " +
     "'warnings' says what the read could not do: display_asleep (macOS then answers windows with the app itself — wake the display and " +
     "discover again), no_window_matches_title, window_titles_unavailable (Screen Recording is not granted, so titles cannot be matched; " +
-    "omit target to read the frontmost app), no_frontmost_app, truncated:*, ax_error:*.",
+    "omit target to read the frontmost app), no_frontmost_app, truncated:*, ax_error:*, sheet_open (answer the sheet first; acts behind it " +
+    "are refused), sheet_open_in_other_process (the sheet's controls belong to another process, e.g. the open/save panel: discover its " +
+    "own title, such as \"Save\" / \"保存\").",
   prefer: "Discover right before each act: a lease names the element as read, and an act on an element that moved is refused.",
   caveats: "Needs Accessibility permission (PermissionRequired otherwise). Window titles need Screen Recording.",
 });
@@ -63,7 +65,8 @@ export const macActDescription = buildDesc({
   details:
     "Acts through Accessibility on the background app — the foreground is not taken. Refused with entity_not_found when the element's window " +
     "or the element at that place changed since the discover (nothing was done; discover again), and action_not_offered when the entity does not " +
-    "offer the action (type on a button, click on a text). value_not_applied: the app took the write but the field does not hold the text " +
+    "offer the action (type on a button, click on a text), and modal_blocking when a sheet or an app-modal window is open over it " +
+    "(answer that first). value_not_applied: the app took the write but the field does not hold the text " +
     "(it may reformat it, e.g. 1.50 shown as 1.5). Not checked: a sheet or dialog that opened over the window after the discover.",
   prefer: "Call desktop_state or desktop_discover afterwards to confirm.",
 });

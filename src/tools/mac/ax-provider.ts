@@ -196,6 +196,11 @@ export async function readMacAxCandidates(
   if (tree.displayAsleep) notes.warnings.push("display_asleep");
   if (tree.selfReference) notes.warnings.push("ax_self_reference");
   if (tree.truncated) notes.warnings.push(`truncated:${tree.stoppedBy ?? "unknown"}`);
+  // A sheet blocks its window (acts behind it are refused natively). Its controls may live in
+  // another process — the open/save panel's do, and then nothing of it is in this tree.
+  for (const sheet of tree.elements.filter((e) => e.role === "AXSheet")) {
+    notes.warnings.push(sheet.childCount <= 1 ? "sheet_open_in_other_process" : "sheet_open");
+  }
 
   const needle = title?.toLowerCase();
   const observedAtMs = deps.now();

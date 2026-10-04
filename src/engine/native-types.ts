@@ -1034,10 +1034,12 @@ export interface NativeMacAxTarget {
 export interface NativeMacActResult {
   ok: boolean
   /** `element_not_found`, `element_changed`, `action_not_advertised`,
-   *  `value_not_settable`, `selection_not_settable`, `length_unknown`, or an AX error name. */
+   *  `value_not_settable`, `selection_not_settable`, `length_unknown`, `modal_blocking`, or an AX error name. */
   reason?: string
   valueAfter?: string
   role?: string
+  /** For `modal_blocking`: `sheet:<title>` or `modal_window:<title>`. */
+  blocker?: string
 }
 
 export interface NativeMacCaptureOptions {

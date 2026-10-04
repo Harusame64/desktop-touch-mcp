@@ -31,8 +31,25 @@ export const VALUE_CHAR_CAP = 2000;
 /** `invalid_ui_element`: the element was destroyed between the read and the act. */
 const GONE = new Set(["element_not_found", "element_changed", "invalid_ui_element"]);
 
+/** A sheet or app-modal window blocks the element (the native act checked; nothing was done). */
+export class ModalBlockingError extends Error {
+  readonly callerDetail: string;
+  constructor(blocker: string | undefined) {
+    super(`modal_blocking: ${blocker ?? "unknown"}`);
+    this.name = "ModalBlockingError";
+    const [kind, ...rest] = (blocker ?? "").split(":");
+    const title = rest.join(":");
+    this.callerDetail =
+      kind === "sheet"
+        ? `A sheet is open on this window${title ? ` ("${title}")` : ""}; nothing behind it was touched. Answer the sheet first: ` +
+          "desktop_discover on the window again, or — when its controls are drawn by another process, as the open/save panel's are — on the sheet's own title (e.g. \"保存\" / \"Save\")."
+        : `A modal window of this app is open${title ? ` ("${title}")` : ""}; nothing was touched. Answer it first (desktop_discover with its title).`;
+  }
+}
+
 function refuse(r: NativeMacActResult, what: string): never {
   const reason = r.reason ?? "unknown";
+  if (reason === "modal_blocking") throw new ModalBlockingError(r.blocker);
   if (GONE.has(reason)) {
     throw new TargetGoneError(
       `${what}: ${reason}`,

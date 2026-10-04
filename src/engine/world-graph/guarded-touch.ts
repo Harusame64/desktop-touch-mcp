@@ -914,6 +914,12 @@ export class GuardedTouchLoop {
       if (err instanceof Error && err.name === "TargetGoneError") {
         return { ok: false, reason: "entity_not_found", diff: [], ...(detail !== undefined && { detail }) };
       }
+      // Mac port: a sheet or an app-modal window blocks the element, found by the native act itself
+      // (the snapshot-based modal guard needs a UIA source). Measured 2026-10-04: with TextEdit's save
+      // sheet open, an AX write and press behind it both took effect. Nothing was done here.
+      if (err instanceof Error && err.name === "ModalBlockingError") {
+        return { ok: false, reason: "modal_blocking", diff: [], ...(detail !== undefined && { detail }) };
+      }
       // Internal #182 — the value road wrote, the provider said yes, and the value did not move.
       // Flattened, it would be `executor_failed`, whose advice sends the caller to a foreground type
       // into the same control; nothing was written, and the recovery is a different field.
