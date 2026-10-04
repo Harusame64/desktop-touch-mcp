@@ -27,6 +27,7 @@ export default [
       "index.d.ts",     // napi-generated
       "tools/**",       // napi tooling
       ".claude/**",     // claude-code worktrees / scratch
+      "release_build_macos/**", // scripts/build-release-macos.mjs staging copy of dist + node_modules
     ],
   },
 
