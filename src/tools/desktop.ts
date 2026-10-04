@@ -126,6 +126,12 @@ export interface DesktopSeeOutput {
   /** Non-fatal warnings (e.g. provider unavailable, partial results). */
   warnings?: string[];
   /**
+   * llm22 F11 — present when the list was cut at its limit (`maxEntities`; 20 by default, 50 with
+   * `view:'explore'`): how many it shows and how many the read found. `warnings[]` says
+   * `entities_capped` too.
+   */
+  entitiesCapped?: { shown: number; total: number };
+  /**
    * Structured view-level constraints derived from warnings[], and from the call itself: a `query`
    * that matched nothing read sets `query` (internal #211). Absent when neither signalled one.
    * Use these to decide fallback strategy without parsing warnings[] strings.
@@ -709,7 +715,12 @@ export class DesktopFacade {
     }
 
     const max = input.maxEntities ?? (input.view === "explore" ? 50 : 20);
+    // llm22 drive F11 (win2, 2026-10-04): Explorer's default view filled its 20 with frame, nav and
+    // address bar, and the files and the "6 items" count were cut with nothing saying so — an agent
+    // read that as "no files". A list cut at the cap says so, with how many were read.
+    const readCount = resolved.length;
     resolved = resolved.slice(0, max);
+    const capped = readCount > max ? { shown: max, total: readCount } : undefined;
 
     session.entities = resolved;
     // Internal #163 — from the candidates, before the resolver drops stale copies. See the field.
@@ -844,10 +855,14 @@ export class DesktopFacade {
               ...(ageMs !== undefined && { ageMs }),
             },
     };
-    const warnings = titleDisagreesWithHandle(input.target, windows, rawResult.target)
-      ? [...rawResult.warnings, "target_title_mismatch"]
-      : rawResult.warnings;
+    const warnings = [
+      ...(titleDisagreesWithHandle(input.target, windows, rawResult.target)
+        ? [...rawResult.warnings, "target_title_mismatch"]
+        : rawResult.warnings),
+      ...(capped ? ["entities_capped"] : []),
+    ];
     if (warnings.length > 0) output.warnings = warnings;
+    if (capped) output.entitiesCapped = capped;
 
     // H2: derive structured constraints from warnings for LLM fallback decisions. A query that
     // matched nothing goes into the constraints only: `warnings[]` non-empty is documented as

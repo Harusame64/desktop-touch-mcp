@@ -159,6 +159,26 @@ describe("DesktopFacade — desktop_see (game / chrome / terminal)", () => {
     expect((await facade.see({ view: "explore" })).entities).toHaveLength(50);
     expect((await facade.see({ view: "action"  })).entities).toHaveLength(20);
   });
+
+  // llm22 drive F11 (win2, 2026-10-04): Explorer's default view filled its 20 and cut the files and
+  // the item count with nothing saying so; an agent read "no files".
+  it("says the list was cut at its limit, with how many the read found", async () => {
+    const manyProvider: CandidateProvider = () =>
+      Array.from({ length: 30 }, (_, i) => cand(`Item ${i}`, "uia", { digest: `d${i}` }));
+    const out = await new DesktopFacade(manyProvider).see({});
+    expect(out.entities).toHaveLength(20);
+    expect(out.entitiesCapped).toEqual({ shown: 20, total: 30 });
+    expect(out.warnings).toContain("entities_capped");
+  });
+
+  it("says nothing of a cap a list did not reach", async () => {
+    const fewProvider: CandidateProvider = () =>
+      Array.from({ length: 20 }, (_, i) => cand(`Item ${i}`, "uia", { digest: `d${i}` }));
+    const out = await new DesktopFacade(fewProvider).see({});
+    expect(out.entities).toHaveLength(20);
+    expect(out).not.toHaveProperty("entitiesCapped");
+    expect(out.warnings ?? []).not.toContain("entities_capped");
+  });
 });
 
 // Audit P1-12 (gap #2): explicit shape validation for the lease handed back

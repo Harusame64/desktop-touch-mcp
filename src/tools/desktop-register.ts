@@ -2065,7 +2065,7 @@ export function registerDesktopTools(server: McpServer): void {
       "constraints.uia=blind_single_pane → PWA/Electron/canvas; try view=debug or screenshot(ocrFallback=always);",
       "constraints.cdp=provider_failed → check --remote-debugging-port=9222;",
       "constraints.terminal=provider_failed → use V1 terminal(action='read'/'send');",
-      "Recovery: no_provider_matched → add target.windowTitle or retry; uia_tree_truncated → the read stopped early (its element cap, or its time on a slow window) and later controls are missing: call again, and if it stays, scroll or narrow the view to the part you need; partial_results_only → compare with V1 click_element;",
+      "Recovery: no_provider_matched → add target.windowTitle or retry; uia_tree_truncated → the read stopped early (its element cap, or its time on a slow window) and later controls are missing: call again, and if it stays, scroll or narrow the view to the part you need; partial_results_only → compare with V1 click_element; entities_capped → the list was cut at its limit (maxEntities; 20 by default, 50 with view:'explore') and entitiesCapped says how many were read: raise maxEntities (up to 200), use view:'explore', or pass a query for the item you need;",
       "cdp_provider_failed → check --remote-debugging-port=9222;",
       "visual_provider_unavailable / visual_provider_warming → server retried once (~200ms); if still warned, continue with structured lane or retry later;",
       "uia/terminal_provider_failed → use V1 tools (click_element / terminal(action='read'));",
