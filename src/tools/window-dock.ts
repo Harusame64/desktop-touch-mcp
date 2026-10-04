@@ -117,7 +117,7 @@ export function registerWindowDockTools(server: McpServer): void {
     {
       description: buildDesc({
         purpose: "Decorate a window: pin (always-on-top), unpin, or dock (move + resize + optional pin).",
-        details: "action='pin' makes window always-on-top until unpin/duration_ms. action='unpin' removes always-on-top. action='dock' positions to corner with width/height (default 480×360 bottom-right) and optionally pins. Minimized windows are automatically restored before docking.",
+        details: "action='pin' makes window always-on-top until unpin/duration_ms. action='unpin' removes always-on-top. action='dock' positions to corner with width/height (default 480×360 bottom-right) and pins it unless pin:false. Minimized windows are automatically restored before docking. The title matches a shown window first; a hidden one (on another virtual desktop, or a minimised packaged app's content) is not docked or pinned — bring it back with focus_window first.",
         prefer: "Use action='dock' for terminal/CLI window auto-positioning at session start. Use action='pin' alone when you only need always-on-top without moving or resizing.",
         caveats: "Pin survives minimize/restore; explicit action='unpin' needed to release. Dock fails on elevated processes. Dock overrides any existing Win+Arrow snap arrangement.",
         examples: [

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { titleMatchesShownFirst } from "./_title-pick.js";
 import {
   enumWindowsInZOrder,
   enumMonitors,
@@ -20,16 +21,24 @@ import { pollUntil } from "../engine/poll.js";
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Find the first visible window whose title contains the query (case-insensitive). */
-function findWindow(titleQuery: string): WindowZInfo | null {
-  const query = titleQuery.toLowerCase();
-  for (const win of enumWindowsInZOrder()) {
-    if (!win.title.toLowerCase().includes(query)) continue;
+/**
+ * Find the first shown window whose title contains the query (case-insensitive). A hidden (cloaked)
+ * window is not docked: moving it changes nothing the user sees, and win2 measured it taking a
+ * minimised packaged app's frozen content instead of its frame (`_title-pick.ts`). `hiddenOnly`
+ * says the title matched only hidden windows.
+ */
+function findWindow(titleQuery: string): { win: WindowZInfo | null; hiddenOnly: boolean } {
+  let hidden = false;
+  for (const win of titleMatchesShownFirst(enumWindowsInZOrder(), titleQuery)) {
+    if (win.isCloaked === true) {
+      hidden = true;
+      continue;
+    }
     // Accept minimized windows too — we restore them before docking.
     if (!win.isMinimized && (win.region.width < 50 || win.region.height < 50)) continue;
-    return win;
+    return { win, hiddenOnly: false };
   }
-  return null;
+  return { win: null, hiddenOnly: hidden };
 }
 
 /** Pick a monitor: explicit id if given, else primary, else first. */
@@ -77,7 +86,7 @@ export const dockWindowSchema = {
   title: z
     .string()
     .describe(
-      "Partial window title to dock (case-insensitive). Matches the first visible window containing this text. " +
+      "Partial window title to dock (case-insensitive). Matches the first shown window containing this text (minimised counts; a hidden one — another virtual desktop, a packaged app's content while minimised — does not). " +
       "Example: 'Claude Code', 'メモ帳'."
     ),
   corner: z
@@ -208,8 +217,17 @@ export const dockWindowHandler = async ({
   margin: number;
 }): Promise<ToolResult> => {
   try {
-    const win = findWindow(title);
+    const { win, hiddenOnly } = findWindow(title);
     if (!win) {
+      if (hiddenOnly) {
+        return failWith(
+          `No window found matching: "${title}" that is shown — only a hidden one (on another virtual desktop, or a ` +
+            "packaged app's content while it is minimised or not shown), and docking it would change nothing on screen. " +
+            "Bring it back first (focus_window), then dock.",
+          "window_dock",
+          { title },
+        );
+      }
       return failWith(`No window found matching: "${title}"`, "window_dock", { title });
     }
     const result = dockKnownWindow(win, { corner, width, height, pin, monitorId, margin });
@@ -327,7 +345,7 @@ export async function autoDockFromEnv(): Promise<void> {
     win = r.value;
   } else {
     const r = await pollUntil(
-      async () => findWindow(title),
+      async () => findWindow(title).win,
       { intervalMs: 200, timeoutMs }
     );
     if (!r.ok) {

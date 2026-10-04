@@ -175,3 +175,23 @@ describe("focusWindowHandler — issue #197 auto-escalate", () => {
     expect(mockRestore).toHaveBeenCalledWith(100n, { force: true });
   });
 });
+
+// internal llm22 drive F5/F8 (win2, 2026-10-04): a minimised packaged app has its frame (shown,
+// minimised) and its content (hidden, frozen) under one title, the content listed above — even at
+// z 0. focus_window aimed at the content and failed.
+describe("focus_window takes a shown window before a hidden one with the same title", () => {
+  it("brings forward the shown (minimised) frame, not the hidden content listed above it", async () => {
+    const content = { ...fakeWindow("電卓", false, 4131504n), isCloaked: true, zOrder: 0 };
+    const frame = { ...fakeWindow("電卓", false, 656956n), isMinimized: true, zOrder: 12 };
+    mockEnum.mockReturnValueOnce([content, frame]).mockReturnValue([{ ...frame, isActive: true, isMinimized: false }]);
+    await focusWindowHandler({ title: "電卓" } as Parameters<typeof focusWindowHandler>[0]);
+    expect(mockRestore.mock.calls[0]?.[0]).toBe(656956n);
+  });
+
+  it("still brings forward a hidden window when it is the only one (another virtual desktop)", async () => {
+    const other = { ...fakeWindow("Remote", false, 77n), isCloaked: true };
+    mockEnum.mockReturnValueOnce([other]).mockReturnValue([{ ...other, isActive: true }]);
+    await focusWindowHandler({ title: "Remote" } as Parameters<typeof focusWindowHandler>[0]);
+    expect(mockRestore.mock.calls[0]?.[0]).toBe(77n);
+  });
+});
