@@ -199,16 +199,19 @@ pub(crate) fn root_key(e: &AXUIElement) -> String {
     )
 }
 
-/// The roots a tree read starts from, with their path prefixes.
+/// The roots a tree read starts from, with their path prefixes, and
+/// whether a child equal to the app itself was skipped.
 pub(crate) fn roots(
     app: &AXUIElement,
     include_menu_bar: bool,
     timeout_secs: f32,
-) -> Vec<(String, CFRetained<AXUIElement>)> {
+) -> (Vec<(String, CFRetained<AXUIElement>)>, bool) {
     let mut out = Vec::new();
+    let mut self_reference = false;
     let kids = children(app, timeout_secs);
     for (i, k) in kids.iter().enumerate() {
         if same(k, app) {
+            self_reference = true;
             continue;
         }
         if !include_menu_bar && attr_string(k, "AXRole").as_deref() == Some("AXMenuBar") {
@@ -218,15 +221,18 @@ pub(crate) fn roots(
     }
     for (prefix, name) in [("f", "AXFocusedWindow"), ("m", "AXMainWindow")] {
         if let Some(w) = attr_element(app, name, timeout_secs) {
-            let seen = same(&w, app)
-                || kids.iter().any(|k| same(k, &w))
+            if same(&w, app) {
+                self_reference = true;
+                continue;
+            }
+            let seen = kids.iter().any(|k| same(k, &w))
                 || out.iter().any(|(_, e)| same(e, &w));
             if !seen {
                 out.push((prefix.to_string(), w));
             }
         }
     }
-    out
+    (out, self_reference)
 }
 
 /// Resolve a path written by [`roots`] + child indexes, returning the
@@ -352,12 +358,12 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
     let deadline = std::time::Duration::from_millis(opts.max_ms.unwrap_or(15_000) as u64);
     let mut elements = Vec::new();
     let mut stopped_by: Option<&str> = None;
-    let mut self_reference = false;
     // Depth-first, children in order, so ids read top to bottom. Each entry
     // carries its ancestors (app first) so a child equal to one is skipped,
     // and its root's key.
     type Entry = (String, CFRetained<AXUIElement>, Vec<CFRetained<AXUIElement>>, std::rc::Rc<String>);
-    let mut stack: Vec<Entry> = roots(&app, opts.include_menu_bar.unwrap_or(false), timeout)
+    let (root_list, mut self_reference) = roots(&app, opts.include_menu_bar.unwrap_or(false), timeout);
+    let mut stack: Vec<Entry> = root_list
         .into_iter()
         .rev()
         .map(|(id, e)| {
