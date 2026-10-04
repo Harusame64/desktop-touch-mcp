@@ -255,8 +255,8 @@ jobs:
       - name: Type check & build
         run: npm run build
 
-      - name: macOS unit cells
-        run: npx vitest run --project=unit tests/unit/mac-*.test.ts
+      - name: macOS unit cells, and the launcher's cells on macOS (it picks and extracts the macOS zip here)
+        run: npx vitest run --project=unit tests/unit/mac-*.test.ts tests/unit/launcher-*.test.ts
 
       - name: Smoke — the macOS server over MCP
         run: node scripts/smoke-macos.mjs

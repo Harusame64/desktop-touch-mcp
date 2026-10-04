@@ -851,7 +851,10 @@ async function main() {
   if (assetNameFor(process.platform, process.arch) === null) {
     fail(
       `This platform (${process.platform}/${process.arch}) is not supported: the npm launcher installs ` +
-        "the Windows build and the macOS build for Apple Silicon (macOS preview) only."
+        "the Windows build and the macOS build for Apple Silicon (macOS preview) only." +
+        (process.platform === "darwin" && process.arch === "x64"
+          ? " If this Mac has Apple Silicon, this Node.js is the Intel build running under Rosetta: install the arm64 build of Node.js."
+          : "")
     );
   }
 

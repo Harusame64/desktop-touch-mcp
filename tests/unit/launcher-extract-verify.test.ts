@@ -18,6 +18,8 @@ const ASSET = process.platform === "darwin" && process.arch === "arm64"
 
 const extractor = vi.hoisted(() => ({
   run: async (_destination: string): Promise<string> => "",
+  /** The extractor the launcher ran, as [command, ...args] (Mac port: unzip on macOS). */
+  calls: [] as string[][],
 }));
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -25,11 +27,12 @@ vi.mock("node:child_process", async (importOriginal) => {
   return {
     ...actual,
     execFile: (
-      _command: string,
+      command: string,
       args: string[],
       options: { maxBuffer?: number },
       callback: (error: Error | null, stdout: string, stderr: string) => void,
     ) => {
+      extractor.calls.push([command, ...args]);
       const maxBuffer = options?.maxBuffer ?? 1024 * 1024;
       extractor.run(args[args.length - 1]).then(
         (stderr) =>
@@ -247,6 +250,24 @@ describe("installing a release counts what the extractor left", () => {
     const dir = path.join(home, "releases", tagName);
     await expect(result).resolves.toBe(dir);
     expect(existsSync(path.join(dir, "node_modules", "a", "b.js"))).toBe(true);
+  });
+
+  // Mac port (gate 2, #785): which extractor runs is part of the contract — unzip on macOS (keeps
+  // node_modules/.bin symlinks, adds no quarantine), PowerShell's Expand-Archive on Windows.
+  it("extracts with this platform's extractor", async () => {
+    extractor.calls.length = 0;
+    extractOnly(NAMES);
+    const { result } = await install();
+    await result;
+    const [command, ...args] = extractor.calls.at(-1) ?? [];
+    if (process.platform === "darwin") {
+      expect(command).toBe("unzip");
+      expect(args.slice(0, 2)).toEqual(["-q", "-o"]);
+      expect(args.at(-2)).toBe("-d");
+    } else {
+      expect(["powershell.exe", "pwsh.exe"]).toContain(command);
+      expect(args.join(" ")).toContain("Expand-Archive");
+    }
   });
 
   it("refuses an extraction that kept dist/index.js but lost other files", async () => {

@@ -48,6 +48,11 @@ syncFile(
     // One SHA256 per release zip since the Mac port: reset every entry, never carry a hash
     // across versions (codex, #785 — the single-entry pattern no longer matched the map).
     .replace(/("desktop-touch-mcp-[\w-]+\.zip"): "[^"]*"/g, '$1: "PENDING"');
+  // Fail rather than leave a hash behind unnoticed (gate 2, #785): both zips' entries must be there.
+  const entries = updated.match(/"desktop-touch-mcp-[\w-]+\.zip": "PENDING"/g) ?? [];
+  if (entries.length < 2) {
+    throw new Error(`[sync-version] expected 2 RELEASE_MANIFEST.sha256 entries in bin/launcher.js, found ${entries.length}`);
+  }
   if (content !== updated) {
     writeFileSync(launcherFile, updated, "utf8");
     console.log(`[sync-version] bin/launcher.js updated to ${pkg.version}`);
