@@ -41,4 +41,18 @@ describe("capturedFrameRect", () => {
     expect(capturedFrameRect(657818n, "bitblt-fallback", rect)).toBe(rect);
     expect(mocks.visible).not.toHaveBeenCalled();
   });
+
+  // Gate 2 on #770: nothing checked that the WGC frame is the visible frame's shape; OCR's scale
+  // would stretch any mismatch to fit and hide it.
+  it("answers null when the captured image is not the visible frame's shape", () => {
+    mocks.visible.mockReset().mockReturnValue(visible);
+    expect(capturedFrameRect(657818n, "wgc", rect, { width: 726, height: 860 })).toBeNull(); // the rect's shape
+    expect(capturedFrameRect(657818n, "wgc", rect, { width: 1280, height: 720 })).toBeNull();
+  });
+
+  it("accepts the frame for a whole or downscaled image of its shape", () => {
+    mocks.visible.mockReset().mockReturnValue(visible);
+    expect(capturedFrameRect(657818n, "wgc", rect, { width: 712, height: 853 })).toEqual(visible);
+    expect(capturedFrameRect(657818n, "wgc", rect, { width: 356, height: 427 })).toEqual(visible);
+  });
 });

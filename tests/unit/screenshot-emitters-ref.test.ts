@@ -328,6 +328,21 @@ describe("capture-blocked surfacing — normal path (ADR-027 Phase 3 / AC8)", ()
     expect(warnings).toMatch(/pass mode='background'/i);
   });
 
+  // Internal #246: normal mode's WGC rescue printed the rect's corner as its origin.
+  it("a WGC rescue frame's dot-by-dot origin is the visible frame's corner", async () => {
+    wireWindow();
+    mockVisibleFrame.mockReset().mockReturnValue({ x: 7, y: 0, width: 786, height: 593 });
+    mockCaptureWindowWithFallback.mockResolvedValue({
+      base64: B64, mimeType: "image/png", width: 786, height: 593,
+      source: "wgc", fallbackReason: "printwindow-all-black", captureBlocked: false,
+    });
+
+    const result = await screenshotHandler({ ...baseArgs, windowTitle: "My App", detail: "image", confirmImage: false, dotByDot: true });
+    const text = result.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("\n");
+    expect(text).toContain("origin: (7, 0)");
+    expect(text).not.toContain("origin: (0, 0)");
+  });
+
   it("captureBlocked=false + printwindow source → no capture warning, no captureBlocked hint", async () => {
     wireWindow();
     mockCaptureWindowWithFallback.mockResolvedValue({

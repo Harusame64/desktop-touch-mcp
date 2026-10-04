@@ -998,7 +998,9 @@ export const screenshotHandler = async (args: {
       let dimensionText: string;
       // Internal #246: a WGC rescue frame starts at the visible frame, not the rect's corner; its
       // origin comes from there, or it gets none when that cannot be read.
-      const rescueFrame = result.source === "wgc" ? capturedFrameRect(targetHwnd, result.source, windowRegion) : null;
+      const rescueFrame = result.source === "wgc"
+        ? capturedFrameRect(targetHwnd, result.source, windowRegion, cropForCapture ? undefined : { width: result.width, height: result.height })
+        : null;
       if (dotByDot && result.source === "wgc" && !rescueFrame) {
         dimensionText =
           `Screenshot (dot-by-dot): ${result.width}x${result.height}px | no screen origin: this frame came from the ` +
@@ -1166,12 +1168,17 @@ export const screenshotBgHandler = async ({
     // be read, it gets none. PrintWindow renders the whole rect, so the rect is its frame.
     const visibleFrameOnly = result.source === "wgc";
     const frame = visibleFrameOnly
-      ? capturedFrameRect(hwnd, result.source, windowScreenRegion ?? { x: 0, y: 0, width: 0, height: 0 })
+      ? capturedFrameRect(
+          hwnd,
+          result.source,
+          windowScreenRegion ?? { x: 0, y: 0, width: 0, height: 0 },
+          region ? undefined : { width: result.width, height: result.height },
+        )
       : windowScreenRegion;
     let originPrinted = false;
     if (dotByDot && frame) {
       originPrinted = true;
-      // Compute screen-space origin: the frame's corner + region offset (approximate, ignores DPI scale)
+      // Compute screen-space origin: the frame's corner + region offset (both in physical pixels)
       const regionOffsetX = region ? region.x : 0;
       const regionOffsetY = region ? region.y : 0;
       const originX = frame.x + regionOffsetX;
@@ -1284,7 +1291,8 @@ export const screenshotOcrHandler = async ({
     refuseIfFrozen(win.hwnd, "screenshot");
     const captured = await captureWindowBackground(win.hwnd, maxDim);
     // Internal #246: a WGC frame covers the visible frame, not the rect; map through what it covers.
-    const frame = capturedFrameRect(win.hwnd, captured.source, win.region) ?? win.region;
+    // When the frame cannot be read or its shape is not the capture's, the rect, as before #246.
+    const frame = capturedFrameRect(win.hwnd, captured.source, win.region, captured) ?? win.region;
     origin.x = frame.x;
     origin.y = frame.y;
     const scaleX = frame.width / captured.width;

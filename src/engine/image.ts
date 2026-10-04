@@ -524,9 +524,25 @@ type ScreenRect = { x: number; y: number; width: number; height: number };
  * answers the visible frame, or `null` when that cannot be read (the caller then has no rectangle
  * to map through); for any other source, `windowRect`.
  */
-export function capturedFrameRect(hwnd: unknown, source: CaptureSource, windowRect: ScreenRect): ScreenRect | null {
+export function capturedFrameRect(
+  hwnd: unknown,
+  source: CaptureSource,
+  windowRect: ScreenRect,
+  /**
+   * The whole captured image's size (not a crop of it), when known. A WGC frame whose shape is not
+   * the visible frame's — a maximised window, a resize between capture and read — is not mapped
+   * through it: `null` (gate 2 on #770). The rect differs from the frame by ~1 % in shape at a 7 px
+   * border, so the tolerance (0.5 %) catches the rect too; downscaling keeps the shape.
+   */
+  captured?: { width: number; height: number },
+): ScreenRect | null {
   if (source !== "wgc") return windowRect;
-  return typeof hwnd === "bigint" ? getVisibleFrameRectByHwnd(hwnd) : null;
+  const frame = typeof hwnd === "bigint" ? getVisibleFrameRectByHwnd(hwnd) : null;
+  if (frame && captured && captured.width > 0 && captured.height > 0) {
+    const shape = (frame.width * captured.height) / (frame.height * captured.width);
+    if (Math.abs(shape - 1) > 0.005) return null;
+  }
+  return frame;
 }
 
 // ADR-027: once a WGC attempt reports the OS doesn't support WGC, skip it for
