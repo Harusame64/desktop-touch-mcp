@@ -179,3 +179,25 @@ describe("gate 2 (#781)", () => {
     expect(b.suggest[0]).toContain("Screen Recording");
   });
 });
+
+describe("codex (#781)", () => {
+  it("an untargeted capture without Accessibility is PermissionRequired, not WindowNotFound", async () => {
+    const L = [w(1, 7, "A")];
+    const d = setup(L, L, { permissions: vi.fn(() => ({ accessibility: false, screenCapture: true })) });
+    const b = body(await macScreenshotHandler(d, {}));
+    expect(b.code).toBe("PermissionRequired");
+    expect(d.getFocus).not.toHaveBeenCalled();
+  });
+  it("a titled capture without Accessibility still works", async () => {
+    const L = [w(1, 7, "A")];
+    const d = setup(L, L, { permissions: vi.fn(() => ({ accessibility: false, screenCapture: true })) });
+    const r = await macScreenshotHandler(d, { windowTitle: "a" });
+    expect(r.content.some((c: any) => c.type === "image")).toBe(true);
+  });
+  it("a window under maxDimension points but over it at 2x is captured at the fitting scale", async () => {
+    const mid = { ...w(1, 7, "Mid"), bounds: { x: 0, y: 0, width: 1200, height: 800 } };
+    const d = setup([mid], [mid]);
+    await macScreenshotHandler(d, { windowTitle: "mid", maxDimension: 1280 });
+    expect(d.capture).toHaveBeenCalledWith({ windowId: 1, scale: 1280 / 1200 });
+  });
+});

@@ -95,6 +95,10 @@ const MAC_SUGGEST = {
   screenRecording: [
     "Open System Settings > Privacy & Security > Screen Recording (macOS 15: Screen & System Audio Recording) and turn on the app that runs this server (Terminal, iTerm, VS Code, the Claude app, ...), then restart the server.",
   ],
+  untargetedNeedsAx: [
+    "Pass windowTitle: a titled capture needs only Screen Recording.",
+    "Or open System Settings > Privacy & Security > Accessibility and turn on the app that runs this server, then restart the server.",
+  ],
   encoderMissing: ["The image encoder (sharp) could not be loaded; reinstall the package so its macOS binary is present."],
 } as const;
 
@@ -158,16 +162,26 @@ export async function macScreenshotHandler(
       context: { permissions },
     });
   }
+  const untargeted = input.windowTitle === undefined || input.windowTitle === "";
+  if (untargeted && !permissions.accessibility) {
+    // The frontmost app is asked through Accessibility (codex, #781).
+    return failCode("PermissionRequired", "screenshot: without windowTitle the frontmost app is found through Accessibility, which this process is not allowed to use.", {
+      suggest: [...MAC_SUGGEST.untargetedNeedsAx],
+      context: { permissions },
+    });
+  }
   const chosen = await chooseWindow(deps, input.windowTitle);
   if ("content" in chosen) return chosen;
   const { window, warnings } = chosen;
 
   const maxDimension = input.maxDimension ?? 1280;
   // Capture no larger than needed: a full-screen window on a 5K display is ~59 MB of RGBA at the
-  // display's own scale, only to be shrunk to maxDimension (gate 2, #781). Below 1 point per pixel
-  // the native default (the display's scale) is kept.
+  // display's own scale, only to be shrunk to maxDimension (gate 2, #781). The scale that fits
+  // maxDimension is passed whenever it is below 2 (Retina) — a 1200-point window at 2x would be
+  // 2400 pixels (codex, #781). Above that the native default (the display's scale) is kept.
   const longest = window.bounds ? Math.max(window.bounds.width, window.bounds.height) : 0;
-  const scale = longest > maxDimension ? maxDimension / longest : undefined;
+  const fit = longest > 0 ? maxDimension / longest : Infinity;
+  const scale = fit < 2 ? fit : undefined;
   const shot = await deps.capture({ windowId: window.windowId, ...(scale !== undefined && { scale }) });
   if (!shot.ok && shot.reason === "window_not_found") {
     return failCode("WindowNotFound", `screenshot: window ${window.windowId} closed before it could be captured.`, {
