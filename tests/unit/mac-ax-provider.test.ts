@@ -246,3 +246,13 @@ describe("an in-process sheet (gate 2 #782)", () => {
     expect(notes.warnings).toEqual(["sheet_open"]);
   });
 });
+
+describe("sheet warnings follow the target window (2026-10-04)", () => {
+  it("does not warn about another document's sheet", async () => {
+    const sheet: any = { id: "a.1.8", rootKey: "Other doc\u001f\u001f0,0,1,1", elementKey: "K", depth: 1, role: "AXSheet", actions: [], valueSettable: false, childCount: 1 };
+    const notes = { warnings: [] as string[] };
+    await readMacAxCandidates({ listWindows: vi.fn(() => [{ windowId: 1, pid: 7, layer: 0, onScreen: true, title: "My doc" }]), getFocus: vi.fn(),
+      axTree: vi.fn(async () => ({ pid: 7, elements: [sheet], truncated: false, selfReference: false, displayAsleep: false, elapsedMs: 1 })), now: () => 1 } as any, { windowTitle: "my doc" }, notes);
+    expect(notes.warnings).toEqual([]);
+  });
+});
