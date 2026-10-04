@@ -143,6 +143,8 @@ fn frontmost_by_scan() -> Option<CFRetained<AXUIElement>> {
 
 pub(crate) fn focus() -> MacFocus {
     let sys = unsafe { AXUIElement::new_system_wide() };
+    // On the system-wide element this sets the process-wide default; every
+    // element this module reaches gets its own timeout, so that is harmless.
     unsafe { sys.set_messaging_timeout(ax::DEFAULT_TIMEOUT_SECS) };
     let (app, source, error) = match ax::attr(&sys, "AXFocusedApplication") {
         Ok(v) => (v.downcast::<AXUIElement>().ok(), "system_wide", None),
@@ -151,8 +153,8 @@ pub(crate) fn focus() -> MacFocus {
     let Some(app) = app else {
         return MacFocus { error: error.or(Some("no_frontmost_app".into())), ..Default::default() };
     };
-    let focused = ax::attr_element(&app, "AXFocusedUIElement");
-    let window = ax::attr_element(&app, "AXFocusedWindow");
+    let focused = ax::attr_element(&app, "AXFocusedUIElement", ax::DEFAULT_TIMEOUT_SECS);
+    let window = ax::attr_element(&app, "AXFocusedWindow", ax::DEFAULT_TIMEOUT_SECS);
     MacFocus {
         pid: app_pid(&app),
         app_title: ax::attr_string(&app, "AXTitle"),

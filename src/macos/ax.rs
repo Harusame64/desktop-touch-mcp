@@ -54,16 +54,26 @@ fn attr_bool(e: &AXUIElement, name: &'static str) -> Option<bool> {
     v.downcast_ref::<CFBoolean>().map(|b| b.as_bool())
 }
 
-pub(crate) fn attr_element(e: &AXUIElement, name: &'static str) -> Option<CFRetained<AXUIElement>> {
-    attr(e, name).ok()?.downcast::<AXUIElement>().ok()
+/// The AX messaging timeout is per element (only the system-wide element
+/// sets the process default), so every element reached from another one is
+/// given the caller's timeout before it is asked anything.
+fn with_timeout(e: CFRetained<AXUIElement>, timeout_secs: f32) -> CFRetained<AXUIElement> {
+    unsafe { e.set_messaging_timeout(timeout_secs) };
+    e
 }
 
-pub(crate) fn children(e: &AXUIElement) -> Vec<CFRetained<AXUIElement>> {
+pub(crate) fn attr_element(e: &AXUIElement, name: &'static str, timeout_secs: f32) -> Option<CFRetained<AXUIElement>> {
+    let child = attr(e, name).ok()?.downcast::<AXUIElement>().ok()?;
+    Some(with_timeout(child, timeout_secs))
+}
+
+pub(crate) fn children(e: &AXUIElement, timeout_secs: f32) -> Vec<CFRetained<AXUIElement>> {
     let Ok(v) = attr(e, "AXChildren") else { return Vec::new() };
     let Ok(arr) = v.downcast::<CFArray>() else { return Vec::new() };
     let arr: CFRetained<CFArray<CFType>> = unsafe { CFRetained::cast_unchecked(arr) };
     arr.iter()
         .filter_map(|c| c.downcast::<AXUIElement>().ok())
+        .map(|c| with_timeout(c, timeout_secs))
         .collect()
 }
 
@@ -166,9 +176,13 @@ pub(crate) fn ax_error_name(e: AXError) -> String {
 // ─── Roots ──────────────────────────────────────────────────────────────────
 
 /// The roots a tree read starts from, with their path prefixes.
-pub(crate) fn roots(app: &AXUIElement, include_menu_bar: bool) -> Vec<(String, CFRetained<AXUIElement>)> {
+pub(crate) fn roots(
+    app: &AXUIElement,
+    include_menu_bar: bool,
+    timeout_secs: f32,
+) -> Vec<(String, CFRetained<AXUIElement>)> {
     let mut out = Vec::new();
-    let kids = children(app);
+    let kids = children(app, timeout_secs);
     for (i, k) in kids.iter().enumerate() {
         if !include_menu_bar && attr_string(k, "AXRole").as_deref() == Some("AXMenuBar") {
             continue;
@@ -176,7 +190,7 @@ pub(crate) fn roots(app: &AXUIElement, include_menu_bar: bool) -> Vec<(String, C
         out.push((format!("a.{i}"), k.clone()));
     }
     for (prefix, name) in [("f", "AXFocusedWindow"), ("m", "AXMainWindow")] {
-        if let Some(w) = attr_element(app, name) {
+        if let Some(w) = attr_element(app, name, timeout_secs) {
             let w_ty: &CFType = &w;
             let seen = kids.iter().any(|k| {
                 let k_ty: &CFType = k;
@@ -194,20 +208,20 @@ pub(crate) fn roots(app: &AXUIElement, include_menu_bar: bool) -> Vec<(String, C
 }
 
 /// Resolve a path written by [`roots`] + child indexes.
-pub(crate) fn resolve(app: &AXUIElement, path: &str) -> Option<CFRetained<AXUIElement>> {
+pub(crate) fn resolve(app: &AXUIElement, path: &str, timeout_secs: f32) -> Option<CFRetained<AXUIElement>> {
     let mut parts = path.split('.');
     let mut cur = match parts.next()? {
         "a" => {
             let i: usize = parts.next()?.parse().ok()?;
-            children(app).into_iter().nth(i)?
+            children(app, timeout_secs).into_iter().nth(i)?
         }
-        "f" => attr_element(app, "AXFocusedWindow")?,
-        "m" => attr_element(app, "AXMainWindow")?,
+        "f" => attr_element(app, "AXFocusedWindow", timeout_secs)?,
+        "m" => attr_element(app, "AXMainWindow", timeout_secs)?,
         _ => return None,
     };
     for p in parts {
         let i: usize = p.parse().ok()?;
-        cur = children(&cur).into_iter().nth(i)?;
+        cur = children(&cur, timeout_secs).into_iter().nth(i)?;
     }
     Some(cur)
 }
@@ -290,7 +304,7 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
     let mut elements = Vec::new();
     let mut truncated = false;
     // Depth-first, children in order, so ids read top to bottom.
-    let mut stack: Vec<(String, CFRetained<AXUIElement>, u32)> = roots(&app, opts.include_menu_bar.unwrap_or(false))
+    let mut stack: Vec<(String, CFRetained<AXUIElement>, u32)> = roots(&app, opts.include_menu_bar.unwrap_or(false), timeout)
         .into_iter()
         .rev()
         .map(|(id, e)| (id, e, 0))
@@ -300,7 +314,7 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
             truncated = true;
             break;
         }
-        let kids = children(&e);
+        let kids = children(&e, timeout);
         elements.push(MacAxElement {
             id: id.clone(),
             depth,
@@ -369,7 +383,7 @@ fn refused(reason: &str) -> MacActResult {
 fn locate(t: &MacAxTarget) -> Result<CFRetained<AXUIElement>, MacActResult> {
     let timeout = t.timeout_secs.map(|s| s as f32).unwrap_or(DEFAULT_TIMEOUT_SECS);
     let app = app_element(t.pid, timeout);
-    let Some(e) = resolve(&app, &t.id) else { return Err(refused("element_not_found")) };
+    let Some(e) = resolve(&app, &t.id, timeout) else { return Err(refused("element_not_found")) };
     let role = attr_string(&e, "AXRole").unwrap_or_default();
     if role != t.expected_role {
         return Err(MacActResult { role: Some(role), ..refused("element_changed") });
