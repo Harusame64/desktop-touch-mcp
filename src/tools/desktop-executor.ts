@@ -3224,7 +3224,6 @@ function getSharedRealDeps(): ExecutorDeps {
     },
 
     async cdpClick(selector, tabId) {
-      // TODO: support non-default CDP port via TargetSpec.cdpPort (Phase 2)
       const { getElementScreenCoords, portForTab } = await import("../engine/cdp-bridge.js");
       const coords = await getElementScreenCoords(selector, tabId ?? null, portForTab(tabId));
       if ((coords as { error?: string }).error) {

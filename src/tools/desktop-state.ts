@@ -15,7 +15,7 @@ import {
 } from "../engine/win32.js";
 import { getHistorySnapshot } from "./_post.js";
 import { listRecentTargetKeys } from "../engine/perception/target-timeline.js";
-import { evaluateInTab } from "../engine/cdp-bridge.js";
+import { evaluateInTab, portForTab } from "../engine/cdp-bridge.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import { getFocusedAndPointInfo } from "../engine/uia-bridge.js";
 import { nativeViewFocus, nativeWin32 } from "../engine/native-engine.js";
@@ -579,7 +579,7 @@ export const desktopStateSchema = {
       "treat it as a generic input-pause signal — it can also fire on secure-desktop transitions (UAC prompt, Credential UI), " +
       "where the user-visible state is not strictly 'locked' but input is equally unavailable to this session."
     ),
-  port: z.coerce.number().int().min(1).max(65535).default(_defaultPort).describe(`CDP port for includeDocument (default ${_defaultPort}).`),
+  port: z.coerce.number().int().min(1).max(65535).optional().describe(`CDP port for includeDocument. Default: the port the tab named by tabId was opened on, else ${_defaultPort}.`),
   tabId: z.string().optional().describe("Optional CDP tab id for includeDocument; omit for the focused tab."),
 };
 
@@ -914,7 +914,8 @@ export const desktopStateHandler = async (args: {
       if (tabExplicit || isChromium) {
         try {
           const expression = `(function(){return{url:location.href,title:document.title,readyState:document.readyState,selection:(window.getSelection&&String(window.getSelection()))||"",scroll:{x:window.scrollX,y:window.scrollY,maxY:Math.max(0,document.documentElement.scrollHeight-window.innerHeight)},viewport:{w:window.innerWidth,h:window.innerHeight}};})()`;
-          extra.document = await evaluateInTab(expression, args.tabId ?? null, args.port ?? _defaultPort);
+          // The tab's own port when none is given (gate 2 on #776, llm22 F13).
+          extra.document = await evaluateInTab(expression, args.tabId ?? null, args.port ?? (tabExplicit ? portForTab(args.tabId) : _defaultPort));
         } catch (err) {
           // Silently omit on CDP failure (no port / tab not found) — caller can
           // diagnose via browser_open or fall through to screenshot/desktop_discover.

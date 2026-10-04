@@ -736,9 +736,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "default": false
         },
         "port": {
-          "description": "CDP port for includeDocument (default 9222).",
+          "description": "CDP port for includeDocument. Default: the port the tab named by tabId was opened on, else 9222.",
           "type": "integer",
-          "default": 9222,
           "minimum": 1,
           "maximum": 65535
         },

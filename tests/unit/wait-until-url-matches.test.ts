@@ -16,6 +16,8 @@ let evalCallCount = 0;
 const evalPorts: number[] = [];
 vi.mock("../../src/engine/cdp-bridge.js", () => ({
   DEFAULT_CDP_PORT: 9222,
+  // A tab this test never listed: the configured default, as the real portForTab answers (llm22 F13).
+  portForTab: () => 9333,
   evaluateInTab: vi.fn().mockImplementation(async (_expr: string, _tabId: string | null, port: number) => {
     evalCallCount += 1;
     evalPorts.push(port);

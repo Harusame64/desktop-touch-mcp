@@ -13,8 +13,7 @@ import {
 } from "../engine/win32.js";
 import { getElementBounds } from "../engine/uia-bridge.js";
 import { WindowExcludedError } from "../engine/tool-exclusion.js";
-import { evaluateInTab } from "../engine/cdp-bridge.js";
-import { getCdpPort } from "../utils/desktop-config.js";
+import { evaluateInTab, portForTab } from "../engine/cdp-bridge.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // External hooks — set by terminal.ts and browser.ts after they load.
@@ -355,8 +354,8 @@ function probeTerminalOutput(windowTitle: string, pattern: string, regex: boolea
  * a regex when `regex:true`, otherwise as a substring (case-sensitive both
  * ways — use a regex with `i` flag for case-insensitive substring search).
  *
- * When `port` is omitted, falls back to the configured CDP port from
- * `desktop-touch-config.json` (`getCdpPort()`), matching how other browser
+ * When `port` is omitted, uses the port the tab was listed on (`portForTab`, llm22 F13), else the
+ * configured CDP port from `desktop-touch-config.json` (`getCdpPort()`), matching how other browser
  * tools resolve their default. Plain `DEFAULT_CDP_PORT` would silently
  * disagree with the configured port and emit BrowserNotConnected even
  * when the browser is connected (Codex PR #58 P1).
@@ -371,7 +370,8 @@ function probeUrlMatches(
   tabId?: string,
 ): () => Promise<{ url: string } | null> {
   const matcher = regex ? new RegExp(pattern) : null;
-  const effectivePort = port ?? getCdpPort();
+  // The tab's own port when none is given (gate 2 on #776, llm22 F13).
+  const effectivePort = port ?? portForTab(tabId);
   return async () => {
     try {
       const url = (await evaluateInTab("location.href", tabId ?? null, effectivePort)) as string | null;

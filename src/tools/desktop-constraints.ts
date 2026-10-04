@@ -101,7 +101,7 @@ export interface ViewConstraints {
    *                              use screenshot(ocrFallback=always) / V1 tools
    *   uia_blind_visual_unready → retry when visual backend is ready, or use screenshot(ocrFallback=always)
    *   uia_blind_visual_empty   → use screenshot(ocrFallback=always) or V1 tools
-   *   cdp_failed_visual_empty  → check --remote-debugging-port on the port the tab was opened on (browser_open's port; 9222 by default) and retry
+   *   cdp_failed_visual_empty  → check --remote-debugging-port on the port the tab was opened on (browser_open's port, 9222 by default; after a server restart, call browser_open with that port again) and retry
    *   all_providers_failed     → use V1 tools (click_element / terminal(action='read') / screenshot);
    *                              also covers terminal-only failure (terminal(action='send'/'read') as recovery)
    */
