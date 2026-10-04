@@ -904,7 +904,7 @@ export interface NativeMacFocus {
   focusedRole?: string
   focusedTitle?: string
   focusedWindowTitle?: string
-  /** `system_wide`, or `app_scan` when the system-wide AX element did not answer. */
+  /** `system_wide`; or, when it did not answer or named an app with no on-screen window, `app_scan` / `app_scan_offscreen` / `app_scan_topmost` (src/macos/system.rs). */
   source?: string
   error?: string
 }

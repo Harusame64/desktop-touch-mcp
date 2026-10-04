@@ -126,19 +126,47 @@ fn app_pid(a: &AXUIElement) -> Option<i32> {
     (err == objc2_application_services::AXError::Success).then_some(pid)
 }
 
+fn owns_on_screen_window(pid: i32) -> bool {
+    list_windows(true).iter().any(|w| w.pid == pid && w.layer == 0)
+}
+
 /// The system-wide element answers `cannot_complete` when the frontmost
 /// app has no focused window on this Space (measured 2026-10-04: Terminal
 /// frontmost with its window on another Space). Each app still answers
 /// `AXFrontmost`, so scan the apps that own windows.
-fn frontmost_by_scan() -> Option<CFRetained<AXUIElement>> {
-    let mut pids: Vec<i32> = list_windows(false).into_iter().filter(|w| w.layer == 0).map(|w| w.pid).collect();
-    pids.sort_unstable();
-    pids.dedup();
-    pids.into_iter().find_map(|pid| {
-        let app = ax::app_element(pid, 1.0);
-        let front = ax::attr(&app, "AXFrontmost").ok()?.downcast_ref::<CFBoolean>()?.as_bool();
-        front.then_some(app)
-    })
+fn claims_frontmost(pid: i32) -> Option<CFRetained<AXUIElement>> {
+    let app = ax::app_element(pid, 1.0);
+    let front = ax::attr(&app, "AXFrontmost").ok()?.downcast_ref::<CFBoolean>()?.as_bool();
+    front.then_some(app)
+}
+
+/// The frontmost app by asking the apps, and how it was found:
+/// 1. `app_scan`: an owner of an on-screen window, front to back, that says it is frontmost;
+/// 2. `app_scan_offscreen`: an owner of only off-screen windows that says so (Terminal with its
+///    window on another Space, 2026-10-04 — but a windowless helper such as CursorUIViewService
+///    also says so, which is why on-screen owners are asked first);
+/// 3. `app_scan_topmost`: nobody says so; the owner of the frontmost on-screen window.
+fn frontmost_by_scan() -> Option<(CFRetained<AXUIElement>, &'static str)> {
+    let mut on: Vec<i32> = Vec::new();
+    for w in list_windows(true).into_iter().filter(|w| w.layer == 0) {
+        if !on.contains(&w.pid) {
+            on.push(w.pid);
+        }
+    }
+    if let Some(app) = on.iter().find_map(|&pid| claims_frontmost(pid)) {
+        return Some((app, "app_scan"));
+    }
+    let mut off: Vec<i32> = list_windows(false)
+        .into_iter()
+        .filter(|w| w.layer == 0 && !on.contains(&w.pid))
+        .map(|w| w.pid)
+        .collect();
+    off.sort_unstable();
+    off.dedup();
+    if let Some(app) = off.into_iter().find_map(claims_frontmost) {
+        return Some((app, "app_scan_offscreen"));
+    }
+    on.first().map(|&pid| (ax::app_element(pid, 1.0), "app_scan_topmost"))
 }
 
 pub(crate) fn focus() -> MacFocus {
@@ -147,8 +175,22 @@ pub(crate) fn focus() -> MacFocus {
     // app element it returns, use that default (6 s unless changed).
     let sys = unsafe { AXUIElement::new_system_wide() };
     let (app, source, error) = match ax::attr(&sys, "AXFocusedApplication") {
-        Ok(v) => (v.downcast::<AXUIElement>().ok(), "system_wide", None),
-        Err(e) => (frontmost_by_scan(), "app_scan", Some(ax::ax_error_name(e))),
+        Ok(v) => match v.downcast::<AXUIElement>().ok() {
+            // The system-wide element can name a windowless helper (measured 2026-10-04: it
+            // answered "CursorUIViewService" while Calculator was frontmost). An app with no
+            // on-screen window is not what a caller means by frontmost, so ask the apps instead.
+            Some(a) if app_pid(&a).is_some_and(owns_on_screen_window) => (Some(a), "system_wide", None),
+            _ => {
+                let scanned = frontmost_by_scan();
+                let source = scanned.as_ref().map_or("app_scan", |(_, s)| *s);
+                (scanned.map(|(a, _)| a), source, Some("system_wide_no_window".to_string()))
+            }
+        },
+        Err(e) => {
+            let scanned = frontmost_by_scan();
+            let source = scanned.as_ref().map_or("app_scan", |(_, s)| *s);
+            (scanned.map(|(a, _)| a), source, Some(ax::ax_error_name(e)))
+        }
     };
     let Some(app) = app else {
         return MacFocus { error: error.or(Some("no_frontmost_app".into())), ..Default::default() };
