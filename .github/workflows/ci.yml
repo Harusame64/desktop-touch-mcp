@@ -258,6 +258,46 @@ jobs:
   # runner" and fakes it for that reason. The job was green without the apt step only because the
   # ubuntu-latest image carries those libs transitively (they are in no documented apt list), so
   # the dependency is DECLARED below rather than left to an image that happens to satisfy it.
+  # Mac port (M3-1): the macOS native layer and server, so the Mac side does not rot between
+  # releases. Apple Silicon only (the user's decision: arm64 first). No vision-gpu on macOS.
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rust unit tests (macOS, no vision-gpu)
+        run: cargo test -p desktop-touch-engine --lib --no-default-features
+
+      - name: Build native addon (darwin-arm64, debug)
+        run: npm run build:rs:debug -- --no-default-features
+
+      - name: Check native types (Rust #[napi] vs index.d.ts drift)
+        run: npm run check:native-types
+
+      - name: Type check & build
+        run: npm run build
+
+      - name: macOS unit cells
+        run: npx vitest run --project=unit tests/unit/mac-*.test.ts
+
+      - name: Smoke — the macOS server over MCP
+        run: node scripts/smoke-macos.mjs
+
   wire-schema-pins:
     runs-on: ubuntu-latest
 
