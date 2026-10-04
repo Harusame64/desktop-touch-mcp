@@ -43,7 +43,7 @@ npx -y @harusame64/desktop-touch-mcp
 
 | 項目 | 要件 |
 |---|---|
-| OS | Windows 10 / 11 (64-bit)。**Apple Silicon の macOS 14 以降はプレビュー** — [macOS（プレビュー）](#macosプレビュー) を参照 |
+| OS | Windows 10 / 11 (64-bit)。**Apple Silicon の macOS 14 以降は機能を絞ったプレビュー（ツール4つのみ）** — [macOS（プレビュー）](#macosプレビュー) を参照 |
 | Node.js | v20 以上推奨 (v22+ で動作確認済み) — **開発と試験の実行には `^22.12 || ^24 || >=26`**（#658 以降の試験の走り手の範囲。23 や 25 のような奇数メジャーは外れる） |
 | PowerShell | 5.1 以上 (Windows 標準同梱) — Rust ネイティブエンジン不在時のフォールバック用 |
 | Claude CLI | `claude` コマンドが使えること |
@@ -171,6 +171,8 @@ npm run build
 
 
 ## macOS（プレビュー）
+
+> **機能を絞ったプレビューです。** macOS 版のツールは4つだけで、Windows 版のごく一部です。挙動はリリースのあいだに変わることがあります。
 
 Apple Silicon の Mac（macOS 14 以降）では、同じ `npx` で macOS 用のサーバーが起動します。使えるツールは `desktop_state`・`desktop_discover`・`desktop_act`（押す・文字の置き換え／追記）・`screenshot`（ウィンドウ1枚）の4つです。ほかのツールは Windows 専用で、macOS では一覧に出ません。
 

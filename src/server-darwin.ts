@@ -40,7 +40,7 @@ Usage: desktop-touch-mcp [options]
 Options:
   -h, --help      Show this help message
 
-macOS: stdio transport only. Tools: desktop_state, desktop_discover, desktop_act, screenshot.
+macOS (limited preview): 4 tools only — desktop_state, desktop_discover, desktop_act, screenshot. stdio transport only.
 Grant Accessibility (and Screen Recording for titles and screenshots) to the app that runs this server.${
     nativeMac ? "" : "\n\nThe macOS native addon did not load here, so a normal start runs the inspection stub (no tools work)."
   }`);

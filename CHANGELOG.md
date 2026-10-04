@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Added — macOS (preview)
-- **desktop-touch now runs on Apple Silicon Macs (macOS 14 or later), as a preview with four tools:**
+- **desktop-touch now runs on Apple Silicon Macs (macOS 14 or later), as a limited preview — four tools only:**
   `desktop_state`, `desktop_discover`, `desktop_act` (press, replace or append text) and `screenshot`
   (one window). It works through macOS Accessibility and does not bring windows forward. Install with
   the same `npx` command; the launcher picks the macOS build. The other tools are Windows-only and are

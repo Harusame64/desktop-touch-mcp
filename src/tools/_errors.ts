@@ -620,8 +620,8 @@ const SUGGESTS: Record<string, string[]> = {
   // pane, and which thing to restart.
   PermissionRequired: [
     "Run `open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\"` (or System Settings > Privacy & Security > Accessibility — on recent macOS the pane can have another name) and turn on the app that runs this server (Terminal, iTerm, VS Code, the Claude app, ...).",
-    "Then restart this MCP server — restart or reconnect it in your MCP client, or restart the app that runs it: a server that was already running did not see a new Accessibility grant.",
-    "Window titles and screenshots also need Screen Recording (restart the same way after granting it): `open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture\"`.",
+    "For window titles and screenshots, grant Screen Recording to the same app now too: `open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture\"`.",
+    "Then restart this MCP server once — restart or reconnect it in your MCP client, or restart the app that runs it: a server that was already running did not see a new Accessibility grant.",
   ],
   WindowFrozen: [
     "Nothing was read: the window's app is suspended by Windows, so UI Automation reads nothing from it and a capture would show its last frame, not what it shows now.",

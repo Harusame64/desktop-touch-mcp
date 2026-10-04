@@ -44,7 +44,7 @@ npx -y @harusame64/desktop-touch-mcp
 
 | | |
 |---|---|
-| OS | Windows 10 / 11 (64-bit). **macOS 14+ on Apple Silicon: preview** — see [macOS (preview)](#macos-preview) |
+| OS | Windows 10 / 11 (64-bit). **macOS 14+ on Apple Silicon: limited preview, 4 tools only** — see [macOS (preview)](#macos-preview) |
 | Node.js | v20+ recommended (tested on v22+) — **to develop or run the test suite, `^22.12 || ^24 || >=26`** — the test runner's own range since #658, which excludes odd majors such as 23 and 25 |
 | PowerShell | 5.1+ (bundled with Windows) — used only as fallback when the Rust native engine is unavailable |
 | Claude CLI | `claude` command must be available |
@@ -179,6 +179,8 @@ For a local checkout, register the built server directly:
 
 
 ## macOS (preview)
+
+> **Limited preview.** The macOS build has only 4 of the tools — a small subset of the Windows build — and its behaviour may change between releases.
 
 On an Apple Silicon Mac (macOS 14 or later) the same `npx` command starts a macOS server with four tools: `desktop_state`, `desktop_discover`, `desktop_act` (press, replace or append text) and `screenshot` (one window). The other tools are Windows-only and are not listed on macOS.
 
