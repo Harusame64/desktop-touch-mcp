@@ -120,6 +120,7 @@
     "BrowserSearchNoResults",
     "BrowserSearchTimeout",
     "BrowserTargetMinimized",
+    "CaptureBackendFailed",
     "DestinationRequired",
     "ElementNotInViewport",
     "FukuwaraiV2Disabled",
