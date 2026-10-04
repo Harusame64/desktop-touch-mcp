@@ -4,6 +4,7 @@ import {
   type MacAxProviderDeps, type MacAxReadNotes,
 } from "../../src/tools/mac/ax-provider.js";
 import type { NativeMacAxElement } from "../../src/engine/native-types.js";
+import { resolveCandidates } from "../../src/engine/world-graph/resolver.js";
 
 const el = (over: Partial<NativeMacAxElement> = {}): NativeMacAxElement => ({
   id: "a.0.1",
@@ -145,5 +146,34 @@ describe("readMacAxCandidates", () => {
     const { r, notes } = await run(d);
     expect(notes.warnings).toEqual(["ax_error:cannot_complete", "display_asleep", "ax_self_reference", "truncated:max_ms"]);
     expect(r).toHaveLength(2);
+  });
+});
+
+describe("AX identity and the pinned app (codex gate 1, #780)", () => {
+  const e = (over: Record<string, unknown>): any => ({
+    id: "a.0.1", rootKey: "R", elementKey: "K", depth: 1, role: "AXButton", actions: ["AXPress"],
+    valueSettable: false, childCount: 0, title: "Same", ...over,
+  });
+
+  it("keeps two AX elements with the same label and no frame apart", () => {
+    const a = toCandidate(e({ id: "a.0.1" }), 7, "W", 1);
+    const b = toCandidate(e({ id: "a.0.2" }), 7, "W", 1);
+    expect(a.digest).toBeDefined();
+    expect(a.digest).not.toBe(b.digest);
+    const resolved = resolveCandidates([a, b], "g");
+    expect(resolved.length).toBe(2);
+  });
+
+  it("does not change identity when only the value changes", () => {
+    expect(toCandidate(e({ value: "x" }), 7, "W", 1).digest).toBe(toCandidate(e({ value: "y" }), 7, "W", 1).digest);
+  });
+
+  it("reads the pinned app without asking which is frontmost", async () => {
+    const getFocus = vi.fn(async () => ({ pid: 99 }));
+    const axTree = vi.fn(async () => ({ pid: 7, elements: [], truncated: false, selfReference: false, displayAsleep: false, elapsedMs: 1 }));
+    const notes = { warnings: [] as string[] };
+    await readMacAxCandidates({ listWindows: vi.fn(() => []), getFocus, axTree, now: () => 1 } as any, undefined, notes, 7);
+    expect(getFocus).not.toHaveBeenCalled();
+    expect(axTree).toHaveBeenCalledWith({ pid: 7 });
   });
 });
