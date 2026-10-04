@@ -432,6 +432,19 @@ describe("detail='ocr' — a frozen window is not captured (internal #247)", () 
     expect(mockCaptureWindowBackground).not.toHaveBeenCalled();
   });
 
+  // Codex on 45cf57d1: detail='text' read UIA first — from a 90 s cache filled while the app was
+  // shown — and with elements there no OCR ran, so the refusals in the OCR entries never fired.
+  it("detail='text' refuses with WindowFrozen before any UIA read", async () => {
+    mockResolveWindowTarget.mockResolvedValue(null);
+    mockEnumWindowsInZOrder.mockReturnValue([settings]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(true);
+
+    const result = await screenshotHandler({ ...baseArgs, windowTitle: "Settings", detail: "text" });
+    const body = JSON.parse((result.content[0] as { text: string }).text) as { ok: boolean; code: string };
+    expect(body.ok).toBe(false);
+    expect(body.code).toBe("WindowFrozen");
+  });
+
   it("captures a window that is not frozen", async () => {
     mockResolveWindowTarget.mockResolvedValue(null);
     mockEnumWindowsInZOrder.mockReturnValue([settings]);

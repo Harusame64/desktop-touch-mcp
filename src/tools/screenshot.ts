@@ -630,6 +630,10 @@ export const screenshotHandler = async (args: {
           : wins.find((w) => w.title.toLowerCase().includes(effectiveTitle.toLowerCase()));
         const resolvedTitle = resolvedWin2?.title ?? effectiveTitle;
         const targetHwnd = resolvedWin2?.hwnd ?? null;
+        // Internal #247 (codex on 45cf57d1): before any UIA read — the 90 s UIA cache would serve a
+        // tree read while the app was shown as its contents now, and with actionable elements in it
+        // no OCR (where the other refusals sit) runs at all.
+        refuseIfFrozen(targetHwnd, "screenshot");
         const isChromium = CHROMIUM_TITLE_RE.test(resolvedTitle);
 
         // terminalGuard — for terminal hosts, UIA actionable is meaningless; use TextPattern.
