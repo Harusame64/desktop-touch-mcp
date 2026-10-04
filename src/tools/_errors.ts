@@ -615,6 +615,11 @@ const SUGGESTS: Record<string, string[]> = {
   // did not move — so nothing was written, and the caller must not read the refusal as "try harder
   // on the same control". Measured on a WinForms NumericUpDown: a keystroke fallback landed at the
   // inner edit's caret and produced a different wrong value.
+  // Internal #247 — `WindowFrozenError` (`engine/window-frozen.ts`) declares this code.
+  WindowFrozen: [
+    "Nothing was read: the window's app is suspended by Windows, so UI Automation reads nothing from it and a capture would show its last frame, not what it shows now.",
+    "Restore or show the window (focus_window, or the user brings it back), then read it again. Retrying while it stays minimised or hidden returns the same.",
+  ],
   ValueNotApplied: [
     "The write was accepted, but what it should have changed read back unchanged, so this act does not report it written: a control's value through UI Automation (the native client; nothing else was tried), or Word's visible page text after a type (the text may have landed out of view, or later).",
     "Do NOT retry the same act blindly. For a control: do NOT fall back to keyboard / type into the same control — on a WinForms NumericUpDown a keystroke landed at its caret and left a different wrong value ('42420' for '4242'). For Word: look at the document first (screenshot), so the text is not typed twice.",

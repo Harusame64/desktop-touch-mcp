@@ -168,7 +168,10 @@ export class OcrVisualAdapter {
         elements = result.elements;
         if (!target.tabId) originHwnd = originHwnd ?? result.resolvedHwnd;
       } catch (err) {
-        console.error("[ocr-adapter] runSomPipeline failed:", err);
+        // Internal #247: a frozen window is skipped, not a failure to log on every poll.
+        if ((err as { name?: unknown } | null)?.name !== "WindowFrozenError") {
+          console.error("[ocr-adapter] runSomPipeline failed:", err);
+        }
         return [];
       }
     }

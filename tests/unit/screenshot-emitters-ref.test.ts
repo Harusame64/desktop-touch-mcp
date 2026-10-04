@@ -16,10 +16,11 @@ import path from "node:path";
 import crypto from "node:crypto";
 
 // ─── Hoisted mocks ────────────────────────────────────────────────────────────
-const { mockEnumWindowsInZOrder, mockGetWindowTitleW, mockGetWindowRectByHwnd, mockHasBuffer, mockCaptureAllLayers, mockCaptureAndDiff, mockUpdateWindowCache, mockSaveSnapshot, mockGetWindows, mockResolveWindowTarget, mockCaptureWindowBackground, mockCaptureWindowWithFallback } = vi.hoisted(() => ({
+const { mockEnumWindowsInZOrder, mockGetWindowTitleW, mockGetWindowRectByHwnd, mockIsWindowProcessFrozen, mockHasBuffer, mockCaptureAllLayers, mockCaptureAndDiff, mockUpdateWindowCache, mockSaveSnapshot, mockGetWindows, mockResolveWindowTarget, mockCaptureWindowBackground, mockCaptureWindowWithFallback } = vi.hoisted(() => ({
   mockEnumWindowsInZOrder: vi.fn(),
   mockGetWindowTitleW: vi.fn(),
   mockGetWindowRectByHwnd: vi.fn(),
+  mockIsWindowProcessFrozen: vi.fn(),
   mockHasBuffer: vi.fn(),
   mockCaptureAllLayers: vi.fn(),
   mockCaptureAndDiff: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
     enumWindowsInZOrder: mockEnumWindowsInZOrder,
     getWindowTitleW: mockGetWindowTitleW,
     getWindowRectByHwnd: mockGetWindowRectByHwnd,
+    isWindowProcessFrozen: mockIsWindowProcessFrozen,
   };
 });
 vi.mock("../../src/engine/layer-buffer.js", async (importOriginal) => {
@@ -67,7 +69,7 @@ vi.mock("../../src/engine/image.js", () => ({
   captureWindowWithFallback: mockCaptureWindowWithFallback,
 }));
 
-const { screenshotHandler, screenshotBgHandler } = await import("../../src/tools/screenshot.js");
+const { screenshotHandler, screenshotBgHandler, screenshotOcrHandler } = await import("../../src/tools/screenshot.js");
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 5, 6, 7, 8]);
 const B64 = PNG.toString("base64");
@@ -405,5 +407,38 @@ describe("full-screen dot-by-dot disclosure (ADR-031)", () => {
     // grow one, or callers would start offsetting coordinates that are already
     // absolute.
     expect(text).not.toContain("origin: (");
+  });
+});
+
+// Internal #247 (gate 2 on #769): screenshot(detail='ocr') captured and OCRed the window itself,
+// without the OCR entries that refuse a frozen app — so hidden, suspended Settings returned its last
+// frame's words, the account name among them, as the window now.
+describe("detail='ocr' — a frozen window is not captured (internal #247)", () => {
+  const settings = { hwnd: 527016n, title: "Settings", zOrder: 0, region: { x: 0, y: 1, width: 884, height: 591 }, isActive: false, isMinimized: false, isMaximized: false, isCloaked: true };
+
+  it("refuses with WindowFrozen and its advice, before any capture", async () => {
+    mockResolveWindowTarget.mockResolvedValue(null);
+    mockEnumWindowsInZOrder.mockReturnValue([settings]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(true);
+    mockCaptureWindowBackground.mockClear();
+
+    const result = await screenshotOcrHandler({ windowTitle: "Settings", language: "ja" });
+    const body = JSON.parse((result.content[0] as { text: string }).text) as { ok: boolean; code: string; error: string; suggest?: string[] };
+    expect(body.ok).toBe(false);
+    expect(body.code).toBe("WindowFrozen");
+    expect(body.error).toContain("suspended by Windows");
+    expect(body.error).not.toContain("runSomPipeline");
+    expect(body.suggest?.join(" ")).toMatch(/Restore or show the window/);
+    expect(mockCaptureWindowBackground).not.toHaveBeenCalled();
+  });
+
+  it("captures a window that is not frozen", async () => {
+    mockResolveWindowTarget.mockResolvedValue(null);
+    mockEnumWindowsInZOrder.mockReturnValue([settings]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    mockCaptureWindowBackground.mockReset().mockRejectedValue(new Error("stop: reached the capture"));
+
+    await screenshotOcrHandler({ windowTitle: "Settings", language: "ja" });
+    expect(mockCaptureWindowBackground).toHaveBeenCalledTimes(1);
   });
 });

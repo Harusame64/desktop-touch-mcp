@@ -16,13 +16,19 @@ import { isWindowProcessFrozen } from "./win32.js";
 export class WindowFrozenError extends Error {
   /** Fit to publish (ADR-036 item 13, `CallerFacingRefusal` in `aim.ts`). */
   readonly callerDetail: string;
+  /** Which entry refused (for logs; not published). */
+  readonly where: string;
   constructor(where: string) {
-    super(`${where}: the window's process is frozen by Windows`);
-    this.name = "WindowFrozenError";
-    this.callerDetail =
+    const detail =
       "This window's app is suspended by Windows (it is minimised or not shown): it reads nothing " +
       "through UI Automation, and a capture of it shows its last frame, not its contents now. " +
       "Restore or show the window, then read it again.";
+    // `WindowFrozen:` declares the code to `classify` (`_errors.ts`), so a flat failure carries
+    // this sentence and its advice rather than a generic code and an internal name.
+    super(`WindowFrozen: ${detail}`);
+    this.name = "WindowFrozenError";
+    this.where = where;
+    this.callerDetail = detail;
   }
 }
 

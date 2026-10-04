@@ -10,6 +10,7 @@ import { getUiElements, extractActionableElements, WINUI3_CLASS_RE, detectUiaBli
 import type { UiElementsResult } from "../engine/uia-bridge.js";
 import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords, runSomPipeline, snapToDictionary, detectOcrLanguage } from "../engine/ocr-bridge.js";
 import type { OcrDictionaryEntry } from "../engine/ocr-bridge.js";
+import { refuseIfFrozen, WindowFrozenError } from "../engine/window-frozen.js";
 import { updateWindowCache, saveSnapshot } from "../engine/window-cache.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
@@ -739,6 +740,7 @@ export const screenshotHandler = async (args: {
         // Set-of-Mark pipeline (preprocess → OCR → cluster → draw) instead of the
         // plain word-list fallback. Falls through to normal OCR on any error.
         const uiaBlind = raw !== null ? detectUiaBlind(raw) : { blind: false as const };
+        let frozen = false;
         if (shouldOcr && uiaBlind.blind) {
           try {
             const somResult = await runSomPipeline(effectiveTitle, targetHwnd, ocrLanguage, 2, preprocessPolicy, preprocessAdaptive, uiaDict);
@@ -784,13 +786,20 @@ export const screenshotHandler = async (args: {
 
             return { content: contentItems };
           } catch (somErr) {
-            // SoM pipeline failed (win-ocr not installed, Rust unavailable, etc.)
-            // Fall through to the regular OCR word-list path below.
-            console.error("[SoM] pipeline failed, falling back to regular OCR:", somErr);
+            if (somErr instanceof WindowFrozenError) {
+              // Internal #247: say why nothing was read, and do not try the word OCR, which would
+              // be refused the same way (gate 2 on #769).
+              hints.warnings = [...(hints.warnings ?? []), `target_window_frozen: ${somErr.callerDetail}`];
+              frozen = true;
+            } else {
+              // SoM pipeline failed (win-ocr not installed, Rust unavailable, etc.)
+              // Fall through to the regular OCR word-list path below.
+              console.error("[SoM] pipeline failed, falling back to regular OCR:", somErr);
+            }
           }
         }
 
-        if (shouldOcr) {
+        if (shouldOcr && !frozen) {
           try {
             const { words, origin } = await recognizeWindow(effectiveTitle, ocrLanguage);
             // Convert words to screen-absolute coords so snapToDictionary locality
@@ -1249,6 +1258,9 @@ export const screenshotOcrHandler = async ({
     // even when covered by other windows (e.g. Claude Code on top of Paint).
     // For sub-region: still use PrintWindow for the full window, then crop in
     // scale math by adjusting the origin and using only the sub-region slice.
+    // Internal #247: a frozen app's capture is its last frame (gate 2 on #769: this road did not
+    // go through the OCR entries that refuse it).
+    refuseIfFrozen(win.hwnd, "screenshot");
     const captured = await captureWindowBackground(win.hwnd, maxDim);
     const scaleX = win.region.width / captured.width;
     const scaleY = win.region.height / captured.height;

@@ -106,6 +106,7 @@
     "UnknownScheme",
     "ValueNotApplied",
     "WindowExcluded",
+    "WindowFrozen",
     "WindowOnOtherDesktop",
     "WorkingMemoryNUpperBoundExceeded"
   ],
