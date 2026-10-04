@@ -235,16 +235,21 @@ pub(crate) fn root_key(e: &AXUIElement) -> String {
 }
 
 /// The roots a tree read starts from, with their path prefixes, and
-/// whether a child equal to the app itself was skipped.
+/// whether a child equal to the app itself was skipped. Stops early (with
+/// what it has) once `late()` says the caller's budget is spent.
 pub(crate) fn roots(
     app: &AXUIElement,
     include_menu_bar: bool,
     timeout_secs: f32,
+    late: &dyn Fn() -> bool,
 ) -> (Vec<(String, CFRetained<AXUIElement>)>, bool) {
     let mut out = Vec::new();
     let mut self_reference = false;
     let kids = children(app, timeout_secs);
     for (i, k) in kids.iter().enumerate() {
+        if late() {
+            return (out, self_reference);
+        }
         if same(k, app) {
             self_reference = true;
             continue;
@@ -255,6 +260,9 @@ pub(crate) fn roots(
         out.push((format!("a.{i}"), k.clone()));
     }
     for (prefix, name) in [("f", "AXFocusedWindow"), ("m", "AXMainWindow")] {
+        if late() {
+            break;
+        }
         if let Some(w) = attr_element(app, name, timeout_secs) {
             if same(&w, app) {
                 self_reference = true;
@@ -312,8 +320,8 @@ pub struct MacAxTreeOptions {
     pub timeout_secs: Option<f64>,
     /// Stop the walk after this long (default 15000 ms): a hung app would
     /// otherwise cost the per-message timeout for every attribute. Checked
-    /// after every read, and no message waits past it, so the overrun is
-    /// one message at most (the roots are read before the walk starts).
+    /// after every read, roots included, and no message waits past it, so
+    /// the overrun is one message at most.
     pub max_ms: Option<u32>,
 }
 
@@ -395,21 +403,31 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
     };
 
     let deadline = std::time::Duration::from_millis(opts.max_ms.unwrap_or(15_000) as u64);
+    let late = || t0.elapsed() >= deadline;
+    let left = || deadline.saturating_sub(t0.elapsed()).as_secs_f32().max(0.05);
     let mut elements = Vec::new();
     let mut stopped_by: Option<&str> = None;
     // Depth-first, children in order, so ids read top to bottom. Each entry
     // carries its ancestors (app first) so a child equal to one is skipped,
     // and its root's key.
     type Entry = (String, CFRetained<AXUIElement>, Vec<CFRetained<AXUIElement>>, std::rc::Rc<String>);
-    let (root_list, mut self_reference) = roots(&app, opts.include_menu_bar.unwrap_or(false), timeout);
-    let mut stack: Vec<Entry> = root_list
-        .into_iter()
-        .rev()
-        .map(|(id, e)| {
-            let key = std::rc::Rc::new(root_key(&e));
-            (id, e, vec![app.clone()], key)
-        })
-        .collect();
+    // The budget covers the roots too: no message waits past it.
+    unsafe { app.set_messaging_timeout(timeout.min(left())) };
+    let (root_list, mut self_reference) =
+        roots(&app, opts.include_menu_bar.unwrap_or(false), timeout.min(left()), &late);
+    let mut stack: Vec<Entry> = Vec::new();
+    for (id, e) in root_list {
+        if late() {
+            break;
+        }
+        unsafe { e.set_messaging_timeout(timeout.min(left())) };
+        let key = std::rc::Rc::new(root_key(&e));
+        stack.push((id, e, vec![app.clone()], key));
+    }
+    if late() {
+        stopped_by = Some("max_ms");
+    }
+    stack.reverse();
     while let Some((id, e, ancestors, key)) = stack.pop() {
         if elements.len() >= max_elements {
             stopped_by = Some("max_elements");
@@ -423,9 +441,7 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         // Hold the budget inside the element too: no single message may wait
         // past it, and the reads stop as soon as it is spent (the partly read
         // element is dropped).
-        let left = deadline.saturating_sub(t0.elapsed()).as_secs_f32();
-        unsafe { e.set_messaging_timeout(timeout.min(left).max(0.05)) };
-        let late = || t0.elapsed() >= deadline;
+        unsafe { e.set_messaging_timeout(timeout.min(left())) };
         macro_rules! read {
             ($x:expr) => {{
                 let v = $x;

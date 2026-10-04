@@ -1050,7 +1050,7 @@ export interface NativeMacCaptureOptions {
 
 export interface NativeMacCaptureResult {
   ok: boolean
-  /** `window_not_found`, `timeout`, `app_init`, or `sck_error <code>: <text>`. */
+  /** `window_not_found`, `timeout`, `unsupported_os` (before macOS 14), `app_init`, or `sck_error <code>: <text>`. */
   reason?: string
   /** RGBA top-down, opaque; length = width * height * 4. */
   data?: Buffer

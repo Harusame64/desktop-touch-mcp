@@ -53,7 +53,8 @@ pub struct MacCaptureOptions {
 #[napi_derive::napi(object)]
 pub struct MacCaptureResult {
     pub ok: bool,
-    /// `window_not_found`, `timeout`, `app_init` (no main-thread init yet),
+    /// `window_not_found`, `timeout`, `unsupported_os` (before macOS 14),
+    /// `app_init` (no main-thread init yet),
     /// or `sck_error <code>: <text>`.
     pub reason: Option<String>,
     /// RGBA, top-down, opaque; `data.len() == width * height * 4`.
@@ -126,6 +127,9 @@ unsafe extern "C" {
 }
 
 /// kCGImageAlphaNoneSkipLast | kCGBitmapByteOrder32Big: R,G,B,x in memory.
+/// The first row in memory is the top of the image: a bitmap context's
+/// buffer is laid out top-down even though its user space has a bottom-left
+/// origin (measured 2026-10-04: a TextEdit window, title bar in row 0).
 const RGBX_BIG: u32 = 5 | (4 << 12);
 
 fn to_rgba(image: &CGImage) -> Option<(Vec<u8>, u32, u32)> {
@@ -151,6 +155,11 @@ fn to_rgba(image: &CGImage) -> Option<(Vec<u8>, u32, u32)> {
 
 pub(crate) fn capture_window(opts: &MacCaptureOptions) -> MacCaptureResult {
     let t0 = std::time::Instant::now();
+    // SCScreenshotManager and SCShareableContent.infoForFilter are macOS 14.
+    let os = objc2_foundation::NSProcessInfo::processInfo().operatingSystemVersion();
+    if os.majorVersion < 14 {
+        return failed("unsupported_os", t0);
+    }
     if !APP_INITIALISED.load(std::sync::atomic::Ordering::Relaxed) {
         return failed("app_init", t0);
     }
