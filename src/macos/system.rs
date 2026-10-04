@@ -104,47 +104,63 @@ pub(crate) fn list_windows(on_screen_only: bool) -> Vec<MacWindow> {
 // ─── Frontmost / focus ──────────────────────────────────────────────────────
 
 #[napi_derive::napi(object)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct MacFocus {
-    /// The frontmost application, from the system-wide AX element.
+    /// The frontmost application.
     pub pid: Option<i32>,
     pub app_title: Option<String>,
     pub focused_role: Option<String>,
     pub focused_title: Option<String>,
     pub focused_window_title: Option<String>,
+    /// `system_wide` (the system-wide AX element answered) or `app_scan`
+    /// (it did not, and each app with a window was asked `AXFrontmost`).
+    pub source: Option<String>,
+    /// Why the system-wide element did not answer, when `source` is `app_scan`;
+    /// or why nothing answered, when `pid` is absent.
     pub error: Option<String>,
+}
+
+fn app_pid(a: &AXUIElement) -> Option<i32> {
+    let mut pid: i32 = 0;
+    let err = unsafe { a.pid(std::ptr::NonNull::from(&mut pid)) };
+    (err == objc2_application_services::AXError::Success).then_some(pid)
+}
+
+/// The system-wide element answers `cannot_complete` when the frontmost
+/// app has no focused window on this Space (measured 2026-10-04: Terminal
+/// frontmost with its window on another Space). Each app still answers
+/// `AXFrontmost`, so scan the apps that own windows.
+fn frontmost_by_scan() -> Option<CFRetained<AXUIElement>> {
+    let mut pids: Vec<i32> = list_windows(false).into_iter().filter(|w| w.layer == 0).map(|w| w.pid).collect();
+    pids.sort_unstable();
+    pids.dedup();
+    pids.into_iter().find_map(|pid| {
+        let app = ax::app_element(pid, 1.0);
+        let front = ax::attr(&app, "AXFrontmost").ok()?.downcast_ref::<CFBoolean>()?.as_bool();
+        front.then_some(app)
+    })
 }
 
 pub(crate) fn focus() -> MacFocus {
     let sys = unsafe { AXUIElement::new_system_wide() };
     unsafe { sys.set_messaging_timeout(ax::DEFAULT_TIMEOUT_SECS) };
-    let app = match ax::attr(&sys, "AXFocusedApplication") {
-        Ok(v) => v.downcast::<AXUIElement>().ok(),
-        Err(e) => {
-            return MacFocus {
-                pid: None,
-                app_title: None,
-                focused_role: None,
-                focused_title: None,
-                focused_window_title: None,
-                error: Some(ax::ax_error_name(e)),
-            }
-        }
+    let (app, source, error) = match ax::attr(&sys, "AXFocusedApplication") {
+        Ok(v) => (v.downcast::<AXUIElement>().ok(), "system_wide", None),
+        Err(e) => (frontmost_by_scan(), "app_scan", Some(ax::ax_error_name(e))),
     };
-    let pid = app.as_ref().and_then(|a| {
-        let mut pid: i32 = 0;
-        let err = unsafe { a.pid(std::ptr::NonNull::from(&mut pid)) };
-        (err == objc2_application_services::AXError::Success).then_some(pid)
-    });
-    let focused = app.as_ref().and_then(|a| ax::attr_element(a, "AXFocusedUIElement"));
-    let window = app.as_ref().and_then(|a| ax::attr_element(a, "AXFocusedWindow"));
+    let Some(app) = app else {
+        return MacFocus { error: error.or(Some("no_frontmost_app".into())), ..Default::default() };
+    };
+    let focused = ax::attr_element(&app, "AXFocusedUIElement");
+    let window = ax::attr_element(&app, "AXFocusedWindow");
     MacFocus {
-        pid,
-        app_title: app.as_ref().and_then(|a| ax::attr_string(a, "AXTitle")),
+        pid: app_pid(&app),
+        app_title: ax::attr_string(&app, "AXTitle"),
         focused_role: focused.as_ref().and_then(|f| ax::attr_string(f, "AXRole")),
         focused_title: focused.as_ref().and_then(|f| ax::attr_string(f, "AXTitle")),
         focused_window_title: window.as_ref().and_then(|w| ax::attr_string(w, "AXTitle")),
-        error: None,
+        source: Some(source.into()),
+        error,
     }
 }
 
