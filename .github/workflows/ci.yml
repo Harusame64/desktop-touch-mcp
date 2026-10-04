@@ -261,6 +261,18 @@ jobs:
       - name: Smoke — the macOS server over MCP
         run: node scripts/smoke-macos.mjs
 
+      # The release job (release.yml macos-release) runs only on a tag; this runs the same script
+      # on every PR so the zip is not first assembled on release day (debug addon here).
+      - name: Assemble the macOS release zip and smoke its own contents
+        run: |
+          set -e
+          node scripts/build-release-macos.mjs
+          X="$RUNNER_TEMP/dtmcp-macos-zip"
+          rm -rf "$X" && mkdir -p "$X"
+          unzip -q desktop-touch-mcp-macos-arm64.zip -d "$X"
+          cp scripts/smoke-macos.mjs "$X/smoke.mjs"
+          (cd "$X" && node dist/index.js --help | head -1 && node smoke.mjs)
+
   # THE WIRE-SCHEMA PINS GET THEIR OWN JOB, and the reason is the placement, not the runner.
   # These two files assert what the SDK's converter emits for the widened properties that ship,
   # and a pin nobody executes is the mechanism that already failed (internal#106 sat red on `main` for
