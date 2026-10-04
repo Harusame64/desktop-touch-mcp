@@ -18,6 +18,12 @@ fn main() {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
         println!("cargo:rustc-link-search=native={manifest_dir}");
         println!("cargo:rustc-link-lib=node");
+    } else if target_os == "macos" {
+        // Mac port (M1): Node's napi_* symbols come from the host process at
+        // load time, so the cdylib leaves them undefined (what
+        // napi_build::setup() does on macOS).
+        println!("cargo:rustc-cdylib-link-arg=-undefined");
+        println!("cargo:rustc-cdylib-link-arg=dynamic_lookup");
     } else if target_os == "windows" {
         // MSVC target: link against node.lib in the project root.
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();

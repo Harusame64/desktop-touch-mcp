@@ -70,15 +70,17 @@ function detectHostTriple() {
   // Toolchain lines look like:
   //   "stable-x86_64-pc-windows-gnu (default)"
   //   "nightly-2025-12-01-x86_64-pc-windows-msvc (default)"
-  // The first whitespace-separated token is the toolchain name; its last
-  // 4 hyphen-separated pieces form the target triple
-  // (`<arch>-<vendor>-<os>-<env>`) regardless of whether the channel is
-  // dated.
+  //   "stable-aarch64-apple-darwin (default)"
+  // The first whitespace-separated token is the toolchain name; the target
+  // triple runs from its arch piece to the end, whether the channel is
+  // dated or not and whether the triple has an env (`-msvc`) or not
+  // (`aarch64-apple-darwin`, the Mac port).
   const toolchain = result.stdout.split(/\s/, 1)[0];
   if (!toolchain) return undefined;
   const pieces = toolchain.split("-");
-  if (pieces.length < 4) return undefined;
-  return pieces.slice(-4).join("-");
+  const archAt = pieces.findIndex((p) => /^(x86_64|aarch64|i686)$/.test(p));
+  if (archAt < 0 || pieces.length - archAt < 3) return undefined;
+  return pieces.slice(archAt).join("-");
 }
 
 // On Windows MSVC, `build.rs` emits `cargo:rustc-link-search=<repo root>` +
