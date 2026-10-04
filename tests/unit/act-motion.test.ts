@@ -182,7 +182,19 @@ describe("PreActWatch", () => {
     expect(w.take("v", { hwnd: 1n, rect: WINDOW })).toMatchObject({ selfRepainting: true });
     w.start("v", 1n, WINDOW, { visible: [] });
     t = 5000;
-    expect(w.take("v", { hwnd: 1n, rect: WINDOW })).toMatchObject({ selfRepainting: true });
+    const blind = w.take("v", { hwnd: 1n, rect: WINDOW });
+    expect(blind).toEqual({ selfRepainting: true });     // no watchedMs: nothing was watched now
+    // …and when the watch saw the window somewhere else (it moved since discover).
+    w.start("v", 1n, WINDOW);
+    t = 9000;
+    expect(w.take("v", { hwnd: 1n, rect: { ...WINDOW, x: WINDOW.x + 40 } })).toEqual({ selfRepainting: true });
+  });
+
+  it("puts no watchedBeforeMs on an observation whose quiet record watched nothing", async () => {
+    const { sub, now } = fakeHandle([[caret]]);
+    const { observation } = await observeAfterAct(sub, WINDOW, { selfRepainting: true }, { now });
+    expect(observation.motion).toBe("indeterminate");
+    expect(observation).not.toHaveProperty("watchedBeforeMs");
   });
 
   it("does not watch a window with nothing of it on screen (a blind watch is not a quiet one)", () => {

@@ -115,8 +115,8 @@ function largestVisibleHit(rects: readonly Box[], parts: readonly Box[]): number
 export interface QuietRecord {
   /** Rects of at least `minRectPx` landed inside it at least twice, `selfRepaintGapMs` apart. */
   selfRepainting: boolean;
-  /** How long it was watched. */
-  watchedMs: number;
+  /** How long it was watched; absent when no watch ran and the verdict comes from an earlier one. */
+  watchedMs?: number;
 }
 
 type Entry = { hwnd: bigint; rect: Box; stop: () => void; seen: { first?: number; selfRepainting: boolean }; since: number; countFrom: number; stoppedAt?: number };
@@ -138,6 +138,17 @@ export class PreActWatch {
    * once its own closes, and must not bring this one's verdict with it (PR codex P2).
    */
   private readonly knownSelfRepainting = new Set<string>();
+
+  /**
+   * No watch of this window to read (none started, none could see it, or it watched another window
+   * or another place): what earlier watches learned about the window the act is on still holds —
+   * without it, a known self-repainting window brought forward by the act reads its own repaint as
+   * the act's change (gate 2 on 5b474fef). No `watchedMs`: nothing was watched now.
+   */
+  private knownFor(now: { hwnd: bigint } | undefined): QuietRecord | undefined {
+    const id = now !== undefined ? this.identityKey(now.hwnd) : undefined;
+    return id !== undefined && this.knownSelfRepainting.has(id) ? { selfRepainting: true } : undefined;
+  }
 
   private identityKey(hwnd: bigint): string | undefined {
     try {
@@ -232,18 +243,13 @@ export class PreActWatch {
    */
   take(key: string, now?: { hwnd: bigint; rect: Box }): QuietRecord | undefined {
     const w = this.watches.get(key);
-    if (!w) {
-      // No watch (none started, or none could see the window): what earlier watches learned about
-      // this window still holds — without it, a known self-repainting window brought forward by
-      // the act reads its own repaint as the act's change (gate 2 on 5b474fef).
-      const id = now !== undefined ? this.identityKey(now.hwnd) : undefined;
-      return id !== undefined && this.knownSelfRepainting.has(id) ? { selfRepainting: true, watchedMs: 0 } : undefined;
-    }
+    if (!w) return this.knownFor(now);
     const end = w.stoppedAt ?? this.now();
     this.end(key);
     // Watched another window, or this one where it no longer is (moved, or onto another monitor):
     // what it saw is not about the window the act is on (PR codex P2).
-    if (now !== undefined && (now.hwnd !== w.hwnd || !sameBox(now.rect, w.rect))) return undefined;
+    // What earlier watches learned about the window the act is on still holds (gate 2 on ae15b2f7).
+    if (now !== undefined && (now.hwnd !== w.hwnd || !sameBox(now.rect, w.rect))) return this.knownFor(now);
     const key2 = this.identityKey(w.hwnd);
     if (w.seen.selfRepainting && key2 !== undefined) {
       this.knownSelfRepainting.add(key2);
@@ -349,7 +355,7 @@ export async function observeAfterAct(
       ...residual,
       framesSampled: batches,
       totalElapsedMs: elapsed,
-      ...(quiet !== undefined && { watchedBeforeMs: quiet.watchedMs }),
+      ...(quiet?.watchedMs !== undefined && { watchedBeforeMs: quiet.watchedMs }),
       ...(quiet?.selfRepainting && { selfRepainting: true }),
       ...(covered && { visibleFraction: Math.round((visibleArea / targetArea0) * 1000) / 1000 }),
       ...cacheState,
