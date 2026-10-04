@@ -1,15 +1,17 @@
 //! Window capture for the Mac port (M1), through ScreenCaptureKit.
 //!
 //! Spike round 2 (Swift): SCK captured a shown or covered window as it is
-//! now (128 ms) and failed with -3811 for a minimised window and for one on
-//! another Space. M1 (this code, 2026-10-04) captured a minimised TextEdit
-//! window *with* text written into it while minimised, so the minimised
-//! case is not settled; one app, one window. Whatever SCK refuses comes back
-//! `ok: false` (`not_capturable` for -3811), never an older image, and
-//! `on_screen` says whether the window was on screen.
+//! now (128 ms) and failed with -3811 (`SCStreamErrorInternalError`) for a
+//! minimised window and for one on another Space. M1 (this code,
+//! 2026-10-04) captured a minimised TextEdit window *with* text written
+//! into it while minimised, so the minimised case is not settled; one app,
+//! one window. Whatever SCK refuses comes back `ok: false` with SCK's error
+//! code and text, never an older image, and `on_screen` says whether the
+//! window was on screen.
 //! SCK draws the cursor unless told not to, and needs CoreGraphics
 //! initialised in the process first (`NSApplication.shared`), which only the
 //! main thread may do — [`ensure_app_initialised`] runs on the JS thread.
+//! Called from a Node worker thread it cannot, and says so (`app_init`).
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -28,10 +30,13 @@ use objc2_screen_capture_kit::{
 
 use super::ax::MacRect;
 
+static APP_INITIALISED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Call on the main (JS) thread before the first capture. Idempotent.
 pub(crate) fn ensure_app_initialised() {
     if let Some(mtm) = MainThreadMarker::new() {
         let _ = objc2_app_kit::NSApplication::sharedApplication(mtm);
+        APP_INITIALISED.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -39,16 +44,17 @@ pub(crate) fn ensure_app_initialised() {
 #[derive(Clone, Debug, Default)]
 pub struct MacCaptureOptions {
     pub window_id: u32,
-    /// Pixels per point (default 2, the Retina backing scale; 1 halves the size).
+    /// Pixels per point (default: the window's display scale as SCK reports it).
     pub scale: Option<f64>,
+    /// For the whole capture, lookup included (default 5000).
     pub timeout_ms: Option<u32>,
 }
 
 #[napi_derive::napi(object)]
 pub struct MacCaptureResult {
     pub ok: bool,
-    /// `window_not_found`, `not_capturable` (minimised / other Space),
-    /// `timeout`, or the SCK error text.
+    /// `window_not_found`, `timeout`, `app_init` (no main-thread init yet),
+    /// or `sck_error <code>: <text>`.
     pub reason: Option<String>,
     /// RGBA, top-down, opaque; `data.len() == width * height * 4`.
     pub data: Option<napi::bindgen_prelude::Buffer>,
@@ -73,6 +79,10 @@ fn failed(reason: impl Into<String>, t0: std::time::Instant) -> MacCaptureResult
     }
 }
 
+fn sck_error(e: &NSError) -> String {
+    format!("sck_error {}: {}", e.code(), e.localizedDescription())
+}
+
 fn find_window(window_id: u32, timeout: Duration) -> Result<Retained<SCWindow>, String> {
     let (tx, rx) = mpsc::channel::<Result<Retained<SCWindow>, String>>();
     let block = RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
@@ -83,7 +93,7 @@ fn find_window(window_id: u32, timeout: Duration) -> Result<Retained<SCWindow>, 
                 .find(|w| unsafe { w.windowID() } == window_id)
                 .ok_or_else(|| "window_not_found".to_string())
         } else if let Some(e) = unsafe { error.as_ref() } {
-            Err(e.localizedDescription().to_string())
+            Err(sck_error(e))
         } else {
             Err("no_shareable_content".to_string())
         };
@@ -135,6 +145,9 @@ fn to_rgba(image: &CGImage) -> Option<(Vec<u8>, u32, u32)> {
 
 pub(crate) fn capture_window(opts: &MacCaptureOptions) -> MacCaptureResult {
     let t0 = std::time::Instant::now();
+    if !APP_INITIALISED.load(std::sync::atomic::Ordering::Relaxed) {
+        return failed("app_init", t0);
+    }
     let timeout = Duration::from_millis(opts.timeout_ms.unwrap_or(5000) as u64);
     let window = match find_window(opts.window_id, timeout) {
         Ok(w) => w,
@@ -144,8 +157,11 @@ pub(crate) fn capture_window(opts: &MacCaptureOptions) -> MacCaptureResult {
     let frame = MacRect { x: wf.origin.x, y: wf.origin.y, width: wf.size.width, height: wf.size.height };
     let on_screen = unsafe { window.isOnScreen() };
 
-    let scale = opts.scale.unwrap_or(2.0).clamp(0.25, 4.0);
     let filter = unsafe { SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), &window) };
+    let scale = opts
+        .scale
+        .unwrap_or_else(|| unsafe { SCShareableContent::infoForFilter(&filter).pointPixelScale() } as f64)
+        .clamp(0.25, 4.0);
     let config = unsafe { SCStreamConfiguration::new() };
     unsafe {
         config.setWidth((frame.width * scale).round().max(1.0) as usize);
@@ -159,9 +175,7 @@ pub(crate) fn capture_window(opts: &MacCaptureOptions) -> MacCaptureResult {
         let r = if let Some(image) = unsafe { image.as_ref() } {
             to_rgba(image).ok_or_else(|| "empty_image".to_string())
         } else if let Some(e) = unsafe { error.as_ref() } {
-            // -3811: the spike saw it for windows on another Space (and,
-            // in Swift, for a minimised window; see the module comment).
-            if e.code() == -3811 { Err("not_capturable".to_string()) } else { Err(e.localizedDescription().to_string()) }
+            Err(sck_error(e))
         } else {
             Err("no_image".to_string())
         };
@@ -170,7 +184,8 @@ pub(crate) fn capture_window(opts: &MacCaptureOptions) -> MacCaptureResult {
     unsafe {
         SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(&filter, &config, Some(&block))
     };
-    match rx.recv_timeout(timeout) {
+    // One budget for the whole capture: what the lookup used is gone.
+    match rx.recv_timeout(timeout.saturating_sub(t0.elapsed())) {
         Ok(Ok((pixels, width, height))) => MacCaptureResult {
             ok: true,
             reason: None,

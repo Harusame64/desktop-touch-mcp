@@ -919,11 +919,15 @@ export interface NativeMacAxTreeOptions {
   includeMenuBar?: boolean
   /** Per-message AX timeout, default 3. */
   timeoutSecs?: number
+  /** Budget for the whole walk, default 15000. */
+  maxMs?: number
 }
 
 export interface NativeMacAxElement {
   /** Child-index path: `a.<i>...` from the app, `f...` / `m...` from the focused / main window. */
   id: string
+  /** The key of the root (window) this element is under; pass it back as `expectedRootKey`. */
+  rootKey: string
   depth: number
   role: string
   subrole?: string
@@ -944,6 +948,12 @@ export interface NativeMacAxTree {
   appTitle?: string
   elements: NativeMacAxElement[]
   truncated: boolean
+  /** `max_elements`, `max_depth` or `max_ms`. */
+  stoppedBy?: string
+  /** A child equal to one of its ancestors was skipped. */
+  selfReference: boolean
+  /** The main display was asleep: AX then answers windows with the app element. */
+  displayAsleep: boolean
   /** AX could not be read at all (`api_disabled`, `cannot_complete`, ...). */
   error?: string
   elapsedMs: number
@@ -952,15 +962,17 @@ export interface NativeMacAxTree {
 export interface NativeMacAxTarget {
   pid: number
   id: string
-  /** The role read for `id`; the act is refused (`element_changed`) when it differs now. */
+  /** The role read for `id`. */
   expectedRole: string
+  /** The `rootKey` read for `id`; the act is refused (`element_changed`) when it or the role differs now. */
+  expectedRootKey: string
   timeoutSecs?: number
 }
 
 export interface NativeMacActResult {
   ok: boolean
   /** `element_not_found`, `element_changed`, `action_not_advertised`,
-   *  `value_not_settable`, `selection_not_settable`, or an AX error name. */
+   *  `value_not_settable`, `selection_not_settable`, `length_unknown`, or an AX error name. */
   reason?: string
   valueAfter?: string
   role?: string
@@ -968,14 +980,15 @@ export interface NativeMacActResult {
 
 export interface NativeMacCaptureOptions {
   windowId: number
-  /** Pixels per point, default 2. */
+  /** Pixels per point; default the window's display scale. */
   scale?: number
+  /** For the whole capture, default 5000. */
   timeoutMs?: number
 }
 
 export interface NativeMacCaptureResult {
   ok: boolean
-  /** `window_not_found`, `not_capturable`, `timeout`, or the SCK error text. */
+  /** `window_not_found`, `timeout`, `app_init`, or `sck_error <code>: <text>`. */
   reason?: string
   /** RGBA top-down, opaque; length = width * height * 4. */
   data?: Buffer

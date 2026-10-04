@@ -8,9 +8,17 @@
 //! window, so those two roots are listed only when the window is not
 //! already under `a`.
 //!
-//! A path is not stable across UI changes, so every act takes the role the
-//! caller read and refuses (`element_changed`) when the element at the path
-//! now has another role.
+//! A path is not stable across UI changes: when an app's windows change
+//! order, `a.1...` names the other document (measured 2026-10-04, TextEdit,
+//! two documents). So every element carries its root's key (the window's
+//! title and document), every act takes the key and the role the caller
+//! read, and the act is refused (`element_changed`) when either differs now.
+//!
+//! While the display sleeps, AX answers a window with the application
+//! element itself (2026-10-04, TextEdit and Calculator; Swift too), so a
+//! walk would descend into the app again. The walk never enters an element
+//! equal to one of its ancestors, and the tree says `selfReference` and
+//! `displayAsleep` so a caller does not take such a tree as the app's UI.
 
 use std::ptr::NonNull;
 
@@ -175,6 +183,22 @@ pub(crate) fn ax_error_name(e: AXError) -> String {
 
 // ─── Roots ──────────────────────────────────────────────────────────────────
 
+fn same(a: &AXUIElement, b: &AXUIElement) -> bool {
+    let a: &CFType = a;
+    let b: &CFType = b;
+    a == b
+}
+
+/// What a root is called, to tell its windows apart when their order
+/// changes: title and document URL, joined by U+001F.
+pub(crate) fn root_key(e: &AXUIElement) -> String {
+    format!(
+        "{}\u{1f}{}",
+        attr_string(e, "AXTitle").unwrap_or_default(),
+        attr_string(e, "AXDocument").unwrap_or_default()
+    )
+}
+
 /// The roots a tree read starts from, with their path prefixes.
 pub(crate) fn roots(
     app: &AXUIElement,
@@ -184,6 +208,9 @@ pub(crate) fn roots(
     let mut out = Vec::new();
     let kids = children(app, timeout_secs);
     for (i, k) in kids.iter().enumerate() {
+        if same(k, app) {
+            continue;
+        }
         if !include_menu_bar && attr_string(k, "AXRole").as_deref() == Some("AXMenuBar") {
             continue;
         }
@@ -191,14 +218,9 @@ pub(crate) fn roots(
     }
     for (prefix, name) in [("f", "AXFocusedWindow"), ("m", "AXMainWindow")] {
         if let Some(w) = attr_element(app, name, timeout_secs) {
-            let w_ty: &CFType = &w;
-            let seen = kids.iter().any(|k| {
-                let k_ty: &CFType = k;
-                k_ty == w_ty
-            }) || out.iter().any(|(_, e)| {
-                let e_ty: &CFType = e;
-                e_ty == w_ty
-            });
+            let seen = same(&w, app)
+                || kids.iter().any(|k| same(k, &w))
+                || out.iter().any(|(_, e)| same(e, &w));
             if !seen {
                 out.push((prefix.to_string(), w));
             }
@@ -207,10 +229,15 @@ pub(crate) fn roots(
     out
 }
 
-/// Resolve a path written by [`roots`] + child indexes.
-pub(crate) fn resolve(app: &AXUIElement, path: &str, timeout_secs: f32) -> Option<CFRetained<AXUIElement>> {
+/// Resolve a path written by [`roots`] + child indexes, returning the
+/// root it starts from and the element.
+pub(crate) fn resolve(
+    app: &AXUIElement,
+    path: &str,
+    timeout_secs: f32,
+) -> Option<(CFRetained<AXUIElement>, CFRetained<AXUIElement>)> {
     let mut parts = path.split('.');
-    let mut cur = match parts.next()? {
+    let root = match parts.next()? {
         "a" => {
             let i: usize = parts.next()?.parse().ok()?;
             children(app, timeout_secs).into_iter().nth(i)?
@@ -219,11 +246,12 @@ pub(crate) fn resolve(app: &AXUIElement, path: &str, timeout_secs: f32) -> Optio
         "m" => attr_element(app, "AXMainWindow", timeout_secs)?,
         _ => return None,
     };
+    let mut cur = root.clone();
     for p in parts {
         let i: usize = p.parse().ok()?;
         cur = children(&cur, timeout_secs).into_iter().nth(i)?;
     }
-    Some(cur)
+    Some((root, cur))
 }
 
 // ─── Tree read ──────────────────────────────────────────────────────────────
@@ -241,12 +269,18 @@ pub struct MacAxTreeOptions {
     pub include_menu_bar: Option<bool>,
     /// Per-message AX timeout in seconds (default 3).
     pub timeout_secs: Option<f64>,
+    /// Stop the whole walk after this long (default 15000 ms): a hung app
+    /// would otherwise cost the per-message timeout for every attribute.
+    pub max_ms: Option<u32>,
 }
 
 #[napi_derive::napi(object)]
 #[derive(Clone, Debug)]
 pub struct MacAxElement {
     pub id: String,
+    /// The key of the root (window) this element is under; pass it back as
+    /// `expectedRootKey` to act on the element.
+    pub root_key: String,
     pub depth: u32,
     pub role: String,
     pub subrole: Option<String>,
@@ -269,10 +303,21 @@ pub struct MacAxTree {
     pub app_title: Option<String>,
     pub elements: Vec<MacAxElement>,
     pub truncated: bool,
+    /// Why the walk stopped early: `max_elements`, `max_depth` or `max_ms`.
+    pub stopped_by: Option<String>,
+    /// A child was equal to one of its ancestors and was not entered.
+    pub self_reference: bool,
+    /// The main display was asleep when the walk ended; AX then answers
+    /// windows with the application element (see the module comment).
+    pub display_asleep: bool,
     /// AX could not be read at all (e.g. `api_disabled` when Accessibility
     /// is not granted, `cannot_complete` when the app does not answer).
     pub error: Option<String>,
     pub elapsed_ms: f64,
+}
+
+fn display_asleep() -> bool {
+    objc2_core_graphics::CGDisplayIsAsleep(objc2_core_graphics::CGMainDisplayID())
 }
 
 pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
@@ -292,6 +337,9 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
                     app_title: None,
                     elements: Vec::new(),
                     truncated: false,
+                    stopped_by: None,
+                    self_reference: false,
+                    display_asleep: display_asleep(),
                     error: err,
                     elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
                 };
@@ -301,22 +349,36 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         Err(_) => None,
     };
 
+    let deadline = std::time::Duration::from_millis(opts.max_ms.unwrap_or(15_000) as u64);
     let mut elements = Vec::new();
-    let mut truncated = false;
-    // Depth-first, children in order, so ids read top to bottom.
-    let mut stack: Vec<(String, CFRetained<AXUIElement>, u32)> = roots(&app, opts.include_menu_bar.unwrap_or(false), timeout)
+    let mut stopped_by: Option<&str> = None;
+    let mut self_reference = false;
+    // Depth-first, children in order, so ids read top to bottom. Each entry
+    // carries its ancestors (app first) so a child equal to one is skipped,
+    // and its root's key.
+    type Entry = (String, CFRetained<AXUIElement>, Vec<CFRetained<AXUIElement>>, std::rc::Rc<String>);
+    let mut stack: Vec<Entry> = roots(&app, opts.include_menu_bar.unwrap_or(false), timeout)
         .into_iter()
         .rev()
-        .map(|(id, e)| (id, e, 0))
+        .map(|(id, e)| {
+            let key = std::rc::Rc::new(root_key(&e));
+            (id, e, vec![app.clone()], key)
+        })
         .collect();
-    while let Some((id, e, depth)) = stack.pop() {
+    while let Some((id, e, ancestors, key)) = stack.pop() {
         if elements.len() >= max_elements {
-            truncated = true;
+            stopped_by = Some("max_elements");
             break;
         }
+        if t0.elapsed() >= deadline {
+            stopped_by = Some("max_ms");
+            break;
+        }
+        let depth = (ancestors.len() - 1) as u32;
         let kids = children(&e, timeout);
         elements.push(MacAxElement {
             id: id.clone(),
+            root_key: (*key).clone(),
             depth,
             role: attr_string(&e, "AXRole").unwrap_or_default(),
             subrole: attr_string(&e, "AXSubrole"),
@@ -332,11 +394,17 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
             child_count: kids.len() as u32,
         });
         if depth < max_depth {
+            let mut chain = ancestors;
+            chain.push(e.clone());
             for (i, k) in kids.into_iter().enumerate().rev() {
-                stack.push((format!("{id}.{i}"), k, depth + 1));
+                if chain.iter().any(|a| same(a, &k)) {
+                    self_reference = true;
+                    continue;
+                }
+                stack.push((format!("{id}.{i}"), k, chain.clone(), key.clone()));
             }
         } else if !kids.is_empty() {
-            truncated = true;
+            stopped_by.get_or_insert("max_depth");
         }
     }
 
@@ -344,7 +412,10 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         pid: opts.pid,
         app_title,
         elements,
-        truncated,
+        truncated: stopped_by.is_some(),
+        stopped_by: stopped_by.map(str::to_string),
+        self_reference,
+        display_asleep: display_asleep(),
         error: None,
         elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
     }
@@ -357,9 +428,11 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
 pub struct MacAxTarget {
     pub pid: i32,
     pub id: String,
-    /// The role the caller read for this id. The act is refused when the
-    /// element at the path now has another role.
+    /// The role the caller read for this id.
     pub expected_role: String,
+    /// The `rootKey` the caller read for this id. The act is refused
+    /// (`element_changed`) when the root or the role differs now.
+    pub expected_root_key: String,
     pub timeout_secs: Option<f64>,
 }
 
@@ -369,7 +442,7 @@ pub struct MacActResult {
     pub ok: bool,
     /// Why the act was refused or failed: `element_not_found`,
     /// `element_changed`, `action_not_advertised`, `value_not_settable`,
-    /// `selection_not_settable`, or the AX error name.
+    /// `selection_not_settable`, `length_unknown`, or the AX error name.
     pub reason: Option<String>,
     /// The element's value read back after a write (capped).
     pub value_after: Option<String>,
@@ -383,7 +456,10 @@ fn refused(reason: &str) -> MacActResult {
 fn locate(t: &MacAxTarget) -> Result<CFRetained<AXUIElement>, MacActResult> {
     let timeout = t.timeout_secs.map(|s| s as f32).unwrap_or(DEFAULT_TIMEOUT_SECS);
     let app = app_element(t.pid, timeout);
-    let Some(e) = resolve(&app, &t.id, timeout) else { return Err(refused("element_not_found")) };
+    let Some((root, e)) = resolve(&app, &t.id, timeout) else { return Err(refused("element_not_found")) };
+    if root_key(&root) != t.expected_root_key {
+        return Err(refused("element_changed"));
+    }
     let role = attr_string(&e, "AXRole").unwrap_or_default();
     if role != t.expected_role {
         return Err(MacActResult { role: Some(role), ..refused("element_changed") });
@@ -433,18 +509,23 @@ pub(crate) fn insert_text(t: &MacAxTarget, text: &str, at: Option<i64>) -> MacAc
         Ok(e) => e,
         Err(r) => return r,
     };
+    // Check everything before moving the caret, so a refusal leaves the
+    // selection as it was.
+    if !is_settable(&e, "AXSelectedText") {
+        return refused("selection_not_settable");
+    }
     if let Some(at) = at {
         if !is_settable(&e, "AXSelectedTextRange") {
             return refused("selection_not_settable");
         }
         let location = if at < 0 {
-            attr(&e, "AXNumberOfCharacters")
+            let len = attr(&e, "AXNumberOfCharacters")
                 .ok()
                 .and_then(|v| v.downcast_ref::<CFNumber>().and_then(|n| n.as_i64()))
-                .or_else(|| {
-                    attr_string(&e, "AXValue").map(|s| s.encode_utf16().count() as i64)
-                })
-                .unwrap_or(0)
+                .or_else(|| attr_string(&e, "AXValue").map(|s| s.encode_utf16().count() as i64));
+            // Not 0: "end" must not silently become "start".
+            let Some(len) = len else { return refused("length_unknown") };
+            len
         } else {
             at
         };
@@ -456,9 +537,6 @@ pub(crate) fn insert_text(t: &MacAxTarget, text: &str, at: Option<i64>) -> MacAc
         if err != AXError::Success {
             return refused(&ax_error_name(err));
         }
-    }
-    if !is_settable(&e, "AXSelectedText") {
-        return refused("selection_not_settable");
     }
     let err = unsafe { e.set_attribute_value(&cfstr("AXSelectedText"), &CFString::from_str(text)) };
     if err != AXError::Success {

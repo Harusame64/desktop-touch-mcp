@@ -49,7 +49,8 @@ impl Task for MacFocusTask {
     type Output = MacFocus;
     type JsValue = MacFocus;
     fn compute(&mut self) -> Result<Self::Output> {
-        Ok(system::focus())
+        // napi 2 runs compute() with no unwind guard; a panic would abort Node.
+        napi_safe_call("mac_get_focus", || Ok(system::focus()))
     }
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
         Ok(output)
@@ -68,7 +69,8 @@ impl Task for MacAxTreeTask {
     type Output = MacAxTree;
     type JsValue = MacAxTree;
     fn compute(&mut self) -> Result<Self::Output> {
-        Ok(ax::read_tree(&self.0))
+        let opts = &self.0;
+        napi_safe_call("mac_ax_tree", || Ok(ax::read_tree(opts)))
     }
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
         Ok(output)
@@ -93,10 +95,13 @@ impl Task for MacActTask {
     type Output = MacActResult;
     type JsValue = MacActResult;
     fn compute(&mut self) -> Result<Self::Output> {
-        Ok(match &self.1 {
-            MacActKind::Perform(action) => ax::perform(&self.0, action),
-            MacActKind::SetValue(v) => ax::set_value(&self.0, v),
-            MacActKind::Insert { text, at } => ax::insert_text(&self.0, text, *at),
+        let (target, kind) = (&self.0, &self.1);
+        napi_safe_call("mac_ax_act", || {
+            Ok(match kind {
+                MacActKind::Perform(action) => ax::perform(target, action),
+                MacActKind::SetValue(v) => ax::set_value(target, v),
+                MacActKind::Insert { text, at } => ax::insert_text(target, text, *at),
+            })
         })
     }
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -129,7 +134,8 @@ impl Task for MacCaptureTask {
     type Output = MacCaptureResult;
     type JsValue = MacCaptureResult;
     fn compute(&mut self) -> Result<Self::Output> {
-        Ok(capture::capture_window(&self.0))
+        let opts = &self.0;
+        napi_safe_call("mac_capture_window", || Ok(capture::capture_window(opts)))
     }
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
         Ok(output)
@@ -137,7 +143,7 @@ impl Task for MacCaptureTask {
 }
 
 /// Capture one window (CGWindowID) with ScreenCaptureKit, cursor off.
-/// What SCK cannot capture (seen: other-Space windows) answers `not_capturable`.
+/// What SCK refuses comes back `ok: false` with its error, never an older image.
 #[napi]
 pub fn mac_capture_window(opts: MacCaptureOptions) -> napi::Result<AsyncTask<MacCaptureTask>> {
     napi_safe_call("mac_capture_window", || {

@@ -142,10 +142,9 @@ fn frontmost_by_scan() -> Option<CFRetained<AXUIElement>> {
 }
 
 pub(crate) fn focus() -> MacFocus {
+    // No timeout is set here: on the system-wide element it would change
+    // the default for the whole process. This one query uses that default.
     let sys = unsafe { AXUIElement::new_system_wide() };
-    // On the system-wide element this sets the process-wide default; every
-    // element this module reaches gets its own timeout, so that is harmless.
-    unsafe { sys.set_messaging_timeout(ax::DEFAULT_TIMEOUT_SECS) };
     let (app, source, error) = match ax::attr(&sys, "AXFocusedApplication") {
         Ok(v) => (v.downcast::<AXUIElement>().ok(), "system_wide", None),
         Err(e) => (frontmost_by_scan(), "app_scan", Some(ax::ax_error_name(e))),
@@ -178,6 +177,9 @@ pub(crate) fn post_text(pid: i32, text: &str) -> bool {
         let units = ch.encode_utf16(&mut buf);
         for down in [true, false] {
             let Some(ev) = CGEvent::new_keyboard_event(None, 0, down) else { return false };
+            // No modifiers: keycode 0 is the "a" key, and a held modifier
+            // picked up from the event source would turn it into a shortcut.
+            CGEvent::set_flags(Some(&ev), CGEventFlags(0));
             unsafe { CGEvent::keyboard_set_unicode_string(Some(&ev), units.len() as _, units.as_ptr()) };
             CGEvent::post_to_pid(pid, Some(&ev));
         }
