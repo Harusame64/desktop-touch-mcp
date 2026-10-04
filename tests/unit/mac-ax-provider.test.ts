@@ -1,0 +1,149 @@
+import { describe, it, expect, vi } from "vitest";
+import {
+  roleOf, actionabilityOf, isCandidate, toCandidate, readMacAxCandidates,
+  type MacAxProviderDeps, type MacAxReadNotes,
+} from "../../src/tools/mac/ax-provider.js";
+import type { NativeMacAxElement } from "../../src/engine/native-types.js";
+
+const el = (over: Partial<NativeMacAxElement> = {}): NativeMacAxElement => ({
+  id: "a.0.1",
+  rootKey: "Doc\u001f\u001f0,0,10,10",
+  elementKey: "k",
+  depth: 1,
+  role: "AXButton",
+  actions: [],
+  valueSettable: false,
+  childCount: 0,
+  ...over,
+});
+
+describe("roleOf", () => {
+  it.each([
+    ["AXButton", "button"], ["AXCheckBox", "button"], ["AXTextField", "textbox"],
+    ["AXTextArea", "textbox"], ["AXLink", "link"], ["AXMenuItem", "menuitem"],
+    ["AXStaticText", "label"], ["AXGroup", "unknown"],
+  ])("%s -> %s", (role, expected) => {
+    expect(roleOf({ role })).toBe(expected);
+  });
+});
+
+describe("actionabilityOf", () => {
+  it("press on a button", () => {
+    expect(actionabilityOf(el({ actions: ["AXPress"] }))).toEqual(["click", "invoke"]);
+  });
+  it("settable text field types", () => {
+    expect(actionabilityOf(el({ role: "AXTextField", valueSettable: true }))).toEqual(["type"]);
+  });
+  it("secure text field offers nothing", () => {
+    expect(actionabilityOf(el({ role: "AXTextField", subrole: "AXSecureTextField", valueSettable: true }))).toEqual([]);
+  });
+  it("static text is read", () => {
+    expect(actionabilityOf(el({ role: "AXStaticText" }))).toEqual(["read"]);
+  });
+  it("group with no actions", () => {
+    expect(actionabilityOf(el({ role: "AXGroup" }))).toEqual([]);
+  });
+});
+
+describe("isCandidate", () => {
+  it("disabled button is not", () => {
+    expect(isCandidate(el({ enabled: false, actions: ["AXPress"] }))).toBe(false);
+  });
+  it("static text with a value is", () => {
+    expect(isCandidate(el({ role: "AXStaticText", value: "56" }))).toBe(true);
+  });
+  it("static text with no name is not", () => {
+    expect(isCandidate(el({ role: "AXStaticText" }))).toBe(false);
+  });
+  it("group with no actions is not", () => {
+    expect(isCandidate(el({ role: "AXGroup" }))).toBe(false);
+  });
+});
+
+describe("toCandidate", () => {
+  it("names a label by its value and carries no value key", () => {
+    const c = toCandidate(el({ role: "AXStaticText", value: "56", description: "最後の式" }), 7, "Win", 1000);
+    expect(c.label).toBe("56");
+    expect(c.role).toBe("label");
+    expect("value" in c).toBe(false);
+  });
+  it("button candidate", () => {
+    const c = toCandidate(el({ title: "7", actions: ["AXPress"] }), 7, "Win", 1000);
+    expect(c.label).toBe("7");
+    expect(c.source).toBe("ax");
+    expect(c.target).toEqual({ kind: "window", id: "Win" });
+    expect(c.observedAtMs).toBe(1000);
+    expect(c.status).toBe("observed");
+    expect(c.locator).toEqual({
+      ax: { pid: 7, id: "a.0.1", role: "AXButton", rootKey: "Doc\u001f\u001f0,0,10,10", elementKey: "k" },
+    });
+  });
+  it("never leaks a secure field's value", () => {
+    const c = toCandidate(el({ role: "AXTextField", subrole: "AXSecureTextField", value: "hunter2" }), 7, "Win", 1000);
+    expect(JSON.stringify(c)).not.toContain("hunter2");
+  });
+  it("keeps a plain text field's value", () => {
+    const c = toCandidate(el({ role: "AXTextField", value: "hello" }), 7, "Win", 1000);
+    expect(c.value).toBe("hello");
+  });
+});
+
+describe("readMacAxCandidates", () => {
+  const tree = (over: object = {}) => ({
+    pid: 7, appTitle: "App",
+    elements: [
+      el({ id: "a.0.1", rootKey: "My Doc\u001f\u001f0,0,1,1", actions: ["AXPress"], title: "OK" }),
+      el({ id: "a.1.1", rootKey: "Other\u001f\u001f0,0,1,1", actions: ["AXPress"], title: "Cancel" }),
+    ],
+    truncated: false, selfReference: false, displayAsleep: false, elapsedMs: 1,
+    ...over,
+  });
+  const mk = () => ({
+    listWindows: vi.fn(),
+    getFocus: vi.fn(),
+    axTree: vi.fn(),
+    now: vi.fn(() => 1000),
+  });
+  const run = (deps: ReturnType<typeof mk>, target?: { windowTitle?: string }) => {
+    const notes: MacAxReadNotes = { warnings: [] };
+    return readMacAxCandidates(deps as unknown as MacAxProviderDeps, target, notes).then((r) => ({ r, notes }));
+  };
+
+  it("filters to the window the title names", async () => {
+    const d = mk();
+    d.listWindows.mockReturnValue([{ windowId: 1, pid: 7, layer: 0, onScreen: true, title: "My Doc" }]);
+    d.axTree.mockResolvedValue(tree());
+    const { r, notes } = await run(d, { windowTitle: "doc" });
+    expect(r).toHaveLength(1);
+    expect(r[0].label).toBe("OK");
+    expect(d.axTree).toHaveBeenCalledWith({ pid: 7 });
+    expect(notes.pid).toBe(7);
+    expect(notes.appTitle).toBe("App");
+    expect(notes.warnings).toEqual([]);
+  });
+  it("warns when no window matches", async () => {
+    const d = mk();
+    d.listWindows.mockReturnValue([]);
+    const { r, notes } = await run(d, { windowTitle: "nothing" });
+    expect(r).toEqual([]);
+    expect(notes.warnings).toEqual(["no_window_matches_title"]);
+    expect(d.axTree).not.toHaveBeenCalled();
+  });
+  it("warns when there is no frontmost app", async () => {
+    const d = mk();
+    d.getFocus.mockResolvedValue({});
+    const { r, notes } = await run(d);
+    expect(r).toEqual([]);
+    expect(notes.warnings).toEqual(["no_frontmost_app"]);
+  });
+  it("reports every warning and keeps both elements without a title", async () => {
+    const d = mk();
+    d.getFocus.mockResolvedValue({ pid: 7 });
+    d.axTree.mockResolvedValue(tree({
+      displayAsleep: true, selfReference: true, truncated: true, stoppedBy: "max_ms", error: "cannot_complete",
+    }));
+    const { r, notes } = await run(d);
+    expect(notes.warnings).toEqual(["ax_error:cannot_complete", "display_asleep", "ax_self_reference", "truncated:max_ms"]);
+    expect(r).toHaveLength(2);
+  });
+});
