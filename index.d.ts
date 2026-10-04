@@ -1004,6 +1004,8 @@ export interface NativeMacCaptureResult {
 }
 
 export declare function macPermissions(): NativeMacPermissions
+/** While the main display sleeps, AX answers windows with the app element itself. */
+export declare function macDisplayAsleep(): boolean
 export declare function macListWindows(onScreenOnly?: boolean): NativeMacWindow[]
 export declare function macGetFocus(): Promise<NativeMacFocus>
 export declare function macAxTree(opts: NativeMacAxTreeOptions): Promise<NativeMacAxTree>

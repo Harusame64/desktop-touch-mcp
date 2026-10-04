@@ -372,7 +372,7 @@ pub struct MacAxTree {
     pub elapsed_ms: f64,
 }
 
-fn display_asleep() -> bool {
+pub(crate) fn display_asleep() -> bool {
     objc2_core_graphics::CGDisplayIsAsleep(objc2_core_graphics::CGMainDisplayID())
 }
 

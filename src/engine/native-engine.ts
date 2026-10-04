@@ -64,6 +64,15 @@ import type {
   NativeDirtyRectSubscription,
   NativeExcelAccessVbomStatus,
   NativeWtsSessionInfo,
+  NativeMacPermissions,
+  NativeMacWindow,
+  NativeMacFocus,
+  NativeMacAxTreeOptions,
+  NativeMacAxTree,
+  NativeMacAxTarget,
+  NativeMacActResult,
+  NativeMacCaptureOptions,
+  NativeMacCaptureResult,
 } from "./native-types.js";
 
 export type * from "./native-types.js";
@@ -489,6 +498,26 @@ export const nativeEngine: NativeEngine | null =
   typeof nativeBinding.dhashFromRaw === "function" &&
   typeof nativeBinding.hammingDistance === "function"
     ? (nativeBinding as unknown as NativeEngine)
+    : null;
+
+/** Mac port (src/macos/): the macOS-only exports, present only in the darwin addon. */
+export interface NativeMac {
+  macPermissions(): NativeMacPermissions;
+  macDisplayAsleep(): boolean;
+  macListWindows(onScreenOnly?: boolean): NativeMacWindow[];
+  macGetFocus(): Promise<NativeMacFocus>;
+  macAxTree(opts: NativeMacAxTreeOptions): Promise<NativeMacAxTree>;
+  macAxPerform(target: NativeMacAxTarget, action: string): Promise<NativeMacActResult>;
+  macAxSetValue(target: NativeMacAxTarget, value: string): Promise<NativeMacActResult>;
+  macAxInsertText(target: NativeMacAxTarget, text: string, at?: number): Promise<NativeMacActResult>;
+  macPostText(pid: number, text: string): boolean;
+  macPostKey(pid: number, keyCode: number, flags?: number): boolean;
+  macCaptureWindow(opts: NativeMacCaptureOptions): Promise<NativeMacCaptureResult>;
+}
+
+export const nativeMac: NativeMac | null =
+  nativeBinding && typeof nativeBinding.macAxTree === "function" && typeof nativeBinding.macDisplayAsleep === "function"
+    ? (nativeBinding as unknown as NativeMac)
     : null;
 
 /**

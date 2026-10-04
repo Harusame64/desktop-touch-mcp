@@ -194,6 +194,7 @@ export const excelCheckAccessVbom       = nativeBinding.excelCheckAccessVbom;
 
 // ─── Mac port M1 (macOS only; src/macos/) ────────────────────────────────────
 export const macPermissions             = nativeBinding.macPermissions;
+export const macDisplayAsleep           = nativeBinding.macDisplayAsleep;
 export const macListWindows             = nativeBinding.macListWindows;
 export const macGetFocus                = nativeBinding.macGetFocus;
 export const macAxTree                  = nativeBinding.macAxTree;

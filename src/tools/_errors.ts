@@ -612,6 +612,12 @@ const SUGGESTS: Record<string, string[]> = {
     "desktop_discover never offers 'select' on any target, so asking for it is always this refusal — reach a list item, combo entry or tab by clicking it. NOTE: screenshot(detail='elements') and workspace_snapshot DO print action:'select' on list items; that is a different reader's word for the same click, and desktop_act does not take it.",
   ],
   // Internal #247 — `WindowFrozenError` (`engine/window-frozen.ts`) declares this code.
+  // Mac port (M2-1): macOS gives Accessibility to the app that runs the server, not to the server
+  // itself, and only the user can grant it. Nothing on the desktop can be read or done until then.
+  PermissionRequired: [
+    "Open System Settings > Privacy & Security > Accessibility and turn on the app that runs this server (Terminal, iTerm, VS Code, the Claude app, ...), then restart the server.",
+    "Screen Recording (same pane) is needed for window titles and screenshots.",
+  ],
   WindowFrozen: [
     "Nothing was read: the window's app is suspended by Windows, so UI Automation reads nothing from it and a capture would show its last frame, not what it shows now.",
     "Restore or show the window (focus_window, or the user brings it back), then read it again. Retrying while it stays minimised or hidden returns the same.",

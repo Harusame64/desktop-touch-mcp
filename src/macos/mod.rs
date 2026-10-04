@@ -25,6 +25,13 @@ pub fn mac_permissions() -> napi::Result<MacPermissions> {
     napi_safe_call("mac_permissions", || Ok(system::permissions()))
 }
 
+/// Whether the main display is asleep. While it is, AX answers windows with
+/// the application element itself (see src/macos/ax.rs).
+#[napi]
+pub fn mac_display_asleep() -> napi::Result<bool> {
+    napi_safe_call("mac_display_asleep", || Ok(ax::display_asleep()))
+}
+
 #[napi]
 pub fn mac_list_windows(on_screen_only: Option<bool>) -> napi::Result<Vec<MacWindow>> {
     napi_safe_call("mac_list_windows", || Ok(system::list_windows(on_screen_only.unwrap_or(false))))

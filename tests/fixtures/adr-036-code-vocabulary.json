@@ -129,6 +129,7 @@
     "KeyLockerNoSuchBinding",
     "KeyLockerSshUnresolved",
     "NavigateFailed",
+    "PermissionRequired",
     "ScopeNotFound",
     "TerminalTextPatternUnavailable",
     "TerminalWindowNotFound",
