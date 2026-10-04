@@ -36,3 +36,22 @@ describe("the release zip for a platform", () => {
     }
   });
 });
+
+describe("started through npm's bin symlink (codex, #785)", () => {
+  it("counts a symlink to the launcher as the launcher, and another file as not", async () => {
+    const { mkdtempSync, symlinkSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const { isLaunchedAsScript } = await import(/* @vite-ignore */ `${LAUNCHER.href}?bin`);
+    const dir = mkdtempSync(join(tmpdir(), "dtmcp-bin-"));
+    const link = join(dir, "desktop-touch-mcp");
+    symlinkSync(fileURLToPath(LAUNCHER), link);
+    const other = join(dir, "other.js");
+    writeFileSync(other, "");
+    expect(isLaunchedAsScript(link, LAUNCHER.href)).toBe(true);
+    expect(isLaunchedAsScript(fileURLToPath(LAUNCHER), LAUNCHER.href)).toBe(true);
+    expect(isLaunchedAsScript(other, LAUNCHER.href)).toBe(false);
+    expect(isLaunchedAsScript(undefined, LAUNCHER.href)).toBe(false);
+  });
+});

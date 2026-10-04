@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile, spawn } from "node:child_process";
-import { createReadStream, createWriteStream, existsSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   mkdir,
@@ -859,11 +859,27 @@ async function main() {
   launchServer(releaseDir);
 }
 
-const launchedAsScript = (() => {
-  const entry = process.argv[1];
+/**
+ * Whether this module is the program, compared on real paths: on macOS (and Linux) npm runs the
+ * bin through a `node_modules/.bin` symlink, so argv[1] is the link while import.meta.url is the
+ * file it points to — compared as given, `npx` exited 0 having done nothing (codex, #785;
+ * reproduced with `npm pack` + `node_modules/.bin/desktop-touch-mcp`). Windows' npm shims pass
+ * the real path, so nothing changes there.
+ */
+/** @internal Exported for tests. */
+export function isLaunchedAsScript(entry, moduleUrl) {
   if (!entry) return false;
-  return path.resolve(entry) === path.resolve(fileURLToPath(import.meta.url));
-})();
+  const real = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  return real(path.resolve(entry)) === real(fileURLToPath(moduleUrl));
+}
+
+const launchedAsScript = isLaunchedAsScript(process.argv[1], import.meta.url);
 
 if (launchedAsScript) {
   main().catch((error) => {
