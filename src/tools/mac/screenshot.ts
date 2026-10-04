@@ -8,10 +8,11 @@
  * Nothing here takes the foreground; a covered window is captured as it is
  * now. What SCK refuses comes back as a failure, never an older image.
  *
- * Encoding uses sharp directly (src/engine/image.ts loads nut-js on import).
+ * Encoding uses sharp directly (src/engine/image.ts loads nut-js on import), and loads it on
+ * the first capture: a missing sharp binary must cost this tool only, not the whole server
+ * (gate 2, #781).
  */
 
-import sharp from "sharp";
 import { z } from "zod";
 
 import type {
@@ -21,7 +22,7 @@ import type {
   NativeMacPermissions,
   NativeMacWindow,
 } from "../../engine/native-types.js";
-import { failCode, getSuggestsForCode } from "../_errors.js";
+import { failCode } from "../_errors.js";
 import { buildDesc, type ToolResult } from "../_types.js";
 
 export interface MacScreenshotDeps {
@@ -41,7 +42,8 @@ export const macScreenshotDescription = buildDesc({
   purpose: "Capture one macOS window as a PNG image, without bringing it forward.",
   details:
     "Returns the image plus JSON: windowId, title, pid, bounds (screen points, top-left origin), imageWidth/imageHeight, and " +
-    "pointsPerPixel (screen_x = bounds.x + image_x * pointsPerPixel; same for y). A covered window is captured as it is now. " +
+    "pointsPerPixel (screen_x = bounds.x + image_x * pointsPerPixel; same for y — for a window that is on screen; a minimised or " +
+    "other-Space window's bounds are not where it shows). A covered window is captured as it is now. " +
     "warnings: several_windows_match (the frontmost of them was taken), window_off_screen (minimised or on another Space; " +
     "the capture may fail or show it as it is).",
   prefer: "Prefer desktop_discover / desktop_state for reading UI: they are cheaper and give leases. Use this when you need pixels.",
@@ -55,7 +57,9 @@ export async function sharpEncodePng(
   height: number,
   maxDimension: number
 ): Promise<{ png: Buffer; width: number; height: number }> {
-  let pipeline = sharp(rgba, { raw: { width, height, channels: 4 } });
+  const sharp = (await import("sharp")).default;
+  // The native capture forces alpha to 255, so the channel carries nothing.
+  let pipeline = sharp(rgba, { raw: { width, height, channels: 4 } }).removeAlpha();
   if (Math.max(width, height) > maxDimension) {
     pipeline = pipeline.resize({
       width: width >= height ? maxDimension : undefined,
@@ -83,6 +87,15 @@ const MAC_SUGGEST = {
     "If the display is asleep, wake it and retry.",
     "desktop_discover reads the window's controls without a capture.",
   ],
+  windowGone: ["The window closed between choosing it and capturing it. Call screenshot again."],
+  unsupportedOs: ["Window capture needs macOS 14 or later. desktop_discover reads the window's controls without a capture."],
+  noTitles: [
+    "No window title is readable. Omit windowTitle to capture the frontmost app's window, or call desktop_state to see what is there.",
+  ],
+  screenRecording: [
+    "Open System Settings > Privacy & Security > Screen Recording (macOS 15: Screen & System Audio Recording) and turn on the app that runs this server (Terminal, iTerm, VS Code, the Claude app, ...), then restart the server.",
+  ],
+  encoderMissing: ["The image encoder (sharp) could not be loaded; reinstall the package so its macOS binary is present."],
 } as const;
 
 interface Chosen {
@@ -107,8 +120,8 @@ async function chooseWindow(deps: MacScreenshotDeps, title: string | undefined):
         "WindowNotFound",
         titled
           ? `screenshot: no window title contains "${title}".`
-          : "screenshot: window titles are not readable (Screen Recording is not granted), so no title can match.",
-        { suggest: titled ? [...MAC_SUGGEST.noTitle] : getSuggestsForCode("PermissionRequired") }
+          : "screenshot: no window title is readable, so no title can match.",
+        { suggest: titled ? [...MAC_SUGGEST.noTitle] : [...MAC_SUGGEST.noTitles] }
       );
     }
   } else {
@@ -141,7 +154,7 @@ export async function macScreenshotHandler(
   const permissions = deps.permissions();
   if (!permissions.screenCapture) {
     return failCode("PermissionRequired", "screenshot: this process is not allowed to record the screen, so no window can be captured.", {
-      suggest: getSuggestsForCode("PermissionRequired"),
+      suggest: [...MAC_SUGGEST.screenRecording],
       context: { permissions },
     });
   }
@@ -149,7 +162,25 @@ export async function macScreenshotHandler(
   if ("content" in chosen) return chosen;
   const { window, warnings } = chosen;
 
-  const shot = await deps.capture({ windowId: window.windowId });
+  const maxDimension = input.maxDimension ?? 1280;
+  // Capture no larger than needed: a full-screen window on a 5K display is ~59 MB of RGBA at the
+  // display's own scale, only to be shrunk to maxDimension (gate 2, #781). Below 1 point per pixel
+  // the native default (the display's scale) is kept.
+  const longest = window.bounds ? Math.max(window.bounds.width, window.bounds.height) : 0;
+  const scale = longest > maxDimension ? maxDimension / longest : undefined;
+  const shot = await deps.capture({ windowId: window.windowId, ...(scale !== undefined && { scale }) });
+  if (!shot.ok && shot.reason === "window_not_found") {
+    return failCode("WindowNotFound", `screenshot: window ${window.windowId} closed before it could be captured.`, {
+      suggest: [...MAC_SUGGEST.windowGone],
+      context: { windowId: window.windowId },
+    });
+  }
+  if (!shot.ok && shot.reason === "unsupported_os") {
+    return failCode("CaptureBackendFailed", "screenshot: window capture needs macOS 14 or later.", {
+      suggest: [...MAC_SUGGEST.unsupportedOs],
+      context: { windowId: window.windowId, reason: shot.reason },
+    });
+  }
   if (!shot.ok || shot.data === undefined) {
     return failCode(
       "CaptureBackendFailed",
@@ -161,7 +192,15 @@ export async function macScreenshotHandler(
     );
   }
 
-  const encoded = await deps.encodePng(shot.data, shot.width, shot.height, input.maxDimension ?? 1280);
+  let encoded: { png: Buffer; width: number; height: number };
+  try {
+    encoded = await deps.encodePng(shot.data, shot.width, shot.height, maxDimension);
+  } catch (e) {
+    return failCode("CaptureBackendFailed", `screenshot: the captured image could not be encoded: ${e instanceof Error ? e.message : String(e)}`, {
+      suggest: [...MAC_SUGGEST.encoderMissing],
+      context: { windowId: window.windowId },
+    });
+  }
   const bounds = shot.frame ?? window.bounds;
   const meta = {
     windowId: window.windowId,

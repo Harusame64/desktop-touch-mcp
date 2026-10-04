@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
 import { macScreenshotHandler, sharpEncodePng, type MacScreenshotDeps } from "../../src/tools/mac/screenshot.js";
-import { getSuggestsForCode } from "../../src/tools/_errors.js";
 
 const w = (id: number, pid: number, title: string, onScreen = true, layer = 0): any => ({
   windowId: id, pid, title, layer, onScreen, bounds: { x: 0, y: 0, width: 200, height: 100 },
@@ -86,7 +85,9 @@ describe("macScreenshotHandler", () => {
     const d = setup(L, L);
     const b = body(await macScreenshotHandler(d, { windowTitle: "doc" }));
     expect(b.code).toBe("WindowNotFound");
-    expect(b.suggest).toEqual(getSuggestsForCode("PermissionRequired"));
+    // Gate 2 (#781): Screen Recording was just confirmed, so the cause is not named as missing.
+    expect(b.error).not.toContain("Screen Recording");
+    expect(JSON.stringify(b.suggest)).not.toContain("Accessibility");
   });
 
   it("8 no title uses focus", async () => {
@@ -145,5 +146,36 @@ describe("sharpEncodePng", () => {
     const r = await sharpEncodePng(rgba, 100, 50, 1000);
     expect(r.width).toBe(100);
     expect(r.height).toBe(50);
+  });
+});
+
+describe("gate 2 (#781)", () => {
+  it("a window that closed before the capture is WindowNotFound", async () => {
+    const L = [w(1, 7, "A")];
+    const d = setup(L, L, { capture: vi.fn(async () => ({ ok: false, reason: "window_not_found", width: 0, height: 0, elapsedMs: 1 })) });
+    expect(body(await macScreenshotHandler(d, { windowTitle: "a" })).code).toBe("WindowNotFound");
+  });
+  it("a large window is captured scaled down to maxDimension, a small one at the native scale", async () => {
+    const big = { ...w(1, 7, "Big"), bounds: { x: 0, y: 0, width: 2560, height: 1440 } };
+    const d = setup([big], [big]);
+    await macScreenshotHandler(d, { windowTitle: "big", maxDimension: 1280 });
+    expect(d.capture).toHaveBeenCalledWith({ windowId: 1, scale: 0.5 });
+    const small = w(2, 7, "Small");
+    const d2 = setup([small], [small]);
+    await macScreenshotHandler(d2, { windowTitle: "small" });
+    expect(d2.capture).toHaveBeenCalledWith({ windowId: 2 });
+  });
+  it("an encoder that cannot load costs this capture only", async () => {
+    const L = [w(1, 7, "A")];
+    const d = setup(L, L, { encodePng: vi.fn(async () => { throw new Error("Could not load the sharp module"); }) });
+    const r = await macScreenshotHandler(d, { windowTitle: "a" });
+    expect(body(r).code).toBe("CaptureBackendFailed");
+    expect(r.content.some((c: any) => c.type === "image")).toBe(false);
+  });
+  it("the Screen Recording advice comes first when it is missing", async () => {
+    const L = [w(1, 7, "A")];
+    const d = setup(L, L, { permissions: vi.fn(() => ({ accessibility: true, screenCapture: false })) });
+    const b = body(await macScreenshotHandler(d, { windowTitle: "a" }));
+    expect(b.suggest[0]).toContain("Screen Recording");
   });
 });
