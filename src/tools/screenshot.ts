@@ -826,8 +826,13 @@ export const screenshotHandler = async (args: {
               a.region.y !== b.region.y ? a.region.y - b.region.y : a.region.x - b.region.x
             );
             hints.ocrFallbackFired = true;
-          } catch {
-            // OCR unavailable (language pack missing, WinRT error) — silently skip
+          } catch (ocrErr) {
+            if (ocrErr instanceof WindowFrozenError) {
+              // Internal #247: the same reason on this road, which is reached without the SoM step
+              // when UIA is not judged blind (gate 2 on 46f67178).
+              hints.warnings = [...(hints.warnings ?? []), `target_window_frozen: ${ocrErr.callerDetail}`];
+            }
+            // Otherwise: OCR unavailable (language pack missing, WinRT error) — silently skip
           }
         }
 

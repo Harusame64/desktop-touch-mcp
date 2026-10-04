@@ -611,15 +611,15 @@ const SUGGESTS: Record<string, string[]> = {
     "A type or setValue on a control UI Automation reports as a button, check box, radio button, hyperlink or menu item is this refusal too: none of them takes text, so nothing was typed — if you meant to press it, ask for click or invoke.",
     "desktop_discover never offers 'select' on any target, so asking for it is always this refusal — reach a list item, combo entry or tab by clicking it. NOTE: screenshot(detail='elements') and workspace_snapshot DO print action:'select' on list items; that is a different reader's word for the same click, and desktop_act does not take it.",
   ],
-  // internal #182. The value road wrote, UI Automation answered success, and the control's value
-  // did not move — so nothing was written, and the caller must not read the refusal as "try harder
-  // on the same control". Measured on a WinForms NumericUpDown: a keystroke fallback landed at the
-  // inner edit's caret and produced a different wrong value.
   // Internal #247 — `WindowFrozenError` (`engine/window-frozen.ts`) declares this code.
   WindowFrozen: [
     "Nothing was read: the window's app is suspended by Windows, so UI Automation reads nothing from it and a capture would show its last frame, not what it shows now.",
     "Restore or show the window (focus_window, or the user brings it back), then read it again. Retrying while it stays minimised or hidden returns the same.",
   ],
+  // internal #182. The value road wrote, UI Automation answered success, and the control's value
+  // did not move — so nothing was written, and the caller must not read the refusal as "try harder
+  // on the same control". Measured on a WinForms NumericUpDown: a keystroke fallback landed at the
+  // inner edit's caret and produced a different wrong value.
   ValueNotApplied: [
     "The write was accepted, but what it should have changed read back unchanged, so this act does not report it written: a control's value through UI Automation (the native client; nothing else was tried), or Word's visible page text after a type (the text may have landed out of view, or later).",
     "Do NOT retry the same act blindly. For a control: do NOT fall back to keyboard / type into the same control — on a WinForms NumericUpDown a keystroke landed at its caret and left a different wrong value ('42420' for '4242'). For Word: look at the document first (screenshot), so the text is not typed twice.",

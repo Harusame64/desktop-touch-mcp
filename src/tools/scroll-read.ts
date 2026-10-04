@@ -13,6 +13,7 @@ import { logDispatchSink } from "./_resolve-log.js";
 export { detectOcrLanguage };
 
 import { failWith, failCode } from "./_errors.js";
+import { WindowFrozenError } from "../engine/window-frozen.js";
 import { keyboard } from "../engine/nutjs.js";
 import { restoreAndFocusWindow } from "../engine/win32.js";
 import { canInjectAtTarget, postKeyComboToHwnd } from "../engine/bg-input.js";
@@ -221,6 +222,8 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
       // No pages captured yet — return a clean structured failure rather
       // than an empty ok:true payload that would mask the underlying error.
       if (perPage.length === 0) {
+        // Internal #247: a frozen app's window keeps its own code and advice (gate 2 on 46f67178).
+        if (err instanceof WindowFrozenError) return failWith(err, "scroll");
         return failCode("ToolError", `scroll(action='read') failed before any page was captured: ${msg}`);
       }
       // At least one page already in `allLines` — preserve partial output and
