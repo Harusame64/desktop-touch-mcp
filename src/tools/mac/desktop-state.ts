@@ -44,6 +44,12 @@ export interface MacDesktopState {
   focusedElement: { role: string; title: string | null } | null;
   /** On-screen app windows (layer 0, not fully transparent); null when the list could not be read. */
   visibleWindows: number | null;
+  /**
+   * Those windows, front to back (at most 30): title as macOS shows it — in the user's language, so
+   * Calculator can be "計算機" — app name and pid. The dogfood (2026-10-04) had no way to learn a title
+   * to pass to desktop_discover / screenshot.
+   */
+  windows: Array<{ title: string | null; app: string | null; pid: number }> | null;
   /** null when it could not be asked. */
   displayAsleep: boolean | null;
   attention: "ok" | "needs_escalation";
@@ -94,10 +100,11 @@ export async function macDesktopStateHandler(deps: MacStateDeps): Promise<ToolRe
     readErrors.focus = errText(e);
   }
   let visibleWindows: number | null = null;
+  let windows: MacDesktopState["windows"] = null;
   try {
-    visibleWindows = deps
-      .listWindows(true)
-      .filter((w) => w.layer === 0 && w.onScreen && w.alpha !== 0).length;
+    const shown = deps.listWindows(true).filter((w) => w.layer === 0 && w.onScreen && w.alpha !== 0);
+    visibleWindows = shown.length;
+    windows = shown.slice(0, 30).map((w) => ({ title: w.title || null, app: w.ownerName ?? null, pid: w.pid }));
   } catch (e) {
     readErrors.windows = errText(e);
   }
@@ -129,6 +136,7 @@ export async function macDesktopStateHandler(deps: MacStateDeps): Promise<ToolRe
     focusedElement:
       focus.focusedRole == null ? null : { role: focus.focusedRole, title: focus.focusedTitle ?? null },
     visibleWindows,
+    windows,
     displayAsleep,
     attention: reason === null ? "ok" : "needs_escalation",
     ...(reason === null ? {} : { suggest: SUGGEST[reason] }),
@@ -148,7 +156,8 @@ export const macDesktopStateDescription = buildDesc({
     "Read-only observation of the macOS desktop: the frontmost app, its focused window and element, and how many windows are on screen.",
   details:
     "Returns focusedWindow {title, appName, pid}, focusedElement {role, title} (null when the app has none, e.g. its window is on another Space), " +
-    "visibleWindows (on-screen app windows), displayAsleep, attention, permissions {accessibility, screenCapture}. " +
+    "visibleWindows and windows[] (on-screen app windows front to back: title, app, pid — titles are in the user's language, e.g. Calculator " +
+    "may be \"計算機\"; pass them to desktop_discover / screenshot), displayAsleep, attention, permissions {accessibility, screenCapture}. " +
     "attention: 'ok', or 'needs_escalation' with hints.reason and suggest[]: 'display_asleep' (macOS then answers windows with the app itself; wake it and read again), " +
     "'no_frontmost_app', 'read_failed' (hints.readErrors; what was read is still returned). The focused element's value is never returned.",
   prefer: "Use first to orient, and after each action to confirm. Cheapest observation tool.",

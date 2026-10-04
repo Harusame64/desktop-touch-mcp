@@ -22,9 +22,9 @@ export const macDiscoverSchema = {
   target: z
     .object({ windowTitle: z.string().optional() })
     .optional()
-    .describe("Target window by title (case-insensitive substring). Omit for the frontmost app."),
+    .describe("Target window by title (case-insensitive substring; titles are in the user's language — desktop_state lists them). Omit for the frontmost app."),
   view: z.enum(["action", "explore", "debug"]).optional().describe("action (default, ≤20 entities), explore (≤50), debug (includes raw rect)"),
-  query: z.string().optional().describe("Filter entities by label substring (case-insensitive)"),
+  query: z.string().optional().describe("Filter entities by label substring (case-insensitive). Labels only: a text field without a label never matches, so look for role 'textbox' instead."),
   maxEntities: z.number().int().min(1).max(200).optional().describe("Override entity count limit"),
   debug: coercedBoolean().optional().describe("Include raw screen coordinates in response"),
 };
@@ -50,18 +50,21 @@ export const macDiscoverDescription = buildDesc({
   purpose: "Find the controls of a macOS window you can act on, each with a lease for desktop_act.",
   details:
     "Reads the app's Accessibility tree (no screenshot, no foreground change). Entities carry label (a text's visible text), role " +
-    "(button/textbox/link/menuitem/label) and primaryAction; buttons offer click, settable text fields offer type, texts only read. " +
+    "(button/textbox/link/menuitem/label), primaryAction, and — for a text field — its current value (never a password field's); " +
+    "buttons offer click, settable text fields offer type, texts only read. Each lease carries expiresAtMs (its life adapts to the view and to how long you take between calls); after it, desktop_act answers lease_expired. " +
     "'warnings' says what the read could not do: display_asleep (macOS then answers windows with the app itself — wake the display and " +
     "discover again), no_window_matches_title, window_titles_unavailable (Screen Recording is not granted, so titles cannot be matched; " +
     "omit target to read the frontmost app), no_frontmost_app, truncated:*, ax_error:*, sheet_open (answer the sheet first; acts behind it " +
     "are refused), sheet_open_in_other_process (the sheet's controls belong to another process, e.g. the open/save panel: discover its " +
     "own title, such as \"Save\" / \"保存\").",
-  prefer: "Discover right before each act: a lease names the element as read, and an act on an element that moved is refused.",
+  prefer:
+    "Discover right before each act: a lease names the element as read, and an act on an element that moved is refused. " +
+    "next:'refresh_view' after an act is advice (the view changed): other leases from the same discover still work while their elements are unchanged.",
   caveats: "Needs Accessibility permission (PermissionRequired otherwise). Window titles need Screen Recording.",
 });
 
 export const macActDescription = buildDesc({
-  purpose: "Act on an entity from desktop_discover: press it, or replace a text field's value.",
+  purpose: "Act on an entity from desktop_discover: press it, or replace a text field's value (to add text, send the field's current value — from desktop_discover — with your text appended).",
   details:
     "Acts through Accessibility on the background app — the foreground is not taken. Refused with entity_not_found when the element's window " +
     "or the element at that place changed since the discover (nothing was done; discover again), and action_not_offered when the entity does not " +
@@ -155,8 +158,11 @@ async function macDiscoverOnce(
   const output = await facade.see(input.view === "debug" ? { ...input, debug: true } : input);
   const notes = state.last as MacAxReadNotes | undefined;
   const warnings = [...((output as { warnings?: string[] }).warnings ?? []), ...(notes?.warnings ?? [])];
+  const values = notes?.values ?? {};
+  const entities = output.entities.map((e) => (values[e.entityId] !== undefined ? { ...e, value: values[e.entityId] } : e));
   return ok({
     ...output,
+    entities,
     ...(warnings.length > 0 && { warnings }),
     ...(notes?.appTitle !== undefined && { app: { title: notes.appTitle, pid: notes.pid } }),
   });

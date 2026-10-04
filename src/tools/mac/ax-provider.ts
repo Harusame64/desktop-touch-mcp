@@ -26,6 +26,13 @@ export interface MacAxProviderDeps {
 /** What the read could not do, for the tool to say beside the entities. */
 export interface MacAxReadNotes {
   warnings: string[];
+  /**
+   * The current value of each text field read, by entity id (`ent_` + digest). The shared entity
+   * view carries no value, and `type` replaces the whole value, so without it a caller could not
+   * add to a field without guessing its text (dogfood 2026-10-04: it read the text off a screenshot).
+   * Never a password field's (the candidate has no value then).
+   */
+  values?: Record<string, string>;
   pid?: number;
   appTitle?: string;
 }
@@ -207,8 +214,14 @@ export async function readMacAxCandidates(
   const needle = title?.toLowerCase();
   const observedAtMs = deps.now();
   const targetId = title ?? tree.appTitle ?? String(pid);
-  return tree.elements
+  const candidates = tree.elements
     .filter((e) => needle === undefined || needle === "" || rootTitle(e.rootKey).toLowerCase().includes(needle))
     .filter(isCandidate)
     .map((e) => toCandidate(e, pid, targetId, observedAtMs));
+  for (const c of candidates) {
+    if (c.role === "textbox" && c.value !== undefined && c.digest !== undefined) {
+      (notes.values ??= {})[`ent_${c.digest}`] = c.value;
+    }
+  }
+  return candidates;
 }

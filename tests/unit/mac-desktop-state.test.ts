@@ -50,6 +50,7 @@ describe("macDesktopStateHandler", () => {
       focusedWindow: { title: "W", appName: "App", pid: 5 },
       focusedElement: { role: "AXTextArea", title: null },
       visibleWindows: 1,
+      windows: [{ title: null, app: null, pid: 5 }],
       displayAsleep: false,
       attention: "ok",
       permissions: { accessibility: true, screenCapture: true },
