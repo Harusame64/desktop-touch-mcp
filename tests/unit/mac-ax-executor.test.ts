@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { createMacAxExecutor } from "../../src/tools/mac/ax-executor.js";
 import { resolveCandidates } from "../../src/engine/world-graph/resolver.js";
+import { deriveEntityCapabilities } from "../../src/tools/desktop-capabilities.js";
 
 const AX = { pid: 7, id: "a.0.1", role: "AXButton", rootKey: "R", elementKey: "E" };
 const entity = { locator: { ax: AX } } as any;
@@ -72,5 +73,17 @@ describe("resolveCandidates and locator.ax", () => {
     } as any], "gen-1");
     expect(entities).toHaveLength(1);
     expect(entities[0].locator?.ax).toEqual(AX);
+  });
+});
+
+// Mac port M2-2: an AX entity advertises the AX executor, never the mouse — the rule table reads a
+// rect as "the mouse can press it", and an AX act never moves the pointer.
+describe("capabilities of an AX entity", () => {
+  it("advertises ax only, even with a rect", () => {
+    const entity: any = {
+      entityId: "e", role: "button", label: "OK", confidence: 0.9, sources: ["ax"], affordances: [],
+      generation: "g", evidenceDigest: "d", rect: { x: 0, y: 0, width: 10, height: 10 },
+    };
+    expect(deriveEntityCapabilities(entity)).toEqual({ preferredExecutors: ["ax"] });
   });
 });
