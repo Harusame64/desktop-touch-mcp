@@ -6,7 +6,7 @@
  * addon (src/macos/). When the darwin addon is not there (a package built
  * before the Mac port), the inspection stub runs instead, as before.
  *
- * M2-1: desktop_state. M2-2: desktop_discover / desktop_act. screenshot follows.
+ * M2-1: desktop_state. M2-2: desktop_discover / desktop_act. M2-3: screenshot.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -25,6 +25,7 @@ import {
   macDiscoverSchema,
   type MacFacadeState,
 } from "./tools/mac/desktop-discover-act.js";
+import { macScreenshotDescription, macScreenshotHandler, macScreenshotSchema, sharpEncodePng } from "./tools/mac/screenshot.js";
 
 
 if (!nativeMac) {
@@ -44,6 +45,7 @@ if (!nativeMac) {
         "2. desktop_discover — find actionable entities (returns a lease each)",
         "3. desktop_act(lease, action) — press, or replace a text field's value; the foreground is not taken",
         "4. desktop_state / desktop_discover — confirm",
+        "screenshot(windowTitle?) — one window as PNG, when pixels are needed (Screen Recording permission)",
         "Discover right before each act. entity_not_found from desktop_act means the window or the element at that place changed since the discover: nothing was done; discover again.",
       ].join("\n"),
     }
@@ -65,6 +67,19 @@ if (!nativeMac) {
   );
   server.tool("desktop_act", macActDescription, macActSchema, async (input) =>
     macActHandler(mac, facade, state, input)
+  );
+
+  server.tool("screenshot", macScreenshotDescription, macScreenshotSchema, async (input) =>
+    macScreenshotHandler(
+      {
+        permissions: () => mac.macPermissions(),
+        listWindows: (onScreenOnly) => mac.macListWindows(onScreenOnly),
+        getFocus: () => mac.macGetFocus(),
+        capture: (opts) => mac.macCaptureWindow(opts),
+        encodePng: sharpEncodePng,
+      },
+      input
+    )
   );
 
   await server.connect(new StdioServerTransport());
