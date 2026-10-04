@@ -170,6 +170,16 @@ describe("PreActWatch", () => {
     expect(w.take("v")).toMatchObject({ selfRepainting: false });
   });
 
+  it("does not watch a window with nothing of it on screen (a blind watch is not a quiet one)", () => {
+    const { b } = broker();
+    let t = 0;
+    const w = new PreActWatch(() => b, { enumerate: monitors, now: () => t });
+    w.start("v", 1n, WINDOW, { visible: [] });
+    t = 5000;
+    expect(b.subscribe).not.toHaveBeenCalled();
+    expect(w.take("v")).toBeUndefined();
+  });
+
   it("does not for one repaint, or two closer than 300 ms (a tooltip, an animation's frames)", () => {
     const { b, paint } = broker();
     let t = 0;

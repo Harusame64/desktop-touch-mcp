@@ -171,6 +171,9 @@ export class PreActWatch {
    */
   start(key: string, hwnd: bigint, windowRect: Box, opt: { afterAct?: boolean; visible?: readonly Box[] } = {}): void {
     this.end(key);
+    // Nothing of it on screen: such a watch sees nothing by construction, and a watch that saw
+    // nothing must not be taken for a quiet window (gate 2 on 367eb814).
+    if (opt.visible !== undefined && !opt.visible.some((p) => p.width > 0 && p.height > 0)) return;
     const broker = this.broker();
     if (broker === null) return;
     const where = resolveOutputIndexForHwnd(hwnd, windowRect, this.opts.enumerate ? { enumerate: this.opts.enumerate } : undefined);
