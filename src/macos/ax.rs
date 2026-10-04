@@ -195,6 +195,33 @@ fn same(a: &AXUIElement, b: &AXUIElement) -> bool {
 /// windows, two Finder windows on one folder). The cost is the other way:
 /// moving, resizing or retitling the window refuses the next act until the
 /// caller reads again. TextEdit's AXTitle does not change on edit (measured).
+/// What an element is, to tell it from a sibling that took its path when
+/// the children changed (a Calculator's buttons shift as its display
+/// grows): subrole, identifier, title, description and frame, joined by
+/// U+001F. The value is left out, since acts change it.
+pub(crate) fn element_key_of(
+    subrole: Option<&str>,
+    identifier: Option<&str>,
+    title: Option<&str>,
+    description: Option<&str>,
+    frame: Option<&MacRect>,
+) -> String {
+    let frame = frame.map(|f| format!("{},{},{},{}", f.x, f.y, f.width, f.height)).unwrap_or_default();
+    [subrole.unwrap_or(""), identifier.unwrap_or(""), title.unwrap_or(""), description.unwrap_or(""), &frame]
+        .join("\u{1f}")
+}
+
+fn element_key(e: &AXUIElement) -> String {
+    let nonempty = |s: Option<String>| s.filter(|s| !s.is_empty());
+    element_key_of(
+        attr_string(e, "AXSubrole").as_deref(),
+        nonempty(attr_string(e, "AXIdentifier")).as_deref(),
+        nonempty(attr_string(e, "AXTitle")).as_deref(),
+        nonempty(attr_string(e, "AXDescription")).as_deref(),
+        frame(e).as_ref(),
+    )
+}
+
 pub(crate) fn root_key(e: &AXUIElement) -> String {
     let frame = frame(e)
         .map(|f| format!("{},{},{},{}", f.x, f.y, f.width, f.height))
@@ -285,8 +312,8 @@ pub struct MacAxTreeOptions {
     pub timeout_secs: Option<f64>,
     /// Stop the walk after this long (default 15000 ms): a hung app would
     /// otherwise cost the per-message timeout for every attribute. Checked
-    /// between elements, so it is a soft limit: one element that hangs can
-    /// overrun it by its ~14 reads times the per-message timeout.
+    /// after every read, and no message waits past it, so the overrun is
+    /// one message at most (the roots are read before the walk starts).
     pub max_ms: Option<u32>,
 }
 
@@ -297,6 +324,8 @@ pub struct MacAxElement {
     /// The key of the root (window) this element is under; pass it back as
     /// `expectedRootKey` to act on the element.
     pub root_key: String,
+    /// What this element is; pass it back as `expectedElementKey`.
+    pub element_key: String,
     pub depth: u32,
     pub role: String,
     pub subrole: Option<String>,
@@ -391,22 +420,56 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
             break;
         }
         let depth = (ancestors.len() - 1) as u32;
-        let kids = children(&e, timeout);
+        // Hold the budget inside the element too: no single message may wait
+        // past it, and the reads stop as soon as it is spent (the partly read
+        // element is dropped).
+        let left = deadline.saturating_sub(t0.elapsed()).as_secs_f32();
+        unsafe { e.set_messaging_timeout(timeout.min(left).max(0.05)) };
+        let late = || t0.elapsed() >= deadline;
+        macro_rules! read {
+            ($x:expr) => {{
+                let v = $x;
+                if late() {
+                    stopped_by = Some("max_ms");
+                    break;
+                }
+                v
+            }};
+        }
+        let kids = read!(children(&e, timeout));
+        let role = read!(attr_string(&e, "AXRole").unwrap_or_default());
+        let subrole = read!(attr_string(&e, "AXSubrole"));
+        let title = read!(attr_string(&e, "AXTitle").filter(|s| !s.is_empty()));
+        let description = read!(attr_string(&e, "AXDescription").filter(|s| !s.is_empty()));
+        let value = read!(value_text(&e));
+        let identifier = read!(attr_string(&e, "AXIdentifier").filter(|s| !s.is_empty()));
+        let frame = read!(frame(&e));
+        let enabled = read!(attr_bool(&e, "AXEnabled"));
+        let focused = read!(attr_bool(&e, "AXFocused"));
+        let actions = read!(action_names(&e));
+        let value_settable = read!(is_settable(&e, "AXValue"));
         elements.push(MacAxElement {
             id: id.clone(),
             root_key: (*key).clone(),
+            element_key: element_key_of(
+                subrole.as_deref(),
+                identifier.as_deref(),
+                title.as_deref(),
+                description.as_deref(),
+                frame.as_ref(),
+            ),
             depth,
-            role: attr_string(&e, "AXRole").unwrap_or_default(),
-            subrole: attr_string(&e, "AXSubrole"),
-            title: attr_string(&e, "AXTitle").filter(|s| !s.is_empty()),
-            description: attr_string(&e, "AXDescription").filter(|s| !s.is_empty()),
-            value: value_text(&e),
-            identifier: attr_string(&e, "AXIdentifier").filter(|s| !s.is_empty()),
-            frame: frame(&e),
-            enabled: attr_bool(&e, "AXEnabled"),
-            focused: attr_bool(&e, "AXFocused"),
-            actions: action_names(&e),
-            value_settable: is_settable(&e, "AXValue"),
+            role,
+            subrole,
+            title,
+            description,
+            value,
+            identifier,
+            frame,
+            enabled,
+            focused,
+            actions,
+            value_settable,
             child_count: kids.len() as u32,
         });
         if depth < max_depth {
@@ -446,9 +509,11 @@ pub struct MacAxTarget {
     pub id: String,
     /// The role the caller read for this id.
     pub expected_role: String,
-    /// The `rootKey` the caller read for this id. The act is refused
-    /// (`element_changed`) when the root or the role differs now.
+    /// The `rootKey` the caller read for this id.
     pub expected_root_key: String,
+    /// The `elementKey` the caller read for this id. The act is refused
+    /// (`element_changed`) when the root, the element or the role differs now.
+    pub expected_element_key: String,
     pub timeout_secs: Option<f64>,
 }
 
@@ -478,6 +543,9 @@ fn locate(t: &MacAxTarget) -> Result<CFRetained<AXUIElement>, MacActResult> {
     }
     let role = attr_string(&e, "AXRole").unwrap_or_default();
     if role != t.expected_role {
+        return Err(MacActResult { role: Some(role), ..refused("element_changed") });
+    }
+    if element_key(&e) != t.expected_element_key {
         return Err(MacActResult { role: Some(role), ..refused("element_changed") });
     }
     Ok(e)

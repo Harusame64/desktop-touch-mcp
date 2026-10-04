@@ -928,6 +928,8 @@ export interface NativeMacAxElement {
   id: string
   /** The key of the root (window) this element is under; pass it back as `expectedRootKey`. */
   rootKey: string
+  /** What this element is (subrole, identifier, title, description, frame); pass it back as `expectedElementKey`. */
+  elementKey: string
   depth: number
   role: string
   subrole?: string
@@ -964,8 +966,10 @@ export interface NativeMacAxTarget {
   id: string
   /** The role read for `id`. */
   expectedRole: string
-  /** The `rootKey` read for `id`; the act is refused (`element_changed`) when it or the role differs now. */
+  /** The `rootKey` read for `id`. */
   expectedRootKey: string
+  /** The `elementKey` read for `id`; the act is refused (`element_changed`) when it, the root key or the role differs now. */
+  expectedElementKey: string
   timeoutSecs?: number
 }
 
