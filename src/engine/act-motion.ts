@@ -232,7 +232,13 @@ export class PreActWatch {
    */
   take(key: string, now?: { hwnd: bigint; rect: Box }): QuietRecord | undefined {
     const w = this.watches.get(key);
-    if (!w) return undefined;
+    if (!w) {
+      // No watch (none started, or none could see the window): what earlier watches learned about
+      // this window still holds — without it, a known self-repainting window brought forward by
+      // the act reads its own repaint as the act's change (gate 2 on 5b474fef).
+      const id = now !== undefined ? this.identityKey(now.hwnd) : undefined;
+      return id !== undefined && this.knownSelfRepainting.has(id) ? { selfRepainting: true, watchedMs: 0 } : undefined;
+    }
     const end = w.stoppedAt ?? this.now();
     this.end(key);
     // Watched another window, or this one where it no longer is (moved, or onto another monitor):

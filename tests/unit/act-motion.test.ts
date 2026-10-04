@@ -170,6 +170,21 @@ describe("PreActWatch", () => {
     expect(w.take("v")).toMatchObject({ selfRepainting: false });
   });
 
+  it("still says a window known to repaint itself does, when the next watch could not see it", () => {
+    const { b, paint } = broker();
+    let t = 0;
+    const identity = () => ({ pid: 42, processStartTimeMs: 1000 });
+    const w = new PreActWatch(() => b, { enumerate: monitors, now: () => t, identity });
+    w.start("v", 1n, WINDOW);
+    paint([inside(884, 561)]);
+    t = 300;
+    paint([inside(884, 561)]);
+    expect(w.take("v", { hwnd: 1n, rect: WINDOW })).toMatchObject({ selfRepainting: true });
+    w.start("v", 1n, WINDOW, { visible: [] });
+    t = 5000;
+    expect(w.take("v", { hwnd: 1n, rect: WINDOW })).toMatchObject({ selfRepainting: true });
+  });
+
   it("does not watch a window with nothing of it on screen (a blind watch is not a quiet one)", () => {
     const { b } = broker();
     let t = 0;
