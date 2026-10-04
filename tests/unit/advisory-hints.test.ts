@@ -29,7 +29,9 @@ describe("maybeAdvisory — keyboard(type) → desktop_act", () => {
     expect(hint).not.toBeNull();
     expect(hint!.preferredPath).toBe("desktop_act");
     expect(hint!.example).toContain("windowTitle:'メモ帳'");
-    expect(hint!.example).toContain("text:'hello'");
+    // llm22 F16: the example sets the WHOLE value; 'hello' alone would replace the document.
+    expect(hint!.example).toContain("action:'setValue'");
+    expect(hint!.example).toContain("not only 'hello'");
     expect(hint!.example).toContain("desktop_discover");
     expect(hint!.example).toContain("desktop_act");
   });
@@ -50,7 +52,7 @@ describe("maybeAdvisory — keyboard(type) → desktop_act", () => {
     // desktop_discover's target takes windowTitle / hwnd / tabId only (internal #211 item 4)
     expect(hint!.example).toContain("desktop_discover({})");
     expect(hint!.example).not.toContain("focused");
-    expect(hint!.example).toContain("text:'…'");
+    expect(hint!.example).toContain("text:'<the whole new value>'");
   });
 
   it("uses the hwnd the caller addressed, ahead of windowTitle as keyboard does", () => {
@@ -163,5 +165,19 @@ describe("getAdvisoryEmitCount", () => {
     maybeAdvisory("keyboard", { action: "type", text: "x" }, edit(), "chrome"); // miss (browser)
     maybeAdvisory("mouse_click", {}, edit(), NATIVE); // miss
     expect(getAdvisoryEmitCount()).toBe(before + 1);
+  });
+});
+
+// llm22 drive F16 (win2, 2026-10-04, P1): an agent that had appended at the caret with keyboard:type
+// followed this hint's example, desktop_act({action:'type'}), and the UI Automation type replaced the
+// whole document. The hint says the road replaces, keeps keyboard for typing at the caret, and its
+// example never asks for a bare type of the fragment.
+describe("the keyboard → desktop_act hint does not lead an append into a replace (llm22 F16)", () => {
+  it("says desktop_act's type replaces the whole field, and that keyboard stays the road at the caret", () => {
+    const hint = maybeAdvisory("keyboard", { action: "type", windowTitle: "メモ帳", text: " +kbd" }, edit(), NATIVE);
+    expect(hint).not.toBeNull();
+    expect(hint!.reason).toMatch(/REPLACES everything in the field/);
+    expect(hint!.reason).toMatch(/insert or append at the caret, keep using keyboard:type/);
+    expect(hint!.example).not.toContain("action:'type'");
   });
 });

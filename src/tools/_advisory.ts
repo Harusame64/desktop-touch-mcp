@@ -143,13 +143,17 @@ function buildHint(
       : `{}`;
   const actArg =
     text !== undefined
-      ? `{lease, action:'type', text:'${sanitize(truncate(text))}'}`
-      : `{lease, action:'type', text:'…'}`;
+      ? `{lease, action:'setValue', text:'<the whole new value, not only '${sanitize(truncate(text))}'>'}`
+      : `{lease, action:'setValue', text:'<the whole new value>'}`;
 
   return {
     preferredPath: "desktop_act",
+    // llm22 drive F16 (win2, 2026-10-04, P1): this used to say keyboard is correct only for
+    // UIA-blind targets, with an example to follow. An agent that had appended text at the caret
+    // followed it, and desktop_act's UIA type replaced the whole document. The hint now says what
+    // that road does, and that keyboard stays the road for typing at the caret.
     reason:
-      "the focused element is a UIA text input (ValuePattern) — desktop_act runs the lease flow (lease verification, modal-blocking detection, attention diff) that keyboard:type does not. keyboard is correct only for UIA-blind targets (PWA / Electron / Canvas).",
+      "the focused element is a UIA text input (ValuePattern). To set its WHOLE value, desktop_act runs the lease flow (lease verification, modal-blocking detection, attention diff) that keyboard:type does not — but its UI Automation type REPLACES everything in the field, exactly as setValue does. To insert or append at the caret, keep using keyboard:type; do not switch to desktop_act for that.",
     example: `desktop_discover(${discoverArg}) → desktop_act(${actArg})`,
   };
 }
