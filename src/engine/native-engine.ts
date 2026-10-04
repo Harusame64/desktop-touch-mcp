@@ -898,7 +898,8 @@ export const nativeDuplication: NativeDuplication | null =
     : null;
 
 if (nativeEngine) {
-  console.error("[native-engine] Rust image-diff engine loaded (SSE2 SIMD)");
+  // The SSE2 path is x86_64 only (src/pixel_diff.rs); arm64 (the Mac port) runs the scalar one.
+  console.error(`[native-engine] Rust image-diff engine loaded (${process.arch === "x64" ? "SSE2 SIMD" : "scalar"})`);
 }
 if (nativeUia) {
   console.error("[native-engine] Rust UIA engine loaded");

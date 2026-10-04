@@ -44,8 +44,12 @@ if (!nativeMac) {
   );
 
   await server.connect(new StdioServerTransport());
-  const p = mac.macPermissions();
-  console.error(
-    `[desktop-touch] macOS server running (stdio). accessibility=${p.accessibility} screenCapture=${p.screenCapture}`
-  );
+  let perms = "unknown";
+  try {
+    const p = mac.macPermissions();
+    perms = `accessibility=${p.accessibility} screenCapture=${p.screenCapture}`;
+  } catch {
+    // Only feeds this log line; desktop_state asks again and reports it.
+  }
+  console.error(`[desktop-touch] macOS server running (stdio). ${perms}`);
 }

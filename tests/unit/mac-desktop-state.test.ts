@@ -9,6 +9,7 @@ const WINDOWS = [
   { windowId: 1, pid: 5, layer: 0, onScreen: true },
   { windowId: 2, pid: 5, layer: 0, onScreen: false },
   { windowId: 3, pid: 9, layer: 24, onScreen: true },
+  { windowId: 4, pid: 9, layer: 0, onScreen: true, alpha: 0 },
 ];
 const OK_PERMS = { accessibility: true, screenCapture: true };
 
@@ -52,22 +53,43 @@ describe("macDesktopStateHandler", () => {
       displayAsleep: false,
       attention: "ok",
       permissions: { accessibility: true, screenCapture: true },
-      hints: { focusSource: "system_wide", focusError: null },
+      hints: { reason: null, focusSource: "system_wide", focusError: null },
     });
     expect(deps.listWindows).toHaveBeenCalledWith(true);
   });
 
-  it("reports display_asleep while keeping the focused window", async () => {
+  it("reports a sleeping display as needs_escalation, keeping the focused window", async () => {
     const { body } = await run(makeDeps({ displayAsleep: vi.fn(() => true) }));
-    expect(body.attention).toBe("display_asleep");
+    expect(body.attention).toBe("needs_escalation");
+    expect(body.hints.reason).toBe("display_asleep");
+    expect(body.suggest.length).toBeGreaterThanOrEqual(1);
     expect(body.focusedWindow).not.toBeNull();
   });
 
-  it("reports no_frontmost_app when focus has no pid", async () => {
+  it("reports no frontmost app as needs_escalation", async () => {
     const { body } = await run(makeDeps({ getFocus: vi.fn(async () => ({ error: "no_frontmost_app" })) }));
     expect(body.focusedWindow).toBeNull();
-    expect(body.attention).toBe("no_frontmost_app");
+    expect(body.attention).toBe("needs_escalation");
+    expect(body.hints.reason).toBe("no_frontmost_app");
     expect(body.hints.focusError).toBe("no_frontmost_app");
+  });
+
+  it("returns what was read when a read throws (reads fail open)", async () => {
+    const { result, body } = await run(
+      makeDeps({ getFocus: vi.fn(async () => { throw new Error("panic in mac_get_focus: x"); }) })
+    );
+    expect(body.ok).toBeUndefined();
+    expect(result.isError).toBeUndefined();
+    expect(body.visibleWindows).toBe(1);
+    expect(body.displayAsleep).toBe(false);
+    expect(body.attention).toBe("needs_escalation");
+    expect(body.hints.reason).toBe("read_failed");
+    expect(body.hints.readErrors).toEqual({ focus: "panic in mac_get_focus: x" });
+
+    const w = await run(makeDeps({ listWindows: vi.fn(() => { throw new Error("cg"); }) }));
+    expect(w.body.visibleWindows).toBeNull();
+    expect(w.body.focusedWindow).toEqual({ title: "W", appName: "App", pid: 5 });
+    expect(w.body.hints.readErrors).toEqual({ windows: "cg" });
   });
 
   it("returns focusedElement null when there is no focused role", async () => {
