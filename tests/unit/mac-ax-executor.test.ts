@@ -131,3 +131,16 @@ describe("type without text (codex, #780)", () => {
     expect(setValue).not.toHaveBeenCalled();
   });
 });
+
+describe("an incomplete read after the act (codex, #780)", () => {
+  it("drops entity_disappeared and says why", async () => {
+    const { qualifyPostRead } = await import("../../src/tools/mac/desktop-discover-act.js");
+    const r = qualifyPostRead({ ok: true, diff: ["entity_disappeared", "value_changed"] }, { warnings: ["ax_error:cannot_complete"] });
+    expect(r).toEqual({ ok: true, diff: ["value_changed"], postReadWarnings: ["ax_error:cannot_complete"] });
+  });
+  it("leaves a complete read alone", async () => {
+    const { qualifyPostRead } = await import("../../src/tools/mac/desktop-discover-act.js");
+    const res = { ok: true, diff: ["entity_disappeared"] };
+    expect(qualifyPostRead(res, { warnings: [] })).toBe(res);
+  });
+});

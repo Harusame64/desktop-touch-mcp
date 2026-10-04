@@ -148,7 +148,8 @@ async function macDiscoverOnce(
   if (denied) return denied;
   state.last = undefined;
   state.phase = "discover";
-  const output = await facade.see(input);
+  // The schema promises raw rects for view:"debug"; the facade adds them only for `debug`.
+  const output = await facade.see(input.view === "debug" ? { ...input, debug: true } : input);
   const notes = state.last as MacAxReadNotes | undefined;
   const warnings = [...((output as { warnings?: string[] }).warnings ?? []), ...(notes?.warnings ?? [])];
   return ok({
@@ -181,6 +182,26 @@ async function macActOnce(
     });
   }
   state.phase = "act";
+  state.last = undefined;
   const result = await facade.touch(input as Parameters<DesktopFacade["touch"]>[0]);
-  return ok(result);
+  return ok(qualifyPostRead(result, state.last));
+}
+
+/** Warnings that mean the read after the act did not see the app whole. */
+const INCOMPLETE_READ = /^(ax_error:|display_asleep$|ax_self_reference$|truncated:|no_window_matches_title$|window_titles_unavailable$|no_frontmost_app$)/;
+
+/**
+ * The touch loop diffs the read after the act against the discover. When that read was
+ * incomplete (an AX error, a sleeping display, a cut-off walk), what it did not see is not
+ * gone: drop `entity_disappeared` and say why (codex, #780). Reads fail open; the act's own
+ * result stands.
+ */
+export function qualifyPostRead<T extends { diff?: string[] }>(result: T, post: MacAxReadNotes | undefined): T {
+  const warnings = (post?.warnings ?? []).filter((w) => INCOMPLETE_READ.test(w));
+  if (warnings.length === 0) return result;
+  return {
+    ...result,
+    ...(result.diff !== undefined && { diff: result.diff.filter((d) => d !== "entity_disappeared") }),
+    postReadWarnings: warnings,
+  };
 }
