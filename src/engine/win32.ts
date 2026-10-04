@@ -244,6 +244,22 @@ export function getWindowRectByHwnd(hwnd: unknown): { x: number; y: number; widt
 }
 
 /**
+ * Internal #246 — the window's visible frame (DWM's extended frame bounds), where a Windows Graphics
+ * Capture frame starts. `GetWindowRect` (`getWindowRectByHwnd`) includes the invisible resize
+ * border, 7 px on win2's machine. `null` when it cannot be read (DWM off, the window gone, an addon
+ * without the export).
+ */
+export function getVisibleFrameRectByHwnd(hwnd: bigint): { x: number; y: number; width: number; height: number } | null {
+  try {
+    const rect = requireNativeWin32().win32GetVisibleFrameRect?.(hwnd);
+    if (!rect) return null;
+    return { x: rect.left, y: rect.top, width: rect.right - rect.left, height: rect.bottom - rect.top };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * ADR-036 item 6 — ask Windows who is under a screen point.
  *
  * `WindowFromPoint`, resolved against real hit regions rather than rectangles: rounded corners,

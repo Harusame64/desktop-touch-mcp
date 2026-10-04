@@ -14,7 +14,8 @@
 use napi::bindgen_prelude::BigInt;
 use napi_derive::napi;
 use windows::Win32::Foundation::HWND;
-use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+use windows::Win32::Foundation::RECT;
+use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -23,6 +24,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::safety::napi_safe_call;
+use super::types::NativeWin32Rect;
 
 fn hwnd_from_bigint(b: BigInt) -> HWND {
     let (_sign, val, _lossless) = b.get_u64();
@@ -162,5 +164,40 @@ pub fn win32_is_window_cloaked(hwnd: BigInt) -> napi::Result<bool> {
             )
         };
         Ok(result.is_ok() && value != 0)
+    })
+}
+
+/// Internal #246 — the window's visible frame: `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)`.
+///
+/// `GetWindowRect` includes the invisible resize border DWM draws around a window on Windows 10+,
+/// while a Windows Graphics Capture frame is cropped to its `ContentSize`, which starts at the
+/// visible frame. win2 measured the difference on 2026-10-04 (internal #243): rect corner
+/// (1191,170), visible frame (1198,170), and the WGC image matched the screen only at dx = 7 — so a
+/// position derived from `GetWindowRect` put a click 7 px left of the pixel it named.
+///
+/// The bounds are in physical pixels (this process is per-monitor DPI aware, as `GetWindowRect`
+/// is here). `None` when the call fails (DWM off, the window gone).
+#[napi]
+pub fn win32_get_visible_frame_rect(hwnd: BigInt) -> napi::Result<Option<NativeWin32Rect>> {
+    napi_safe_call("win32_get_visible_frame_rect", || {
+        let h = hwnd_from_bigint(hwnd);
+        let mut rect = RECT::default();
+        let result = unsafe {
+            DwmGetWindowAttribute(
+                h,
+                DWMWA_EXTENDED_FRAME_BOUNDS,
+                &mut rect as *mut RECT as *mut std::ffi::c_void,
+                std::mem::size_of::<RECT>() as u32,
+            )
+        };
+        if result.is_err() || rect.right <= rect.left || rect.bottom <= rect.top {
+            return Ok(None);
+        }
+        Ok(Some(NativeWin32Rect {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+        }))
     })
 }

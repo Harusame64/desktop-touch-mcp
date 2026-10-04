@@ -6,6 +6,7 @@ import {
   canCaptureWindowViaWgc,
   captureScreenRegion,
   getPrimaryMonitorBounds,
+  getVisibleFrameRectByHwnd,
 } from "./win32.js";
 import { nativeEngine } from "./native-engine.js";
 import {
@@ -510,6 +511,23 @@ export function isLikelyBlankCapture(
 
 export type CaptureSource = "printwindow" | "bitblt-fallback" | "wgc";
 export type CaptureFallbackReason = "printwindow-failed" | "printwindow-all-black" | null;
+
+type ScreenRect = { x: number; y: number; width: number; height: number };
+
+/**
+ * Internal #246 — the screen rectangle a captured frame covers.
+ *
+ * PrintWindow (and BitBlt of the window's rect) render the whole `GetWindowRect`, invisible resize
+ * border included. A Windows Graphics Capture frame is cropped to its content, which starts at the
+ * window's visible DWM frame — 7 px inside the rect on win2's machine (internal #243), so mapping a
+ * WGC pixel through the rect put it 7 px off, and stretched it by rect/frame. For a WGC frame this
+ * answers the visible frame, or `null` when that cannot be read (the caller then has no rectangle
+ * to map through); for any other source, `windowRect`.
+ */
+export function capturedFrameRect(hwnd: unknown, source: CaptureSource, windowRect: ScreenRect): ScreenRect | null {
+  if (source !== "wgc") return windowRect;
+  return typeof hwnd === "bigint" ? getVisibleFrameRectByHwnd(hwnd) : null;
+}
 
 // ADR-027: once a WGC attempt reports the OS doesn't support WGC, skip it for
 // the rest of the session rather than paying a futile worker round-trip on

@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 import sharp from "sharp";
-import { captureWindowBackground } from "./image.js";
+import { captureWindowBackground, capturedFrameRect } from "./image.js";
 import { enumWindowsInZOrder, getWindowDpi, printWindowToBuffer, isExcludedWindowHandle } from "./win32.js";
 import { WindowExcludedError } from "./tool-exclusion.js";
 import { refuseIfFrozen } from "./window-frozen.js";
@@ -288,9 +288,15 @@ export async function recognizeWindowByHwnd(
   const maxDim = 1280;
   const captured = await captureWindowBackground(hwnd, maxDim);
 
+  // Internal #246: a WGC frame covers the visible frame, not the rect (7 px inside it on win2's
+  // machine); map its words through what it covers. Unreadable → the rect, as before.
+  const frame = capturedFrameRect(hwnd, captured.source, region) ?? region;
+  origin.x = frame.x;
+  origin.y = frame.y;
+
   // Scale factors: image may be downscaled, OCR bboxes are in image coords
-  const scaleX = region.width / captured.width;
-  const scaleY = region.height / captured.height;
+  const scaleX = frame.width / captured.width;
+  const scaleY = frame.height / captured.height;
 
   const rawWords = await runOcr(captured.base64, language);
 

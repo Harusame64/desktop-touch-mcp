@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { captureScreen, captureDisplay, captureWindowBackground, captureWindowWithFallback } from "../engine/image.js";
+import { captureScreen, captureDisplay, captureWindowBackground, captureWindowWithFallback, capturedFrameRect } from "../engine/image.js";
 import type { CaptureSource, CaptureFallbackReason } from "../engine/image.js";
 import { captureAndDiff, captureAllLayers, hasBuffer } from "../engine/layer-buffer.js";
 import type { WindowInfo } from "../engine/layer-buffer.js";
@@ -82,8 +82,8 @@ export const screenshotSchema = {
     .describe(
       "1:1 pixel mode — no scaling, WebP compression. " +
       "Window captures include 'origin: (x,y)' so you can compute screen position: screen_x = origin_x + image_x. " +
-      "Except mode='background' when the frame comes from the window's composition surface (WGC, used when it can be for a visible, non-minimised window with fullContent): " +
-      "it starts at the window's visible frame, which is not measured, so no origin is given — the text says so; use desktop_discover for coordinates. " +
+      "A frame from the window's composition surface (WGC: mode='background' with fullContent on a visible, non-minimised window when it can be, or normal mode's rescue) starts at the window's visible frame, and its origin is that frame's corner; " +
+      "when the visible frame cannot be read, no origin is given — the text says so; use desktop_discover for coordinates. " +
       "When dotByDotMaxDimension is also set, scale factor is included: screen_x = origin_x + image_x / scale."
     ),
   dotByDotMaxDimension: z
@@ -996,8 +996,17 @@ export const screenshotHandler = async (args: {
       if (localWarnings.length > 0) captureHints.warnings = localWarnings;
 
       let dimensionText: string;
-      if (dotByDot) {
-        dimensionText = formatOriginText(originX, originY, result.width, result.height, result.scale);
+      // Internal #246: a WGC rescue frame starts at the visible frame, not the rect's corner; its
+      // origin comes from there, or it gets none when that cannot be read.
+      const rescueFrame = result.source === "wgc" ? capturedFrameRect(targetHwnd, result.source, windowRegion) : null;
+      if (dotByDot && result.source === "wgc" && !rescueFrame) {
+        dimensionText =
+          `Screenshot (dot-by-dot): ${result.width}x${result.height}px | no screen origin: this frame came from the ` +
+          "window's composition surface and starts at its visible frame, which could not be read. For screen coordinates use desktop_discover.";
+      } else if (dotByDot) {
+        const ox = rescueFrame ? rescueFrame.x + (cropForCapture?.x ?? 0) : originX;
+        const oy = rescueFrame ? rescueFrame.y + (cropForCapture?.y ?? 0) : originY;
+        dimensionText = formatOriginText(ox, oy, result.width, result.height, result.scale);
       } else {
         const scaleNote = (region && (region.width !== captureRegion.width || region.height !== captureRegion.height))
           ? ` [region clamped to window bounds]`
@@ -1153,30 +1162,33 @@ export const screenshotBgHandler = async ({
     let dimensionText: string;
     // A WGC frame starts at the window's visible (DWM) frame, not at GetWindowRect's corner, which
     // includes the invisible resize border: win2 measured the image 7 px right of that corner
-    // (2026-10-04, internal #243), so an origin from the rect would put a click 7 px left. Until the
-    // visible frame is read, a WGC frame gets no origin; PrintWindow renders the whole rect.
+    // (2026-10-04, internal #243). Its origin is the visible frame (internal #246); when that cannot
+    // be read, it gets none. PrintWindow renders the whole rect, so the rect is its frame.
     const visibleFrameOnly = result.source === "wgc";
+    const frame = visibleFrameOnly
+      ? capturedFrameRect(hwnd, result.source, windowScreenRegion ?? { x: 0, y: 0, width: 0, height: 0 })
+      : windowScreenRegion;
     let originPrinted = false;
-    if (dotByDot && visibleFrameOnly) {
-      dimensionText =
-        `Background capture (dot-by-dot) of "${foundTitle}": ${result.width}x${result.height}px` +
-        (result.scale !== undefined ? ` | scale: ${result.scale.toFixed(4)}` : "") +
-        " | no screen origin: this image starts at the window's visible frame, which this capture does not measure." +
-        " For screen coordinates use desktop_discover." +
-        (region
-          ? ` [sub-crop applied: (${region.x},${region.y}) ${region.width}x${region.height}, relative to the visible frame]`
-          : "");
-    } else if (dotByDot && windowScreenRegion) {
+    if (dotByDot && frame) {
       originPrinted = true;
-      // Compute screen-space origin: window position + region offset (approximate, ignores DPI scale)
+      // Compute screen-space origin: the frame's corner + region offset (approximate, ignores DPI scale)
       const regionOffsetX = region ? region.x : 0;
       const regionOffsetY = region ? region.y : 0;
-      const originX = windowScreenRegion.x + regionOffsetX;
-      const originY = windowScreenRegion.y + regionOffsetY;
+      const originX = frame.x + regionOffsetX;
+      const originY = frame.y + regionOffsetY;
       dimensionText = formatOriginText(originX, originY, result.width, result.height, result.scale);
       if (region) {
         dimensionText += ` [sub-crop applied: (${region.x},${region.y}) ${region.width}x${region.height} image-local]`;
       }
+    } else if (dotByDot && visibleFrameOnly) {
+      dimensionText =
+        `Background capture (dot-by-dot) of "${foundTitle}": ${result.width}x${result.height}px` +
+        (result.scale !== undefined ? ` | scale: ${result.scale.toFixed(4)}` : "") +
+        " | no screen origin: this image starts at the window's visible frame, which could not be read." +
+        " For screen coordinates use desktop_discover." +
+        (region
+          ? ` [sub-crop applied: (${region.x},${region.y}) ${region.width}x${region.height}, relative to the visible frame]`
+          : "");
     } else if (dotByDot) {
       dimensionText = `Background capture (dot-by-dot) of "${foundTitle}": ${result.width}x${result.height}px`;
       if (result.scale !== undefined) {
@@ -1271,8 +1283,12 @@ export const screenshotOcrHandler = async ({
     // go through the OCR entries that refuse it).
     refuseIfFrozen(win.hwnd, "screenshot");
     const captured = await captureWindowBackground(win.hwnd, maxDim);
-    const scaleX = win.region.width / captured.width;
-    const scaleY = win.region.height / captured.height;
+    // Internal #246: a WGC frame covers the visible frame, not the rect; map through what it covers.
+    const frame = capturedFrameRect(win.hwnd, captured.source, win.region) ?? win.region;
+    origin.x = frame.x;
+    origin.y = frame.y;
+    const scaleX = frame.width / captured.width;
+    const scaleY = frame.height / captured.height;
 
     // If a sub-region was requested, restrict which words survive later
     const subRegionFilter = subRegion
@@ -1419,7 +1435,7 @@ export function registerScreenshotTools(server: McpServer): void {
         "detail='ocr' returns Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr — use when UIA is sparse and you want to force OCR unconditionally). " +
         "detail='image' and detail='som' both return a cheap by-ref resource_link by default (no inline base64); pass confirmImage=true to also embed the inline image (the annotated bitmap for som). " +
         "mode='background' captures the window itself, hidden/minimised/occluded too — from its composition surface (WGC) when it can, else via PrintWindow (Phase 4: absorbs former screenshot_background) — pair with windowTitle/hwnd. " +
-        "dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response); a background WGC frame prints no origin. " +
+        "dotByDot=true returns 1:1 pixel WebP; compute screen coords: screen_x = origin_x + image_x (or screen_x = origin_x + image_x / scale when dotByDotMaxDimension is set — scale printed in response); a WGC frame's origin is the window's visible frame, and when that cannot be read it prints none. " +
         "diffMode=true returns only changed windows after the first call (~160 tok). " +
         "region={x,y,width,height} captures a sub-rectangle (Phase 4: absorbs former scope_element when paired with windowTitle/hwnd — discover element bounds via desktop_discover, then pass region here). " +
         "Data reduction: grayscale=true (−50%), dotByDotMaxDimension=1280 (caps longest edge), windowTitle+region (sub-crop to exclude browser chrome — e.g. region={x:0, y:120, width:1920, height:900}).",

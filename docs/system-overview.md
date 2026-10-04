@@ -305,7 +305,7 @@ screenshot(dotByDot=true, windowTitle=X) → 1:1 WebP, no coord conversion
 #### `screenshot(mode='background')`
 A capture of the window itself rather than of the screen, retained for back-compat and explicit selection. As of v1.4.4 the default `mode='normal'` window-targeted route already uses PrintWindow (with automatic BitBlt fallback when PrintWindow returns no data / an all-black frame), so most callers no longer need this flag. Use it to force the PrintWindow result without the BitBlt fallback layer (a WGC frame that comes back blank falls through to the same full-content PrintWindow) when the target window is legitimately all-black (terminal / dark editor / video frame).
 - With `fullContent` (the default), a visible, non-minimised window is captured from its composition surface (WGC) when it can be, and PrintWindow is the fallback; `fullContent=false` uses PrintWindow only.
-- `dotByDot=true` emits 1:1 WebP. A WGC frame starts at the window's visible frame, which is not measured, so it gives no screen origin; use `desktop_discover` for coordinates. A PrintWindow frame gives the origin as before.
+- `dotByDot=true` emits 1:1 WebP. A WGC frame starts at the window's visible frame (DWM's extended frame bounds, inside the invisible resize border), and its origin is that frame's corner; when the visible frame cannot be read, it gives no origin — use `desktop_discover` for coordinates. A PrintWindow frame covers the whole window rect, and its origin is the rect's corner.
 - `PW_RENDERFULLCONTENT` is the default flag (set `fullContent=false` for the legacy flag-0 mode when a GPU game / video window hangs PrintWindow).
 
 > Word-level Windows OCR (`Windows.Media.Ocr`) is reached through `screenshot`

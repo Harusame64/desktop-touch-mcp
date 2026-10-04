@@ -16,11 +16,12 @@ import path from "node:path";
 import crypto from "node:crypto";
 
 // ─── Hoisted mocks ────────────────────────────────────────────────────────────
-const { mockEnumWindowsInZOrder, mockGetWindowTitleW, mockGetWindowRectByHwnd, mockIsWindowProcessFrozen, mockHasBuffer, mockCaptureAllLayers, mockCaptureAndDiff, mockUpdateWindowCache, mockSaveSnapshot, mockGetWindows, mockResolveWindowTarget, mockCaptureWindowBackground, mockCaptureWindowWithFallback } = vi.hoisted(() => ({
+const { mockEnumWindowsInZOrder, mockGetWindowTitleW, mockGetWindowRectByHwnd, mockIsWindowProcessFrozen, mockVisibleFrame, mockHasBuffer, mockCaptureAllLayers, mockCaptureAndDiff, mockUpdateWindowCache, mockSaveSnapshot, mockGetWindows, mockResolveWindowTarget, mockCaptureWindowBackground, mockCaptureWindowWithFallback } = vi.hoisted(() => ({
   mockEnumWindowsInZOrder: vi.fn(),
   mockGetWindowTitleW: vi.fn(),
   mockGetWindowRectByHwnd: vi.fn(),
   mockIsWindowProcessFrozen: vi.fn(),
+  mockVisibleFrame: vi.fn(),
   mockHasBuffer: vi.fn(),
   mockCaptureAllLayers: vi.fn(),
   mockCaptureAndDiff: vi.fn(),
@@ -67,6 +68,8 @@ vi.mock("../../src/engine/image.js", () => ({
   captureScreen: vi.fn(),
   captureDisplay: vi.fn(),
   captureWindowWithFallback: mockCaptureWindowWithFallback,
+  // Internal #246: the real rule (a WGC frame covers the visible frame), with that frame mocked.
+  capturedFrameRect: (_hwnd: unknown, source: string, rect: unknown) => (source === "wgc" ? mockVisibleFrame() : rect),
 }));
 
 const { screenshotHandler, screenshotBgHandler, screenshotOcrHandler } = await import("../../src/tools/screenshot.js");
@@ -163,9 +166,27 @@ describe("mode='background' — captures the window it resolved (internal #243)"
     expect(link?.description).toContain("click coordinates");
   });
 
-  it("gives a WGC frame no screen origin: it starts at the visible frame, 7 px inside the rect", async () => {
+  // Internal #246: win2 measured the WGC frame starting at the visible frame, 7 px right of the rect.
+  it("gives a WGC frame its visible frame's corner as the origin, not the rect's", async () => {
     mockResolveWindowTarget.mockResolvedValue({ title: "Target", hwnd: 4242n, warnings: [] });
     mockGetWindowRectByHwnd.mockReturnValue({ x: 10, y: 20, width: 300, height: 200 });
+    mockVisibleFrame.mockReset().mockReturnValue({ x: 17, y: 20, width: 286, height: 193 });
+    mockCaptureWindowBackground.mockResolvedValue({
+      base64: B64, mimeType: "image/png", width: 286, height: 193, source: "wgc",
+    });
+
+    const result = await screenshotBgHandler({
+      hwnd: "4242", maxDimension: 768, dotByDot: true, grayscale: false, webpQuality: 60, fullContent: true,
+    });
+    const text = result.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("\n");
+    expect(text).toContain("origin: (17, 20)");
+    expect(text).not.toContain("origin: (10, 20)");
+  });
+
+  it("gives a WGC frame no screen origin when its visible frame cannot be read", async () => {
+    mockResolveWindowTarget.mockResolvedValue({ title: "Target", hwnd: 4242n, warnings: [] });
+    mockGetWindowRectByHwnd.mockReturnValue({ x: 10, y: 20, width: 300, height: 200 });
+    mockVisibleFrame.mockReset().mockReturnValue(null);
     mockCaptureWindowBackground.mockResolvedValue({
       base64: B64, mimeType: "image/png", width: 286, height: 193, source: "wgc",
     });

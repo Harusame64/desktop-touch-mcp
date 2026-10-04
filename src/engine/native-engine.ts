@@ -137,6 +137,8 @@ export interface NativeWin32 {
   win32EnumTopLevelWindows?(): bigint[];
   win32GetWindowText?(hwnd: bigint): string;
   win32GetWindowRect?(hwnd: bigint): NativeWin32Rect | null;
+  /** internal #246: the visible frame (DWMWA_EXTENDED_FRAME_BOUNDS); null when it cannot be read. */
+  win32GetVisibleFrameRect?(hwnd: bigint): NativeWin32Rect | null;
   win32GetForegroundWindow?(): bigint | null;
   win32IsWindowVisible?(hwnd: bigint): boolean;
   win32IsIconic?(hwnd: bigint): boolean;

@@ -483,6 +483,8 @@ export declare function drawSomLabels(opts: NativeDrawSomLabelsOptions): Promise
 export declare function win32EnumTopLevelWindows(): bigint[]
 export declare function win32GetWindowText(hwnd: bigint): string
 export declare function win32GetWindowRect(hwnd: bigint): NativeWin32Rect | null
+/** internal #246 — the visible frame (DWMWA_EXTENDED_FRAME_BOUNDS); null when it cannot be read. */
+export declare function win32GetVisibleFrameRect(hwnd: bigint): NativeWin32Rect | null
 export declare function win32GetForegroundWindow(): bigint | null
 export declare function win32IsWindowVisible(hwnd: bigint): boolean
 export declare function win32IsIconic(hwnd: bigint): boolean

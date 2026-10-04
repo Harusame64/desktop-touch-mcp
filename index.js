@@ -80,6 +80,7 @@ export const drawSomLabels    = nativeBinding.drawSomLabels;
 export const win32EnumTopLevelWindows       = nativeBinding.win32EnumTopLevelWindows;
 export const win32GetWindowText             = nativeBinding.win32GetWindowText;
 export const win32GetWindowRect             = nativeBinding.win32GetWindowRect;
+export const win32GetVisibleFrameRect       = nativeBinding.win32GetVisibleFrameRect;
 export const win32GetForegroundWindow       = nativeBinding.win32GetForegroundWindow;
 export const win32IsWindowVisible           = nativeBinding.win32IsWindowVisible;
 export const win32IsIconic                  = nativeBinding.win32IsIconic;
