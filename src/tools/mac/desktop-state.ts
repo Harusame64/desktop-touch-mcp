@@ -159,7 +159,9 @@ export const macDesktopStateDescription = buildDesc({
     "visibleWindows and windows[] (on-screen app windows front to back: title, app, pid — titles are in the user's language, e.g. Calculator " +
     "may be \"計算機\"; pass them to desktop_discover / screenshot), displayAsleep, attention, permissions {accessibility, screenCapture}. " +
     "attention: 'ok', or 'needs_escalation' with hints.reason and suggest[]: 'display_asleep' (macOS then answers windows with the app itself; wake it and read again), " +
-    "'no_frontmost_app', 'read_failed' (hints.readErrors; what was read is still returned). The focused element's value is never returned.",
+    "'no_frontmost_app', 'read_failed' (hints.readErrors; what was read is still returned). The focused element's value is never returned. " +
+    "hints.focusSource / focusError say how the frontmost app was found (diagnostics: 'app_scan' with focusError 'cannot_complete' is a normal answer). " +
+    "windows[] can include an app's untitled helper windows (title null).",
   prefer: "Use first to orient, and after each action to confirm. Cheapest observation tool.",
   caveats:
     "Needs Accessibility permission for the app running this server; without it the call fails with PermissionRequired and says where to grant it.",
