@@ -92,6 +92,7 @@ function mergeLocators(candidates: UiEntityCandidate[]): EntityLocator | undefin
     if (c.locator.cdp)      { loc.cdp      = { ...c.locator.cdp,      ...loc.cdp      }; any = true; }
     if (c.locator.terminal) { loc.terminal = { ...c.locator.terminal, ...loc.terminal }; any = true; }
     if (c.locator.visual)   { loc.visual   = { ...c.locator.visual,   ...loc.visual   }; any = true; }
+    if (c.locator.ax)       { loc.ax       = { ...c.locator.ax,       ...loc.ax       }; any = true; }
   }
 
   return any ? loc : undefined;

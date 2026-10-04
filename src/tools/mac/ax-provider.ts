@@ -66,10 +66,16 @@ export function actionabilityOf(e: NativeMacAxElement): UiEntityCandidate["actio
   return verbs;
 }
 
+/**
+ * The name a caller sees. A static text's visible text is its AXValue (its
+ * description is a spoken hint, e.g. Calculator's display says "最後の式"),
+ * so a label is named by its value first — as a Windows static text is named
+ * by the text it shows.
+ */
 function labelOf(e: NativeMacAxElement): string | undefined {
+  if (roleOf(e) === "label" && e.value) return e.value;
   if (e.title) return e.title;
   if (e.description) return e.description;
-  if (roleOf(e) === "label" && e.value) return e.value;
   return undefined;
 }
 

@@ -41,13 +41,27 @@ function refuse(r: NativeMacActResult, what: string): never {
         : "The element this act named is no longer there. Nothing was done."
     );
   }
-  throw new Error(`${what}: ${reason}`);
+  throw new MacAxActError(`${what}: ${reason}`, reason);
+}
+
+/**
+ * Any other refusal or AX error (`action_not_advertised`, `value_not_settable`, `cannot_complete`, ...):
+ * the touch loop reports `executor_failed`, and the native reason — our own vocabulary, never the
+ * app's text — is published as the detail (`callerDetail`, aim.ts `CallerFacingRefusal`).
+ */
+export class MacAxActError extends Error {
+  readonly callerDetail: string;
+  constructor(message: string, reason: string) {
+    super(message);
+    this.name = "MacAxActError";
+    this.callerDetail = `The Accessibility act was refused or failed: ${reason}. Nothing is known to have been done.`;
+  }
 }
 
 export function createMacAxExecutor(deps: MacAxExecutorDeps): ExecutorFn {
   return async (entity, action, text) => {
     const ax = entity.locator?.ax;
-    if (ax === undefined) throw new Error("mac executor: the entity has no AX locator");
+    if (ax === undefined) throw new MacAxActError("mac executor: the entity has no AX locator", "no_ax_locator");
     const target: NativeMacAxTarget = {
       pid: ax.pid,
       id: ax.id,
