@@ -66,20 +66,38 @@ export const macActDescription = buildDesc({
   prefer: "Call desktop_state or desktop_discover afterwards to confirm.",
 });
 
-export function createMacFacade(mac: NativeMac, notesSink: { last?: MacAxReadNotes }): DesktopFacade {
+/**
+ * What the Mac tools keep beside the facade. `phase` says whether the provider is reading for a
+ * discover or for the read after an act; `noTargetPid` is the app a discover without a target
+ * resolved as frontmost, so the read after an act compares the same app even when the press
+ * brought another one forward (codex gate 1, #780). Discover and act run one at a time
+ * (`serialise`), so these fields are never shared by two calls.
+ */
+export interface MacFacadeState {
+  last?: MacAxReadNotes;
+  phase: "discover" | "act";
+  noTargetPid?: number;
+}
+
+export function createMacFacade(mac: NativeMac, state: MacFacadeState): DesktopFacade {
   const provider = async (input: DesktopSeeInput) => {
     const notes: MacAxReadNotes = { warnings: [] };
-    notesSink.last = notes;
-    return readMacAxCandidates(
+    state.last = notes;
+    const target = input.target as { windowTitle?: string } | undefined;
+    const untargeted = target?.windowTitle === undefined || target.windowTitle === "";
+    const candidates = await readMacAxCandidates(
       {
         listWindows: (onScreenOnly) => mac.macListWindows(onScreenOnly),
         getFocus: () => mac.macGetFocus(),
         axTree: (opts) => mac.macAxTree(opts),
         now: () => Date.now(),
       },
-      input.target as { windowTitle?: string } | undefined,
-      notes
+      target,
+      notes,
+      untargeted && state.phase === "act" ? state.noTargetPid : undefined
     );
+    if (untargeted && state.phase === "discover") state.noTargetPid = notes.pid;
+    return candidates;
   };
   return new DesktopFacade(provider, {
     sessionEvictionIntervalMs: 30_000,
@@ -100,31 +118,36 @@ function permissionGate(mac: NativeMac, tool: string): ToolResult | null {
   );
 }
 
-// The read notes travel beside the facade, so two discovers must not overlap.
-let discoverChain: Promise<unknown> = Promise.resolve();
+// The state travels beside the facade, so discovers and acts run one at a time. A call that
+// throws does not stop the ones queued after it.
+let chain: Promise<unknown> = Promise.resolve();
+function serialise<T>(run: () => Promise<T>): Promise<T> {
+  const next = chain.then(run);
+  chain = next.catch(() => undefined);
+  return next;
+}
 
 export function macDiscoverHandler(
   mac: NativeMac,
   facade: DesktopFacade,
-  notesSink: { last?: MacAxReadNotes },
+  state: MacFacadeState,
   input: DesktopSeeInput
 ): Promise<ToolResult> {
-  const run = discoverChain.then(() => macDiscoverOnce(mac, facade, notesSink, input));
-  discoverChain = run.catch(() => undefined);
-  return run;
+  return serialise(() => macDiscoverOnce(mac, facade, state, input));
 }
 
 async function macDiscoverOnce(
   mac: NativeMac,
   facade: DesktopFacade,
-  notesSink: { last?: MacAxReadNotes },
+  state: MacFacadeState,
   input: DesktopSeeInput
 ): Promise<ToolResult> {
   const denied = permissionGate(mac, "desktop_discover");
   if (denied) return denied;
-  notesSink.last = undefined;
+  state.last = undefined;
+  state.phase = "discover";
   const output = await facade.see(input);
-  const notes = notesSink.last as MacAxReadNotes | undefined;
+  const notes = state.last as MacAxReadNotes | undefined;
   const warnings = [...((output as { warnings?: string[] }).warnings ?? []), ...(notes?.warnings ?? [])];
   return ok({
     ...output,
@@ -133,9 +156,19 @@ async function macDiscoverOnce(
   });
 }
 
-export async function macActHandler(
+export function macActHandler(
   mac: NativeMac,
   facade: DesktopFacade,
+  state: MacFacadeState,
+  input: { lease: unknown; action?: string; text?: string }
+): Promise<ToolResult> {
+  return serialise(() => macActOnce(mac, facade, state, input));
+}
+
+async function macActOnce(
+  mac: NativeMac,
+  facade: DesktopFacade,
+  state: MacFacadeState,
   input: { lease: unknown; action?: string; text?: string }
 ): Promise<ToolResult> {
   const denied = permissionGate(mac, "desktop_act");
@@ -145,6 +178,7 @@ export async function macActHandler(
       suggest: getSuggestsForCode("InvalidArgs"),
     });
   }
+  state.phase = "act";
   const result = await facade.touch(input as Parameters<DesktopFacade["touch"]>[0]);
   return ok(result);
 }

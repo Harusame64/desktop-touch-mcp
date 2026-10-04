@@ -12,6 +12,8 @@
  */
 
 import type { NativeMacAxElement, NativeMacAxTree, NativeMacFocus, NativeMacWindow } from "../../engine/native-types.js";
+import { createHash } from "node:crypto";
+
 import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
 
 export interface MacAxProviderDeps {
@@ -87,6 +89,17 @@ export function isCandidate(e: NativeMacAxElement): boolean {
   return verbs.includes("read") && labelOf(e) !== undefined;
 }
 
+/**
+ * The candidate's identity (the resolver's key, the entityId and the lease's evidence digest):
+ * the app, the path, and the root and element keys — not the label and rect the resolver falls
+ * back to, which two distinct AX elements can share (same title, no frame), and would then be
+ * merged into one entity carrying one element's verbs and the other's locator (codex gate 1, #780).
+ * The value is left out, so typing into a field does not change its identity.
+ */
+export function axDigest(pid: number, e: Pick<NativeMacAxElement, "id" | "rootKey" | "elementKey">): string {
+  return createHash("sha1").update(`ax|${pid}|${e.id}|${e.rootKey}|${e.elementKey}`).digest("hex").slice(0, 16);
+}
+
 export function toCandidate(
   e: NativeMacAxElement,
   pid: number,
@@ -108,6 +121,7 @@ export function toCandidate(
     confidence: 0.9,
     observedAtMs,
     status: "observed",
+    digest: axDigest(pid, e),
     locator: { ax: { pid, id: e.id, role: e.role, rootKey: e.rootKey, elementKey: e.elementKey } },
   };
 }
@@ -125,7 +139,9 @@ function rootTitle(rootKey: string): string {
 export async function readMacAxCandidates(
   deps: MacAxProviderDeps,
   target: { windowTitle?: string } | undefined,
-  notes: MacAxReadNotes
+  notes: MacAxReadNotes,
+  /** Without a title: read this app instead of asking which is frontmost (a post-act read). */
+  pinnedPid?: number
 ): Promise<UiEntityCandidate[]> {
   const title = target?.windowTitle;
   let pid: number | undefined;
@@ -139,6 +155,8 @@ export async function readMacAxCandidates(
       return [];
     }
     pid = win.pid;
+  } else if (pinnedPid !== undefined) {
+    pid = pinnedPid;
   } else {
     const focus = await deps.getFocus();
     pid = focus.pid;

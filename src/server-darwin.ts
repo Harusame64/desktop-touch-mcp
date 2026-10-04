@@ -23,8 +23,9 @@ import {
   macDiscoverDescription,
   macDiscoverHandler,
   macDiscoverSchema,
+  type MacFacadeState,
 } from "./tools/mac/desktop-discover-act.js";
-import type { MacAxReadNotes } from "./tools/mac/ax-provider.js";
+
 
 if (!nativeMac) {
   console.error("[desktop-touch] macOS: the darwin native addon is not loaded; running the inspection stub.");
@@ -57,12 +58,14 @@ if (!nativeMac) {
     })
   );
 
-  const notes: { last?: MacAxReadNotes } = {};
-  const facade = createMacFacade(mac, notes);
+  const state: MacFacadeState = { phase: "discover" };
+  const facade = createMacFacade(mac, state);
   server.tool("desktop_discover", macDiscoverDescription, macDiscoverSchema, async (input) =>
-    macDiscoverHandler(mac, facade, notes, input)
+    macDiscoverHandler(mac, facade, state, input)
   );
-  server.tool("desktop_act", macActDescription, macActSchema, async (input) => macActHandler(mac, facade, input));
+  server.tool("desktop_act", macActDescription, macActSchema, async (input) =>
+    macActHandler(mac, facade, state, input)
+  );
 
   await server.connect(new StdioServerTransport());
   let perms = "unknown";
