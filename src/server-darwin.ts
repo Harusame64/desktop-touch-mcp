@@ -6,7 +6,7 @@
  * addon (src/macos/). When the darwin addon is not there (a package built
  * before the Mac port), the inspection stub runs instead, as before.
  *
- * M2-1: desktop_state. desktop_discover / desktop_act and screenshot follow.
+ * M2-1: desktop_state. M2-2: desktop_discover / desktop_act. screenshot follows.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -15,6 +15,16 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { nativeMac } from "./engine/native-engine.js";
 import { SERVER_VERSION } from "./version.js";
 import { macDesktopStateDescription, macDesktopStateHandler } from "./tools/mac/desktop-state.js";
+import {
+  createMacFacade,
+  macActDescription,
+  macActHandler,
+  macActSchema,
+  macDiscoverDescription,
+  macDiscoverHandler,
+  macDiscoverSchema,
+} from "./tools/mac/desktop-discover-act.js";
+import type { MacAxReadNotes } from "./tools/mac/ax-provider.js";
 
 if (!nativeMac) {
   console.error("[desktop-touch] macOS: the darwin native addon is not loaded; running the inspection stub.");
@@ -30,6 +40,10 @@ if (!nativeMac) {
         "Only the tools listed are available on macOS; the rest of the Windows catalog is not.",
         "It needs Accessibility permission (and Screen Recording for window titles and screenshots) for the app that runs this server.",
         "1. desktop_state — orient: frontmost app, focused window/element, attention",
+        "2. desktop_discover — find actionable entities (returns a lease each)",
+        "3. desktop_act(lease, action) — press, or replace a text field's value; the foreground is not taken",
+        "4. desktop_state / desktop_discover — confirm",
+        "Discover right before each act. entity_not_found from desktop_act means the window or the element at that place changed since the discover: nothing was done; discover again.",
       ].join("\n"),
     }
   );
@@ -42,6 +56,13 @@ if (!nativeMac) {
       displayAsleep: () => mac.macDisplayAsleep(),
     })
   );
+
+  const notes: { last?: MacAxReadNotes } = {};
+  const facade = createMacFacade(mac, notes);
+  server.tool("desktop_discover", macDiscoverDescription, macDiscoverSchema, async (input) =>
+    macDiscoverHandler(mac, facade, notes, input)
+  );
+  server.tool("desktop_act", macActDescription, macActSchema, async (input) => macActHandler(mac, facade, input));
 
   await server.connect(new StdioServerTransport());
   let perms = "unknown";

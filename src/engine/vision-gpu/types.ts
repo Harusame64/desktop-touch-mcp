@@ -56,7 +56,8 @@ export interface RoiInput {
  * entity at the World Graph layer.
  */
 export interface UiEntityCandidate {
-  source: "uia" | "cdp" | "win32" | "ocr" | "som" | "visual_gpu" | "terminal";
+  /** `ax`: macOS Accessibility (Mac port, src/tools/mac/ax-provider.ts). */
+  source: "uia" | "cdp" | "win32" | "ocr" | "som" | "visual_gpu" | "terminal" | "ax";
   target: { kind: "window" | "browserTab"; id: string };
   /**
    * ADR-029 — HWND (decimal string) of the window this candidate was actually

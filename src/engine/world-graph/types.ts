@@ -11,6 +11,18 @@ export type UiEntityRole = "button" | "textbox" | "link" | "menuitem" | "label" 
  * non-null locator field.
  */
 export interface EntityLocator {
+  /**
+   * macOS Accessibility (Mac port): the element as `macAxTree` read it. `id` is a child-index
+   * path from the app; the act is refused unless the root (window) and the element still carry
+   * the keys read here (src/macos/ax.rs).
+   */
+  ax?: {
+    pid: number;
+    id: string;
+    role: string;
+    rootKey: string;
+    elementKey: string;
+  };
   /** UIA: element identified by AutomationId and/or accessible name. */
   uia?: {
     automationId?: string;
@@ -73,7 +85,7 @@ export interface EntityLocator {
   visual?: { rect?: Rect; trackId?: string };
 }
 export type AffordanceVerb = "invoke" | "click" | "type" | "select" | "scrollTo" | "read";
-export type EntitySourceKind = "uia" | "cdp" | "win32" | "ocr" | "som" | "visual_gpu" | "terminal" | "inferred";
+export type EntitySourceKind = "uia" | "cdp" | "win32" | "ocr" | "som" | "visual_gpu" | "terminal" | "inferred" | "ax";
 /**
  * `"keyboard"` is a sub-executor used as a fallback from the UIA `setValue` route
  * when `uiaSetValue` throws (e.g. Notepad's RichEditD2DPT exposes `ValuePattern` but
@@ -85,7 +97,7 @@ export type EntitySourceKind = "uia" | "cdp" | "win32" | "ocr" | "som" | "visual
  * path-class refactor epic may promote it to a first-class executor once the
  * capability registry consolidates the ladder.
  */
-export type ExecutorKind = "uia" | "cdp" | "terminal" | "mouse" | "keyboard";
+export type ExecutorKind = "uia" | "cdp" | "terminal" | "mouse" | "keyboard" | "ax";
 
 /**
  * Issue #327 item C: rich return shape for `ExecutorFn` / `TouchEnvironment.execute`
