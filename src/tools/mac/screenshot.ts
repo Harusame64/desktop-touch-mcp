@@ -93,12 +93,12 @@ const MAC_SUGGEST = {
     "No window title is readable. Omit windowTitle to capture the frontmost app's window, or call desktop_state to see what is there.",
   ],
   screenRecording: [
-    "Run `open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture\"` (System Settings > Privacy & Security > Screen Recording, \"Screen & System Audio Recording\" on recent macOS) and turn on the app that runs this server (Terminal, iTerm, VS Code, the Claude app, ...).",
-    "Then restart this MCP server (restart or reconnect it in your MCP client): a server that is already running does not see the new grant.",
+    "Run `open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture\"` (System Settings > Privacy & Security > Screen Recording — on recent macOS the pane can have another name) and turn on the app that runs this server (Terminal, iTerm, VS Code, the Claude app, ...).",
+    "Then restart this MCP server (restart or reconnect it in your MCP client). If captures still fail, quit and reopen the app that runs it.",
   ],
   untargetedNeedsAx: [
     "Pass windowTitle: a titled capture needs only Screen Recording.",
-    "Or run `open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\"`, turn on the app that runs this server, then restart this MCP server.",
+    "Or grant Accessibility: run `open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\"`, turn on the app that runs this server, then restart this MCP server (a running server did not see a new Accessibility grant).",
   ],
   encoderMissing: ["The image encoder (sharp) could not be loaded; reinstall the package so its macOS binary is present."],
 } as const;

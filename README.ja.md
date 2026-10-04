@@ -179,7 +179,7 @@ Apple Silicon の Mac（macOS 14 以降）では、同じ `npx` で macOS 用の
   open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
   open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
   ```
-  許可したら、**MCP サーバーを再起動**してください（MCP クライアントで再起動または再接続）。動いているサーバーは、あとから付けた許可を見ません。許可がないあいだ、ツールは `PermissionRequired` と、何を許可すればよいかを返します。
+  許可したら、**MCP サーバーを再起動**してください（MCP クライアントで再起動・再接続するか、サーバーを動かしているアプリを再起動）。動いていたサーバーは、あとから付けたアクセシビリティの許可を見ませんでした。画面収録を許可してもスクリーンショットが失敗するときは、そのアプリを終了して開き直してください。許可がないあいだ、ツールは `PermissionRequired` と、何を許可すればよいかを返します。
 - インストールは `npx` だけにしてください。ブラウザでダウンロードしたリリースの zip は Gatekeeper に拒否されます（ネイティブモジュールは公証していません）。
 - stdio のみです（`--http` はまだ使えません）。Intel の Mac と Linux には対応していません。
 

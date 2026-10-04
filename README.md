@@ -187,7 +187,7 @@ On an Apple Silicon Mac (macOS 14 or later) the same `npx` command starts a macO
   open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
   open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
   ```
-  Then **restart the MCP server** (restart or reconnect it in your client): a server that is already running does not see a new grant. Until then the tools answer `PermissionRequired` and say what to grant.
+  Then **restart the MCP server** — restart or reconnect it in your client, or restart the app that runs it: a server that was already running did not see a new Accessibility grant. If screenshots still fail after granting Screen Recording, quit and reopen that app. Until then the tools answer `PermissionRequired` and say what to grant.
 - Install with `npx` only: a release zip downloaded with a browser is refused by Gatekeeper (the native module is not notarized).
 - stdio only (`--http` is not available yet). Intel Macs and Linux are not supported.
 
