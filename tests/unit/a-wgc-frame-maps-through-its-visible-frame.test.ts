@@ -8,19 +8,27 @@
  * captured pixel (dot-by-dot origins, OCR boxes) asks `capturedFrameRect` which rectangle the frame
  * covers.
  */
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ visible: vi.fn() }));
+const mocks = vi.hoisted(() => ({ visible: vi.fn(), rect: vi.fn() }));
 
 vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
-  return { ...actual, getVisibleFrameRectByHwnd: mocks.visible };
+  return { ...actual, getVisibleFrameRectByHwnd: mocks.visible, getWindowRectByHwnd: mocks.rect };
 });
+// image.ts imports nut-js, which loads native libXtst at import and aborts a Linux unit runner
+// (codex on c183454c); nothing here uses it.
+vi.mock("../../src/engine/nutjs.js", () => ({ screen: {}, Region: class {} }));
 
 import { capturedFrameRect } from "../../src/engine/image.js";
 
 const rect = { x: 1191, y: 170, width: 726, height: 860 };
 const visible = { x: 1198, y: 170, width: 712, height: 853 };
+
+beforeEach(() => {
+  // The window has not moved since the rect was read, unless a cell says otherwise.
+  mocks.rect.mockReset().mockReturnValue({ ...rect });
+});
 
 describe("capturedFrameRect", () => {
   it("answers the visible frame for a WGC frame", () => {
@@ -54,5 +62,17 @@ describe("capturedFrameRect", () => {
     mocks.visible.mockReset().mockReturnValue(visible);
     expect(capturedFrameRect(657818n, "wgc", rect, { width: 712, height: 853 })).toEqual(visible);
     expect(capturedFrameRect(657818n, "wgc", rect, { width: 356, height: 427 })).toEqual(visible);
+  });
+
+  // Codex on d5b63769: the frame is read after the capture; a window that moved meanwhile would give
+  // old pixels the new corner.
+  it("answers null when the window moved or resized since its rect was read", () => {
+    mocks.visible.mockReset().mockReturnValue(visible);
+    mocks.rect.mockReturnValue({ ...rect, x: rect.x + 40 });
+    expect(capturedFrameRect(657818n, "wgc", rect, { width: 712, height: 853 })).toBeNull();
+    mocks.rect.mockReturnValue({ ...rect, width: rect.width + 1 });
+    expect(capturedFrameRect(657818n, "wgc", rect, { width: 712, height: 853 })).toBeNull();
+    mocks.rect.mockReturnValue(null);
+    expect(capturedFrameRect(657818n, "wgc", rect, { width: 712, height: 853 })).toBeNull();
   });
 });

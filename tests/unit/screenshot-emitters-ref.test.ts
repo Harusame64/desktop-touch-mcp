@@ -183,6 +183,22 @@ describe("mode='background' — captures the window it resolved (internal #243)"
     expect(text).not.toContain("origin: (10, 20)");
   });
 
+  // Codex on c183454c: the crop clamps a negative region offset to 0; the origin added it raw.
+  it("adds the crop's clamped offset to the origin, not a negative region offset", async () => {
+    mockResolveWindowTarget.mockResolvedValue({ title: "Target", hwnd: 4242n, warnings: [] });
+    mockGetWindowRectByHwnd.mockReturnValue({ x: 10, y: 20, width: 300, height: 200 });
+    mockCaptureWindowBackground.mockResolvedValue({
+      base64: B64, mimeType: "image/png", width: 50, height: 40, source: "printwindow",
+    });
+
+    const result = await screenshotBgHandler({
+      hwnd: "4242", maxDimension: 768, dotByDot: true, grayscale: false, webpQuality: 60, fullContent: false,
+      region: { x: -5, y: -3, width: 50, height: 40 },
+    });
+    const text = result.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("\n");
+    expect(text).toContain("origin: (10, 20)");
+  });
+
   it("gives a WGC frame no screen origin when its visible frame cannot be read", async () => {
     mockResolveWindowTarget.mockResolvedValue({ title: "Target", hwnd: 4242n, warnings: [] });
     mockGetWindowRectByHwnd.mockReturnValue({ x: 10, y: 20, width: 300, height: 200 });

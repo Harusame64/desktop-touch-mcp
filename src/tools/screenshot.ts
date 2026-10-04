@@ -1178,9 +1178,10 @@ export const screenshotBgHandler = async ({
     let originPrinted = false;
     if (dotByDot && frame) {
       originPrinted = true;
-      // Compute screen-space origin: the frame's corner + region offset (both in physical pixels)
-      const regionOffsetX = region ? region.x : 0;
-      const regionOffsetY = region ? region.y : 0;
+      // Compute screen-space origin: the frame's corner + region offset (both in physical pixels).
+      // The offset the crop used, clamped at 0 as it was (codex on c183454c), not the raw request.
+      const regionOffsetX = crop ? crop.x : 0;
+      const regionOffsetY = crop ? crop.y : 0;
       const originX = frame.x + regionOffsetX;
       const originY = frame.y + regionOffsetY;
       dimensionText = formatOriginText(originX, originY, result.width, result.height, result.scale);

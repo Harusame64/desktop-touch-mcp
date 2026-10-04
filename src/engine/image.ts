@@ -7,6 +7,7 @@ import {
   captureScreenRegion,
   getPrimaryMonitorBounds,
   getVisibleFrameRectByHwnd,
+  getWindowRectByHwnd,
 } from "./win32.js";
 import { nativeEngine } from "./native-engine.js";
 import {
@@ -537,7 +538,19 @@ export function capturedFrameRect(
   captured?: { width: number; height: number },
 ): ScreenRect | null {
   if (source !== "wgc") return windowRect;
-  const frame = typeof hwnd === "bigint" ? getVisibleFrameRectByHwnd(hwnd) : null;
+  if (typeof hwnd !== "bigint") return null;
+  // `windowRect` was read before the capture and the frame is read after it: a window that moved or
+  // resized in between would give pixels from the old place the new place's corner (codex on
+  // d5b63769). Not the same rect now → not mapped.
+  const now = getWindowRectByHwnd(hwnd);
+  if (
+    !now ||
+    now.x !== windowRect.x || now.y !== windowRect.y ||
+    now.width !== windowRect.width || now.height !== windowRect.height
+  ) {
+    return null;
+  }
+  const frame = getVisibleFrameRectByHwnd(hwnd);
   if (frame && captured && captured.width > 0 && captured.height > 0) {
     const shape = (frame.width * captured.height) / (frame.height * captured.width);
     if (Math.abs(shape - 1) > 0.005) return null;
