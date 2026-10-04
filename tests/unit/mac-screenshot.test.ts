@@ -118,6 +118,19 @@ describe("macScreenshotHandler", () => {
     expect(s).not.toContain("PrintWindow");
     expect(s).not.toContain("USERPROFILE");
   });
+
+  // "Never an older image": a failure that still carries pixels must not hand them back. Without
+  // pixels on the failure (cell 10) a check of `data` alone and a check of `ok` look the same.
+  it("10b a failure that carries pixels returns no image", async () => {
+    const L = [w(1, 7, "A")];
+    const d = setup(L, L, {
+      capture: vi.fn(async () => ({ ok: false, reason: "timeout", data: Buffer.alloc(16), width: 2, height: 2, elapsedMs: 1 })),
+    });
+    const r = await macScreenshotHandler(d, { windowTitle: "a" });
+    expect(body(r).code).toBe("CaptureBackendFailed");
+    expect(r.content.some((c: any) => c.type === "image")).toBe(false);
+    expect(d.encodePng).not.toHaveBeenCalled();
+  });
 });
 
 describe("sharpEncodePng", () => {
