@@ -8,6 +8,7 @@
 //! `napi_safe_call`.
 
 pub(crate) mod ax;
+pub(crate) mod capture;
 pub(crate) mod system;
 
 use napi::bindgen_prelude::*;
@@ -15,6 +16,7 @@ use napi::Task;
 use napi_derive::napi;
 
 use crate::win32::safety::napi_safe_call;
+use capture::{MacCaptureOptions, MacCaptureResult};
 use ax::{MacActResult, MacAxTarget, MacAxTree, MacAxTreeOptions};
 use system::{MacFocus, MacPermissions, MacWindow};
 
@@ -119,4 +121,28 @@ pub fn mac_ax_set_value(target: MacAxTarget, value: String) -> AsyncTask<MacActT
 #[napi]
 pub fn mac_ax_insert_text(target: MacAxTarget, text: String, at: Option<i64>) -> AsyncTask<MacActTask> {
     AsyncTask::new(MacActTask(target, MacActKind::Insert { text, at }))
+}
+
+pub struct MacCaptureTask(MacCaptureOptions);
+
+impl Task for MacCaptureTask {
+    type Output = MacCaptureResult;
+    type JsValue = MacCaptureResult;
+    fn compute(&mut self) -> Result<Self::Output> {
+        Ok(capture::capture_window(&self.0))
+    }
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// Capture one window (CGWindowID) with ScreenCaptureKit, cursor off.
+/// What SCK cannot capture (seen: other-Space windows) answers `not_capturable`.
+#[napi]
+pub fn mac_capture_window(opts: MacCaptureOptions) -> napi::Result<AsyncTask<MacCaptureTask>> {
+    napi_safe_call("mac_capture_window", || {
+        // On the JS (main) thread: SCK needs CoreGraphics initialised first.
+        capture::ensure_app_initialised();
+        Ok(AsyncTask::new(MacCaptureTask(opts)))
+    })
 }
