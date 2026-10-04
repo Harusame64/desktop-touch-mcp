@@ -11,10 +11,13 @@ const _require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
 
 // Try MSVC first (official publish triple per package.json), then GNU (dev toolchain).
-const bindingCandidates = [
-  "desktop-touch-engine.win32-x64-msvc.node",
-  "desktop-touch-engine.win32-x64-gnu.node",
-];
+// macOS (Mac port M1): Apple Silicon only for now.
+const bindingCandidates = process.platform === "darwin"
+  ? ["desktop-touch-engine.darwin-arm64.node"]
+  : [
+      "desktop-touch-engine.win32-x64-msvc.node",
+      "desktop-touch-engine.win32-x64-gnu.node",
+    ];
 
 let nativeBinding = null;
 let lastError = null;
@@ -188,5 +191,17 @@ export const excelWorkbookClose         = nativeBinding.excelWorkbookClose;
 export const excelVbaModuleAdd          = nativeBinding.excelVbaModuleAdd;
 export const excelMacroRun              = nativeBinding.excelMacroRun;
 export const excelCheckAccessVbom       = nativeBinding.excelCheckAccessVbom;
+
+// ─── Mac port M1 (macOS only; src/macos/) ────────────────────────────────────
+export const macPermissions             = nativeBinding.macPermissions;
+export const macListWindows             = nativeBinding.macListWindows;
+export const macGetFocus                = nativeBinding.macGetFocus;
+export const macAxTree                  = nativeBinding.macAxTree;
+export const macAxPerform               = nativeBinding.macAxPerform;
+export const macAxSetValue              = nativeBinding.macAxSetValue;
+export const macAxInsertText            = nativeBinding.macAxInsertText;
+export const macPostText                = nativeBinding.macPostText;
+export const macPostKey                 = nativeBinding.macPostKey;
+export const macCaptureWindow           = nativeBinding.macCaptureWindow;
 
 export default nativeBinding;

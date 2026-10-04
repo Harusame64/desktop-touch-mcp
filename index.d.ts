@@ -866,3 +866,135 @@ export declare function excelMacroRun(sessionId: number, macroName: string): voi
 /** Read HKCU / HKLM `AccessVBOM` state without modifying the registry.
  * Used by the Phase 4 MCP tool's `check_access_vbom` action. */
 export declare function excelCheckAccessVbom(): ExcelAccessVbomStatus
+
+// ─── Mac port M1 (macOS only; internal docs/mac-port-design.md) ─────────────
+// AX / CGWindowList / CGEvent / ScreenCaptureKit, from src/macos/. These
+// functions exist only in the darwin addon.
+
+/** Screen rectangle in points, top-left origin (the AX coordinate space). */
+export interface NativeMacRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface NativeMacPermissions {
+  /** Accessibility, granted to the host process (Terminal, the Claude app). */
+  accessibility: boolean
+  /** Screen Recording: window titles from CGWindowList, and capture. */
+  screenCapture: boolean
+}
+
+export interface NativeMacWindow {
+  windowId: number
+  pid: number
+  ownerName?: string
+  /** Empty without Screen Recording permission. */
+  title?: string
+  bounds?: NativeMacRect
+  layer: number
+  onScreen: boolean
+  alpha?: number
+}
+
+export interface NativeMacFocus {
+  pid?: number
+  appTitle?: string
+  focusedRole?: string
+  focusedTitle?: string
+  focusedWindowTitle?: string
+  /** `system_wide`, or `app_scan` when the system-wide AX element did not answer. */
+  source?: string
+  error?: string
+}
+
+export interface NativeMacAxTreeOptions {
+  pid: number
+  /** Default 3000; `truncated` says when it stopped. */
+  maxElements?: number
+  /** Default 40. */
+  maxDepth?: number
+  /** Default false. */
+  includeMenuBar?: boolean
+  /** Per-message AX timeout, default 3. */
+  timeoutSecs?: number
+}
+
+export interface NativeMacAxElement {
+  /** Child-index path: `a.<i>...` from the app, `f...` / `m...` from the focused / main window. */
+  id: string
+  depth: number
+  role: string
+  subrole?: string
+  title?: string
+  description?: string
+  value?: string
+  identifier?: string
+  frame?: NativeMacRect
+  enabled?: boolean
+  focused?: boolean
+  actions: string[]
+  valueSettable: boolean
+  childCount: number
+}
+
+export interface NativeMacAxTree {
+  pid: number
+  appTitle?: string
+  elements: NativeMacAxElement[]
+  truncated: boolean
+  /** AX could not be read at all (`api_disabled`, `cannot_complete`, ...). */
+  error?: string
+  elapsedMs: number
+}
+
+export interface NativeMacAxTarget {
+  pid: number
+  id: string
+  /** The role read for `id`; the act is refused (`element_changed`) when it differs now. */
+  expectedRole: string
+  timeoutSecs?: number
+}
+
+export interface NativeMacActResult {
+  ok: boolean
+  /** `element_not_found`, `element_changed`, `action_not_advertised`,
+   *  `value_not_settable`, `selection_not_settable`, or an AX error name. */
+  reason?: string
+  valueAfter?: string
+  role?: string
+}
+
+export interface NativeMacCaptureOptions {
+  windowId: number
+  /** Pixels per point, default 2. */
+  scale?: number
+  timeoutMs?: number
+}
+
+export interface NativeMacCaptureResult {
+  ok: boolean
+  /** `window_not_found`, `not_capturable`, `timeout`, or the SCK error text. */
+  reason?: string
+  /** RGBA top-down, opaque; length = width * height * 4. */
+  data?: Buffer
+  width: number
+  height: number
+  frame?: NativeMacRect
+  onScreen?: boolean
+  elapsedMs: number
+}
+
+export declare function macPermissions(): NativeMacPermissions
+export declare function macListWindows(onScreenOnly?: boolean): NativeMacWindow[]
+export declare function macGetFocus(): Promise<NativeMacFocus>
+export declare function macAxTree(opts: NativeMacAxTreeOptions): Promise<NativeMacAxTree>
+export declare function macAxPerform(target: NativeMacAxTarget, action: string): Promise<NativeMacActResult>
+export declare function macAxSetValue(target: NativeMacAxTarget, value: string): Promise<NativeMacActResult>
+/** `at`: UTF-16 offset; negative = end; omitted = replace the current selection. */
+export declare function macAxInsertText(target: NativeMacAxTarget, text: string, at?: number): Promise<NativeMacActResult>
+/** Delivery is not confirmed: read the target back. */
+export declare function macPostText(pid: number, text: string): boolean
+export declare function macPostKey(pid: number, keyCode: number, flags?: number): boolean
+export declare function macCaptureWindow(opts: NativeMacCaptureOptions): Promise<NativeMacCaptureResult>
