@@ -76,4 +76,6 @@ for (const must of ["dist/index.js", ADDON, "node_modules/sharp/package.json"]) 
   if (!new RegExp(`\\s${must.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m").test(listing)) die(`${must} is not in the zip`);
 }
 if (!/node_modules\/@img\/sharp-darwin-arm64\//.test(listing)) die("sharp's darwin-arm64 binary is not in the zip");
+// The binary links against libvips; without it sharp fails at the first capture (gate 2, #784).
+if (!/node_modules\/@img\/sharp-libvips-darwin-arm64\//.test(listing)) die("sharp's darwin-arm64 libvips is not in the zip");
 console.error(`[build-release-macos] OK — ${OUT}`);

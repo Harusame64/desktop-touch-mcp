@@ -41,7 +41,9 @@ Options:
   -h, --help      Show this help message
 
 macOS: stdio transport only. Tools: desktop_state, desktop_discover, desktop_act, screenshot.
-Grant Accessibility (and Screen Recording for titles and screenshots) to the app that runs this server.`);
+Grant Accessibility (and Screen Recording for titles and screenshots) to the app that runs this server.${
+    nativeMac ? "" : "\n\nThe macOS native addon did not load here, so a normal start runs the inspection stub (no tools work)."
+  }`);
   process.exit(0);
 }
 if (args.includes("--http")) {

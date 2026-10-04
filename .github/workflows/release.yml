@@ -231,6 +231,8 @@ jobs:
     name: Build macOS release zip
     runs-on: macos-15
     needs: windows-release
+    # The smoke drives AX; a call that blocks must not leave the Release run open for 6 h.
+    timeout-minutes: 30
     if: github.repository == 'Harusame64/desktop-touch-mcp'
 
     steps:
@@ -264,7 +266,15 @@ jobs:
           rm -rf "$X" && mkdir -p "$X"
           unzip -q desktop-touch-mcp-macos-arm64.zip -d "$X"
           cp scripts/smoke-macos.mjs "$X/smoke.mjs"
-          (cd "$X" && node dist/index.js --help | head -1 && node smoke.mjs)
+          # --help: capture first, then check the text — `--help | head -1` takes head's exit status
+          # and checks nothing (gate 2, #784). sharp: actually encode, from the zip's node_modules.
+          cd "$X"
+          V=$(node -p 'require("./package.json").version')
+          out=$(node dist/index.js --help)
+          printf '%s\n' "$out" | head -1
+          grep -qF "desktop-touch-mcp v$V (macOS preview)" <<<"$out" || { echo "::error::--help did not print v$V (macOS preview)"; exit 1; }
+          node -e 'import("sharp").then((s) => s.default({ create: { width: 2, height: 2, channels: 4, background: "#000" } }).png().toBuffer()).then((b) => console.log("sharp ok", b.length), (e) => { console.error(e); process.exit(1); })'
+          node smoke.mjs
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
