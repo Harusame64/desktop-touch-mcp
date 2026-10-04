@@ -9,7 +9,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { ACT_MOTION, largestHit, observeAfterAct, PreActWatch } from "../../src/engine/act-motion.js";
+import { ACT_MOTION, largestHit, observeAfterAct, PreActWatch, visibleParts } from "../../src/engine/act-motion.js";
 
 const WINDOW = { x: 100, y: 100, width: 900, height: 600 };
 const inside = (width: number, height: number) => ({ x: 200, y: 200, width, height });
@@ -389,5 +389,67 @@ describe("PreActWatch", () => {
     w.start("v", 1n, { x: 5000, y: 5000, width: 100, height: 100 });
     expect(b.subscribe).not.toHaveBeenCalled();
     expect(w.take("v")).toBeUndefined();
+  });
+});
+
+/**
+ * internal #245 — MEASURED win2 (2026-10-04, internal `spike/245-hidden-act-observation`): an act whose
+ * changed label was covered by another window read `no_change` 10 of 12 times, and one whose label
+ * was on screen read `any_change` 9 of 9; with a video playing behind the target, its rects crossed
+ * the target's rect and every act read as a change. Only what is on screen is read, and a window
+ * partly covered says `indeterminate` instead of `no_change`.
+ */
+describe("visibleParts", () => {
+  it("leaves the frame whole when nothing covers it, and nothing when it is covered", () => {
+    expect(visibleParts(WINDOW, [])).toEqual([WINDOW]);
+    expect(visibleParts(WINDOW, [{ x: 0, y: 0, width: 2000, height: 2000 }])).toEqual([]);
+  });
+
+  it("subtracts a cover over the left half, leaving the right half", () => {
+    const parts = visibleParts(WINDOW, [{ x: 0, y: 0, width: 550, height: 2000 }]);
+    expect(parts).toEqual([{ x: 550, y: 100, width: 450, height: 600 }]);
+  });
+
+  it("subtracts a cover in the middle as the four boxes around it", () => {
+    const parts = visibleParts(WINDOW, [{ x: 400, y: 300, width: 100, height: 100 }]);
+    const area = parts.reduce((s, p) => s + p.width * p.height, 0);
+    expect(area).toBe(900 * 600 - 100 * 100);
+  });
+});
+
+describe("observeAfterAct on a window others cover", () => {
+  const leftCovered = visibleParts(WINDOW, [{ x: 0, y: 0, width: 550, height: 2000 }]);
+
+  it("says indeterminate with the visible share, not no_change, when nothing on screen changed", async () => {
+    const { sub, now } = fakeHandle([[caret]]);
+    const { observation } = await observeAfterAct(sub, WINDOW, undefined, { now, visible: leftCovered });
+    expect(observation.motion).toBe("indeterminate");
+    expect(observation.visibleFraction).toBe(0.5);
+  });
+
+  it("still says any_change for a change on the part that is on screen", async () => {
+    const { sub, now } = fakeHandle([[{ x: 700, y: 300, width: 40, height: 20 }]]);
+    const { observation } = await observeAfterAct(sub, WINDOW, undefined, { now, visible: leftCovered });
+    expect(observation.motion).toBe("any_change");
+  });
+
+  it("does not count a repaint under the cover — another window's, not this one's", async () => {
+    const { sub, now } = fakeHandle([[{ x: 150, y: 300, width: 300, height: 300 }]]);
+    const { observation } = await observeAfterAct(sub, WINDOW, undefined, { now, visible: leftCovered });
+    expect(observation.motion).toBe("indeterminate");
+  });
+
+  it("says no_change, with no visibleFraction, for a window wholly on screen", async () => {
+    const { sub, now } = fakeHandle([[caret]]);
+    const { observation } = await observeAfterAct(sub, WINDOW, undefined, { now, visible: [WINDOW] });
+    expect(observation.motion).toBe("no_change");
+    expect(observation).not.toHaveProperty("visibleFraction");
+  });
+
+  it("says indeterminate for a window wholly covered", async () => {
+    const { sub, now } = fakeHandle([[inside(900, 600)]]);
+    const { observation } = await observeAfterAct(sub, WINDOW, undefined, { now, visible: [] });
+    expect(observation.motion).toBe("indeterminate");
+    expect(observation.visibleFraction).toBe(0);
   });
 });

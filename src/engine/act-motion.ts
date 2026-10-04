@@ -73,6 +73,44 @@ export function largestHit(rects: readonly Box[], target: Box): number {
   return best;
 }
 
+/** `a` minus `b`, as up to four boxes. */
+function subtract(a: Box, b: Box): Box[] {
+  if (insideArea(a, b) === 0) return [a];
+  const out: Box[] = [];
+  const ax2 = a.x + a.width, ay2 = a.y + a.height, bx2 = b.x + b.width, by2 = b.y + b.height;
+  if (b.y > a.y) out.push({ x: a.x, y: a.y, width: a.width, height: b.y - a.y });
+  if (by2 < ay2) out.push({ x: a.x, y: by2, width: a.width, height: ay2 - by2 });
+  const top = Math.max(a.y, b.y), bottom = Math.min(ay2, by2);
+  if (b.x > a.x) out.push({ x: a.x, y: top, width: b.x - a.x, height: bottom - top });
+  if (bx2 < ax2) out.push({ x: bx2, y: top, width: ax2 - bx2, height: bottom - top });
+  return out.filter((r) => r.width > 0 && r.height > 0);
+}
+
+/**
+ * internal #245 — the parts of `frame` that windows above it leave on screen. DXGI reports what was
+ * composed; a covered part's repaint is never composed, and another window's repaint there is not
+ * this window's (win2: a video behind the target crossed its rect and read as the act's change).
+ */
+export function visibleParts(frame: Box, covers: readonly Box[]): Box[] {
+  let parts: Box[] = [frame];
+  for (const c of covers) {
+    parts = parts.flatMap((p) => subtract(p, c));
+    if (parts.length === 0) break;
+  }
+  return parts;
+}
+
+/** The largest area any one rect of the batch covers inside the visible parts. */
+function largestVisibleHit(rects: readonly Box[], parts: readonly Box[]): number {
+  let best = 0;
+  for (const r of rects) {
+    let inside = 0;
+    for (const p of parts) inside += insideArea(r, p);
+    best = Math.max(best, inside);
+  }
+  return best;
+}
+
 /** What a window did while nothing acted on it. */
 export interface QuietRecord {
   /** Rects of at least `minRectPx` landed inside it at least twice, `selfRepaintGapMs` apart. */
@@ -229,10 +267,21 @@ export async function observeAfterAct(
   sub: BrokerSubscription,
   target: Box,
   quiet: QuietRecord | undefined,
-  opts: { now?: () => number; windowMs?: number; cacheState?: CacheAcquireState } = {},
+  opts: {
+    now?: () => number;
+    windowMs?: number;
+    cacheState?: CacheAcquireState;
+    /** internal #245 — the parts of `target` on screen (`visibleParts`); all of it when absent. */
+    visible?: readonly Box[];
+  } = {},
 ): Promise<{ observation: VisualMotionObservation; dirtyRects: Rect[] }> {
   const now = opts.now ?? (() => performance.now());
   const windowMs = opts.windowMs ?? ACT_MOTION.windowMs;
+  const parts: readonly Box[] = opts.visible ?? [target];
+  const targetArea0 = Math.max(1, target.width * target.height);
+  const visibleArea = parts.reduce((sum, p) => sum + p.width * p.height, 0);
+  // Covered at all → a read of nothing is not "no change" (one pixel row of slack for rounding).
+  const covered = visibleArea < targetArea0 - Math.max(target.width, target.height);
   const start = now();
   const seen: Rect[] = [];
   let best = 0;
@@ -252,9 +301,9 @@ export async function observeAfterAct(
       batches = i + 1;
       for (const r of batch) {
         seen.push({ x: r.x, y: r.y, width: r.width, height: r.height });
-        totalInside += insideArea(r, target);
+        totalInside += parts.reduce((sum, p) => sum + insideArea(r, p), 0);
       }
-      best = Math.max(best, largestHit(batch, target));
+      best = Math.max(best, largestVisibleHit(batch, parts));
       if (best >= ACT_MOTION.minRectPx) break;
       if (now() - start >= windowMs) break;
     }
@@ -276,7 +325,9 @@ export async function observeAfterAct(
     ? "indeterminate"
     : best >= ACT_MOTION.minRectPx
       ? "any_change"
-      : "no_change";
+      : covered
+        ? "indeterminate"
+        : "no_change";
   return {
     observation: {
       motion,
@@ -286,6 +337,7 @@ export async function observeAfterAct(
       totalElapsedMs: elapsed,
       ...(quiet !== undefined && { watchedBeforeMs: quiet.watchedMs }),
       ...(quiet?.selfRepainting && { selfRepainting: true }),
+      ...(covered && { visibleFraction: Math.round((visibleArea / targetArea0) * 1000) / 1000 }),
       ...cacheState,
     },
     dirtyRects: seen,

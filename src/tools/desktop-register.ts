@@ -78,6 +78,7 @@ import {
   isWindowProcessFrozen,
   getProcessIdentityByPid,
   getWindowRectByHwnd,
+  getVisibleFrameRectByHwnd,
   getVirtualScreen,
   getWindowRenderState,
   getWindowRoot,
@@ -94,7 +95,7 @@ import { probeAim } from "../engine/aim-probe.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { pickPlainTopLevelWindowByTitle } from "./_resolve-window.js";
 import { resolveOutputIndexForHwnd } from "../engine/any-change.js";
-import { observeAfterAct, PreActWatch, type QuietRecord } from "../engine/act-motion.js";
+import { observeAfterAct, PreActWatch, visibleParts, type QuietRecord } from "../engine/act-motion.js";
 import { captureFrame, type RawFrame } from "../engine/layer-buffer.js";
 import { verifyLocalRepaint } from "../engine/local-repaint.js";
 import { disposeSharedDirtyRectBroker, getSharedDirtyRectBroker, type BrokerSubscription, type CacheAcquireState } from "../engine/dxgi-broker.js";
@@ -1582,6 +1583,25 @@ async function prepareActMotion(facade: DesktopFacade, viewId: string): Promise<
 }
 
 /**
+ * internal #245 — the visible frames of the windows above `hwnd` in z-order that are drawn (not
+ * minimised, not cloaked). Unknown order (the window is not listed) → none: the whole frame is read,
+ * as before.
+ */
+function coversAbove(hwnd: bigint): { x: number; y: number; width: number; height: number }[] {
+  try {
+    const wins = enumWindowsInZOrder();
+    const self = wins.find((w) => w.hwnd === hwnd);
+    if (!self) return [];
+    return wins
+      .filter((w) => w.zOrder < self.zOrder && !w.isMinimized && !w.isCloaked)
+      .map((w) => getVisibleFrameRectByHwnd(w.hwnd) ?? w.region)
+      .filter((r) => r.width > 0 && r.height > 0);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * internal #211 (D) — the verdict, from the handle `prepareActMotion` took. `dirtyRects` is an internal
  * ROI-source channel for buildRoiCapture, split off so it never reaches `result.observation`.
  */
@@ -1601,7 +1621,14 @@ async function finishActMotion(m: ActMotion): Promise<{ observation: VisualMotio
         dirtyRects: [],
       };
     }
-    return await observeAfterAct(m.sub, rect, m.quiet, m.cacheState !== undefined ? { cacheState: m.cacheState } : {});
+    // internal #245 — read only what was on screen: the window's visible frame (its rect includes
+    // the invisible resize border, where a window behind shows through), less the windows above it.
+    const frame = getVisibleFrameRectByHwnd(m.hwnd) ?? rect;
+    const visible = visibleParts(frame, coversAbove(m.hwnd));
+    return await observeAfterAct(m.sub, frame, m.quiet, {
+      ...(m.cacheState !== undefined && { cacheState: m.cacheState }),
+      visible,
+    });
   } catch {
     return null;
   }

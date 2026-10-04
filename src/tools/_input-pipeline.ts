@@ -656,6 +656,14 @@ export interface VisualMotionObservation {
    * (a console's cursor row, a WinForms or Swing client area every few hundred ms; S1).
    */
   selfRepainting?: true;
+  /**
+   * internal #245 — present when windows above covered part of the acted-on window: the share of its
+   * visible frame that was on screen (0–1). Only that part is read — a covered part's repaint never
+   * reaches the screen, and another window repainting there is not this window's. With part of it
+   * covered, nothing read is not "no change", so the verdict is `indeterminate`, not `no_change`
+   * (win2, 2026-10-04: a covered label that changed read `no_change` 10 of 12 times).
+   */
+  visibleFraction?: number;
 }
 
 // ─── Resolver ────────────────────────────────────────────────────────────────
