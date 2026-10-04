@@ -3,7 +3,9 @@
 This project uses a hybrid distribution model:
 
 - npm publishes a lightweight launcher package: `@harusame64/desktop-touch-mcp`
-- GitHub Releases publish the real Windows runtime zip: `desktop-touch-mcp-windows.zip`
+- GitHub Releases publish the real runtime zips: `desktop-touch-mcp-windows.zip`, and since the Mac port
+  `desktop-touch-mcp-macos-arm64.zip` (Apple Silicon, "macOS preview"; release.yml `macos-release`
+  builds it after the Windows zip)
 
 Users run:
 
@@ -12,9 +14,10 @@ npx -y @harusame64/desktop-touch-mcp
 ```
 
 On first run, the npm launcher resolves the runtime by npm package version.
-For package `X.Y.Z`, it fetches GitHub Release tag `vX.Y.Z`, verifies
-`desktop-touch-mcp-windows.zip` with SHA256, then extracts it under
-`%USERPROFILE%\.desktop-touch-mcp` and starts `dist/index.js`.
+For package `X.Y.Z`, it fetches GitHub Release tag `vX.Y.Z`, verifies the zip for
+its platform (`desktop-touch-mcp-windows.zip` on Windows, `desktop-touch-mcp-macos-arm64.zip` on an
+Apple Silicon Mac) against that zip's own SHA256, then extracts it under
+`%USERPROFILE%\.desktop-touch-mcp` (`~/.desktop-touch-mcp` on macOS) and starts `dist/index.js`.
 
 ## Safety Rules
 
@@ -297,7 +300,13 @@ The release must include:
 
 ```text
 desktop-touch-mcp-windows.zip
+desktop-touch-mcp-macos-arm64.zip
 ```
+
+`RELEASE_MANIFEST.sha256` holds one entry per zip, and the `npm-publish` job (which waits for both
+zip jobs) downloads each zip, checks its contents and sets its entry with
+`node scripts/update-sha.mjs <asset> <sha256>`. The manual route below is for when that job cannot
+run; do it once per zip.
 
 After the zip is available, compute SHA256 and update `bin/launcher.js` `RELEASE_MANIFEST.sha256`:
 
@@ -313,7 +322,7 @@ Remove-Item $out -Force
 Then set:
 
 - `RELEASE_MANIFEST.tagName = "v0.11.4"`
-- `RELEASE_MANIFEST.sha256 = "<hash>"`
+- each `RELEASE_MANIFEST.sha256["<asset>.zip"] = "<hash>"` (`node scripts/update-sha.mjs <asset>.zip <hash>`)
 
 Re-run preflight:
 
@@ -487,6 +496,23 @@ Expected stdout includes:
 ```json
 "serverInfo":{"name":"desktop-touch","version":"X.Y.Z"}
 ```
+
+## macOS npx Smoke Test (Mac port)
+
+On an Apple Silicon Mac, after npm publish, from a directory outside the source tree:
+
+```bash
+rm -rf ~/.desktop-touch-mcp/releases/vX.Y.Z
+cd /tmp && npx -y @harusame64/desktop-touch-mcp@X.Y.Z --help
+```
+
+Expected: `[desktop-touch-mcp] Downloading desktop-touch-mcp-macos-arm64.zip from vX.Y.Z`, then
+`desktop-touch-mcp vX.Y.Z (macOS preview)` and exit 0. Then the MCP smoke against the installed
+release: copy `scripts/smoke-macos.mjs` into `~/.desktop-touch-mcp/releases/vX.Y.Z/` and run
+`node smoke.mjs` there — four tools, and `desktop_state` reads (or answers `PermissionRequired` on a
+Mac without the grant). The addon must carry no `com.apple.quarantine` attribute
+(`xattr ~/.desktop-touch-mcp/releases/vX.Y.Z/desktop-touch-engine.darwin-arm64.node` prints nothing):
+a quarantined, un-notarized addon is refused by Gatekeeper.
 
 ## npx Download & HTTP Smoke Test
 
@@ -730,6 +756,7 @@ v1.13.1 zip contains 114 nested `node_modules` entries (`body-parser/node_module
 while a vulnerable nested copy ships beside it.
 
 ```bash
+# Do this for desktop-touch-mcp-macos-arm64.zip too: it carries its own node_modules.
 curl -sL -o rel.zip "https://github.com/Harusame64/desktop-touch-mcp/releases/download/vX.Y.Z/desktop-touch-mcp-windows.zip"
 
 # Every copy of <pkg>, hoisted and nested. For a scoped package pass the full

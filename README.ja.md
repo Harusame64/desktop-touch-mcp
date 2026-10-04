@@ -43,7 +43,7 @@ npx -y @harusame64/desktop-touch-mcp
 
 | 項目 | 要件 |
 |---|---|
-| OS | Windows 10 / 11 (64-bit) |
+| OS | Windows 10 / 11 (64-bit)。**Apple Silicon の macOS 14 以降はプレビュー** — [macOS（プレビュー）](#macosプレビュー) を参照 |
 | Node.js | v20 以上推奨 (v22+ で動作確認済み) — **開発と試験の実行には `^22.12 || ^24 || >=26`**（#658 以降の試験の走り手の範囲。23 や 25 のような奇数メジャーは外れる） |
 | PowerShell | 5.1 以上 (Windows 標準同梱) — Rust ネイティブエンジン不在時のフォールバック用 |
 | Claude CLI | `claude` コマンドが使えること |
@@ -61,7 +61,7 @@ npx -y @harusame64/desktop-touch-mcp
 npx -y @harusame64/desktop-touch-mcp
 ```
 
-npm ランチャーは npm package version に厳密に対応する runtime だけを取得します。`X.Y.Z` を実行した場合は GitHub Release `vX.Y.Z` のみを参照し、`desktop-touch-mcp-windows.zip` をダウンロードして SHA256 を検証できた場合にだけ `%USERPROFILE%\.desktop-touch-mcp` へ展開します。検証済みキャッシュは次回以降も再利用されます。
+npm ランチャーは npm package version に厳密に対応する runtime だけを取得します。`X.Y.Z` を実行した場合は GitHub Release `vX.Y.Z` のみを参照し、お使いの環境の zip（`desktop-touch-mcp-windows.zip`、Apple Silicon の Mac では `desktop-touch-mcp-macos-arm64.zip`）をダウンロードして SHA256 を検証できた場合にだけ `%USERPROFILE%\.desktop-touch-mcp`（macOS では `~/.desktop-touch-mcp`）へ展開します。検証済みキャッシュは次回以降も再利用されます。
 
 キャッシュの保存先は `DESKTOP_TOUCH_MCP_HOME` で変更できます。
 
@@ -168,6 +168,15 @@ npm run build
 ```
 
 > **注意:** `D:/path/to/desktop-touch-mcp` の部分は、このリポジトリをクローンした実際のパスに変更してください。
+
+
+## macOS（プレビュー）
+
+Apple Silicon の Mac（macOS 14 以降）では、同じ `npx` で macOS 用のサーバーが起動します。使えるツールは `desktop_state`・`desktop_discover`・`desktop_act`（押す・文字の置き換え／追記）・`screenshot`（ウィンドウ1枚）の4つです。ほかのツールは Windows 専用で、macOS では一覧に出ません。
+
+- サーバーを動かすアプリ（ターミナル、iTerm、VS Code、Claude アプリなど）に、システム設定 › プライバシーとセキュリティ で **アクセシビリティ** を、ウィンドウのタイトルとスクリーンショットには **画面収録** も許可し、アプリを再起動してください。許可がないあいだ、ツールは `PermissionRequired` と、何を許可すればよいかを返します。
+- インストールは `npx` だけにしてください。ブラウザでダウンロードしたリリースの zip は Gatekeeper に拒否されます（ネイティブモジュールは公証していません）。
+- stdio のみです（`--http` はまだ使えません）。Intel の Mac と Linux には対応していません。
 
 ---
 

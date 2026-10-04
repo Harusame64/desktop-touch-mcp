@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added — macOS (preview)
+- **desktop-touch now runs on Apple Silicon Macs (macOS 14 or later), as a preview with four tools:**
+  `desktop_state`, `desktop_discover`, `desktop_act` (press, replace or append text) and `screenshot`
+  (one window). It works through macOS Accessibility and does not bring windows forward. Install with
+  the same `npx` command; the launcher picks the macOS build. The other tools are Windows-only and are
+  not listed on macOS. See "macOS (preview)" in the README for the permissions to grant.
+- An act is refused (`entity_not_found`) when the window or the element it named changed since
+  `desktop_discover`, and (`modal_blocking`) when a sheet or an app-modal window is open over it —
+  nothing is pressed or typed.
+
 ## [2.2.0] - 2026-10-04 — Says what it could not see, instead of reporting it as seen
 
 2.2 stops answering as if it had seen something it did not: a suspended app's last frame, a covered

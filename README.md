@@ -44,7 +44,7 @@ npx -y @harusame64/desktop-touch-mcp
 
 | | |
 |---|---|
-| OS | Windows 10 / 11 (64-bit) |
+| OS | Windows 10 / 11 (64-bit). **macOS 14+ on Apple Silicon: preview** — see [macOS (preview)](#macos-preview) |
 | Node.js | v20+ recommended (tested on v22+) — **to develop or run the test suite, `^22.12 || ^24 || >=26`** — the test runner's own range since #658, which excludes odd majors such as 23 and 25 |
 | PowerShell | 5.1+ (bundled with Windows) — used only as fallback when the Rust native engine is unavailable |
 | Claude CLI | `claude` command must be available |
@@ -65,7 +65,7 @@ npx -y @harusame64/desktop-touch-mcp
 npx -y @harusame64/desktop-touch-mcp
 ```
 
-The npm launcher resolves runtime strictly by npm package version. For package `X.Y.Z`, it fetches only GitHub Release tag `vX.Y.Z`, downloads `desktop-touch-mcp-windows.zip`, verifies its SHA256 digest, and only then expands it under `%USERPROFILE%\.desktop-touch-mcp`. Verified cached releases are reused on later runs.
+The npm launcher resolves runtime strictly by npm package version. For package `X.Y.Z`, it fetches only GitHub Release tag `vX.Y.Z`, downloads the zip for your platform (`desktop-touch-mcp-windows.zip`, or `desktop-touch-mcp-macos-arm64.zip` on an Apple Silicon Mac), verifies its SHA256 digest, and only then expands it under `%USERPROFILE%\.desktop-touch-mcp` (`~/.desktop-touch-mcp` on macOS). Verified cached releases are reused on later runs.
 
 Set `DESKTOP_TOUCH_MCP_HOME` to override the cache root directory.
 
@@ -176,6 +176,15 @@ For a local checkout, register the built server directly:
 ```
 
 > **Note:** Replace `D:/path/to/desktop-touch-mcp` with the actual path where you cloned this repository.
+
+
+## macOS (preview)
+
+On an Apple Silicon Mac (macOS 14 or later) the same `npx` command starts a macOS server with four tools: `desktop_state`, `desktop_discover`, `desktop_act` (press, replace or append text) and `screenshot` (one window). The other tools are Windows-only and are not listed on macOS.
+
+- Grant **Accessibility** — and **Screen Recording** for window titles and screenshots — to the app that runs the server (Terminal, iTerm, VS Code, the Claude app, …) in System Settings › Privacy & Security, then restart it. Until then the tools answer `PermissionRequired` and say what to grant.
+- Install with `npx` only: a release zip downloaded with a browser is refused by Gatekeeper (the native module is not notarized).
+- stdio only (`--http` is not available yet). Intel Macs and Linux are not supported.
 
 ---
 
