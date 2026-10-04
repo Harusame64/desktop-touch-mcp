@@ -7,14 +7,16 @@
 // Usage: node scripts/build-release-macos.mjs [out.zip]   (default: desktop-touch-mcp-macos-arm64.zip)
 
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const OUT = resolve(process.argv[2] ?? join(ROOT, "desktop-touch-mcp-macos-arm64.zip"));
-const REL = join(ROOT, "release_build_macos");
+// The staging copy lives outside the repo: inside it, its dist/ and node_modules/ were read by
+// every tree scanner (eslint, check:config-vocabulary) as if they were source.
+const REL = mkdtempSync(join(tmpdir(), "dtmcp-release-macos-"));
 const ADDON = "desktop-touch-engine.darwin-arm64.node";
 // The runtime dependencies the Windows zip carries (release.yml); sharp brings its darwin binary.
 const RUNTIME_DEPS = ["@modelcontextprotocol/sdk", "@nut-tree-fork/nut-js", "sharp", "ws", "zod"];
@@ -28,9 +30,7 @@ for (const f of ["dist/index.js", ADDON, "index.js", "package.json"]) {
   if (!existsSync(join(ROOT, f))) die(`${f} is missing — run npm run build and the darwin addon build first`);
 }
 
-rmSync(REL, { recursive: true, force: true });
 rmSync(OUT, { force: true });
-mkdirSync(REL);
 for (const f of ["package.json", "package-lock.json", "LICENSE", "README.md", "README.ja.md", "index.js", "index.d.ts", ADDON]) {
   cpSync(join(ROOT, f), join(REL, f));
 }
@@ -78,4 +78,5 @@ for (const must of ["dist/index.js", ADDON, "node_modules/sharp/package.json"]) 
 if (!/node_modules\/@img\/sharp-darwin-arm64\//.test(listing)) die("sharp's darwin-arm64 binary is not in the zip");
 // The binary links against libvips; without it sharp fails at the first capture (gate 2, #784).
 if (!/node_modules\/@img\/sharp-libvips-darwin-arm64\//.test(listing)) die("sharp's darwin-arm64 libvips is not in the zip");
+rmSync(REL, { recursive: true, force: true });
 console.error(`[build-release-macos] OK — ${OUT}`);

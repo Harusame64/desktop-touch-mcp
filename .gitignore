@@ -128,6 +128,5 @@ scripts/spikes/
 # rollback artifact is a full ~6 MB copy of the .node.
 .*.node.*.tmp
 
-# Mac port: the macOS release zip and its staging folder (scripts/build-release-macos.mjs)
-release_build_macos/
+# Mac port: the macOS release zip (scripts/build-release-macos.mjs; its staging copy is in the OS temp dir)
 desktop-touch-mcp-macos-arm64.zip
