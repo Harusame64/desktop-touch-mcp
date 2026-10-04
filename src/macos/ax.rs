@@ -79,10 +79,8 @@ pub(crate) fn value_text(e: &AXUIElement) -> Option<String> {
             Some(f) => format!("{f}"),
             None => return None,
         }
-    } else if let Some(b) = v.downcast_ref::<CFBoolean>() {
-        b.as_bool().to_string()
     } else {
-        return None;
+        v.downcast_ref::<CFBoolean>()?.as_bool().to_string()
     };
     Some(cap_chars(s, VALUE_CHAR_CAP))
 }
