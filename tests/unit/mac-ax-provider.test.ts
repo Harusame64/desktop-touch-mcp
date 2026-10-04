@@ -224,3 +224,15 @@ describe("text field values for discover (dogfood 2026-10-04)", () => {
     expect(JSON.stringify(notes)).not.toContain("hunter2");
   });
 });
+
+describe("a cut value is not offered as the text (codex #782)", () => {
+  it("leaves the value out and records the field as truncated", async () => {
+    const f: any = { id: "a.0.1", rootKey: "R", elementKey: "K", depth: 1, role: "AXTextArea", actions: [], valueSettable: true, childCount: 0, value: "x".repeat(2000), valueTruncated: true };
+    const notes: any = { warnings: [] };
+    const [c] = await readMacAxCandidates({ listWindows: vi.fn(() => []), getFocus: vi.fn(async () => ({ pid: 7 })),
+      axTree: vi.fn(async () => ({ pid: 7, elements: [f], truncated: false, selfReference: false, displayAsleep: false, elapsedMs: 1 })), now: () => 1 } as any, undefined, notes);
+    expect(c!.value).toBeUndefined();
+    expect(notes.values).toBeUndefined();
+    expect(notes.truncated).toEqual([`ent_${c!.digest}`]);
+  });
+});

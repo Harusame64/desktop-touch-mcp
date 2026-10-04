@@ -33,6 +33,8 @@ export interface MacAxReadNotes {
    * Never a password field's (the candidate has no value then).
    */
   values?: Record<string, string>;
+  /** Entity ids of text fields whose value is longer than the read cap (no value is given for them). */
+  truncated?: string[];
   pid?: number;
   appTitle?: string;
 }
@@ -140,7 +142,8 @@ export function toCandidate(
     target: { kind: "window", id: targetId },
     role: roleOf(e),
     ...(label !== undefined && { label }),
-    ...(!secure && roleOf(e) !== "label" && e.value !== undefined && { value: e.value }),
+    // A cut value is not the field's text; it is left out rather than offered as if it were (codex, #782).
+    ...(!secure && roleOf(e) !== "label" && e.value !== undefined && !e.valueTruncated && { value: e.value }),
     ...(e.frame !== undefined && { rect: { x: e.frame.x, y: e.frame.y, width: e.frame.width, height: e.frame.height } }),
     actionability: actionabilityOf(e),
     controlType: e.role,
@@ -221,6 +224,11 @@ export async function readMacAxCandidates(
   for (const c of candidates) {
     if (c.role === "textbox" && c.value !== undefined && c.digest !== undefined) {
       (notes.values ??= {})[`ent_${c.digest}`] = c.value;
+    }
+  }
+  for (const e of tree.elements) {
+    if (e.valueTruncated && roleOf(e) === "textbox" && e.subrole !== SECURE) {
+      (notes.truncated ??= []).push(`ent_${axDigest(pid, e)}`);
     }
   }
   return candidates;

@@ -88,6 +88,12 @@ pub(crate) fn children(e: &AXUIElement, timeout_secs: f32) -> Vec<CFRetained<AXU
 /// `AXValue` rendered as text: strings as-is, numbers and booleans printed.
 /// Capped so a document body does not flood the result.
 pub(crate) fn value_text(e: &AXUIElement) -> Option<String> {
+    value_text_marked(e).map(|(s, _)| s)
+}
+
+/// `AXValue` as text, capped, and whether the cap cut it. A caller must not take a cut value for
+/// the whole text: writing it back with something added would delete the rest (codex, #782).
+pub(crate) fn value_text_marked(e: &AXUIElement) -> Option<(String, bool)> {
     let v = attr(e, "AXValue").ok()?;
     let s = if let Some(s) = v.downcast_ref::<CFString>() {
         s.to_string()
@@ -100,7 +106,8 @@ pub(crate) fn value_text(e: &AXUIElement) -> Option<String> {
     } else {
         v.downcast_ref::<CFBoolean>()?.as_bool().to_string()
     };
-    Some(cap_chars(s, VALUE_CHAR_CAP))
+    let cut = s.chars().nth(VALUE_CHAR_CAP).is_some();
+    Some((cap_chars(s, VALUE_CHAR_CAP), cut))
 }
 
 fn cap_chars(s: String, cap: usize) -> String {
@@ -343,6 +350,8 @@ pub struct MacAxElement {
     pub title: Option<String>,
     pub description: Option<String>,
     pub value: Option<String>,
+    /// `value` was cut at the cap: it is not the whole text.
+    pub value_truncated: bool,
     pub identifier: Option<String>,
     pub frame: Option<MacRect>,
     pub enabled: Option<bool>,
@@ -460,7 +469,9 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         let subrole = read!(attr_string(&e, "AXSubrole"));
         let title = read!(attr_string(&e, "AXTitle").filter(|s| !s.is_empty()));
         let description = read!(attr_string(&e, "AXDescription").filter(|s| !s.is_empty()));
-        let value = read!(value_text(&e));
+        let marked = read!(value_text_marked(&e));
+        let value_truncated = marked.as_ref().is_some_and(|(_, cut)| *cut);
+        let value = marked.map(|(s, _)| s);
         let identifier = read!(attr_string(&e, "AXIdentifier").filter(|s| !s.is_empty()));
         let frame = read!(frame(&e));
         let enabled = read!(attr_bool(&e, "AXEnabled"));
@@ -483,6 +494,7 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
             title,
             description,
             value,
+            value_truncated,
             identifier,
             frame,
             enabled,

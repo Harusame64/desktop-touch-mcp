@@ -994,6 +994,8 @@ export interface NativeMacAxElement {
   title?: string
   description?: string
   value?: string
+  /** `value` was cut at 2000 characters: it is not the whole text. */
+  valueTruncated: boolean
   identifier?: string
   frame?: NativeMacRect
   enabled?: boolean

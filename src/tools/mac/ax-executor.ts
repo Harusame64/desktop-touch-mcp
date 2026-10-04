@@ -23,6 +23,10 @@ import type { ExecutorFn } from "../desktop.js";
 export interface MacAxExecutorDeps {
   perform(target: NativeMacAxTarget, action: string): Promise<NativeMacActResult>;
   setValue(target: NativeMacAxTarget, value: string): Promise<NativeMacActResult>;
+  /** Insert at a UTF-16 offset (negative = end) through the selection; the rest of the text is untouched. */
+  insertText?(target: NativeMacAxTarget, text: string, at?: number): Promise<NativeMacActResult>;
+  /** Whether this act was asked to append (desktop_act `append: true`) rather than replace. */
+  appendMode?(): boolean;
 }
 
 /** Mirrors `VALUE_CHAR_CAP` in src/macos/ax.rs. */
@@ -91,6 +95,23 @@ export function createMacAxExecutor(deps: MacAxExecutorDeps): ExecutorFn {
     if (action === "type" || action === "setValue") {
       // `auto` on a type-only field resolves to `type`; without text it must not fall to a press.
       if (text === undefined) throw new MacAxActError(`${action}: no text`, "text_required");
+      if (deps.appendMode?.() === true) {
+        // Append without reading the old text back in: replacing with "old + new" would cut a long
+        // document at the read cap and delete the rest (codex, #782).
+        if (deps.insertText === undefined) throw new MacAxActError("append: not available", "append_unavailable");
+        const r = await deps.insertText(target, text, -1);
+        if (!r.ok) refuse(r, "append");
+        // The read-back is capped, so the end can be checked only when the whole text came back.
+        const after = r.valueAfter;
+        if (after !== undefined && Array.from(after).length < VALUE_CHAR_CAP && !after.endsWith(text)) {
+          throw new ValueNotAppliedError(
+            "append: the field does not end with the text written",
+            undefined,
+            "The app accepted the insertion but the field does not end with the text now."
+          );
+        }
+        return "ax";
+      }
       const r = await deps.setValue(target, text);
       if (!r.ok) refuse(r, "setValue");
       // The native read-back is capped at VALUE_CHAR_CAP characters (src/macos/ax.rs).
