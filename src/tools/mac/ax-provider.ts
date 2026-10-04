@@ -198,8 +198,10 @@ export async function readMacAxCandidates(
   if (tree.truncated) notes.warnings.push(`truncated:${tree.stoppedBy ?? "unknown"}`);
   // A sheet blocks its window (acts behind it are refused natively). Its controls may live in
   // another process — the open/save panel's do, and then nothing of it is in this tree.
+  // The same sheet can be reached from two roots (its window and the focused window): say it once.
   for (const sheet of tree.elements.filter((e) => e.role === "AXSheet")) {
-    notes.warnings.push(sheet.childCount <= 1 ? "sheet_open_in_other_process" : "sheet_open");
+    const w = sheet.childCount <= 1 ? "sheet_open_in_other_process" : "sheet_open";
+    if (!notes.warnings.includes(w)) notes.warnings.push(w);
   }
 
   const needle = title?.toLowerCase();
