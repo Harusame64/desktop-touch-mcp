@@ -1,0 +1,456 @@
+//! Accessibility (AX) reads and acts for the Mac port (M1).
+//!
+//! Elements are named by a path of child indexes from a root:
+//! `a.<i>.<j>...` walks `AXChildren` from the application element,
+//! `f.<j>...` starts at the app's `AXFocusedWindow`, `m.<j>...` at its
+//! `AXMainWindow`. The spike found that a window on another Space is not in
+//! `AXChildren`/`AXWindows` but is reachable through the focused/main
+//! window, so those two roots are listed only when the window is not
+//! already under `a`.
+//!
+//! A path is not stable across UI changes, so every act takes the role the
+//! caller read and refuses (`element_changed`) when the element at the path
+//! now has another role.
+
+use std::ptr::NonNull;
+
+use objc2_application_services::{AXError, AXUIElement, AXValue, AXValueType};
+use objc2_core_foundation::{
+    CFArray, CFBoolean, CFNumber, CFRange, CFRetained, CFString, CFType, CGPoint, CGSize,
+};
+
+pub(crate) const DEFAULT_TIMEOUT_SECS: f32 = 3.0;
+const VALUE_CHAR_CAP: usize = 2000;
+
+pub(crate) fn cfstr(s: &'static str) -> CFRetained<CFString> {
+    CFString::from_static_str(s)
+}
+
+pub(crate) fn app_element(pid: i32, timeout_secs: f32) -> CFRetained<AXUIElement> {
+    let app = unsafe { AXUIElement::new_application(pid) };
+    unsafe { app.set_messaging_timeout(timeout_secs) };
+    app
+}
+
+pub(crate) fn attr(e: &AXUIElement, name: &'static str) -> Result<CFRetained<CFType>, AXError> {
+    let mut out: *const CFType = std::ptr::null();
+    let err = unsafe { e.copy_attribute_value(&cfstr(name), NonNull::from(&mut out)) };
+    if err != AXError::Success {
+        return Err(err);
+    }
+    match NonNull::new(out as *mut CFType) {
+        Some(p) => Ok(unsafe { CFRetained::from_raw(p) }),
+        None => Err(AXError::NoValue),
+    }
+}
+
+pub(crate) fn attr_string(e: &AXUIElement, name: &'static str) -> Option<String> {
+    let v = attr(e, name).ok()?;
+    v.downcast_ref::<CFString>().map(|s| s.to_string())
+}
+
+fn attr_bool(e: &AXUIElement, name: &'static str) -> Option<bool> {
+    let v = attr(e, name).ok()?;
+    v.downcast_ref::<CFBoolean>().map(|b| b.as_bool())
+}
+
+pub(crate) fn attr_element(e: &AXUIElement, name: &'static str) -> Option<CFRetained<AXUIElement>> {
+    attr(e, name).ok()?.downcast::<AXUIElement>().ok()
+}
+
+pub(crate) fn children(e: &AXUIElement) -> Vec<CFRetained<AXUIElement>> {
+    let Ok(v) = attr(e, "AXChildren") else { return Vec::new() };
+    let Ok(arr) = v.downcast::<CFArray>() else { return Vec::new() };
+    let arr: CFRetained<CFArray<CFType>> = unsafe { CFRetained::cast_unchecked(arr) };
+    arr.iter()
+        .filter_map(|c| c.downcast::<AXUIElement>().ok())
+        .collect()
+}
+
+/// `AXValue` rendered as text: strings as-is, numbers and booleans printed.
+/// Capped so a document body does not flood the result.
+pub(crate) fn value_text(e: &AXUIElement) -> Option<String> {
+    let v = attr(e, "AXValue").ok()?;
+    let s = if let Some(s) = v.downcast_ref::<CFString>() {
+        s.to_string()
+    } else if let Some(n) = v.downcast_ref::<CFNumber>() {
+        match n.as_f64() {
+            Some(f) if f.fract() == 0.0 && f.abs() < 1e15 => format!("{}", f as i64),
+            Some(f) => format!("{f}"),
+            None => return None,
+        }
+    } else if let Some(b) = v.downcast_ref::<CFBoolean>() {
+        b.as_bool().to_string()
+    } else {
+        return None;
+    };
+    Some(cap_chars(s, VALUE_CHAR_CAP))
+}
+
+fn cap_chars(s: String, cap: usize) -> String {
+    match s.char_indices().nth(cap) {
+        Some((i, _)) => s[..i].to_string(),
+        None => s,
+    }
+}
+
+pub(crate) fn action_names(e: &AXUIElement) -> Vec<String> {
+    let mut out: *const CFArray = std::ptr::null();
+    let err = unsafe { e.copy_action_names(NonNull::from(&mut out)) };
+    if err != AXError::Success {
+        return Vec::new();
+    }
+    let Some(p) = NonNull::new(out as *mut CFArray<CFString>) else { return Vec::new() };
+    let arr: CFRetained<CFArray<CFString>> = unsafe { CFRetained::from_raw(p) };
+    arr.iter().map(|s| s.to_string()).collect()
+}
+
+pub(crate) fn is_settable(e: &AXUIElement, name: &'static str) -> bool {
+    // Boolean (an unsigned char) in the C signature.
+    let mut settable: u8 = 0;
+    let err = unsafe { e.is_attribute_settable(&cfstr(name), NonNull::from(&mut settable)) };
+    err == AXError::Success && settable != 0
+}
+
+fn ax_point(e: &AXUIElement) -> Option<CGPoint> {
+    let v = attr(e, "AXPosition").ok()?.downcast::<AXValue>().ok()?;
+    let mut p = CGPoint { x: 0.0, y: 0.0 };
+    let ok = unsafe { v.value(AXValueType::CGPoint, NonNull::from(&mut p).cast()) };
+    ok.then_some(p)
+}
+
+fn ax_size(e: &AXUIElement) -> Option<CGSize> {
+    let v = attr(e, "AXSize").ok()?.downcast::<AXValue>().ok()?;
+    let mut s = CGSize { width: 0.0, height: 0.0 };
+    let ok = unsafe { v.value(AXValueType::CGSize, NonNull::from(&mut s).cast()) };
+    ok.then_some(s)
+}
+
+/// Screen rectangle in points, top-left origin (the AX coordinate space).
+#[napi_derive::napi(object)]
+#[derive(Clone, Debug)]
+pub struct MacRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+pub(crate) fn frame(e: &AXUIElement) -> Option<MacRect> {
+    let p = ax_point(e)?;
+    let s = ax_size(e)?;
+    Some(MacRect { x: p.x, y: p.y, width: s.width, height: s.height })
+}
+
+pub(crate) fn ax_error_name(e: AXError) -> String {
+    let name = match e {
+        AXError::Success => "success",
+        AXError::Failure => "failure",
+        AXError::IllegalArgument => "illegal_argument",
+        AXError::InvalidUIElement => "invalid_ui_element",
+        AXError::InvalidUIElementObserver => "invalid_ui_element_observer",
+        AXError::CannotComplete => "cannot_complete",
+        AXError::AttributeUnsupported => "attribute_unsupported",
+        AXError::ActionUnsupported => "action_unsupported",
+        AXError::NotificationUnsupported => "notification_unsupported",
+        AXError::NotImplemented => "not_implemented",
+        AXError::NotificationAlreadyRegistered => "notification_already_registered",
+        AXError::NotificationNotRegistered => "notification_not_registered",
+        AXError::APIDisabled => "api_disabled",
+        AXError::NoValue => "no_value",
+        AXError::ParameterizedAttributeUnsupported => "parameterized_attribute_unsupported",
+        AXError::NotEnoughPrecision => "not_enough_precision",
+        _ => return format!("ax_error_{}", e.0),
+    };
+    name.to_string()
+}
+
+// ─── Roots ──────────────────────────────────────────────────────────────────
+
+/// The roots a tree read starts from, with their path prefixes.
+pub(crate) fn roots(app: &AXUIElement, include_menu_bar: bool) -> Vec<(String, CFRetained<AXUIElement>)> {
+    let mut out = Vec::new();
+    let kids = children(app);
+    for (i, k) in kids.iter().enumerate() {
+        if !include_menu_bar && attr_string(k, "AXRole").as_deref() == Some("AXMenuBar") {
+            continue;
+        }
+        out.push((format!("a.{i}"), k.clone()));
+    }
+    for (prefix, name) in [("f", "AXFocusedWindow"), ("m", "AXMainWindow")] {
+        if let Some(w) = attr_element(app, name) {
+            let w_ty: &CFType = &w;
+            let seen = kids.iter().any(|k| {
+                let k_ty: &CFType = k;
+                k_ty == w_ty
+            }) || out.iter().any(|(_, e)| {
+                let e_ty: &CFType = e;
+                e_ty == w_ty
+            });
+            if !seen {
+                out.push((prefix.to_string(), w));
+            }
+        }
+    }
+    out
+}
+
+/// Resolve a path written by [`roots`] + child indexes.
+pub(crate) fn resolve(app: &AXUIElement, path: &str) -> Option<CFRetained<AXUIElement>> {
+    let mut parts = path.split('.');
+    let mut cur = match parts.next()? {
+        "a" => {
+            let i: usize = parts.next()?.parse().ok()?;
+            children(app).into_iter().nth(i)?
+        }
+        "f" => attr_element(app, "AXFocusedWindow")?,
+        "m" => attr_element(app, "AXMainWindow")?,
+        _ => return None,
+    };
+    for p in parts {
+        let i: usize = p.parse().ok()?;
+        cur = children(&cur).into_iter().nth(i)?;
+    }
+    Some(cur)
+}
+
+// ─── Tree read ──────────────────────────────────────────────────────────────
+
+#[napi_derive::napi(object)]
+#[derive(Clone, Debug, Default)]
+pub struct MacAxTreeOptions {
+    pub pid: i32,
+    /// Stop after this many elements (default 3000). `truncated` says so.
+    pub max_elements: Option<u32>,
+    /// Do not descend below this depth (default 40).
+    pub max_depth: Option<u32>,
+    /// Include the app's menu bar (default false: menus are large and
+    /// rarely what a caller wants first).
+    pub include_menu_bar: Option<bool>,
+    /// Per-message AX timeout in seconds (default 3).
+    pub timeout_secs: Option<f64>,
+}
+
+#[napi_derive::napi(object)]
+#[derive(Clone, Debug)]
+pub struct MacAxElement {
+    pub id: String,
+    pub depth: u32,
+    pub role: String,
+    pub subrole: Option<String>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub value: Option<String>,
+    pub identifier: Option<String>,
+    pub frame: Option<MacRect>,
+    pub enabled: Option<bool>,
+    pub focused: Option<bool>,
+    pub actions: Vec<String>,
+    pub value_settable: bool,
+    pub child_count: u32,
+}
+
+#[napi_derive::napi(object)]
+#[derive(Clone, Debug)]
+pub struct MacAxTree {
+    pub pid: i32,
+    pub app_title: Option<String>,
+    pub elements: Vec<MacAxElement>,
+    pub truncated: bool,
+    /// AX could not be read at all (e.g. `api_disabled` when Accessibility
+    /// is not granted, `cannot_complete` when the app does not answer).
+    pub error: Option<String>,
+    pub elapsed_ms: f64,
+}
+
+pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
+    let t0 = std::time::Instant::now();
+    let timeout = opts.timeout_secs.map(|t| t as f32).unwrap_or(DEFAULT_TIMEOUT_SECS);
+    let app = app_element(opts.pid, timeout);
+    let max_elements = opts.max_elements.unwrap_or(3000) as usize;
+    let max_depth = opts.max_depth.unwrap_or(40);
+
+    let app_title = match attr(&app, "AXTitle") {
+        Ok(v) => v.downcast_ref::<CFString>().map(|s| s.to_string()),
+        Err(AXError::APIDisabled) | Err(AXError::CannotComplete) | Err(AXError::InvalidUIElement) => {
+            let err = attr(&app, "AXRole").err().map(ax_error_name);
+            if err.is_some() {
+                return MacAxTree {
+                    pid: opts.pid,
+                    app_title: None,
+                    elements: Vec::new(),
+                    truncated: false,
+                    error: err,
+                    elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
+                };
+            }
+            None
+        }
+        Err(_) => None,
+    };
+
+    let mut elements = Vec::new();
+    let mut truncated = false;
+    // Depth-first, children in order, so ids read top to bottom.
+    let mut stack: Vec<(String, CFRetained<AXUIElement>, u32)> = roots(&app, opts.include_menu_bar.unwrap_or(false))
+        .into_iter()
+        .rev()
+        .map(|(id, e)| (id, e, 0))
+        .collect();
+    while let Some((id, e, depth)) = stack.pop() {
+        if elements.len() >= max_elements {
+            truncated = true;
+            break;
+        }
+        let kids = children(&e);
+        elements.push(MacAxElement {
+            id: id.clone(),
+            depth,
+            role: attr_string(&e, "AXRole").unwrap_or_default(),
+            subrole: attr_string(&e, "AXSubrole"),
+            title: attr_string(&e, "AXTitle").filter(|s| !s.is_empty()),
+            description: attr_string(&e, "AXDescription").filter(|s| !s.is_empty()),
+            value: value_text(&e),
+            identifier: attr_string(&e, "AXIdentifier").filter(|s| !s.is_empty()),
+            frame: frame(&e),
+            enabled: attr_bool(&e, "AXEnabled"),
+            focused: attr_bool(&e, "AXFocused"),
+            actions: action_names(&e),
+            value_settable: is_settable(&e, "AXValue"),
+            child_count: kids.len() as u32,
+        });
+        if depth < max_depth {
+            for (i, k) in kids.into_iter().enumerate().rev() {
+                stack.push((format!("{id}.{i}"), k, depth + 1));
+            }
+        } else if !kids.is_empty() {
+            truncated = true;
+        }
+    }
+
+    MacAxTree {
+        pid: opts.pid,
+        app_title,
+        elements,
+        truncated,
+        error: None,
+        elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
+    }
+}
+
+// ─── Acts ───────────────────────────────────────────────────────────────────
+
+#[napi_derive::napi(object)]
+#[derive(Clone, Debug, Default)]
+pub struct MacAxTarget {
+    pub pid: i32,
+    pub id: String,
+    /// The role the caller read for this id. The act is refused when the
+    /// element at the path now has another role.
+    pub expected_role: String,
+    pub timeout_secs: Option<f64>,
+}
+
+#[napi_derive::napi(object)]
+#[derive(Clone, Debug, Default)]
+pub struct MacActResult {
+    pub ok: bool,
+    /// Why the act was refused or failed: `element_not_found`,
+    /// `element_changed`, `action_not_advertised`, `value_not_settable`,
+    /// `selection_not_settable`, or the AX error name.
+    pub reason: Option<String>,
+    /// The element's value read back after a write (capped).
+    pub value_after: Option<String>,
+    pub role: Option<String>,
+}
+
+fn refused(reason: &str) -> MacActResult {
+    MacActResult { ok: false, reason: Some(reason.to_string()), ..Default::default() }
+}
+
+fn locate(t: &MacAxTarget) -> Result<CFRetained<AXUIElement>, MacActResult> {
+    let timeout = t.timeout_secs.map(|s| s as f32).unwrap_or(DEFAULT_TIMEOUT_SECS);
+    let app = app_element(t.pid, timeout);
+    let Some(e) = resolve(&app, &t.id) else { return Err(refused("element_not_found")) };
+    let role = attr_string(&e, "AXRole").unwrap_or_default();
+    if role != t.expected_role {
+        return Err(MacActResult { role: Some(role), ..refused("element_changed") });
+    }
+    Ok(e)
+}
+
+/// Perform an AX action, but only one the element advertises: Chrome's web
+/// links answer success to `AXPress` without advertising it and without
+/// navigating (spike round 2).
+pub(crate) fn perform(t: &MacAxTarget, action: &str) -> MacActResult {
+    let e = match locate(t) {
+        Ok(e) => e,
+        Err(r) => return r,
+    };
+    if !action_names(&e).iter().any(|a| a == action) {
+        return refused("action_not_advertised");
+    }
+    let err = unsafe { e.perform_action(&CFString::from_str(action)) };
+    if err != AXError::Success {
+        return refused(&ax_error_name(err));
+    }
+    MacActResult { ok: true, value_after: value_text(&e), ..Default::default() }
+}
+
+pub(crate) fn set_value(t: &MacAxTarget, value: &str) -> MacActResult {
+    let e = match locate(t) {
+        Ok(e) => e,
+        Err(r) => return r,
+    };
+    if !is_settable(&e, "AXValue") {
+        return refused("value_not_settable");
+    }
+    let v = CFString::from_str(value);
+    let err = unsafe { e.set_attribute_value(&cfstr("AXValue"), &v) };
+    if err != AXError::Success {
+        return refused(&ax_error_name(err));
+    }
+    MacActResult { ok: true, value_after: value_text(&e), ..Default::default() }
+}
+
+/// Insert text through the selection, no keyboard: move the caret to `at`
+/// (UTF-16 offset; negative = end; `None` = keep the current selection,
+/// which the text then replaces), then set `AXSelectedText`.
+pub(crate) fn insert_text(t: &MacAxTarget, text: &str, at: Option<i64>) -> MacActResult {
+    let e = match locate(t) {
+        Ok(e) => e,
+        Err(r) => return r,
+    };
+    if let Some(at) = at {
+        if !is_settable(&e, "AXSelectedTextRange") {
+            return refused("selection_not_settable");
+        }
+        let location = if at < 0 {
+            attr(&e, "AXNumberOfCharacters")
+                .ok()
+                .and_then(|v| v.downcast_ref::<CFNumber>().and_then(|n| n.as_i64()))
+                .or_else(|| {
+                    attr_string(&e, "AXValue").map(|s| s.encode_utf16().count() as i64)
+                })
+                .unwrap_or(0)
+        } else {
+            at
+        };
+        let mut range = CFRange { location: location as isize, length: 0 };
+        let Some(rv) = (unsafe { AXValue::new(AXValueType::CFRange, NonNull::from(&mut range).cast()) }) else {
+            return refused("failure");
+        };
+        let err = unsafe { e.set_attribute_value(&cfstr("AXSelectedTextRange"), &rv) };
+        if err != AXError::Success {
+            return refused(&ax_error_name(err));
+        }
+    }
+    if !is_settable(&e, "AXSelectedText") {
+        return refused("selection_not_settable");
+    }
+    let err = unsafe { e.set_attribute_value(&cfstr("AXSelectedText"), &CFString::from_str(text)) };
+    if err != AXError::Success {
+        return refused(&ax_error_name(err));
+    }
+    MacActResult { ok: true, value_after: value_text(&e), ..Default::default() }
+}

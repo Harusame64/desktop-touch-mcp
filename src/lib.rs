@@ -34,6 +34,10 @@ mod l3_bridge;
 // `src/vba_bridge.rs` for the full design rationale.
 #[cfg(windows)]
 mod vba_bridge;
+// Mac port M1 (internal docs/mac-port-design.md): AX / CGWindowList /
+// CGEvent behind the same addon, macOS only.
+#[cfg(target_os = "macos")]
+mod macos;
 
 // Visual GPU Phase 4 backend (ADR-005). The module always compiles so that
 // `detect_capability()` can report `backend_built=false` cleanly when the

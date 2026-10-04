@@ -192,6 +192,15 @@ windows = { version = "0.62", features = [
     "Win32_System_WinRT_Graphics_Capture",
 ] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Mac port (M1, internal docs/mac-port-design.md): AX for reading and acting,
+# CGWindowList / CGEvent for windows and keystrokes, ScreenCaptureKit for
+# window capture. Same crate and napi addon as Windows, gated by target_os.
+objc2 = "0.6"
+objc2-core-foundation = "0.3"
+objc2-application-services = "0.3"
+objc2-core-graphics = "0.3"
+
 [build-dependencies]
 napi-build = "2"
 
