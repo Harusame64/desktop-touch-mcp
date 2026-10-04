@@ -213,7 +213,7 @@ export interface UiEntity {
    * of cross-boundary deps; structural compatibility lets `see()` assign
    * the field from a full `EntityCapabilities` value without a cast.
    */
-  unsupportedExecutors?: Array<"uia" | "cdp" | "terminal" | "mouse" | "keyboard">;
+  unsupportedExecutors?: Array<"uia" | "cdp" | "terminal" | "mouse" | "keyboard" | "ax">;
   /**
    * ADR-020 SR-1 PR-SR1-1 (北極星 8, case β entity bake): executor route
    * order baked from the registry-derived `EntityCapabilities` during
@@ -236,8 +236,10 @@ export interface UiEntity {
    * inputs. The inline shape does not automatically follow
    * `AdvertisedExecutorKind` because the engine layer intentionally avoids
    * importing types from the advisory layer (`src/tools/desktop-constraints.ts`).
+   *
+   * Mac port: `"ax"` (macOS Accessibility), for the same reason — `AdvertisedExecutorKind` gained it.
    */
-  preferredExecutors?: Array<"uia" | "cdp" | "terminal" | "mouse" | "keyboard">;
+  preferredExecutors?: Array<"uia" | "cdp" | "terminal" | "mouse" | "keyboard" | "ax">;
   /**
    * ADR-020 SR-1 PR-SR1-1 (case β entity bake): human-readable recovery
    * hint baked from the registry-derived `EntityCapabilities.fallbackHint`
