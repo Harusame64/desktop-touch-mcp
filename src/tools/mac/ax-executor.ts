@@ -28,7 +28,8 @@ export interface MacAxExecutorDeps {
 /** Mirrors `VALUE_CHAR_CAP` in src/macos/ax.rs. */
 export const VALUE_CHAR_CAP = 2000;
 
-const GONE = new Set(["element_not_found", "element_changed"]);
+/** `invalid_ui_element`: the element was destroyed between the read and the act. */
+const GONE = new Set(["element_not_found", "element_changed", "invalid_ui_element"]);
 
 function refuse(r: NativeMacActResult, what: string): never {
   const reason = r.reason ?? "unknown";

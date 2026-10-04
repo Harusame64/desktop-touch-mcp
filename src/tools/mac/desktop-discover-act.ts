@@ -49,10 +49,11 @@ export const macActSchema = {
 export const macDiscoverDescription = buildDesc({
   purpose: "Find the controls of a macOS window you can act on, each with a lease for desktop_act.",
   details:
-    "Reads the app's Accessibility tree (no screenshot, no foreground change). Entities carry label, role (button/textbox/link/menuitem/label), " +
-    "value (never for a password field), and the actions the element itself offers. 'warnings' says what the read could not do: " +
-    "display_asleep (macOS then answers windows with the app itself — wake the display and discover again), no_window_matches_title, " +
-    "no_frontmost_app, truncated:*, ax_error:*.",
+    "Reads the app's Accessibility tree (no screenshot, no foreground change). Entities carry label (a text's visible text), role " +
+    "(button/textbox/link/menuitem/label) and primaryAction; buttons offer click, settable text fields offer type, texts only read. " +
+    "'warnings' says what the read could not do: display_asleep (macOS then answers windows with the app itself — wake the display and " +
+    "discover again), no_window_matches_title, window_titles_unavailable (Screen Recording is not granted, so titles cannot be matched; " +
+    "omit target to read the frontmost app), no_frontmost_app, truncated:*, ax_error:*.",
   prefer: "Discover right before each act: a lease names the element as read, and an act on an element that moved is refused.",
   caveats: "Needs Accessibility permission (PermissionRequired otherwise). Window titles need Screen Recording.",
 });
@@ -61,8 +62,9 @@ export const macActDescription = buildDesc({
   purpose: "Act on an entity from desktop_discover: press it, or replace a text field's value.",
   details:
     "Acts through Accessibility on the background app — the foreground is not taken. Refused with entity_not_found when the element's window " +
-    "or the element at that place changed since the discover (nothing was done; discover again), action_not_offered when the element does not offer it, " +
-    "value_not_applied when the app did not take the text.",
+    "or the element at that place changed since the discover (nothing was done; discover again), and action_not_offered when the entity does not " +
+    "offer the action (type on a button, click on a text). value_not_applied: the app took the write but the field does not hold the text " +
+    "(it may reformat it, e.g. 1.50 shown as 1.5). Not checked: a sheet or dialog that opened over the window after the discover.",
   prefer: "Call desktop_state or desktop_discover afterwards to confirm.",
 });
 

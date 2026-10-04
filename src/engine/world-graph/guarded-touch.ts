@@ -462,7 +462,29 @@ function resolveAction(entity: UiEntity, requested: TouchAction): TouchAction {
  * first — one on the producing TYPE, one on the executor's dispatch — so neither half can be built
  * quietly. Until then a caller asking to select is told nothing happened, which is the truth.
  */
+/**
+ * Mac port (#780, gate 2): an Accessibility entity's verbs are a clear ground, unlike the
+ * affordance union above — the AX provider gives `type` only to a settable, non-secure text role
+ * and `click`/`invoke` only to an element that advertises AXPress (src/tools/mac/ax-provider.ts).
+ * Without this, `type` reached AXValue on a check box, whose value is settable too.
+ */
+function axOffers(entity: UiEntity, verbs: readonly string[]): boolean {
+  return entity.affordances.some((a) => verbs.includes(a.verb));
+}
+
 function offersAction(entity: UiEntity, action: TouchAction): boolean {
+  if (entity.sources.includes("ax")) {
+    switch (action) {
+      case "type":
+      case "setValue":
+        return axOffers(entity, ["type"]);
+      case "invoke":
+      case "click":
+        return axOffers(entity, ["click", "invoke"]);
+      default:
+        break;
+    }
+  }
   switch (action) {
     // **NOT SUPPORTED BY THIS PRODUCT** — see above. Refused before anything touches the world.
     case "select":

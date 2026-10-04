@@ -74,12 +74,25 @@ const road = readRoadVocabulary(
   "src/tools/desktop-executor.ts",
 );
 // Mac port: the macOS executor (src/tools/mac/ax-executor.ts) writes no row; it returns its
-// ExecutorKind as a bare literal. Read only that file's `return "<kind>";` statements, and fail
-// rather than answer short when the file is there and none is found.
-const macExecutor = tryRead("src/tools/mac/ax-executor.ts");
-const macRoutes = [...macExecutor.matchAll(/\breturn\s+"([a-z_]+)";/g)].map((m) => m[1]);
+// ExecutorKind as a bare literal. **A narrow, declared exception to "every reader comes from the
+// parser"** (gate 2 on #780): one small file, comments stripped, and only `return "<x>";` whose <x>
+// is an ExecutorKind member counts — a helper returning some other string is not a road. It fails
+// rather than answers short when the file is there and none is found, and when any other `return`
+// in the file names an ExecutorKind member some other way (`as const`, an object, a variable).
+const macExecutor = tryRead("src/tools/mac/ax-executor.ts").replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");
+const executorKindsForMac = typeUnion(worldTypes, "src/engine/world-graph/types.ts", "ExecutorKind");
+const macRoutes = [...macExecutor.matchAll(/\breturn\s+"([a-z_]+)";/g)]
+  .map((m) => m[1])
+  .filter((k) => executorKindsForMac.includes(k));
 if (macExecutor !== "" && macRoutes.length === 0) {
-  unionProblems.push("src/tools/mac/ax-executor.ts: no `return \"<kind>\";` found — has the macOS executor changed shape?");
+  unionProblems.push("src/tools/mac/ax-executor.ts: no `return \"<ExecutorKind>\";` found — has the macOS executor changed shape?");
+}
+for (const m of macExecutor.matchAll(/\breturn\b[^;]*;/g)) {
+  const stmt = m[0];
+  if (/^return\s+"[a-z_]+";$/.test(stmt)) continue;
+  if (executorKindsForMac.some((k) => stmt.includes(`"${k}"`))) {
+    unionProblems.push(`src/tools/mac/ax-executor.ts: \`${stmt}\` names an ExecutorKind in a shape this reader does not take`);
+  }
 }
 const derived = {
   landingWhyOnTheRow: road.landingWhyOnTheRow,

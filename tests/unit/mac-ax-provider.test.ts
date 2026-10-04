@@ -124,11 +124,19 @@ describe("readMacAxCandidates", () => {
   });
   it("warns when no window matches", async () => {
     const d = mk();
-    d.listWindows.mockReturnValue([]);
+    d.listWindows.mockReturnValue([{ windowId: 1, pid: 7, layer: 0, onScreen: true, title: "Something else" }]);
     const { r, notes } = await run(d, { windowTitle: "nothing" });
     expect(r).toEqual([]);
     expect(notes.warnings).toEqual(["no_window_matches_title"]);
     expect(d.axTree).not.toHaveBeenCalled();
+  });
+  // Gate 2 (#780): without Screen Recording every CGWindowList title is empty — say so, not "no match".
+  it("says titles are unavailable when no window has a title", async () => {
+    const d = mk();
+    d.listWindows.mockReturnValue([{ windowId: 1, pid: 7, layer: 0, onScreen: true }, { windowId: 2, pid: 8, layer: 0, onScreen: true, title: "" }]);
+    const { r, notes } = await run(d, { windowTitle: "doc" });
+    expect(r).toEqual([]);
+    expect(notes.warnings).toEqual(["window_titles_unavailable"]);
   });
   it("warns when there is no frontmost app", async () => {
     const d = mk();

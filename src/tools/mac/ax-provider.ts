@@ -151,7 +151,10 @@ export async function readMacAxCandidates(
       .listWindows(false)
       .find((w) => w.layer === 0 && (w.title ?? "").toLowerCase().includes(needle));
     if (win === undefined) {
-      notes.warnings.push(`no_window_matches_title`);
+      // Window titles from CGWindowList need Screen Recording; without it every title is empty,
+      // and "no window matches" would be a false answer (gate 2, #780).
+      const titled = deps.listWindows(false).some((w) => w.layer === 0 && (w.title ?? "") !== "");
+      notes.warnings.push(titled ? "no_window_matches_title" : "window_titles_unavailable");
       return [];
     }
     pid = win.pid;

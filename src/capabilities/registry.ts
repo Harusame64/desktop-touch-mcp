@@ -121,7 +121,10 @@ function lookupDefault(
   // Mac port: an Accessibility entity is acted on through AX only (src/tools/mac/ax-executor.ts) —
   // never the mouse, so the rule table below, which reads a rect as "the mouse can press it", must
   // not answer for it.
-  if (entity.sources.includes("ax")) return { preferredExecutors: ["ax"] };
+  // A label (AX `read` only) has nothing to act with, so it advertises nothing.
+  if (entity.sources.includes("ax")) {
+    return entity.affordances.some((a) => a.verb !== "read") ? { preferredExecutors: ["ax"] } : undefined;
+  }
 
   const isUiaSource = entity.sources.includes("uia");
   const hasRect = entity.rect !== undefined;
