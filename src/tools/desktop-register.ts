@@ -75,6 +75,7 @@ import { DirtyRectRouter } from "../engine/vision-gpu/dirty-rect-source.js";
 import {
   enumWindowsInZOrder,
   getWindowProcessId,
+  isWindowProcessFrozen,
   getProcessIdentityByPid,
   getWindowRectByHwnd,
   getVirtualScreen,
@@ -590,6 +591,8 @@ export interface WindowsProviderCacheOptions {
   enumerate?: typeof enumWindowsInZOrder;
   /** Override per-hwnd process info. Tests inject a fake; production uses getWindowProcessId + getProcessIdentityByPid. */
   resolveProcessName?: (hwnd: bigint | number) => string | undefined;
+  /** Override the frozen-process read (internal #247). Tests inject a fake; production uses isWindowProcessFrozen. */
+  isFrozen?: (hwnd: bigint) => boolean | null;
 }
 
 function defaultResolveProcessName(hwnd: bigint | number): string | undefined {
@@ -608,6 +611,7 @@ export function createCachedProductionWindowsProvider(
   const now = options.nowFn ?? (() => performance.now());
   const enumerate = options.enumerate ?? enumWindowsInZOrder;
   const resolveProcessName = options.resolveProcessName ?? defaultResolveProcessName;
+  const isFrozen = options.isFrozen ?? isWindowProcessFrozen;
   let cached: { at: number; result: DesktopWindowMeta[] } | undefined;
 
   return () => {
@@ -628,6 +632,12 @@ export function createCachedProductionWindowsProvider(
         isMinimized: w.isMinimized,
         isMaximized: w.isMaximized,
         processName,
+        // Internal #247: a hidden window is listed like any other. Say so, and whether its process
+        // is frozen — then what it shows is its last frame, not its contents now. Only hidden
+        // windows are asked (win2 measured every frozen window cloaked); a window on another
+        // virtual desktop is hidden and still running.
+        ...(w.isCloaked === true && { isCloaked: true as const }),
+        ...(w.isCloaked === true && isFrozen(w.hwnd) === true && { isFrozen: true as const }),
       };
     });
     cached = { at: t, result };
@@ -1979,7 +1989,8 @@ export function registerDesktopTools(server: McpServer): void {
       "Raw screen coordinates are NOT returned in normal mode (debug=true only).",
       "If response.warnings[] is non-empty, results may be partial — except dialog_resolved_via_owner_chain, parent_disabled_prefer_popup and target_title_mismatch, which say which window was read.",
       "response.constraints (when present) is a structured summary of provider limitations — use it to decide fallback without parsing warnings[] strings.",
-      "constraints.entityZeroReason (when entities is empty) explains WHY: foreground_unresolved → add target.windowTitle; query_no_match → query matched nothing read (off-screen text, and text UIA does not expose — spreadsheet cell values, some document bodies and Java windows — are never in the list; a Word page is matched by the lines visible on it; with uia_tree_truncated it may also lie past the cap): scroll it into view and call again, or read visible text with screenshot(detail='ocr'); target_window_gone → the window target.hwnd named has closed; discover the window it belonged to, or call without target.hwnd; window_excluded → the target is excluded from every tool surface of this server (the key locker's own windows): nothing was read, and calling again returns the same, so target another window;",
+      "constraints.entityZeroReason (when entities is empty) explains WHY: foreground_unresolved → add target.windowTitle; query_no_match → query matched nothing read (off-screen text, and text UIA does not expose — spreadsheet cell values, some document bodies and Java windows — are never in the list; a Word page is matched by the lines visible on it; with uia_tree_truncated it may also lie past the cap): scroll it into view and call again, or read visible text with screenshot(detail='ocr'); target_window_gone → the window target.hwnd named has closed; discover the window it belonged to, or call without target.hwnd; window_excluded → the target is excluded from every tool surface of this server (the key locker's own windows): nothing was read, and calling again returns the same, so target another window; window_frozen → the window's app is suspended by Windows (minimised or not shown): UI Automation reads nothing from it and a capture shows its last frame, so nothing was read — restore or show the window, then call again;",
+      "response.windows[] lists the top-level windows. isCloaked:true marks a window Windows hides (on another virtual desktop, or a packaged app's window while it is not shown) — it can still be running; isFrozen:true marks one whose app Windows has also suspended: it reads nothing and a capture of it is its last frame, not what it shows now.",
       "uia_blind_visual_incapable → the attached visual backend recognises nothing (the default build); waiting never changes it, so enable a recognising backend or use screenshot(ocrFallback=always) / V1 tools;",
       "uia_blind_visual_unready → retry when visual backend is ready or use screenshot(ocrFallback=always);",
       "uia_blind_visual_empty → use screenshot(ocrFallback=always) or V1 click_element;",

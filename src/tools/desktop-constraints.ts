@@ -58,7 +58,12 @@ export interface ViewConstraints {
      * internal #222 — the target is excluded from every tool surface of this server (the key
      * locker's own windows): nothing was read, and nothing will be while it stays excluded.
      */
-    | "window_excluded";
+    | "window_excluded"
+    /**
+     * internal #247 — the window's app is suspended by Windows (minimised or not shown): UIA reads
+     * nothing and a capture shows its last frame, so the OCR lane read nothing from it.
+     */
+    | "window_frozen";
   /**
    * The ingress could not give a whole answer: its fetch threw (a stale cache is returned when
    * present), or its result had no usable candidate list, or entries that were not objects
@@ -87,6 +92,9 @@ export interface ViewConstraints {
    *                              window
    *   target_window_gone       → the window target.hwnd named has closed: discover the window it
    *                              belonged to, or call without target.hwnd
+   *   window_frozen            → the window's app is suspended by Windows (minimised or not shown):
+   *                              UIA reads nothing and a capture is its last frame, so nothing was
+   *                              read from it — restore or show the window, then discover again
    *   ingress_fetch_error      → retry desktop_discover
    *   uia_blind_visual_incapable → the attached visual backend recognises nothing (the default
    *                              build). Waiting never changes it: enable a recognising backend, or
@@ -107,6 +115,7 @@ export interface ViewConstraints {
     | "query_no_match"
     | "target_window_gone"
     | "window_excluded"
+    | "window_frozen"
     | "ingress_fetch_error";
 }
 
@@ -221,6 +230,11 @@ export function deriveViewConstraints(
         c.window = "window_excluded";
         hasConstraint = true;
         break;
+      // Internal #247: the window's app is frozen; what a capture shows is its last frame.
+      case "target_window_frozen":
+        if (c.window !== "window_excluded" && c.window !== "target_window_gone") c.window = "window_frozen";
+        hasConstraint = true;
+        break;
       case "query_no_match":
         c.query = "no_match";
         hasConstraint = true;
@@ -248,6 +262,7 @@ function deriveEntityZeroReason(c: ViewConstraints): ViewConstraints["entityZero
   // Priority: highest severity / most actionable first.
   if (c.window === "window_excluded") return "window_excluded";
   if (c.window === "target_window_gone") return "target_window_gone";
+  if (c.window === "window_frozen") return "window_frozen";
   if (c.window === "no_provider_matched") return "foreground_unresolved";
   if (c.ingress === "fetch_error") return "ingress_fetch_error";
 

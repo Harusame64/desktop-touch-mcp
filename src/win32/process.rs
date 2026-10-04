@@ -13,7 +13,9 @@ use std::sync::atomic::Ordering;
 
 use napi_derive::napi;
 use windows::core::{PCWSTR, PWSTR};
-use windows::Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation};
+use windows::Wdk::System::Threading::{
+    NtQueryInformationProcess, ProcessBasicInformation, ProcessCommandLineInformation,
+};
 use windows::Win32::Foundation::{
     CloseHandle, LocalFree, FILETIME, HANDLE, HLOCAL, STATUS_BUFFER_OVERFLOW,
     STATUS_BUFFER_TOO_SMALL, STATUS_INFO_LENGTH_MISMATCH, STATUS_SUCCESS, UNICODE_STRING,
@@ -372,4 +374,70 @@ mod cmdline_tests {
         let r = win32_get_process_command_line(0xFFFF_FFF0).expect("no throw");
         assert!(r.is_none());
     }
+}
+
+// ── pid → frozen (internal #247) ────────────────────────────────────────────
+
+/// `PROCESS_EXTENDED_BASIC_INFORMATION`: `PROCESS_BASIC_INFORMATION` behind a `Size` the caller
+/// fills, then `Flags`. Not in the windows crate; laid out as the SDK header does.
+#[repr(C)]
+#[derive(Default)]
+struct ProcessExtendedBasicInformation {
+    size: usize,
+    exit_status: i32,
+    peb_base_address: usize,
+    affinity_mask: usize,
+    base_priority: i32,
+    unique_process_id: usize,
+    inherited_from_unique_process_id: usize,
+    flags: u32,
+}
+
+/// `Flags` bit 4 — `IsFrozen`. (Bit 3 is `IsCrossSessionCreate`, set on packaged apps that run.)
+const PROCESS_FLAG_IS_FROZEN: u32 = 1 << 4;
+
+/// Internal #247 — is the process frozen by the OS (a packaged app suspended by its lifecycle
+/// manager)? Such a window can still be listed and captured, but what is captured is the last frame
+/// before it stopped, and UI Automation reads nothing from it.
+///
+/// MEASURED by win2 (2026-10-04, internal `spike/247-cloaked-windows`, `dev/s247-cloaked/round3*`):
+/// Settings and Calculator minimised, all threads suspended → `Flags` 0x58 (bit 4 set); Xbox's
+/// hidden but running content 0x68, the frame host 0x8, Chrome 0x0, a window whose UI thread
+/// sleeps (`IsHungAppWindow` true) 0x0 — so this separates frozen from hung as well as from
+/// running. Restoring the window cleared it within 33 ms.
+///
+/// `None` when it cannot be read (pid 0, the process cannot be opened, a failed query): never read
+/// as "not frozen".
+#[napi]
+pub fn win32_process_is_frozen(pid: u32) -> napi::Result<Option<bool>> {
+    napi_safe_call("win32_process_is_frozen", || {
+        if pid == 0 {
+            return Ok(None);
+        }
+        let handle = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) } {
+            Ok(h) if !h.is_invalid() => h,
+            _ => return Ok(None),
+        };
+        let _handle_guard = ProcessHandleGuard(handle);
+        let mut info = ProcessExtendedBasicInformation {
+            size: std::mem::size_of::<ProcessExtendedBasicInformation>(),
+            ..Default::default()
+        };
+        let mut ret_len: u32 = 0;
+        let status = unsafe {
+            NtQueryInformationProcess(
+                handle,
+                ProcessBasicInformation,
+                &mut info as *mut ProcessExtendedBasicInformation as *mut core::ffi::c_void,
+                std::mem::size_of::<ProcessExtendedBasicInformation>() as u32,
+                &mut ret_len,
+            )
+        };
+        if status != STATUS_SUCCESS
+            || (ret_len as usize) < std::mem::size_of::<ProcessExtendedBasicInformation>()
+        {
+            return Ok(None);
+        }
+        Ok(Some(info.flags & PROCESS_FLAG_IS_FROZEN != 0))
+    })
 }

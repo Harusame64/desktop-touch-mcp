@@ -205,6 +205,8 @@ export interface NativeWin32 {
   /** ADR-014 v2 R3 L3-4 W-0: a process's launch argv (CommandLineToArgvW), or
    *  null on any failure/ACCESS_DENIED (fail-safe "unreadable" for the caller). */
   win32GetProcessCommandLine?(pid: number): string[] | null;
+  /** internal #247: whether the OS froze the process; null when it cannot be read. */
+  win32ProcessIsFrozen?(pid: number): boolean | null;
   win32GetScrollInfo?(hwnd: bigint, axis: string): NativeScrollInfo | null;
   win32PostMessage?(hwnd: bigint, msg: number, wParam: bigint, lParam: bigint): boolean;
   win32GetFocus?(): bigint | null;

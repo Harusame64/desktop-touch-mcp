@@ -99,6 +99,17 @@ export interface DesktopWindowMeta {
   isMaximized: boolean;
   /** Best-effort process name (e.g. "chrome.exe"). May be absent on lookup failure. */
   processName?: string;
+  /**
+   * Internal #247 — present (true) only when DWM hides the window: on another virtual desktop, or a
+   * packaged app's window while it is not shown. Such a window can still be running.
+   */
+  isCloaked?: true;
+  /**
+   * Internal #247 — present (true) only when the window is hidden and the OS has frozen its process
+   * (a packaged app suspended while not shown). It reads nothing through UI Automation, and a
+   * capture of it shows its last frame, not its contents now.
+   */
+  isFrozen?: true;
 }
 
 export interface DesktopSeeOutput {

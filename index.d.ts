@@ -533,6 +533,8 @@ export declare function win32GetThreadFocus(targetHwnd: bigint): NativeThreadFoc
 export declare function win32BuildProcessParentMap(): NativeProcessParentEntry[]
 export declare function win32GetProcessIdentity(pid: number): NativeProcessIdentity
 export declare function win32GetProcessCommandLine(pid: number): string[] | null
+/** internal #247 — whether the OS froze the process (a suspended packaged app); null when it cannot be read. */
+export declare function win32ProcessIsFrozen(pid: number): boolean | null
 export declare function win32GetScrollInfo(hwnd: bigint, axis: string): NativeScrollInfo | null
 export declare function win32PostMessage(hwnd: bigint, msg: number, wParam: bigint, lParam: bigint): boolean
 export declare function win32ConsolePasteNoFocus(hwnd: bigint, text: string): NativeConsolePasteResult

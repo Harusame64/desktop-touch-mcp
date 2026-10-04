@@ -582,6 +582,23 @@ export function getWindowIdentity(hwnd: unknown): ProcessIdentity {
  * `PROCESS_QUERY_LIMITED_INFORMATION` right as the identity query (no cross-process
  * memory read).
  */
+/**
+ * Internal #247 — is the window's process frozen by the OS (a packaged app suspended while hidden
+ * or minimised)? Its window is still listed and can be captured, but the frame is the last one
+ * before it stopped and UI Automation reads nothing. `null` when it cannot be told (no pid, the
+ * process cannot be opened, an addon without the export) — never read as "running".
+ */
+export function isWindowProcessFrozen(hwnd: bigint): boolean | null {
+  const pid = getWindowProcessId(hwnd);
+  if (pid === 0) return null;
+  try {
+    const frozen = requireNativeWin32().win32ProcessIsFrozen?.(pid);
+    return typeof frozen === "boolean" ? frozen : null;
+  } catch {
+    return null;
+  }
+}
+
 export function getProcessCommandLineByPid(pid: number): string[] | null {
   if (typeof pid !== "number" || pid === 0) {
     return null;

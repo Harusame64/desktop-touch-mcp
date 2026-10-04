@@ -27,6 +27,7 @@ import type { OcrDictionaryEntry } from "../../engine/ocr-bridge.js";
 import { detectOcrLanguage } from "../../engine/ocr-bridge.js";
 import { getOcrVisualAdapter } from "../../engine/vision-gpu/ocr-adapter-registry.js";
 import { probeLane } from "../../engine/aim-probe.js";
+import { WindowFrozenError } from "../../engine/window-frozen.js";
 
 export async function fetchOcrCandidates(
   target: TargetSpec | undefined,
@@ -107,6 +108,13 @@ export async function fetchOcrCandidates(
 
     return probeLane("ocr", "read", read, { candidates, warnings: [...hwndWarnings] });
   } catch (err) {
+    // Internal #247: not a failure — the window shows an old frame, so nothing is read from it.
+    if (err instanceof WindowFrozenError) {
+      return probeLane("ocr", "skipped", { ...asked, why: "window_frozen" }, {
+        candidates: [],
+        warnings: [...hwndWarnings, "target_window_frozen"],
+      });
+    }
     console.error("[ocr-provider] fetchOcrCandidates failed:", err);
     return probeLane("ocr", "failed", { ...asked, why: "threw" }, { candidates: [], warnings: [...hwndWarnings, "ocr_provider_failed"] });
   }

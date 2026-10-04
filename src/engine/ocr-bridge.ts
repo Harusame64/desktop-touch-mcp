@@ -8,6 +8,7 @@ import sharp from "sharp";
 import { captureWindowBackground } from "./image.js";
 import { enumWindowsInZOrder, getWindowDpi, printWindowToBuffer, isExcludedWindowHandle } from "./win32.js";
 import { WindowExcludedError } from "./tool-exclusion.js";
+import { refuseIfFrozen } from "./window-frozen.js";
 import { nativeEngine } from "./native-engine.js";
 import { cropRgbaToRoi } from "./roi-crop.js";
 import type { Rect } from "./vision-gpu/types.js";
@@ -278,6 +279,8 @@ export async function recognizeWindowByHwnd(
   if (hwnd != null && isExcludedWindowHandle(hwnd)) {
     throw new WindowExcludedError(`recognizeWindowByHwnd: target window is tool-excluded (key locker)`);
   }
+  // Internal #247: a frozen app's capture is its last frame; do not read it as the window now.
+  refuseIfFrozen(hwnd, "recognizeWindowByHwnd");
   const origin = { x: region.x, y: region.y };
 
   // Use PrintWindow (PW_RENDERFULLCONTENT) so the window is captured correctly
@@ -766,6 +769,8 @@ export async function runSomPipeline(
   // the `origin` offset, after which the ENTIRE downstream pipeline (scale,
   // preprocess, OCR, image-local→screen conversion, SoM label placement)
   // operates on the cropped buffer transparently — no other change needed.
+  // Internal #247: a frozen app's capture is its last frame; do not read it as the window now.
+  refuseIfFrozen(targetHwnd, "runSomPipeline");
   let { data: rawData, width, height } = printWindowToBuffer(targetHwnd);
   // printWindowToBuffer returns RGBA (4 channels)
 

@@ -114,6 +114,7 @@ export const win32GetThreadFocus         = nativeBinding.win32GetThreadFocus;
 export const win32BuildProcessParentMap       = nativeBinding.win32BuildProcessParentMap;
 export const win32GetProcessIdentity          = nativeBinding.win32GetProcessIdentity;
 export const win32GetProcessCommandLine       = nativeBinding.win32GetProcessCommandLine;
+export const win32ProcessIsFrozen             = nativeBinding.win32ProcessIsFrozen;
 export const win32GetScrollInfo               = nativeBinding.win32GetScrollInfo;
 export const win32PostMessage                 = nativeBinding.win32PostMessage;
 export const win32GetFocus                    = nativeBinding.win32GetFocus;
