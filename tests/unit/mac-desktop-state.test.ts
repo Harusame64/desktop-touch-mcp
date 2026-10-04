@@ -106,3 +106,17 @@ describe("macDesktopStateHandler", () => {
     expect(text).not.toContain('"value"');
   });
 });
+
+describe("a guessed frontmost app (gate 2 #782)", () => {
+  it("is needs_escalation / frontmost_guessed", async () => {
+    const r = await macDesktopStateHandler({
+      permissions: () => ({ accessibility: true, screenCapture: true }),
+      listWindows: () => [],
+      getFocus: async () => ({ pid: 5, appTitle: "Topmost", source: "app_scan_topmost" }),
+      displayAsleep: () => false,
+    } as any);
+    const body = JSON.parse((r.content[0] as any).text);
+    expect(body.attention).toBe("needs_escalation");
+    expect(body.hints.reason).toBe("frontmost_guessed");
+  });
+});

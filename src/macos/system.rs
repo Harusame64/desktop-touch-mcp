@@ -145,8 +145,10 @@ fn claims_frontmost(pid: i32) -> Option<CFRetained<AXUIElement>> {
 /// 2. `app_scan_offscreen`: an owner of only off-screen windows that says so (Terminal with its
 ///    window on another Space, 2026-10-04 — but a windowless helper such as CursorUIViewService
 ///    also says so, which is why on-screen owners are asked first);
-/// 3. `app_scan_topmost`: nobody says so; the owner of the frontmost on-screen window.
-fn frontmost_by_scan() -> Option<(CFRetained<AXUIElement>, &'static str)> {
+///    (before 2: `system_wide_windowless`, the system-wide answer when it named an app with no
+///    on-screen window and no on-screen owner claims frontmost);
+/// 3. `app_scan_topmost`: nobody says so; the owner of the frontmost on-screen window — a guess.
+fn frontmost_by_scan(system_wide: Option<CFRetained<AXUIElement>>) -> Option<(CFRetained<AXUIElement>, &'static str)> {
     let mut on: Vec<i32> = Vec::new();
     for w in list_windows(true).into_iter().filter(|w| w.layer == 0) {
         if !on.contains(&w.pid) {
@@ -155,6 +157,11 @@ fn frontmost_by_scan() -> Option<(CFRetained<AXUIElement>, &'static str)> {
     }
     if let Some(app) = on.iter().find_map(|&pid| claims_frontmost(pid)) {
         return Some((app, "app_scan"));
+    }
+    // Nobody with an on-screen window says it is frontmost: the app the system named stands — an app
+    // whose window is closed (Calculator) or not at layer 0 (Spotlight) is still frontmost (gate 2, #782).
+    if let Some(app) = system_wide {
+        return Some((app, "system_wide_windowless"));
     }
     let mut off: Vec<i32> = list_windows(false)
         .into_iter()
@@ -180,14 +187,14 @@ pub(crate) fn focus() -> MacFocus {
             // answered "CursorUIViewService" while Calculator was frontmost). An app with no
             // on-screen window is not what a caller means by frontmost, so ask the apps instead.
             Some(a) if app_pid(&a).is_some_and(owns_on_screen_window) => (Some(a), "system_wide", None),
-            _ => {
-                let scanned = frontmost_by_scan();
+            other => {
+                let scanned = frontmost_by_scan(other);
                 let source = scanned.as_ref().map_or("app_scan", |(_, s)| *s);
                 (scanned.map(|(a, _)| a), source, Some("system_wide_no_window".to_string()))
             }
         },
         Err(e) => {
-            let scanned = frontmost_by_scan();
+            let scanned = frontmost_by_scan(None);
             let source = scanned.as_ref().map_or("app_scan", |(_, s)| *s);
             (scanned.map(|(a, _)| a), source, Some(ax::ax_error_name(e)))
         }

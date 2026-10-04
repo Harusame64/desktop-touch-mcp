@@ -236,3 +236,13 @@ describe("a cut value is not offered as the text (codex #782)", () => {
     expect(notes.truncated).toEqual([`ent_${c!.digest}`]);
   });
 });
+
+describe("an in-process sheet (gate 2 #782)", () => {
+  it("is sheet_open when something under it can be acted on, even inside one group", async () => {
+    const el = (id: string, role: string, over: any = {}): any => ({ id, rootKey: "R", elementKey: id, depth: id.split(".").length - 2, role, actions: [], valueSettable: false, childCount: 0, ...over });
+    const notes = { warnings: [] as string[] };
+    await readMacAxCandidates({ listWindows: vi.fn(() => []), getFocus: vi.fn(async () => ({ pid: 7 })),
+      axTree: vi.fn(async () => ({ pid: 7, elements: [el("a.0.7", "AXSheet", { childCount: 1 }), el("a.0.7.0", "AXGroup", { childCount: 1 }), el("a.0.7.0.0", "AXButton", { title: "Don't Save", actions: ["AXPress"] })], truncated: false, selfReference: false, displayAsleep: false, elapsedMs: 1 })), now: () => 1 } as any, undefined, notes);
+    expect(notes.warnings).toEqual(["sheet_open"]);
+  });
+});

@@ -209,8 +209,11 @@ export async function readMacAxCandidates(
   // A sheet blocks its window (acts behind it are refused natively). Its controls may live in
   // another process — the open/save panel's do, and then nothing of it is in this tree.
   // The same sheet can be reached from two roots (its window and the focused window): say it once.
+  // In this process when anything under it can be acted on; the open/save panel's sheet holds
+  // nothing here (gate 2, #782: a child count misreads an in-process sheet wrapped in one group).
   for (const sheet of tree.elements.filter((e) => e.role === "AXSheet")) {
-    const w = sheet.childCount <= 1 ? "sheet_open_in_other_process" : "sheet_open";
+    const inside = tree.elements.some((e) => e.id.startsWith(`${sheet.id}.`) && (e.actions.length > 0 || e.valueSettable));
+    const w = inside ? "sheet_open" : "sheet_open_in_other_process";
     if (!notes.warnings.includes(w)) notes.warnings.push(w);
   }
 

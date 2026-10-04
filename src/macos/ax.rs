@@ -615,6 +615,11 @@ fn modal_blocker(app: &AXUIElement, root: &AXUIElement, id: &str, timeout: f32) 
         let arr: CFRetained<CFArray<CFType>> = unsafe { CFRetained::cast_unchecked(arr) };
         for w in arr.iter().filter_map(|w| w.downcast::<AXUIElement>().ok()) {
             let w = with_timeout(w, timeout);
+            // Sheets are judged above, by where the element is; one listed here as a window must not
+            // also block its own controls or other documents' windows (gate 2, #782).
+            if attr_string(&w, "AXRole").as_deref() == Some("AXSheet") {
+                continue;
+            }
             if !same(&w, root) && attr_bool(&w, "AXModal") == Some(true) {
                 return Some(format!("modal_window:{}", attr_string(&w, "AXTitle").unwrap_or_default()));
             }

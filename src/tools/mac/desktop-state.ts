@@ -37,7 +37,7 @@ export interface MacStateDeps {
  * reason in `hints.reason` and what to do in `suggest`, as the Windows desktop_state promises
  * ("other values require recovery (see suggest[])").
  */
-export type MacStateReason = "display_asleep" | "no_frontmost_app" | "read_failed";
+export type MacStateReason = "display_asleep" | "no_frontmost_app" | "read_failed" | "frontmost_guessed";
 
 export interface MacDesktopState {
   focusedWindow: { title: string | null; appName: string | null; pid: number } | null;
@@ -70,6 +70,9 @@ const SUGGEST: Record<MacStateReason, string[]> = {
   ],
   no_frontmost_app: [
     "No app answered as frontmost. Call desktop_state again; if it persists, the app in front may not support Accessibility.",
+  ],
+  frontmost_guessed: [
+    "No app said it is frontmost, so the owner of the frontmost window is shown — a guess. Pass a window title (windows[] lists them) to desktop_discover / screenshot rather than relying on 'frontmost'.",
   ],
   read_failed: [
     "Part of the desktop could not be read (see hints.readErrors); what is shown was read. Call desktop_state again.",
@@ -122,7 +125,9 @@ export async function macDesktopStateHandler(deps: MacStateDeps): Promise<ToolRe
         ? "read_failed"
         : focus.pid == null
           ? "no_frontmost_app"
-          : null;
+          : focus.source === "app_scan_topmost"
+            ? "frontmost_guessed"
+            : null;
 
   const state: MacDesktopState = {
     focusedWindow:
@@ -160,7 +165,9 @@ export const macDesktopStateDescription = buildDesc({
     "may be \"計算機\"; pass them to desktop_discover / screenshot), displayAsleep, attention, permissions {accessibility, screenCapture}. " +
     "attention: 'ok', or 'needs_escalation' with hints.reason and suggest[]: 'display_asleep' (macOS then answers windows with the app itself; wake it and read again), " +
     "'no_frontmost_app', 'read_failed' (hints.readErrors; what was read is still returned). The focused element's value is never returned. " +
-    "hints.focusSource / focusError say how the frontmost app was found (diagnostics: 'app_scan' with focusError 'cannot_complete' is a normal answer). " +
+    "hints.focusSource / focusError say how the frontmost app was found (diagnostics: system_wide, app_scan, system_wide_windowless, " +
+    "app_scan_offscreen — e.g. focusError 'cannot_complete' or 'system_wide_no_window' with a found app is a normal answer; " +
+    "app_scan_topmost is a guess and answers needs_escalation / frontmost_guessed). " +
     "windows[] can include an app's untitled helper windows (title null).",
   prefer: "Use first to orient, and after each action to confirm. Cheapest observation tool.",
   caveats:
