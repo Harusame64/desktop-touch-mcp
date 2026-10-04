@@ -1128,8 +1128,15 @@ export const screenshotBgHandler = async ({
         if (title.toLowerCase().includes(effectiveTitle.toLowerCase())) {
           hwnd = h;
           foundTitle = title;
-          const reg = await win.region;
-          windowScreenRegion = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
+          // GetWindowRect, as the resolved path uses: nut-js's region is clamped to the primary
+          // monitor, so a window on another monitor or past an edge got a wrong origin, and #246's
+          // before/after rect comparison never matched it (gate 2 on 556d72b5). nut-js only when
+          // that cannot be read.
+          windowScreenRegion = h ? getWindowRectByHwnd(h) : null;
+          if (!windowScreenRegion) {
+            const reg = await win.region;
+            windowScreenRegion = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
+          }
           break;
         }
       }

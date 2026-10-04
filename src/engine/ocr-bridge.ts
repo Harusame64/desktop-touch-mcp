@@ -289,7 +289,8 @@ export async function recognizeWindowByHwnd(
   const captured = await captureWindowBackground(hwnd, maxDim);
 
   // Internal #246: a WGC frame covers the visible frame, not the rect (7 px inside it on win2's
-  // machine); map its words through what it covers. Unreadable → the rect, as before.
+  // machine); map its words through what it covers. Unreadable, moved, or not the capture's shape →
+  // the rect, as before.
   const frame = capturedFrameRect(hwnd, captured.source, region, captured) ?? region;
   origin.x = frame.x;
   origin.y = frame.y;

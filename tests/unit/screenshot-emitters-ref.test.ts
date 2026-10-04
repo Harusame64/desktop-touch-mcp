@@ -235,6 +235,26 @@ describe("mode='background' — captures the window it resolved (internal #243)"
     expect(link?.description).not.toContain("click coordinates");
   });
 
+  // Gate 2 on 556d72b5: nut-js clamps a window's region to the primary monitor; the title road took
+  // its origin from there.
+  it("without a resolved window, takes the window's own rect, not nut-js's clamped region", async () => {
+    mockResolveWindowTarget.mockResolvedValue(null);
+    mockGetWindows.mockResolvedValue([
+      { windowHandle: 777, title: Promise.resolve("Other"), region: Promise.resolve({ left: 0, top: 0, width: 600, height: 480 }) },
+    ]);
+    mockGetWindowTitleW.mockReturnValue("Other");
+    mockGetWindowRectByHwnd.mockReset().mockReturnValue({ x: -1700, y: 120, width: 640, height: 480 });
+    mockCaptureWindowBackground.mockResolvedValue({
+      base64: B64, mimeType: "image/png", width: 640, height: 480, source: "printwindow",
+    });
+
+    const result = await screenshotBgHandler({
+      windowTitle: "Other", maxDimension: 768, dotByDot: true, grayscale: false, webpQuality: 60, fullContent: false,
+    });
+    const text = result.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("\n");
+    expect(text).toContain("origin: (-1700, 120)");
+  });
+
   it("without a resolved window, turns nut-js's number handle into a BigInt before any native call", async () => {
     mockResolveWindowTarget.mockResolvedValue(null);
     mockGetWindows.mockResolvedValue([
