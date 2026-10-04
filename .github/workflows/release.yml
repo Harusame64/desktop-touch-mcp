@@ -342,12 +342,15 @@ jobs:
               echo "::error::Failed to download ${ASSET} after 30 retries"
               exit 1
             fi
-            unzip -l release.zip | grep -qE '[[:space:]]dist/index\.js$' || {
+            # The listing goes to a variable first: with pipefail, `unzip -l | grep -q` fails when grep
+            # exits early and unzip takes SIGPIPE — measured on the 33 MB macOS zip (simulated run).
+            LISTING=$(unzip -l release.zip)
+            grep -qE '[[:space:]]dist/index\.js$' <<<"$LISTING" || {
               echo "::error::dist/index.js missing from ${ASSET}"
               exit 1
             }
             if [ "$ASSET" = "desktop-touch-mcp-macos-arm64.zip" ]; then
-              unzip -l release.zip | grep -qE '[[:space:]]desktop-touch-engine\.darwin-arm64\.node$' || {
+              grep -qE '[[:space:]]desktop-touch-engine\.darwin-arm64\.node$' <<<"$LISTING" || {
                 echo "::error::the darwin addon is missing from ${ASSET}"
                 exit 1
               }
