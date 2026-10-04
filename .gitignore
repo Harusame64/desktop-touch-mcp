@@ -127,3 +127,7 @@ scripts/spikes/
 # third kind, `rollback`, which no `*.<kind>.tmp` line above covers, and a
 # rollback artifact is a full ~6 MB copy of the .node.
 .*.node.*.tmp
+
+# Mac port: the macOS release zip and its staging folder (scripts/build-release-macos.mjs)
+release_build_macos/
+desktop-touch-mcp-macos-arm64.zip

@@ -223,6 +223,55 @@ jobs:
           fail_on_unmatched_files: true
           body_path: release-notes.md
 
+  # Mac port (M3-2a): the macOS (Apple Silicon) zip, added to the release the Windows job created.
+  # After windows-release, so the two never race to create the release. npm-publish does not wait
+  # for it yet (M3-2b wires the launcher to it), so a failure here cannot hold the Windows release.
+  # Contents mirror the Windows zip; scripts/build-release-macos.mjs assembles and checks them.
+  macos-release:
+    name: Build macOS release zip
+    runs-on: macos-15
+    needs: windows-release
+    if: github.repository == 'Harusame64/desktop-touch-mcp'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Build native addon (darwin-arm64, release, no vision-gpu)
+        run: npm run build:rs -- --no-default-features
+
+      - name: Assemble and check the macOS zip
+        run: node scripts/build-release-macos.mjs
+
+      - name: Smoke the zip's own contents
+        run: |
+          set -e
+          X="$RUNNER_TEMP/dtmcp-macos-zip"
+          rm -rf "$X" && mkdir -p "$X"
+          unzip -q desktop-touch-mcp-macos-arm64.zip -d "$X"
+          cp scripts/smoke-macos.mjs "$X/smoke.mjs"
+          (cd "$X" && node dist/index.js --help | head -1 && node smoke.mjs)
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: desktop-touch-mcp-macos-arm64.zip
+          fail_on_unmatched_files: true
+
   npm-publish:
     name: Publish to npm (OIDC)
     runs-on: ubuntu-latest

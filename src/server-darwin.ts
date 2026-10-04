@@ -28,6 +28,28 @@ import {
 import { macScreenshotDescription, macScreenshotHandler, macScreenshotSchema, sharpEncodePng } from "./tools/mac/screenshot.js";
 
 
+// ─── CLI flags (before anything starts, so a one-shot --help exits) ──────────
+const args = process.argv.slice(2);
+if (args.includes("--help") || args.includes("-h")) {
+  // CLI usage on stdout — the process exits, so MCP JSON-RPC never starts.
+  // eslint-disable-next-line no-console
+  console.log(`desktop-touch-mcp v${SERVER_VERSION} (macOS preview)
+
+Usage: desktop-touch-mcp [options]
+
+Options:
+  -h, --help      Show this help message
+
+macOS: stdio transport only. Tools: desktop_state, desktop_discover, desktop_act, screenshot.
+Grant Accessibility (and Screen Recording for titles and screenshots) to the app that runs this server.`);
+  process.exit(0);
+}
+if (args.includes("--http")) {
+  // Not silently stdio: a client configured for HTTP would wait for a port that never opens.
+  console.error("[desktop-touch] --http is not available on macOS yet; run without it (stdio).");
+  process.exit(2);
+}
+
 if (!nativeMac) {
   console.error("[desktop-touch] macOS: the darwin native addon is not loaded; running the inspection stub.");
   await import("./server-linux-stub.js");
