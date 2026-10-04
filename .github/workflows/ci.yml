@@ -220,8 +220,9 @@ jobs:
 
   # Mac port (M3-1): the macOS native layer and server, so the Mac side does not rot between
   # releases. Apple Silicon only (the user's decision: arm64 first). No vision-gpu on macOS.
+  # macos-15, not macos-14: GitHub retires macos-14 on 2026-11-02, with brownouts from 2026-10-05.
   macos:
-    runs-on: macos-14
+    runs-on: macos-15
     # An AX call that blocks on the runner must not hold the job for the 6-hour default.
     timeout-minutes: 20
     steps:
