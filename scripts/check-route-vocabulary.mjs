@@ -73,6 +73,14 @@ const road = readRoadVocabulary(
         : [],
   "src/tools/desktop-executor.ts",
 );
+// Mac port: the macOS executor (src/tools/mac/ax-executor.ts) writes no row; it returns its
+// ExecutorKind as a bare literal. Read only that file's `return "<kind>";` statements, and fail
+// rather than answer short when the file is there and none is found.
+const macExecutor = tryRead("src/tools/mac/ax-executor.ts");
+const macRoutes = [...macExecutor.matchAll(/\breturn\s+"([a-z_]+)";/g)].map((m) => m[1]);
+if (macExecutor !== "" && macRoutes.length === 0) {
+  unionProblems.push("src/tools/mac/ax-executor.ts: no `return \"<kind>\";` found — has the macOS executor changed shape?");
+}
 const derived = {
   landingWhyOnTheRow: road.landingWhyOnTheRow,
   // **Pinned, not asserted.** The one dynamic spelling (`why: verdict.why`) is what lets the row
@@ -81,7 +89,7 @@ const derived = {
   // failure, so this belongs in the grid rather than in an invariant — the day the spelling goes,
   // the comparison below says so in the same voice as every other drift.
   landingWhyFromTheUnion: road.landingWhyDrawsFromTheUnion ? ["verdict.why"] : [],
-  route: road.route,
+  route: [...new Set([...road.route, ...macRoutes])].sort(),
   rung: road.rung,
   refused: road.refused,
   why: road.why,

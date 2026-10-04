@@ -37,7 +37,7 @@ import type {
  * executor exposes a dedicated `keyboard` block for entities that opt
  * out of UIA entirely (`preferredExecutors: ["keyboard"]`).
  */
-export type AdvertisedExecutorKind = "uia" | "cdp" | "terminal" | "mouse" | "keyboard";
+export type AdvertisedExecutorKind = "uia" | "cdp" | "terminal" | "mouse" | "keyboard" | "ax";
 
 /** Runtime defense-in-depth — every emitted `preferredExecutor` must belong
  *  to this set. Catches rule-table edits that accidentally introduce
@@ -51,6 +51,7 @@ const ALLOWED_EXECUTORS: ReadonlySet<AdvertisedExecutorKind> = new Set<Advertise
   "terminal",
   "mouse",
   "keyboard",
+  "ax",
 ]);
 
 export interface CapabilityRegistry {
@@ -117,6 +118,11 @@ function lookupDefault(
   entity: UiEntity,
   viewConstraints?: ViewConstraints,
 ): EntityCapabilities | undefined {
+  // Mac port: an Accessibility entity is acted on through AX only (src/tools/mac/ax-executor.ts) —
+  // never the mouse, so the rule table below, which reads a rect as "the mouse can press it", must
+  // not answer for it.
+  if (entity.sources.includes("ax")) return { preferredExecutors: ["ax"] };
+
   const isUiaSource = entity.sources.includes("uia");
   const hasRect = entity.rect !== undefined;
   const patterns = entity.patterns ?? [];

@@ -7,6 +7,7 @@
   ],
   "route": [
     "aim_check",
+    "ax",
     "cdp",
     "containment_check",
     "element_check",
@@ -122,6 +123,7 @@
     "read_only"
   ],
   "executorKind": [
+    "ax",
     "cdp",
     "keyboard",
     "mouse",
@@ -129,6 +131,7 @@
     "uia"
   ],
   "advertisedExecutorKind": [
+    "ax",
     "cdp",
     "keyboard",
     "mouse",
