@@ -143,17 +143,22 @@ function buildHint(
       : `{}`;
   const actArg =
     text !== undefined
-      ? `{lease, action:'setValue', text:'<the whole new value, not only '${sanitize(truncate(text))}'>'}`
+      ? `{lease, action:'setValue', text:'<the whole new value>'}`
       : `{lease, action:'setValue', text:'<the whole new value>'}`;
 
   return {
-    preferredPath: "desktop_act",
+    // Conditional, as the reason is: only to replace the whole value (gate 2 on #773).
+    preferredPath: "desktop_act (only to replace the whole value)",
     // llm22 drive F16 (win2, 2026-10-04, P1): this used to say keyboard is correct only for
     // UIA-blind targets, with an example to follow. An agent that had appended text at the caret
     // followed it, and desktop_act's UIA type replaced the whole document. The hint now says what
     // that road does, and that keyboard stays the road for typing at the caret.
+    // desktop_act's own description states the condition (written through UI Automation → replaces;
+    // through the keyboard rung → inserted at the caret); this hint keeps it (gate 2 on #773).
     reason:
-      "the focused element is a UIA text input (ValuePattern). To set its WHOLE value, desktop_act runs the lease flow (lease verification, modal-blocking detection, attention diff) that keyboard:type does not — but its UI Automation type REPLACES everything in the field, exactly as setValue does. To insert or append at the caret, keep using keyboard:type; do not switch to desktop_act for that.",
+      "the focused element is a UIA text input (ValuePattern). desktop_act runs the lease flow (lease verification, modal-blocking detection, attention diff) that keyboard:type does not, but it does not insert at the caret: its type or setValue written through UI Automation (reply executor 'uia') REPLACES everything in the field; only when it falls back to the keyboard road (executor 'keyboard') is the text inserted at the caret. So use it to set the WHOLE value, pass all of it, and check executor in the reply. To insert or append at the caret (" +
+      (text !== undefined ? `as '${sanitize(truncate(text))}' just was` : "as keyboard:type just did") +
+      "), keep using keyboard:type.",
     example: `desktop_discover(${discoverArg}) → desktop_act(${actArg})`,
   };
 }

@@ -27,11 +27,11 @@ describe("maybeAdvisory — keyboard(type) → desktop_act", () => {
       NATIVE,
     );
     expect(hint).not.toBeNull();
-    expect(hint!.preferredPath).toBe("desktop_act");
+    expect(hint!.preferredPath).toBe("desktop_act (only to replace the whole value)");
     expect(hint!.example).toContain("windowTitle:'メモ帳'");
     // llm22 F16: the example sets the WHOLE value; 'hello' alone would replace the document.
     expect(hint!.example).toContain("action:'setValue'");
-    expect(hint!.example).toContain("not only 'hello'");
+    expect(hint!.reason).toContain("as 'hello' just was");
     expect(hint!.example).toContain("desktop_discover");
     expect(hint!.example).toContain("desktop_act");
   });
@@ -64,7 +64,7 @@ describe("maybeAdvisory — keyboard(type) → desktop_act", () => {
     expect(both!.example).not.toContain("windowTitle");
   });
 
-  it("truncates long text and sanitises quotes/newlines/backslashes in the example", () => {
+  it("truncates long text and sanitises quotes/newlines/backslashes where the hint quotes it", () => {
     const longText = "a".repeat(50) + "'b\nc\\d";
     const hint = maybeAdvisory(
       "keyboard",
@@ -73,8 +73,10 @@ describe("maybeAdvisory — keyboard(type) → desktop_act", () => {
       NATIVE,
     );
     expect(hint).not.toBeNull();
-    expect(hint!.example).toContain("…");
-    expect(hint!.example).not.toMatch(/\n/);
+    // llm22 F16: the typed text is quoted in the reason now, never in the example's value slot.
+    expect(hint!.reason).toContain("…");
+    expect(hint!.reason).not.toMatch(/\n/);
+    expect(hint!.example).not.toContain("aaaa");
   });
 });
 
@@ -92,7 +94,7 @@ describe("maybeAdvisory — unnamed text input (#352 follow-up, ADR-022 §5.5)",
       NATIVE,
     );
     expect(hint).not.toBeNull();
-    expect(hint!.preferredPath).toBe("desktop_act");
+    expect(hint!.preferredPath).toBe("desktop_act (only to replace the whole value)");
   });
 
   it("does NOT fire for an unnamed Edit with hasValuePattern:false (no ValuePattern)", () => {
@@ -176,8 +178,11 @@ describe("the keyboard → desktop_act hint does not lead an append into a repla
   it("says desktop_act's type replaces the whole field, and that keyboard stays the road at the caret", () => {
     const hint = maybeAdvisory("keyboard", { action: "type", windowTitle: "メモ帳", text: " +kbd" }, edit(), NATIVE);
     expect(hint).not.toBeNull();
-    expect(hint!.reason).toMatch(/REPLACES everything in the field/);
-    expect(hint!.reason).toMatch(/insert or append at the caret, keep using keyboard:type/);
+    expect(hint!.reason).toMatch(/executor 'uia'\) REPLACES everything in the field/);
+    expect(hint!.reason).toMatch(/executor 'keyboard'\) is the text inserted at the caret/);
+    expect(hint!.reason).toMatch(/keep using keyboard:type/);
+    expect(hint!.preferredPath).toBe("desktop_act (only to replace the whole value)");
+    expect(hint!.example).toContain("text:'<the whole new value>'");
     expect(hint!.example).not.toContain("action:'type'");
   });
 });

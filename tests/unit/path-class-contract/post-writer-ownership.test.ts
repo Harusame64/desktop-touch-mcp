@@ -194,7 +194,7 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     );
     const advisory = parsed.advisory as Record<string, unknown> | undefined;
     expect(advisory).toBeDefined();
-    expect(advisory!.preferredPath).toBe("desktop_act");
+    expect(advisory!.preferredPath).toBe("desktop_act (only to replace the whole value)");
     expect(String(advisory!.example)).toContain("windowTitle:'メモ帳'");
     // advisory is a ROOT sibling of post — not nested inside post
     expect((parsed.post as Record<string, unknown>).advisory).toBeUndefined();
@@ -235,7 +235,7 @@ describe("ADR-022: obj.advisory owned by withPostState (success only)", () => {
     expect(fe!.value).toBe("");
     const advisory = parsed.advisory as Record<string, unknown> | undefined;
     expect(advisory).toBeDefined();
-    expect(advisory!.preferredPath).toBe("desktop_act");
+    expect(advisory!.preferredPath).toBe("desktop_act (only to replace the whole value)");
   });
 
   it("carries whether the focused field has a value, never the value — and keeps none in the history (ADR-036, option c)", async () => {
