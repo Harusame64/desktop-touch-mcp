@@ -21,12 +21,25 @@ import { pipeline } from "node:stream/promises";
 const PACKAGE_VERSION = "2.2.0";
 const RELEASE_TAG = `v${PACKAGE_VERSION}`;
 const REPO_API_URL = `https://api.github.com/repos/Harusame64/desktop-touch-mcp/releases/tags/${RELEASE_TAG}`;
-const ASSET_NAME = "desktop-touch-mcp-windows.zip";
+// The release zip for this machine. Windows (any arch, as before) gets the Windows build; Apple
+// Silicon Macs get the macOS build (Mac port, "macOS preview"). Anything else is refused in main().
+const WINDOWS_ASSET = "desktop-touch-mcp-windows.zip";
+const MACOS_ARM64_ASSET = "desktop-touch-mcp-macos-arm64.zip";
+/** @internal Exported for tests. */
+export function assetNameFor(platform, arch) {
+  if (platform === "win32") return WINDOWS_ASSET;
+  if (platform === "darwin" && arch === "arm64") return MACOS_ARM64_ASSET;
+  return null;
+}
+const ASSET_NAME = assetNameFor(process.platform, process.arch) ?? WINDOWS_ASSET;
 const RELEASE_METADATA_FILE = ".desktop-touch-release.json";
 const RELEASE_MANIFEST = {
   tagName: "v2.2.0",
-  assetName: ASSET_NAME,
-  sha256: "PENDING",
+  // One SHA256 per release zip, written by the npm-publish job (scripts/update-sha.mjs).
+  sha256: {
+    "desktop-touch-mcp-windows.zip": "PENDING",
+    "desktop-touch-mcp-macos-arm64.zip": "PENDING",
+  },
 };
 const CACHE_ROOT = process.env.DESKTOP_TOUCH_MCP_HOME
   ? path.resolve(process.env.DESKTOP_TOUCH_MCP_HOME)
@@ -49,7 +62,7 @@ function fail(message) {
 
 /**
  * Opt-in escape hatch for running the launcher from a source tree whose
- * RELEASE_MANIFEST.sha256 is still the "PENDING" placeholder (i.e. the
+ * RELEASE_MANIFEST.sha256 entry for this machine's zip is still the "PENDING" placeholder (i.e. the
  * release workflow has not finalized the manifest). Published npm packages
  * always ship a real SHA256, so end users never need this.
  */
@@ -315,8 +328,9 @@ export function expectedReleaseSpec() {
       `Release manifest mismatch: PACKAGE_VERSION=${PACKAGE_VERSION}, manifest=${RELEASE_MANIFEST.tagName}`
     );
   }
-  if (!RELEASE_MANIFEST.sha256 || RELEASE_MANIFEST.assetName !== ASSET_NAME) {
-    throw new Error(`Missing release manifest for ${RELEASE_TAG}`);
+  const manifestSha = RELEASE_MANIFEST.sha256?.[ASSET_NAME];
+  if (!manifestSha) {
+    throw new Error(`Missing release manifest for ${ASSET_NAME} in ${RELEASE_TAG}`);
   }
   // "PENDING" is the pre-release placeholder set in source. The release
   // workflow (scripts/update-sha.mjs) replaces it with the real zip SHA256
@@ -325,7 +339,7 @@ export function expectedReleaseSpec() {
   // launcher can never silently run an unverified runtime zip. Developers
   // running straight from source can opt in to skipping verification with
   // DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED=1.
-  const isPending = RELEASE_MANIFEST.sha256 === "PENDING";
+  const isPending = manifestSha === "PENDING";
   if (isPending && !allowUnverifiedRelease()) {
     throw new Error(
       `Release SHA256 manifest for ${RELEASE_TAG} is PENDING — this launcher was not finalized by the release workflow. ` +
@@ -333,13 +347,13 @@ export function expectedReleaseSpec() {
       `set DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED=1 to skip integrity verification (development only).`
     );
   }
-  if (!isPending && !/^[a-f0-9]{64}$/i.test(RELEASE_MANIFEST.sha256)) {
+  if (!isPending && !/^[a-f0-9]{64}$/i.test(manifestSha)) {
     throw new Error(`Invalid release SHA256 manifest for ${RELEASE_TAG}`);
   }
   return {
     tagName: RELEASE_MANIFEST.tagName,
-    assetName: RELEASE_MANIFEST.assetName,
-    sha256: isPending ? null : String(RELEASE_MANIFEST.sha256).toLowerCase(),
+    assetName: ASSET_NAME,
+    sha256: isPending ? null : String(manifestSha).toLowerCase(),
     sha256Pending: isPending,
   };
 }
@@ -528,6 +542,11 @@ function run(command, args) {
 }
 
 async function expandZip(zipPath, destination) {
+  // macOS: unzip restores the zip's node_modules/.bin symlinks as links, and adds no quarantine
+  // attribute — the ad-hoc-signed addon loads only when it is not quarantined (measured, M3).
+  if (process.platform === "darwin") {
+    return await run("unzip", ["-q", "-o", zipPath, "-d", destination]);
+  }
   const script = "& { param($zip, $dest) Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force }";
   const args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script, zipPath, destination];
 
@@ -829,8 +848,11 @@ function launchServer(releaseDir) {
 }
 
 async function main() {
-  if (process.platform !== "win32") {
-    fail("The npm launcher currently installs the Windows release build only.");
+  if (assetNameFor(process.platform, process.arch) === null) {
+    fail(
+      `This platform (${process.platform}/${process.arch}) is not supported: the npm launcher installs ` +
+        "the Windows build and the macOS build for Apple Silicon (macOS preview) only."
+    );
   }
 
   const releaseDir = await ensureRelease();

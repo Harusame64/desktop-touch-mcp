@@ -224,8 +224,8 @@ jobs:
           body_path: release-notes.md
 
   # Mac port (M3-2a): the macOS (Apple Silicon) zip, added to the release the Windows job created.
-  # After windows-release, so the two never race to create the release. npm-publish does not wait
-  # for it yet (M3-2b wires the launcher to it), so a failure here cannot hold the Windows release.
+  # After windows-release, so the two never race to create the release. Since M3-2b npm-publish
+  # waits for it: the launcher carries a SHA256 for both zips.
   # Contents mirror the Windows zip; scripts/build-release-macos.mjs assembles and checks them.
   macos-release:
     name: Build macOS release zip
@@ -285,7 +285,8 @@ jobs:
   npm-publish:
     name: Publish to npm (OIDC)
     runs-on: ubuntu-latest
-    needs: windows-release
+    # Both zips: the launcher ships a SHA256 for each, so it cannot publish before the macOS zip exists.
+    needs: [windows-release, macos-release]
     if: github.repository == 'Harusame64/desktop-touch-mcp'
     permissions:
       contents: read
@@ -320,34 +321,41 @@ jobs:
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Download release zip, verify contents, compute SHA256
-        id: sha
+      # Mac port (M3-2b): one SHA256 per release zip — the launcher picks the zip for its platform
+      # and verifies it against its own entry. Each zip must hold dist/index.js; the macOS zip must
+      # also hold the darwin addon.
+      - name: Download release zips, verify contents, set each SHA256 in launcher.js
         run: |
+          set -euo pipefail
           VERSION="${{ steps.tag.outputs.version }}"
-          ZIP_URL="https://github.com/Harusame64/desktop-touch-mcp/releases/download/v${VERSION}/desktop-touch-mcp-windows.zip"
-          for i in $(seq 1 30); do
-            if curl -fL -o release.zip "$ZIP_URL"; then
-              break
+          for ASSET in desktop-touch-mcp-windows.zip desktop-touch-mcp-macos-arm64.zip; do
+            ZIP_URL="https://github.com/Harusame64/desktop-touch-mcp/releases/download/v${VERSION}/${ASSET}"
+            rm -f release.zip
+            for i in $(seq 1 30); do
+              if curl -fL -o release.zip "$ZIP_URL"; then
+                break
+              fi
+              echo "${ASSET} not yet available, retry $i/30 (sleeping 10s)"
+              sleep 10
+            done
+            if [ ! -f release.zip ]; then
+              echo "::error::Failed to download ${ASSET} after 30 retries"
+              exit 1
             fi
-            echo "Asset not yet available, retry $i/30 (sleeping 10s)"
-            sleep 10
+            unzip -l release.zip | grep -qE '[[:space:]]dist/index\.js$' || {
+              echo "::error::dist/index.js missing from ${ASSET}"
+              exit 1
+            }
+            if [ "$ASSET" = "desktop-touch-mcp-macos-arm64.zip" ]; then
+              unzip -l release.zip | grep -qE '[[:space:]]desktop-touch-engine\.darwin-arm64\.node$' || {
+                echo "::error::the darwin addon is missing from ${ASSET}"
+                exit 1
+              }
+            fi
+            SHA256=$(sha256sum release.zip | cut -d' ' -f1)
+            node scripts/update-sha.mjs "$ASSET" "$SHA256"
+            rm release.zip
           done
-          if [ ! -f release.zip ]; then
-            echo "::error::Failed to download release zip after 30 retries"
-            exit 1
-          fi
-          unzip -l release.zip | grep -qE '[[:space:]]dist/index\.js$' || {
-            echo "::error::dist/index.js missing from release zip"
-            exit 1
-          }
-          SHA256=$(sha256sum release.zip | cut -d' ' -f1)
-          echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
-          rm release.zip
-
-      - name: Update SHA256 in launcher.js
-        env:
-          SHA256: ${{ steps.sha.outputs.sha256 }}
-        run: node scripts/update-sha.mjs "$SHA256"
 
       - name: Verify manifest
         run: npm run check:launcher-manifest
