@@ -164,7 +164,12 @@ export class PreActWatch {
   }
 
   /** `afterAct`: the watch follows an act on this window, whose own repaint is still finishing. */
-  start(key: string, hwnd: bigint, windowRect: Box, opt: { afterAct?: boolean } = {}): void {
+  /**
+   * `visible`: the parts of the window on screen (internal #245, `visibleParts`), so a window behind
+   * or above repainting over its rect is not taken for this one repainting itself (gate 2 on #771).
+   * All of `windowRect` when absent.
+   */
+  start(key: string, hwnd: bigint, windowRect: Box, opt: { afterAct?: boolean; visible?: readonly Box[] } = {}): void {
     this.end(key);
     const broker = this.broker();
     if (broker === null) return;
@@ -184,7 +189,7 @@ export class PreActWatch {
         (rects) => {
           if (entry.stoppedAt !== undefined) return;
           const t = this.now();
-          if (t < countFrom || largestHit(rects, windowRect) < ACT_MOTION.minRectPx) return;
+          if (t < countFrom || largestVisibleHit(rects, opt.visible ?? [windowRect]) < ACT_MOTION.minRectPx) return;
           if (entry.seen.first === undefined) entry.seen.first = t;
           else if (t - entry.seen.first >= ACT_MOTION.selfRepaintGapMs) entry.seen.selfRepainting = true;
         },
@@ -280,8 +285,8 @@ export async function observeAfterAct(
   const parts: readonly Box[] = opts.visible ?? [target];
   const targetArea0 = Math.max(1, target.width * target.height);
   const visibleArea = parts.reduce((sum, p) => sum + p.width * p.height, 0);
-  // Covered at all → a read of nothing is not "no change" (one pixel row of slack for rounding).
-  const covered = visibleArea < targetArea0 - Math.max(target.width, target.height);
+  // Covered at all → a read of nothing is not "no change" (an 8×8 slack; a change is 500 px or more).
+  const covered = visibleArea < targetArea0 - 64;
   const start = now();
   const seen: Rect[] = [];
   let best = 0;

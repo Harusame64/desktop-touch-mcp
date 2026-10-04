@@ -79,6 +79,7 @@ import {
   getProcessIdentityByPid,
   getWindowRectByHwnd,
   getVisibleFrameRectByHwnd,
+  enumMonitors,
   getVirtualScreen,
   getWindowRenderState,
   getWindowRoot,
@@ -1002,7 +1003,8 @@ async function startPreActWatch(facade: DesktopFacade, viewId: string, opt: { af
     if (hwnd === null) return;
     const rect = getWindowRectByHwnd(hwnd);
     if (rect === null || rect.width <= 0 || rect.height <= 0) return;
-    getPreActWatch().start(viewId, hwnd, rect, opt);
+    // internal #245 — the watch reads the same parts the act's read will (gate 2 on #771).
+    getPreActWatch().start(viewId, hwnd, rect, { ...opt, visible: visibleRegionOf(hwnd, rect).visible });
   } catch {
     // Observation only: a watch that cannot start leaves the act's verdict as it was.
   }
@@ -1582,10 +1584,16 @@ async function prepareActMotion(facade: DesktopFacade, viewId: string): Promise<
   }
 }
 
+/** WS_EX_LAYERED: a window whose pixels can be see-through; not taken for a cover. */
+const WS_EX_LAYERED = 0x0008_0000;
+
 /**
  * internal #245 — the visible frames of the windows above `hwnd` in z-order that are drawn (not
- * minimised, not cloaked). Unknown order (the window is not listed) → none: the whole frame is read,
- * as before.
+ * minimised, not cloaked) and not layered. A layered window's opacity is unknown — a full-screen one
+ * that is mostly transparent sits at the top of win2's desktop (Dell's EAWorkWindow,
+ * `point-owner.ts`) and would cover every window (gate 2 on #771) — so it is left out, as before
+ * #245. Not seen as covers: windows `enumWindowsInZOrder` does not list (untitled ones such as menus
+ * and tooltips, ones under 50 px, the key locker's). Unknown order (the window is not listed) → none.
  */
 function coversAbove(hwnd: bigint): { x: number; y: number; width: number; height: number }[] {
   try {
@@ -1593,12 +1601,41 @@ function coversAbove(hwnd: bigint): { x: number; y: number; width: number; heigh
     const self = wins.find((w) => w.hwnd === hwnd);
     if (!self) return [];
     return wins
-      .filter((w) => w.zOrder < self.zOrder && !w.isMinimized && !w.isCloaked)
+      .filter((w) => w.zOrder < self.zOrder && !w.isMinimized && !w.isCloaked && ((w.exStyle ?? 0) & WS_EX_LAYERED) === 0)
       .map((w) => getVisibleFrameRectByHwnd(w.hwnd) ?? w.region)
       .filter((r) => r.width > 0 && r.height > 0);
   } catch {
     return [];
   }
+}
+
+/**
+ * internal #245 — the window's visible frame (its rect includes the invisible resize border, where a
+ * window behind shows through), and the parts of it on screen: inside the monitor the watch reads
+ * (DXGI reports one output; a part past it never reports — gate 2 on #771), less the windows above.
+ */
+export function visibleRegionOf(
+  hwnd: bigint,
+  rect: { x: number; y: number; width: number; height: number },
+): { frame: { x: number; y: number; width: number; height: number }; visible: { x: number; y: number; width: number; height: number }[] } {
+  const frame = getVisibleFrameRectByHwnd(hwnd) ?? rect;
+  let onOutput = frame;
+  try {
+    const cx = rect.x + rect.width / 2;
+    const cy = rect.y + rect.height / 2;
+    const mon = enumMonitors().find((m) => cx >= m.bounds.x && cx < m.bounds.x + m.bounds.width && cy >= m.bounds.y && cy < m.bounds.y + m.bounds.height);
+    if (mon) {
+      const x = Math.max(frame.x, mon.bounds.x);
+      const y = Math.max(frame.y, mon.bounds.y);
+      const w = Math.min(frame.x + frame.width, mon.bounds.x + mon.bounds.width) - x;
+      const h = Math.min(frame.y + frame.height, mon.bounds.y + mon.bounds.height) - y;
+      onOutput = { x, y, width: Math.max(0, w), height: Math.max(0, h) };
+    }
+  } catch {
+    // Monitors unreadable: the frame as it is.
+  }
+  const visible = onOutput.width > 0 && onOutput.height > 0 ? visibleParts(onOutput, coversAbove(hwnd)) : [];
+  return { frame, visible };
 }
 
 /**
@@ -1621,10 +1658,8 @@ async function finishActMotion(m: ActMotion): Promise<{ observation: VisualMotio
         dirtyRects: [],
       };
     }
-    // internal #245 — read only what was on screen: the window's visible frame (its rect includes
-    // the invisible resize border, where a window behind shows through), less the windows above it.
-    const frame = getVisibleFrameRectByHwnd(m.hwnd) ?? rect;
-    const visible = visibleParts(frame, coversAbove(m.hwnd));
+    // internal #245 — read only what was on screen (`visibleRegionOf`).
+    const { frame, visible } = visibleRegionOf(m.hwnd, rect);
     return await observeAfterAct(m.sub, frame, m.quiet, {
       ...(m.cacheState !== undefined && { cacheState: m.cacheState }),
       visible,

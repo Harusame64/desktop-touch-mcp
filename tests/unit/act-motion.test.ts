@@ -155,6 +155,21 @@ describe("PreActWatch", () => {
     expect(w.take("v")).toMatchObject({ selfRepainting: true });
   });
 
+  // internal #245 (gate 2 on #771): a video behind the target crossed its rect's invisible strips; the
+  // watch counted it and the act read indeterminate, remembered after the video stopped.
+  it("does not count repaints outside the parts on screen it was given", () => {
+    const { b, paint } = broker();
+    let t = 0;
+    const w = new PreActWatch(() => b, { enumerate: monitors, now: () => t });
+    const rightHalf = [{ x: 550, y: 100, width: 450, height: 600 }];
+    w.start("v", 1n, WINDOW, { visible: rightHalf });
+    paint([{ x: 100, y: 100, width: 400, height: 600 }]);
+    t = 300;
+    paint([{ x: 100, y: 100, width: 400, height: 600 }]);
+    t = 2000;
+    expect(w.take("v")).toMatchObject({ selfRepainting: false });
+  });
+
   it("does not for one repaint, or two closer than 300 ms (a tooltip, an animation's frames)", () => {
     const { b, paint } = broker();
     let t = 0;

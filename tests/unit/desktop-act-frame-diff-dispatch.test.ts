@@ -354,7 +354,8 @@ describe("desktop_act frame-diff dispatch — legacy S5 path (S5b fold off)", ()
     // …and the window is watched again for an act that follows without a discover, with the act's
     // own trailing repaint given its grace (gate 2).
     expect(fakeBroker.subscribe).toHaveBeenCalledTimes(1);
-    expect(startSpy).toHaveBeenLastCalledWith("v1", 123n, WINDOW_RECT, { afterAct: true });
+    // internal #245: with the parts of the window on screen, so the watch reads what the act will.
+    expect(startSpy).toHaveBeenLastCalledWith("v1", 123n, WINDOW_RECT, { afterAct: true, visible: expect.any(Array) });
     // The watch is checked against the window as it is now: moved or another, it is dropped.
     expect(takeSpy).toHaveBeenCalledWith("v1", { hwnd: 123n, rect: WINDOW_RECT });
     expect(mockObserveAfterAct.mock.calls[0][0]).toBe(fakeSub);
