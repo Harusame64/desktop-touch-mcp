@@ -10,6 +10,7 @@
  */
 
 import WebSocket from "ws";
+import { getCdpPort } from "../utils/desktop-config.js";
 
 export const DEFAULT_CDP_PORT = 9222;
 // Exported so callers that surface a CDP-timeout-derived hint (e.g.
@@ -226,7 +227,36 @@ async function fetchTabs(port: number): Promise<CdpTab[]> {
   if (!res.ok) {
     throw new Error(`CDP /json returned HTTP ${res.status}`);
   }
-  return (await res.json()) as CdpTab[];
+  const tabs = (await res.json()) as CdpTab[];
+  for (const t of tabs) if (typeof t?.id === "string") rememberTabPort(t.id, port);
+  return tabs;
+}
+
+/**
+ * llm22 drive F13 (win2, 2026-10-04): after `browser_open(port:9333)`, `desktop_discover` and
+ * `desktop_act` on that tab went to 9222 (the port was hardcoded there) and failed
+ * (`all_providers_failed`, "check --remote-debugging-port=9222"). A tab is remembered with the port
+ * it was listed on, and those roads ask here. Bounded; the oldest goes first.
+ */
+const tabPorts = new Map<string, number>();
+const TAB_PORTS_MAX = 512;
+
+export function rememberTabPort(tabId: string, port: number): void {
+  tabPorts.delete(tabId);
+  tabPorts.set(tabId, port);
+  while (tabPorts.size > TAB_PORTS_MAX) {
+    const oldest = tabPorts.keys().next().value;
+    if (oldest === undefined) break;
+    tabPorts.delete(oldest);
+  }
+}
+
+/**
+ * The CDP port a tab was last listed on; otherwise the configured default (`cdpPort` in
+ * desktop-touch-config.json, else 9222) — the same default the browser_* tools use.
+ */
+export function portForTab(tabId: string | null | undefined): number {
+  return (typeof tabId === "string" ? tabPorts.get(tabId) : undefined) ?? getCdpPort();
 }
 
 async function resolveTab(

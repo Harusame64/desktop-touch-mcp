@@ -97,8 +97,9 @@ export async function fetchBrowserCandidates(
   const tabId = target.tabId;
 
   try {
-    const { evaluateInTab, DEFAULT_CDP_PORT } = await import("../../engine/cdp-bridge.js");
-    const elements = await evaluateInTab(INTERACTIVE_SCRIPT, tabId, DEFAULT_CDP_PORT) as BrowserElement[];
+    const { evaluateInTab, portForTab } = await import("../../engine/cdp-bridge.js");
+    // The port the tab was listed on (browser_open's), not a fixed 9222 (llm22 F13).
+    const elements = await evaluateInTab(INTERACTIVE_SCRIPT, tabId, portForTab(tabId)) as BrowserElement[];
 
     if (!Array.isArray(elements)) {
       return probeLane("cdp", "failed", { tabId, why: "not_an_array" }, { candidates: [], warnings: ["cdp_provider_failed"] });

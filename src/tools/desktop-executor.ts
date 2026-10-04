@@ -139,7 +139,7 @@ export interface ExecutorDeps {
   /** CDP: click a DOM element by CSS selector. */
   cdpClick(selector: string, tabId?: string): Promise<void>;
   /** CDP: fill a text input by CSS selector.
-   * NOTE: uses DEFAULT_CDP_PORT (9222). Phase 2 should extend TargetSpec with optional cdpPort. */
+   * Uses the port the tab was listed on (`portForTab`, llm22 F13). */
   cdpFill(selector: string, value: string, tabId?: string): Promise<void>;
   /**
    * Terminal: send text to a terminal window via background WM_CHAR injection (G2).
@@ -3225,8 +3225,8 @@ function getSharedRealDeps(): ExecutorDeps {
 
     async cdpClick(selector, tabId) {
       // TODO: support non-default CDP port via TargetSpec.cdpPort (Phase 2)
-      const { getElementScreenCoords, DEFAULT_CDP_PORT } = await import("../engine/cdp-bridge.js");
-      const coords = await getElementScreenCoords(selector, tabId ?? null, DEFAULT_CDP_PORT);
+      const { getElementScreenCoords, portForTab } = await import("../engine/cdp-bridge.js");
+      const coords = await getElementScreenCoords(selector, tabId ?? null, portForTab(tabId));
       if ((coords as { error?: string }).error) {
         throw new Error((coords as { error?: string }).error ?? "CDP getElementScreenCoords failed");
       }
@@ -3240,7 +3240,7 @@ function getSharedRealDeps(): ExecutorDeps {
     },
 
     async cdpFill(selector, value, tabId) {
-      const { evaluateInTab, DEFAULT_CDP_PORT } = await import("../engine/cdp-bridge.js");
+      const { evaluateInTab, portForTab } = await import("../engine/cdp-bridge.js");
       const expr = `(function(){
   const el = document.querySelector(${JSON.stringify(selector)});
   if(!el) return { ok:false, error:"Element not found: " + ${JSON.stringify(selector)} };
@@ -3253,7 +3253,7 @@ function getSharedRealDeps(): ExecutorDeps {
   el.dispatchEvent(new Event("change",{bubbles:true}));
   return { ok:true };
 })()`;
-      const r = await evaluateInTab(expr, tabId ?? null, DEFAULT_CDP_PORT) as { ok: boolean; error?: string };
+      const r = await evaluateInTab(expr, tabId ?? null, portForTab(tabId)) as { ok: boolean; error?: string };
       if (!r.ok) throw new Error(r.error ?? "CDP fill failed");
     },
 

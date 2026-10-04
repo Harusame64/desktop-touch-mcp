@@ -303,7 +303,7 @@ describe("every lane says what it did with the read (14a)", () => {
 
   describe("cdp", () => {
     async function cdpAnswering(evaluate: () => Promise<unknown>) {
-      vi.doMock("../../src/engine/cdp-bridge.js", () => ({ evaluateInTab: vi.fn(evaluate), DEFAULT_CDP_PORT: 9222 }));
+      vi.doMock("../../src/engine/cdp-bridge.js", () => ({ evaluateInTab: vi.fn(evaluate), DEFAULT_CDP_PORT: 9222, portForTab: () => 9222 }));
       return (await import("../../src/tools/desktop-providers/browser-provider.js")).fetchBrowserCandidates;
     }
 
