@@ -1630,6 +1630,10 @@ export function visibleRegionOf(
       const w = Math.min(frame.x + frame.width, mon.bounds.x + mon.bounds.width) - x;
       const h = Math.min(frame.y + frame.height, mon.bounds.y + mon.bounds.height) - y;
       onOutput = { x, y, width: Math.max(0, w), height: Math.max(0, h) };
+    } else {
+      // On no monitor (the act minimised it, or moved it off-screen): nothing of it was on screen
+      // (codex on 367eb814).
+      onOutput = { x: frame.x, y: frame.y, width: 0, height: 0 };
     }
   } catch {
     // Monitors unreadable: the frame as it is.

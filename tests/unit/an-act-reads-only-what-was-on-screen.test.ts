@@ -75,4 +75,10 @@ describe("visibleRegionOf", () => {
     expect(frame).toEqual(FRAME);
     expect(area(visible)).toBe(500 * 600);
   });
+
+  it("leaves nothing visible when the window is on no monitor (minimised or moved off-screen by the act)", () => {
+    setup([win(1n, 0, RECT)]);
+    mocks.monitors.mockReturnValue([{ bounds: { x: 2000, y: 0, width: 1920, height: 1080 } }]);
+    expect(visibleRegionOf(1n, RECT).visible).toEqual([]);
+  });
 });
