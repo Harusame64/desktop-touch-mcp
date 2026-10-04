@@ -773,6 +773,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "type": "object",
       "properties": {
         "title": {
+          "description": "Partial window title to search for (case-insensitive). A shown window (a minimised one counts) is taken before a hidden one with the same text; a hidden one — on another virtual desktop — only when nothing shown matches.",
           "type": "string"
         },
         "chromeTabUrlContains": {
