@@ -71,7 +71,9 @@ export function createMacAxExecutor(deps: MacAxExecutorDeps): ExecutorFn {
       expectedElementKey: ax.elementKey,
     };
 
-    if ((action === "type" || action === "setValue") && text !== undefined) {
+    if (action === "type" || action === "setValue") {
+      // `auto` on a type-only field resolves to `type`; without text it must not fall to a press.
+      if (text === undefined) throw new MacAxActError(`${action}: no text`, "text_required");
       const r = await deps.setValue(target, text);
       if (!r.ok) refuse(r, "setValue");
       // The native read-back is capped at VALUE_CHAR_CAP characters (src/macos/ax.rs).

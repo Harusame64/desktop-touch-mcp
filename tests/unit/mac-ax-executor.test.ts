@@ -118,3 +118,16 @@ describe("the facade refuses an action an AX entity does not offer", () => {
     expect(exec).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("type without text (codex, #780)", () => {
+  it("refuses with text_required instead of falling to a press", async () => {
+    const perform = vi.fn(), setValue = vi.fn();
+    const exec = createMacAxExecutor({ perform, setValue } as any);
+    const entity: any = { locator: { ax: { pid: 7, id: "a.0.1", role: "AXTextField", rootKey: "R", elementKey: "E" } } };
+    const err: any = await exec(entity, "type", undefined).catch((e) => e);
+    expect(err.name).toBe("MacAxActError");
+    expect(err.callerDetail).toContain("text_required");
+    expect(perform).not.toHaveBeenCalled();
+    expect(setValue).not.toHaveBeenCalled();
+  });
+});

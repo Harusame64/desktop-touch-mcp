@@ -96,8 +96,15 @@ export function isCandidate(e: NativeMacAxElement): boolean {
  * merged into one entity carrying one element's verbs and the other's locator (codex gate 1, #780).
  * The value is left out, so typing into a field does not change its identity.
  */
-export function axDigest(pid: number, e: Pick<NativeMacAxElement, "id" | "rootKey" | "elementKey">): string {
-  return createHash("sha1").update(`ax|${pid}|${e.id}|${e.rootKey}|${e.elementKey}`).digest("hex").slice(0, 16);
+export function axDigest(
+  pid: number,
+  e: Pick<NativeMacAxElement, "id" | "rootKey" | "elementKey" | "role" | "subrole" | "value">
+): string {
+  // A text is named by what it shows, so what it shows is part of what it is: when Calculator's
+  // display changes, the post-act diff must see a different entity (codex, #780). Texts are only
+  // read, never leased for an act, so a changing identity costs nothing there.
+  const shown = roleOf(e) === "label" ? `|${e.value ?? ""}` : "";
+  return createHash("sha1").update(`ax|${pid}|${e.id}|${e.rootKey}|${e.elementKey}${shown}`).digest("hex").slice(0, 16);
 }
 
 export function toCandidate(

@@ -185,3 +185,10 @@ describe("AX identity and the pinned app (codex gate 1, #780)", () => {
     expect(axTree).toHaveBeenCalledWith({ pid: 7 });
   });
 });
+
+describe("a text's identity follows what it shows (codex, #780)", () => {
+  const t = (value: string): any => ({ id: "a.0.3", rootKey: "R", elementKey: "K", depth: 2, role: "AXStaticText", actions: [], valueSettable: false, childCount: 0, value });
+  it("changes when the visible text changes", () => {
+    expect(toCandidate(t("7"), 7, "W", 1).digest).not.toBe(toCandidate(t("56"), 7, "W", 1).digest);
+  });
+});
