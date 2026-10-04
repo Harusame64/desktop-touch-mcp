@@ -209,3 +209,18 @@ describe("sheet warnings (2026-10-04)", () => {
     expect(notes.warnings).toEqual(["sheet_open_in_other_process"]);
   });
 });
+
+describe("text field values for discover (dogfood 2026-10-04)", () => {
+  const tree = (elements: any[]) => ({ pid: 7, elements, truncated: false, selfReference: false, displayAsleep: false, elapsedMs: 1 });
+  const field = (over: any): any => ({ id: "a.0.1", rootKey: "R", elementKey: "K", depth: 1, role: "AXTextArea", actions: [], valueSettable: true, childCount: 0, ...over });
+  it("records a text field's value by entity id", async () => {
+    const notes: any = { warnings: [] };
+    const [c] = await readMacAxCandidates({ listWindows: vi.fn(() => []), getFocus: vi.fn(async () => ({ pid: 7 })), axTree: vi.fn(async () => tree([field({ value: "line one\nline two" })])), now: () => 1 } as any, undefined, notes);
+    expect(notes.values).toEqual({ [`ent_${c!.digest}`]: "line one\nline two" });
+  });
+  it("never records a password field's value", async () => {
+    const notes: any = { warnings: [] };
+    await readMacAxCandidates({ listWindows: vi.fn(() => []), getFocus: vi.fn(async () => ({ pid: 7 })), axTree: vi.fn(async () => tree([field({ role: "AXTextField", subrole: "AXSecureTextField", value: "hunter2" })])), now: () => 1 } as any, undefined, notes);
+    expect(JSON.stringify(notes)).not.toContain("hunter2");
+  });
+});
