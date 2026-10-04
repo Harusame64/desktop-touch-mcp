@@ -22,8 +22,9 @@ fn main() {
         // Mac port (M1): Node's napi_* symbols come from the host process at
         // load time, so the cdylib leaves them undefined (what
         // napi_build::setup() does on macOS).
-        println!("cargo:rustc-cdylib-link-arg=-undefined");
-        println!("cargo:rustc-cdylib-link-arg=dynamic_lookup");
+        // `link-arg` (not `cdylib-link-arg`) so the unit-test binary links too.
+        println!("cargo:rustc-link-arg=-undefined");
+        println!("cargo:rustc-link-arg=dynamic_lookup");
     } else if target_os == "windows" {
         // MSVC target: link against node.lib in the project root.
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();

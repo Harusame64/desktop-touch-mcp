@@ -644,3 +644,61 @@ pub(crate) fn insert_text(t: &MacAxTarget, text: &str, at: Option<i64>) -> MacAc
     }
     MacActResult { ok: true, value_after: value_text(&e), ..Default::default() }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: f64) -> MacRect {
+        MacRect { x, y: 2.0, width: 3.0, height: 4.0 }
+    }
+
+    #[test]
+    fn element_key_joins_all_fields_with_unit_separator() {
+        let r = MacRect { x: 1.0, y: 2.0, width: 3.0, height: 4.0 };
+        assert_eq!(
+            element_key_of(Some("AXStandardWindow"), Some("id1"), Some("Title"), Some("Desc"), Some(&r)),
+            "AXStandardWindow\u{1f}id1\u{1f}Title\u{1f}Desc\u{1f}1,2,3,4"
+        );
+    }
+
+    #[test]
+    fn element_key_all_none_is_four_separators() {
+        assert_eq!(element_key_of(None, None, None, None, None), "\u{1f}\u{1f}\u{1f}\u{1f}");
+    }
+
+    #[test]
+    fn element_key_differs_by_frame() {
+        let (a, b) = (rect(10.0), rect(11.0));
+        assert_ne!(
+            element_key_of(Some("s"), Some("i"), Some("t"), Some("d"), Some(&a)),
+            element_key_of(Some("s"), Some("i"), Some("t"), Some("d"), Some(&b))
+        );
+    }
+
+    #[test]
+    fn element_key_differs_by_title() {
+        let r = rect(1.0);
+        assert_ne!(
+            element_key_of(Some("s"), Some("i"), Some("t1"), Some("d"), Some(&r)),
+            element_key_of(Some("s"), Some("i"), Some("t2"), Some("d"), Some(&r))
+        );
+    }
+
+    #[test]
+    fn cap_chars_truncates_and_passes_through() {
+        assert_eq!(cap_chars("abc".to_string(), 2), "ab");
+        assert_eq!(cap_chars("abc".to_string(), 3), "abc");
+        assert_eq!(cap_chars("abc".to_string(), 10), "abc");
+    }
+
+    #[test]
+    fn cap_chars_counts_chars_not_bytes() {
+        assert_eq!(cap_chars("日本語😀x".to_string(), 4), "日本語😀");
+    }
+
+    #[test]
+    fn cap_chars_empty() {
+        assert_eq!(cap_chars(String::new(), 5), "");
+    }
+}
