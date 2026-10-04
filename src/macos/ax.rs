@@ -198,7 +198,9 @@ fn same(a: &AXUIElement, b: &AXUIElement) -> bool {
 /// What an element is, to tell it from a sibling that took its path when
 /// the children changed (a Calculator's buttons shift as its display
 /// grows): subrole, identifier, title, description and frame, joined by
-/// U+001F. The value is left out, since acts change it.
+/// U+001F. The value is left out, since acts change it. An empty string
+/// counts as absent, so the key built while reading the tree and the one
+/// built again at the act agree.
 pub(crate) fn element_key_of(
     subrole: Option<&str>,
     identifier: Option<&str>,
@@ -207,17 +209,18 @@ pub(crate) fn element_key_of(
     frame: Option<&MacRect>,
 ) -> String {
     let frame = frame.map(|f| format!("{},{},{},{}", f.x, f.y, f.width, f.height)).unwrap_or_default();
+    // `Option<&str>` of "" and None both become "": the two call sites
+    // filter empties differently.
     [subrole.unwrap_or(""), identifier.unwrap_or(""), title.unwrap_or(""), description.unwrap_or(""), &frame]
         .join("\u{1f}")
 }
 
 fn element_key(e: &AXUIElement) -> String {
-    let nonempty = |s: Option<String>| s.filter(|s| !s.is_empty());
     element_key_of(
         attr_string(e, "AXSubrole").as_deref(),
-        nonempty(attr_string(e, "AXIdentifier")).as_deref(),
-        nonempty(attr_string(e, "AXTitle")).as_deref(),
-        nonempty(attr_string(e, "AXDescription")).as_deref(),
+        attr_string(e, "AXIdentifier").as_deref(),
+        attr_string(e, "AXTitle").as_deref(),
+        attr_string(e, "AXDescription").as_deref(),
         frame(e).as_ref(),
     )
 }
@@ -682,6 +685,18 @@ mod tests {
         assert_ne!(
             element_key_of(Some("s"), Some("i"), Some("t1"), Some("d"), Some(&r)),
             element_key_of(Some("s"), Some("i"), Some("t2"), Some("d"), Some(&r))
+        );
+    }
+
+    /// The read side passes `None` for an empty title / description /
+    /// identifier, the act side passes `Some("")`: the keys must agree, or
+    /// every act on an unnamed element would refuse.
+    #[test]
+    fn element_key_empty_string_equals_absent() {
+        let r = rect(1.0);
+        assert_eq!(
+            element_key_of(Some("s"), None, None, None, Some(&r)),
+            element_key_of(Some("s"), Some(""), Some(""), Some(""), Some(&r))
         );
     }
 

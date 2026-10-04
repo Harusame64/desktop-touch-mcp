@@ -20,9 +20,11 @@ fn main() {
         println!("cargo:rustc-link-lib=node");
     } else if target_os == "macos" {
         // Mac port (M1): Node's napi_* symbols come from the host process at
-        // load time, so the cdylib leaves them undefined (what
-        // napi_build::setup() does on macOS).
-        // `link-arg` (not `cdylib-link-arg`) so the unit-test binary links too.
+        // load time, so they are left undefined. napi_build::setup() does this
+        // for the cdylib only (`rustc-cdylib-link-arg`); `rustc-link-arg`
+        // gives it to the unit-test binary too, which otherwise cannot link.
+        // The cost: a unit test that calls a real napi_* function now fails
+        // at run time ("symbol not found in flat namespace"), not at link.
         println!("cargo:rustc-link-arg=-undefined");
         println!("cargo:rustc-link-arg=dynamic_lookup");
     } else if target_os == "windows" {
