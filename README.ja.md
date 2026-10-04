@@ -174,7 +174,12 @@ npm run build
 
 Apple Silicon の Mac（macOS 14 以降）では、同じ `npx` で macOS 用のサーバーが起動します。使えるツールは `desktop_state`・`desktop_discover`・`desktop_act`（押す・文字の置き換え／追記）・`screenshot`（ウィンドウ1枚）の4つです。ほかのツールは Windows 専用で、macOS では一覧に出ません。
 
-- サーバーを動かすアプリ（ターミナル、iTerm、VS Code、Claude アプリなど）に、システム設定 › プライバシーとセキュリティ で **アクセシビリティ** を、ウィンドウのタイトルとスクリーンショットには **画面収録** も許可し、アプリを再起動してください。許可がないあいだ、ツールは `PermissionRequired` と、何を許可すればよいかを返します。
+- サーバーを動かすアプリ（ターミナル、iTerm、VS Code、Claude アプリなど）に、システム設定 › プライバシーとセキュリティ で **アクセシビリティ** を、ウィンドウのタイトルとスクリーンショットには **画面収録** も許可してください。最近の macOS では名前が変わっていることがあります（macOS 27 では「デバイスの制御とデータへのアクセス」と「画面収録とシステムオーディオ録音」）。次のコマンドで、それぞれの画面を直接開けます:
+  ```bash
+  open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+  open "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+  ```
+  許可したら、**MCP サーバーを再起動**してください（MCP クライアントで再起動または再接続）。動いているサーバーは、あとから付けた許可を見ません。許可がないあいだ、ツールは `PermissionRequired` と、何を許可すればよいかを返します。
 - インストールは `npx` だけにしてください。ブラウザでダウンロードしたリリースの zip は Gatekeeper に拒否されます（ネイティブモジュールは公証していません）。
 - stdio のみです（`--http` はまだ使えません）。Intel の Mac と Linux には対応していません。
 

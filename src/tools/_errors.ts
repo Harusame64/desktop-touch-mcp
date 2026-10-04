@@ -614,9 +614,14 @@ const SUGGESTS: Record<string, string[]> = {
   // Internal #247 — `WindowFrozenError` (`engine/window-frozen.ts`) declares this code.
   // Mac port (M2-1): macOS gives Accessibility to the app that runs the server, not to the server
   // itself, and only the user can grant it. Nothing on the desktop can be read or done until then.
+  // Measured on macOS 27 (2026-10-04, M3-3, Japanese UI): the user could not find "Accessibility" —
+  // the pane is titled 「デバイスの制御とデータへのアクセス」 there — and a grant
+  // made while the server runs is not seen until the server restarts. So: a command that opens the
+  // pane, and which thing to restart.
   PermissionRequired: [
-    "Open System Settings > Privacy & Security > Accessibility and turn on the app that runs this server (Terminal, iTerm, VS Code, the Claude app, ...), then restart the server.",
-    "Screen Recording (same pane) is needed for window titles and screenshots.",
+    "Run `open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\"` (or System Settings > Privacy & Security > Accessibility — on recent macOS the pane can have another name) and turn on the app that runs this server (Terminal, iTerm, VS Code, the Claude app, ...).",
+    "Then restart this MCP server (restart or reconnect it in your MCP client): a server that is already running does not see the new grant.",
+    "Window titles and screenshots also need Screen Recording: `open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture\"`.",
   ],
   WindowFrozen: [
     "Nothing was read: the window's app is suspended by Windows, so UI Automation reads nothing from it and a capture would show its last frame, not what it shows now.",
