@@ -74,10 +74,23 @@ export function actionabilityOf(e: NativeMacAxElement): UiEntityCandidate["actio
  * so a label is named by its value first — as a Windows static text is named
  * by the text it shows.
  */
+/**
+ * The title bar's buttons carry no title or description, only a subrole, so they came out as
+ * nameless "button"s — and a caller pressing a nameless button closed a document (2026-10-04, the
+ * sheet measurement). Name them by what they do.
+ */
+const WINDOW_BUTTONS: Record<string, string> = {
+  AXCloseButton: "Close window",
+  AXMinimizeButton: "Minimize window",
+  AXFullScreenButton: "Full screen",
+  AXZoomButton: "Zoom window",
+};
+
 function labelOf(e: NativeMacAxElement): string | undefined {
   if (roleOf(e) === "label" && e.value) return e.value;
   if (e.title) return e.title;
   if (e.description) return e.description;
+  if (e.subrole !== undefined && WINDOW_BUTTONS[e.subrole] !== undefined) return WINDOW_BUTTONS[e.subrole];
   return undefined;
 }
 

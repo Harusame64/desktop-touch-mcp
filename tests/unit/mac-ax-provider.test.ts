@@ -192,3 +192,10 @@ describe("a text's identity follows what it shows (codex, #780)", () => {
     expect(toCandidate(t("7"), 7, "W", 1).digest).not.toBe(toCandidate(t("56"), 7, "W", 1).digest);
   });
 });
+
+describe("title-bar buttons are named (2026-10-04)", () => {
+  it("names the close button instead of leaving it nameless", () => {
+    const close: any = { id: "a.0.5", rootKey: "R", elementKey: "K", depth: 1, role: "AXButton", subrole: "AXCloseButton", actions: ["AXPress"], valueSettable: false, childCount: 0 };
+    expect(toCandidate(close, 7, "W", 1).label).toBe("Close window");
+  });
+});
