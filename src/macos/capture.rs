@@ -79,6 +79,10 @@ fn failed(reason: impl Into<String>, t0: std::time::Instant) -> MacCaptureResult
     }
 }
 
+fn guarded<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| Err("panic".to_string()))
+}
+
 fn sck_error(e: &NSError) -> String {
     format!("sck_error {}: {}", e.code(), e.localizedDescription())
 }
@@ -86,7 +90,9 @@ fn sck_error(e: &NSError) -> String {
 fn find_window(window_id: u32, timeout: Duration) -> Result<Retained<SCWindow>, String> {
     let (tx, rx) = mpsc::channel::<Result<Retained<SCWindow>, String>>();
     let block = RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
-        let r = if let Some(content) = unsafe { content.as_ref() } {
+        // Runs on SCK's queue, outside napi_safe_call: a panic here would
+        // cross the block's C boundary and abort.
+        let r = guarded(|| if let Some(content) = unsafe { content.as_ref() } {
             let windows = unsafe { content.windows() };
             windows
                 .iter()
@@ -96,7 +102,7 @@ fn find_window(window_id: u32, timeout: Duration) -> Result<Retained<SCWindow>, 
             Err(sck_error(e))
         } else {
             Err("no_shareable_content".to_string())
-        };
+        });
         let _ = tx.send(r);
     });
     unsafe {
@@ -172,13 +178,13 @@ pub(crate) fn capture_window(opts: &MacCaptureOptions) -> MacCaptureResult {
 
     let (tx, rx) = mpsc::channel::<Result<(Vec<u8>, u32, u32), String>>();
     let block = RcBlock::new(move |image: *mut CGImage, error: *mut NSError| {
-        let r = if let Some(image) = unsafe { image.as_ref() } {
+        let r = guarded(|| if let Some(image) = unsafe { image.as_ref() } {
             to_rgba(image).ok_or_else(|| "empty_image".to_string())
         } else if let Some(e) = unsafe { error.as_ref() } {
             Err(sck_error(e))
         } else {
             Err("no_image".to_string())
-        };
+        });
         let _ = tx.send(r);
     });
     unsafe {

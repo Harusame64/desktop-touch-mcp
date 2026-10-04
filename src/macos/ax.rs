@@ -190,12 +190,20 @@ fn same(a: &AXUIElement, b: &AXUIElement) -> bool {
 }
 
 /// What a root is called, to tell its windows apart when their order
-/// changes: title and document URL, joined by U+001F.
+/// changes: title, document URL and frame, joined by U+001F. The frame is
+/// there for windows that share a title and have no document (two Terminal
+/// windows, two Finder windows on one folder). The cost is the other way:
+/// moving, resizing or retitling the window refuses the next act until the
+/// caller reads again. TextEdit's AXTitle does not change on edit (measured).
 pub(crate) fn root_key(e: &AXUIElement) -> String {
+    let frame = frame(e)
+        .map(|f| format!("{},{},{},{}", f.x, f.y, f.width, f.height))
+        .unwrap_or_default();
     format!(
-        "{}\u{1f}{}",
+        "{}\u{1f}{}\u{1f}{}",
         attr_string(e, "AXTitle").unwrap_or_default(),
-        attr_string(e, "AXDocument").unwrap_or_default()
+        attr_string(e, "AXDocument").unwrap_or_default(),
+        frame
     )
 }
 
@@ -275,8 +283,10 @@ pub struct MacAxTreeOptions {
     pub include_menu_bar: Option<bool>,
     /// Per-message AX timeout in seconds (default 3).
     pub timeout_secs: Option<f64>,
-    /// Stop the whole walk after this long (default 15000 ms): a hung app
-    /// would otherwise cost the per-message timeout for every attribute.
+    /// Stop the walk after this long (default 15000 ms): a hung app would
+    /// otherwise cost the per-message timeout for every attribute. Checked
+    /// between elements, so it is a soft limit: one element that hangs can
+    /// overrun it by its ~14 reads times the per-message timeout.
     pub max_ms: Option<u32>,
 }
 

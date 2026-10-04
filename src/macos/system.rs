@@ -143,7 +143,8 @@ fn frontmost_by_scan() -> Option<CFRetained<AXUIElement>> {
 
 pub(crate) fn focus() -> MacFocus {
     // No timeout is set here: on the system-wide element it would change
-    // the default for the whole process. This one query uses that default.
+    // the default for the whole process. This query, and the reads on the
+    // app element it returns, use that default (6 s unless changed).
     let sys = unsafe { AXUIElement::new_system_wide() };
     let (app, source, error) = match ax::attr(&sys, "AXFocusedApplication") {
         Ok(v) => (v.downcast::<AXUIElement>().ok(), "system_wide", None),
