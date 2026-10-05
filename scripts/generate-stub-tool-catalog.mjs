@@ -23,6 +23,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stubCatalogEnv } from "./lib/stub-catalog-env.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const FILE = "tests/unit/stub-catalog-is-the-live-tools-list.test.ts";
@@ -43,9 +44,7 @@ const res = spawnSync(
   {
     stdio: "inherit",
     cwd: ROOT,
-    env: CHECK
-      ? Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== "DESKTOP_TOUCH_WRITE_STUB_CATALOG"))
-      : { ...process.env, DESKTOP_TOUCH_WRITE_STUB_CATALOG: "1" },
+    env: stubCatalogEnv(process.env, CHECK),
   },
 );
 

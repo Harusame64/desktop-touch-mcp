@@ -10,8 +10,10 @@ COPY index.js index.d.ts ./
 COPY src ./src
 COPY scripts ./scripts
 
+# The stub catalog (src/stub-tool-catalog.ts) is committed and CI checks it against the Windows
+# server's tools/list; it is not regenerated here — the generator registers the real tools under
+# vitest, and this image carries neither the tests nor the vitest config (internal #252).
 RUN npm ci --include=dev --ignore-scripts \
-  && npm run generate:stub-catalog \
   && npm run build \
   && npm prune --omit=dev
 

@@ -249,8 +249,8 @@ describe("the shipped promise says what it covers", () => {
     // exists nowhere in that file — it spans a `" +` boundary. An anchor that matches
     // nothing is a cell that cannot go red, and this is the third time that shape has
     // appeared in this sequence. The generated catalogue holds the assembled text, and
-    // `check:stub-catalog` (CI) regenerates and diffs it, so catalogue == source is
-    // enforced elsewhere and reading the catalogue is reading what ships.
+    // `check:stub-catalog` (CI) and `stub-catalog-is-the-live-tools-list.test.ts` require it to
+    // be the server's own tools/list, so reading the catalogue is reading what ships.
     //
     // WHAT IT CATCHES AND WHAT IT CANNOT, measured rather than guessed — and corrected
     // twice, because an inventory a reader trusts cannot afford to be wrong. Deleting

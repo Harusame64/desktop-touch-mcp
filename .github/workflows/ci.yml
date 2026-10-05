@@ -51,9 +51,6 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Check generated Linux stub catalog
-        run: npm run check:stub-catalog
-
       - name: Check failWith callsite-shape fixtures (ADR-021 PR-P2-2 — codemod shape gate)
         # Regenerates the failWith callsite-shape catalogue and fails if it drifts
         # from source. Pairs with the frozen-golden bit-equality test
@@ -349,6 +346,33 @@ jobs:
 
       - name: Wire-schema pins (internal#106/#662 — what the SDK's converter emits for every flattened tool)
         run: npm run check:wire-pins
+
+  # THE STUB CATALOG GETS ITS OWN JOB, for the reason the wire pins do (see above): it now runs
+  # vitest — it registers the real tools on a real McpServer and compares the committed catalog
+  # with what tools/list answers (internal #252) — and a vitest run cancelled on a 2-core runner
+  # kills the job it is in. In the build job it would take the Rust checks, the addon build and
+  # `tsc` down with it. It stays on Windows because the catalog IS the Windows server's tools/list:
+  # unlike the wire pins, it covers every tool, and this job is where that is true by
+  # construction rather than by an audit of every module for platform conditionals.
+  stub-catalog:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        # `--ignore-scripts`, as the wire-pins job: this needs `node_modules`, not a build. The
+        # native addon is absent here, as in every scratch tree the check was measured in.
+        run: npm ci --ignore-scripts
+
+      - name: Check the stub catalog is the server's tools/list
+        run: npm run check:stub-catalog
 
   docker-build:
     runs-on: ubuntu-latest

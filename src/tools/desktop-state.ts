@@ -1203,8 +1203,8 @@ export function registerDesktopStateTools(server: McpServer): void {
   // `withEnvelopeIncludeSchema`) and `desktopStateRegistrationHandler`
   // (envelope-aware wrapper) so `run_macro` dispatcher reuses the SAME
   // wrapped instances (Opus P1-1 同型 strip risk for macro path).
-  // Comments live OUTSIDE the call so the stub-catalog generator's
-  // bare-identifier regex sees clean args[2] / args[3].
+  // (Comments were kept outside the call for the stub-catalog generator's source parser; it
+  // now reads tools/list, internal #252, so that constraint is gone.)
   server.tool(
     "desktop_state",
     buildDesc({

@@ -283,7 +283,11 @@ function createMcpServer(opts: { canAsk: boolean }): McpServer {
     );
   };
 
-  // One list for the server and the stub catalog (`tools/catalog-registrars.ts`, internal #252).
+  // The stub-catalog surface, in three steps the stub catalog's generator repeats in this order
+  // (`tests/unit/stub-catalog-is-the-live-tools-list.test.ts` checks the order here): the shared
+  // list (`tools/catalog-registrars.ts`, internal #252), the advice configuration, the key locker.
+  // The capture stays a statement of its own in this function — the one place it may be made
+  // (`the-presenter-resolves-advice-for-this-server.test.ts`).
   for (const register of CATALOG_TOOL_REGISTRARS) register(s);
   // ADR-014 R3 — the key locker management tool (self-gates on the kill switch, so a disabled
   // locker registers nothing).

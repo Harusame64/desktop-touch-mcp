@@ -651,7 +651,8 @@ describe("desktopActRawHandler — executor_failed if_unexpected attach (#327 it
 
     const ran = await tryNextOf({}, "type");
     expect(ran.some((l) => /has already tried/.test(l))).toBe(true);
-    expect(ran.some((l) => /^For action='click'|try click_element\(/.test(l))).toBe(false);
+    expect(ran.some((l) => l.startsWith("For action='click'"))).toBe(false);
+    expect(ran.some((l) => l.includes("try click_element("))).toBe(false);
 
     const click = await tryNextOf({}, "click");
     expect(click.some((l) => /has already tried/.test(l))).toBe(false);

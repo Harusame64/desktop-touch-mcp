@@ -82,7 +82,7 @@ export const screenshotSchema = {
     .describe(
       "1:1 pixel mode — no scaling, WebP compression. " +
       "Window captures include 'origin: (x,y)' so you can compute screen position: screen_x = origin_x + image_x. " +
-      "A frame from the window's composition surface (WGC: mode='background' with fullContent on a visible, non-minimised window when it can be, or normal mode's rescue) starts at the window's visible frame, and its origin is that frame's corner; " +
+      "A frame from the window's composition surface (WGC: mode='background' with fullContent on a window visible on the current desktop — not minimised or cloaked — when it can be, or normal mode's rescue) starts at the window's visible frame, and its origin is that frame's corner; " +
       "when the visible frame cannot be read, no origin is given — the text says so; use desktop_discover for coordinates. " +
       "When dotByDotMaxDimension is also set, scale factor is included: screen_x = origin_x + image_x / scale."
     ),
@@ -138,7 +138,7 @@ export const screenshotSchema = {
     .describe(
       "Capture mode.\n" +
       "  'normal'     — default. Window-targeted captures (windowTitle / hwnd) use Win32 PrintWindow; when it returns no data or an all-black frame, the window's composition surface (WGC) is tried next if the window is visible on the current desktop (not minimised or cloaked), and BitBlt last. The route used is reported in hints.captureSource ('printwindow' | 'wgc' | 'bitblt-fallback'). Fullscreen / displayId captures use BitBlt.\n" +
-      "  'background' — a capture of the window itself, not of the screen: its composition surface (WGC) when it can be for a visible, non-minimised window with fullContent, else Win32 PrintWindow. Requires windowTitle (or hwnd). Pair with fullContent for GPU-rendered apps."
+      "  'background' — a capture of the window itself, not of the screen: its composition surface (WGC) when it can be for a window visible on the current desktop (not minimised or cloaked) with fullContent, else Win32 PrintWindow. Requires windowTitle (or hwnd). Pair with fullContent for GPU-rendered apps."
     ),
   fullContent: coercedBoolean()
     .default(true)
