@@ -92,7 +92,7 @@
     "test:e2e:perception": "vitest run --project=e2e tests/e2e/perception-mvp.test.ts tests/e2e/rich-narration-edge.test.ts",
     "test:watch": "vitest",
     "generate:stub-catalog": "node scripts/generate-stub-tool-catalog.mjs",
-    "check:stub-catalog": "node scripts/generate-stub-tool-catalog.mjs && git diff --exit-code src/stub-tool-catalog.ts",
+    "check:stub-catalog": "node scripts/generate-stub-tool-catalog.mjs --check",
     "check:failwith-fixtures": "node scripts/extract-failwith-shape-fixtures.mjs && git diff --exit-code tests/fixtures/failwith-callsite-shapes.json",
     "check:napi-safe": "node scripts/check-napi-safe.mjs",
     "check:native-types": "node scripts/check-native-types.mjs",

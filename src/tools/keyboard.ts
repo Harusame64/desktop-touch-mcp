@@ -3506,9 +3506,10 @@ export const keyboardSequenceHandler = async ({
 // Discriminated union for the public `keyboard` tool — this is the schema
 // the registered tool validates against (NOT keyboardTypeSchema /
 // keyboardPressSchema above, which are kept only as exports for any external
-// consumer). Field lists are inlined here because the stub-catalog generator
-// (scripts/generate-stub-tool-catalog.mjs) statically parses the variants
-// and cannot follow Zod object spread. Keep the field set in sync with
+// consumer). Field lists were inlined here because the stub-catalog generator
+// used to parse the variants as source text and could not follow Zod object
+// spread; it now reads tools/list (internal #252), so that reason is gone, but
+// the lists are still separate copies. Keep the field set in sync with
 // keyboardTypeSchema / keyboardPressSchema; tests in
 // keyboard-leash-guard.test.ts pin abortOnFocusLoss reachability so future
 // drift trips a regression test instead of slipping through silently
@@ -3602,11 +3603,9 @@ export const keyboardSchema = z.discriminatedUnion("action", [
   // execute inside ONE withKeyboardLock so concurrent keyboard / scroll /
   // terminal callers cannot splice between them.
   //
-  // KEEP STEP-ITEM SHAPE INLINE: scripts/generate-stub-tool-catalog.mjs
-  // statically parses each variant. The inner `z.object({keys,holdMs,gapMs}).strict()`
-  // expression must remain literal here so the regen can emit
-  // `items.properties` + `additionalProperties:false` for the Linux stub
-  // catalog (v5 P2-1).
+  // The step-item shape was kept inline for the stub-catalog generator, which
+  // used to parse each variant as source text (v5 P2-1). It now reads
+  // tools/list (internal #252), so the shape may be named or shared freely.
   z.object({
     action: z.literal("sequence"),
     steps: z.array(

@@ -10,37 +10,18 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
-import { registerScreenshotTools } from "./tools/screenshot.js";
-import { registerMouseTools } from "./tools/mouse.js";
-import { registerKeyboardTools } from "./tools/keyboard.js";
-import { registerWindowTools, getWindowsHandler, getWindowsSchema } from "./tools/window.js";
+import { CATALOG_TOOL_REGISTRARS } from "./tools/catalog-registrars.js";
+import { getWindowsHandler, getWindowsSchema } from "./tools/window.js";
 import {
-  registerUiElementTools,
   getUiElementsHandler,
   getUiElementsSchema,
   setElementValueHandler,
   setElementValueSchema,
 } from "./tools/ui-elements.js";
 import { withRichNarration, UIA_WRITE_NARRATION } from "./tools/_narration.js";
-import { registerWorkspaceTools } from "./tools/workspace.js";
-import { registerMacroTools } from "./tools/macro.js";
-import { registerBrowserTools } from "./tools/browser.js";
 import { autoDockFromEnv } from "./tools/dock.js";
-import { registerWindowDockTools } from "./tools/window-dock.js";
-import { registerScrollTools } from "./tools/scroll.js";
-import { registerWaitUntilTool } from "./tools/wait-until.js";
-import { registerDesktopStateTools } from "./tools/desktop-state.js";
-import { registerTerminalTools } from "./tools/terminal.js";
-import { registerEventTools } from "./tools/events.js";
-import { registerClipboardTools } from "./tools/clipboard.js";
-import { registerNotificationTools } from "./tools/notification.js";
-import { registerExcelTools } from "./tools/excel.js";
-import { registerPerceptionTools } from "./tools/perception.js";
 import { registerPerceptionResources } from "./tools/perception-resources.js";
 import { registerScreenshotResources } from "./tools/screenshot-resources.js";
-import { registerScreenshotQueryTool } from "./tools/screenshot-query.js";
-import { registerScreenshotGcTool } from "./tools/screenshot-gc.js";
-import { registerServerStatusTool } from "./tools/server-status.js";
 import { captureAdviceConfiguration } from "./tools/_advice-capability.js";
 import { keyLockerDisabled } from "./engine/key-locker/key-locker-switch.js";
 import { registerKeyLockerTools } from "./tools/key-locker-tool.js";
@@ -200,7 +181,7 @@ function createMcpServer(opts: { canAsk: boolean }): McpServer {
         "  action_not_offered → the target does not offer the action this act named, and NOTHING WAS DONE — no road was taken, so this is not a failed executor. Ask for the action you mean: desktop_act(action='click') or action='invoke' presses it. The entity's affordances in the desktop_discover response say which actions it offers, and action='auto' picks one of them. No provider here advertises 'select', so a select on any target is this refusal — reach a list or combo box by clicking the item you want. A type or setValue on a control UI Automation reports as a button, check box, radio button, hyperlink or menu item is this refusal too: none of them takes text, and nothing was typed;",
         "  value_not_applied → the write was accepted and nothing read back changed: a type or setValue through the native UI Automation client to a control that is not a text field (not Edit or Document) whose value read back unchanged for a moment after the write (nothing else was tried), or a type into Word's body after which the visible page text read back unchanged (it may have landed out of view). Do not retry it or type into the same control another way (on a WinForms NumericUpDown a keystroke landed at its caret); look at the field or document, or re-call desktop_discover, before writing again;",
         "  window_excluded → this window is excluded from every tool surface of this server (the key locker's own windows are, so a secret being typed cannot be driven by the same session); nothing was clicked and nothing here can click it. Act on another window;",
-        "  executor_failed → the road this act took failed. When if_unexpected.detail says no route was tried, nothing was typed: follow detail. Otherwise, for a click or invoke fall back to click_element / mouse_click / browser_click; for a type or setValue, focus the field and use keyboard(action='type', method='foreground'). if_unexpected.try_next carries the lines for this act;",
+        "  executor_failed → when if_unexpected.detail begins 'Nothing was typed', no route ran and nothing was typed: do what detail says. Otherwise the road this act took failed: for a click or invoke fall back to click_element / mouse_click / browser_click; for a type or setValue, focus the field and use keyboard(action='type', method='foreground') — on a Windows Terminal textbox use terminal(action='send') instead, but never after foreground_not_allowed. if_unexpected.try_next carries the lines for this act;",
         "  unknown → the tool's handler threw before any road could name a cause. This is NOT a refusal the tool decided, so it does not say the act was skipped — it may have taken effect before the throw. Observe the target again before acting and do not repeat the call as a retry until you have; if_unexpected.try_next names the instrument for the kind of target. If it repeats it is a defect worth reporting, because every other road here answers under its own name;",
         "",
         "## Observation — priority order",
@@ -302,28 +283,8 @@ function createMcpServer(opts: { canAsk: boolean }): McpServer {
     );
   };
 
-  registerScreenshotTools(s);
-  registerMouseTools(s);
-  registerKeyboardTools(s);
-  registerWindowTools(s);
-  registerUiElementTools(s);
-  registerWorkspaceTools(s);
-  registerMacroTools(s);
-  registerScrollTools(s);
-  registerBrowserTools(s);
-  registerWindowDockTools(s);
-  registerWaitUntilTool(s);
-  registerDesktopStateTools(s);
-  registerTerminalTools(s);
-  registerEventTools(s);
-  registerClipboardTools(s);
-  registerNotificationTools(s);
-  registerExcelTools(s);
-  registerPerceptionTools(s);
-  registerServerStatusTool(s);
-  // ADR-026 Phase 3 — screenshot disk-cache observe (query) + reclaim (gc).
-  registerScreenshotQueryTool(s);
-  registerScreenshotGcTool(s);
+  // One list for the server and the stub catalog (`tools/catalog-registrars.ts`, internal #252).
+  for (const register of CATALOG_TOOL_REGISTRARS) register(s);
   // ADR-014 R3 — the key locker management tool (self-gates on the kill switch, so a disabled
   // locker registers nothing).
   // ADR-036 stage 2 B2b: take the configuration HERE, where registration reads the

@@ -137,7 +137,7 @@ export const screenshotSchema = {
     .optional()
     .describe(
       "Capture mode.\n" +
-      "  'normal'     — default. Window-targeted captures (windowTitle / hwnd) use Win32 PrintWindow; when it returns no data or an all-black frame, the window's composition surface (WGC) is tried next if the window is visible and not minimised, and BitBlt last. The route used is reported in hints.captureSource ('printwindow' | 'wgc' | 'bitblt-fallback'). Fullscreen / displayId captures use BitBlt.\n" +
+      "  'normal'     — default. Window-targeted captures (windowTitle / hwnd) use Win32 PrintWindow; when it returns no data or an all-black frame, the window's composition surface (WGC) is tried next if the window is visible on the current desktop (not minimised or cloaked), and BitBlt last. The route used is reported in hints.captureSource ('printwindow' | 'wgc' | 'bitblt-fallback'). Fullscreen / displayId captures use BitBlt.\n" +
       "  'background' — a capture of the window itself, not of the screen: its composition surface (WGC) when it can be for a visible, non-minimised window with fullContent, else Win32 PrintWindow. Requires windowTitle (or hwnd). Pair with fullContent for GPU-rendered apps."
     ),
   fullContent: coercedBoolean()

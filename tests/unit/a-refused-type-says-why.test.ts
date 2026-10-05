@@ -121,6 +121,10 @@ describe("a type no route can carry", () => {
       };
       const result = await new GuardedTouchLoop(store, env).touch({ lease, action: "type", text: "x" });
       expect(result).toMatchObject({ ok: false, reason: "executor_failed", noRouteTried: true });
+      // The server instructions, the desktop_act description and the guides tell a caller to
+      // recognise this case by detail beginning "Nothing was typed" (gate 2 round 2 on #792:
+      // they first keyed on "no route was tried", which only one of the three says).
+      expect((result as { detail?: string }).detail).toMatch(/^Nothing was typed/);
     });
   }
 
