@@ -8,7 +8,13 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { createDesktopExecutor, type ExecutorDeps } from "../../src/tools/desktop-executor.js";
+import {
+  createDesktopExecutor,
+  KeyboardCannotReplaceError,
+  KeyboardHostUnavailableError,
+  NoTextRouteError,
+  type ExecutorDeps,
+} from "../../src/tools/desktop-executor.js";
 import { GuardedTouchLoop, type TouchEnvironment } from "../../src/engine/world-graph/guarded-touch.js";
 import { LeaseStore } from "../../src/engine/world-graph/lease-store.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
@@ -94,6 +100,30 @@ describe("a type no route can carry", () => {
     expect(result).toEqual({ ok: false, reason: "executor_failed", diff: [], detail: detailFor(WORD_BODY_ROUTES, TYPE_INSTEAD), noRouteTried: true });
   });
 
+  // Gate 2 on #792: the marker on the two keyboard-road refusals had no cell — removing it from
+  // either left every test green. Each of the three is thrown through the loop here.
+  const ALL_THREE: Array<[string, () => Error]> = [
+    ["NoTextRouteError", () => new NoTextRouteError(body, "type", { uia: "blocked", cdp: "no-selector", terminal: "no-source", keyboard: "not-in-preferred" })],
+    ["KeyboardCannotReplaceError", () => new KeyboardCannotReplaceError(body)],
+    ["KeyboardHostUnavailableError (not usable)", () => new KeyboardHostUnavailableError(body)],
+    ["KeyboardHostUnavailableError (cannot post)", () => new KeyboardHostUnavailableError(body, "cannot_post")],
+  ];
+  for (const [name, make] of ALL_THREE) {
+    it(`carries noRouteTried for ${name}, a refusal made before any route ran (internal #242)`, async () => {
+      const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+      const lease = store.issue(body, "v1");
+      const env: TouchEnvironment = {
+        resolveLiveEntities: () => [body],
+        currentGeneration: () => "gen-1",
+        isModalBlocking: () => false,
+        checkViewport: () => null,
+        execute: async () => { throw make(); },
+      };
+      const result = await new GuardedTouchLoop(store, env).touch({ lease, action: "type", text: "x" });
+      expect(result).toMatchObject({ ok: false, reason: "executor_failed", noRouteTried: true });
+    });
+  }
+
   it("does not claim no route was tried for a throw that does not say so (internal #242)", async () => {
     const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
     const lease = store.issue(body, "v1");
@@ -128,6 +158,8 @@ describe("the advice", () => {
       const lines = executorFailedAdviceFor(action, false);
       expect(lines.some((l) => CLICK_REMEDY.test(l.replace(/Focus the target window first with focus_window or mouse_click$/, ""))), action).toBe(false);
       expect(lines.some((l) => ROUTES_TRIED.test(l)), action).toBe(true);
+      // A stale locator is a cause for a type as much as for a click (gate 2: dropping it was green).
+      expect(lines.some((l) => l.startsWith("Re-run {tool:reidentify_element}")), action).toBe(true);
     }
   });
 

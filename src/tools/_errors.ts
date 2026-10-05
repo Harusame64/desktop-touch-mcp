@@ -910,8 +910,9 @@ const SUGGESTS: Record<string, string[]> = {
   // a usable name/automationId for the `setValue` PowerShell locator filter.
   // The hints below point to the alternate channels for each action,
   // matching the wiring the dogfood confirmed actually works.
-  // `executorFailedAdviceFor` (below) hands desktop_act only the lines that fit the act; this
-  // list, every line in order, is what every other road still answers.
+  // `executorFailedAdviceFor` (below) hands desktop_act only the lines that fit the act. This
+  // list, every line in order, is what an act whose action does not name its road gets (auto,
+  // select, absent), and what `getSuggestsForCode("ExecutorFailed")` answers.
   ExecutorFailed: [
     "For action='click', fall back to mouse_click({clickAt}) using the entity rect center from {tool:reidentify_element} — common when UIA InvokePattern is missing on the control",
     "For action='type' or action='setValue': when detail says no route was tried, follow it. Otherwise, on a UI Automation element desktop_act has already tried UIA setValue and background WM_CHAR (post-#327 E ladder) before reporting executor_failed. The remaining rung is keyboard({action:'type', text, method:'foreground'}) — foreground SendInput uses the OS input queue and bypasses BG injection blocks that stopped the internal ladder (Chromium hosts, WT-XAML, etc.). Focus the target window first with focus_window or mouse_click",

@@ -119,8 +119,9 @@ function evalExpr(expr, extra = {}) {
     EVENT_TYPES: ['window_appeared', 'window_disappeared', 'foreground_changed'],
     // run_macro's `tool` describe names the step tools THIS server dispatches,
     // which depends on its configuration and is only known at run time. The
-    // stub cannot know it, so it says where the list is (internal #252).
-    dispatchableStepNames: () => ['(the step tools this server dispatches — listed by the running server)'],
+    // stub cannot know it, and the stub server lists none (it answers every
+    // call UnsupportedPlatform), so it says whose list it is (internal #252).
+    dispatchableStepNames: () => ['the step tools the Windows server dispatches (the set depends on its configuration and is not listed here)'],
     ...extra,
   };
   return vm.runInNewContext(expr, context, { timeout: 1000 });
@@ -133,14 +134,87 @@ function evalExpr(expr, extra = {}) {
 // what got committed.
 const unevaluable = [];
 let currentFile = '';
+// The source identifiers are resolved against: the tool file, or the file a resolved const came
+// from while that const is being read (`inSourceOf`).
+let currentSrc = '';
+let currentPath = '';
 
-function evalOrReport(expr, what, extra) {
+// Gate 2 on #792: the generator also SUBSTITUTED where it could not read — an open `{}` schema
+// for a union of named variants, a placeholder description for a named field, a dropped
+// `.max(CONST)`, a skipped `...spread` — and every one of those was as quiet as a failed eval.
+// They are recorded here the same way, so the only way a value leaves the catalog is out loud.
+function substituted(what) {
+  unevaluable.push(`${currentFile}: ${what}`);
+}
+
+// A const named in the current source, or imported into it from a relative module.
+function resolveIdentifier(name) {
+  const local = findConstExpression(currentSrc, name);
+  if (local) return { expr: local, src: currentSrc, path: currentPath };
+  const importRe = /import\s*(?:type\s+)?\{([^}]*)\}\s*from\s*["']([^"']+)["']/g;
+  let m;
+  while ((m = importRe.exec(currentSrc)) !== null) {
+    if (!m[2].startsWith('.')) continue;
+    for (const spec of m[1].split(',')) {
+      const [orig, alias] = spec.trim().split(/\s+as\s+/);
+      if (!orig || (alias ?? orig).trim() !== name) continue;
+      const otherPath = path.resolve(path.dirname(currentPath), m[2].replace(/\.js$/, '.ts'));
+      if (!fs.existsSync(otherPath)) return undefined;
+      const otherSrc = fs.readFileSync(otherPath, 'utf8');
+      const expr = findConstExpression(otherSrc, orig.trim());
+      return expr ? { expr, src: otherSrc, path: otherPath } : undefined;
+    }
+  }
+  return undefined;
+}
+
+function inSourceOf(res, fn) {
+  const [src, p] = [currentSrc, currentPath];
+  currentSrc = res.src;
+  currentPath = res.path;
+  try { return fn(); } finally { currentSrc = src; currentPath = p; }
+}
+
+// Object-literal fields with each `...name` replaced by the fields of the object literal it names
+// (same source only — a field read in another file's context would resolve its own names wrongly).
+function expandSpreads(fields) {
+  const out = [];
+  for (const raw of fields) {
+    const field = stripLeadingTrivia(raw);
+    if (field === '') continue; // a trailing comment after the last field, not a field
+    const sm = /^\.\.\.\s*([A-Za-z_$][\w$]*)\s*$/.exec(field);
+    if (!sm) { out.push(raw); continue; }
+    const res = resolveIdentifier(sm[1]);
+    if (!res || res.src !== currentSrc || !res.expr.trim().startsWith('{')) {
+      substituted(`cannot expand the spread ...${sm[1]}`);
+      continue;
+    }
+    out.push(...expandSpreads(splitObjectFields(res.expr)));
+  }
+  return out;
+}
+
+function evalOrReport(expr, what, extra = {}, depth = 0) {
   let value;
-  try {
-    value = evalExpr(expr, extra);
-  } catch (e) {
-    unevaluable.push(`${currentFile}: ${what}: ${e.message}\n    ${expr.replace(/\s+/g, ' ').slice(0, 160)}`);
-    return { ok: false };
+  for (;;) {
+    try {
+      value = evalExpr(expr, extra);
+      break;
+    } catch (e) {
+      // A name the context does not hold is looked up as a const (here, or imported from a
+      // relative module) and evaluated in its own file — `.max(WT_PANE_ID_SCHEMA_MAX)`.
+      // Not `instanceof Error`: the throw comes from the vm context's realm, whose Error is another.
+      const ref = typeof e?.message === 'string' && /^([A-Za-z_$][\w$]*) is not defined$/.exec(e.message);
+      const res = ref && depth < 8 && !(ref[1] in extra) ? resolveIdentifier(ref[1]) : undefined;
+      if (res) {
+        const inner = inSourceOf(res, () => evalOrReport(`(${res.expr})`, `${what} → ${ref[1]}`, {}, depth + 1));
+        if (!inner.ok) return { ok: false };
+        extra = { ...extra, [ref[1]]: inner.value };
+        continue;
+      }
+      unevaluable.push(`${currentFile}: ${what}: ${e.message}\n    ${expr.replace(/\s+/g, ' ').slice(0, 160)}`);
+      return { ok: false };
+    }
   }
   // A value that evaluates to undefined was lost, not given: `.default({})`
   // read as an empty block did exactly this without throwing.
@@ -205,6 +279,7 @@ function extractServerTools(src, file) {
     const name = evalOrReport(args[0], 'server.tool name');
     const description = evalOrReport(`(${args[1]})`, 'server.tool description');
     const schemaName = /^[A-Za-z_$][\w$]*$/.test(args[2]) ? args[2] : undefined;
+    if (schemaName === undefined) unevaluable.push(`${file}: server.tool schema is not a name: ${args[2].slice(0, 80)}`);
     if (name.ok && description.ok) {
       out.push({ name: String(name.value), description: String(description.value), schemaName, file });
     }
@@ -243,7 +318,10 @@ function extractRegisterTools(src, file) {
     let schemaName;
     for (const rawField of splitObjectFields(configExpr)) {
       const fm = /^([A-Za-z_$][\w$]*)\s*:\s*([\s\S]*)$/.exec(stripLeadingTrivia(rawField));
-      if (!fm) continue;
+      if (!fm) { unevaluable.push(`${file}: cannot read the server.registerTool config field ${stripLeadingTrivia(rawField).slice(0, 80)}`); continue; }
+      if (fm[1] === 'inputSchema' && !/^[A-Za-z_$][\w$]*$/.test(fm[2].trim())) {
+        unevaluable.push(`${file}: server.registerTool inputSchema of ${String(name.value)} is not a name`);
+      }
       if (fm[1] === 'description') {
         const r = evalOrReport(`(${fm[2]})`, `server.registerTool description of ${String(name.value)}`);
         if (r.ok) description = String(r.value);
@@ -312,7 +390,15 @@ function findConstExpression(src, name) {
         let j = i + 1;
         while (j < src.length && /[ \t]/.test(src[j])) j++;
         const next = src[j];
-        if (next === '.' || next === ',' || next === ')' || next === ']') {
+        if (next === '.' || next === ',' || next === ')' || next === ']' || next === '+' || next === '?' || next === ':') {
+          i++;
+          continue;
+        }
+        // Nor does it end after a line that ends in an operator: `const X =\n  "a" +\n  "b";` was
+        // cut at the first `+`, and the half that was read could not be evaluated.
+        let k = i - 1;
+        while (k > start && /[ \t\r]/.test(src[k])) k--;
+        if (k > start && /[+\-*/%?:&|=,(<>]/.test(src[k])) {
           i++;
           continue;
         }
@@ -359,32 +445,6 @@ function splitObjectFields(objExpr) {
   if (last) fields.push(last);
   return fields;
 }
-
-const commonParams = {
-  portParam: { type: 'integer', minimum: 1, maximum: 65535, default: 9222, description: 'Chrome/Edge CDP remote debugging port.', __optional: true },
-  tabIdParam: { type: 'string', description: 'Tab ID from browser_open. Omit to use the first page tab.', __optional: true },
-  selectorParam: { type: 'string', description: "CSS selector for the target element (e.g. '#submit', '.btn', 'button[type=submit]')." },
-  includeContextParam: { type: 'boolean', default: true, description: 'When true, append activeTab and readyState context to the response.', __optional: true },
-  narrateParam: { type: 'string', enum: ['minimal', 'rich'], default: 'minimal', description: 'Narration level. rich includes UIA or browser state diff when supported, and is withheld with post.rich.diffDegraded when the diff cannot be shown to describe the window that was acted on.', __optional: true },
-  speedParam: { type: 'integer', minimum: 0, description: 'Cursor movement speed in px/sec. 0 = instant.', __optional: true },
-  homingParam: { type: 'boolean', default: true, description: 'Enable homing correction if the target window moved.', __optional: true },
-  windowTitleParam: { type: 'string', description: 'Partial title of the target window.', __optional: true },
-  windowTitleFocusParam: { type: 'string', description: 'Partial title of the window that should receive keyboard input.', __optional: true },
-  elementNameParam: { type: 'string', description: 'Name or label of the UI element.', __optional: true },
-  elementIdParam: { type: 'string', description: 'AutomationId of the UI element.', __optional: true },
-  forceFocusParam: { type: 'boolean', description: 'Bypass Windows foreground-stealing protection before focusing.', __optional: true },
-  trackFocusParam: { type: 'boolean', default: true, description: 'Detect if focus was stolen after the action.', __optional: true },
-  settleMsParam: { type: 'integer', minimum: 0, maximum: 2000, default: 300, description: 'Milliseconds to wait before checking post-action state.', __optional: true },
-  hwndParam: { type: 'string', description: 'Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues.', __optional: true },
-  hwndFocusParam: { type: 'string', description: 'Direct window handle ID (takes precedence over windowTitle). Obtain from get_windows response (hwnd field). String type to avoid 64-bit precision issues.', __optional: true },
-  methodParam: { type: 'string', enum: ['auto', 'background', 'foreground'], default: 'auto', description: 'Input method. background = WM_CHAR PostMessage (no focus change); foreground = SendInput (current default); auto = pick automatically.', __optional: true },
-  // ADR-023 Phase 1: by-axis (semantic) targeting params shared by browser_click / browser_fill.
-  byAxisParam: { type: 'string', enum: ['text', 'regex', 'role', 'ariaLabel'], description: "Semantic axis to target by INSTEAD of a CSS selector: 'text' (visible text), 'regex', 'role' (ARIA/implicit role), 'ariaLabel'. Pair with pattern. Resolves to a SINGLE actionable element and STOPS with candidates when ambiguous.", __optional: true },
-  byPatternParam: { type: 'string', description: 'Value matched against the chosen by axis (required when by is set).', __optional: true },
-  byRoleParam: { type: 'string', description: "Optional ARIA/implicit-role filter AND-combined with by (e.g. by:'text', pattern:'Save', role:'button').", __optional: true },
-  byScopeParam: { type: 'string', description: 'Optional CSS selector to limit the by-axis search scope (disambiguation).', __optional: true },
-  byCaseSensitiveParam: { type: 'boolean', description: "Case-sensitive matching for by:'text'/'regex' (default false).", __optional: true },
-};
 
 function extractDescribe(valueExpr) {
   const searchExpr = primaryCallSuffix(valueExpr);
@@ -489,7 +549,22 @@ function extractDefault(valueExpr) {
 
 function inferProperty(valueExpr) {
   const v = valueExpr.trim();
-  if (commonParams[v]) return { ...commonParams[v] };
+  // A field given by name (`verifyDelivery: verifyDeliveryParam`, optionally with modifiers after
+  // it) is read as the expression that name holds, in the file that declares it. This replaced a
+  // hand-copied table of shared params whose descriptions had drifted from the source on 11 tools
+  // (gate 2 on #792, measured against the live tools/list).
+  const named = /^([A-Za-z_$][\w$]*)((?:\s*\.[\s\S]*)?)$/.exec(v);
+  if (named && named[1] !== 'z') {
+    const res = resolveIdentifier(named[1]);
+    if (res) return inSourceOf(res, () => inferProperty(res.expr.trim().replace(/;\s*$/, '') + named[2]));
+  }
+  // `coercedJsonObject(shape)` (`_coerce.ts`) is `z.object(shape)` behind a JSON-string preprocess,
+  // so callers see the object's shape.
+  const coerced = /^coercedJsonObject\s*\(/.exec(v);
+  if (coerced) {
+    const end = scanBalanced(v, coerced[0].length, '(', ')');
+    return inferProperty(`z.object(${v.slice(coerced[0].length, end - 1)})${v.slice(end)}`);
+  }
   // `z.preprocess(transform, inner)` — the inner schema is what callers see
   // in the JSON schema. The transform is server-only behaviour (e.g.
   // defensive string→object parsing for tool-call serialisers that send
@@ -565,10 +640,10 @@ function inferProperty(valueExpr) {
     const innerRequired = [];
     const innerExpr = extractZObjectInner(v);
     if (innerExpr && innerExpr.startsWith('{')) {
-      for (const rawField of splitObjectFields(innerExpr)) {
+      for (const rawField of expandSpreads(splitObjectFields(innerExpr))) {
         const field = stripLeadingTrivia(rawField);
         const fm = /^([A-Za-z_$][\w$]*|["'][^"']+["'])\s*:\s*([\s\S]*)$/.exec(field);
-        if (!fm) continue;
+        if (!fm) { substituted(`cannot read the field ${field.slice(0, 80)}`); continue; }
         const rawKey = fm[1];
         const key = rawKey[0] === '"' || rawKey[0] === "'" ? rawKey.slice(1, -1) : rawKey;
         const innerValueExpr = fm[2].trim();
@@ -595,24 +670,39 @@ function inferProperty(valueExpr) {
   else if (hasTopLevelZCall(v, 'coerce.number') || hasTopLevelZCall(v, 'number')) { prop.type = v.includes('.int()') ? 'integer' : 'number'; }
   else if (hasTopLevelZCall(v, 'string')) { prop.type = 'string'; }
   else if (hasTopLevelZCall(v, 'boolean') || /^coercedBoolean\s*\(/.test(v)) { prop.type = 'boolean'; }
-  else { prop.description ||= `Parameter '${v}' from the Windows server schema.`; }
+  else {
+    substituted(`no rule for the field expression ${v.replace(/\s+/g, ' ').slice(0, 120)}`);
+    prop.description ||= `Parameter '${v}' from the Windows server schema.`;
+  }
 
   const def = extractDefault(v);
   if (def !== undefined) prop.default = def;
   const modifierSuffix = primaryCallSuffix(v);
-  const min = /\.min\((\d[\d_]*)\)/.exec(modifierSuffix);
-  const max = /\.max\((\d[\d_]*)\)/.exec(modifierSuffix);
-  if (min) {
-    const value = Number(min[1].replaceAll('_', ''));
-    if (prop.type === 'string') prop.minLength = value;
-    else if (prop.type === 'array') prop.minItems = value;
-    else if (prop.type === 'number' || prop.type === 'integer') prop.minimum = value;
+  // The bound is evaluated like any other argument, so `.max(WT_PANE_ID_SCHEMA_MAX)` is kept; it
+  // used to be matched only as a digit literal and dropped otherwise.
+  const maskedSuffix = maskNonCode(modifierSuffix);
+  const bound = (name) => {
+    // Searched outside strings: a describe sentence may itself contain ".max(".
+    const idx = maskedSuffix.indexOf(`.${name}(`);
+    if (idx < 0) return undefined;
+    const start = idx + name.length + 2;
+    const end = scanBalanced(modifierSuffix, start, '(', ')');
+    const r = evalCallArg(modifierSuffix.slice(start, end - 1), `.${name}()`);
+    if (!r.ok) return undefined;
+    if (typeof r.value !== 'number') { substituted(`.${name}() is not a number: ${String(r.value)}`); return undefined; }
+    return r.value;
+  };
+  const min = bound('min');
+  const max = bound('max');
+  if (min !== undefined) {
+    if (prop.type === 'string') prop.minLength = min;
+    else if (prop.type === 'array') prop.minItems = min;
+    else if (prop.type === 'number' || prop.type === 'integer') prop.minimum = min;
   }
-  if (max) {
-    const value = Number(max[1].replaceAll('_', ''));
-    if (prop.type === 'string') prop.maxLength = value;
-    else if (prop.type === 'array') prop.maxItems = value;
-    else if (prop.type === 'number' || prop.type === 'integer') prop.maximum = value;
+  if (max !== undefined) {
+    if (prop.type === 'string') prop.maxLength = max;
+    else if (prop.type === 'array') prop.maxItems = max;
+    else if (prop.type === 'number' || prop.type === 'integer') prop.maximum = max;
   }
   return prop;
 }
@@ -718,12 +808,12 @@ function parseZObjectVariant(variantExprRaw, discriminator) {
 
   const properties = {};
   const required = [];
-  for (const rawFieldVar of splitObjectFields(objExpr)) {
+  for (const rawFieldVar of expandSpreads(splitObjectFields(objExpr))) {
     // Phase 4 / Codex PR #41 P2: same leading-trivia issue as parseSchema —
     // strip before matching the key.
     const field = stripLeadingTrivia(rawFieldVar);
     const fm = /^([A-Za-z_$][\w$]*|["'][^"']+["'])\s*:\s*([\s\S]*)$/.exec(field);
-    if (!fm) continue;
+    if (!fm) { substituted(`cannot read the field ${field.slice(0, 80)}`); continue; }
     const rawKey = fm[1];
     const key = rawKey[0] === '"' || rawKey[0] === "'" ? rawKey.slice(1, -1) : rawKey;
     const valueExpr = fm[2].trim();
@@ -786,10 +876,16 @@ function parseDiscriminatedUnionSchema(rawExpr) {
 
   const oneOf = [];
   for (const variantExpr of variantExprs) {
-    const trimmed = variantExpr.trim();
+    const trimmed = stripLeadingTrivia(variantExpr).trim();
     if (!trimmed) continue;
-    const variantSchema = parseZObjectVariant(trimmed, discriminator);
+    // A variant given by name (`[runVbaSchema, checkAccessVbomSchema]`) is read as the
+    // expression it names — these used to come back null and leave the whole union open.
+    const res = /^[A-Za-z_$][\w$]*$/.test(trimmed) ? resolveIdentifier(trimmed) : undefined;
+    const variantSchema = res
+      ? inSourceOf(res, () => parseZObjectVariant(res.expr.trim(), discriminator))
+      : parseZObjectVariant(trimmed, discriminator);
     if (variantSchema) oneOf.push(variantSchema);
+    else substituted(`cannot read the union variant ${trimmed.replace(/\s+/g, ' ').slice(0, 80)}`);
   }
   if (oneOf.length === 0) return null;
   return { type: 'object', oneOf };
@@ -879,7 +975,7 @@ function flattenOneOfToObject(unionSchema, discriminatorKey) {
 function parseSchema(src, schemaName) {
   if (!schemaName) return { type: 'object', properties: {}, additionalProperties: false };
   let expr = findConstExpression(src, schemaName);
-  if (!expr) return { type: 'object', properties: {}, additionalProperties: true };
+  if (!expr) { substituted(`schema ${schemaName} is not declared in this file`); return { type: 'object', properties: {}, additionalProperties: true }; }
 
   // ADR-018 Phase 2a — `flattenUnionToObjectSchema(<identifier>)`: the 7
   // multi-action tools register a FLAT wire schema produced by
@@ -914,6 +1010,7 @@ function parseSchema(src, schemaName) {
         return flattenOneOfToObject(unionSchema, discriminator);
       }
     }
+    substituted(`schema ${schemaName}: the flattenUnionToObjectSchema chain could not be read`);
     return { type: 'object', properties: {}, additionalProperties: true };
   }
 
@@ -979,13 +1076,14 @@ function parseSchema(src, schemaName) {
       }
       return unionSchema;
     }
+    substituted(`schema ${schemaName}: the union inside withEnvelopeIncludeForUnion could not be read`);
     return { type: 'object', properties: {}, additionalProperties: true };
   }
 
-  if (!expr.trim().startsWith('{')) return { type: 'object', properties: {}, additionalProperties: true };
+  if (!expr.trim().startsWith('{')) { substituted(`schema ${schemaName} is not an object literal the generator reads`); return { type: 'object', properties: {}, additionalProperties: true }; }
   const properties = {};
   const required = [];
-  for (const rawField of splitObjectFields(expr)) {
+  for (const rawField of expandSpreads(splitObjectFields(expr))) {
     // splitObjectFields strips comment **content** during the scan but the
     // returned slice can still start with leading whitespace + // / /* */
     // comment lines (the scan skips them but the substring boundaries are
@@ -995,7 +1093,7 @@ function parseSchema(src, schemaName) {
     // from desktop_state stub schema).
     const field = stripLeadingTrivia(rawField);
     const m = /^([A-Za-z_$][\w$]*|["'][^"']+["'])\s*:\s*([\s\S]*)$/.exec(field);
-    if (!m) continue;
+    if (!m) { substituted(`cannot read the field ${field.slice(0, 80)}`); continue; }
     const rawKey = m[1];
     const key = rawKey[0] === '"' || rawKey[0] === "'" ? rawKey.slice(1, -1) : rawKey;
     const valueExpr = m[2].trim();
@@ -1031,7 +1129,9 @@ function parseSchema(src, schemaName) {
 const byName = new Map();
 for (const file of TOOL_FILES) {
   currentFile = file;
-  const src = fs.readFileSync(path.join(toolsDir, file), 'utf8');
+  currentPath = path.join(toolsDir, file);
+  const src = fs.readFileSync(currentPath, 'utf8');
+  currentSrc = src;
   for (const tool of extractServerTools(src, file)) {
     tool.inputSchema = parseSchema(src, tool.schemaName);
     byName.set(tool.name, tool);
@@ -1045,6 +1145,7 @@ for (const file of TOOL_FILES) {
     const isDiscrimUnion = rawExpr && /^\s*z\s*\.\s*discriminatedUnion\s*\(/.test(rawExpr);
     if (isDiscrimUnion) {
       const expanded = parseDiscriminatedUnionSchema(rawExpr.trim());
+      if (!expanded) substituted(`schema ${tool.schemaName}: the union could not be read`);
       tool.inputSchema = expanded || {
         type: 'object',
         properties: { action: { type: 'string' } },

@@ -27,7 +27,9 @@ describe("InvalidArgs advice", () => {
     expect(suggest.join(" ")).not.toMatch(/automationId/);
   });
 
-  it("carries no line about name / automationId in the shared table", () => {
-    expect(getSuggestsForCode("InvalidArgs").join(" ")).not.toMatch(/automationId/);
+  it("is exactly the line true of every tool", () => {
+    // Pinned whole, not by one spelling: re-adding the rule reworded ("Pass name or AutomationId")
+    // passed a /automationId/ test (gate 2 on #792). A new shared line is a deliberate edit here.
+    expect(getSuggestsForCode("InvalidArgs")).toEqual(["Check the required parameters for this tool"]);
   });
 });
