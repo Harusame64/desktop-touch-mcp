@@ -3037,9 +3037,10 @@ export const terminalDispatchHandler = async (args: TerminalArgs): Promise<ToolR
         //
         // The caller who really omits both arguments is not helped by any of this: the
         // refine's message reaches them, and the advice beside it is `SUGGESTS.InvalidArgs`
-        // — "Check the required parameters" and a line about `name` / `automationId`,
-        // which this tool does not take. Filed in `remaining-work.md`; converting that
-        // road means giving the schema layer a way to carry advice, which is its own change.
+        // — "Check the required parameters". (It also carried a line about `name` /
+        // `automationId`, which this tool does not take, until internal #244 removed it.)
+        // Converting that road means giving the schema layer a way to carry advice, which
+        // is its own change.
         return failCode("InvalidArgs", "terminal(action='run') requires windowTitle or paneId");
       }
       return terminalRunHandler({ ...a, windowTitle: runWindowTitle, input: resolvedInput });

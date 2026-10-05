@@ -12,7 +12,7 @@ import { createDesktopExecutor, type ExecutorDeps } from "../../src/tools/deskto
 import { GuardedTouchLoop, type TouchEnvironment } from "../../src/engine/world-graph/guarded-touch.js";
 import { LeaseStore } from "../../src/engine/world-graph/lease-store.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
-import { getSuggestsForCode } from "../../src/tools/_errors.js";
+import { executorFailedAdviceFor, getSuggestsForCode } from "../../src/tools/_errors.js";
 
 const body: UiEntity = {
   entityId: "body",
@@ -90,11 +90,61 @@ describe("a type no route can carry", () => {
       execute: (e, action, text) => exec(e, action, text),
     };
     const result = await new GuardedTouchLoop(store, env).touch({ lease, action: "type", text: "x" });
-    expect(result).toEqual({ ok: false, reason: "executor_failed", diff: [], detail: detailFor(WORD_BODY_ROUTES, TYPE_INSTEAD) });
+    // internal #242: `noRouteTried` rides along, so the advice can say nothing was tried.
+    expect(result).toEqual({ ok: false, reason: "executor_failed", diff: [], detail: detailFor(WORD_BODY_ROUTES, TYPE_INSTEAD), noRouteTried: true });
+  });
+
+  it("does not claim no route was tried for a throw that does not say so (internal #242)", async () => {
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(body, "v1");
+    const env: TouchEnvironment = {
+      resolveLiveEntities: () => [body],
+      currentGeneration: () => "gen-1",
+      isModalBlocking: () => false,
+      checkViewport: () => null,
+      execute: async () => { throw new Error("a route ran and failed"); },
+    };
+    const result = await new GuardedTouchLoop(store, env).touch({ lease, action: "type", text: "x" });
+    expect(result).toEqual({ ok: false, reason: "executor_failed", diff: [] });
   });
 });
 
 describe("the advice", () => {
+  // internal #242 — the list is chosen for the act. A caller reading it, not its conditionals, was
+  // told routes were tried that never ran, and was offered clicks for a type.
+  const CLICK_REMEDY = /mouse_click|click_element/;
+  const ROUTES_TRIED = /has already tried/;
+
+  it("says only 'follow detail' when no route was tried, whatever the action", () => {
+    for (const action of ["type", "setValue", "click", "auto", undefined]) {
+      const lines = executorFailedAdviceFor(action, true);
+      expect(lines, String(action)).toHaveLength(1);
+      expect(lines[0], String(action)).toMatch(/^Nothing was typed and no route was tried: detail says why .* follow it$/);
+    }
+  });
+
+  it("offers no click remedy for a type or setValue whose route ran, and keeps the ladder", () => {
+    for (const action of ["type", "setValue"]) {
+      const lines = executorFailedAdviceFor(action, false);
+      expect(lines.some((l) => CLICK_REMEDY.test(l.replace(/Focus the target window first with focus_window or mouse_click$/, ""))), action).toBe(false);
+      expect(lines.some((l) => ROUTES_TRIED.test(l)), action).toBe(true);
+    }
+  });
+
+  it("offers no type ladder for a click, and keeps the click remedies", () => {
+    for (const action of ["click", "invoke"]) {
+      const lines = executorFailedAdviceFor(action, false);
+      expect(lines.some((l) => ROUTES_TRIED.test(l)), action).toBe(false);
+      expect(lines.some((l) => CLICK_REMEDY.test(l)), action).toBe(true);
+    }
+  });
+
+  it("answers the whole list where the action does not say which road (auto, select, absent)", () => {
+    for (const action of ["auto", "select", undefined]) {
+      expect(executorFailedAdviceFor(action, false), String(action)).toEqual(getSuggestsForCode("ExecutorFailed"));
+    }
+  });
+
   it("defers to detail when no route was tried, and says whose the two rungs are", () => {
     const line = getSuggestsForCode("ExecutorFailed").find((l) => l.startsWith("For action='type'"));
     expect(line).toMatch(/^For action='type' or action='setValue': when detail says no route was tried, follow it\. Otherwise, on a UI Automation element desktop_act has already tried/);

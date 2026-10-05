@@ -325,6 +325,12 @@ export type TouchResult =
        * has nothing to say does not claim to.
        */
       detail?: string;
+      /**
+       * internal #242 — on `executor_failed` only: the executor refused before any route ran
+       * (nothing was typed). Read by `desktop-register.ts` to choose the advice; not published.
+       * Absent when a route ran, or when the throw did not say.
+       */
+      noRouteTried?: true;
     };
 
 /**
@@ -932,7 +938,16 @@ export class GuardedTouchLoop {
       if (err instanceof Error && err.name === "WindowExcludedError") {
         return { ok: false, reason: "window_excluded", diff: [], ...(detail !== undefined && { detail }) };
       }
-      return { ok: false, reason: "executor_failed", diff: [], ...(detail !== undefined && { detail }) };
+      // internal #242 — a refusal made before any route ran says so (`noRouteTried` on the class,
+      // same opt-in as `callerDetail`), so the advice does not tell the caller routes were tried.
+      const noRouteTried = (err as { noRouteTried?: unknown } | null)?.noRouteTried === true;
+      return {
+        ok: false,
+        reason: "executor_failed",
+        diff: [],
+        ...(detail !== undefined && { detail }),
+        ...(noRouteTried && { noRouteTried: true as const }),
+      };
     }
     // Issue #327 item C: normalise bare-kind / rich-outcome return shapes so
     // downstream stays single-shape.

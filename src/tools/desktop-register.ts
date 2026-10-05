@@ -23,7 +23,7 @@ import {
 } from "../engine/landing-advice.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { coercedBoolean } from "./_coerce.js";
-import { failCode, getSuggestsForCode } from "./_errors.js";
+import { executorFailedAdviceFor, failCode, getSuggestsForCode } from "./_errors.js";
 import { DesktopFacade, type CandidateProvider, type DesktopSeeInput, type DesktopWindowMeta } from "./desktop.js";
 import type {
   EntityLease,
@@ -1267,9 +1267,15 @@ const desktopActRawHandlerInner = async (
   // handler-returned ok:false as a failure, which is the Phase 5 TOOL_REGISTRY
   // Result-returning change (ADR-021 §2.2 deferred).
   if (!result.ok && result.reason === "executor_failed") {
+    // internal #242 — the advice for THIS act: its action, and whether any route ran. The reason's
+    // own list told a type that no route could carry that routes had been tried, and offered clicks.
     const failure = toFailureEnvelope(
       Err(new ExecutorFailedError("desktop_act executor failed")),
-      { optIn: false, detail: result.detail },
+      {
+        optIn: false,
+        detail: result.detail,
+        tryNext: executorFailedAdviceFor(input.action, result.noRouteTried === true).map((action) => ({ action })),
+      },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],

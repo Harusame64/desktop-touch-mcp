@@ -507,6 +507,8 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
     // same as no list. Adding a code here is the deliberate act; the cell only insists
     // that the act happened.
     const CHANGED_BY_HAND: Record<string, string> = {
+      InvalidArgs:
+        "internal #244: the line about name / automationId was click_element's rule, handed to every tool's argument refusal; the three tools it fits say it in their own message",
       AutoGuardBlocked:
         "mixed subject split; `target_not_found` split by producer (desktop vs browser); the desktop_state handle route added where the enumeration is gone",
       ElementNotFound:

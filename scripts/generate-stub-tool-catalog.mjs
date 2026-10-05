@@ -117,37 +117,97 @@ function evalExpr(expr, extra = {}) {
     FLUENT_KINDS: ['target.exists', 'target.identity', 'target.title', 'target.rect', 'target.foreground', 'target.zOrder', 'modal.above', 'target.focusedElement', 'browser.url', 'browser.title', 'browser.readyState'],
     GUARD_KINDS: ['target.identityStable', 'safe.keyboardTarget', 'safe.clickCoordinates', 'stable.rect', 'browser.ready'],
     EVENT_TYPES: ['window_appeared', 'window_disappeared', 'foreground_changed'],
+    // run_macro's `tool` describe names the step tools THIS server dispatches,
+    // which depends on its configuration and is only known at run time. The
+    // stub cannot know it, so it says where the list is (internal #252).
+    dispatchableStepNames: () => ['(the step tools this server dispatches — listed by the running server)'],
     ...extra,
   };
   return vm.runInNewContext(expr, context, { timeout: 1000 });
 }
 
-function parseDescription(expr) {
+// Internal #252: every expression the generator finds but cannot evaluate is
+// recorded here, and the run fails before writing the catalog. Without this a
+// lost description, default or enum was published as an absence and
+// `check:stub-catalog` stayed green, because the regenerated (broken) file was
+// what got committed.
+const unevaluable = [];
+let currentFile = '';
+
+function evalOrReport(expr, what, extra) {
+  let value;
   try {
-    return String(evalExpr(expr));
-  } catch {
-    const m = /^([A-Za-z_$][\w$]*)$/.exec(expr.trim());
-    if (m) return undefined;
-    return expr.replace(/\s+/g, ' ').slice(0, 500);
+    value = evalExpr(expr, extra);
+  } catch (e) {
+    unevaluable.push(`${currentFile}: ${what}: ${e.message}\n    ${expr.replace(/\s+/g, ' ').slice(0, 160)}`);
+    return { ok: false };
   }
+  // A value that evaluates to undefined was lost, not given: `.default({})`
+  // read as an empty block did exactly this without throwing.
+  if (value === undefined) {
+    unevaluable.push(`${currentFile}: ${what}: evaluated to undefined\n    ${expr.replace(/\s+/g, ' ').slice(0, 160)}`);
+    return { ok: false };
+  }
+  return { ok: true, value };
+}
+
+// Evaluate the first argument of a call from the raw text between its
+// parentheses. The text is split as an argument list (so a trailing comma,
+// legal in a call, is not part of the expression) and evaluated as an
+// expression (so an object literal is not read as a block).
+function evalCallArg(argsText, what) {
+  const args = splitTopLevelArgs(argsText).filter((a) => a !== '');
+  if (args.length === 0) return { ok: false };
+  return evalOrReport(`(${args[0]})`, what);
+}
+
+// A copy of `src` with the contents of strings, templates and comments blanked
+// to spaces (same length, so indices line up). Call sites are searched in the
+// mask, so a `server.tool(` inside a doc comment or a description string is
+// not taken for a registration.
+function maskNonCode(src) {
+  const out = src.split('');
+  const blank = (from, to) => { for (let k = from; k < to; k++) if (out[k] !== '\n') out[k] = ' '; };
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    let end = -1;
+    if (c === '"' || c === "'") end = skipString(src, i);
+    else if (c === '`') end = skipTemplate(src, i);
+    else if (c === '/' && src[i + 1] === '/') { const nl = src.indexOf('\n', i + 2); end = nl < 0 ? src.length : nl; }
+    else if (c === '/' && src[i + 1] === '*') { const e = src.indexOf('*/', i + 2); end = e < 0 ? src.length : e + 2; }
+    if (end < 0) { i++; continue; }
+    blank(i, end);
+    i = end;
+  }
+  return out.join('');
+}
+
+function findCallSites(src, pattern) {
+  const masked = maskNonCode(src);
+  const sites = [];
+  let idx = 0;
+  while ((idx = masked.indexOf(pattern, idx)) >= 0) {
+    sites.push(idx);
+    idx += pattern.length;
+  }
+  return sites;
 }
 
 function extractServerTools(src, file) {
   const out = [];
-  let idx = 0;
-  while ((idx = src.indexOf('server.tool(', idx)) >= 0) {
+  for (const idx of findCallSites(src, 'server.tool(')) {
     const argsStart = idx + 'server.tool('.length;
     const end = scanBalanced(src, argsStart, '(', ')');
     const callBody = src.slice(argsStart, end - 1);
     const args = splitTopLevelArgs(callBody);
-    if (args.length >= 3) {
-      let name;
-      try { name = String(evalExpr(args[0])); } catch {}
-      const description = parseDescription(args[1]);
-      const schemaName = /^[A-Za-z_$][\w$]*$/.test(args[2]) ? args[2] : undefined;
-      if (name && description) out.push({ name, description, schemaName, file });
+    if (args.length < 3) continue;
+    const name = evalOrReport(args[0], 'server.tool name');
+    const description = evalOrReport(`(${args[1]})`, 'server.tool description');
+    const schemaName = /^[A-Za-z_$][\w$]*$/.test(args[2]) ? args[2] : undefined;
+    if (name.ok && description.ok) {
+      out.push({ name: String(name.value), description: String(description.value), schemaName, file });
     }
-    idx = end;
   }
   return out;
 }
@@ -159,82 +219,44 @@ function extractServerTools(src, file) {
 function extractRegisterTools(src, file) {
   const out = [];
   const pattern = 'server.registerTool(';
-  let idx = 0;
-  while ((idx = src.indexOf(pattern, idx)) >= 0) {
+  for (const idx of findCallSites(src, pattern)) {
     const argsStart = idx + pattern.length;
     const end = scanBalanced(src, argsStart, '(', ')');
     const callBody = src.slice(argsStart, end - 1);
     const args = splitTopLevelArgs(callBody);
-    if (args.length < 2) { idx = end; continue; }
+    if (args.length < 2) continue;
 
     // First arg: tool name
-    let name;
-    try { name = String(evalExpr(args[0])); } catch { idx = end; continue; }
+    const name = evalOrReport(args[0], 'server.registerTool name');
+    if (!name.ok) continue;
 
     // Second arg: config object { description: ..., inputSchema: ... }
     const configExpr = args[1].trim();
-    if (!configExpr.startsWith('{')) { idx = end; continue; }
+    if (!configExpr.startsWith('{')) {
+      unevaluable.push(`${file}: server.registerTool config for ${String(name.value)} is not an object literal`);
+      continue;
+    }
 
-    // Extract description field
-    const configBody = configExpr.slice(1, scanBalanced(configExpr, 1, '{', '}') - 1);
-
-    // Find description: buildDesc({...}) or description: "..." or description: `...`
+    // The description is evaluated as the expression it is (a string, a
+    // concatenation, a template or buildDesc({...})), not re-parsed by hand.
     let description;
-    const descRe = /description\s*:\s*/g;
-    let dm;
-    while ((dm = descRe.exec(configBody)) !== null) {
-      const pos = dm.index + dm[0].length;
-      if (configBody.startsWith('buildDesc(', pos)) {
-        try {
-          const bdEnd = scanBalanced(configBody, pos + 'buildDesc('.length, '(', ')');
-          const bdArg = configBody.slice(pos + 'buildDesc('.length, bdEnd - 1);
-          const obj = evalExpr(`(${bdArg})`);
-          description = buildDesc(obj);
-        } catch { /* skip */ }
-      } else {
-        const q = configBody[pos];
-        if (q === '"' || q === "'") {
-          // Proper string extraction
-          let s = '';
-          let i = pos + 1;
-          while (i < configBody.length && configBody[i] !== q) {
-            if (configBody[i] === '\\' && i + 1 < configBody.length) {
-              const esc = configBody[i + 1];
-              s += esc === 'n' ? '\n' : esc === 't' ? '\t' : esc;
-              i += 2;
-            } else { s += configBody[i++]; }
-          }
-          description = s;
-        } else if (q === '`') {
-          // Template literal — skip interpolations
-          let s = '';
-          let i = pos + 1;
-          while (i < configBody.length && configBody[i] !== '`') {
-            if (configBody[i] === '$' && configBody[i + 1] === '{') {
-              let depth = 1; i += 2;
-              while (i < configBody.length && depth > 0) {
-                if (configBody[i] === '{') depth++;
-                else if (configBody[i] === '}') depth--;
-                i++;
-              }
-            } else { s += configBody[i++]; }
-          }
-          description = s;
-        }
-      }
-      if (description) break;
-    }
-
-    // Find inputSchema: schemaName
     let schemaName;
-    const isRe = /inputSchema\s*:\s*([A-Za-z_$][\w$]*)/;
-    const ism = isRe.exec(configBody);
-    if (ism) schemaName = ism[1];
-
-    if (name && description) {
-      out.push({ name, description, schemaName, file });
+    for (const rawField of splitObjectFields(configExpr)) {
+      const fm = /^([A-Za-z_$][\w$]*)\s*:\s*([\s\S]*)$/.exec(stripLeadingTrivia(rawField));
+      if (!fm) continue;
+      if (fm[1] === 'description') {
+        const r = evalOrReport(`(${fm[2]})`, `server.registerTool description of ${String(name.value)}`);
+        if (r.ok) description = String(r.value);
+      } else if (fm[1] === 'inputSchema' && /^[A-Za-z_$][\w$]*$/.test(fm[2].trim())) {
+        schemaName = fm[2].trim();
+      }
     }
-    idx = end;
+
+    if (description) {
+      out.push({ name: String(name.value), description, schemaName, file });
+    } else {
+      unevaluable.push(`${file}: server.registerTool ${String(name.value)} has no description`);
+    }
   }
   return out;
 }
@@ -370,8 +392,8 @@ function extractDescribe(valueExpr) {
   if (idx < 0) return undefined;
   const start = idx + '.describe('.length;
   const end = scanBalanced(searchExpr, start, '(', ')');
-  const arg = searchExpr.slice(start, end - 1).trim();
-  try { return String(evalExpr(arg)); } catch { return undefined; }
+  const r = evalCallArg(searchExpr.slice(start, end - 1), '.describe()');
+  return r.ok ? String(r.value) : undefined;
 }
 
 function topLevelZCallMatch(valueExpr, callPath) {
@@ -396,8 +418,8 @@ function extractEnum(valueExpr) {
   if (!m) return undefined;
   const start = m[0].length;
   const end = scanBalanced(v, start, '(', ')');
-  const arg = v.slice(start, end - 1).trim();
-  try { return evalExpr(arg); } catch { return undefined; }
+  const r = evalCallArg(v.slice(start, end - 1), 'z.enum()');
+  return r.ok ? r.value : undefined;
 }
 
 function extractArrayEnum(valueExpr) {
@@ -435,8 +457,8 @@ function extractLiteralValue(valueExpr) {
   if (!m) return undefined;
   const start = m[0].length;
   const end = scanBalanced(v, start, '(', ')');
-  const arg = v.slice(start, end - 1).trim();
-  try { return evalExpr(arg); } catch { return undefined; }
+  const r = evalCallArg(v.slice(start, end - 1), 'z.literal()');
+  return r.ok ? r.value : undefined;
 }
 
 // Extract the body inside the outermost z.object(...) call so the caller can
@@ -461,8 +483,8 @@ function extractDefault(valueExpr) {
   if (idx < 0) return undefined;
   const start = idx + '.default('.length;
   const end = scanBalanced(searchExpr, start, '(', ')');
-  const arg = searchExpr.slice(start, end - 1).trim();
-  try { return evalExpr(arg); } catch { return undefined; }
+  const r = evalCallArg(searchExpr.slice(start, end - 1), '.default()');
+  return r.ok ? r.value : undefined;
 }
 
 function inferProperty(valueExpr) {
@@ -712,12 +734,8 @@ function parseZObjectVariant(variantExprRaw, discriminator) {
       if (litMatch) {
         const ls = litMatch[0].length;
         const le = scanBalanced(valueExpr, ls, '(', ')');
-        const litArg = valueExpr.slice(ls, le - 1).trim();
-        try {
-          properties[key] = { const: evalExpr(litArg) };
-        } catch {
-          properties[key] = { type: 'string' };
-        }
+        const r = evalCallArg(valueExpr.slice(ls, le - 1), `discriminator literal ${key}`);
+        properties[key] = r.ok ? { const: r.value } : { type: 'string' };
       } else {
         properties[key] = { type: 'string' };
       }
@@ -756,12 +774,9 @@ function parseDiscriminatedUnionSchema(rawExpr) {
   const args = splitTopLevelArgs(argsBody);
   if (args.length < 2) return null;
 
-  let discriminator;
-  try {
-    discriminator = String(evalExpr(args[0]));
-  } catch {
-    return null;
-  }
+  const d = evalOrReport(args[0], 'z.discriminatedUnion discriminator');
+  if (!d.ok) return null;
+  const discriminator = String(d.value);
 
   const variantsExpr = args[1].trim();
   if (!variantsExpr.startsWith('[')) return null;
@@ -803,7 +818,8 @@ function extractDiscriminatorName(unionRawExpr) {
   const argsEnd = scanBalanced(raw, m[0].length, '(', ')');
   const args = splitTopLevelArgs(raw.slice(m[0].length, argsEnd - 1));
   if (args.length < 1) return undefined;
-  try { return String(evalExpr(args[0])); } catch { return undefined; }
+  const d = evalOrReport(args[0], 'z.discriminatedUnion discriminator');
+  return d.ok ? String(d.value) : undefined;
 }
 
 // ADR-018 Phase 2a — static flatten of a discriminatedUnion `{ oneOf: [...] }`
@@ -1014,6 +1030,7 @@ function parseSchema(src, schemaName) {
 
 const byName = new Map();
 for (const file of TOOL_FILES) {
+  currentFile = file;
   const src = fs.readFileSync(path.join(toolsDir, file), 'utf8');
   for (const tool of extractServerTools(src, file)) {
     tool.inputSchema = parseSchema(src, tool.schemaName);
@@ -1038,6 +1055,14 @@ for (const file of TOOL_FILES) {
     }
     byName.set(tool.name, tool);
   }
+}
+
+if (unevaluable.length) {
+  console.error(
+    `generate-stub-tool-catalog: ${unevaluable.length} expression(s) could not be evaluated, so the catalog would lose them. ` +
+    `Nothing was written.\n` + unevaluable.map((u) => `  - ${u}`).join('\n'),
+  );
+  process.exit(1);
 }
 
 const tools = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));

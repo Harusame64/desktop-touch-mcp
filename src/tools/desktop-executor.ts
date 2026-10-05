@@ -2137,6 +2137,8 @@ function centerInside(
  */
 export class KeyboardCannotReplaceError extends Error implements CallerFacingRefusal {
   readonly callerDetail: string;
+  /** internal #242 — refused before any route ran; `guarded-touch.ts` carries this so the advice can say so. */
+  readonly noRouteTried = true as const;
   constructor(entity: UiEntity) {
     super(`setValue requested for "${entity.label ?? entity.entityId}", whose only route is the keyboard, which inserts rather than replaces`);
     this.name = "KeyboardCannotReplaceError";
@@ -2157,6 +2159,8 @@ export class KeyboardCannotReplaceError extends Error implements CallerFacingRef
  */
 export class KeyboardHostUnavailableError extends Error implements CallerFacingRefusal {
   readonly callerDetail: string;
+  /** internal #242 — refused before any route ran; `guarded-touch.ts` carries this so the advice can say so. */
+  readonly noRouteTried = true as const;
   constructor(entity: UiEntity, cause: "not_usable" | "cannot_post" = "not_usable") {
     super(cause === "cannot_post"
       ? `cannot post into the window "${entity.label ?? entity.entityId}" is drawn in`
@@ -2190,6 +2194,8 @@ const NO_TEXT_ROUTE_WORDS: Record<NoTextRouteState, string> = {
  */
 export class NoTextRouteError extends Error implements CallerFacingRefusal {
   readonly callerDetail: string;
+  /** internal #242 — refused before any route ran; `guarded-touch.ts` carries this so the advice can say so. */
+  readonly noRouteTried = true as const;
   constructor(entity: UiEntity, action: string, routes: Record<"uia" | "cdp" | "terminal" | "keyboard", NoTextRouteState>) {
     super(
       `setValue/type requested for "${entity.label ?? entity.entityId}" but no text-capable executor available ` +

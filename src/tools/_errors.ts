@@ -24,9 +24,13 @@ const ROOT_HOISTED_KEYS = new Set<string>(["_perceptionForPost", "_richForPost",
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SUGGESTS: Record<string, string[]> = {
+  // Only lines true of every InvalidArgs. A line about one tool's arguments belongs in that
+  // tool's message: "At least one of name or automationId must be provided" sat here and was
+  // handed to screenshot, scroll and terminal refusals too (internal #244). The three tools it
+  // was written for already say it in their own message ("Provide at least one of: name,
+  // automationId").
   InvalidArgs: [
     "Check the required parameters for this tool",
-    "At least one of name or automationId must be provided",
   ],
   WindowNotFound: [
     "Run {tool:list_window_titles} to see available titles",
@@ -906,6 +910,8 @@ const SUGGESTS: Record<string, string[]> = {
   // a usable name/automationId for the `setValue` PowerShell locator filter.
   // The hints below point to the alternate channels for each action,
   // matching the wiring the dogfood confirmed actually works.
+  // `executorFailedAdviceFor` (below) hands desktop_act only the lines that fit the act; this
+  // list, every line in order, is what every other road still answers.
   ExecutorFailed: [
     "For action='click', fall back to mouse_click({clickAt}) using the entity rect center from {tool:reidentify_element} — common when UIA InvokePattern is missing on the control",
     "For action='type' or action='setValue': when detail says no route was tried, follow it. Otherwise, on a UI Automation element desktop_act has already tried UIA setValue and background WM_CHAR (post-#327 E ladder) before reporting executor_failed. The remaining rung is keyboard({action:'type', text, method:'foreground'}) — foreground SendInput uses the OS input queue and bypasses BG injection blocks that stopped the internal ladder (Chromium hosts, WT-XAML, etc.). Focus the target window first with focus_window or mouse_click",
@@ -1345,6 +1351,44 @@ export const RESERVED_CODE_NAMES: readonly string[] = Object.freeze([...RESERVED
 export function getSuggestsForCode(code: string): string[] {
   return SUGGESTS[code] ?? [];
 }
+
+/**
+ * internal #242 — `desktop_act`'s `executor_failed` advice, for the act it answers.
+ *
+ * `SUGGESTS.ExecutorFailed` is keyed by the reason alone, so a caller reading the list rather than
+ * its conditionals was told routes were tried that never ran, and was offered click remedies for a
+ * type. The act knows both things the list could not: which action it was, and whether a route ran.
+ *
+ * - `noRouteTried` — the executor refused before any route (`NoTextRouteError` and its two
+ *   keyboard-road siblings in `desktop-executor.ts`). Every other line is about a route that ran
+ *   and failed, so the one left says to follow `detail`, which says why and what to do instead.
+ * - `click` / `invoke` — the click lines and the re-identify line; the type ladder is not this act.
+ * - `type` / `setValue` — the type ladder and the re-identify line; the click remedies are not.
+ * - anything else (`auto`, `select`, absent) — the whole list, as before: the act's road is not
+ *   known from its name.
+ */
+export function executorFailedAdviceFor(action: string | undefined, noRouteTried: boolean): string[] {
+  if (noRouteTried) return [EXECUTOR_FAILED_NO_ROUTE_TRIED];
+  const all = SUGGESTS.ExecutorFailed ?? [];
+  // Picked from the list by what each line is about, so the list stays the one source of the
+  // words. A line reworded past its test is a programming error, not a quieter answer: it throws.
+  const pick = (about: string, test: (line: string) => boolean): string => {
+    const hits = all.filter(test);
+    if (hits.length !== 1) throw new Error(`executorFailedAdviceFor: ${hits.length} ExecutorFailed lines are about ${about}`);
+    return hits[0]!;
+  };
+  const clickFallback = () => pick("the mouse_click fallback", (l) => l.startsWith("For action='click'"));
+  const clickElement = () => pick("click_element", (l) => l.includes("try click_element("));
+  const typeLadder = () => pick("the type ladder", (l) => l.startsWith("For action='type'"));
+  const reidentify = () => pick("re-identifying", (l) => l.startsWith("Re-run {tool:reidentify_element}"));
+  if (action === "click" || action === "invoke") return [clickFallback(), clickElement(), reidentify()];
+  if (action === "type" || action === "setValue") return [typeLadder(), reidentify()];
+  return [...all];
+}
+
+// The one line for an `executor_failed` refused before any route ran (internal #242).
+const EXECUTOR_FAILED_NO_ROUTE_TRIED =
+  "Nothing was typed and no route was tried: detail says why no route here could carry the text to this element, and what to do instead — follow it";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Error classification

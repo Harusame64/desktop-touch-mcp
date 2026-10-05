@@ -637,6 +637,27 @@ describe("desktopActRawHandler — executor_failed if_unexpected attach (#327 it
     expect(typeof tryNext[0]!.action).toBe("string");
   });
 
+  // internal #242 — the handler hands the act's own advice, not the reason's whole list.
+  it("answers a type no route could carry with only 'follow detail', and a type whose route ran with no click remedy", async () => {
+    const tryNextOf = async (touch: { noRouteTried?: true }, action: "type" | "click") => {
+      vi.spyOn(getDesktopFacade(), "touch").mockResolvedValue({ ok: false, reason: "executor_failed", diff: [], ...touch });
+      const parsed = parseHandlerResult((await desktopActRawHandler({ lease: fakeLease, action, ...(action === "type" && { text: "x" }) })).content);
+      return ((parsed["if_unexpected"] as { try_next: Array<{ action: string }> }).try_next).map((r) => r.action);
+    };
+
+    const none = await tryNextOf({ noRouteTried: true }, "type");
+    expect(none).toHaveLength(1);
+    expect(none[0]).toMatch(/^Nothing was typed and no route was tried/);
+
+    const ran = await tryNextOf({}, "type");
+    expect(ran.some((l) => /has already tried/.test(l))).toBe(true);
+    expect(ran.some((l) => /^For action='click'|try click_element\(/.test(l))).toBe(false);
+
+    const click = await tryNextOf({}, "click");
+    expect(click.some((l) => /has already tried/.test(l))).toBe(false);
+    expect(click.some((l) => /^For action='click'/.test(l))).toBe(true);
+  });
+
   it("does NOT attach if_unexpected when touch fails with a different reason (e.g. modal_blocking) — scope pin", async () => {
     const facade = getDesktopFacade();
     vi.spyOn(facade, "touch").mockResolvedValue({

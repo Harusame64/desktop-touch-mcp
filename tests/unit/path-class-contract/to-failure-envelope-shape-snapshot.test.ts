@@ -479,7 +479,9 @@ describe("PR-P1-1 site 7: desktopActRawHandler executor_failed (DATA-level — h
       diff: [],
       if_unexpected: {
         most_likely_cause: "ExecutorFailed",
-        try_next: FROZEN_TRY_NEXT.ExecutorFailed,
+        // internal #242: a click is handed the reason's lines that fit a click — the type ladder,
+        // which says routes for text were tried, is not this act's.
+        try_next: FROZEN_TRY_NEXT.ExecutorFailed.filter((row) => !row.action.startsWith("For action='type'")),
       },
     });
   });

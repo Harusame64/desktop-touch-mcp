@@ -1219,11 +1219,13 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             "additionalProperties": false,
             "properties": {
               "tool": {
+                "description": "Tool name to call. One of: (the step tools this server dispatches — listed by the running server), or the special pseudo-command \"sleep\".",
                 "type": "string"
               },
               "params": {
                 "description": "Parameters for the tool (same as calling it directly). Omit for tools with no params.",
-                "type": "object"
+                "type": "object",
+                "default": {}
               }
             },
             "required": [
@@ -1338,7 +1340,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "mode": {
-          "description": "Capture mode.\n  'normal'     — default. Window-targeted captures (windowTitle / hwnd) use Win32 PrintWindow with automatic BitBlt fallback when PrintWindow returns no data or an all-black frame; the route used is reported in hints.captureSource. Fullscreen / displayId captures use BitBlt.\n  'background' — a capture of the window itself, not of the screen: its composition surface (WGC) when it can be for a visible, non-minimised window with fullContent, else Win32 PrintWindow. Requires windowTitle (or hwnd). Pair with fullContent for GPU-rendered apps.",
+          "description": "Capture mode.\n  'normal'     — default. Window-targeted captures (windowTitle / hwnd) use Win32 PrintWindow; when it returns no data or an all-black frame, the window's composition surface (WGC, with fullContent) is tried next and BitBlt last. The route used is reported in hints.captureSource ('printwindow' | 'wgc' | 'bitblt-fallback'). Fullscreen / displayId captures use BitBlt.\n  'background' — a capture of the window itself, not of the screen: its composition surface (WGC) when it can be for a visible, non-minimised window with fullContent, else Win32 PrintWindow. Requires windowTitle (or hwnd). Pair with fullContent for GPU-rendered apps.",
           "type": "string",
           "enum": [
             "normal",
@@ -1756,6 +1758,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "maxLength": 200
         },
         "paneId": {
+          "description": "Pane handle from key_locker launch_console — a decimal console hwnd, or the `wt:<pid>:<startMs>` form for a Windows Terminal tab. Targets THIS pane for the whole run+wait+read: the pane title is re-resolved before every read, so a mid-run retitle (e.g. a classic console renaming to `user@host` after an ssh login) is still tracked. Takes precedence over windowTitle. This is the paneId FIELD of launch_console's result — NOT its windowTitle. A Windows Terminal pane is tracked while its tab is the ACTIVE tab (switching away pauses the reads until you switch back).",
           "type": "string"
         },
         "input": {
@@ -1769,7 +1772,11 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "maxLength": 10000
         },
         "until": {
-          "type": "object"
+          "type": "object",
+          "default": {
+            "mode": "quiet",
+            "quietMs": 1500
+          }
         },
         "timeoutMs": {
           "description": "Hard timeout in ms (default 30s)",
@@ -1815,7 +1822,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "target": {
-          "description": "Target descriptor — fields used depend on condition. Accepts an object literal or a JSON-stringified object."
+          "description": "Target descriptor — fields used depend on condition. Accepts an object literal or a JSON-stringified object.",
+          "default": {}
         },
         "timeoutMs": {
           "description": "Maximum time to wait (default 5000ms)",
