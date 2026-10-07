@@ -53,15 +53,15 @@ async function drain(sub: { next(t: number): Promise<Rect[]> }, n: number): Prom
 
 describe("dropInitialDesktopImage", () => {
   it("drops the measured shape: the first batch is one rect equal to the output", async () => {
-    expect(await drain(dropInitialDesktopImage(stubOf([[FULL], [WINDOW]]), PRIMARY), 2)).toEqual([[], [WINDOW]]);
+    expect(await drain(dropInitialDesktopImage(stubOf([[FULL], [WINDOW]]), PRIMARY), 2)).toEqual([[WINDOW], []]);
   });
 
   it("drops it when empty batches come first", async () => {
-    expect(await drain(dropInitialDesktopImage(stubOf([[], [FULL], [WINDOW]]), PRIMARY), 3)).toEqual([[], [], [WINDOW]]);
+    expect(await drain(dropInitialDesktopImage(stubOf([[], [FULL], [WINDOW]]), PRIMARY), 3)).toEqual([[], [WINDOW], []]);
   });
 
   it("drops a secondary output's image, which does not start at the origin", async () => {
-    expect(await drain(dropInitialDesktopImage(stubOf([[SECONDARY], [WINDOW]]), SECONDARY), 2)).toEqual([[], [WINDOW]]);
+    expect(await drain(dropInitialDesktopImage(stubOf([[SECONDARY], [WINDOW]]), SECONDARY), 2)).toEqual([[WINDOW], []]);
   });
 
   it("passes a small first change in the top-left corner", async () => {
@@ -82,7 +82,7 @@ describe("dropInitialDesktopImage", () => {
   });
 
   it("passes a later whole-output rect", async () => {
-    expect(await drain(dropInitialDesktopImage(stubOf([[FULL], [FULL]]), PRIMARY), 2)).toEqual([[], [FULL]]);
+    expect(await drain(dropInitialDesktopImage(stubOf([[FULL], [FULL]]), PRIMARY), 2)).toEqual([[FULL], []]);
   });
 
   it("says when the first non-empty batch has been read, dropped or passed on", async () => {
@@ -97,6 +97,21 @@ describe("dropInitialDesktopImage", () => {
       await Promise.resolve();
       expect(read).toBe(true);
     }
+  });
+
+  it("reads on at once after dropping, instead of answering an empty batch (gate 2)", async () => {
+    const stub = stubOf([[FULL], [WINDOW]]);
+    expect(await dropInitialDesktopImage(stub, PRIMARY).next(10)).toEqual([WINDOW]);
+    expect(stub.next).toHaveBeenCalledTimes(2);
+  });
+
+  it("releases a waiter when disposed before any batch (gate 2)", async () => {
+    const sub = dropInitialDesktopImage(stubOf([]), PRIMARY);
+    let read = false;
+    void sub.firstBatchRead!.then(() => { read = true; });
+    sub.dispose();
+    await Promise.resolve();
+    expect(read).toBe(true);
   });
 
   it("forwards dispose and isDisposed", () => {

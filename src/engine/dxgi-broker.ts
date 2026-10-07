@@ -833,9 +833,13 @@ export function dropInitialDesktopImage(sub: SubscriptionLike, bounds: NativeOut
         only.y === bounds.y &&
         only.width === bounds.width &&
         only.height === bounds.height;
-      return whole ? [] : batch;
+      // Read on at once: an empty batch would put the broker's fan-out to sleep for a poll interval
+      // just as the act it released starts (gate 2).
+      return whole ? sub.next(timeoutMs) : batch;
     },
-    dispose(): void { sub.dispose(); },
+    // Disposed (invalidated, access lost) before any batch: nothing more will be read, so a waiter
+    // is released rather than left to its timeout (gate 2).
+    dispose(): void { markRead(); sub.dispose(); },
   };
 }
 

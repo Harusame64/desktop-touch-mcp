@@ -1571,6 +1571,12 @@ interface ActMotion {
   quiet: QuietRecord | undefined;
   sub: BrokerSubscription | null;
   cacheState: CacheAcquireState | undefined;
+  /**
+   * internal #235 — false when the wait for the duplication's initial image ran out: the act's
+   * repaint can then be folded into that image and dropped with it, so a read of nothing is not
+   * "no change".
+   */
+  primed: boolean;
   dispose(): void;
 }
 
@@ -1593,12 +1599,20 @@ async function prepareActMotion(facade: DesktopFacade, viewId: string): Promise<
     const broker = getSharedDirtyRectBroker();
     const where = rect !== null && rect.width > 0 && rect.height > 0 ? resolveOutputIndexForHwnd(hwnd, rect) : null;
     if (broker === null || where === null || !where.ok) {
-      return { hwnd, quiet, sub: null, cacheState: undefined, dispose: () => undefined };
+      return { hwnd, quiet, sub: null, cacheState: undefined, primed: true, dispose: () => undefined };
     }
+    // The first handle holds the duplication open while it reads its initial image; the act reads a
+    // second one taken after that, so what repainted during the wait (a tooltip, the last act's
+    // tail, the initial image itself when it is not dropped) is not counted as the act's (gate 2).
+    const priming = broker.acquire(where.outputIndex);
+    if (priming.sub === null) {
+      return { hwnd, quiet, sub: null, cacheState: priming.state, primed: true, dispose: () => undefined };
+    }
+    const primed = await firstBatchReadOrTimeout(broker, where.outputIndex);
     const acquired = broker.acquire(where.outputIndex);
+    priming.sub.dispose();
     const sub = acquired.sub;
-    if (sub !== null) await firstBatchReadOrTimeout(broker, where.outputIndex);
-    return { hwnd, quiet, sub, cacheState: acquired.state, dispose: () => sub?.dispose() };
+    return { hwnd, quiet, sub, cacheState: priming.state, primed, dispose: () => sub?.dispose() };
   } catch {
     return null;
   }
@@ -1607,15 +1621,15 @@ async function prepareActMotion(facade: DesktopFacade, viewId: string): Promise<
 /**
  * internal #235, arm 10 — wait until the duplication has read its initial image, so the act's repaint
  * lands in a batch of its own instead of being dropped with that image. Bounded: an image that never
- * comes costs `ACT_MOTION.firstBatchWaitMs`, not the act.
+ * comes costs `ACT_MOTION.firstBatchWaitMs`, not the act. False when it ran out.
  */
-async function firstBatchReadOrTimeout(broker: DirtyRectBroker, outputIndex: number): Promise<void> {
+async function firstBatchReadOrTimeout(broker: DirtyRectBroker, outputIndex: number): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<void>((resolve) => {
-    timer = setTimeout(resolve, ACT_MOTION.firstBatchWaitMs);
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ACT_MOTION.firstBatchWaitMs);
   });
   try {
-    await Promise.race([broker.firstBatchRead(outputIndex), timeout]);
+    return await Promise.race([broker.firstBatchRead(outputIndex).then(() => true), timeout]);
   } finally {
     clearTimeout(timer);
   }
@@ -1701,10 +1715,13 @@ async function finishActMotion(m: ActMotion): Promise<{ observation: VisualMotio
     }
     // internal #245 — read only what was on screen (`visibleRegionOf`).
     const { frame, visible } = visibleRegionOf(m.hwnd, rect);
-    return await observeAfterAct(m.sub, frame, m.quiet, {
+    const read = await observeAfterAct(m.sub, frame, m.quiet, {
       ...(m.cacheState !== undefined && { cacheState: m.cacheState }),
       visible,
     });
+    return !m.primed && read.observation.motion === "no_change"
+      ? { ...read, observation: { ...read.observation, motion: "indeterminate" } }
+      : read;
   } catch {
     return null;
   }
