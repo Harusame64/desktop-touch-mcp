@@ -17,7 +17,9 @@
  *   Only the specified targetKey is marked dirty. Unrelated targets are unaffected.
  *   The targetKey must match the TargetSessionKey format (window:/tab:/title:).
  *
- * Idle cost: zero. pushDirtySignal() is a synchronous Map write. No background polling.
+ * Idle cost: zero. pushDirtySignal() is a synchronous Map write. No background polling
+ * here; what calls it may poll. The dirty-rect router in desktop-register.ts runs OCR on
+ * the foreground window on every screen change, and is opt-in for that reason (#235).
  */
 
 import type { UiEntityCandidate } from "./types.js";

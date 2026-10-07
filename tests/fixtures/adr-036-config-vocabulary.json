@@ -81,6 +81,9 @@
     "DESKTOP_TOUCH_DRAIN_OVERSIZE_THRESHOLD": [
       "src:ts"
     ],
+    "DESKTOP_TOUCH_ENABLE_DIRTY_RECTS": [
+      "src:ts"
+    ],
     "DESKTOP_TOUCH_ENABLE_ONNX_BACKEND": [
       "src:ts"
     ],
@@ -359,7 +362,8 @@
     "length": "unclassified",
     "toLowerCase": "unclassified",
     "trim": "unclassified",
-    "some": "unclassified"
+    "some": "unclassified",
+    "DESKTOP_TOUCH_ENABLE_DIRTY_RECTS": "axis"
   },
   "allowDynamic": [
     "src/utils/launch.ts:name"

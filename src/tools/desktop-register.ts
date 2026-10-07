@@ -668,6 +668,17 @@ let _onnxBackend: OnnxBackend | undefined;
 let _dirtyRouter: DirtyRectRouter | undefined;
 
 /**
+ * Whether the dirty-rect router starts with the facade. Off unless the operator sets
+ * `DESKTOP_TOUCH_ENABLE_DIRTY_RECTS=1` (internal #235): once started, it captures and OCRs
+ * whichever window is in front every few seconds with no tool call, the user's own windows
+ * included. `DESKTOP_TOUCH_DISABLE_DIRTY_RECTS=1` still wins over the opt-in.
+ */
+export function shouldStartDirtyRectRouter(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env["DESKTOP_TOUCH_ENABLE_DIRTY_RECTS"] === "1"
+    && env["DESKTOP_TOUCH_DISABLE_DIRTY_RECTS"] !== "1";
+}
+
+/**
  * @internal Test-only entry point: production feeds the backend via pushDirtySignal.
  * Call backend.updateSnapshot(targetKey, candidates) to deliver stable candidates.
  */
@@ -786,10 +797,12 @@ export function getDesktopFacade(): DesktopFacade {
         console.error("[desktop-register] Failed to initialize visual runtime:", err);
       });
 
-      // Phase 3: start dirty-rect router. Routes Desktop Duplication events
-      // to the foreground window's OcrVisualAdapter for immediate re-polling.
+      // Phase 3: start dirty-rect router, opt-in only (see shouldStartDirtyRectRouter).
+      // Routes Desktop Duplication events to the foreground window's OcrVisualAdapter
+      // for immediate re-polling. A discover's own OCR lane already feeds the same
+      // adapter for the window it reads, so the visual lane works without it.
       // Falls back to no-op if native addon is absent (no RDP error, just silence).
-      if (process.env["DESKTOP_TOUCH_DISABLE_DIRTY_RECTS"] !== "1") {
+      if (shouldStartDirtyRectRouter()) {
         _dirtyRouter = new DirtyRectRouter({
           onRois: (_rois, _nowMs) => {
             // Phase 3: trigger the foreground window's OCR adapter on dirty-rect events.

@@ -12,6 +12,13 @@
   `desktop_discover`, and (`modal_blocking`) when a sheet or an app-modal window is open over it —
   nothing is pressed or typed.
 
+### Changed — Windows
+- **The server no longer reads the window in front on its own.** Since 1.0 it captured and OCRed
+  whichever window was in front, every few seconds while the screen changed, with no tool call —
+  your own windows included. It now reads a window only when a tool asks for it. On a window UI
+  Automation cannot read, `desktop_discover`'s `visual_gpu` entities now appear from the second
+  discover rather than the first. `DESKTOP_TOUCH_ENABLE_DIRTY_RECTS=1` turns the old behaviour back on.
+
 ## [2.2.0] - 2026-10-04 — Says what it could not see, instead of reporting it as seen
 
 2.2 stops answering as if it had seen something it did not: a suspended app's last frame, a covered
