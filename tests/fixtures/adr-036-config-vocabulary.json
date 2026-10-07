@@ -291,7 +291,7 @@
     "DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE": "unclassified",
     "DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES": "unclassified",
     "DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH": "unclassified",
-    "DESKTOP_TOUCH_DISABLE_DIRTY_RECTS": "unclassified",
+    "DESKTOP_TOUCH_DISABLE_DIRTY_RECTS": "axis",
     "DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2": "premise",
     "DESKTOP_TOUCH_DISABLE_KEY_LOCKER": "unclassified",
     "DESKTOP_TOUCH_DISABLE_NATIVE_UIA": "axis",
@@ -375,7 +375,7 @@
       "found_by": "win2, 2026-09-17, internal dev/config-axis 309c327"
     }
   ],
-  "maxUnclassified": 58,
+  "maxUnclassified": 57,
   "documented": [
     "DESKTOP_TOUCH_ALLOWLIST",
     "DESKTOP_TOUCH_AUTO_GUARD",

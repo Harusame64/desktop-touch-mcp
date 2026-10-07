@@ -1063,8 +1063,8 @@ const desktopActRawHandlerInner = async (
   // frame-diff rather than DXGI dirty rects. A PrintWindow pre/post diff captures
   // only the target window's own pixels (occlusion-immune) and never touches the
   // DXGI dirty-rect broker, so it sidesteps both dogfood defects: F1 (occlusion-
-  // blind geometry filter) and F2 (the same-process DirtyRectRouter draining the
-  // frame before the act polls). See adr-024-seed2-dogfood-findings. The pre-
+  // blind geometry filter) and F2 (the same-process DirtyRectRouter, opt-in since
+  // #235, draining the frame before the act polls). See adr-024-seed2-dogfood-findings. The pre-
   // action frame MUST be captured BEFORE the touch, so resolve the visual-only
   // flag + window geometry up front. Non-visual-only targets keep the DXGI path;
   // since internal #211 D it reads a handle acquired before the touch
