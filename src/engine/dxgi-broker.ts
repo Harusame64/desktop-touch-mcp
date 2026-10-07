@@ -776,7 +776,34 @@ function defaultFactory(outputIndex: number): SubscriptionLike {
   if (typeof Ctor !== "function") {
     throw new Error("DirtyRectSubscription not available in native addon");
   }
-  return new Ctor(outputIndex) as unknown as SubscriptionLike;
+  return dropInitialDesktopImage(new Ctor(outputIndex) as unknown as SubscriptionLike);
+}
+
+/**
+ * The first frame a new duplication hands back is the desktop's initial image, not a change: win2
+ * measured one rect covering the whole output (1920×1080 at the origin) as the first batch after
+ * every `miss-init`, 6 of 6, in a fresh process and after a 20 s idle rebuild (internal #235, arm 9).
+ * While the dirty-rect router ran it kept the broker warm, so no consumer saw it; now the next
+ * consumer after an idle does, and a discover-time `PreActWatch` would count it as a repaint.
+ *
+ * Only that shape is dropped: the first non-empty batch, when it is a single rect at the origin.
+ * Anything else is passed on, so a real first change of another shape is not lost.
+ *
+ * @internal exported for tests.
+ */
+export function dropInitialDesktopImage(sub: SubscriptionLike): SubscriptionLike {
+  let firstSeen = false;
+  return {
+    get isDisposed() { return sub.isDisposed; },
+    async next(timeoutMs: number): Promise<NativeDirtyRect[]> {
+      const batch = await sub.next(timeoutMs);
+      if (firstSeen || batch.length === 0) return batch;
+      firstSeen = true;
+      const only = batch.length === 1 ? batch[0] : undefined;
+      return only !== undefined && only.x === 0 && only.y === 0 ? [] : batch;
+    },
+    dispose(): void { sub.dispose(); },
+  };
 }
 
 /** Lazily construct (and reuse) the process-wide broker. Returns `null`
