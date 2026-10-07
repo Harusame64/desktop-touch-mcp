@@ -92,6 +92,8 @@ export interface SubscriptionLike {
   readonly isDisposed: boolean;
   next(timeoutMs: number): Promise<NativeDirtyRect[]>;
   dispose(): void;
+  /** Resolves once the first non-empty batch has been read (`dropInitialDesktopImage`). */
+  readonly firstBatchRead?: Promise<void>;
 }
 
 /**
@@ -457,6 +459,19 @@ export class DirtyRectBroker {
   }
 
   /**
+   * Resolves once the native subscription for `outputIndex` has read its first non-empty batch —
+   * the initial image a new duplication hands back (`dropInitialDesktopImage`). Already resolved
+   * when there is no live subscription or it does not say. A change made before this resolves can
+   * be folded into that image and dropped with it (internal #235, arm 10).
+   */
+  firstBatchRead(outputIndex: number): Promise<void> {
+    const entry = this.entries.get(outputIndex);
+    return entry?.kind === "subscription" && entry.sub.firstBatchRead !== undefined
+      ? entry.sub.firstBatchRead
+      : Promise.resolve();
+  }
+
+  /**
    * Mark `outputIndex` for short-lived back-off after a `sub.next()` failure
    * (E_DUP_ACCESS_LOST recovery). Disposes the native subscription so the
    * next `acquire` / `subscribe` call fast-paths to `hit-negative-backoff`
@@ -792,16 +807,25 @@ function defaultFactory(outputIndex: number): SubscriptionLike {
  * the origin, and a small real change in the primary's top-left corner does. Anything else is passed
  * on, so a real first change of another shape is not lost.
  *
+ * A change made before that batch is read is folded into it and dropped with it: win2 measured a
+ * window repainted 42–99 ms after a cold acquire arriving nowhere, 9 of 9, while the same repaint
+ * without this wrapper sat inside the whole-output rect (arm 10). So `firstBatchRead` resolves once
+ * the batch is read, and an act waits for it before acting (`DirtyRectBroker.firstBatchRead`).
+ *
  * @internal exported for tests.
  */
 export function dropInitialDesktopImage(sub: SubscriptionLike, bounds: NativeOutputBounds): SubscriptionLike {
   let firstSeen = false;
+  let markRead: () => void = () => undefined;
+  const firstBatchRead = new Promise<void>((resolve) => { markRead = resolve; });
   return {
     get isDisposed() { return sub.isDisposed; },
+    firstBatchRead,
     async next(timeoutMs: number): Promise<NativeDirtyRect[]> {
       const batch = await sub.next(timeoutMs);
       if (firstSeen || batch.length === 0) return batch;
       firstSeen = true;
+      markRead();
       const only = batch.length === 1 ? batch[0] : undefined;
       const whole =
         only !== undefined &&

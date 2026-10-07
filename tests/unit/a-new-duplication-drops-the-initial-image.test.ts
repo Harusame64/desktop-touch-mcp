@@ -85,6 +85,20 @@ describe("dropInitialDesktopImage", () => {
     expect(await drain(dropInitialDesktopImage(stubOf([[FULL], [FULL]]), PRIMARY), 2)).toEqual([[], [FULL]]);
   });
 
+  it("says when the first non-empty batch has been read, dropped or passed on", async () => {
+    for (const first of [[FULL], [WINDOW]]) {
+      const sub = dropInitialDesktopImage(stubOf([[], first]), PRIMARY);
+      let read = false;
+      void sub.firstBatchRead!.then(() => { read = true; });
+      await sub.next(10);
+      await Promise.resolve();
+      expect(read).toBe(false);
+      await sub.next(10);
+      await Promise.resolve();
+      expect(read).toBe(true);
+    }
+  });
+
   it("forwards dispose and isDisposed", () => {
     const stub = stubOf([]);
     const sub = dropInitialDesktopImage(stub, PRIMARY);
@@ -99,6 +113,20 @@ describe("the shared broker's native subscriptions drop it", () => {
   afterEach(() => {
     disposeSharedDirtyRectBroker();
     nativeBatches.queue = [];
+  });
+
+  it("the broker says when a new subscription has read its initial image", async () => {
+    nativeBatches.queue = [[FULL], [WINDOW]];
+    const broker = getSharedDirtyRectBroker()!;
+    const acquired = broker.acquire(0);
+    let read = false;
+    void broker.firstBatchRead(0).then(() => { read = true; });
+    await Promise.resolve();
+    expect(read).toBe(false);
+    expect(await acquired.sub!.next(1000)).toEqual([WINDOW]);
+    expect(read).toBe(true);
+    // An output with no subscription has nothing to wait for.
+    await expect(broker.firstBatchRead(5)).resolves.toBeUndefined();
   });
 
   it("a polling consumer after miss-init never sees the initial image", async () => {

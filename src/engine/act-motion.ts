@@ -52,6 +52,12 @@ export const ACT_MOTION = Object.freeze({
   maxWatches: 8,
   /** A bound on the post-act read loop, whatever the broker answers. */
   maxBatches: 1000,
+  /**
+   * How long an act waits for a cold duplication's initial image to be read before acting (internal
+   * #235, arm 10): win2 measured it 141–158 ms after a cold acquire; a repaint before it is folded
+   * into it and dropped with it. A warm one has read it already and does not wait.
+   */
+  firstBatchWaitMs: 500,
 });
 
 type Box = { x: number; y: number; width: number; height: number };

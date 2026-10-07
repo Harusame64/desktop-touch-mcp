@@ -96,10 +96,10 @@ import { probeAim } from "../engine/aim-probe.js";
 import { computeViewportPosition } from "../utils/viewport-position.js";
 import { pickPlainTopLevelWindowByTitle } from "./_resolve-window.js";
 import { resolveOutputIndexForHwnd } from "../engine/any-change.js";
-import { observeAfterAct, PreActWatch, visibleParts, type QuietRecord } from "../engine/act-motion.js";
+import { ACT_MOTION, observeAfterAct, PreActWatch, visibleParts, type QuietRecord } from "../engine/act-motion.js";
 import { captureFrame, type RawFrame } from "../engine/layer-buffer.js";
 import { verifyLocalRepaint } from "../engine/local-repaint.js";
-import { disposeSharedDirtyRectBroker, getSharedDirtyRectBroker, type BrokerSubscription, type CacheAcquireState } from "../engine/dxgi-broker.js";
+import { disposeSharedDirtyRectBroker, getSharedDirtyRectBroker, type BrokerSubscription, type CacheAcquireState, type DirtyRectBroker } from "../engine/dxgi-broker.js";
 import type { VisualMotionObservation } from "./_input-pipeline.js";
 import { shouldReturnRoiCapture, type ReturnCaptureMode } from "./_roi-capture-gate.js";
 import { filterDirtyRectsToWindow, boundingBox, clampRectToWindow, resolveFoldOcrRoi } from "./_roi-region.js";
@@ -1597,9 +1597,27 @@ async function prepareActMotion(facade: DesktopFacade, viewId: string): Promise<
     }
     const acquired = broker.acquire(where.outputIndex);
     const sub = acquired.sub;
+    if (sub !== null) await firstBatchReadOrTimeout(broker, where.outputIndex);
     return { hwnd, quiet, sub, cacheState: acquired.state, dispose: () => sub?.dispose() };
   } catch {
     return null;
+  }
+}
+
+/**
+ * internal #235, arm 10 — wait until the duplication has read its initial image, so the act's repaint
+ * lands in a batch of its own instead of being dropped with that image. Bounded: an image that never
+ * comes costs `ACT_MOTION.firstBatchWaitMs`, not the act.
+ */
+async function firstBatchReadOrTimeout(broker: DirtyRectBroker, outputIndex: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ACT_MOTION.firstBatchWaitMs);
+  });
+  try {
+    await Promise.race([broker.firstBatchRead(outputIndex), timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
