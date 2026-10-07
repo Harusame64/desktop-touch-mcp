@@ -17,8 +17,10 @@
   whichever window was in front, every few seconds while the screen changed, with no tool call —
   your own windows included. It now reads a window only when a tool asks for it. On a window UI
   Automation cannot read, `desktop_discover`'s `visual_gpu` entities appear from the second discover
-  of that window, as they always did unless the window had been in front earlier.
-  `DESKTOP_TOUCH_ENABLE_DIRTY_RECTS=1` turns the old behaviour back on.
+  of that window, as they always did unless the window had been in front earlier. After a pause
+  between tool calls, the next `desktop_act` can wait up to half a second before acting (about
+  0.15 s measured), so that its change is not missed. `DESKTOP_TOUCH_ENABLE_DIRTY_RECTS=1` turns the old
+  behaviour back on.
 
 ## [2.2.0] - 2026-10-04 — Says what it could not see, instead of reporting it as seen
 
