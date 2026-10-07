@@ -827,12 +827,14 @@ export function dropInitialDesktopImage(sub: SubscriptionLike, bounds: NativeOut
       firstSeen = true;
       markRead();
       const only = batch.length === 1 ? batch[0] : undefined;
+      // Either orientation: a 90°/270° output's duplication surface is unrotated, so its rects come
+      // back with width and height swapped against `DesktopCoordinates` (gate 2, Copilot; not measured).
       const whole =
         only !== undefined &&
         only.x === bounds.x &&
         only.y === bounds.y &&
-        only.width === bounds.width &&
-        only.height === bounds.height;
+        ((only.width === bounds.width && only.height === bounds.height) ||
+          (only.width === bounds.height && only.height === bounds.width));
       // Read on at once: an empty batch would put the broker's fan-out to sleep for a poll interval
       // just as the act it released starts (gate 2).
       return whole ? sub.next(timeoutMs) : batch;

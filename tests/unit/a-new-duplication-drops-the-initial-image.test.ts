@@ -64,6 +64,12 @@ describe("dropInitialDesktopImage", () => {
     expect(await drain(dropInitialDesktopImage(stubOf([[SECONDARY], [WINDOW]]), SECONDARY), 2)).toEqual([[WINDOW], []]);
   });
 
+  it("drops a rotated output's image, whose rect is unrotated (width and height swapped)", async () => {
+    const portrait = { x: 1920, y: 0, width: 1080, height: 1920 };
+    const unrotated = { x: 1920, y: 0, width: 1920, height: 1080 };
+    expect(await drain(dropInitialDesktopImage(stubOf([[unrotated], [WINDOW]]), portrait), 2)).toEqual([[WINDOW], []]);
+  });
+
   it("passes a small first change in the top-left corner", async () => {
     expect(await drain(dropInitialDesktopImage(stubOf([[CORNER]]), PRIMARY), 1)).toEqual([[CORNER]]);
   });
