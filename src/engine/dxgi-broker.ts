@@ -29,7 +29,7 @@
  * 単独 test ~15-20 case で動作実証、consumer migration は PR-SR4-2 / -3 で。
  */
 
-import type { NativeDirtyRect } from "./native-types.js";
+import type { NativeDirtyRect, NativeDirtyRectSubscription, NativeOutputBounds } from "./native-types.js";
 import { nativeDuplication } from "./native-engine.js";
 
 // ─── Constants (sub-plan §5.3、broker 側私的複製、PR-SR4-2 で SSOT shift) ───
@@ -776,7 +776,8 @@ function defaultFactory(outputIndex: number): SubscriptionLike {
   if (typeof Ctor !== "function") {
     throw new Error("DirtyRectSubscription not available in native addon");
   }
-  return dropInitialDesktopImage(new Ctor(outputIndex) as unknown as SubscriptionLike);
+  const native = new Ctor(outputIndex) as unknown as NativeDirtyRectSubscription;
+  return dropInitialDesktopImage(native, native.outputBounds);
 }
 
 /**
@@ -786,12 +787,14 @@ function defaultFactory(outputIndex: number): SubscriptionLike {
  * While the dirty-rect router ran it kept the broker warm, so no consumer saw it; now the next
  * consumer after an idle does, and a discover-time `PreActWatch` would count it as a repaint.
  *
- * Only that shape is dropped: the first non-empty batch, when it is a single rect at the origin.
- * Anything else is passed on, so a real first change of another shape is not lost.
+ * Only that shape is dropped: the first non-empty batch, when it is a single rect equal to the
+ * output's bounds. Rects are in desktop coordinates, so a secondary output's image does not start at
+ * the origin, and a small real change in the primary's top-left corner does. Anything else is passed
+ * on, so a real first change of another shape is not lost.
  *
  * @internal exported for tests.
  */
-export function dropInitialDesktopImage(sub: SubscriptionLike): SubscriptionLike {
+export function dropInitialDesktopImage(sub: SubscriptionLike, bounds: NativeOutputBounds): SubscriptionLike {
   let firstSeen = false;
   return {
     get isDisposed() { return sub.isDisposed; },
@@ -800,7 +803,13 @@ export function dropInitialDesktopImage(sub: SubscriptionLike): SubscriptionLike
       if (firstSeen || batch.length === 0) return batch;
       firstSeen = true;
       const only = batch.length === 1 ? batch[0] : undefined;
-      return only !== undefined && only.x === 0 && only.y === 0 ? [] : batch;
+      const whole =
+        only !== undefined &&
+        only.x === bounds.x &&
+        only.y === bounds.y &&
+        only.width === bounds.width &&
+        only.height === bounds.height;
+      return whole ? [] : batch;
     },
     dispose(): void { sub.dispose(); },
   };
