@@ -651,33 +651,60 @@ function outerDefault(schema: z.ZodTypeAny): { value: unknown } | undefined {
   return undefined;
 }
 
+/** The first `.describe()` text from the outside in, through `optional` / `default` / `nullable`. */
+function descriptionOf(schema: z.ZodTypeAny): string | undefined {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let cur: any = schema;
+  for (let guard = 0; guard < 12; guard++) {
+    if (typeof cur?.description === "string" && cur.description.length > 0) return cur.description as string;
+    const t = cur?._def?.type;
+    if (t !== "optional" && t !== "default" && t !== "nullable") return undefined;
+    cur = cur._def.innerType;
+  }
+  return undefined;
+}
+
+/** Whether a field's base (wrappers stripped) carries a default of its own on the wire (`coercedBooleanWithDefault`). */
+function baseShowsDefault(schema: z.ZodTypeAny): boolean {
+  try {
+    return "default" in (z.toJSONSchema(stripFieldWrappers(schema), { io: "input" }) as Record<string, unknown>);
+  } catch {
+    return false; // unserializable: `mergeFlatField` widens it, and it carries nothing of ours
+  }
+}
+
 /**
  * internal #266 — give the merged field back the description and default its variants declared.
  * `stripFieldWrappers` removes the outer `optional` / `default`, and in zod 4 a `.describe()` written
- * after them lives on that wrapper, so 83 descriptions and 51 defaults of the eight flattened tools
- * never reached `tools/list`.
+ * after them lives on that wrapper, so 83 descriptions (91 with the eight injected `include`
+ * fields) and 51 defaults of the eight flattened tools never reached `tools/list`.
  *
- * - Description: one text when every variant that has one says the same; otherwise each text,
- *   labelled with the actions it is written for (13 fields measured, e.g. `scroll.windowTitle`
- *   is required for some actions and focuses the window for another).
+ * - Description: one text, unlabelled, when every variant with the field has that same text;
+ *   otherwise each text labelled with the actions it is written for, and an action whose variant
+ *   has none is simply not named (13 fields differ, e.g. `scroll.windowTitle` is required for some
+ *   actions and focuses the window for another).
  * - Default: only when every variant with the field declares the same one (`keyboard.method` has
  *   one on two of its three actions, `scroll.direction` two different ones: neither gets one). It
  *   is metadata (`.meta`), not a `.default()`: this flat schema is not the parse that applies it.
- *   A field built by `coercedBooleanWithDefault` carries its default on the inner schema, which
- *   the merge keeps; when its variants disagree that default would be wrong, so that throws.
+ *   Over a `z.preprocess` base the SDK's input-mode conversion drops it (`terminal.until`), which
+ *   `the-wire-carries-descriptions-and-defaults.test.ts` names.
+ * - A base built by `coercedBooleanWithDefault` carries its default inside, where the merge keeps
+ *   it — in an `anyOf` branch too. When the variants do not all declare that one default it would
+ *   be wrong for some action, so that throws, whatever the variant order.
  */
 function withWireMeta(key: string, merged: z.ZodTypeAny, fieldOf: FlatFieldVariant[]): z.ZodTypeAny {
   const byText = new Map<string, string[]>();
   for (const { schema, actions } of fieldOf) {
-    const text = schema.description;
-    if (typeof text !== "string" || text.length === 0) continue;
+    const text = descriptionOf(schema);
+    if (text === undefined) continue;
     byText.set(text, [...(byText.get(text) ?? []), ...actions]);
   }
   const texts = [...byText.entries()];
+  const allDescribed = fieldOf.every((f) => descriptionOf(f.schema) !== undefined);
   const description =
     texts.length === 0
       ? undefined
-      : texts.length === 1
+      : texts.length === 1 && allDescribed
         ? texts[0][0]
         : texts.map(([text, actions]) => `${actions.map((a) => `'${a}'`).join(" / ")}: ${text}`).join("\n");
 
@@ -687,21 +714,17 @@ function withWireMeta(key: string, merged: z.ZodTypeAny, fieldOf: FlatFieldVaria
     new Set(defaults.map((d) => JSON.stringify(d!.value))).size === 1
       ? defaults[0]
       : undefined;
+  if (agreed === undefined && fieldOf.some((f) => baseShowsDefault(f.schema))) {
+    throw new Error(
+      `flattenUnionToObjectSchema: "${key}" would show a default on the wire although its variants ` +
+        "do not all declare the same one (a coercedBooleanWithDefault on some of them).",
+    );
+  }
 
   const meta: Record<string, unknown> = {};
   if (description !== undefined) meta.description = description;
   if (agreed !== undefined) meta.default = agreed.value;
-  const out = Object.keys(meta).length > 0 ? merged.meta(meta) : merged;
-  if (agreed === undefined) {
-    const wire = z.toJSONSchema(out, { io: "input", unrepresentable: "any" }) as Record<string, unknown>;
-    if ("default" in wire) {
-      throw new Error(
-        `flattenUnionToObjectSchema: "${key}" would show a default on the wire although its variants ` +
-          "do not all declare the same one (a coercedBooleanWithDefault on some of them).",
-      );
-    }
-  }
-  return out;
+  return Object.keys(meta).length > 0 ? merged.meta(meta) : merged;
 }
 
 /** Strip outer ZodOptional / ZodDefault / ZodNullable wrappers to the base. */

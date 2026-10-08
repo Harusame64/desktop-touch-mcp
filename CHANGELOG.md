@@ -25,9 +25,10 @@
 ### Fixed — Windows
 - **Your client now sees what each tool's arguments mean.** 91 arguments of the tools that take an
   `action` (`keyboard`, `scroll`, `terminal`, `browser_eval` and others) reached the client with no
-  description, and 80 arguments across the tools without their default. Both are now in
-  `tools/list`. Where an argument means different things for different actions, its description
-  says which text is for which action.
+  description, and 80 arguments across the tools without their default; those now reach it. Where
+  an argument means different things for different actions, its description says which text is for
+  which action. Four defaults still do not show: `keyboard.method` and `scroll.direction` (they
+  differ by action) and `terminal.until` and `wait_until.target`.
 
 ## [2.2.0] - 2026-10-04 — Says what it could not see, instead of reporting it as seen
 

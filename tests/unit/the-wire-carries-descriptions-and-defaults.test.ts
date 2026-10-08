@@ -6,6 +6,10 @@
  * defaults on `z.preprocess` fields elsewhere, were lost. Two causes: `flattenUnionToObjectSchema`
  * stripped the wrappers a zod 4 `.describe()` / `.default()` hang on, and the SDK's `io: "input"`
  * conversion does not emit a default outside a `z.preprocess`.
+ *
+ * Counted on the regenerated catalog against main: 91 descriptions (#266's 83, plus the eight
+ * `include` fields the envelope injects, which it did not list) and 80 defaults (48 + 32) more.
+ * Four declared defaults still do not show, by name in the sweep below.
  */
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -81,16 +85,109 @@ describe("flattenUnionToObjectSchema keeps what the variants declared", () => {
     expect(flattenUnionToObjectSchema(union).parse({ action: "a" })).toEqual({ action: "a" });
   });
 
-  it("refuses a coercedBooleanWithDefault whose variants disagree, rather than show one variant's default", () => {
+  it("refuses a coercedBooleanWithDefault whose variants disagree, in either order (gate 2)", () => {
+    const withDefault = () => coercedBooleanWithDefault(true);
+    const without = () => coercedBoolean().optional();
+    for (const [first, second] of [[withDefault, without], [without, withDefault]]) {
+      const bad = z.discriminatedUnion("action", [
+        z.object({ action: z.literal("a"), f: first() }),
+        z.object({ action: z.literal("b"), f: second() }),
+      ]);
+      expect(() => flattenUnionToObjectSchema(bad)).toThrow(/"f" would show a default/);
+    }
+  });
+
+  it("refuses it inside a widening too, where its default would sit in one anyOf branch (gate 2)", () => {
     const bad = z.discriminatedUnion("action", [
       z.object({ action: z.literal("a"), f: coercedBooleanWithDefault(true) }),
-      z.object({ action: z.literal("b"), f: coercedBoolean().optional() }),
+      z.object({ action: z.literal("b"), f: z.string().optional() }),
     ]);
     expect(() => flattenUnionToObjectSchema(bad)).toThrow(/"f" would show a default/);
   });
+
+  it("reads a description written before the wrappers, too (gate 2)", () => {
+    const u = z.discriminatedUnion("action", [
+      z.object({ action: z.literal("a"), e: z.enum(["x"]).describe("inner text").default("x") }),
+      z.object({ action: z.literal("b"), e: z.enum(["y"]).describe("inner text").optional() }),
+    ]);
+    expect(propsOf(flattenUnionToObjectSchema(u)).e.description).toBe("inner text");
+  });
+
+  it("labels a description only some actions have, so it is not read as every action's (gate 2)", () => {
+    const u = z.discriminatedUnion("action", [
+      z.object({ action: z.literal("a"), x: z.string().optional().describe("required for a") }),
+      z.object({ action: z.literal("b"), x: z.string().optional() }),
+    ]);
+    expect(propsOf(flattenUnionToObjectSchema(u)).x.description).toBe("'a': required for a");
+  });
 });
 
+// The eight flattened tools' unions: their registered schemas no longer hold the defaults.
+const UNIONS: Record<string, [string, string]> = {
+  browser_eval: ["../../src/tools/browser.js", "browserEvalSchema"],
+  clipboard: ["../../src/tools/clipboard.js", "clipboardSchema"],
+  excel: ["../../src/tools/excel.js", "excelSchema"],
+  key_locker: ["../../src/tools/key-locker-tool.js", "keyLockerSchema"],
+  keyboard: ["../../src/tools/keyboard.js", "keyboardSchema"],
+  scroll: ["../../src/tools/scroll.js", "scrollSchema"],
+  terminal: ["../../src/tools/terminal.js", "terminalSchema"],
+  window_dock: ["../../src/tools/window-dock.js", "windowDockSchema"],
+};
+
+function declaredDefault(schema: unknown): { value: unknown } | undefined {
+  let cur: any = schema;
+  for (let g = 0; g < 12; g++) {
+    const t = cur?._def?.type;
+    if (t === "default") return { value: cur._def.defaultValue };
+    if (t !== "optional" && t !== "nullable") return undefined;
+    cur = cur._def.innerType;
+  }
+  return undefined;
+}
+
 describe("the catalog surface (= the live tools/list)", () => {
+  it("every default a registered tool declares is on the wire with its value, but four named ones (gate 2)", async () => {
+    const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
+    const { CATALOG_TOOL_REGISTRARS } = await import("../../src/tools/catalog-registrars.js");
+    const { registerKeyLockerTools } = await import("../../src/tools/key-locker-tool.js");
+    const server = new McpServer({ name: "sweep", version: "0" });
+    for (const register of CATALOG_TOOL_REGISTRARS) register(server);
+    registerKeyLockerTools(server);
+    const registered = (server as any)._registeredTools as Record<string, { inputSchema?: { shape?: Record<string, unknown> } }>;
+    const declared: Array<[string, string, unknown]> = [];
+    for (const [tool, entry] of Object.entries(registered)) {
+      if (tool in UNIONS) {
+        const [path, name] = UNIONS[tool];
+        const union = (await import(path))[name] as { options: Array<{ shape: Record<string, unknown> }> };
+        for (const v of union.options)
+          for (const [k, f] of Object.entries(v.shape)) {
+            const d = declaredDefault(f);
+            if (d !== undefined) declared.push([tool, k, d.value]);
+          }
+      } else {
+        for (const [k, f] of Object.entries(entry.inputSchema?.shape ?? {})) {
+          const d = declaredDefault(f);
+          if (d !== undefined) declared.push([tool, k, d.value]);
+        }
+      }
+    }
+    const wireOf = (tool: string, key: string) =>
+      (STUB_TOOL_CATALOG.find((t) => t.name === tool)?.inputSchema.properties as Record<string, Record<string, unknown>> | undefined)?.[key];
+    const missing = new Set<string>();
+    for (const [tool, key, value] of declared) {
+      const w = wireOf(tool, key);
+      if (w === undefined || !("default" in w)) missing.add(`${tool}.${key}`);
+      else expect(w.default, `${tool}.${key}`).toEqual(value);
+    }
+    // CONTROL: the sweep saw the declarations it is about — from a union and from a plain tool.
+    expect(declared.length).toBeGreaterThan(100);
+    expect(declared).toContainEqual(["terminal", "lines", 50]);
+    expect(declared).toContainEqual(["screenshot", "dotByDot", false]);
+    // keyboard.method / scroll.direction: the actions disagree. terminal.until / wait_until.target:
+    // objects holding a z.preprocess field, whose default zod drops in input mode.
+    expect([...missing].sort()).toEqual(["keyboard.method", "scroll.direction", "terminal.until", "wait_until.target"]);
+  });
+
   // What is still undescribed, by name: `terminal.until` has no `.describe()` in its source (the
   // tool description explains it), and `mouse_drag`'s coordinates have none either.
   it("every property is described but the five known ones", () => {
