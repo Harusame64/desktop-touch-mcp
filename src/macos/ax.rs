@@ -570,21 +570,92 @@ fn refused(reason: &str) -> MacActResult {
 fn locate(t: &MacAxTarget) -> Result<CFRetained<AXUIElement>, MacActResult> {
     let timeout = t.timeout_secs.map(|s| s as f32).unwrap_or(DEFAULT_TIMEOUT_SECS);
     let app = app_element(t.pid, timeout);
-    let Some((root, e)) = resolve(&app, &t.id, timeout) else { return Err(refused("element_not_found")) };
+    let root_id = root_id_of(&t.id);
+    let (root, at_path) = match resolve(&app, &t.id, timeout) {
+        Some((root, e)) => (root, Some(e)),
+        // The path runs past the children there are now: the root may still hold the element.
+        None => match resolve(&app, &root_id, timeout) {
+            Some((root, _)) => (root, None),
+            None => return Err(refused("element_not_found")),
+        },
+    };
     if root_key(&root) != t.expected_root_key {
         return Err(refused("element_changed"));
     }
+    let is_it = |e: &AXUIElement| {
+        attr_string(e, "AXRole").as_deref() == Some(t.expected_role.as_str()) && element_key(e) == t.expected_element_key
+    };
+    let (e, id) = match at_path {
+        Some(e) if is_it(&e) => (e, t.id.clone()),
+        at_path => match relocate(&root, &root_id, &t.expected_role, &t.expected_element_key, timeout) {
+            Some((id, e)) => (e, id),
+            None => {
+                let role = at_path.as_ref().and_then(|e| attr_string(e, "AXRole"));
+                let reason = if at_path.is_some() { "element_changed" } else { "element_not_found" };
+                return Err(MacActResult { role, ..refused(reason) });
+            }
+        },
+    };
     let role = attr_string(&e, "AXRole").unwrap_or_default();
-    if role != t.expected_role {
-        return Err(MacActResult { role: Some(role), ..refused("element_changed") });
-    }
-    if element_key(&e) != t.expected_element_key {
-        return Err(MacActResult { role: Some(role), ..refused("element_changed") });
-    }
-    if let Some(blocker) = modal_blocker(&app, &root, &t.id, timeout) {
+    if let Some(blocker) = modal_blocker(&app, &root, &id, timeout) {
         return Err(MacActResult { role: Some(role), blocker: Some(blocker), ..refused("modal_blocking") });
     }
     Ok(e)
+}
+
+/// The path of the root an element path starts from: `a.<i>`, `f` or `m`.
+fn root_id_of(id: &str) -> String {
+    let mut parts = id.split('.');
+    match parts.next() {
+        Some("a") => format!("a.{}", parts.next().unwrap_or("")),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    }
+}
+
+/// internal #260 — find the element a caller read by what it is (role and element key) under the
+/// root it was read in, when its path now names something else or nothing: a sibling before it
+/// came or went, so the path shifted while the element did not (Calculator: All Clear removes the
+/// expression line, and every button's index drops by one; their keys do not change, measured
+/// 2026-10-08). Answers only when exactly one element under the root matches — two that match are
+/// not told apart here, and the act is refused as before. A walk cut short (by its element or time
+/// budget) answers nothing rather than a guess.
+fn relocate(
+    root: &CFRetained<AXUIElement>,
+    root_id: &str,
+    role: &str,
+    key: &str,
+    timeout: f32,
+) -> Option<(String, CFRetained<AXUIElement>)> {
+    const MAX_ELEMENTS: usize = 3000;
+    let t0 = std::time::Instant::now();
+    let budget = std::time::Duration::from_millis(3000);
+    let mut found: Option<(String, CFRetained<AXUIElement>)> = None;
+    type Entry = (String, CFRetained<AXUIElement>, Vec<CFRetained<AXUIElement>>);
+    let mut stack: Vec<Entry> = vec![(root_id.to_string(), root.clone(), Vec::new())];
+    let mut visited = 0usize;
+    while let Some((id, e, ancestors)) = stack.pop() {
+        visited += 1;
+        if visited > MAX_ELEMENTS || t0.elapsed() >= budget {
+            return None;
+        }
+        // The role first: one message, and most elements stop there.
+        if attr_string(&e, "AXRole").as_deref() == Some(role) && element_key(&e) == key {
+            if found.is_some() {
+                return None;
+            }
+            found = Some((id.clone(), e.clone()));
+        }
+        let mut lineage = ancestors;
+        lineage.push(e.clone());
+        for (i, k) in children(&e, timeout).into_iter().enumerate().rev() {
+            if lineage.iter().any(|a| same(a, &k)) {
+                continue;
+            }
+            stack.push((format!("{id}.{i}"), k, lineage.clone()));
+        }
+    }
+    found
 }
 
 /// What blocks an act on the element at `id` under `root`, if anything (measured 2026-10-04:
@@ -594,12 +665,10 @@ fn locate(t: &MacAxTarget) -> Result<CFRetained<AXUIElement>, MacActResult> {
 /// - another window of the app that says it is modal (`AXModal`), e.g. an app-modal alert
 ///   (`modal_window:<title>`).
 fn modal_blocker(app: &AXUIElement, root: &AXUIElement, id: &str, timeout: f32) -> Option<String> {
-    let mut parts = id.split('.');
-    let root_id = match parts.next() {
-        Some("a") => format!("a.{}", parts.next().unwrap_or("")),
-        Some(other) => other.to_string(),
-        None => return None,
-    };
+    let root_id = root_id_of(id);
+    if root_id.is_empty() {
+        return None;
+    }
     for (i, child) in children(root, timeout).iter().enumerate() {
         if attr_string(child, "AXRole").as_deref() != Some("AXSheet") {
             continue;

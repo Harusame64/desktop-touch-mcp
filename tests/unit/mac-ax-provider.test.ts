@@ -163,13 +163,40 @@ describe("AX identity and the pinned app (codex gate 1, #780)", () => {
     valueSettable: false, childCount: 0, title: "Same", ...over,
   });
 
-  it("keeps two AX elements with the same label and no frame apart", () => {
-    const a = toCandidate(e({ id: "a.0.1" }), 7, "W", 1);
-    const b = toCandidate(e({ id: "a.0.2" }), 7, "W", 1);
-    expect(a.digest).toBeDefined();
-    expect(a.digest).not.toBe(b.digest);
-    const resolved = resolveCandidates([a, b], "g");
+  const read = async (elements: unknown[]) =>
+    readMacAxCandidates(
+      {
+        listWindows: vi.fn(() => []),
+        getFocus: vi.fn(async () => ({ pid: 7 })),
+        axTree: vi.fn(async () => ({ pid: 7, elements, truncated: false, selfReference: false, displayAsleep: false, elapsedMs: 1 })),
+        now: () => 1,
+      } as any,
+      undefined,
+      { warnings: [] as string[] },
+      7
+    );
+
+  it("keeps two AX elements with the same label and no frame apart", async () => {
+    const [a, b] = await read([e({ id: "a.0.1" }), e({ id: "a.0.2" })]);
+    expect(a!.digest).toBeDefined();
+    expect(a!.digest).not.toBe(b!.digest);
+    const resolved = resolveCandidates([a!, b!], "g");
     expect(resolved.length).toBe(2);
+  });
+
+  it("keeps an element's identity when a sibling before it goes and its path shifts (internal #260)", async () => {
+    const one = (id: string) => e({ id, elementKey: "\u001fOne\u001f\u001f1\u001f316,754,48,48", title: "1" });
+    const before = await read([e({ id: "a.0.0", role: "AXStaticText", elementKey: "expr", value: "1 + 2" }), one("a.0.14")]);
+    const after = await read([one("a.0.13")]);
+    const id = (cs: Awaited<ReturnType<typeof read>>) => cs.find((c) => c.label === "1")!.digest;
+    expect(id(after)).toBe(id(before));
+    // …while it still names the element at its path now, for the act.
+    expect(after.find((c) => c.label === "1")!.locator!.ax!.id).toBe("a.0.13");
+  });
+
+  it("an element is not taken for another with a different role or key", () => {
+    expect(toCandidate(e({ role: "AXCheckBox" }), 7, "W", 1).digest).not.toBe(toCandidate(e({}), 7, "W", 1).digest);
+    expect(toCandidate(e({ elementKey: "K2" }), 7, "W", 1).digest).not.toBe(toCandidate(e({}), 7, "W", 1).digest);
   });
 
   it("does not change identity when only the value changes", () => {

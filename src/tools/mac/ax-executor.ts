@@ -59,7 +59,7 @@ function refuse(r: NativeMacActResult, what: string): never {
       `${what}: ${reason}`,
       undefined,
       reason === "element_changed"
-        ? "The element this act named is not where it was read: its window or the element at that place changed since desktop_discover. Nothing was done."
+        ? "The element this act named is not what it was read as: its window changed since desktop_discover, or nothing in it is that element now (or more than one is). Nothing was done."
         : "The element this act named is no longer there. Nothing was done."
     );
   }

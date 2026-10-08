@@ -71,8 +71,9 @@ export const macDiscoverDescription = buildDesc({
 export const macActDescription = buildDesc({
   purpose: "Act on an entity from desktop_discover: press it, replace a text field's value, or append to it (append: true).",
   details:
-    "Acts through Accessibility on the background app — the foreground is not taken. Refused with entity_not_found when the element's window " +
-    "or the element at that place changed since the discover (nothing was done; discover again), and action_not_offered when the entity does not " +
+    "Acts through Accessibility on the background app — the foreground is not taken. An element whose place among its siblings changed " +
+    "(one before it came or went) is found again. Refused with entity_not_found when the element's window changed since the discover, or " +
+    "the element is gone or no longer what was read (nothing was done; discover again), and action_not_offered when the entity does not " +
     "offer the action (type on a button, click on a text), and modal_blocking when a sheet or an app-modal window is open over it " +
     "(answer that first). value_not_applied: the app took the write but the field does not hold the text " +
     "(it may reformat it, e.g. 1.50 shown as 1.5). A sheet or app-modal window is checked at the act itself, so one that opened after " +

@@ -113,27 +113,49 @@ export function isCandidate(e: NativeMacAxElement): boolean {
 
 /**
  * The candidate's identity (the resolver's key, the entityId and the lease's evidence digest):
- * the app, the path, and the root and element keys — not the label and rect the resolver falls
+ * the app, the root and element keys and the role — not the label and rect the resolver falls
  * back to, which two distinct AX elements can share (same title, no frame), and would then be
  * merged into one entity carrying one element's verbs and the other's locator (codex gate 1, #780).
  * The value is left out, so typing into a field does not change its identity.
+ *
+ * Not the path (internal #260): a sibling coming or going before an element shifts its path while
+ * the element stays what it was (Calculator's All Clear drops every button's index by one), and
+ * its identity must not change with it; the native act finds it again by its keys
+ * (`relocate`, src/macos/ax.rs). `nth` tells apart elements whose keys are all equal, by their
+ * order in the read: the first is 0.
  */
 export function axDigest(
   pid: number,
-  e: Pick<NativeMacAxElement, "id" | "rootKey" | "elementKey" | "role" | "subrole" | "value">
+  e: Pick<NativeMacAxElement, "rootKey" | "elementKey" | "role" | "subrole" | "value">,
+  nth = 0
 ): string {
   // A text is named by what it shows, so what it shows is part of what it is: when Calculator's
   // display changes, the post-act diff must see a different entity (codex, #780). Texts are only
   // read, never leased for an act, so a changing identity costs nothing there.
   const shown = roleOf(e) === "label" ? `|${e.value ?? ""}` : "";
-  return createHash("sha1").update(`ax|${pid}|${e.id}|${e.rootKey}|${e.elementKey}${shown}`).digest("hex").slice(0, 16);
+  const twin = nth > 0 ? `#${nth}` : "";
+  return createHash("sha1").update(`ax|${pid}|${e.rootKey}|${e.role}|${e.elementKey}${shown}${twin}`).digest("hex").slice(0, 16);
+}
+
+/** Each element's digest, by its path in this read, with equal keys told apart by order. */
+function digestsOf(pid: number, elements: readonly NativeMacAxElement[]): Map<string, string> {
+  const seen = new Map<string, number>();
+  const out = new Map<string, string>();
+  for (const e of elements) {
+    const base = axDigest(pid, e);
+    const nth = seen.get(base) ?? 0;
+    seen.set(base, nth + 1);
+    out.set(e.id, nth === 0 ? base : axDigest(pid, e, nth));
+  }
+  return out;
 }
 
 export function toCandidate(
   e: NativeMacAxElement,
   pid: number,
   targetId: string,
-  observedAtMs: number
+  observedAtMs: number,
+  digest: string = axDigest(pid, e)
 ): UiEntityCandidate {
   const label = labelOf(e);
   const secure = e.subrole === SECURE;
@@ -151,7 +173,7 @@ export function toCandidate(
     confidence: 0.9,
     observedAtMs,
     status: "observed",
-    digest: axDigest(pid, e),
+    digest,
     locator: { ax: { pid, id: e.id, role: e.role, rootKey: e.rootKey, elementKey: e.elementKey } },
   };
 }
@@ -224,10 +246,11 @@ export async function readMacAxCandidates(
   const needle = title?.toLowerCase();
   const observedAtMs = deps.now();
   const targetId = title ?? tree.appTitle ?? String(pid);
+  const digests = digestsOf(pid, tree.elements);
   const candidates = tree.elements
     .filter((e) => needle === undefined || needle === "" || rootTitle(e.rootKey).toLowerCase().includes(needle))
     .filter(isCandidate)
-    .map((e) => toCandidate(e, pid, targetId, observedAtMs));
+    .map((e) => toCandidate(e, pid, targetId, observedAtMs, digests.get(e.id)));
   for (const c of candidates) {
     if (c.role === "textbox" && c.value !== undefined && c.digest !== undefined) {
       (notes.values ??= {})[`ent_${c.digest}`] = c.value;
@@ -235,7 +258,7 @@ export async function readMacAxCandidates(
   }
   for (const e of tree.elements) {
     if (e.valueTruncated && roleOf(e) === "textbox" && e.subrole !== SECURE) {
-      (notes.truncated ??= []).push(`ent_${axDigest(pid, e)}`);
+      (notes.truncated ??= []).push(`ent_${digests.get(e.id) ?? axDigest(pid, e)}`);
     }
   }
   return candidates;

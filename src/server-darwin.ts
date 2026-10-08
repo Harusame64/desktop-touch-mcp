@@ -70,7 +70,7 @@ if (!nativeMac) {
         "3. desktop_act(lease, action) — press, or replace a text field's value; the foreground is not taken",
         "4. desktop_state / desktop_discover — confirm",
         "screenshot(windowTitle?) — one window as PNG, when pixels are needed (Screen Recording permission)",
-        "Discover right before each act. entity_not_found from desktop_act means the window or the element at that place changed since the discover: nothing was done; discover again.",
+        "Discover right before each act. entity_not_found from desktop_act means the window changed since the discover, or the element is gone or no longer what was read: nothing was done; discover again.",
       ].join("\n"),
     }
   );
