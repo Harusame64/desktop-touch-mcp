@@ -79,16 +79,15 @@ pub(crate) fn children(e: &AXUIElement, timeout_secs: f32) -> Vec<CFRetained<AXU
     children_read(e, timeout_secs).unwrap_or_default()
 }
 
-/// `AXChildren`, or `None` when it could not be read (`cannot_complete`, an invalid element, ...).
-/// An element with no children attribute or no value is a leaf, not a failure. A caller that must
+/// `AXChildren`, or `None` when it could not be read now (`attr_opt`'s errors). An element that
+/// gives no children is a leaf, not a failure. A caller that must
 /// know it saw everything (`relocate`, a read's uniqueness, internal #260) tells the two apart.
 pub(crate) fn children_read(e: &AXUIElement, timeout_secs: f32) -> Option<Vec<CFRetained<AXUIElement>>> {
-    let v = match attr(e, "AXChildren") {
-        Ok(v) => v,
-        Err(AXError::NoValue | AXError::AttributeUnsupported) => return Some(Vec::new()),
-        Err(_) => return None,
-    };
-    Some(children_of(v, timeout_secs))
+    match attr_opt(e, "AXChildren") {
+        Ok(Some(v)) => Some(children_of(v, timeout_secs)),
+        Ok(None) => Some(Vec::new()),
+        Err(_) => None,
+    }
 }
 
 fn children_of(v: CFRetained<CFType>, timeout_secs: f32) -> Vec<CFRetained<AXUIElement>> {
@@ -148,6 +147,38 @@ pub(crate) fn is_settable(e: &AXUIElement, name: &'static str) -> bool {
     let mut settable: u8 = 0;
     let err = unsafe { e.is_attribute_settable(&cfstr(name), NonNull::from(&mut settable)) };
     err == AXError::Success && settable != 0
+}
+
+/// `attr`, telling a read that could not be made now from an attribute the element does not give:
+/// the app did not answer (`cannot_complete`, its timeout), the element is gone mid-read
+/// (`invalid_ui_element`), or AX is off (`api_disabled`) are `Err` — the next read may differ, so
+/// an identity built from it is not one (codex on #802). Every other error is the element's
+/// steady answer and reads as absent: Calculator answers `failure` for `AXSubrole` on the same two
+/// buttons in every read (5 of 5, measured 2026-10-08), as no value or unsupported would.
+fn attr_opt(e: &AXUIElement, name: &'static str) -> Result<Option<CFRetained<CFType>>, AXError> {
+    match attr(e, name) {
+        Ok(v) => Ok(Some(v)),
+        Err(err @ (AXError::CannotComplete | AXError::InvalidUIElement | AXError::APIDisabled)) => Err(err),
+        Err(_) => Ok(None),
+    }
+}
+
+/// `attr_string`, failing when the read failed rather than when the attribute is absent.
+fn attr_string_strict(e: &AXUIElement, name: &'static str) -> Result<Option<String>, AXError> {
+    Ok(attr_opt(e, name)?.and_then(|v| v.downcast_ref::<CFString>().map(|s| s.to_string())))
+}
+
+/// `frame`, failing when a read failed rather than when position or size is absent.
+fn frame_strict(e: &AXUIElement) -> Result<Option<MacRect>, AXError> {
+    let p = attr_opt(e, "AXPosition")?.and_then(|v| v.downcast::<AXValue>().ok()).and_then(|v| {
+        let mut p = CGPoint { x: 0.0, y: 0.0 };
+        unsafe { v.value(AXValueType::CGPoint, NonNull::from(&mut p).cast()) }.then_some(p)
+    });
+    let z = attr_opt(e, "AXSize")?.and_then(|v| v.downcast::<AXValue>().ok()).and_then(|v| {
+        let mut s = CGSize { width: 0.0, height: 0.0 };
+        unsafe { v.value(AXValueType::CGSize, NonNull::from(&mut s).cast()) }.then_some(s)
+    });
+    Ok(p.zip(z).map(|(p, s)| MacRect { x: p.x, y: p.y, width: s.width, height: s.height }))
 }
 
 fn ax_point(e: &AXUIElement) -> Option<CGPoint> {
@@ -237,7 +268,8 @@ pub(crate) fn element_key_of(
         .join("\u{1f}")
 }
 
-/// `element_key`, each of its reads held to the time left (`relocate`); `None` once it runs out.
+/// `element_key`, each of its reads held to the time left (`relocate`); `None` once it runs out or
+/// a read fails (an absent attribute is not a failure).
 fn element_key_within(
     e: &AXUIElement,
     timeout: f32,
@@ -246,7 +278,7 @@ fn element_key_within(
 ) -> Option<String> {
     let read = |name: &'static str| {
         unsafe { e.set_messaging_timeout(timeout.min(left())) };
-        let v = attr_string(e, name);
+        let v = attr_string_strict(e, name).ok()?.filter(|s| !s.is_empty());
         if late() { None } else { Some(v) }
     };
     let subrole = read("AXSubrole")?;
@@ -254,7 +286,7 @@ fn element_key_within(
     let title = read("AXTitle")?;
     let description = read("AXDescription")?;
     unsafe { e.set_messaging_timeout(timeout.min(left())) };
-    let f = frame(e);
+    let f = frame_strict(e).ok()?;
     if late() {
         return None;
     }
@@ -411,9 +443,11 @@ pub struct MacAxTree {
     pub stopped_by: Option<String>,
     /// A child was equal to one of its ancestors and was not entered.
     pub self_reference: bool,
-    /// Some element's children could not be read (`AXChildren` failed): the
-    /// tree may miss what lies under it, though the walk was not cut short.
-    pub children_unread: bool,
+    /// Some element's children, role or element-key attributes could not be
+    /// read (an AX error, not an absent attribute): the tree may miss an
+    /// element, or two alike may read as different, though the walk was not
+    /// cut short (internal #260, codex on #802).
+    pub read_incomplete: bool,
     /// The main display was asleep when the walk ended; AX then answers
     /// windows with the application element (see the module comment).
     pub display_asleep: bool,
@@ -446,7 +480,7 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
                     truncated: false,
                     stopped_by: None,
                     self_reference: false,
-                    children_unread: false,
+                    read_incomplete: false,
                     display_asleep: display_asleep(),
                     error: err,
                     elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
@@ -468,7 +502,7 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
     type Entry = (String, CFRetained<AXUIElement>, Vec<CFRetained<AXUIElement>>, std::rc::Rc<String>);
     // The budget covers the roots too: no message waits past it.
     unsafe { app.set_messaging_timeout(timeout.min(left())) };
-    let mut children_unread = false;
+    let mut read_incomplete = false;
     let (root_list, mut self_reference) =
         roots(&app, opts.include_menu_bar.unwrap_or(false), timeout.min(left()), &late);
     let mut stack: Vec<Entry> = Vec::new();
@@ -511,19 +545,28 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         let kids = match read!(children_read(&e, timeout)) {
             Some(kids) => kids,
             None => {
-                children_unread = true;
+                read_incomplete = true;
                 Vec::new()
             }
         };
-        let role = read!(attr_string(&e, "AXRole").unwrap_or_default());
-        let subrole = read!(attr_string(&e, "AXSubrole"));
-        let title = read!(attr_string(&e, "AXTitle").filter(|s| !s.is_empty()));
-        let description = read!(attr_string(&e, "AXDescription").filter(|s| !s.is_empty()));
+        // What an element is (its role and element key) is read strictly: a failed read marks the
+        // tree incomplete instead of passing for an absent attribute.
+        let mut strict = |r: Result<Option<String>, AXError>| r.unwrap_or_else(|_| {
+            read_incomplete = true;
+            None
+        });
+        let role = strict(read!(attr_string_strict(&e, "AXRole"))).unwrap_or_default();
+        let subrole = strict(read!(attr_string_strict(&e, "AXSubrole")));
+        let title = strict(read!(attr_string_strict(&e, "AXTitle"))).filter(|s| !s.is_empty());
+        let description = strict(read!(attr_string_strict(&e, "AXDescription"))).filter(|s| !s.is_empty());
         let marked = read!(value_text_marked(&e));
         let value_truncated = marked.as_ref().is_some_and(|(_, cut)| *cut);
         let value = marked.map(|(s, _)| s);
-        let identifier = read!(attr_string(&e, "AXIdentifier").filter(|s| !s.is_empty()));
-        let frame = read!(frame(&e));
+        let identifier = strict(read!(attr_string_strict(&e, "AXIdentifier"))).filter(|s| !s.is_empty());
+        let frame = read!(frame_strict(&e)).unwrap_or_else(|_| {
+            read_incomplete = true;
+            None
+        });
         let enabled = read!(attr_bool(&e, "AXEnabled"));
         let focused = read!(attr_bool(&e, "AXFocused"));
         let actions = read!(action_names(&e));
@@ -575,7 +618,7 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         truncated: stopped_by.is_some(),
         stopped_by: stopped_by.map(str::to_string),
         self_reference,
-        children_unread,
+        read_incomplete,
         display_asleep: display_asleep(),
         error: None,
         elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
@@ -724,7 +767,9 @@ fn relocate(
         }
         unsafe { e.set_messaging_timeout(timeout.min(left())) };
         // The role first: one message, and most elements stop there.
-        let is_role = attr_string(&e, "AXRole").as_deref() == Some(role);
+        // A read that failed may hide the element or a twin: no one element can be named (codex on #802).
+        let Ok(read_role) = attr_string_strict(&e, "AXRole") else { return Relocated::Unclear };
+        let is_role = read_role.as_deref() == Some(role);
         if late() {
             return Relocated::Unclear;
         }

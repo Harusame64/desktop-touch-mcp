@@ -145,9 +145,10 @@ export function axDigest(
 
 /**
  * Whether each element (by its path in this read) is the only one of its kind under its window.
- * A read cut short (`truncated`), or one where some element's children could not be read
- * (`childrenUnread`), cannot say: a twin may lie past the cut or under that element, and the act
- * would then find it as the only one left and press it for the other's lease (codex on #802).
+ * A read cut short (`truncated`), or one where some element's children or identity could not be
+ * read (`readIncomplete`), cannot say: a twin may lie past the cut, under that element, or read as
+ * different through a failed attribute, and the act would then find it as the only one left and
+ * press it for the other's lease (codex on #802).
  * None is.
  */
 function uniquenessOf(elements: readonly NativeMacAxElement[], truncated: boolean): Map<string, boolean> {
@@ -252,7 +253,7 @@ export async function readMacAxCandidates(
   const needle = title?.toLowerCase();
   const observedAtMs = deps.now();
   const targetId = title ?? tree.appTitle ?? String(pid);
-  const unique = uniquenessOf(tree.elements, tree.truncated || tree.childrenUnread === true);
+  const unique = uniquenessOf(tree.elements, tree.truncated || tree.readIncomplete === true);
   const candidates = tree.elements
     .filter((e) => needle === undefined || needle === "" || rootTitle(e.rootKey).toLowerCase().includes(needle))
     .filter(isCandidate)
