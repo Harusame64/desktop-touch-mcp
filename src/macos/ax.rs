@@ -365,8 +365,14 @@ pub(crate) fn roots(
                 self_reference = true;
                 continue;
             }
+            // A sheet that is focused is the focused window here, though it sits under a window
+            // already listed: read as a root of its own it would come twice, and two copies of
+            // one "保存" sheet read as two sheets (internal #273, codex on #805). Its parent tells.
+            let under_listed = attr_element(&w, "AXParent", timeout_secs)
+                .is_some_and(|p| kids.iter().any(|k| same(k, &p)));
             let seen = kids.iter().any(|k| same(k, &w))
-                || out.iter().any(|(_, e)| same(e, &w));
+                || out.iter().any(|(_, e)| same(e, &w))
+                || under_listed;
             if !seen {
                 out.push((prefix.to_string(), w));
             }

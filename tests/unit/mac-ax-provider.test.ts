@@ -179,45 +179,23 @@ describe("readMacAxCandidates", () => {
     expect(notes.warnings).not.toContain("title_matches_nothing_readable");
   });
 
-  it("takes a focused sheet read twice (under its document and as the focused window) for one (internal #273)", async () => {
-    // Measured 2026-10-08, TextEdit with its save panel open: AXSheet "保存" at a.0.8 and again as root "f".
-    const d = mk();
-    d.listWindows.mockReturnValue([{ windowId: 2, pid: 7, layer: 0, onScreen: true, title: "保存" }]);
-    const base = withSheet().elements;
-    const sheetKey = "\u001f\u001f保存\u001f\u001f224,158,442,318";
-    d.axTree.mockResolvedValue(
-      tree({
-        readIncomplete: true,
-        elements: [
-          ...base.map((x: any) => (x.role === "AXSheet" ? { ...x, elementKey: sheetKey } : x)),
-          el({ id: "f", rootKey: "\u001f\u001f224,158,442,318", role: "AXSheet", title: "保存", elementKey: sheetKey }),
-          el({ id: "f.0.12", rootKey: "\u001f\u001f224,158,442,318", actions: ["AXPress"], title: "削除" }),
-        ],
-      })
-    );
-    const { r, notes } = await run(d, { windowTitle: "保存" });
-    expect(r.map((c) => c.label).sort()).toEqual(["保存", "削除"]);
-    expect(notes.warnings).not.toContain("title_matches_several_sheets");
-  });
-
-  it("takes the alias for one even when its frame differs, and reads the copy that holds the controls (gate 2 on #805)", async () => {
+  it("refuses a sheet under a window and another, same-titled, only as the focused window: two documents (codex on #805)", async () => {
+    // The native read no longer lists a focused sheet whose parent is a listed window as a root of
+    // its own (roots, src/macos/ax.rs), so an `f` sheet here belongs to another document.
     const d = mk();
     d.listWindows.mockReturnValue([{ windowId: 2, pid: 7, layer: 0, onScreen: true, title: "保存" }]);
     d.axTree.mockResolvedValue(
       tree({
-        readIncomplete: true,
         elements: [
-          // the copy under the document: its children did not read
-          el({ id: "a.0.8", rootKey: doc, role: "AXSheet", title: "保存", elementKey: "\u001f\u001f保存\u001f\u001f224,170,442,318" }),
-          // the focused-window copy, read mid-slide at another frame, with the controls
-          el({ id: "f", rootKey: "\u001f\u001f224,158,442,318", role: "AXSheet", title: "保存", elementKey: "\u001f\u001f保存\u001f\u001f224,158,442,318" }),
-          el({ id: "f.0.12", rootKey: "\u001f\u001f224,158,442,318", actions: ["AXPress"], title: "削除" }),
+          ...withSheet().elements,
+          el({ id: "f", rootKey: "\u001f\u001f0,0,1,1", role: "AXSheet", title: "保存" }),
+          el({ id: "f.0.12", rootKey: "\u001f\u001f0,0,1,1", actions: ["AXPress"], title: "削除" }),
         ],
       })
     );
     const { r, notes } = await run(d, { windowTitle: "保存" });
-    expect(r.map((c) => c.label)).toEqual(["削除"]);
-    expect(notes.warnings).not.toContain("title_matches_several_sheets");
+    expect(r).toEqual([]);
+    expect(notes.warnings).toContain("title_matches_several_sheets");
   });
 
   it("stops at an earlier app whose empty read was incomplete: a later app does not answer instead (internal #273)", async () => {

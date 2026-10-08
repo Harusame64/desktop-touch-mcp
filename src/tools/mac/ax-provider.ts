@@ -326,27 +326,13 @@ async function readPidUnderTitle(
   // (internal #257). Only one: two documents' "保存" sheets read together would mix their
   // 削除 buttons, and one pressed for the wrong document loses its work (gate 2 on #804). Not when
   // an AX window carries the title: that window is what was named (its own sheet comes with it).
-  // The focused or main window is read as its own root (`f`, `m`) when the app's windows do not
-  // list it, so a sheet that is focused comes twice: under its document (`a.0.8`) and as `f`
-  // (measured 2026-10-08, TextEdit). The alias is not another sheet; two documents' sheets are
-  // both under `a` and still count as two (internal #273).
-  const titledSheets =
+  // A focused sheet under a listed window is not read again as the focused-window root (`roots`,
+  // src/macos/ax.rs), so each sheet here is one sheet: two that carry the title are two documents'.
+  const sheetsTitled =
     !titled || windowsTitled
       ? []
       : tree.elements.filter((e) => e.role === "AXSheet" && (e.title ?? e.description ?? "").toLowerCase().includes(needle));
-  // Alias by title, not by key: the two copies may be read with different frames (a sheet still
-  // sliding in) or one with a failed frame read (gate 2 on #805).
-  const sheetTitle = (e: NativeMacAxElement) => (e.title ?? e.description ?? "").toLowerCase();
-  const isAlias = (e: NativeMacAxElement) =>
-    !e.id.startsWith("a.") && titledSheets.some((o) => o.id.startsWith("a.") && sheetTitle(o) === sheetTitle(e));
-  const sheetsTitled = titledSheets.filter((e) => !isAlias(e));
-  // Of a sheet and its alias, the copy whose read holds more controls: one copy's children may
-  // have failed to read while the other's did not (gate 2 on #805).
-  const controlsUnder = (s: NativeMacAxElement) => tree.elements.filter((e) => e.id.startsWith(`${s.id}.`) && isCandidate(e)).length;
-  const sheet =
-    sheetsTitled.length === 1
-      ? [sheetsTitled[0]!, ...titledSheets.filter(isAlias)].reduce((best, s) => (controlsUnder(s) > controlsUnder(best) ? s : best))
-      : undefined;
+  const sheet = sheetsTitled.length === 1 ? sheetsTitled[0] : undefined;
   const underTitle = (e: NativeMacAxElement) =>
     !titled || rootTitle(e.rootKey).toLowerCase().includes(needle) || (sheet !== undefined && e.id.startsWith(`${sheet.id}.`));
   const candidates = tree.elements
