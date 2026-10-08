@@ -6,7 +6,7 @@ import { DesktopFacade } from "../../src/tools/desktop.js";
 
 const AX = { pid: 7, id: "a.0.1", role: "AXButton", rootKey: "R", elementKey: "E" };
 const entity = { locator: { ax: AX } } as any;
-const TARGET = { pid: 7, id: "a.0.1", expectedRole: "AXButton", expectedRootKey: "R", expectedElementKey: "E" };
+const TARGET = { pid: 7, id: "a.0.1", expectedRole: "AXButton", expectedRootKey: "R", expectedElementKey: "E", relocatable: false };
 
 const setup = () => {
   const perform = vi.fn();
@@ -20,6 +20,14 @@ describe("mac AX executor", () => {
     perform.mockResolvedValue({ ok: true });
     await expect(exec(entity, "click")).resolves.toBe("ax");
     expect(perform).toHaveBeenCalledWith(TARGET, "AXPress");
+  });
+  it("lets the native act look for a unique element where it moved, and only a unique one (internal #260)", async () => {
+    const { perform, exec } = setup();
+    perform.mockResolvedValue({ ok: true });
+    await exec({ locator: { ax: { ...AX, unique: true } } } as any, "click");
+    expect(perform).toHaveBeenLastCalledWith({ ...TARGET, relocatable: true }, "AXPress");
+    await exec({ locator: { ax: { ...AX, unique: false } } } as any, "click");
+    expect(perform).toHaveBeenLastCalledWith({ ...TARGET, relocatable: false }, "AXPress");
   });
   it("element_changed is TargetGoneError saying nothing was done", async () => {
     const { perform, exec } = setup();

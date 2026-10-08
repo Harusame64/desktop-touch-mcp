@@ -76,7 +76,7 @@ describe("toCandidate", () => {
     expect(c.observedAtMs).toBe(1000);
     expect(c.status).toBe("observed");
     expect(c.locator).toEqual({
-      ax: { pid: 7, id: "a.0.1", role: "AXButton", rootKey: "Doc\u001f\u001f0,0,10,10", elementKey: "k" },
+      ax: { pid: 7, id: "a.0.1", role: "AXButton", rootKey: "Doc\u001f\u001f0,0,10,10", elementKey: "k", unique: true },
     });
   });
   it("never leaks a secure field's value", () => {
@@ -192,6 +192,21 @@ describe("AX identity and the pinned app (codex gate 1, #780)", () => {
     expect(id(after)).toBe(id(before));
     // …while it still names the element at its path now, for the act.
     expect(after.find((c) => c.label === "1")!.locator!.ax!.id).toBe("a.0.13");
+  });
+
+  it("marks an element unique, or not, for the act to look for it where it moved (gate 2 on #802)", async () => {
+    const [a, b, c] = await read([e({ id: "a.0.1" }), e({ id: "a.0.2" }), e({ id: "a.0.3", elementKey: "Other" })]);
+    expect(a!.locator!.ax!.unique).toBe(false);
+    expect(b!.locator!.ax!.unique).toBe(false);
+    expect(c!.locator!.ax!.unique).toBe(true);
+  });
+
+  it("an element alike in everything keeps its path in its identity, so one cannot inherit the other's (gate 2 on #802)", async () => {
+    // P1.x and P2.y alike; P1.x goes. The one left must not take P1.x's identity.
+    const [first, second] = await read([e({ id: "a.0.1.0" }), e({ id: "a.0.2.0" })]);
+    const [left] = await read([e({ id: "a.0.2.0" })]);
+    expect(left!.digest).not.toBe(first!.digest);
+    expect(second!.digest).toBeDefined();
   });
 
   it("an element is not taken for another with a different role or key", () => {

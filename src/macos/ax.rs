@@ -542,9 +542,15 @@ pub struct MacAxTarget {
     pub expected_role: String,
     /// The `rootKey` the caller read for this id.
     pub expected_root_key: String,
-    /// The `elementKey` the caller read for this id. The act is refused
-    /// (`element_changed`) when the root, the element or the role differs now.
+    /// The `elementKey` the caller read for this id. When the path now names
+    /// something else, the element is looked for under the same root by this
+    /// key and the role (`relocate`); the act is refused (`element_changed`)
+    /// when the root differs, or the element is not found there.
     pub expected_element_key: String,
+    /// Whether the element was the only one under its root with this role and
+    /// key when read (internal #260). Only then is it looked for again when
+    /// its path moved: of two alike, the one left is not the one leased.
+    pub relocatable: Option<bool>,
     pub timeout_secs: Option<f64>,
 }
 
@@ -587,14 +593,24 @@ fn locate(t: &MacAxTarget) -> Result<CFRetained<AXUIElement>, MacActResult> {
     };
     let (e, id) = match at_path {
         Some(e) if is_it(&e) => (e, t.id.clone()),
-        at_path => match relocate(&root, &root_id, &t.expected_role, &t.expected_element_key, timeout) {
-            Some((id, e)) => (e, id),
-            None => {
-                let role = at_path.as_ref().and_then(|e| attr_string(e, "AXRole"));
-                let reason = if at_path.is_some() { "element_changed" } else { "element_not_found" };
-                return Err(MacActResult { role, ..refused(reason) });
+        at_path => {
+            let found = if t.relocatable == Some(true) {
+                relocate(&app, &root, &root_id, &t.expected_role, &t.expected_element_key, timeout)
+            } else {
+                Relocated::NotTried
+            };
+            match found {
+                Relocated::One(id, e) => (e, id),
+                other => {
+                    let role = at_path.as_ref().and_then(|e| attr_string(e, "AXRole"));
+                    // Gone: the path names nothing and nothing under the root is it. Anything else —
+                    // the path names another element, two are alike now, the walk was cut short —
+                    // is a changed element, not a missing one (gate 2 on #802).
+                    let gone = at_path.is_none() && matches!(other, Relocated::NotFound);
+                    return Err(MacActResult { role, ..refused(if gone { "element_not_found" } else { "element_changed" }) });
+                }
             }
-        },
+        }
     };
     let role = attr_string(&e, "AXRole").unwrap_or_default();
     if let Some(blocker) = modal_blocker(&app, &root, &id, timeout) {
@@ -613,49 +629,71 @@ fn root_id_of(id: &str) -> String {
     }
 }
 
+/// What `relocate` found.
+enum Relocated {
+    One(String, CFRetained<AXUIElement>),
+    NotFound,
+    /// Two or more alike, or the walk was cut short: no one element to name.
+    Unclear,
+    /// The element was not unique when read, so it is not looked for.
+    NotTried,
+}
+
 /// internal #260 — find the element a caller read by what it is (role and element key) under the
 /// root it was read in, when its path now names something else or nothing: a sibling before it
 /// came or went, so the path shifted while the element did not (Calculator: All Clear removes the
 /// expression line, and every button's index drops by one; their keys do not change, measured
-/// 2026-10-08). Answers only when exactly one element under the root matches — two that match are
-/// not told apart here, and the act is refused as before. A walk cut short (by its element or time
-/// budget) answers nothing rather than a guess.
+/// 2026-10-08). Asked only for an element that was the only one of its kind under its root when
+/// read (`relocatable`), and answers only when exactly one matches now. The walk holds a 3 s and
+/// 3000-element budget, no message waits past it, and a walk cut short answers `Unclear` rather
+/// than a guess. Like the tree read, it never enters an element equal to an ancestor, the app
+/// included (a sleeping display answers a window with the app itself).
 fn relocate(
+    app: &CFRetained<AXUIElement>,
     root: &CFRetained<AXUIElement>,
     root_id: &str,
     role: &str,
     key: &str,
     timeout: f32,
-) -> Option<(String, CFRetained<AXUIElement>)> {
+) -> Relocated {
     const MAX_ELEMENTS: usize = 3000;
     let t0 = std::time::Instant::now();
     let budget = std::time::Duration::from_millis(3000);
+    let left = || budget.saturating_sub(t0.elapsed()).as_secs_f32().max(0.05);
     let mut found: Option<(String, CFRetained<AXUIElement>)> = None;
     type Entry = (String, CFRetained<AXUIElement>, Vec<CFRetained<AXUIElement>>);
-    let mut stack: Vec<Entry> = vec![(root_id.to_string(), root.clone(), Vec::new())];
+    let mut stack: Vec<Entry> = vec![(root_id.to_string(), root.clone(), vec![app.clone()])];
     let mut visited = 0usize;
     while let Some((id, e, ancestors)) = stack.pop() {
         visited += 1;
         if visited > MAX_ELEMENTS || t0.elapsed() >= budget {
-            return None;
+            return Relocated::Unclear;
         }
+        unsafe { e.set_messaging_timeout(timeout.min(left())) };
         // The role first: one message, and most elements stop there.
         if attr_string(&e, "AXRole").as_deref() == Some(role) && element_key(&e) == key {
             if found.is_some() {
-                return None;
+                return Relocated::Unclear;
             }
             found = Some((id.clone(), e.clone()));
         }
+        let kids = children(&e, timeout.min(left()));
+        if t0.elapsed() >= budget {
+            return Relocated::Unclear;
+        }
         let mut lineage = ancestors;
         lineage.push(e.clone());
-        for (i, k) in children(&e, timeout).into_iter().enumerate().rev() {
+        for (i, k) in kids.into_iter().enumerate().rev() {
             if lineage.iter().any(|a| same(a, &k)) {
                 continue;
             }
             stack.push((format!("{id}.{i}"), k, lineage.clone()));
         }
     }
-    found
+    match found {
+        Some((id, e)) => Relocated::One(id, e),
+        None => Relocated::NotFound,
+    }
 }
 
 /// What blocks an act on the element at `id` under `root`, if anything (measured 2026-10-04:
@@ -781,6 +819,15 @@ mod tests {
 
     fn rect(x: f64) -> MacRect {
         MacRect { x, y: 2.0, width: 3.0, height: 4.0 }
+    }
+
+    #[test]
+    fn root_id_of_names_the_root_a_path_starts_from() {
+        assert_eq!(root_id_of("a.0.0.0.1.0.14"), "a.0");
+        assert_eq!(root_id_of("a.3"), "a.3");
+        assert_eq!(root_id_of("f.2.1"), "f");
+        assert_eq!(root_id_of("m"), "m");
+        assert_eq!(root_id_of(""), "");
     }
 
     #[test]

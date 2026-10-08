@@ -111,43 +111,43 @@ export function isCandidate(e: NativeMacAxElement): boolean {
   return verbs.includes("read") && labelOf(e) !== undefined;
 }
 
-/**
- * The candidate's identity (the resolver's key, the entityId and the lease's evidence digest):
- * the app, the root and element keys and the role — not the label and rect the resolver falls
- * back to, which two distinct AX elements can share (same title, no frame), and would then be
- * merged into one entity carrying one element's verbs and the other's locator (codex gate 1, #780).
- * The value is left out, so typing into a field does not change its identity.
- *
- * Not the path (internal #260): a sibling coming or going before an element shifts its path while
- * the element stays what it was (Calculator's All Clear drops every button's index by one), and
- * its identity must not change with it; the native act finds it again by its keys
- * (`relocate`, src/macos/ax.rs). `nth` tells apart elements whose keys are all equal, by their
- * order in the read: the first is 0.
- */
-export function axDigest(
-  pid: number,
-  e: Pick<NativeMacAxElement, "rootKey" | "elementKey" | "role" | "subrole" | "value">,
-  nth = 0
-): string {
+/** What an element is under its window: role, element key, and a text's shown value. */
+function kindOf(e: Pick<NativeMacAxElement, "rootKey" | "elementKey" | "role" | "subrole" | "value">): string {
   // A text is named by what it shows, so what it shows is part of what it is: when Calculator's
   // display changes, the post-act diff must see a different entity (codex, #780). Texts are only
   // read, never leased for an act, so a changing identity costs nothing there.
   const shown = roleOf(e) === "label" ? `|${e.value ?? ""}` : "";
-  const twin = nth > 0 ? `#${nth}` : "";
-  return createHash("sha1").update(`ax|${pid}|${e.rootKey}|${e.role}|${e.elementKey}${shown}${twin}`).digest("hex").slice(0, 16);
+  return `${e.rootKey}|${e.role}|${e.elementKey}${shown}`;
 }
 
-/** Each element's digest, by its path in this read, with equal keys told apart by order. */
-function digestsOf(pid: number, elements: readonly NativeMacAxElement[]): Map<string, string> {
-  const seen = new Map<string, number>();
-  const out = new Map<string, string>();
-  for (const e of elements) {
-    const base = axDigest(pid, e);
-    const nth = seen.get(base) ?? 0;
-    seen.set(base, nth + 1);
-    out.set(e.id, nth === 0 ? base : axDigest(pid, e, nth));
-  }
-  return out;
+/**
+ * The candidate's identity (the resolver's key, the entityId and the lease's evidence digest):
+ * the app and what the element is under its window — not the label and rect the resolver falls
+ * back to, which two distinct AX elements can share (same title, no frame), and would then be
+ * merged into one entity carrying one element's verbs and the other's locator (codex gate 1, #780).
+ * The value is left out, so typing into a field does not change its identity.
+ *
+ * Not the path, for an element that is the only one of its kind under its window (internal #260):
+ * a sibling coming or going before it shifts its path while it stays what it was (Calculator's All
+ * Clear drops every button's index by one), and the native act finds it again by its keys
+ * (`relocate`, src/macos/ax.rs). Elements alike in everything keep the path as before
+ * (`unique: false`): told apart by order instead, one would take the other's identity when an
+ * earlier one went (gate 2 on #802).
+ */
+export function axDigest(
+  pid: number,
+  e: Pick<NativeMacAxElement, "id" | "rootKey" | "elementKey" | "role" | "subrole" | "value">,
+  unique = true
+): string {
+  const where = unique ? "" : `|${e.id}`;
+  return createHash("sha1").update(`ax|${pid}|${kindOf(e)}${where}`).digest("hex").slice(0, 16);
+}
+
+/** Whether each element (by its path in this read) is the only one of its kind under its window. */
+function uniquenessOf(elements: readonly NativeMacAxElement[]): Map<string, boolean> {
+  const count = new Map<string, number>();
+  for (const e of elements) count.set(kindOf(e), (count.get(kindOf(e)) ?? 0) + 1);
+  return new Map(elements.map((e) => [e.id, count.get(kindOf(e)) === 1]));
 }
 
 export function toCandidate(
@@ -155,7 +155,7 @@ export function toCandidate(
   pid: number,
   targetId: string,
   observedAtMs: number,
-  digest: string = axDigest(pid, e)
+  unique = true
 ): UiEntityCandidate {
   const label = labelOf(e);
   const secure = e.subrole === SECURE;
@@ -173,8 +173,8 @@ export function toCandidate(
     confidence: 0.9,
     observedAtMs,
     status: "observed",
-    digest,
-    locator: { ax: { pid, id: e.id, role: e.role, rootKey: e.rootKey, elementKey: e.elementKey } },
+    digest: axDigest(pid, e, unique),
+    locator: { ax: { pid, id: e.id, role: e.role, rootKey: e.rootKey, elementKey: e.elementKey, unique } },
   };
 }
 
@@ -246,11 +246,11 @@ export async function readMacAxCandidates(
   const needle = title?.toLowerCase();
   const observedAtMs = deps.now();
   const targetId = title ?? tree.appTitle ?? String(pid);
-  const digests = digestsOf(pid, tree.elements);
+  const unique = uniquenessOf(tree.elements);
   const candidates = tree.elements
     .filter((e) => needle === undefined || needle === "" || rootTitle(e.rootKey).toLowerCase().includes(needle))
     .filter(isCandidate)
-    .map((e) => toCandidate(e, pid, targetId, observedAtMs, digests.get(e.id)));
+    .map((e) => toCandidate(e, pid, targetId, observedAtMs, unique.get(e.id) === true));
   for (const c of candidates) {
     if (c.role === "textbox" && c.value !== undefined && c.digest !== undefined) {
       (notes.values ??= {})[`ent_${c.digest}`] = c.value;
@@ -258,7 +258,7 @@ export async function readMacAxCandidates(
   }
   for (const e of tree.elements) {
     if (e.valueTruncated && roleOf(e) === "textbox" && e.subrole !== SECURE) {
-      (notes.truncated ??= []).push(`ent_${digests.get(e.id) ?? axDigest(pid, e)}`);
+      (notes.truncated ??= []).push(`ent_${axDigest(pid, e, unique.get(e.id) === true)}`);
     }
   }
   return candidates;

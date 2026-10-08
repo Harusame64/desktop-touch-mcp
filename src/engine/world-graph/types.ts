@@ -13,8 +13,10 @@ export type UiEntityRole = "button" | "textbox" | "link" | "menuitem" | "label" 
 export interface EntityLocator {
   /**
    * macOS Accessibility (Mac port): the element as `macAxTree` read it. `id` is a child-index
-   * path from the app; the act is refused unless the root (window) and the element still carry
-   * the keys read here (src/macos/ax.rs).
+   * path from the app; the act is refused unless the root (window) still carries the key read
+   * here and the element is found by its keys — at the path, or, when it was the only one of its
+   * kind under the root (`unique`), wherever it moved among its siblings (src/macos/ax.rs,
+   * internal #260).
    */
   ax?: {
     pid: number;
@@ -22,6 +24,7 @@ export interface EntityLocator {
     role: string;
     rootKey: string;
     elementKey: string;
+    unique?: boolean;
   };
   /** UIA: element identified by AutomationId and/or accessible name. */
   uia?: {
