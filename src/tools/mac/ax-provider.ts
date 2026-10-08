@@ -272,10 +272,27 @@ export async function readMacAxCandidates(
   const observedAtMs = deps.now();
   const targetId = title ?? tree.appTitle ?? String(pid);
   const unique = uniquenessOf(tree.elements, tree.truncated || tree.readIncomplete === true);
+  // A sheet is not a window in the AX tree: its controls sit under its window's root, though the
+  // window list names it on its own ("保存"). So a title is matched against sheets too, and a
+  // sheet's title reads what is in it — the route a refused act's advice gives (internal #257).
+  const sheetsTitled =
+    needle === undefined || needle === ""
+      ? []
+      : tree.elements.filter((e) => e.role === "AXSheet" && (e.title ?? e.description ?? "").toLowerCase().includes(needle));
+  const underTitle = (e: NativeMacAxElement) =>
+    needle === undefined ||
+    needle === "" ||
+    rootTitle(e.rootKey).toLowerCase().includes(needle) ||
+    sheetsTitled.some((s) => e.id.startsWith(`${s.id}.`));
   const candidates = tree.elements
-    .filter((e) => needle === undefined || needle === "" || rootTitle(e.rootKey).toLowerCase().includes(needle))
+    .filter(underTitle)
     .filter(isCandidate)
     .map((e) => toCandidate(e, pid, targetId, observedAtMs, unique.get(e.id) === true));
+  // A window was found by this title, but nothing under it could be read: say so rather than
+  // answer an empty list as if the window held nothing (internal #257).
+  if (needle !== undefined && needle !== "" && !tree.elements.some(underTitle) && tree.error === undefined) {
+    notes.warnings.push("title_matches_nothing_readable");
+  }
   for (const c of candidates) {
     if (c.role === "textbox" && c.value !== undefined && c.digest !== undefined) {
       (notes.values ??= {})[`ent_${c.digest}`] = c.value;

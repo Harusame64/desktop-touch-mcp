@@ -58,7 +58,8 @@ export const macDiscoverDescription = buildDesc({
     "longer than 2000 characters: no value, valueTruncated: true); " +
     "buttons offer click, settable text fields offer type, texts only read. Each lease carries expiresAtMs (its life adapts to the view and to how long you take between calls); after it, desktop_act answers lease_expired. " +
     "'warnings' says what the read could not do: display_asleep (macOS then answers windows with the app itself — wake the display and " +
-    "discover again), no_window_matches_title, window_titles_unavailable (Screen Recording is not granted, so titles cannot be matched; " +
+    "discover again), no_window_matches_title, title_matches_nothing_readable (a window has the title but nothing under it can be read, e.g. a " +
+    "panel drawn by another process), window_titles_unavailable (Screen Recording is not granted, so titles cannot be matched; " +
     "omit target to read the frontmost app), no_frontmost_app, truncated:*, ax_error:*, sheet_open (answer the sheet first; acts behind it " +
     "are refused), sheet_open_in_other_process (the sheet's controls belong to another process, e.g. the open/save panel: discover its " +
     "own title, such as \"Save\" / \"保存\").",
@@ -224,7 +225,7 @@ async function macActOnce(
 }
 
 /** Warnings that mean the read after the act did not see the app whole. */
-const INCOMPLETE_READ = /^(ax_error:|display_asleep$|ax_self_reference$|truncated:|no_window_matches_title$|window_titles_unavailable$|no_frontmost_app$)/;
+const INCOMPLETE_READ = /^(ax_error:|display_asleep$|ax_self_reference$|truncated:|no_window_matches_title$|title_matches_nothing_readable$|window_titles_unavailable$|no_frontmost_app$)/;
 
 /**
  * The touch loop diffs the read after the act against the discover. When that read was

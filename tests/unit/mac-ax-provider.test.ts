@@ -122,6 +122,46 @@ describe("readMacAxCandidates", () => {
     expect(notes.appTitle).toBe("App");
     expect(notes.warnings).toEqual([]);
   });
+  // internal #257: TextEdit's save sheet is listed as a window titled "保存", but in the AX tree it
+  // sits under the document's root (measured 2026-10-08: AXSheet "保存" at a.0.8, buttons 削除 /
+  // キャンセル / 保存 at a.0.8.0.12–14, root "名称未設定2").
+  const doc = "名称未設定2\u001f\u001f0,0,1,1";
+  const withSheet = () =>
+    tree({
+      elements: [
+        el({ id: "a.0.1", rootKey: doc, actions: ["AXPress"], title: "テキストカラー" }),
+        el({ id: "a.0.8", rootKey: doc, role: "AXSheet", title: "保存" }),
+        el({ id: "a.0.8.0.12", rootKey: doc, actions: ["AXPress"], title: "削除" }),
+        el({ id: "a.0.8.0.14", rootKey: doc, actions: ["AXPress"], title: "保存" }),
+      ],
+    });
+
+  it("reads a sheet by its own title: its controls, not its window's (internal #257)", async () => {
+    const d = mk();
+    d.listWindows.mockReturnValue([{ windowId: 2, pid: 7, layer: 0, onScreen: true, title: "保存" }]);
+    d.axTree.mockResolvedValue(withSheet());
+    const { r, notes } = await run(d, { windowTitle: "保存" });
+    expect(r.map((c) => c.label).sort()).toEqual(["保存", "削除"]);
+    expect(notes.warnings).not.toContain("title_matches_nothing_readable");
+  });
+
+  it("the window's title still reads the window, its sheet included", async () => {
+    const d = mk();
+    d.listWindows.mockReturnValue([{ windowId: 1, pid: 7, layer: 0, onScreen: true, title: "名称未設定2" }]);
+    d.axTree.mockResolvedValue(withSheet());
+    const { r } = await run(d, { windowTitle: "名称未設定" });
+    expect(r.map((c) => c.label).sort()).toEqual(["テキストカラー", "保存", "削除"]);
+  });
+
+  it("says so when a window has the title but nothing under it can be read (internal #257)", async () => {
+    const d = mk();
+    d.listWindows.mockReturnValue([{ windowId: 2, pid: 7, layer: 0, onScreen: true, title: "Panel" }]);
+    d.axTree.mockResolvedValue(tree());
+    const { r, notes } = await run(d, { windowTitle: "panel" });
+    expect(r).toEqual([]);
+    expect(notes.warnings).toContain("title_matches_nothing_readable");
+  });
+
   it("warns when no window matches", async () => {
     const d = mk();
     d.listWindows.mockReturnValue([{ windowId: 1, pid: 7, layer: 0, onScreen: true, title: "Something else" }]);
@@ -318,6 +358,8 @@ describe("sheet warnings follow the target window (2026-10-04)", () => {
     const notes = { warnings: [] as string[] };
     await readMacAxCandidates({ listWindows: vi.fn(() => [{ windowId: 1, pid: 7, layer: 0, onScreen: true, title: "My doc" }]), getFocus: vi.fn(),
       axTree: vi.fn(async () => ({ pid: 7, elements: [sheet], truncated: false, selfReference: false, displayAsleep: false, elapsedMs: 1 })), now: () => 1 } as any, { windowTitle: "my doc" }, notes);
-    expect(notes.warnings).toEqual([]);
+    // No sheet warning. (This tree holds nothing under "My doc", which the read says on its own:
+    // title_matches_nothing_readable, internal #257.)
+    expect(notes.warnings.filter((w) => w.startsWith("sheet_open"))).toEqual([]);
   });
 });
