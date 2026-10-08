@@ -249,7 +249,10 @@ export async function readMacAxCandidates(
     for (const [i, p] of pids.entries()) {
       const tried: MacAxReadNotes = { warnings: [] };
       const found = await readPidUnderTitle(deps, title, p, tried);
-      if (found.length > 0 || i === pids.length - 1) {
+      // Several sheets carry the title in this app: it refused to pick one, and a later app must
+      // not answer in its place (codex on #804).
+      const ambiguous = tried.warnings.includes("title_matches_several_sheets");
+      if (found.length > 0 || ambiguous || i === pids.length - 1) {
         let warnings = tried.warnings;
         if (found.length === 0 && unsure.length > 0) {
           warnings = [...new Set([...warnings.filter((w) => w !== "title_matches_nothing_readable"), ...unsure])];

@@ -193,6 +193,30 @@ describe("readMacAxCandidates", () => {
     expect(notes.warnings).not.toContain("title_matches_nothing_readable");
   });
 
+  it("stops at an app where several sheets carry the title: a later app does not answer instead (codex on #804)", async () => {
+    const d = mk();
+    const docB = "Other\u001f\u001f0,0,1,1";
+    d.listWindows.mockReturnValue([
+      { windowId: 2, pid: 7, layer: 0, onScreen: false, title: "保存" },
+      { windowId: 9, pid: 8, layer: 0, onScreen: false, title: "保存" },
+    ]);
+    d.axTree.mockImplementation(async ({ pid }: { pid: number }) =>
+      pid === 7
+        ? tree({
+            elements: [
+              ...withSheet().elements,
+              el({ id: "a.1.8", rootKey: docB, role: "AXSheet", title: "保存" }),
+              el({ id: "a.1.8.0.12", rootKey: docB, actions: ["AXPress"], title: "削除" }),
+            ],
+          })
+        : tree({ pid, elements: [el({ id: "a.0.1", rootKey: "保存\u001f\u001f0,0,1,1", actions: ["AXPress"], title: "OK" })] })
+    );
+    const { r, notes } = await run(d, { windowTitle: "保存" });
+    expect(r).toEqual([]);
+    expect(notes.warnings).toContain("title_matches_several_sheets");
+    expect(d.axTree).toHaveBeenCalledTimes(1);
+  });
+
   it("reads no sheet when several carry the title, and says so (gate 2 on #804)", async () => {
     const d = mk();
     const docB = "Other\u001f\u001f0,0,1,1";
