@@ -692,8 +692,13 @@ export const desktopStateHandler = async (args: {
     // inside the tab via CDP, never as a separate top-level window.
     //
     // Tested by `tests/unit/modal-detection-browser-exclusion.test.ts`.
+    //
+    // A hidden (cloaked) or minimised window is not a modal in front of anything, though its title
+    // may read like one — a 'Save As' on another virtual desktop (internal #253, as
+    // `cursorOverWindow` above).
     let hasModal = false;
     for (const w of wins) {
+      if (w.isCloaked === true || w.isMinimized) continue;
       if (!MODAL_RE.test(w.title)) continue;
       if (isBrowserTopLevelClass(w.className)) {
         // `getWindowIdentity` is an OpenProcess + QueryFullProcessImageName
@@ -948,7 +953,8 @@ export const desktopStateHandler = async (args: {
       hasModal,
       pageState,
       attention,
-      visibleWindows: wins.length,
+      // Shown windows only: a cloaked or minimised one is not visible (internal #253).
+      visibleWindows: wins.filter((w) => w.isCloaked !== true && !w.isMinimized).length,
       ...extra,
       ...(Object.keys(hints).length > 0 ? { hints } : {}),
     });
