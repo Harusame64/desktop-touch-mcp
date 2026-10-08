@@ -303,6 +303,12 @@ fn element_key_within(
     Some(element_key_of(subrole.as_deref(), identifier.as_deref(), title.as_deref(), description.as_deref(), f.as_ref()))
 }
 
+/// An element key without its frame (the last field `element_key_of` writes): what an element is
+/// apart from where it is (internal #270).
+fn without_frame(key: &str) -> &str {
+    key.rfind('\u{1f}').map_or(key, |i| &key[..i])
+}
+
 fn element_key(e: &AXUIElement) -> String {
     element_key_of(
         attr_string(e, "AXSubrole").as_deref(),
@@ -652,8 +658,9 @@ pub struct MacAxTarget {
     /// when the root differs, or the element is not found there.
     pub expected_element_key: String,
     /// Whether the element was the only one under its root with this role and
-    /// key when read (internal #260). Only then is it looked for again when
-    /// its path moved: of two alike, the one left is not the one leased.
+    /// key, frame aside, when read (internal #260, #270). Only then is it
+    /// looked for again when its path moved: of two alike, the one left is
+    /// not the one leased.
     pub relocatable: Option<bool>,
     pub timeout_secs: Option<f64>,
 }
@@ -768,6 +775,7 @@ fn relocate(
     type Entry = (String, CFRetained<AXUIElement>, Vec<CFRetained<AXUIElement>>);
     let mut stack: Vec<Entry> = vec![(root_id.to_string(), root.clone(), vec![app.clone()])];
     let mut visited = 0usize;
+    let mut alike = 0usize;
     while let Some((id, e, ancestors)) = stack.pop() {
         visited += 1;
         // Every message is held to the time left, and the budget is checked after each (codex on #802).
@@ -785,11 +793,16 @@ fn relocate(
         }
         if is_role {
             let Some(k) = element_key_within(&e, timeout, &left, &late) else { return Relocated::Unclear };
-            if k == key {
-                if found.is_some() {
+            // Alike but for the frame counts as another one: two such are not told apart, as at the
+            // read (internal #270). The one acted on must also carry the frame read.
+            if without_frame(&k) == without_frame(key) {
+                if alike > 0 {
                     return Relocated::Unclear;
                 }
-                found = Some((id.clone(), e.clone()));
+                alike += 1;
+                if k == key {
+                    found = Some((id.clone(), e.clone()));
+                }
             }
         }
         unsafe { e.set_messaging_timeout(timeout.min(left())) };
@@ -936,6 +949,14 @@ mod tests {
 
     fn rect(x: f64) -> MacRect {
         MacRect { x, y: 2.0, width: 3.0, height: 4.0 }
+    }
+
+    #[test]
+    fn without_frame_drops_only_the_last_field() {
+        let k = element_key_of(Some("AXSub"), Some("One"), Some("1"), None, Some(&MacRect { x: 1.0, y: 2.0, width: 3.0, height: 4.0 }));
+        assert_eq!(without_frame(&k), "AXSub\u{1f}One\u{1f}1\u{1f}");
+        assert_eq!(without_frame(&element_key_of(None, None, None, None, None)), "\u{1f}\u{1f}\u{1f}");
+        assert_eq!(without_frame("no-separator"), "no-separator");
     }
 
     #[test]

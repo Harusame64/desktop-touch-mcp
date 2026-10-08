@@ -974,7 +974,7 @@ export interface NativeMacAxTarget {
   expectedRootKey: string
   /** The `elementKey` read for `id`. When the path now names something else, the element is looked for under the same root by this key and the role. */
   expectedElementKey: string
-  /** The element was the only one of its kind under its root when read: only then is it looked for where it moved (internal #260). */
+  /** The element was the only one of its kind under its root, its position aside, when read: only then is it looked for where it moved (internal #260, #270). */
   relocatable?: boolean
   timeoutSecs?: number
 }

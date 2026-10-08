@@ -195,7 +195,7 @@ describe("AX identity and the pinned app (codex gate 1, #780)", () => {
   });
 
   it("marks an element unique, or not, for the act to look for it where it moved (gate 2 on #802)", async () => {
-    const [a, b, c] = await read([e({ id: "a.0.1" }), e({ id: "a.0.2" }), e({ id: "a.0.3", elementKey: "Other" })]);
+    const [a, b, c] = await read([e({ id: "a.0.1" }), e({ id: "a.0.2" }), e({ id: "a.0.3", title: "Other", elementKey: "Other" })]);
     expect(a!.locator!.ax!.unique).toBe(false);
     expect(b!.locator!.ax!.unique).toBe(false);
     expect(c!.locator!.ax!.unique).toBe(true);
@@ -203,10 +203,15 @@ describe("AX identity and the pinned app (codex gate 1, #780)", () => {
 
   it("calls controls alike but for their position not unique (internal #270)", async () => {
     const row = (id: string, y: number) => e({ id, title: "Delete", elementKey: `\u001f\u001fDelete\u001f\u001f10,${y},40,20` });
-    const [a, b, c] = await read([row("a.0.1.0", 100), row("a.0.2.0", 130), e({ id: "a.0.3", elementKey: "\u001f\u001fAdd\u001f\u001f10,160,40,20" })]);
+    const [a, b, c] = await read([row("a.0.1.0", 100), row("a.0.2.0", 130), e({ id: "a.0.3", title: "Add", elementKey: "\u001f\u001fAdd\u001f\u001f10,160,40,20" })]);
     expect(a!.locator!.ax!.unique).toBe(false);
     expect(b!.locator!.ax!.unique).toBe(false);
     expect(c!.locator!.ax!.unique).toBe(true);
+    // …and they stay two entities, each keeping its path in its identity: the row left after the
+    // other goes does not take the other's (gate 2 on #803).
+    expect(a!.digest).not.toBe(b!.digest);
+    const [left] = await read([row("a.0.1.0", 100)]);
+    expect(left!.digest).not.toBe(b!.digest);
   });
 
   it("calls nothing unique in a read cut short: a twin may lie past the cut (codex on #802)", async () => {

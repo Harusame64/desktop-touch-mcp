@@ -130,9 +130,9 @@ function kindOf(e: Pick<NativeMacAxElement, "rootKey" | "elementKey" | "role" | 
  * Not the path, for an element that is the only one of its kind under its window (internal #260):
  * a sibling coming or going before it shifts its path while it stays what it was (Calculator's All
  * Clear drops every button's index by one), and the native act finds it again by its keys
- * (`relocate`, src/macos/ax.rs). Elements alike in everything keep the path as before
- * (`unique: false`): told apart by order instead, one would take the other's identity when an
- * earlier one went (gate 2 on #802).
+ * (`relocate`, src/macos/ax.rs). Elements alike but for their position keep the path as before
+ * (`unique: false`, `sortOf`): told apart by order instead, one would take the other's identity
+ * when an earlier one went (gate 2 on #802); by frame, one could take the other's place (#270).
  */
 export function axDigest(
   pid: number,
@@ -152,21 +152,27 @@ export function axDigest(
  * None is.
  */
 function uniquenessOf(elements: readonly NativeMacAxElement[], truncated: boolean): Map<string, boolean> {
+  const sorts = elements.map(sortOf);
   const count = new Map<string, number>();
-  for (const e of elements) count.set(sortOf(e), (count.get(sortOf(e)) ?? 0) + 1);
-  return new Map(elements.map((e) => [e.id, !truncated && count.get(sortOf(e)) === 1]));
+  for (const k of sorts) count.set(k, (count.get(k) ?? 0) + 1);
+  return new Map(elements.map((e, i) => [e.id, !truncated && count.get(sorts[i]!) === 1]));
 }
 
 /**
- * `kindOf` without the frame (the element key's last field, src/macos/ax.rs `element_key_of`):
- * controls alike but for where they are — a "Delete" button in each row of a list — are not
- * unique, though their keys differ. Counted by the frame, the leased row's button could go and
- * another row's reflow into its place at another path, and the act would find that one as the
- * only match and press it (internal #270, codex on #802).
+ * What an element is apart from where it is: its window, role, and the element key's fields but
+ * the frame — subrole, identifier, title, description, read from the element rather than cut out
+ * of the joined key. Controls alike but for their position — a "Delete" button in each row of a
+ * list — are then not unique, though their keys differ: counted by the frame, the leased row's
+ * button could go and another row's reflow into its place, and the act would find that one as the
+ * only match and press it (internal #270, codex on #802). The native act counts the same way
+ * (`without_frame`, src/macos/ax.rs). The cost: unnamed controls that differ only by position
+ * (two unlabelled text fields) are not looked for where they moved, and keep the path in their
+ * identity.
  */
-function sortOf(e: Pick<NativeMacAxElement, "rootKey" | "elementKey" | "role" | "subrole" | "value">): string {
-  const cut = e.elementKey.lastIndexOf("\u001f");
-  return kindOf({ ...e, elementKey: cut < 0 ? e.elementKey : e.elementKey.slice(0, cut) });
+function sortOf(e: NativeMacAxElement): string {
+  const shown = roleOf(e) === "label" ? `|${e.value ?? ""}` : "";
+  const fields = [e.subrole, e.identifier, e.title, e.description].map((f) => f ?? "").join("\u001f");
+  return `${e.rootKey}|${e.role}|${fields}${shown}`;
 }
 
 export function toCandidate(

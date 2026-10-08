@@ -15,8 +15,8 @@ export interface EntityLocator {
    * macOS Accessibility (Mac port): the element as `macAxTree` read it. `id` is a child-index
    * path from the app; the act is refused unless the root (window) still carries the key read
    * here and the element is found by its keys — at the path, or, when it was the only one of its
-   * kind under the root (`unique`), wherever it moved among its siblings (src/macos/ax.rs,
-   * internal #260).
+   * kind under the root, its position aside (`unique`), wherever it moved among its siblings
+   * (src/macos/ax.rs, internal #260, #270).
    */
   ax?: {
     pid: number;
