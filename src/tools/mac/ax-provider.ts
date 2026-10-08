@@ -224,17 +224,34 @@ export async function readMacAxCandidates(
   let pid: number | undefined;
   if (title !== undefined && title !== "") {
     const needle = title.toLowerCase();
-    const win = deps
-      .listWindows(false)
-      .find((w) => w.layer === 0 && (w.title ?? "").toLowerCase().includes(needle));
-    if (win === undefined) {
+    const pids = [
+      ...new Set(
+        deps
+          .listWindows(false)
+          .filter((w) => w.layer === 0 && (w.title ?? "").toLowerCase().includes(needle))
+          .map((w) => w.pid)
+      ),
+    ];
+    if (pids.length === 0) {
       // Window titles from CGWindowList need Screen Recording; without it every title is empty,
       // and "no window matches" would be a false answer (gate 2, #780).
       const titled = deps.listWindows(false).some((w) => w.layer === 0 && (w.title ?? "") !== "");
       notes.warnings.push(titled ? "no_window_matches_title" : "window_titles_unavailable");
       return [];
     }
-    pid = win.pid;
+    // Several apps can show a window with the title: the open/save panel's "保存" is listed for
+    // its service process as well as for the app whose tree holds its controls, and the service
+    // came first (measured 2026-10-08). Each is read in turn until one has something under the
+    // title; the last one's read is answered if none has (internal #257).
+    for (const [i, p] of pids.entries()) {
+      const tried: MacAxReadNotes = { warnings: [] };
+      const found = await readPidUnderTitle(deps, title, p, tried);
+      if (found.length > 0 || i === pids.length - 1) {
+        Object.assign(notes, { ...tried, warnings: [...notes.warnings, ...tried.warnings] });
+        return found;
+      }
+    }
+    return [];
   } else if (pinnedPid !== undefined) {
     pid = pinnedPid;
   } else {
@@ -245,6 +262,16 @@ export async function readMacAxCandidates(
       return [];
     }
   }
+  return readPidUnderTitle(deps, title, pid, notes);
+}
+
+/** Read one app's tree and the candidates under the title (all of them without one). */
+async function readPidUnderTitle(
+  deps: MacAxProviderDeps,
+  title: string | undefined,
+  pid: number,
+  notes: MacAxReadNotes
+): Promise<UiEntityCandidate[]> {
   notes.pid = pid;
 
   const tree = await deps.axTree({ pid });

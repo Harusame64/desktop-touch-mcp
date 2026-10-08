@@ -162,6 +162,23 @@ describe("readMacAxCandidates", () => {
     expect(notes.warnings).toContain("title_matches_nothing_readable");
   });
 
+  it("reads the next app with a window of the title when the first has nothing under it (internal #257)", async () => {
+    // Measured 2026-10-08: "保存" is listed for the open/save panel's service process first, and
+    // for TextEdit, whose tree holds the panel's controls.
+    const d = mk();
+    d.listWindows.mockReturnValue([
+      { windowId: 9, pid: 60157, layer: 0, onScreen: false, title: "保存" },
+      { windowId: 2, pid: 7, layer: 0, onScreen: false, title: "保存" },
+    ]);
+    d.axTree.mockImplementation(async ({ pid }: { pid: number }) =>
+      pid === 7 ? withSheet() : tree({ pid, elements: [] })
+    );
+    const { r, notes } = await run(d, { windowTitle: "保存" });
+    expect(r.map((c) => c.label).sort()).toEqual(["保存", "削除"]);
+    expect(notes.pid).toBe(7);
+    expect(notes.warnings).not.toContain("title_matches_nothing_readable");
+  });
+
   it("reads no sheet when several carry the title, and says so (gate 2 on #804)", async () => {
     const d = mk();
     const docB = "Other\u001f\u001f0,0,1,1";
