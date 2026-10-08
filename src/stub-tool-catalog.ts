@@ -92,7 +92,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "scrollIntoView": {
           "description": "When true, if the target is outside the viewport, scroll it into view (centered) before clicking, instead of failing with ElementNotInViewport. Default false preserves the explicit scrollIntoView-then-retry workflow. Selector mode only (by-axis resolves only in-viewport actionable targets).",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "include": {
           "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",
@@ -121,47 +122,62 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "Action selector — one of: js, dom, appState. Per-action required fields are enforced at call time (see the tool description); this flat schema lists every action's fields as optional."
         },
         "expression": {
-          "type": "string",
-          "description": "JavaScript expression to evaluate. The server automatically wraps snippets in an async IIFE to avoid repeated const/let collisions. For multi-statement snippets, use an explicit final return value. Declarations (const/let/var) are scoped per snippet — use window.* / globalThis.* for persistence. A single eval is bounded by the CDP per-command timeout (~15s): do NOT write in-page polling loops here — use wait_until (element_matches / url_matches / ready_state) to wait for conditions instead."
+          "description": "JavaScript expression to evaluate. The server automatically wraps snippets in an async IIFE to avoid repeated const/let collisions. For multi-statement snippets, use an explicit final return value. Declarations (const/let/var) are scoped per snippet — use window.* / globalThis.* for persistence. A single eval is bounded by the CDP per-command timeout (~15s): do NOT write in-page polling loops here — use wait_until (element_matches / url_matches / ready_state) to wait for conditions instead.",
+          "type": "string"
         },
         "withPerception": {
-          "type": "boolean"
+          "description": "When true, return structured JSON {ok, result, post} with post.perception attached. Default false preserves raw-text return.",
+          "type": "boolean",
+          "default": false
         },
         "lensId": {
+          "description": "Optional perception lens ID. Guards (target.identityStable) are evaluated before eval.",
           "type": "string"
         },
         "tabId": {
+          "description": "Tab ID from browser_open. Omit to use the first page tab.",
           "type": "string"
         },
         "port": {
+          "description": "Chrome/Edge CDP remote debugging port (default 9222; configurable via desktop-touch-config.json)",
+          "default": 9222,
           "type": "integer",
           "minimum": 1,
           "maximum": 65535
         },
         "includeContext": {
-          "type": "boolean"
+          "description": "When true (default), append `activeTab` + `readyState` lines to the response. Set false to skip — saves ~150 tokens per call when chaining several browser_* calls in the same tab.",
+          "type": "boolean",
+          "default": true
         },
         "include": {
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",
           "type": "array",
           "items": {
             "type": "string"
           }
         },
         "selector": {
+          "description": "CSS selector for root element. Omit for document.body.",
           "type": "string"
         },
         "maxLength": {
+          "description": "Max characters of HTML to return (default 10000).",
+          "default": 10000,
           "type": "integer",
           "minimum": 100,
           "maximum": 100000
         },
         "selectors": {
+          "description": "Custom probe selectors. Omit to use the default SPA framework set (__NEXT_DATA__ / __NUXT_DATA__ / __REMIX_CONTEXT__ / __APOLLO_STATE__ / window:__INITIAL_STATE__ etc.). Window globals must be prefixed with 'window:'.",
           "type": "array",
           "items": {
             "type": "string"
           }
         },
         "maxBytes": {
+          "description": "Max bytes per individual payload (default 4000). Larger payloads are truncated.",
+          "default": 4000,
           "type": "integer",
           "minimum": 256,
           "maximum": 64000
@@ -228,7 +244,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "includeContext": {
           "description": "When true (default), append `activeTab` + `readyState` lines to the response. Set false to skip — saves ~150 tokens per call when chaining several browser_* calls in the same tab.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "include": {
           "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",
@@ -256,7 +273,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "includeHidden": {
           "description": "When true, include hidden inputs (type=hidden). Default false to avoid CSRF-token / serialized-state clutter.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "maxResults": {
           "default": 100,
@@ -278,7 +296,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "includeContext": {
           "description": "When true (default), append `activeTab` + `readyState` lines to the response. Set false to skip — saves ~150 tokens per call when chaining several browser_* calls in the same tab.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "include": {
           "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",
@@ -317,7 +336,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "includeContext": {
           "description": "When true (default), append `activeTab` + `readyState` lines to the response. Set false to skip — saves ~150 tokens per call when chaining several browser_* calls in the same tab.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "include": {
           "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",
@@ -365,7 +385,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "waitForLoad": {
           "description": "When true (default), wait for document.readyState === 'complete' before returning. Use waitForLoad:false for the legacy behavior (return immediately after Page.navigate). Accepts the strings \"true\"/\"false\".",
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "loadTimeoutMs": {
           "default": 15000,
@@ -438,7 +459,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             },
             "killExisting": {
               "description": "When true, terminate existing browser processes before launch. Use when a browser is already running WITHOUT --remote-debugging-port. WARNING: unsaved input in the existing session will be lost.",
-              "type": "boolean"
+              "type": "boolean",
+              "default": false
             }
           }
         },
@@ -481,7 +503,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "inViewportOnly": {
           "description": "When true, only return elements currently visible in the viewport.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "maxResults": {
           "default": 50,
@@ -503,7 +526,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "includeContext": {
           "description": "When true (default), append `activeTab` + `readyState` lines to the response. Set false to skip — saves ~150 tokens per call when chaining several browser_* calls in the same tab.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "include": {
           "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",
@@ -558,15 +582,18 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "visibleOnly": {
           "description": "Only visible elements (default true). Set false to include hidden ones with confidence penalty.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "inViewportOnly": {
           "description": "Only currently-in-viewport elements (default false).",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "caseSensitive": {
           "description": "Case-sensitive matching for text/regex (default false).",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "tabId": {
           "description": "Tab ID from browser_open. Omit to use the first page tab.",
@@ -671,15 +698,16 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "Action selector — one of: read, write. Per-action required fields are enforced at call time (see the tool description); this flat schema lists every action's fields as optional."
         },
         "include": {
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",
           "type": "array",
           "items": {
             "type": "string"
           }
         },
         "text": {
+          "description": "Text to place on the clipboard",
           "type": "string",
-          "maxLength": 100000,
-          "description": "Text to place on the clipboard"
+          "maxLength": 100000
         }
       },
       "required": [
@@ -696,19 +724,23 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
       "properties": {
         "includeCursor": {
           "description": "When true, add a richer `cursor` field with monitor index alongside the lightweight `cursorPos`. Phase 4: absorbs former get_cursor_position. Default false.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "includeScreen": {
           "description": "When true, add a `screen` field with all connected display info (resolution, position, DPI, scale). Phase 4: absorbs former get_screen_info. Default false. Use the displayId values returned here in screenshot / window_dock(action='dock').",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "includeDocument": {
           "description": "When true, add a `document` field with the focused Chrome tab's url, title, readyState, selection, and scroll position via CDP. Phase 4: absorbs former get_document_state. Default false. Requires browser_open (CDP active); silently omitted on non-Chromium foreground.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "includeSessionContext": {
           "description": "When true, add a `sessionContext` field with the Terminal Services session classification (origin, consoleSessionId, sessionLabel: 'console'|'rdp'|'other', sessionState: 'active'|'connected'|'disconnected'|'locked'|'unknown', ownWinStation). Default false. Equivalent to `include: ['sessionContext']`. Per ADR-017: observability-only — does not gate input. `sessionState: 'locked'` is a heuristic (active + foreground=null + previous sample within 60s saw a non-null foreground); treat it as a generic input-pause signal — it can also fire on secure-desktop transitions (UAC prompt, Credential UI), where the user-visible state is not strictly 'locked' but input is equally unavailable to this session.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "port": {
           "description": "CDP port for includeDocument. Default: the port the tab named by tabId was opened on, else 9222.",
@@ -746,18 +778,23 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "Action selector — one of: run_vba, check_access_vbom. Per-action required fields are enforced at call time (see the tool description); this flat schema lists every action's fields as optional."
         },
         "code": {
+          "description": "VBA source. MUST declare at least one Sub matching `macroName` (default `DesktopTouchAdHoc`). Example: \n\"Sub DesktopTouchAdHoc()\\r\\n    Range(\\\"A1\\\").Value = \\\"Hello\\\"\\r\\nEnd Sub\"",
           "type": "string",
-          "minLength": 1,
-          "description": "VBA source. MUST declare at least one Sub matching `macroName` (default `DesktopTouchAdHoc`). Example: \n\"Sub DesktopTouchAdHoc()\\r\\n    Range(\\\"A1\\\").Value = \\\"Hello\\\"\\r\\nEnd Sub\""
+          "minLength": 1
         },
         "macroName": {
+          "description": "Sub name to invoke. MUST appear in `code` as `Sub <name>(...)`. Default `DesktopTouchAdHoc`.",
+          "default": "DesktopTouchAdHoc",
           "type": "string",
           "minLength": 1
         },
         "visible": {
+          "description": "If true, show the Excel window during execution. Default false (headless). Setting visible:true is useful for demo recording but may surface MsgBox/InputBox calls in the macro that block the COM thread.",
+          "default": false,
           "type": "boolean"
         },
         "include": {
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",
           "type": "array",
           "items": {
             "type": "string"
@@ -828,24 +865,27 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "Action selector — one of: list, save, forget, set_policy, status, launch_console. Per-action required fields are enforced at call time (see the tool description); this flat schema lists every action's fields as optional."
         },
         "include": {
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",
           "type": "array",
           "items": {
             "type": "string"
           }
         },
         "uri": {
+          "description": "A binding URI identifying the credential target — e.g. `ssh://user@host:22`, `sudo://host/root`, `https-cred://github.com:443`, `sshkey:SHA256:…` (no `//`). Parsed per the L1 grammar; malformed input is rejected.",
           "type": "string",
-          "minLength": 1,
-          "description": "A binding URI identifying the credential target — e.g. `ssh://user@host:22`, `sudo://host/root`, `https-cred://github.com:443`, `sshkey:SHA256:…` (no `//`). Parsed per the L1 grammar; malformed input is rejected."
+          "minLength": 1
         },
         "confirmEveryInjection": {
-          "type": "boolean",
-          "description": "true (default) = confirm every autofill for this binding; false = opt out (autofill without asking)."
+          "description": "true (default) = confirm every autofill for this binding; false = opt out (autofill without asking).",
+          "type": "boolean"
         },
         "fresh": {
+          "description": "false (default) = reuse the most-recent still-open anchored pane of the requested host; true = open a NEW one (bounded).",
           "type": "boolean"
         },
         "host": {
+          "description": "'windows-terminal' (default) = open a new tab in the user's current Windows Terminal window. 'classic' = open a dedicated classic console window instead (the fallback when Windows Terminal is not installed — a KeyLockerWtUnavailable error tells you to retry with this). A Windows Terminal pane autofills/reads only while its tab is the ACTIVE tab; a classic console has its own window.",
           "type": "string",
           "enum": [
             "windows-terminal",
@@ -875,11 +915,12 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "Action selector — one of: type, press, sequence. Per-action required fields are enforced at call time (see the tool description); this flat schema lists every action's fields as optional."
         },
         "text": {
+          "description": "The text to type (max 10,000 characters)",
           "type": "string",
-          "maxLength": 10000,
-          "description": "The text to type (max 10,000 characters)"
+          "maxLength": 10000
         },
         "method": {
+          "description": "'type' / 'press': Input routing channel. 'auto' uses background (PostMessage) when the target window is a known terminal class (Windows Terminal / cmd / PowerShell) OR DTM_BG_AUTO=1 is set; else foreground. Terminal auto-detect is HWND-targeted so user-side focus changes mid-stream cannot divert keystrokes (except a combo with ctrl/shift/alt, or type with replaceAll, which 'auto' sends through the foreground). 'background' forces PostMessage-only (no focus change, fails on Chromium/IME). A key combo with ctrl, shift or alt, and type's replaceAll (which selects with Ctrl+A), cannot be posted — the app would see the plain key and type it — so 'background' refuses them with BackgroundModifierComboUnsupported and nothing is sent; 'auto' sends them through the foreground. 'foreground' forces the current behavior (SetForegroundWindow + keystrokes). 'foreground_flash' (ADR-013 Option E) is an explicit opt-in 妥協 BG path for Windows Terminal: temporarily steals foreground (~50-80ms), pastes via clipboard, sends Ctrl+V, restores foreground + clipboard. Single-line + < 5KiB only. Carries `typingLeakRisk: true` in hints because user keystrokes during the flash window can leak to WT. Default 'auto'.\n'sequence': Sequence is foreground-only by design — Alt-menu mnemonics need real SendInput. Omit, or pass 'foreground'. method:'background' / 'foreground_flash' are rejected at schema parse time (typed codes BackgroundNotApplicableToSequence / ForegroundFlashNotApplicableToSequence document the rationale for LLMs).",
           "anyOf": [
             {
               "type": "string",
@@ -897,6 +938,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "narrate": {
+          "description": "Narration level. \"rich\": include UIA diff in post.rich (appeared/disappeared/valueDeltas, and nameDeltas when an element's name changed, such as a calculator display) — usually removes the need for a verification screenshot. It is withheld, with post.rich.diffDegraded saying why, when the diff cannot be shown to describe the window that was acted on. On click_element and keyboard (and set_element_value where the server registers it), which resolve the target window before acting: another open window's title contains the text this call resolved to, whether you named the hwnd or the server did — \"@active\" and the dialog rescue both resolve one (\"ambiguous_title\"); or the target moved between the snapshot and the action (\"target_changed\"). On those and on mouse_click, retrying with a fixId also withholds it, because the stored fix names a window this cannot see (\"fix_target_unknown\") — browser tools keep their diff on a fixId retry, because theirs is a tab diff and does not depend on a window title. mouse_click and mouse_drag accept an hwnd and still take their snapshots by windowTitle, so nothing else is withheld for them: verify those with a screenshot. A window too large to read whole is withheld too (\"tree_truncated\"). The action itself is unaffected in every case; only the diff is. Default: \"minimal\".",
+          "default": "minimal",
           "type": "string",
           "enum": [
             "minimal",
@@ -904,55 +947,75 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "use_clipboard": {
-          "type": "boolean"
+          "description": "If true, copy text to clipboard and paste with Ctrl+V instead of simulating keystrokes. Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — pasted text is not run through IME conversion. Note this does not help while an IME composition is already in progress: the paste keystroke is consumed by the IME and nothing is inserted, though the call still answers ok, so commit or cancel the composition first; when the IME was on at the paste, hints.clipboard.imeOpen says so. Your clipboard is replaced for the duration of the call and put back afterwards; hints.clipboard reports which backend served the paste and whether the restore ran. On builds without the native addon this path is capped at about 12000 characters and fails with code:'ClipboardWriteTooLargeForFallback' above it. Default false.",
+          "type": "boolean",
+          "default": false
         },
         "replaceAll": {
-          "type": "boolean"
+          "description": "When true, send Ctrl+A to select all existing text before typing. Equivalent to Ctrl+A → keyboard(action='type') in one call (requires field already focused). Default false.",
+          "type": "boolean",
+          "default": false
         },
         "forceKeystrokes": {
-          "type": "boolean"
+          "description": "When true, always use keystroke mode even if text contains non-ASCII content (CJK, emoji, diacritics, em-dash, smart quotes, etc.) that would normally trigger auto-clipboard. Default false — auto-clipboard is enabled.",
+          "type": "boolean",
+          "default": false
         },
         "windowTitle": {
+          "description": "Partial title of the window that should receive the keystrokes. Required unless you pass hwnd: a call with neither stops with DestinationRequired before any key is sent, and an empty or whitespace-only value counts as neither. The server focuses this window before typing and uses it as the expected target for focusLost detection. Use '@active' to target the current foreground window on purpose.",
           "type": "string"
         },
         "hwnd": {
+          "description": "Direct window handle ID (takes precedence over windowTitle). Either this or windowTitle is required. Obtain from desktop_discover response (windows[].hwnd). String type to avoid 64-bit precision issues. A window that has no title can be addressed this way, but only while it is already the foreground window — keyboard focus and guarding cannot target a titleless window yet.",
           "type": "string"
         },
         "forceFocus": {
+          "description": "When true, bypass Windows foreground-stealing protection via AttachThreadInput before focusing the target window. Default: follows env DESKTOP_TOUCH_FORCE_FOCUS (default false).",
           "type": "boolean"
         },
         "trackFocus": {
-          "type": "boolean"
+          "description": "When true (default), detect if focus was stolen from the target window after the action. Reports focusLost in the response. Set false to skip.",
+          "type": "boolean",
+          "default": true
         },
         "settleMs": {
+          "description": "Milliseconds to wait after the action before checking foreground window (default 300).",
+          "default": 300,
           "type": "integer",
           "minimum": 0,
           "maximum": 2000
         },
         "lensId": {
+          "description": "'type': Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated before typing, and a perception envelope is attached to post.perception on success.\n'press': Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated before the key press.\n'sequence': Optional perception lens ID. Guards (safe.keyboardTarget) are evaluated once before the first step.",
           "type": "string"
         },
         "fixId": {
+          "description": "'type': Approve a pending suggestedFix (one-shot, 15s TTL). Pass the fixId returned by a previous failed keyboard(action='type') to re-attempt with guard-validated args.\n'sequence': Approve a pending suggestedFix (one-shot, 15s TTL). Only meaningful for GUARD-pre-loop rejections (e.g. unsafe.keyboardTarget). Mid-loop MenuFocusLostMidSequence does NOT issue fixIds — recover by re-calling with context.remaining.",
           "type": "string"
         },
         "abortOnFocusLoss": {
+          "description": "Focus Leash Phase B: when true, the foreground keystroke send is split into chunks (default 8 chars; override via DTM_LEASH_CHUNK_SIZE env) and the target window's foreground state is verified between chunks. If the user grabs focus mid-stream, the call aborts and returns FocusLostDuringType with context.typed (chars delivered to target) and context.remaining (unsent tail) so the caller can re-focus and retry the unsent portion. Default: true when windowTitle is provided, false otherwise. Has no effect on the clipboard path (atomic Ctrl+V) or the BG (WM_CHAR) path (HWND-targeted, foreground-independent).",
           "type": "boolean"
         },
         "forceImeOff": {
-          "type": "boolean"
+          "description": "'type': Issue #245 系統②: when true, query the target window's IME open-status via Imm32 before typing; if ON, switch OFF for the duration of this call and restore the prior state in `finally`. Prevents silent romaji conversion when the user's Japanese IME is active but the LLM is typing ASCII commands. Requires `windowTitle` or `hwnd` (otherwise no target to query). Default false — existing use_clipboard auto-promotion still handles non-ASCII symbols transparently. No-op when the addon predates the IMM bridge (call proceeds with whatever IME state is in effect).\n'sequence': Issue #245 系統②: query the target's IME open-status before the first step; if ON, switch OFF for the whole sequence and restore in finally. Prevents Alt-mnemonic hijack when 日本語 IME is active (the OS routes Alt+letter to IME composition instead of the menu). Requires windowTitle or hwnd. Default false.",
+          "type": "boolean",
+          "default": false
         },
         "include": {
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",
           "type": "array",
           "items": {
             "type": "string"
           }
         },
         "keys": {
+          "description": "Key combo string, e.g. 'ctrl+c', 'alt+tab', 'enter', 'ctrl+shift+s'. Note: win+r, win+x, win+s, win+l are blocked for security.",
           "type": "string",
-          "maxLength": 100,
-          "description": "Key combo string, e.g. 'ctrl+c', 'alt+tab', 'enter', 'ctrl+shift+s'. Note: win+r, win+x, win+s, win+l are blocked for security."
+          "maxLength": 100
         },
         "steps": {
+          "description": "Ordered list of key-press steps. Min 1, max 16. Total duration must not exceed 5000ms (excludes settleMs and focus acquisition). N=1 is allowed but inherits the sequence verification contract (hints.verifyDelivery.status='focus_only'); if you want the stricter keyboard:press contract, call keyboard({action:'press', keys}) directly (issue #278, matrix doc §3.1).",
           "minItems": 1,
           "maxItems": 16,
           "type": "array",
@@ -981,8 +1044,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
               "keys"
             ],
             "additionalProperties": false
-          },
-          "description": "Ordered list of key-press steps. Min 1, max 16. Total duration must not exceed 5000ms (excludes settleMs and focus acquisition). N=1 is allowed but inherits the sequence verification contract (hints.verifyDelivery.status='focus_only'); if you want the stricter keyboard:press contract, call keyboard({action:'press', keys}) directly (issue #278, matrix doc §3.1)."
+          }
         }
       },
       "required": [
@@ -1040,11 +1102,13 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "doubleClick": {
           "description": "Whether to double-click",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "tripleClick": {
           "description": "Whether to triple-click (select a line of text). Takes precedence over doubleClick when both are true.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "narrate": {
           "default": "minimal",
@@ -1063,7 +1127,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "homing": {
           "description": "Enable homing correction (default true). When enabled, the MCP server corrects stale coordinates if the target window moved since the last screenshot. Set false to disable all correction (like traction control OFF).",
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "windowTitle": {
           "description": "Hint: partial title of the window being clicked. Enables window-delta correction and auto-focus if the window went behind another. Use '@active' for the current foreground window. Example: \"メモ帳\", \"Google Chrome\"",
@@ -1087,7 +1152,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "trackFocus": {
           "description": "When true (default), detect if focus was stolen from the target window after the action. Reports focusLost:{afterMs,expected,stolenBy,stolenByProcessName} in the response. Set false to skip the settle wait and focus check.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "settleMs": {
           "default": 300,
@@ -1098,7 +1164,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "verifyDelivery": {
           "description": "When true (default), capture pre/post snapshots of element-under-cursor + focusedElement + foregroundWindow + scrollPos to populate hints.verifyDelivery with status='delivered' | 'focus_only' | 'unverifiable' (issue #178). Set false to skip the extra UIA work when the caller will read post state itself.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "lensId": {
           "description": "Optional perception lens ID for advanced pinned-target workflows. When provided, guards are evaluated before clicking (safe.clickCoordinates, target.identityStable) and a perception envelope is attached to post.perception in the response. For normal use, omit lensId and pass windowTitle directly — Auto Perception handles tracking.",
@@ -1158,7 +1225,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "homing": {
           "description": "Enable homing correction (default true). When enabled, the MCP server corrects stale coordinates if the target window moved since the last screenshot. Set false to disable all correction (like traction control OFF).",
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "windowTitle": {
           "description": "Hint: partial title of the window being clicked. Enables window-delta correction and auto-focus if the window went behind another. Use '@active' for the current foreground window. Example: \"メモ帳\", \"Google Chrome\"",
@@ -1174,15 +1242,18 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "allowCrossWindowDrag": {
           "description": "When true, allow dragging the endpoint into a different window or the desktop background. Default false — cross-window drags (including desktop/wallpaper) are blocked to prevent accidents. Pass true to confirm intent for deliberate cross-window or desktop-area drags.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "allowTabDrag": {
           "description": "When true, allow drags that start in the title-bar / tab-strip area of a tabbed app (Notepad, Terminal, Edge, Chrome, etc.). Default false — such drags are blocked because they detach the tab into a new window rather than moving the window. Pass true only when you intentionally want to rearrange or detach a tab. Note: active only when auto-guard is enabled (same scope as allowCrossWindowDrag).",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "verifyDelivery": {
           "description": "When true (default), capture pre/post snapshots of element-under-cursor + focusedElement + foregroundWindow + scrollPos to populate hints.verifyDelivery with status='delivered' | 'focus_only' | 'unverifiable' (issue #178). Set false to skip the extra UIA work when the caller will read post state itself.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "include": {
           "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",
@@ -1267,7 +1338,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "stop_on_error": {
           "description": "Stop execution on the first error (default true). Set false to collect all results.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "include": {
           "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",
@@ -1340,7 +1412,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "dotByDot": {
           "description": "1:1 pixel mode — no scaling, WebP compression. Window captures include 'origin: (x,y)' so you can compute screen position: screen_x = origin_x + image_x. A frame from the window's composition surface (WGC: mode='background' with fullContent on a window visible on the current desktop — not minimised or cloaked — when it can be, or normal mode's rescue) starts at the window's visible frame, and its origin is that frame's corner; when the visible frame cannot be read, no origin is given — the text says so; use desktop_discover for coordinates. When dotByDotMaxDimension is also set, scale factor is included: screen_x = origin_x + image_x / scale.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "dotByDotMaxDimension": {
           "description": "Cap the longest edge (pixels) when dotByDot=true. Reduces payload while preserving coordinate math. Example: 1280 on a 1920×1080 screen → scale≈0.667. Response includes scale factor: screen_x = origin_x + image_x / scale. Recommended for Chrome: dotByDot=true, dotByDotMaxDimension=1280, grayscale=true.",
@@ -1350,7 +1423,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "grayscale": {
           "description": "Convert to grayscale before encoding. Reduces file size ~50% for text-heavy content (e.g. AWS console, code editors). Avoid when color is meaningful (charts, status indicators).",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "webpQuality": {
           "default": 60,
@@ -1361,7 +1435,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "diffMode": {
           "description": "Layer diff mode — compares each window against the buffered previous frame. First call = full I-frame (all windows). Subsequent calls = only changed windows (P-frame). Implicitly enables dotByDot. Best used with windowTitle=undefined to snapshot all windows.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "detail": {
           "description": "Response detail level (omit to let the server pick a smart default):\n  omitted — auto: 'image' when dotByDot/region/displayId is specified, else 'meta'\n  'meta'  — window title + screen region only (~20 tok/window, cheapest)\n  'text'  — UIA element tree as JSON with text values (~100-300 tok/window, no image)\n  'image' — actual screenshot pixels. Returns a cheap by-ref resource_link by default (no inline base64); pass confirmImage=true to ALSO embed the inline image.\n  'som'   — Set-of-Marks elements + annotated image (bypasses UIA entirely). Returns the OCR elements[] plus a cheap by-ref resource_link by default (no inline base64); pass confirmImage=true to ALSO embed the annotated bitmap.\n  'ocr'   — Windows OCR words with screen-pixel clickAt coords (Phase 4: absorbs former screenshot_ocr). Use when UIA returns no actionable elements (WinUI3 custom-drawn UIs, game overlays, PDF viewers). Note: detail='text' auto-falls back to OCR via ocrFallback='auto'; choose detail='ocr' only when forcing OCR unconditionally.",
@@ -1385,11 +1460,13 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "fullContent": {
           "description": "When mode='background', use PW_RENDERFULLCONTENT to capture GPU-rendered windows (Chrome, Electron, WinUI3). Default true. Set false for legacy mode (faster but GPU windows may appear black). Ignored unless mode='background'.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "confirmImage": {
           "description": "Embed inline image pixels in the response. detail='image' now returns a cheap by-ref resource_link WITHOUT this flag (it is no longer blocked); confirmImage=true ADDITIONALLY embeds the inline image for immediate vision. detail='som' likewise returns its elements[] + a by-ref resource_link by default; confirmImage=true ADDITIONALLY inlines the annotated SoM bitmap. Prefer detail='text' / diffMode=true / dotByDot=true first — set confirmImage=true only when inline visual inspection is genuinely required.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "ocrFallback": {
           "default": "auto",
@@ -1417,7 +1494,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "preprocessAdaptive": {
           "description": "When true, apply Sauvola adaptive binarization after contrast stretch. Improves recognition of thin text on low-contrast or gradient backgrounds. Automatically enabled when preprocessPolicy='aggressive'. Requires Rust native engine; silently skipped otherwise.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "include": {
           "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",
@@ -1551,6 +1629,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "Action selector — one of: raw, to_element, smart, capture, read. Per-action required fields are enforced at call time (see the tool description); this flat schema lists every action's fields as optional."
         },
         "direction": {
+          "description": "'raw': Scroll direction\n'smart': Scroll direction. into-view: scroll until target element is visible (default). Other values scroll unconditionally.\n'capture': Scroll direction: 'down' (vertical, uses Page Down key) or 'right' (horizontal, uses mouse scroll). Default 'down'.",
           "type": "string",
           "enum": [
             "up",
@@ -1558,45 +1637,58 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             "left",
             "right",
             "into-view"
-          ],
-          "description": "Scroll direction"
+          ]
         },
         "amount": {
+          "description": "Number of scroll notches (default 3, max 1000). One notch = one physical wheel detent on every dispatch path. Count screenfuls, not lines: ≈10 notches move one screenful, so amount:3 (default) is about a third of a screen. UIA-capable apps (Notepad, Explorer, WPF) step ≈1/10 of the window's visible area per notch; browsers and WebView-based apps (Chrome, Electron, Tauri) move ≈100 px per notch. Exact distance depends on the app, the window size and the OS wheel-speed setting. The 1000-notch ceiling exists because each notch is dispatched as real wheel input; to reach a specific place in a long document use action='to_element' or action='smart' instead of a huge amount.",
+          "default": 3,
           "type": "integer",
           "minimum": 1,
           "maximum": 1000
         },
         "x": {
+          "description": "X coordinate to scroll at (moves cursor there first)",
           "type": "number"
         },
         "y": {
+          "description": "Y coordinate to scroll at",
           "type": "number"
         },
         "speed": {
+          "description": "Cursor movement speed in px/sec (0=teleport, omit=default)",
           "type": "number"
         },
         "homing": {
-          "type": "boolean"
+          "description": "Apply window-movement homing correction to (x,y) before scrolling. Default true.",
+          "type": "boolean",
+          "default": true
         },
         "windowTitle": {
+          "description": "'raw': Partial window title. When provided, the server focuses this window first.\n'to_element': Partial window title (required for native path when name is used)\n'smart': Partial window title. Required for UIA and image paths. For CDP path, optional.\n'capture': Partial title of the window to capture (case-insensitive match)\n'read': Partial window title to focus and OCR (case-insensitive match).",
           "type": "string"
         },
         "hwnd": {
+          "description": "Direct window handle ID (takes precedence over windowTitle).",
           "type": "string"
         },
         "include": {
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",
           "type": "array",
           "items": {
             "type": "string"
           }
         },
         "name": {
+          "description": "Partial name/label of the element (UIA name match). Use for native app elements. At least one of name or selector must be provided.",
           "type": "string"
         },
         "selector": {
+          "description": "CSS selector for the element (Chrome/Edge only). At least one of name or selector must be provided.",
           "type": "string"
         },
         "block": {
+          "description": "Vertical alignment after scroll — start/center/end/nearest (Chrome path only, default: center)",
+          "default": "center",
           "type": "string",
           "enum": [
             "start",
@@ -1606,19 +1698,24 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "tabId": {
+          "description": "'to_element': Tab ID (Chrome path only). Omit for first page tab.\n'smart': CDP tab ID (Chrome path only). Omit for first page tab.",
           "type": "string"
         },
         "port": {
+          "description": "'to_element': CDP port for Chrome path (default 9222)\n'smart': CDP port (default 9222)",
+          "default": 9222,
           "type": "integer",
           "minimum": 1,
           "maximum": 65535
         },
         "target": {
+          "description": "CSS selector (Chrome/Edge) or partial UIA name (native apps). For CDP path, must be a valid CSS selector (starts with #, ., tag, or [ ). For UIA path, a partial name match against element Name property.",
           "type": "string",
-          "minLength": 1,
-          "description": "CSS selector (Chrome/Edge) or partial UIA name (native apps). For CDP path, must be a valid CSS selector (starts with #, ., tag, or [ ). For UIA path, a partial name match against element Name property."
+          "minLength": 1
         },
         "strategy": {
+          "description": "auto (default): try CDP → UIA → image in order. cdp: Chrome/Edge only. uia: native Windows UIA. image: image + Win32 binary-search.",
+          "default": "auto",
           "type": "string",
           "enum": [
             "auto",
@@ -1628,6 +1725,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "inline": {
+          "description": "Vertical alignment after scroll (CDP path). Default: center.",
+          "default": "center",
           "type": "string",
           "enum": [
             "start",
@@ -1637,32 +1736,43 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "maxDepth": {
+          "description": "Max number of ancestor scroll containers to walk. Default 3.",
+          "default": 3,
           "type": "integer",
           "minimum": 1,
           "maximum": 10
         },
         "retryCount": {
+          "description": "Max scroll attempts (image path binary-search). Default 3, cap 4.",
+          "default": 3,
           "type": "integer",
           "minimum": 1,
           "maximum": 4
         },
         "verifyWithHash": {
-          "type": "boolean"
+          "description": "Verify scroll effectiveness via perceptual hash comparison. Automatically enabled for image path.",
+          "type": "boolean",
+          "default": false
         },
         "virtualIndex": {
+          "description": "Target row index in a virtualised list (0-based). Enables direct TanStack/data-index seeking.",
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991
         },
         "virtualTotal": {
+          "description": "Total row count in a virtualised list. Required when virtualIndex is set.",
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991
         },
         "expandHidden": {
-          "type": "boolean"
+          "description": "Temporarily set overflow:hidden ancestors to overflow:auto to unlock scroll. Mutates live CSS.",
+          "type": "boolean",
+          "default": false
         },
         "hint": {
+          "description": "Scroll direction hint for binary-search (image path). Seeds lo/hi bounds to reduce attempts.",
           "type": "string",
           "enum": [
             "above",
@@ -1672,26 +1782,36 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "maxScrolls": {
+          "description": "Maximum scroll iterations before stopping (default 10, max 30)",
+          "default": 10,
           "type": "integer",
           "minimum": 1,
           "maximum": 30
         },
         "scrollDelayMs": {
+          "description": "'capture': Milliseconds to wait after each scroll for rendering to settle (default 400). Increase for slow/animated pages.\n'read': Milliseconds to wait after each scroll for rendering to settle (default 400).",
+          "default": 400,
           "type": "integer",
           "minimum": 100,
           "maximum": 3000
         },
         "maxWidth": {
+          "description": "Max size of the short edge of the final image (default 1280). For 'down': caps the image width; height is unconstrained. For 'right': caps the image height; width is unconstrained.",
+          "default": 1280,
           "type": "integer",
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991
         },
         "maxPages": {
+          "description": "Maximum number of scroll steps / OCR pages (default 20, max 50).",
+          "default": 20,
           "type": "integer",
           "minimum": 1,
           "maximum": 50
         },
         "scrollKey": {
+          "description": "Key sent to scroll one page. PageDown (default): full-page scroll for most apps. Space: web/PDF readers. ArrowDown: line-by-line slow scroll.",
+          "default": "PageDown",
           "type": "string",
           "enum": [
             "PageDown",
@@ -1700,9 +1820,12 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "stopWhenNoChange": {
-          "type": "boolean"
+          "description": "Stop automatically when two consecutive pages yield no new lines after deduplication (page-end detection). Default true.",
+          "type": "boolean",
+          "default": true
         },
         "language": {
+          "description": "OCR language code (e.g. 'ja', 'en', 'zh'). Omit to auto-detect from Windows system locale via Intl.DateTimeFormat().resolvedOptions().locale. Default: auto.",
           "type": "string"
         }
       },
@@ -1745,26 +1868,35 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "Action selector — one of: read, send, run. Per-action required fields are enforced at call time (see the tool description); this flat schema lists every action's fields as optional."
         },
         "windowTitle": {
+          "description": "'read' / 'run': Partial title of the terminal window (e.g. 'PowerShell', 'pwsh', 'WindowsTerminal'). Provide windowTitle OR paneId (paneId takes precedence).\n'send': Partial title of the terminal window. Provide windowTitle OR paneId (paneId takes precedence).",
           "type": "string",
           "maxLength": 200
         },
         "paneId": {
+          "description": "'read': Pane handle from key_locker launch_console — either the decimal hwnd of a classic console, or the 'wt:…' form for a Windows Terminal tab. Targets THIS pane even after its title changes; takes precedence over windowTitle. NOTE: read still resolves the pane's text by title under the hood, so it declines if the pane's current title is no longer unique among windows (a 'wt:…' pane additionally reads only while its tab is the ACTIVE tab of its Windows Terminal window).\n'send': Pane handle from key_locker launch_console — either the decimal hwnd of a classic console (bound directly by hwnd, surviving a title change, e.g. after an ssh login the title becomes user@host), or the 'wt:…' form for a Windows Terminal tab (delivered to its Windows Terminal window while that tab is ACTIVE). Takes precedence over windowTitle.\n'run': Pane handle from key_locker launch_console — a decimal console hwnd, or the `wt:<pid>:<startMs>` form for a Windows Terminal tab. Targets THIS pane for the whole run+wait+read: the pane title is re-resolved before every read, so a mid-run retitle (e.g. a classic console renaming to `user@host` after an ssh login) is still tracked. Takes precedence over windowTitle. This is the paneId FIELD of launch_console's result — NOT its windowTitle. A Windows Terminal pane is tracked while its tab is the ACTIVE tab (switching away pauses the reads until you switch back).",
           "type": "string",
           "maxLength": 48
         },
         "lines": {
+          "description": "Tail N lines (default 50).",
+          "default": 50,
           "type": "integer",
           "minimum": 1,
           "maximum": 2000
         },
         "sinceMarker": {
+          "description": "Marker returned from a previous call. If found in current text, only the diff is returned.",
           "type": "string",
           "maxLength": 64
         },
         "stripAnsi": {
-          "type": "boolean"
+          "description": "Strip ANSI escape sequences (default true).",
+          "type": "boolean",
+          "default": true
         },
         "source": {
+          "description": "'auto' = UIA TextPattern then OCR fallback; 'uia' = TextPattern only (fail on miss); 'ocr' = OCR only.",
+          "default": "auto",
           "type": "string",
           "enum": [
             "auto",
@@ -1773,21 +1905,25 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "ocrLanguage": {
+          "description": "BCP-47 language tag for OCR fallback. Auto-detects from system locale when omitted.",
           "type": "string",
           "maxLength": 20
         },
         "include": {
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",
           "type": "array",
           "items": {
             "type": "string"
           }
         },
         "input": {
+          "description": "'send': Text to send (max 10,000 chars).\n'run': Command to send (Enter is appended automatically). Either `input` or its deprecated alias `command` is required.",
           "type": "string",
-          "maxLength": 10000,
-          "description": "Text to send (max 10,000 chars)."
+          "maxLength": 10000
         },
         "method": {
+          "description": "Input routing channel. 'auto' defaults to background (WM_CHAR) when the target is a known terminal class (Windows Terminal / cmd / PowerShell / conhost) so user-side focus changes mid-stream cannot divert keystrokes. DTM_BG_AUTO=1 enables BG globally; 'auto' falls back to foreground for non-terminal targets. 'background' forces WM_CHAR injection (no focus change). 'foreground' forces the current behavior (SetForegroundWindow + clipboard paste). 'foreground_flash' (ADR-013 Option E) is an explicit opt-in 妥協 BG path for Windows Terminal: temporarily steals foreground (~50-80ms), pastes via clipboard, sends Ctrl+V + Enter (when pressEnter=true), restores foreground + clipboard. Single-line + < 5KiB only. `typingLeakRisk: true` in hints. Default 'auto'.",
+          "default": "auto",
           "type": "string",
           "enum": [
             "auto",
@@ -1797,23 +1933,35 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "chunkSize": {
+          "description": "Split long input into chunks of this many characters in background mode to prevent terminal input queue saturation. Default 100. Only applies when method results in background.",
+          "default": 100,
           "type": "integer",
           "minimum": 1,
           "maximum": 10000
         },
         "pressEnter": {
-          "type": "boolean"
+          "description": "Press Enter after typing (default true).",
+          "type": "boolean",
+          "default": true
         },
         "focusFirst": {
-          "type": "boolean"
+          "description": "Focus the terminal before sending (default true).",
+          "type": "boolean",
+          "default": true
         },
         "restoreFocus": {
-          "type": "boolean"
+          "description": "Restore the previously-focused window after sending (default true).",
+          "type": "boolean",
+          "default": true
         },
         "preferClipboard": {
-          "type": "boolean"
+          "description": "Paste the input from the clipboard instead of typing it — safe for long text and not run through IME conversion (does not help while an IME composition is already in progress: the paste keystroke is consumed by the IME and nothing arrives, though the call still answers ok; hints.clipboard.imeOpen says when the IME was on at the paste). Your clipboard is replaced for the duration of the call and put back afterwards, but the restore is skipped when another process wrote to the clipboard first, when its contents are too large for an addon-less build to carry back, or when saving it failed; hints.clipboard reports which backend served the paste and whether the restore ran. Default true.",
+          "type": "boolean",
+          "default": true
         },
         "pasteKey": {
+          "description": "Paste key combo. 'auto' picks ctrl+shift+v for WSL/bash/mintty/wezterm/alacritty, ctrl+v elsewhere. Only used when preferClipboard=true.",
+          "default": "auto",
           "type": "string",
           "enum": [
             "auto",
@@ -1822,17 +1970,23 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "forceFocus": {
+          "description": "When true, bypass Windows foreground-stealing protection via AttachThreadInput before focusing the terminal window. Default: follows env DESKTOP_TOUCH_FORCE_FOCUS (default false).",
           "type": "boolean"
         },
         "trackFocus": {
-          "type": "boolean"
+          "description": "When true (default), detect if focus was stolen after sending. Reports focusLost in the response.",
+          "type": "boolean",
+          "default": true
         },
         "settleMs": {
+          "description": "Milliseconds to wait after sending before checking foreground window (default 300).",
+          "default": 300,
           "type": "integer",
           "minimum": 0,
           "maximum": 2000
         },
         "command": {
+          "description": "[Deprecated alias of `input`] Accepted for callers that mis-remember the parameter name; new code should use `input`. If both are set, `input` wins.",
           "type": "string",
           "maxLength": 10000
         },
@@ -1870,7 +2024,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
                 },
                 "regex": {
                   "description": "If true, treat pattern as a regex",
-                  "type": "boolean"
+                  "type": "boolean",
+                  "default": false
                 },
                 "quietMs": {
                   "description": "Optional settle fallback. When set, also completes with completion.reason:'quiet' (completion.matchedPattern stays absent — check it to tell a match from a settle) if output stays stable for this many ms WITHOUT the pattern matching, instead of waiting for the hard timeout. Use for commands that may finish without ever printing the pattern — e.g. a final line with no trailing newline that an end-anchored pattern (\\n / $) can't bind (issue #384). Omit to keep waiting for the pattern until timeoutMs.",
@@ -1910,11 +2065,14 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "timeoutMs": {
+          "description": "Hard timeout in ms (default 30s)",
+          "default": 30000,
           "type": "integer",
           "minimum": 500,
           "maximum": 600000
         },
         "sendOptions": {
+          "description": "Extra options forwarded to terminal send (method, chunkSize, etc.)",
           "type": "object",
           "propertyNames": {
             "type": "string"
@@ -1922,6 +2080,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "additionalProperties": {}
         },
         "readOptions": {
+          "description": "Extra options forwarded to terminal read (lines, source, ocrLanguage, etc.)",
           "type": "object",
           "propertyNames": {
             "type": "string"
@@ -2042,21 +2201,25 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "Action selector — one of: pin, unpin, dock. Per-action required fields are enforced at call time (see the tool description); this flat schema lists every action's fields as optional."
         },
         "title": {
-          "type": "string",
-          "description": "Partial window title (case-insensitive)"
+          "description": "'pin' / 'unpin': Partial window title (case-insensitive)\n'dock': Partial window title to dock (case-insensitive). Matches the first shown window containing this text (a minimised one counts; a hidden one — on another virtual desktop, or a minimised packaged app's content — does not). Example: 'Claude Code', 'メモ帳'.",
+          "type": "string"
         },
         "duration_ms": {
+          "description": "Auto-unpin after this many ms (0–60000). Omit to pin indefinitely.",
           "type": "integer",
           "minimum": 0,
           "maximum": 60000
         },
         "include": {
+          "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",
           "type": "array",
           "items": {
             "type": "string"
           }
         },
         "corner": {
+          "description": "Screen corner to snap the window to. Default 'bottom-right'.",
+          "default": "bottom-right",
           "type": "string",
           "enum": [
             "top-left",
@@ -2066,24 +2229,33 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           ]
         },
         "width": {
+          "description": "Window width in pixels after docking. Default 480.",
+          "default": 480,
           "type": "integer",
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991
         },
         "height": {
+          "description": "Window height in pixels after docking. Default 360.",
+          "default": 360,
           "type": "integer",
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991
         },
         "pin": {
-          "type": "boolean"
+          "description": "If true, set always-on-top so the docked window stays visible on top of other windows. Use window_dock(action='unpin') to remove the topmost flag later. Default true.",
+          "type": "boolean",
+          "default": true
         },
         "monitorId": {
+          "description": "Monitor to dock on (from desktop_state({includeScreen:true})). Omit for primary monitor.",
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991
         },
         "margin": {
+          "description": "Pixel padding between the window and the screen edge. Default 8.",
+          "default": 8,
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991
@@ -2152,7 +2324,8 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         },
         "includeUiSummary": {
           "description": "Whether to include UI element summaries for each window",
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "include": {
           "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",

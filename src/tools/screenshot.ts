@@ -18,7 +18,7 @@ import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { buildImageResponse, buildImageBlocks, pngDimensions } from "./screenshot-response.js";
 import { failWith, failArgs } from "./_errors.js";
-import { coercedBoolean } from "./_coerce.js";
+import { coercedBooleanWithDefault } from "./_coerce.js";
 import {
   makeQueryWrapper,
   withEnvelopeIncludeSchema,
@@ -77,8 +77,7 @@ export const screenshotSchema = {
     .positive()
     .default(768)
     .describe("Max width or height in pixels (default 768). Use 1280 to read small text, code, or fine UI details. Ignored when dotByDot=true."),
-  dotByDot: coercedBoolean()
-    .default(false)
+  dotByDot: coercedBooleanWithDefault(false)
     .describe(
       "1:1 pixel mode — no scaling, WebP compression. " +
       "Window captures include 'origin: (x,y)' so you can compute screen position: screen_x = origin_x + image_x. " +
@@ -97,8 +96,7 @@ export const screenshotSchema = {
       "Response includes scale factor: screen_x = origin_x + image_x / scale. " +
       "Recommended for Chrome: dotByDot=true, dotByDotMaxDimension=1280, grayscale=true."
     ),
-  grayscale: coercedBoolean()
-    .default(false)
+  grayscale: coercedBooleanWithDefault(false)
     .describe(
       "Convert to grayscale before encoding. Reduces file size ~50% for text-heavy content (e.g. AWS console, code editors). " +
       "Avoid when color is meaningful (charts, status indicators)."
@@ -110,8 +108,7 @@ export const screenshotSchema = {
     .max(100)
     .default(60)
     .describe("WebP quality when dotByDot=true or diffMode=true. 40=layout only, 60=general (default), 80=fine text."),
-  diffMode: coercedBoolean()
-    .default(false)
+  diffMode: coercedBooleanWithDefault(false)
     .describe(
       "Layer diff mode — compares each window against the buffered previous frame. " +
       "First call = full I-frame (all windows). Subsequent calls = only changed windows (P-frame). " +
@@ -140,15 +137,13 @@ export const screenshotSchema = {
       "  'normal'     — default. Window-targeted captures (windowTitle / hwnd) use Win32 PrintWindow; when it returns no data or an all-black frame, the window's composition surface (WGC) is tried next if the window is visible on the current desktop (not minimised or cloaked), and BitBlt last. The route used is reported in hints.captureSource ('printwindow' | 'wgc' | 'bitblt-fallback'). Fullscreen / displayId captures use BitBlt.\n" +
       "  'background' — a capture of the window itself, not of the screen: its composition surface (WGC) when it can be for a window visible on the current desktop (not minimised or cloaked) with fullContent, else Win32 PrintWindow. Requires windowTitle (or hwnd). Pair with fullContent for GPU-rendered apps."
     ),
-  fullContent: coercedBoolean()
-    .default(true)
+  fullContent: coercedBooleanWithDefault(true)
     .optional()
     .describe(
       "When mode='background', use PW_RENDERFULLCONTENT to capture GPU-rendered windows (Chrome, Electron, WinUI3). Default true. " +
       "Set false for legacy mode (faster but GPU windows may appear black). Ignored unless mode='background'."
     ),
-  confirmImage: coercedBoolean()
-    .default(false)
+  confirmImage: coercedBooleanWithDefault(false)
     .describe(
       "Embed inline image pixels in the response. " +
       "detail='image' now returns a cheap by-ref resource_link WITHOUT this flag (it is no longer blocked); " +
@@ -179,8 +174,7 @@ export const screenshotSchema = {
       "'aggressive': relaxes DPI clamp to 175%, preserving upscale on 150%-DPI monitors (e.g. Outlook PWA). Also auto-enables adaptive binarization. " +
       "'minimal': always scale=1 regardless of DPI/resolution."
     ),
-  preprocessAdaptive: coercedBoolean()
-    .default(false)
+  preprocessAdaptive: coercedBooleanWithDefault(false)
     .describe(
       "When true, apply Sauvola adaptive binarization after contrast stretch. " +
       "Improves recognition of thin text on low-contrast or gradient backgrounds. " +
@@ -231,8 +225,7 @@ export const screenshotBgSchema = {
     .positive()
     .default(768)
     .describe("Max width or height in pixels (default 768). Use 1280 to read small text or fine UI details."),
-  dotByDot: coercedBoolean()
-    .default(false)
+  dotByDot: coercedBooleanWithDefault(false)
     .describe(
       "1:1 pixel mode — no scaling, WebP compression. " +
       "When region is also specified, origin reflects the window + region offset for coordinate math."
@@ -246,8 +239,7 @@ export const screenshotBgSchema = {
       "Cap the longest edge (pixels) when dotByDot=true. " +
       "Response includes scale factor: screen_x = origin_x + image_x / scale."
     ),
-  grayscale: coercedBoolean()
-    .default(false)
+  grayscale: coercedBooleanWithDefault(false)
     .describe("Convert to grayscale. Reduces file size ~50% for text-heavy content."),
   webpQuality: z
     .coerce.number()
@@ -256,8 +248,7 @@ export const screenshotBgSchema = {
     .max(100)
     .default(60)
     .describe("WebP quality when dotByDot=true."),
-  fullContent: coercedBoolean()
-    .default(true)
+  fullContent: coercedBooleanWithDefault(true)
     .describe(
       "Use PW_RENDERFULLCONTENT flag (default true) to capture GPU-rendered windows (Chrome, Electron, WinUI3). " +
       "Set false for legacy mode (faster, but GPU windows may appear black). " +

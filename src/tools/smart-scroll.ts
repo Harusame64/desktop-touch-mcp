@@ -25,7 +25,7 @@ import { getCdpPort } from "../utils/desktop-config.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith, failArgs } from "./_errors.js";
-import { coercedBoolean } from "./_coerce.js";
+import { coercedBooleanWithDefault } from "./_coerce.js";
 import { WHEEL_DELTA_PER_NOTCH } from "./_input-pipeline.js";
 
 const _defaultPort = getCdpPort();
@@ -70,7 +70,7 @@ export const smartScrollSchema = {
   retryCount: z.number().int().min(1).max(4).default(3).describe(
     "Max scroll attempts (image path binary-search). Default 3, cap 4."
   ),
-  verifyWithHash: coercedBoolean().default(false).describe(
+  verifyWithHash: coercedBooleanWithDefault(false).describe(
     "Verify scroll effectiveness via perceptual hash comparison. Automatically enabled for image path."
   ),
   virtualIndex: z.number().int().min(0).optional().describe(
@@ -79,7 +79,7 @@ export const smartScrollSchema = {
   virtualTotal: z.number().int().min(1).optional().describe(
     "Total row count in a virtualised list. Required when virtualIndex is set."
   ),
-  expandHidden: coercedBoolean().default(false).describe(
+  expandHidden: coercedBooleanWithDefault(false).describe(
     "Temporarily set overflow:hidden ancestors to overflow:auto to unlock scroll. Mutates live CSS."
   ),
   hint: z.enum(["above", "below", "left", "right"]).optional().describe(

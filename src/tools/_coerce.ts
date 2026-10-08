@@ -28,16 +28,28 @@ import { z } from "zod";
  * typo can't silently flip the flag.
  */
 export function coercedBoolean() {
-  return z.preprocess((v) => {
-    if (typeof v === "string") {
-      const lower = v.toLowerCase().trim();
-      if (lower === "true") return true;
-      if (lower === "false") return false;
-    }
-    if (v === 1) return true;
-    if (v === 0) return false;
-    return v;
-  }, z.boolean());
+  return z.preprocess(coerceBooleanInput, z.boolean());
+}
+
+/**
+ * `coercedBoolean().default(value)`, with the default also written on the inner `z.boolean()` so it
+ * reaches `tools/list`. The SDK converts input schemas with `io: "input"`, where a `.default()` (or a
+ * `.meta({ default })`) outside a `z.preprocess` is not emitted; on the inner schema it is, and a
+ * `.meta()` there does not change parsing (internal #266).
+ */
+export function coercedBooleanWithDefault(value: boolean) {
+  return z.preprocess(coerceBooleanInput, z.boolean().meta({ default: value })).default(value);
+}
+
+function coerceBooleanInput(v: unknown): unknown {
+  if (typeof v === "string") {
+    const lower = v.toLowerCase().trim();
+    if (lower === "true") return true;
+    if (lower === "false") return false;
+  }
+  if (v === 1) return true;
+  if (v === 0) return false;
+  return v;
 }
 
 /**
@@ -48,19 +60,21 @@ export function coercedBoolean() {
  * Non-string input is passed through unchanged.
  */
 export function coercedJsonObject<T extends z.ZodRawShape>(shape: T) {
-  return z.preprocess((v) => {
-    if (typeof v === "string") {
-      const trimmed = v.trim();
-      if (trimmed === "") return {};
-      try {
-        const parsed = JSON.parse(trimmed) as unknown;
-        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-          return parsed;
-        }
-      } catch {
-        // Fall through; the inner z.object will raise its own structured error.
+  return z.preprocess(coerceJsonObjectInput, z.object(shape));
+}
+
+function coerceJsonObjectInput(v: unknown): unknown {
+  if (typeof v === "string") {
+    const trimmed = v.trim();
+    if (trimmed === "") return {};
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed;
       }
+    } catch {
+      // Fall through; the inner z.object will raise its own structured error.
     }
-    return v;
-  }, z.object(shape));
+  }
+  return v;
 }

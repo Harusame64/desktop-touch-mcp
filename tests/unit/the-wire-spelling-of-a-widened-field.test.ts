@@ -94,16 +94,12 @@ describe("internal#106 — the wire spelling of a widened field", () => {
     it("is spelled `anyOf` — not a type array, which is the spelling internal#106 cannot vouch for", () => {
       expect(spellingOf(method)).toBe("anyOf");
     });
-    // `anyOf` AND NOTHING ELSE — including no `description` and no `default`, which is a DEFECT
-    // this cell records rather than blesses: `mergeFlatField` strips the wrappers a `.describe()`
-    // hangs on, so 15 of keyboard's 19 properties ship undocumented and `method` loses
-    // `default: "auto"` (measured on the wire, both machines; filed as internal#110).
-    it("and `anyOf` is the only key on it — see internal#110, which this pins rather than approves", () => {
+    // `anyOf` and its `description`, and NO `default`: internal#110 / #266 brought the description
+    // back (each action's text, labelled), and `method` has `default: "auto"` on `type` and `press`
+    // but none on `sequence`, so no one default is true of the flat field.
+    it("carries `anyOf` and a description, and no default (internal #266)", () => {
       spellingOf(method);
-      expect(
-        Object.keys(method).sort(),
-        "internal#110: if this went red because `description` or `default` came back, THE FIX LANDED — update this pin rather than reverting the fix.",
-      ).toEqual(["anyOf"]);
+      expect(Object.keys(method).sort()).toEqual(["anyOf", "description"]);
     });
     it("carries the two branches that disagree in kind — an enum and a const, in any order", () => {
       spellingOf(method);

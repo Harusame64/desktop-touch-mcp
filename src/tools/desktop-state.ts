@@ -3,7 +3,7 @@ import { z } from "zod";
 import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
-import { coercedBoolean } from "./_coerce.js";
+import { coercedBooleanWithDefault } from "./_coerce.js";
 import { mouse } from "../engine/nutjs.js";
 import {
   enumWindowsInZOrder,
@@ -542,23 +542,17 @@ export const desktopStateSchema = {
   // Phase 4: optional response-field expansion absorbing get_cursor_position /
   // get_screen_info / get_document_state. Default off — keeps the cheap
   // baseline observation cost at ~1 UIA + 1 EnumWindows. Enable on demand.
-  includeCursor: coercedBoolean()
-    .optional()
-    .default(false)
+  includeCursor: coercedBooleanWithDefault(false)
     .describe(
       "When true, add a richer `cursor` field with monitor index alongside the lightweight `cursorPos`. " +
       "Phase 4: absorbs former get_cursor_position. Default false."
     ),
-  includeScreen: coercedBoolean()
-    .optional()
-    .default(false)
+  includeScreen: coercedBooleanWithDefault(false)
     .describe(
       "When true, add a `screen` field with all connected display info (resolution, position, DPI, scale). " +
       "Phase 4: absorbs former get_screen_info. Default false. Use the displayId values returned here in screenshot / window_dock(action='dock')."
     ),
-  includeDocument: coercedBoolean()
-    .optional()
-    .default(false)
+  includeDocument: coercedBooleanWithDefault(false)
     .describe(
       "When true, add a `document` field with the focused Chrome tab's url, title, readyState, selection, and scroll position via CDP. " +
       "Phase 4: absorbs former get_document_state. Default false. Requires browser_open (CDP active); silently omitted on non-Chromium foreground."
@@ -566,9 +560,7 @@ export const desktopStateSchema = {
   // ADR-017 — the boolean form. The equivalent `include: ['sessionContext']`
   // keyword route is translated into this flag by a thin registration shim,
   // so both forms surface the same `sessionContext` block.
-  includeSessionContext: coercedBoolean()
-    .optional()
-    .default(false)
+  includeSessionContext: coercedBooleanWithDefault(false)
     .describe(
       "When true, add a `sessionContext` field with the Terminal Services session classification " +
       "(origin, consoleSessionId, sessionLabel: 'console'|'rdp'|'other', " +

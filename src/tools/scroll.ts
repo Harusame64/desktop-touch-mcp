@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { coercedBoolean } from "./_coerce.js";
+import { coercedBooleanWithDefault } from "./_coerce.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import { withRichNarration } from "./_narration.js";
 import {
@@ -34,7 +34,7 @@ export const scrollSchema = z.discriminatedUnion("action", [
     x: z.coerce.number().optional().describe("X coordinate to scroll at (moves cursor there first)"),
     y: z.coerce.number().optional().describe("Y coordinate to scroll at"),
     speed: z.coerce.number().optional().describe("Cursor movement speed in px/sec (0=teleport, omit=default)"),
-    homing: coercedBoolean().default(true).describe("Apply window-movement homing correction to (x,y) before scrolling. Default true."),
+    homing: coercedBooleanWithDefault(true).describe("Apply window-movement homing correction to (x,y) before scrolling. Default true."),
     windowTitle: z.string().optional().describe("Partial window title. When provided, the server focuses this window first."),
     hwnd: z.string().optional().describe("Direct window handle ID (takes precedence over windowTitle)."),
   }),
@@ -90,7 +90,7 @@ export const scrollSchema = z.discriminatedUnion("action", [
     retryCount: z.number().int().min(1).max(4).default(3).describe(
       "Max scroll attempts (image path binary-search). Default 3, cap 4."
     ),
-    verifyWithHash: coercedBoolean().default(false).describe(
+    verifyWithHash: coercedBooleanWithDefault(false).describe(
       "Verify scroll effectiveness via perceptual hash comparison. Automatically enabled for image path."
     ),
     virtualIndex: z.number().int().min(0).optional().describe(
@@ -99,7 +99,7 @@ export const scrollSchema = z.discriminatedUnion("action", [
     virtualTotal: z.number().int().min(1).optional().describe(
       "Total row count in a virtualised list. Required when virtualIndex is set."
     ),
-    expandHidden: coercedBoolean().default(false).describe(
+    expandHidden: coercedBooleanWithDefault(false).describe(
       "Temporarily set overflow:hidden ancestors to overflow:auto to unlock scroll. Mutates live CSS."
     ),
     hint: z.enum(["above", "below", "left", "right"]).optional().describe(
@@ -172,8 +172,7 @@ export const scrollSchema = z.discriminatedUnion("action", [
       .max(3000)
       .default(400)
       .describe("Milliseconds to wait after each scroll for rendering to settle (default 400)."),
-    stopWhenNoChange: coercedBoolean()
-      .default(true)
+    stopWhenNoChange: coercedBooleanWithDefault(true)
       .describe(
         "Stop automatically when two consecutive pages yield no new lines after deduplication " +
         "(page-end detection). Default true."

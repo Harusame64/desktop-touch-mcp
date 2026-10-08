@@ -5,7 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith, failCode } from "./_errors.js";
-import { coercedBoolean } from "./_coerce.js";
+import { coercedBoolean, coercedBooleanWithDefault } from "./_coerce.js";
 import {
   enumWindowsInZOrder,
   restoreAndFocusWindow,
@@ -107,7 +107,7 @@ export const terminalReadSchema = {
   ),
   lines: z.coerce.number().int().min(1).max(2000).default(50).describe("Tail N lines (default 50)."),
   sinceMarker: z.string().max(64).optional().describe("Marker returned from a previous call. If found in current text, only the diff is returned."),
-  stripAnsi: coercedBoolean().default(true).describe("Strip ANSI escape sequences (default true)."),
+  stripAnsi: coercedBooleanWithDefault(true).describe("Strip ANSI escape sequences (default true)."),
   source: z.enum(["auto", "uia", "ocr"]).default("auto").describe("'auto' = UIA TextPattern then OCR fallback; 'uia' = TextPattern only (fail on miss); 'ocr' = OCR only."),
   ocrLanguage: z.string().max(20).optional().describe("BCP-47 language tag for OCR fallback. Auto-detects from system locale when omitted."),
 };
@@ -139,16 +139,16 @@ export const terminalSendSchema = {
     "Split long input into chunks of this many characters in background mode to prevent " +
     "terminal input queue saturation. Default 100. Only applies when method results in background."
   ),
-  pressEnter: coercedBoolean().default(true).describe("Press Enter after typing (default true)."),
-  focusFirst: coercedBoolean().default(true).describe("Focus the terminal before sending (default true)."),
-  restoreFocus: coercedBoolean().default(true).describe("Restore the previously-focused window after sending (default true)."),
-  preferClipboard: coercedBoolean().default(true).describe("Paste the input from the clipboard instead of typing it — safe for long text and not run through IME conversion (does not help while an IME composition is already in progress: the paste keystroke is consumed by the IME and nothing arrives, though the call still answers ok; hints.clipboard.imeOpen says when the IME was on at the paste). Your clipboard is replaced for the duration of the call and put back afterwards, but the restore is skipped when another process wrote to the clipboard first, when its contents are too large for an addon-less build to carry back, or when saving it failed; hints.clipboard reports which backend served the paste and whether the restore ran. Default true."),
+  pressEnter: coercedBooleanWithDefault(true).describe("Press Enter after typing (default true)."),
+  focusFirst: coercedBooleanWithDefault(true).describe("Focus the terminal before sending (default true)."),
+  restoreFocus: coercedBooleanWithDefault(true).describe("Restore the previously-focused window after sending (default true)."),
+  preferClipboard: coercedBooleanWithDefault(true).describe("Paste the input from the clipboard instead of typing it — safe for long text and not run through IME conversion (does not help while an IME composition is already in progress: the paste keystroke is consumed by the IME and nothing arrives, though the call still answers ok; hints.clipboard.imeOpen says when the IME was on at the paste). Your clipboard is replaced for the duration of the call and put back afterwards, but the restore is skipped when another process wrote to the clipboard first, when its contents are too large for an addon-less build to carry back, or when saving it failed; hints.clipboard reports which backend served the paste and whether the restore ran. Default true."),
   pasteKey: z.enum(["auto", "ctrl+v", "ctrl+shift+v"]).default("auto").describe("Paste key combo. 'auto' picks ctrl+shift+v for WSL/bash/mintty/wezterm/alacritty, ctrl+v elsewhere. Only used when preferClipboard=true."),
   forceFocus: coercedBoolean().optional().describe(
     "When true, bypass Windows foreground-stealing protection via AttachThreadInput " +
     "before focusing the terminal window. Default: follows env DESKTOP_TOUCH_FORCE_FOCUS (default false)."
   ),
-  trackFocus: coercedBoolean().default(true).describe(
+  trackFocus: coercedBooleanWithDefault(true).describe(
     "When true (default), detect if focus was stolen after sending. Reports focusLost in the response."
   ),
   settleMs: z.coerce.number().int().min(0).max(2000).default(300).describe(
@@ -2939,7 +2939,7 @@ export const terminalSchema = z.discriminatedUnion("action", [
       z.object({
         mode: z.literal("pattern"),
         pattern: z.string().describe("Stop when output matches this string (or regex if regex:true)"),
-        regex: coercedBoolean().default(false).describe("If true, treat pattern as a regex"),
+        regex: coercedBooleanWithDefault(false).describe("If true, treat pattern as a regex"),
         // issue #384: opt-in settle fallback.
         quietMs: z.coerce.number().int().min(50).max(30000).optional().describe(
           "Optional settle fallback. When set, also completes with completion.reason:'quiet' " +

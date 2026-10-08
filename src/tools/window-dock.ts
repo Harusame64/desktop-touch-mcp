@@ -11,7 +11,7 @@ import {
   flattenUnionToObjectSchema,
   parseActionArgsOrFail,
 } from "./_envelope.js";
-import { coercedBoolean } from "./_coerce.js";
+import { coercedBooleanWithDefault } from "./_coerce.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Dispatcher schema (discriminated union)
@@ -43,8 +43,7 @@ export const windowDockSchema = z.discriminatedUnion("action", [
       .describe("Screen corner to snap the window to. Default 'bottom-right'."),
     width: z.coerce.number().int().positive().default(480).describe("Window width in pixels after docking. Default 480."),
     height: z.coerce.number().int().positive().default(360).describe("Window height in pixels after docking. Default 360."),
-    pin: coercedBoolean()
-      .default(true)
+    pin: coercedBooleanWithDefault(true)
       .describe(
         "If true, set always-on-top so the docked window stays visible on top of other windows. " +
         "Use window_dock(action='unpin') to remove the topmost flag later. Default true."

@@ -37,7 +37,7 @@ import { stripAnsi } from "../engine/ansi.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith } from "./_errors.js";
-import { coercedBoolean } from "./_coerce.js";
+import { coercedBoolean, coercedBooleanWithDefault } from "./_coerce.js";
 import { withRichNarration, narrateParam, UIA_WRITE_NARRATION } from "./_narration.js";
 import { detectFocusLoss, checkForegroundOnce } from "./_focus.js";
 import { scanSinceMarkerNormEnd } from "./_since-marker.js";
@@ -1012,7 +1012,7 @@ const forceFocusParam = coercedBoolean().optional().describe(
   "before focusing the target window. Default: follows env DESKTOP_TOUCH_FORCE_FOCUS (default false)."
 );
 
-const trackFocusParam = coercedBoolean().default(true).describe(
+const trackFocusParam = coercedBooleanWithDefault(true).describe(
   "When true (default), detect if focus was stolen from the target window after the action. " +
   "Reports focusLost in the response. Set false to skip."
 );
@@ -1100,9 +1100,7 @@ export const keyboardTypeSchema = {
   text: z.string().max(10000).describe("The text to type (max 10,000 characters)"),
   method: methodParam,
   narrate: narrateParam,
-  use_clipboard: coercedBoolean()
-    .optional()
-    .default(false)
+  use_clipboard: coercedBooleanWithDefault(false)
     .describe(
       "If true, copy text to clipboard and paste with Ctrl+V instead of simulating keystrokes. " +
       "Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — " +
@@ -1115,11 +1113,11 @@ export const keyboardTypeSchema = {
       "addon this path is capped at about 12000 characters and fails with " +
       "code:'ClipboardWriteTooLargeForFallback' above it. Default false."
     ),
-  replaceAll: coercedBoolean().optional().default(false).describe(
+  replaceAll: coercedBooleanWithDefault(false).describe(
     "When true, send Ctrl+A to select all existing text before typing. " +
     "Equivalent to Ctrl+A → keyboard(action='type') in one call (requires field already focused). Default false."
   ),
-  forceKeystrokes: coercedBoolean().optional().default(false).describe(
+  forceKeystrokes: coercedBooleanWithDefault(false).describe(
     "When true, always use keystroke mode even if text contains non-ASCII content " +
     "(CJK, emoji, diacritics, em-dash, smart quotes, etc.) that would normally trigger auto-clipboard. " +
     "Default false — auto-clipboard is enabled."
@@ -1148,7 +1146,7 @@ export const keyboardTypeSchema = {
     "Has no effect on the clipboard path (atomic Ctrl+V) or the BG (WM_CHAR) path " +
     "(HWND-targeted, foreground-independent)."
   ),
-  forceImeOff: coercedBoolean().optional().default(false).describe(
+  forceImeOff: coercedBooleanWithDefault(false).describe(
     "Issue #245 系統②: when true, query the target window's IME open-status via " +
     "Imm32 before typing; if ON, switch OFF for the duration of this call and " +
     "restore the prior state in `finally`. Prevents silent romaji conversion when " +
@@ -3520,9 +3518,7 @@ export const keyboardSchema = z.discriminatedUnion("action", [
     text: z.string().max(10000).describe("The text to type (max 10,000 characters)"),
     method: methodParam,
     narrate: narrateParam,
-    use_clipboard: coercedBoolean()
-      .optional()
-      .default(false)
+    use_clipboard: coercedBooleanWithDefault(false)
       .describe(
         "If true, copy text to clipboard and paste with Ctrl+V instead of simulating keystrokes. " +
         "Use this when typing URLs, paths, or ASCII text into apps with Japanese IME active — " +
@@ -3535,11 +3531,11 @@ export const keyboardSchema = z.discriminatedUnion("action", [
         "addon this path is capped at about 12000 characters and fails with " +
         "code:'ClipboardWriteTooLargeForFallback' above it. Default false."
       ),
-    replaceAll: coercedBoolean().optional().default(false).describe(
+    replaceAll: coercedBooleanWithDefault(false).describe(
       "When true, send Ctrl+A to select all existing text before typing. " +
       "Equivalent to Ctrl+A → keyboard(action='type') in one call (requires field already focused). Default false."
     ),
-    forceKeystrokes: coercedBoolean().optional().default(false).describe(
+    forceKeystrokes: coercedBooleanWithDefault(false).describe(
       "When true, always use keystroke mode even if text contains non-ASCII content " +
       "(CJK, emoji, diacritics, em-dash, smart quotes, etc.) that would normally trigger auto-clipboard. " +
       "Default false — auto-clipboard is enabled."
@@ -3568,7 +3564,7 @@ export const keyboardSchema = z.discriminatedUnion("action", [
       "Has no effect on the clipboard path (atomic Ctrl+V) or the BG (WM_CHAR) path " +
       "(HWND-targeted, foreground-independent)."
     ),
-    forceImeOff: coercedBoolean().optional().default(false).describe(
+    forceImeOff: coercedBooleanWithDefault(false).describe(
       "Issue #245 系統②: when true, query the target window's IME open-status via " +
       "Imm32 before typing; if ON, switch OFF for the duration of this call and " +
       "restore the prior state in `finally`. Prevents silent romaji conversion when " +
@@ -3654,7 +3650,7 @@ export const keyboardSchema = z.discriminatedUnion("action", [
       "rejections (e.g. unsafe.keyboardTarget). Mid-loop MenuFocusLostMidSequence does NOT " +
       "issue fixIds — recover by re-calling with context.remaining."
     ),
-    forceImeOff: coercedBoolean().optional().default(false).describe(
+    forceImeOff: coercedBooleanWithDefault(false).describe(
       "Issue #245 系統②: query the target's IME open-status before the first step; " +
       "if ON, switch OFF for the whole sequence and restore in finally. Prevents Alt-mnemonic " +
       "hijack when 日本語 IME is active (the OS routes Alt+letter to IME composition instead " +

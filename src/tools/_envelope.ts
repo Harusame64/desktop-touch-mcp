@@ -586,8 +586,9 @@ export function flattenUnionToObjectSchema(union: any): z.ZodObject<z.ZodRawShap
   }
   const variants = union.options as readonly z.ZodObject<z.ZodRawShape>[];
   const literals = new Set<string>();
-  const fieldVariants = new Map<string, z.ZodTypeAny[]>();
+  const fieldVariants = new Map<string, FlatFieldVariant[]>();
   for (const variant of variants) {
+    const variantActions: string[] = [];
     // A `.refine()`-wrapped variant is still a `ZodObject` —
     // `.shape` is directly accessible, no unwrap needed. Verified under 4.3.6 and RE-MEASURED
     // under the installed 4.5.4 (the flatten still produces `terminal.until`, 2026-09-15): a
@@ -601,12 +602,15 @@ export function flattenUnionToObjectSchema(union: any): z.ZodObject<z.ZodRawShap
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const values = (fdef?.values as unknown[] | undefined) ?? [(fieldSchema as any).value];
         for (const v of values) {
-          if (v !== undefined && v !== null) literals.add(String(v));
+          if (v !== undefined && v !== null) {
+            literals.add(String(v));
+            variantActions.push(String(v));
+          }
         }
         continue;
       }
       const list = fieldVariants.get(key) ?? [];
-      list.push(fieldSchema);
+      list.push({ schema: fieldSchema, actions: variantActions });
       fieldVariants.set(key, list);
     }
   }
@@ -625,10 +629,79 @@ export function flattenUnionToObjectSchema(union: any): z.ZodObject<z.ZodRawShap
           "this flat schema lists every action's fields as optional.",
       ),
   };
-  for (const [key, schemas] of fieldVariants) {
-    mergedShape[key] = mergeFlatField(schemas);
+  for (const [key, fieldOf] of fieldVariants) {
+    mergedShape[key] = withWireMeta(key, mergeFlatField(fieldOf.map((f) => f.schema)), fieldOf);
   }
   return z.object(mergedShape);
+}
+
+/** One variant's schema for a field, and the actions that variant serves. */
+type FlatFieldVariant = { schema: z.ZodTypeAny; actions: string[] };
+
+/** The `.default()` value in a field's outer wrappers, or `undefined` when it has none. */
+function outerDefault(schema: z.ZodTypeAny): { value: unknown } | undefined {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let cur: any = schema;
+  for (let guard = 0; guard < 12; guard++) {
+    const t = cur?._def?.type;
+    if (t === "default") return { value: cur._def.defaultValue };
+    if (t !== "optional" && t !== "nullable") return undefined;
+    cur = cur._def.innerType;
+  }
+  return undefined;
+}
+
+/**
+ * internal #266 — give the merged field back the description and default its variants declared.
+ * `stripFieldWrappers` removes the outer `optional` / `default`, and in zod 4 a `.describe()` written
+ * after them lives on that wrapper, so 83 descriptions and 51 defaults of the eight flattened tools
+ * never reached `tools/list`.
+ *
+ * - Description: one text when every variant that has one says the same; otherwise each text,
+ *   labelled with the actions it is written for (13 fields measured, e.g. `scroll.windowTitle`
+ *   is required for some actions and focuses the window for another).
+ * - Default: only when every variant with the field declares the same one (`keyboard.method` has
+ *   one on two of its three actions, `scroll.direction` two different ones: neither gets one). It
+ *   is metadata (`.meta`), not a `.default()`: this flat schema is not the parse that applies it.
+ *   A field built by `coercedBooleanWithDefault` carries its default on the inner schema, which
+ *   the merge keeps; when its variants disagree that default would be wrong, so that throws.
+ */
+function withWireMeta(key: string, merged: z.ZodTypeAny, fieldOf: FlatFieldVariant[]): z.ZodTypeAny {
+  const byText = new Map<string, string[]>();
+  for (const { schema, actions } of fieldOf) {
+    const text = schema.description;
+    if (typeof text !== "string" || text.length === 0) continue;
+    byText.set(text, [...(byText.get(text) ?? []), ...actions]);
+  }
+  const texts = [...byText.entries()];
+  const description =
+    texts.length === 0
+      ? undefined
+      : texts.length === 1
+        ? texts[0][0]
+        : texts.map(([text, actions]) => `${actions.map((a) => `'${a}'`).join(" / ")}: ${text}`).join("\n");
+
+  const defaults = fieldOf.map((f) => outerDefault(f.schema));
+  const agreed =
+    defaults.every((d) => d !== undefined) &&
+    new Set(defaults.map((d) => JSON.stringify(d!.value))).size === 1
+      ? defaults[0]
+      : undefined;
+
+  const meta: Record<string, unknown> = {};
+  if (description !== undefined) meta.description = description;
+  if (agreed !== undefined) meta.default = agreed.value;
+  const out = Object.keys(meta).length > 0 ? merged.meta(meta) : merged;
+  if (agreed === undefined) {
+    const wire = z.toJSONSchema(out, { io: "input", unrepresentable: "any" }) as Record<string, unknown>;
+    if ("default" in wire) {
+      throw new Error(
+        `flattenUnionToObjectSchema: "${key}" would show a default on the wire although its variants ` +
+          "do not all declare the same one (a coercedBooleanWithDefault on some of them).",
+      );
+    }
+  }
+  return out;
 }
 
 /** Strip outer ZodOptional / ZodDefault / ZodNullable wrappers to the base. */
@@ -683,6 +756,7 @@ function mergeFlatField(schemas: z.ZodTypeAny[]): z.ZodTypeAny {
       const js = z.toJSONSchema(base) as Record<string, unknown>;
       delete js.$schema;
       delete js.description; // structural identity ignores description text
+      delete js.default; // …and a default carried on the inner schema (`coercedBooleanWithDefault`)
       sig = JSON.stringify(js);
     } catch {
       sig = `__unserializable_${i}__`; // treat as a distinct shape
@@ -691,19 +765,15 @@ function mergeFlatField(schemas: z.ZodTypeAny[]): z.ZodTypeAny {
   });
   const bases = [...uniqueBySig.values()];
   if (bases.length === 1) return bases[0].optional();
-  // All-`z.enum` collision → merge to one `z.enum` of the value union. Carry
-  // over the first variant's description (the per-variant `.describe()` is
-  // otherwise lost; per-action specifics live in the tool's Caveats block).
+  // All-`z.enum` collision → merge to one `z.enum` of the value union (its
+  // description is `withWireMeta`'s, like every other field's).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const asEnum = (b: any): string[] | null =>
     b?._def?.type === "enum" && Array.isArray(b.options) ? (b.options as string[]) : null;
   const enumValueSets = bases.map(asEnum);
   if (enumValueSets.every((v) => v !== null)) {
     const merged = [...new Set(enumValueSets.flat() as string[])];
-    let mergedEnum = z.enum(merged as [string, ...string[]]);
-    const firstDesc = bases.find((b) => typeof b.description === "string")?.description;
-    if (firstDesc) mergedEnum = mergedEnum.describe(firstDesc);
-    return mergedEnum.optional();
+    return z.enum(merged as [string, ...string[]]).optional();
   }
    
   return z.union(bases as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]).optional();

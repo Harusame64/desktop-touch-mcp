@@ -8,7 +8,7 @@ import { updateWindowCache } from "../engine/window-cache.js";
 import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith, failCode } from "./_errors.js";
-import { coercedBoolean } from "./_coerce.js";
+import { coercedBoolean, coercedBooleanWithDefault } from "./_coerce.js";
 import { pollUntil } from "../engine/poll.js";
 import {
   listTabs,
@@ -91,7 +91,7 @@ export const browserOpenSchema = {
         .max(30_000)
         .default(10_000)
         .describe("Max ms to wait for the CDP endpoint to become ready (default 10000)."),
-      killExisting: coercedBoolean().default(false).describe(
+      killExisting: coercedBooleanWithDefault(false).describe(
         "When true, terminate existing browser processes before launch. " +
         "Use when a browser is already running WITHOUT --remote-debugging-port. " +
         "WARNING: unsaved input in the existing session will be lost."
@@ -105,8 +105,7 @@ export const browserOpenSchema = {
     ),
 };
 
-const includeContextParam = coercedBoolean()
-  .default(true)
+const includeContextParam = coercedBooleanWithDefault(true)
   .describe(
     "When true (default), append `activeTab` + `readyState` lines to the response. " +
     "Set false to skip — saves ~150 tokens per call when chaining several browser_* calls in the same tab."
@@ -168,7 +167,7 @@ export const browserClickElementSchema = {
     "and a perception envelope is attached to post.perception on success."
   ),
   fixId: z.string().optional().describe("Approve a pending suggestedFix (one-shot, 15s TTL). Selector mode only."),
-  scrollIntoView: coercedBoolean().default(false).describe(
+  scrollIntoView: coercedBooleanWithDefault(false).describe(
     "When true, if the target is outside the viewport, scroll it into view (centered) before clicking, " +
     "instead of failing with ElementNotInViewport. Default false preserves the explicit " +
     "scrollIntoView-then-retry workflow. Selector mode only (by-axis resolves only in-viewport actionable targets)."
@@ -192,7 +191,7 @@ export const browserEvalJsSchema = {
     "Optional perception lens ID. Guards (target.identityStable) are evaluated before eval. " +
     "Note: action='js' returns raw text by default; pass withPerception:true to receive a structured envelope."
   ),
-  withPerception: coercedBoolean().optional().default(false).describe(
+  withPerception: coercedBooleanWithDefault(false).describe(
     "When true, return structured JSON { ok, result, post } instead of raw text. " +
     "Enables post.perception attachment so the LLM can see guard status. " +
     "Default false preserves the raw-text return for backwards compatibility. " +
@@ -222,7 +221,7 @@ export const browserNavigateSchema = {
   narrate: narrateParam,
   tabId: tabIdParam,
   port: portParam,
-  waitForLoad: coercedBoolean().default(true).describe(
+  waitForLoad: coercedBooleanWithDefault(true).describe(
     "When true (default), wait for document.readyState === 'complete' before returning. " +
     "Use waitForLoad:false for the legacy behavior (return immediately after Page.navigate). " +
     "Accepts the strings \"true\"/\"false\"."
@@ -268,7 +267,7 @@ export const browserLaunchSchema = {
     .max(30_000)
     .default(10_000)
     .describe("Max milliseconds to wait for the CDP endpoint to become ready (default 10000)."),
-  killExisting: coercedBoolean().default(false).describe(
+  killExisting: coercedBooleanWithDefault(false).describe(
     "When true, terminate existing chrome.exe / msedge.exe / brave.exe processes before launch. " +
     "Use this when a browser is already running WITHOUT --remote-debugging-port. " +
     "WARNING: unsaved input in the existing browser session will be lost. " +
@@ -283,9 +282,9 @@ export const browserSearchSchema = {
   scope: z.string().optional().describe("CSS selector to limit the search scope."),
   maxResults: z.coerce.number().int().min(1).max(200).default(50).describe("Max results returned (default 50)."),
   offset: z.coerce.number().int().min(0).default(0).describe("Offset into the result set (default 0)."),
-  visibleOnly: coercedBoolean().default(true).describe("Only visible elements (default true). Set false to include hidden ones with confidence penalty."),
-  inViewportOnly: coercedBoolean().default(false).describe("Only currently-in-viewport elements (default false)."),
-  caseSensitive: coercedBoolean().default(false).describe("Case-sensitive matching for text/regex (default false)."),
+  visibleOnly: coercedBooleanWithDefault(true).describe("Only visible elements (default true). Set false to include hidden ones with confidence penalty."),
+  inViewportOnly: coercedBooleanWithDefault(false).describe("Only currently-in-viewport elements (default false)."),
+  caseSensitive: coercedBooleanWithDefault(false).describe("Case-sensitive matching for text/regex (default false)."),
   tabId: tabIdParam,
   port: portParam,
 };
@@ -313,8 +312,7 @@ export const browserGetFormSchema = {
       "CSS selector for the form or container element to inspect (e.g. '#login-form', '.search-bar'). " +
       "All input, select, textarea, and button descendants are returned."
     ),
-  includeHidden: coercedBoolean()
-    .default(false)
+  includeHidden: coercedBooleanWithDefault(false)
     .describe(
       "When true, include hidden inputs (type=hidden). Default false to avoid CSRF-token / serialized-state clutter."
     ),
@@ -342,8 +340,7 @@ export const browserGetInteractiveSchema = {
     .array(z.enum(["link", "button", "input", "all"]))
     .default(["all"])
     .describe("Element types to include. Default 'all' returns links, buttons, and inputs."),
-  inViewportOnly: coercedBoolean()
-    .default(false)
+  inViewportOnly: coercedBooleanWithDefault(false)
     .describe("When true, only return elements currently visible in the viewport."),
   maxResults: z.coerce
     .number()
@@ -2912,7 +2909,7 @@ export const browserEvalSchema = z.discriminatedUnion("action", [
       "A single eval is bounded by the CDP per-command timeout (~15s): do NOT write in-page polling loops here — " +
       "use wait_until (element_matches / url_matches / ready_state) to wait for conditions instead."
     ),
-    withPerception: coercedBoolean().optional().default(false).describe(
+    withPerception: coercedBooleanWithDefault(false).describe(
       "When true, return structured JSON {ok, result, post} with post.perception attached. Default false preserves raw-text return."
     ),
     lensId: z.string().optional().describe(
