@@ -162,6 +162,56 @@ describe("readMacAxCandidates", () => {
     expect(notes.warnings).toContain("title_matches_nothing_readable");
   });
 
+  it("reads no sheet when several carry the title, and says so (gate 2 on #804)", async () => {
+    const d = mk();
+    const docB = "Other\u001f\u001f0,0,1,1";
+    d.listWindows.mockReturnValue([{ windowId: 2, pid: 7, layer: 0, onScreen: true, title: "保存" }]);
+    d.axTree.mockResolvedValue(
+      tree({
+        elements: [
+          ...withSheet().elements,
+          el({ id: "a.1.8", rootKey: docB, role: "AXSheet", title: "保存" }),
+          el({ id: "a.1.8.0.12", rootKey: docB, actions: ["AXPress"], title: "削除" }),
+        ],
+      })
+    );
+    const { r, notes } = await run(d, { windowTitle: "保存" });
+    expect(r).toEqual([]);
+    expect(notes.warnings).toContain("title_matches_several_sheets");
+  });
+
+  it("does not pull another window's sheet into a window the title names (gate 2 on #804)", async () => {
+    const d = mk();
+    d.listWindows.mockReturnValue([{ windowId: 3, pid: 7, layer: 0, onScreen: true, title: "Saved searches" }]);
+    d.axTree.mockResolvedValue(
+      tree({
+        elements: [
+          el({ id: "a.0.1", rootKey: "Saved searches\u001f\u001f0,0,1,1", actions: ["AXPress"], title: "Search" }),
+          el({ id: "a.1.8", rootKey: doc, role: "AXSheet", title: "Save" }),
+          el({ id: "a.1.8.0.12", rootKey: doc, actions: ["AXPress"], title: "Delete" }),
+        ],
+      })
+    );
+    const { r } = await run(d, { windowTitle: "save" });
+    expect(r.map((c) => c.label)).toEqual(["Search"]);
+  });
+
+  it("warns when what is under the title is nothing to act on or read (gate 2 on #804)", async () => {
+    const d = mk();
+    d.listWindows.mockReturnValue([{ windowId: 2, pid: 7, layer: 0, onScreen: true, title: "Panel" }]);
+    d.axTree.mockResolvedValue(tree({ elements: [el({ id: "a.0", rootKey: "Panel\u001f\u001f0,0,1,1", role: "AXGroup" })] }));
+    const { notes } = await run(d, { windowTitle: "panel" });
+    expect(notes.warnings).toContain("title_matches_nothing_readable");
+  });
+
+  it("does not add it when a read already says why it is empty (gate 2 on #804)", async () => {
+    const d = mk();
+    d.listWindows.mockReturnValue([{ windowId: 2, pid: 7, layer: 0, onScreen: true, title: "Panel" }]);
+    d.axTree.mockResolvedValue(tree({ elements: [], displayAsleep: true }));
+    const { notes } = await run(d, { windowTitle: "panel" });
+    expect(notes.warnings).toEqual(["display_asleep"]);
+  });
+
   it("warns when no window matches", async () => {
     const d = mk();
     d.listWindows.mockReturnValue([{ windowId: 1, pid: 7, layer: 0, onScreen: true, title: "Something else" }]);
@@ -358,8 +408,7 @@ describe("sheet warnings follow the target window (2026-10-04)", () => {
     const notes = { warnings: [] as string[] };
     await readMacAxCandidates({ listWindows: vi.fn(() => [{ windowId: 1, pid: 7, layer: 0, onScreen: true, title: "My doc" }]), getFocus: vi.fn(),
       axTree: vi.fn(async () => ({ pid: 7, elements: [sheet], truncated: false, selfReference: false, displayAsleep: false, elapsedMs: 1 })), now: () => 1 } as any, { windowTitle: "my doc" }, notes);
-    // No sheet warning. (This tree holds nothing under "My doc", which the read says on its own:
-    // title_matches_nothing_readable, internal #257.)
-    expect(notes.warnings.filter((w) => w.startsWith("sheet_open"))).toEqual([]);
+    // No sheet warning; the tree holds nothing under "My doc", which the read says (internal #257).
+    expect(notes.warnings).toEqual(["title_matches_nothing_readable"]);
   });
 });

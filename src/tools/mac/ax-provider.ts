@@ -268,30 +268,35 @@ export async function readMacAxCandidates(
     if (!notes.warnings.includes(w)) notes.warnings.push(w);
   }
 
-  const needle = title?.toLowerCase();
+  const needle = sheetNeedle;
   const observedAtMs = deps.now();
   const targetId = title ?? tree.appTitle ?? String(pid);
   const unique = uniquenessOf(tree.elements, tree.truncated || tree.readIncomplete === true);
+  const titled = needle !== undefined && needle !== "";
+  const windowsTitled = titled && tree.elements.some((e) => rootTitle(e.rootKey).toLowerCase().includes(needle));
   // A sheet is not a window in the AX tree: its controls sit under its window's root, though the
-  // window list names it on its own ("保存"). So a title is matched against sheets too, and a
-  // sheet's title reads what is in it — the route a refused act's advice gives (internal #257).
+  // window list names it on its own ("保存"). So a title no AX window carries is matched against
+  // sheets, and a sheet's title reads what is in it — the route a refused act's advice gives
+  // (internal #257). Only one: two documents' "保存" sheets read together would mix their
+  // 削除 buttons, and one pressed for the wrong document loses its work (gate 2 on #804). Not when
+  // an AX window carries the title: that window is what was named (its own sheet comes with it).
   const sheetsTitled =
-    needle === undefined || needle === ""
+    !titled || windowsTitled
       ? []
       : tree.elements.filter((e) => e.role === "AXSheet" && (e.title ?? e.description ?? "").toLowerCase().includes(needle));
+  const sheet = sheetsTitled.length === 1 ? sheetsTitled[0] : undefined;
   const underTitle = (e: NativeMacAxElement) =>
-    needle === undefined ||
-    needle === "" ||
-    rootTitle(e.rootKey).toLowerCase().includes(needle) ||
-    sheetsTitled.some((s) => e.id.startsWith(`${s.id}.`));
+    !titled || rootTitle(e.rootKey).toLowerCase().includes(needle) || (sheet !== undefined && e.id.startsWith(`${sheet.id}.`));
   const candidates = tree.elements
     .filter(underTitle)
     .filter(isCandidate)
     .map((e) => toCandidate(e, pid, targetId, observedAtMs, unique.get(e.id) === true));
-  // A window was found by this title, but nothing under it could be read: say so rather than
-  // answer an empty list as if the window held nothing (internal #257).
-  if (needle !== undefined && needle !== "" && !tree.elements.some(underTitle) && tree.error === undefined) {
-    notes.warnings.push("title_matches_nothing_readable");
+  // Say why a titled read came back empty rather than answer it as if the window held nothing
+  // (internal #257) — unless a warning above already says why (a sleeping display, a cut-off or
+  // failed read: the window may simply not have been walked).
+  const explained = tree.error !== undefined || tree.displayAsleep || tree.truncated || tree.selfReference;
+  if (titled && candidates.length === 0 && !explained) {
+    notes.warnings.push(sheetsTitled.length > 1 ? "title_matches_several_sheets" : "title_matches_nothing_readable");
   }
   for (const c of candidates) {
     if (c.role === "textbox" && c.value !== undefined && c.digest !== undefined) {

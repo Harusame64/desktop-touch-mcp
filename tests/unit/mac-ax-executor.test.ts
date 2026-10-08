@@ -146,6 +146,11 @@ describe("an incomplete read after the act (codex, #780)", () => {
     const r = qualifyPostRead({ ok: true, diff: ["entity_disappeared", "value_changed"] }, { warnings: ["ax_error:cannot_complete"] });
     expect(r).toEqual({ ok: true, diff: ["value_changed"], postReadWarnings: ["ax_error:cannot_complete"] });
   });
+  it("reports a sheet the act closed as gone: an emptied titled view is not an incomplete read (gate 2 on #804)", async () => {
+    const { qualifyPostRead } = await import("../../src/tools/mac/desktop-discover-act.js");
+    const res = { ok: true, diff: ["entity_disappeared"] };
+    expect(qualifyPostRead(res, { warnings: ["title_matches_nothing_readable"] })).toBe(res);
+  });
   it("leaves a complete read alone", async () => {
     const { qualifyPostRead } = await import("../../src/tools/mac/desktop-discover-act.js");
     const res = { ok: true, diff: ["entity_disappeared"] };
