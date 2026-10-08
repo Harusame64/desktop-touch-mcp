@@ -72,6 +72,23 @@ describe("desktop_state hasModal and visibleWindows (internal #253)", () => {
     expect(out.visibleWindows).toBe(1);
   });
 
+  it("a hidden or minimised dialog that holds a shown owner disabled still is (gate 2)", async () => {
+    for (const hidden of [{ isMinimized: true }, { isCloaked: true }]) {
+      wins.value = [
+        at(1n, "確認", 0, { ownerHwnd: 3n, ...hidden }),
+        at(3n, "Owner", 2, { isEnabled: false }),
+      ];
+      expect((await read()).hasModal).toBe(true);
+    }
+  });
+
+  it("…but not when the owner it disabled is itself hidden, or not disabled", async () => {
+    wins.value = [at(1n, "確認", 0, { ownerHwnd: 3n, isMinimized: true }), at(3n, "Owner", 2, { isEnabled: false, isCloaked: true })];
+    expect((await read()).hasModal).toBe(false);
+    wins.value = [at(1n, "確認", 0, { ownerHwnd: 3n, isMinimized: true }), at(3n, "Owner", 2, { isEnabled: true })];
+    expect((await read()).hasModal).toBe(false);
+  });
+
   it("the same title on a shown window still is (control)", async () => {
     wins.value = [at(1n, "名前を付けて保存", 0), at(3n, "Visible", 2)];
     const out = await read();

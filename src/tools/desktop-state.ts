@@ -598,6 +598,10 @@ export const desktopStateHandler = async (args: {
 } = {}): Promise<ToolResult> => {
   try {
     const wins = enumWindowsInZOrder();
+    // A hidden (cloaked: another virtual desktop, or a packaged app's content while not shown) or
+    // minimised window is not on screen (llm22 F19 for cursorOverWindow, internal #253 for the
+    // modal and the count).
+    const shown = wins.filter((w) => w.isCloaked !== true && !w.isMinimized);
     // NOT written into the window cache, deliberately. It would look like the
     // right thing — the guard's `target_not_found` advice names this tool — but
     // the recovery does not need it: an aiming miss re-reads the window list on
@@ -664,8 +668,7 @@ export const desktopStateHandler = async (args: {
     // another virtual desktop, or a packaged app's content while not shown) or a minimised one is
     // not under the cursor, though its rect may be (llm22 drive F19, win2, 2026-10-04: a notepad on
     // another desktop and minimised Settings' content were named).
-    for (const w of wins) {
-      if (w.isCloaked === true || w.isMinimized) continue;
+    for (const w of shown) {
       const r = w.region;
       if (
         cursor.x >= r.x && cursor.x < r.x + r.width &&
@@ -693,12 +696,16 @@ export const desktopStateHandler = async (args: {
     //
     // Tested by `tests/unit/modal-detection-browser-exclusion.test.ts`.
     //
-    // A hidden (cloaked) or minimised window is not a modal in front of anything, though its title
-    // may read like one — a 'Save As' on another virtual desktop (internal #253, as
-    // `cursorOverWindow` above).
+    // A hidden or minimised window is not a modal in front of anything, though its title may read
+    // like one — a 'Save As' on another virtual desktop (internal #253). Unless it holds a shown
+    // window disabled: an owner a dialog has disabled is blocked whether the dialog is minimised
+    // or not yet shown (gate 2 on #801).
+    const shownIds = new Set(shown.map((w) => w.hwnd));
+    const blocksAShownOwner = (w: (typeof wins)[number]): boolean =>
+      w.ownerHwnd != null && shownIds.has(w.ownerHwnd) && wins.find((o) => o.hwnd === w.ownerHwnd)?.isEnabled === false;
     let hasModal = false;
     for (const w of wins) {
-      if (w.isCloaked === true || w.isMinimized) continue;
+      if (!shownIds.has(w.hwnd) && !blocksAShownOwner(w)) continue;
       if (!MODAL_RE.test(w.title)) continue;
       if (isBrowserTopLevelClass(w.className)) {
         // `getWindowIdentity` is an OpenProcess + QueryFullProcessImageName
@@ -953,8 +960,7 @@ export const desktopStateHandler = async (args: {
       hasModal,
       pageState,
       attention,
-      // Shown windows only: a cloaked or minimised one is not visible (internal #253).
-      visibleWindows: wins.filter((w) => w.isCloaked !== true && !w.isMinimized).length,
+      visibleWindows: shown.length,
       ...extra,
       ...(Object.keys(hints).length > 0 ? { hints } : {}),
     });
@@ -1210,7 +1216,7 @@ export function registerDesktopStateTools(server: McpServer): void {
         "Read-only observation of the current desktop state. Returns focused window/element, modal flag, attention signal from Auto Perception. " +
         "Phase 4 absorbs former get_active_window / get_cursor_position / get_screen_info / get_document_state via include* flags.",
       details:
-        "Always returns: focusedWindow (title, hwnd, processName), focusedElement (name, type, value, automationId), cursorPos {x,y}, cursorOverElement (name, type), cursorOverWindow, hasModal (boolean), pageState ('ready'|'loading'|'dialog'), attention, visibleWindows count. " +
+        "Always returns: focusedWindow (title, hwnd, processName), focusedElement (name, type, value, automationId), cursorPos {x,y}, cursorOverElement (name, type), cursorOverWindow, hasModal (boolean), pageState ('ready'|'loading'|'dialog'), attention, visibleWindows (windows on screen: not minimised, not on another virtual desktop). " +
         "Optional fields (default off): " +
         "includeCursor:true → cursor {x,y,monitorId} (richer than cursorPos). " +
         "includeScreen:true → screen {virtualScreen, displays[], displayCount, primaryIndex}. " +
@@ -1329,7 +1335,7 @@ export function registerDesktopStateTools(server: McpServer): void {
       // the focused element changes". The habit they share is naming the most visible change in a
       // round that moved more than one thing; this form is read off the predicate instead.
       caveats:
-        "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal only detects modal dialogs exposed via UIA — browser alert/confirm dialogs may not appear here. " +
+        "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal is a heuristic: an on-screen window whose title reads like a dialog (Save As, Error, 確認 …) — browser alert/confirm dialogs do not appear here. " +
         "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable. " +
         "focusedElement.value is the focused field's current text, so a plain credential field's value comes back like any other. Masked fields are withheld on the CDP road by rule; on the UIA road the value is whatever the provider serves and nothing here checks for a masked control — a masked field can arrive as mask characters, one per character of the secret, which nothing here distinguishes from its real value. It is also not always present, and hints.focusedElementValueAbsent says why when it is not: 'view_road_has_no_value' (the perception view is preferred and carries no values at all) or 'masked_on_this_road' (the CDP read dropped a masked field). No hint means nothing was dropped on the road that answered — on the UIA road an absent value can still be a field whose provider will not serve one.",
     }),

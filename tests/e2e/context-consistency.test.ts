@@ -201,7 +201,10 @@ describe("C3: hasModal real dialog detection", () => {
 
     // Verify that the dialog appeared
     const { enumWindowsInZOrder } = await import("../../src/engine/win32.js");
+    // On screen only, as desktop_state counts a modal (internal #253): a leftover Save As on another
+    // virtual desktop is not this one.
     const dialogTitles = enumWindowsInZOrder()
+      .filter(w => w.isCloaked !== true && !w.isMinimized)
       .map(w => w.title)
       .filter(t => t.includes("名前を付けて保存") || t.includes("Save As") || t.includes("Save"));
 
