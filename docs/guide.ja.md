@@ -170,7 +170,7 @@ mouse_click(x=500, y=300, windowTitle="メモ帳", elementName="保存")
 mouse_click(x=500, y=300, homing=false)
 ```
 
-`homing` パラメータは `mouse_click` / `mouse_move` / `mouse_drag` / `scroll` 全てで使えます。キャッシュは `screenshot()` / `get_windows()` / `focus_window()` / `workspace_snapshot()` 呼び出し時に自動更新されます。
+`homing` パラメータは `mouse_click` / `mouse_drag` / `scroll` で使えます。キャッシュは `screenshot()` / `desktop_discover()` / `focus_window()` / `workspace_snapshot()` 呼び出し時に自動更新されます。
 
 ---
 
@@ -223,7 +223,7 @@ UIA ブリッジの PowerShell フォールバックパスでは、`-like` パ�
 
 ## マウス移動速度
 
-`mouse_move` / `mouse_click` / `mouse_drag` / `scroll` は全て `speed` パラメータ（省略可）を受け付けます。
+マウス系のツール（`mouse_click` / `mouse_drag` / `scroll`）は全て `speed` パラメータ（省略可）を受け付けます。
 
 | 値 | 動作 |
 |---|---|
@@ -393,7 +393,7 @@ v0.16.x での opt-in フラグです。v0.17 以降は V2 がデフォルト ON
 - `keyboard_target_unsafe` → 何も入力されていない: 文字が別のコントロール / ウィンドウ、または読み取り専用のコントロールへ行くところだった。あるいは指定した欄（かそのウィンドウ）が無効だった（どれかは `if_unexpected.detail`。無効なら、無効にしているものが済んでから discover し直す）。指定した欄にフォーカスを移してから入力し直す——前面の `keyboard` では打ち直さない。タイトル指定なら `desktop_act` の `action='click'`、ハンドル指定ならタイトルで discover し直してから（ただし共通ダイアログはタイトルもハンドルに解決するので、そこではテキスト欄にフォーカスを移す道が無い）。別のウィンドウのときは先に `focus_window`
 - `executor_failed` → `if_unexpected.detail` が "Nothing was typed" で始まるときは、どの経路も走っておらず何も入力されていない — detail のとおりにする。それ以外は desktop_act が取った経路が失敗した。クリックなら `click_element` / `mouse_click` / `browser_click` に、入力なら欄にフォーカスして `keyboard(action='type', method='foreground')` にフォールバック
 
-`desktop_discover` が warnings（`visual_provider_unavailable`、`visual_provider_warming`、`cdp_provider_failed` 等）を返した場合も、V1 ツール（`screenshot`、`click_element`、`get_ui_elements`、`terminal(action='send')` など）がエスケープハッチとして使えます。
+`desktop_discover` が warnings（`visual_provider_unavailable`、`visual_provider_warming`、`cdp_provider_failed` 等）を返した場合も、座標ベースのツール（`screenshot(detail='text')`、`click_element`、`mouse_click`、`terminal` など）がエスケープハッチとして使えます。
 
 ---
 

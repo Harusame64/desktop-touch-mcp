@@ -187,119 +187,56 @@ Apple Silicon の Mac（macOS 14 以降）では、同じ `npx` で macOS 用の
 
 ---
 
-## ツール一覧 (32 ツール — 30 stub catalog + 2 dynamic v2)
+## ツール一覧 (32 ツール)
 
-> 📖 **詳細リファレンス**: [`docs/system-overview.md`](docs/system-overview.md) — 各ツールのパラメータ・応答形式・座標計算・レイヤーバッファ・技術ノートを網羅（英語）。
+> 📖 **詳細リファレンス**: [`docs/system-overview.md`](docs/system-overview.md) — 各ツールのパラメータ・応答形式・座標計算を網羅（英語）。
 
-### スクリーンショット系 (5)
+### 🌐 World-Graph V2（基本の経路）
 | ツール | 概要 |
 |---|---|
-| `screenshot` | メインキャプチャ。`detail` / `dotByDot` / `dotByDotMaxDimension` / `grayscale` / `region` / `diffMode` 対応。画像はインライン展開せず、ディスク保存した画像への安価なリンク `screenshot://by-ref/{id}` を返す |
-| `screenshot_background` | 背面・最小化ウィンドウをキャプチャ (PrintWindow API) |
-| `screenshot_ocr` | Windows OCR で文字と `clickAt` 座標を取得 |
-| `get_screen_info` | モニター解像度・DPI・カーソル位置 |
-| `scroll(action='capture')` | ページ全体をスクロールしながらスティッチ |
+| `desktop_discover` | デスクトップを観察し、操作できる要素を lease 付きで返す（UIA・CDP・ターミナル・Visual SoM）。 |
+| `desktop_act` | lease を確かめてから要素を操作する（クリック・入力・ドラッグ）。意味のある差分を返す。見た目でしか読めない対象では、変わった領域の PNG と次の候補の `roiCapture` も返す。 |
 
-### スクリーンショットキャッシュ (2)
+### 👁️ 観察・状態
 | ツール | 概要 |
 |---|---|
-| `screenshot_query` | by-ref リンクの裏にあるディスクキャッシュの一覧を、ピクセルを再読込せずに取得（captureId・by-ref uri・サイズ・寸法・時刻・tag、キャッシュ全体の合計）。パスは一切返さない |
-| `screenshot_gc` | 保持ポリシー（最新 N 件 / バイト上限 / 経過時間）でキャッシュを掃除。既定は dry-run（削除対象の一覧のみ）。実削除は `dryRun:false` かつ `confirm:true` の両方が必要 |
+| `desktop_state` | フォーカス・前面ウィンドウ・カーソル・Auto-Perception の注意信号を軽く確かめる。 |
+| `screenshot` | 複数のモードでキャプチャ：`detail='text'`（UIA/OCR）・`diffMode`（P-frame）・`dotByDot`（1:1）・`mode='background'`。画像は毎回インライン展開せず、保存した画像への安価なリンク `screenshot://by-ref/{id}` を返す。 |
+| `screenshot_query` / `screenshot_gc` | by-ref リンクの裏にあるディスクキャッシュを見る・掃除する。`screenshot_query` はピクセルを読み直さずに一覧を返し、`screenshot_gc` は保持ポリシーで領域を空ける（既定は dry-run）。 |
+| `workspace_snapshot` | 全ウィンドウのサムネイルと UI の要約を 1 回で取得し、作業の状況をつかむ。 |
+| `server_status` | ネイティブエンジンの状態と、有効になっている機能を診断する。 |
 
-### ウィンドウ管理 (4)
+### ⌨️ 入力・操作
 | ツール | 概要 |
 |---|---|
-| `get_windows` | 全ウィンドウを Z-order 順で一覧 |
-| `get_active_window` | フォーカス中ウィンドウの情報 |
-| `focus_window` | タイトル部分一致でフォアグラウンドに移動。ChromeタブURL指定にも対応 |
-| `window_dock(action='dock')` | Claude CLIなどを画面隅にドックして最前面固定 |
+| `keyboard` | キー入力を送る。背面への入力（WM_CHAR）と、IME を避けるクリップボード経由に対応。 |
+| `mouse_click` / `mouse_drag` | 座標でのクリック・ドラッグ。homing と forceFocus の保護つき。 |
+| `scroll` | 複数の方式：`raw`（ノッチ）・`to_element`・`smart`（仮想リスト）・`capture`（スティッチ）。 |
+| `click_element` | 名前/AutomationId で UIA 要素をクリックする旧来の方法（エンティティが取れないときの予備）。 |
 
-### マウス操作 (5)
+### 🌐 Browser CDP（Chrome/Edge/Brave）
 | ツール | 概要 |
 |---|---|
-| `mouse_move` / `mouse_click` / `mouse_drag` | 移動・クリック・ドラッグ。`speed` / `homing` / `forceFocus` 対応 |
-| `scroll` | 上下左右スクロール。`speed` / `homing` 対応 |
-| `get_cursor_position` | 現在カーソル座標 |
+| `browser_open` / `browser_navigate` | デバッグモードでの起動（何度呼んでも同じ結果）と、確実な遷移。 |
+| `browser_click` / `browser_fill` / `browser_form` | 再描画やフレームワークの再レンダリングをまたいで安定する DOM 操作。 |
+| `browser_eval` | `js`（スクリプト）・`dom`（HTML）・`appState`（SPA のデータ抽出）で中身を調べる。 |
+| `browser_overview` / `browser_search` / `browser_locate` | 意味での一覧・grep のような DOM 検索・ピクセル単位の座標の取得。 |
 
-### キーボード操作 (2)
+### 🛠️ ユーティリティ・ワークフロー
 | ツール | 概要 |
 |---|---|
-| `keyboard(action='type')` | テキスト入力。`use_clipboard=true` で IME バイパス、非ASCII記号は自動clipboard経路 |
-| `keyboard(action='press')` | `ctrl+c` / `alt+tab` / `f5` などのキー入力・修飾キー組み合わせ |
+| `terminal` | コマンド実行の統合：`run`（送信＋完了待ち＋読み取り）・`read`（OCR/UIA）・`send`。`run` の完了判定は `quiet`・`pattern`・`exit`（コマンドの**終了**を待ち exit code を返す → [ターミナルの完了判定](docs/guide.ja.md#ターミナルの完了判定-until)）。 |
+| `wait_until` | ウィンドウ・フォーカス・テキスト・URL の状態変化をサーバー側で効率よく待つ。 |
+| `window_dock` / `focus_window` | ウィンドウ管理：`pin`（最前面固定）・`unpin`・`dock`（画面隅へ寄せる）・`focus`。 |
+| `workspace_launch` | アプリを起動し、新しいウィンドウ（HWND）を自動で見つける（ローカライズされたタイトルにも対応）。 |
+| `run_macro` | 最大 50 の操作を 1 往復にまとめて実行する。 |
+| `clipboard` / `notification_show` | システムのテキストのやりとりと、利用者への通知。 |
+| `key_locker` | ターミナルが自動入力する認証情報（SSH 鍵のパスフレーズ、sudo / ログインパスワード）を管理。秘密情報はロッカー自身のセキュアダイアログに一度だけ入力し、この PC 上で暗号化保存（Windows DPAPI）— アシスタントには一切見えない。`action='launch_console'` で自動入力対応コンソールを起動（返る `paneId` を `terminal` に渡して `ssh`/`sudo` を流す）、`save` / `list` / `forget` / `set_policy` / `status` で登録を管理。自動入力は `launch_console` で開いたコンソールでのみ発火。`DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1` で無効化。 |
 
-### UI Automation (4)
+### 📊 Office（Excel）
 | ツール | 概要 |
 |---|---|
-| `get_ui_elements` | UIA 要素ツリー取得 |
-| `click_element` | 名前/AutomationId でボタンやメニューをクリック (座標不要) |
-| `set_element_value` | テキストフィールドに直接値をセット |
-| `scope_element` | 要素を高解像度ズームキャプチャ + 子ツリー |
-
-### Browser CDP (9)
-| ツール | 概要 |
-|---|---|
-| `browser_open` | Chrome/Edge に CDP 接続してタブ一覧取得。`launch:{}` を渡すと CDP エンドポイントが無いとき自動でデバッグモード起動（idempotent — 既存エンドポイントがあれば spawn skip） |
-| `browser_locate` | CSS セレクター → 物理ピクセル座標 |
-| `browser_click` | DOM 要素を検索してクリック（1ステップ） |
-| `browser_eval` | タブ上の操作を 3 アクションで提供：`js`（JS 評価）/ `dom`（HTML 取得）/ `appState`（SSR 注入された SPA state を抽出 — `__NEXT_DATA__` / `__NUXT_DATA__` / `__REMIX_CONTEXT__` / `__APOLLO_STATE__` / GitHub `react-app` / JSON-LD / Redux SSR） |
-| `browser_fill` | React/Vue/Svelte の controlled input をCDPで安全に入力 |
-| `browser_form` | フォーム配下の input/select/textarea/button を name・type・value・label 付きで列挙 |
-| `browser_overview` | リンク/ボタン/入力 + ARIA トグルを状態付きで列挙 |
-| `browser_search` | text / regex / role / ariaLabel / selector で DOM を grep（confidence 順） |
-| `browser_navigate` | CDP 経由で URL 遷移。`waitForLoad:true` が既定 |
-
-DOM を触る `browser_*` ツールは `includeContext:false` で末尾の `activeTab:` / `readyState:` 2 行を省略可（連続呼び出しで ~150 tok/call 削減）。500ms 以内の連続 call は getTabContext を内部キャッシュで 1 回に圧縮。
-
-### ワークスペース (2)
-| ツール | 概要 |
-|---|---|
-| `workspace_snapshot` | 全ウィンドウをサムネイル + UI 要素サマリで一括取得 |
-| `workspace_launch` | アプリ起動 + 新ウィンドウ自動検出 |
-
-### コンテキスト・待機・履歴 (8)
-| ツール | 概要 |
-|---|---|
-| `desktop_state` | フォーカス中ウィンドウ・要素・カーソル・ページ状態を軽量取得 |
-| `get_history` | 直近ツール履歴を取得 |
-| `get_document_state` | Chromeページ状態（URL/title/readyState/scroll）をCDPで取得 |
-| `server_status` | 各サブシステムの動作バックエンドを返す：`uia`（Rust native または powershell）/ `imageDiff`（Rust SSE2 または typescript）。診断用 — パフォーマンス調査時に1回呼ぶ |
-| `wait_until` | window/focus/terminal/browser DOM などの状態変化をサーバー側で待機 |
-| `events_subscribe` / `events_poll` / `events_unsubscribe` / `events_list` | ウィンドウ出現・消滅・フォーカス変化を購読/取得 |
-
-### ターミナル (2)
-| ツール | 概要 |
-|---|---|
-| `terminal(action='run')` | コマンド送信 → 完了待ち → 出力取得を 1 コールで実行。完了判定は `until`: `quiet` / `pattern` / `exit`（コマンドの**終了**を待ち exit code を返す → [ターミナルの完了判定](docs/guide.ja.md#ターミナルの完了判定-until)） |
-| `terminal(action='read')` | Windows Terminal / PowerShell / cmd / WSL のテキストをUIA/OCRで取得。`sinceMarker`差分対応 |
-| `terminal(action='send')` | ターミナルへコマンド送信。clipboard paste既定でIME安全 |
-
-### ピン・マクロ (3)
-| ツール | 概要 |
-|---|---|
-| `window_dock(action='pin')` / `unwindow_dock(action='pin')` | 最前面固定 / 解除 |
-| `run_macro` | 最大 50 ステップを順次実行 |
-
-### Clipboard / Notification (3)
-| ツール | 概要 |
-|---|---|
-| `clipboard(action='read')` / `clipboard(action='write')` | Windows clipboard のテキスト読み書き。Unicode/CJK対応 |
-| `notification_show` | 長時間タスク完了時などにWindows通知を表示 |
-
-### 高度スクロール (2)
-| ツール | 概要 |
-|---|---|
-| `scroll(action='to_element')` | 要素名またはCSS selectorで対象をviewportへスクロール |
-| `scroll(action='smart')` | CDP → UIA → 画像binary-searchの統合スクロール。ネスト・仮想リスト・sticky header対応 |
-
-### Office (Excel) (1)
-| ツール | 概要 |
-|---|---|
-| `excel` | Excel VBA マクロを COM 経由で記述・実行。`action='run_vba'` はマクロを管理下の Trusted Location に書き込んで実行、`action='check_access_vbom'` は読み取り専用の事前チェック。数式だけでは届かない処理を VBA で実行。初回のみ `node scripts/enable-access-vbom.mjs` |
-
-### Key Locker (1)
-| ツール | 概要 |
-|---|---|
-| `key_locker` | ターミナルが自動入力する認証情報（SSH 鍵のパスフレーズ、sudo / ログインパスワード）を管理。秘密情報はロッカー自身のセキュアダイアログに一度だけ入力し、この PC 上で暗号化保存（Windows DPAPI, current user）— アシスタントには一切見えない。`action='launch_console'` で自動入力対応コンソールを起動（返る `paneId` を `terminal` に渡して `ssh`/`sudo` を流す）/ `save`（登録）/ `list` / `forget` / `set_policy` / `status`。自動入力は `launch_console` で開いたコンソールでのみ発火。`DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1` で無効化 |
+| `excel` | Excel VBA マクロを COM 経由で記述・実行。`action='run_vba'` はマクロを管理下の Trusted Location に書き込んで実行、`action='check_access_vbom'` は読み取り専用の事前チェック。数式だけでは届かない処理を VBA で実行。初回のみ `node scripts/enable-access-vbom.mjs`。 |
 
 ---
 
