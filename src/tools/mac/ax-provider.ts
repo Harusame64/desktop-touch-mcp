@@ -280,6 +280,9 @@ async function readPidUnderTitle(
   if (tree.displayAsleep) notes.warnings.push("display_asleep");
   if (tree.selfReference) notes.warnings.push("ax_self_reference");
   if (tree.truncated) notes.warnings.push(`truncated:${tree.stoppedBy ?? "unknown"}`);
+  // Some element's children or identity could not be read: what is missing is not known to be
+  // absent (codex on #804).
+  if (tree.readIncomplete === true) notes.warnings.push("ax_read_incomplete");
   // A sheet blocks its window (acts behind it are refused natively). Its controls may live in
   // another process — the open/save panel's do, and then nothing of it is in this tree.
   // The same sheet can be reached from two roots (its window and the focused window): say it once.
@@ -321,7 +324,8 @@ async function readPidUnderTitle(
   // Say why a titled read came back empty rather than answer it as if the window held nothing
   // (internal #257) — unless a warning above already says why (a sleeping display, a cut-off or
   // failed read: the window may simply not have been walked).
-  const explained = tree.error !== undefined || tree.displayAsleep || tree.truncated || tree.selfReference;
+  const explained =
+    tree.error !== undefined || tree.displayAsleep || tree.truncated || tree.selfReference || tree.readIncomplete === true;
   if (titled && candidates.length === 0 && !explained) {
     notes.warnings.push(sheetsTitled.length > 1 ? "title_matches_several_sheets" : "title_matches_nothing_readable");
   }

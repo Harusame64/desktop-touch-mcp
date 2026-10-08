@@ -151,6 +151,11 @@ describe("an incomplete read after the act (codex, #780)", () => {
     const res = { ok: true, diff: ["entity_disappeared"] };
     expect(qualifyPostRead(res, { warnings: ["title_matches_nothing_readable"] })).toBe(res);
   });
+  it("treats a partly unread tree as incomplete after an act (codex on #804)", async () => {
+    const { qualifyPostRead } = await import("../../src/tools/mac/desktop-discover-act.js");
+    const r = qualifyPostRead({ ok: true, diff: ["entity_disappeared"] }, { warnings: ["ax_read_incomplete"] });
+    expect(r).toEqual({ ok: true, diff: [], postReadWarnings: ["ax_read_incomplete"] });
+  });
   it("leaves a complete read alone", async () => {
     const { qualifyPostRead } = await import("../../src/tools/mac/desktop-discover-act.js");
     const res = { ok: true, diff: ["entity_disappeared"] };

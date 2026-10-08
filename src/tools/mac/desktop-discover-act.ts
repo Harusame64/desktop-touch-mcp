@@ -62,7 +62,7 @@ export const macDiscoverDescription = buildDesc({
     "or read: a panel drawn by another process, or the app names the window otherwise in Accessibility — omit target to read the frontmost " +
     "app, or use the title of the window that holds it), title_matches_several_sheets (sheets of several documents carry the title: " +
     "discover each document by its own title), window_titles_unavailable (Screen Recording is not granted, so titles cannot be matched; " +
-    "omit target to read the frontmost app), no_frontmost_app, truncated:*, ax_error:*, sheet_open (answer the sheet first; acts behind it " +
+    "omit target to read the frontmost app), no_frontmost_app, truncated:*, ax_error:*, ax_read_incomplete (part of the tree did not answer: discover again), sheet_open (answer the sheet first; acts behind it " +
     "are refused), sheet_open_in_other_process (the sheet's controls belong to another process, e.g. the open/save panel: discover its " +
     "own title, such as \"Save\" / \"保存\").",
   prefer:
@@ -227,7 +227,7 @@ async function macActOnce(
 }
 
 /** Warnings that mean the read after the act did not see the app whole. */
-const INCOMPLETE_READ = /^(ax_error:|display_asleep$|ax_self_reference$|truncated:|no_window_matches_title$|window_titles_unavailable$|no_frontmost_app$)/;
+const INCOMPLETE_READ = /^(ax_error:|ax_read_incomplete$|display_asleep$|ax_self_reference$|truncated:|no_window_matches_title$|window_titles_unavailable$|no_frontmost_app$)/;
 
 /**
  * The touch loop diffs the read after the act against the discover. When that read was

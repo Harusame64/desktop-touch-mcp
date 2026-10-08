@@ -229,6 +229,14 @@ describe("readMacAxCandidates", () => {
     expect(notes.warnings).toEqual(["display_asleep"]);
   });
 
+  it("says a read was incomplete, and not that the title holds nothing (codex on #804)", async () => {
+    const d = mk();
+    d.listWindows.mockReturnValue([{ windowId: 2, pid: 7, layer: 0, onScreen: true, title: "Panel" }]);
+    d.axTree.mockResolvedValue(tree({ elements: [], readIncomplete: true }));
+    const { notes } = await run(d, { windowTitle: "panel" });
+    expect(notes.warnings).toEqual(["ax_read_incomplete"]);
+  });
+
   it("warns when no window matches", async () => {
     const d = mk();
     d.listWindows.mockReturnValue([{ windowId: 1, pid: 7, layer: 0, onScreen: true, title: "Something else" }]);
