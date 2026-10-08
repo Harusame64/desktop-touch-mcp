@@ -195,7 +195,7 @@ Apple Silicon の Mac（macOS 14 以降）では、同じ `npx` で macOS 用の
 | ツール | 概要 |
 |---|---|
 | `desktop_discover` | デスクトップを観察し、操作できる要素を lease 付きで返す（UIA・CDP・ターミナル・Visual SoM）。 |
-| `desktop_act` | lease を確かめてから要素を操作する（クリック・入力・ドラッグ）。意味のある差分を返す。見た目でしか読めない対象では、変わった領域の PNG と次の候補の `roiCapture` も返す。 |
+| `desktop_act` | lease を確かめてから要素を操作する（クリック・入力・値の設定・選択）。意味のある差分を返す。見た目でしか読めない対象では、変わった領域の PNG と次の候補の `roiCapture` も返す。 |
 
 ### 👁️ 観察・状態
 | ツール | 概要 |

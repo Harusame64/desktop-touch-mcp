@@ -203,7 +203,7 @@ On an Apple Silicon Mac (macOS 14 or later) the same `npx` command starts a macO
 | Tool | Description |
 |---|---|
 | `desktop_discover` | Observe the desktop. Returns interactive entities with leases (UIA, CDP, Terminal, Visual SoM). |
-| `desktop_act` | Perform actions (click, type, drag) on entities via lease validation. Returns semantic diffs — plus an optional `roiCapture` (changed-region PNG + next-target preview) on visual-only targets. |
+| `desktop_act` | Perform actions (click, type, set a value, select) on entities via lease validation. Returns semantic diffs — plus an optional `roiCapture` (changed-region PNG + next-target preview) on visual-only targets. |
 
 ### 👁️ Observation & State
 | Tool | Description |
