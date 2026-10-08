@@ -1335,7 +1335,7 @@ export function registerDesktopStateTools(server: McpServer): void {
       // the focused element changes". The habit they share is naming the most visible change in a
       // round that moved more than one thing; this form is read off the predicate instead.
       caveats:
-        "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal is a heuristic: an on-screen window whose title reads like a dialog (Save As, Error, 確認 …) — browser alert/confirm dialogs do not appear here. " +
+        "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal is a heuristic: a window whose title reads like a dialog (Save As, Error, 確認 …), on screen or holding an on-screen owner disabled — browser alert/confirm dialogs do not appear here. " +
         "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable. " +
         "focusedElement.value is the focused field's current text, so a plain credential field's value comes back like any other. Masked fields are withheld on the CDP road by rule; on the UIA road the value is whatever the provider serves and nothing here checks for a masked control — a masked field can arrive as mask characters, one per character of the secret, which nothing here distinguishes from its real value. It is also not always present, and hints.focusedElementValueAbsent says why when it is not: 'view_road_has_no_value' (the perception view is preferred and carries no values at all) or 'masked_on_this_road' (the CDP read dropped a masked field). No hint means nothing was dropped on the road that answered — on the UIA road an absent value can still be a field whose provider will not serve one.",
     }),
