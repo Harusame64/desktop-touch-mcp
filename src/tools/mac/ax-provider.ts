@@ -143,11 +143,15 @@ export function axDigest(
   return createHash("sha1").update(`ax|${pid}|${kindOf(e)}${where}`).digest("hex").slice(0, 16);
 }
 
-/** Whether each element (by its path in this read) is the only one of its kind under its window. */
-function uniquenessOf(elements: readonly NativeMacAxElement[]): Map<string, boolean> {
+/**
+ * Whether each element (by its path in this read) is the only one of its kind under its window.
+ * A read cut short (`truncated`) cannot say: a twin may lie past the cut, and the act would then
+ * find it as the only one left and press it for the other's lease (codex on #802). None is.
+ */
+function uniquenessOf(elements: readonly NativeMacAxElement[], truncated: boolean): Map<string, boolean> {
   const count = new Map<string, number>();
   for (const e of elements) count.set(kindOf(e), (count.get(kindOf(e)) ?? 0) + 1);
-  return new Map(elements.map((e) => [e.id, count.get(kindOf(e)) === 1]));
+  return new Map(elements.map((e) => [e.id, !truncated && count.get(kindOf(e)) === 1]));
 }
 
 export function toCandidate(
@@ -246,7 +250,7 @@ export async function readMacAxCandidates(
   const needle = title?.toLowerCase();
   const observedAtMs = deps.now();
   const targetId = title ?? tree.appTitle ?? String(pid);
-  const unique = uniquenessOf(tree.elements);
+  const unique = uniquenessOf(tree.elements, tree.truncated);
   const candidates = tree.elements
     .filter((e) => needle === undefined || needle === "" || rootTitle(e.rootKey).toLowerCase().includes(needle))
     .filter(isCandidate)

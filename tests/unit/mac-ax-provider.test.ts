@@ -163,12 +163,12 @@ describe("AX identity and the pinned app (codex gate 1, #780)", () => {
     valueSettable: false, childCount: 0, title: "Same", ...over,
   });
 
-  const read = async (elements: unknown[]) =>
+  const read = async (elements: unknown[], truncated = false) =>
     readMacAxCandidates(
       {
         listWindows: vi.fn(() => []),
         getFocus: vi.fn(async () => ({ pid: 7 })),
-        axTree: vi.fn(async () => ({ pid: 7, elements, truncated: false, selfReference: false, displayAsleep: false, elapsedMs: 1 })),
+        axTree: vi.fn(async () => ({ pid: 7, elements, truncated, selfReference: false, displayAsleep: false, elapsedMs: 1 })),
         now: () => 1,
       } as any,
       undefined,
@@ -199,6 +199,11 @@ describe("AX identity and the pinned app (codex gate 1, #780)", () => {
     expect(a!.locator!.ax!.unique).toBe(false);
     expect(b!.locator!.ax!.unique).toBe(false);
     expect(c!.locator!.ax!.unique).toBe(true);
+  });
+
+  it("calls nothing unique in a read cut short: a twin may lie past the cut (codex on #802)", async () => {
+    const [only] = await read([e({ id: "a.0.3", elementKey: "Other" })], true);
+    expect(only!.locator!.ax!.unique).toBe(false);
   });
 
   it("an element alike in everything keeps its path in its identity, so one cannot inherit the other's (gate 2 on #802)", async () => {
