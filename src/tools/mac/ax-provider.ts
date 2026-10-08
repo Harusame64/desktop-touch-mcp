@@ -153,8 +153,20 @@ export function axDigest(
  */
 function uniquenessOf(elements: readonly NativeMacAxElement[], truncated: boolean): Map<string, boolean> {
   const count = new Map<string, number>();
-  for (const e of elements) count.set(kindOf(e), (count.get(kindOf(e)) ?? 0) + 1);
-  return new Map(elements.map((e) => [e.id, !truncated && count.get(kindOf(e)) === 1]));
+  for (const e of elements) count.set(sortOf(e), (count.get(sortOf(e)) ?? 0) + 1);
+  return new Map(elements.map((e) => [e.id, !truncated && count.get(sortOf(e)) === 1]));
+}
+
+/**
+ * `kindOf` without the frame (the element key's last field, src/macos/ax.rs `element_key_of`):
+ * controls alike but for where they are — a "Delete" button in each row of a list — are not
+ * unique, though their keys differ. Counted by the frame, the leased row's button could go and
+ * another row's reflow into its place at another path, and the act would find that one as the
+ * only match and press it (internal #270, codex on #802).
+ */
+function sortOf(e: Pick<NativeMacAxElement, "rootKey" | "elementKey" | "role" | "subrole" | "value">): string {
+  const cut = e.elementKey.lastIndexOf("\u001f");
+  return kindOf({ ...e, elementKey: cut < 0 ? e.elementKey : e.elementKey.slice(0, cut) });
 }
 
 export function toCandidate(

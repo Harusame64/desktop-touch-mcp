@@ -201,6 +201,14 @@ describe("AX identity and the pinned app (codex gate 1, #780)", () => {
     expect(c!.locator!.ax!.unique).toBe(true);
   });
 
+  it("calls controls alike but for their position not unique (internal #270)", async () => {
+    const row = (id: string, y: number) => e({ id, title: "Delete", elementKey: `\u001f\u001fDelete\u001f\u001f10,${y},40,20` });
+    const [a, b, c] = await read([row("a.0.1.0", 100), row("a.0.2.0", 130), e({ id: "a.0.3", elementKey: "\u001f\u001fAdd\u001f\u001f10,160,40,20" })]);
+    expect(a!.locator!.ax!.unique).toBe(false);
+    expect(b!.locator!.ax!.unique).toBe(false);
+    expect(c!.locator!.ax!.unique).toBe(true);
+  });
+
   it("calls nothing unique in a read cut short: a twin may lie past the cut (codex on #802)", async () => {
     const [only] = await read([e({ id: "a.0.3", elementKey: "Other" })], true);
     expect(only!.locator!.ax!.unique).toBe(false);
