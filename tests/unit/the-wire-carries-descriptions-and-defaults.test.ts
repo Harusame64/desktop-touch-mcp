@@ -199,6 +199,16 @@ describe("the catalog surface (= the live tools/list)", () => {
     expect(undescribed).toEqual(["mouse_drag.endX", "mouse_drag.endY", "mouse_drag.startX", "mouse_drag.startY", "terminal.until"]);
   });
 
+  it("the two nested defaults this restored are on the wire too (Copilot: the sweep is top-level only)", () => {
+    const props = (tool: string) =>
+      STUB_TOOL_CATALOG.find((t) => t.name === tool)!.inputSchema.properties as Record<string, Record<string, unknown>>;
+    const launch = props("browser_open").launch as { properties: Record<string, Record<string, unknown>> };
+    expect(launch.properties.killExisting.default).toBe(false);
+    const until = props("terminal").until as { oneOf: Array<{ properties: Record<string, Record<string, unknown>> }> };
+    const pattern = until.oneOf.find((b) => b.properties.mode?.const === "pattern")!;
+    expect(pattern.properties.regex.default).toBe(false);
+  });
+
   it("the defaults win2 found lost are on the wire, but the two whose variants disagree", () => {
     const prop = (tool: string, key: string) =>
       (STUB_TOOL_CATALOG.find((t) => t.name === tool)!.inputSchema.properties as Record<string, Record<string, unknown>>)[key];
