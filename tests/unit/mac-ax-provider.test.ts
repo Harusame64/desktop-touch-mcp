@@ -163,12 +163,12 @@ describe("AX identity and the pinned app (codex gate 1, #780)", () => {
     valueSettable: false, childCount: 0, title: "Same", ...over,
   });
 
-  const read = async (elements: unknown[], truncated = false) =>
+  const read = async (elements: unknown[], truncated = false, childrenUnread = false) =>
     readMacAxCandidates(
       {
         listWindows: vi.fn(() => []),
         getFocus: vi.fn(async () => ({ pid: 7 })),
-        axTree: vi.fn(async () => ({ pid: 7, elements, truncated, selfReference: false, displayAsleep: false, elapsedMs: 1 })),
+        axTree: vi.fn(async () => ({ pid: 7, elements, truncated, childrenUnread, selfReference: false, displayAsleep: false, elapsedMs: 1 })),
         now: () => 1,
       } as any,
       undefined,
@@ -203,6 +203,11 @@ describe("AX identity and the pinned app (codex gate 1, #780)", () => {
 
   it("calls nothing unique in a read cut short: a twin may lie past the cut (codex on #802)", async () => {
     const [only] = await read([e({ id: "a.0.3", elementKey: "Other" })], true);
+    expect(only!.locator!.ax!.unique).toBe(false);
+  });
+
+  it("calls nothing unique when some element's children could not be read (codex on #802)", async () => {
+    const [only] = await read([e({ id: "a.0.3", elementKey: "Other" })], false, true);
     expect(only!.locator!.ax!.unique).toBe(false);
   });
 

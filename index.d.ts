@@ -956,6 +956,8 @@ export interface NativeMacAxTree {
   stoppedBy?: string
   /** A child equal to one of its ancestors was skipped. */
   selfReference: boolean
+  /** Some element's children could not be read: the tree may miss what lies under it (not cut short). */
+  childrenUnread: boolean
   /** The main display was asleep: AX then answers windows with the app element. */
   displayAsleep: boolean
   /** AX could not be read at all (`api_disabled`, `cannot_complete`, ...). */

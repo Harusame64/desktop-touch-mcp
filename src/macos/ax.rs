@@ -76,7 +76,22 @@ pub(crate) fn attr_element(e: &AXUIElement, name: &'static str, timeout_secs: f3
 }
 
 pub(crate) fn children(e: &AXUIElement, timeout_secs: f32) -> Vec<CFRetained<AXUIElement>> {
-    let Ok(v) = attr(e, "AXChildren") else { return Vec::new() };
+    children_read(e, timeout_secs).unwrap_or_default()
+}
+
+/// `AXChildren`, or `None` when it could not be read (`cannot_complete`, an invalid element, ...).
+/// An element with no children attribute or no value is a leaf, not a failure. A caller that must
+/// know it saw everything (`relocate`, a read's uniqueness, internal #260) tells the two apart.
+pub(crate) fn children_read(e: &AXUIElement, timeout_secs: f32) -> Option<Vec<CFRetained<AXUIElement>>> {
+    let v = match attr(e, "AXChildren") {
+        Ok(v) => v,
+        Err(AXError::NoValue | AXError::AttributeUnsupported) => return Some(Vec::new()),
+        Err(_) => return None,
+    };
+    Some(children_of(v, timeout_secs))
+}
+
+fn children_of(v: CFRetained<CFType>, timeout_secs: f32) -> Vec<CFRetained<AXUIElement>> {
     let Ok(arr) = v.downcast::<CFArray>() else { return Vec::new() };
     let arr: CFRetained<CFArray<CFType>> = unsafe { CFRetained::cast_unchecked(arr) };
     arr.iter()
@@ -220,6 +235,30 @@ pub(crate) fn element_key_of(
     // filter empties differently.
     [subrole.unwrap_or(""), identifier.unwrap_or(""), title.unwrap_or(""), description.unwrap_or(""), &frame]
         .join("\u{1f}")
+}
+
+/// `element_key`, each of its reads held to the time left (`relocate`); `None` once it runs out.
+fn element_key_within(
+    e: &AXUIElement,
+    timeout: f32,
+    left: &dyn Fn() -> f32,
+    late: &dyn Fn() -> bool,
+) -> Option<String> {
+    let read = |name: &'static str| {
+        unsafe { e.set_messaging_timeout(timeout.min(left())) };
+        let v = attr_string(e, name);
+        if late() { None } else { Some(v) }
+    };
+    let subrole = read("AXSubrole")?;
+    let identifier = read("AXIdentifier")?;
+    let title = read("AXTitle")?;
+    let description = read("AXDescription")?;
+    unsafe { e.set_messaging_timeout(timeout.min(left())) };
+    let f = frame(e);
+    if late() {
+        return None;
+    }
+    Some(element_key_of(subrole.as_deref(), identifier.as_deref(), title.as_deref(), description.as_deref(), f.as_ref()))
 }
 
 fn element_key(e: &AXUIElement) -> String {
@@ -372,6 +411,9 @@ pub struct MacAxTree {
     pub stopped_by: Option<String>,
     /// A child was equal to one of its ancestors and was not entered.
     pub self_reference: bool,
+    /// Some element's children could not be read (`AXChildren` failed): the
+    /// tree may miss what lies under it, though the walk was not cut short.
+    pub children_unread: bool,
     /// The main display was asleep when the walk ended; AX then answers
     /// windows with the application element (see the module comment).
     pub display_asleep: bool,
@@ -404,6 +446,7 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
                     truncated: false,
                     stopped_by: None,
                     self_reference: false,
+                    children_unread: false,
                     display_asleep: display_asleep(),
                     error: err,
                     elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
@@ -425,6 +468,7 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
     type Entry = (String, CFRetained<AXUIElement>, Vec<CFRetained<AXUIElement>>, std::rc::Rc<String>);
     // The budget covers the roots too: no message waits past it.
     unsafe { app.set_messaging_timeout(timeout.min(left())) };
+    let mut children_unread = false;
     let (root_list, mut self_reference) =
         roots(&app, opts.include_menu_bar.unwrap_or(false), timeout.min(left()), &late);
     let mut stack: Vec<Entry> = Vec::new();
@@ -464,7 +508,13 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
                 v
             }};
         }
-        let kids = read!(children(&e, timeout));
+        let kids = match read!(children_read(&e, timeout)) {
+            Some(kids) => kids,
+            None => {
+                children_unread = true;
+                Vec::new()
+            }
+        };
         let role = read!(attr_string(&e, "AXRole").unwrap_or_default());
         let subrole = read!(attr_string(&e, "AXSubrole"));
         let title = read!(attr_string(&e, "AXTitle").filter(|s| !s.is_empty()));
@@ -525,6 +575,7 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         truncated: stopped_by.is_some(),
         stopped_by: stopped_by.map(str::to_string),
         self_reference,
+        children_unread,
         display_asleep: display_asleep(),
         error: None,
         elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
@@ -666,19 +717,30 @@ fn relocate(
     let mut visited = 0usize;
     while let Some((id, e, ancestors)) = stack.pop() {
         visited += 1;
-        if visited > MAX_ELEMENTS || t0.elapsed() >= budget {
+        // Every message is held to the time left, and the budget is checked after each (codex on #802).
+        let late = || t0.elapsed() >= budget;
+        if visited > MAX_ELEMENTS || late() {
             return Relocated::Unclear;
         }
         unsafe { e.set_messaging_timeout(timeout.min(left())) };
         // The role first: one message, and most elements stop there.
-        if attr_string(&e, "AXRole").as_deref() == Some(role) && element_key(&e) == key {
-            if found.is_some() {
-                return Relocated::Unclear;
-            }
-            found = Some((id.clone(), e.clone()));
+        let is_role = attr_string(&e, "AXRole").as_deref() == Some(role);
+        if late() {
+            return Relocated::Unclear;
         }
-        let kids = children(&e, timeout.min(left()));
-        if t0.elapsed() >= budget {
+        if is_role {
+            let Some(k) = element_key_within(&e, timeout, &left, &late) else { return Relocated::Unclear };
+            if k == key {
+                if found.is_some() {
+                    return Relocated::Unclear;
+                }
+                found = Some((id.clone(), e.clone()));
+            }
+        }
+        unsafe { e.set_messaging_timeout(timeout.min(left())) };
+        // A subtree that could not be read may hold another one alike (codex on #802).
+        let Some(kids) = children_read(&e, timeout.min(left())) else { return Relocated::Unclear };
+        if late() {
             return Relocated::Unclear;
         }
         let mut lineage = ancestors;
