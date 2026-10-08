@@ -179,6 +179,20 @@ describe("readMacAxCandidates", () => {
     expect(notes.warnings).not.toContain("title_matches_nothing_readable");
   });
 
+  it("keeps an earlier app's incomplete read when no app has anything under the title (codex on #804)", async () => {
+    const d = mk();
+    d.listWindows.mockReturnValue([
+      { windowId: 9, pid: 60157, layer: 0, onScreen: false, title: "保存" },
+      { windowId: 2, pid: 7, layer: 0, onScreen: false, title: "保存" },
+    ]);
+    d.axTree.mockImplementation(async ({ pid }: { pid: number }) =>
+      pid === 60157 ? tree({ pid, elements: [], readIncomplete: true }) : tree({ pid, elements: [] })
+    );
+    const { notes } = await run(d, { windowTitle: "保存" });
+    expect(notes.warnings).toContain("ax_read_incomplete");
+    expect(notes.warnings).not.toContain("title_matches_nothing_readable");
+  });
+
   it("reads no sheet when several carry the title, and says so (gate 2 on #804)", async () => {
     const d = mk();
     const docB = "Other\u001f\u001f0,0,1,1";

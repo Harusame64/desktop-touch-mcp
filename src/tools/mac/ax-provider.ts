@@ -243,13 +243,21 @@ export async function readMacAxCandidates(
     // its service process as well as for the app whose tree holds its controls, and the service
     // came first (measured 2026-10-08). Each is read in turn until one has something under the
     // title; the last one's read is answered if none has (internal #257).
+    // An earlier app whose read was incomplete is not known to hold nothing: if none has anything,
+    // its warnings are answered and "nothing readable" is not (codex on #804).
+    const unsure: string[] = [];
     for (const [i, p] of pids.entries()) {
       const tried: MacAxReadNotes = { warnings: [] };
       const found = await readPidUnderTitle(deps, title, p, tried);
       if (found.length > 0 || i === pids.length - 1) {
-        Object.assign(notes, { ...tried, warnings: [...notes.warnings, ...tried.warnings] });
+        let warnings = tried.warnings;
+        if (found.length === 0 && unsure.length > 0) {
+          warnings = [...new Set([...warnings.filter((w) => w !== "title_matches_nothing_readable"), ...unsure])];
+        }
+        Object.assign(notes, { ...tried, warnings: [...notes.warnings, ...warnings] });
         return found;
       }
+      unsure.push(...tried.warnings.filter((w) => UNSURE_READ.test(w)));
     }
     return [];
   } else if (pinnedPid !== undefined) {
@@ -264,6 +272,9 @@ export async function readMacAxCandidates(
   }
   return readPidUnderTitle(deps, title, pid, notes);
 }
+
+/** Warnings that say a read did not see its app whole. */
+const UNSURE_READ = /^(ax_error:|ax_read_incomplete$|display_asleep$|ax_self_reference$|truncated:)/;
 
 /** Read one app's tree and the candidates under the title (all of them without one). */
 async function readPidUnderTitle(
