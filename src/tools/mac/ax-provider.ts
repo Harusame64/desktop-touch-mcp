@@ -252,7 +252,10 @@ export async function readMacAxCandidates(
       // Several sheets carry the title in this app: it refused to pick one, and a later app must
       // not answer in its place (codex on #804).
       const ambiguous = tried.warnings.includes("title_matches_several_sheets");
-      if (found.length > 0 || ambiguous || i === pids.length - 1) {
+      // An empty read that did not see its app whole may have missed that app's own controls (a
+      // save sheet's 削除): a later app must not answer in its place either (internal #273).
+      const unsureEmpty = found.length === 0 && tried.warnings.some((w) => UNSURE_READ.test(w));
+      if (found.length > 0 || ambiguous || unsureEmpty || i === pids.length - 1) {
         let warnings = tried.warnings;
         if (found.length === 0 && unsure.length > 0) {
           warnings = [...new Set([...warnings.filter((w) => w !== "title_matches_nothing_readable"), ...unsure])];
@@ -324,10 +327,17 @@ async function readPidUnderTitle(
   // (internal #257). Only one: two documents' "保存" sheets read together would mix their
   // 削除 buttons, and one pressed for the wrong document loses its work (gate 2 on #804). Not when
   // an AX window carries the title: that window is what was named (its own sheet comes with it).
-  const sheetsTitled =
+  // The focused or main window is read as its own root (`f`, `m`) when the app's windows do not
+  // list it, so a sheet that is focused comes twice: under its document (`a.0.8`) and as `f`
+  // (measured 2026-10-08, TextEdit). The alias is not another sheet; two documents' sheets are
+  // both under `a` and still count as two (internal #273).
+  const titledSheets =
     !titled || windowsTitled
       ? []
       : tree.elements.filter((e) => e.role === "AXSheet" && (e.title ?? e.description ?? "").toLowerCase().includes(needle));
+  const sheetsTitled = titledSheets.filter(
+    (e) => e.id.startsWith("a.") || !titledSheets.some((o) => o.id.startsWith("a.") && o.elementKey === e.elementKey)
+  );
   const sheet = sheetsTitled.length === 1 ? sheetsTitled[0] : undefined;
   const underTitle = (e: NativeMacAxElement) =>
     !titled || rootTitle(e.rootKey).toLowerCase().includes(needle) || (sheet !== undefined && e.id.startsWith(`${sheet.id}.`));
@@ -340,9 +350,9 @@ async function readPidUnderTitle(
   // failed read: the window may simply not have been walked).
   const explained =
     tree.error !== undefined || tree.displayAsleep || tree.truncated || tree.selfReference || tree.readIncomplete === true;
-  if (titled && candidates.length === 0 && !explained) {
-    notes.warnings.push(sheetsTitled.length > 1 ? "title_matches_several_sheets" : "title_matches_nothing_readable");
-  }
+  // Several sheets is a refusal of its own, whatever else the read says.
+  if (titled && sheetsTitled.length > 1) notes.warnings.push("title_matches_several_sheets");
+  else if (titled && candidates.length === 0 && !explained) notes.warnings.push("title_matches_nothing_readable");
   for (const c of candidates) {
     if (c.role === "textbox" && c.value !== undefined && c.digest !== undefined) {
       (notes.values ??= {})[`ent_${c.digest}`] = c.value;

@@ -179,6 +179,42 @@ describe("readMacAxCandidates", () => {
     expect(notes.warnings).not.toContain("title_matches_nothing_readable");
   });
 
+  it("takes a focused sheet read twice (under its document and as the focused window) for one (internal #273)", async () => {
+    // Measured 2026-10-08, TextEdit with its save panel open: AXSheet "保存" at a.0.8 and again as root "f".
+    const d = mk();
+    d.listWindows.mockReturnValue([{ windowId: 2, pid: 7, layer: 0, onScreen: true, title: "保存" }]);
+    const base = withSheet().elements;
+    const sheetKey = "\u001f\u001f保存\u001f\u001f224,158,442,318";
+    d.axTree.mockResolvedValue(
+      tree({
+        readIncomplete: true,
+        elements: [
+          ...base.map((x: any) => (x.role === "AXSheet" ? { ...x, elementKey: sheetKey } : x)),
+          el({ id: "f", rootKey: "\u001f\u001f224,158,442,318", role: "AXSheet", title: "保存", elementKey: sheetKey }),
+          el({ id: "f.0.12", rootKey: "\u001f\u001f224,158,442,318", actions: ["AXPress"], title: "削除" }),
+        ],
+      })
+    );
+    const { r, notes } = await run(d, { windowTitle: "保存" });
+    expect(r.map((c) => c.label).sort()).toEqual(["保存", "削除"]);
+    expect(notes.warnings).not.toContain("title_matches_several_sheets");
+  });
+
+  it("stops at an earlier app whose empty read was incomplete: a later app does not answer instead (internal #273)", async () => {
+    const d = mk();
+    d.listWindows.mockReturnValue([
+      { windowId: 9, pid: 60157, layer: 0, onScreen: false, title: "保存" },
+      { windowId: 2, pid: 7, layer: 0, onScreen: false, title: "保存" },
+    ]);
+    d.axTree.mockImplementation(async ({ pid }: { pid: number }) =>
+      pid === 60157 ? tree({ pid, elements: [], readIncomplete: true }) : withSheet()
+    );
+    const { r, notes } = await run(d, { windowTitle: "保存" });
+    expect(r).toEqual([]);
+    expect(notes.warnings).toContain("ax_read_incomplete");
+    expect(d.axTree).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps an earlier app's incomplete read when no app has anything under the title (codex on #804)", async () => {
     const d = mk();
     d.listWindows.mockReturnValue([
