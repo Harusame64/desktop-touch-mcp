@@ -23,9 +23,9 @@
   change on screen.
 
 ### Fixed — Windows
-- **Your client now sees what each tool's arguments mean.** Most arguments of `keyboard`, `scroll`,
-  `terminal`, `browser_eval`, `window_dock`, `excel` and `key_locker` reached the client with no
-  description, and about 80 arguments across the tools without their default. Both are now in
+- **Your client now sees what each tool's arguments mean.** 91 arguments of the tools that take an
+  `action` (`keyboard`, `scroll`, `terminal`, `browser_eval` and others) reached the client with no
+  description, and 80 arguments across the tools without their default. Both are now in
   `tools/list`. Where an argument means different things for different actions, its description
   says which text is for which action.
 
