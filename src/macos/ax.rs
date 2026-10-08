@@ -79,8 +79,8 @@ pub(crate) fn children(e: &AXUIElement, timeout_secs: f32) -> Vec<CFRetained<AXU
     children_read(e, timeout_secs).unwrap_or_default()
 }
 
-/// `AXChildren`, or `None` when it could not be read now (`attr_opt`'s errors). An element that
-/// gives no children is a leaf, not a failure. A caller that must
+/// `AXChildren`, or `None` when it could not be read (`attr_opt`'s errors). An element that gives
+/// no children is a leaf, not a failure. A caller that must
 /// know it saw everything (`relocate`, a read's uniqueness, internal #260) tells the two apart.
 pub(crate) fn children_read(e: &AXUIElement, timeout_secs: f32) -> Option<Vec<CFRetained<AXUIElement>>> {
     match attr_opt(e, "AXChildren") {
@@ -149,17 +149,17 @@ pub(crate) fn is_settable(e: &AXUIElement, name: &'static str) -> bool {
     err == AXError::Success && settable != 0
 }
 
-/// `attr`, telling a read that could not be made now from an attribute the element does not give:
-/// the app did not answer (`cannot_complete`, its timeout), the element is gone mid-read
-/// (`invalid_ui_element`), or AX is off (`api_disabled`) are `Err` — the next read may differ, so
-/// an identity built from it is not one (codex on #802). Every other error is the element's
-/// steady answer and reads as absent: Calculator answers `failure` for `AXSubrole` on the same two
-/// buttons in every read (5 of 5, measured 2026-10-08), as no value or unsupported would.
+/// `attr`, telling a read that could not be made from an attribute the element does not give
+/// (no value, unsupported): any other error is `Err`, and an identity built from it is not one —
+/// the next read may differ (codex on #802). One measured exception: Calculator answers `failure`
+/// for `AXSubrole` on the same two buttons in every read (5 of 5, 2026-10-08), a steady answer that
+/// reads as absent; counted as a failed read it marked every Calculator read incomplete.
 fn attr_opt(e: &AXUIElement, name: &'static str) -> Result<Option<CFRetained<CFType>>, AXError> {
     match attr(e, name) {
         Ok(v) => Ok(Some(v)),
-        Err(err @ (AXError::CannotComplete | AXError::InvalidUIElement | AXError::APIDisabled)) => Err(err),
-        Err(_) => Ok(None),
+        Err(AXError::NoValue | AXError::AttributeUnsupported) => Ok(None),
+        Err(AXError::Failure) if name == "AXSubrole" => Ok(None),
+        Err(err) => Err(err),
     }
 }
 
@@ -170,10 +170,18 @@ fn attr_string_strict(e: &AXUIElement, name: &'static str) -> Result<Option<Stri
 
 /// `frame`, failing when a read failed rather than when position or size is absent.
 fn frame_strict(e: &AXUIElement) -> Result<Option<MacRect>, AXError> {
+    frame_strict_with(e, &|| {})
+}
+
+/// `frame_strict`, calling `before` ahead of each of its two messages (`relocate` sets the time
+/// left there, codex on #802).
+fn frame_strict_with(e: &AXUIElement, before: &dyn Fn()) -> Result<Option<MacRect>, AXError> {
+    before();
     let p = attr_opt(e, "AXPosition")?.and_then(|v| v.downcast::<AXValue>().ok()).and_then(|v| {
         let mut p = CGPoint { x: 0.0, y: 0.0 };
         unsafe { v.value(AXValueType::CGPoint, NonNull::from(&mut p).cast()) }.then_some(p)
     });
+    before();
     let z = attr_opt(e, "AXSize")?.and_then(|v| v.downcast::<AXValue>().ok()).and_then(|v| {
         let mut s = CGSize { width: 0.0, height: 0.0 };
         unsafe { v.value(AXValueType::CGSize, NonNull::from(&mut s).cast()) }.then_some(s)
@@ -285,8 +293,10 @@ fn element_key_within(
     let identifier = read("AXIdentifier")?;
     let title = read("AXTitle")?;
     let description = read("AXDescription")?;
-    unsafe { e.set_messaging_timeout(timeout.min(left())) };
-    let f = frame_strict(e).ok()?;
+    let f = frame_strict_with(e, &|| {
+        unsafe { e.set_messaging_timeout(timeout.min(left())) };
+    })
+    .ok()?;
     if late() {
         return None;
     }
