@@ -245,7 +245,6 @@ export async function readMacAxCandidates(
     // title; the last one's read is answered if none has (internal #257).
     // An earlier app whose read was incomplete is not known to hold nothing: if none has anything,
     // its warnings are answered and "nothing readable" is not (codex on #804).
-    const unsure: string[] = [];
     for (const [i, p] of pids.entries()) {
       const tried: MacAxReadNotes = { warnings: [] };
       const found = await readPidUnderTitle(deps, title, p, tried);
@@ -255,15 +254,12 @@ export async function readMacAxCandidates(
       // An empty read that did not see its app whole may have missed that app's own controls (a
       // save sheet's 削除): a later app must not answer in its place either (internal #273).
       const unsureEmpty = found.length === 0 && tried.warnings.some((w) => UNSURE_READ.test(w));
+      // The cost: when the open/save panel's service process is listed first and its read is
+      // incomplete, the panel is not reached by its title (measured complete, gate 2 on #805).
       if (found.length > 0 || ambiguous || unsureEmpty || i === pids.length - 1) {
-        let warnings = tried.warnings;
-        if (found.length === 0 && unsure.length > 0) {
-          warnings = [...new Set([...warnings.filter((w) => w !== "title_matches_nothing_readable"), ...unsure])];
-        }
-        Object.assign(notes, { ...tried, warnings: [...notes.warnings, ...warnings] });
+        Object.assign(notes, { ...tried, warnings: [...notes.warnings, ...tried.warnings] });
         return found;
       }
-      unsure.push(...tried.warnings.filter((w) => UNSURE_READ.test(w)));
     }
     return [];
   } else if (pinnedPid !== undefined) {
@@ -279,8 +275,11 @@ export async function readMacAxCandidates(
   return readPidUnderTitle(deps, title, pid, notes);
 }
 
-/** Warnings that say a read did not see its app whole. */
-const UNSURE_READ = /^(ax_error:|ax_read_incomplete$|display_asleep$|ax_self_reference$|truncated:)/;
+/**
+ * Warnings that say a read did not see its app whole. The post-act qualifier counts these and the
+ * title's own (`INCOMPLETE_READ`, desktop-discover-act.ts) — one list, so the two cannot drift.
+ */
+export const UNSURE_READ = /^(ax_error:|ax_read_incomplete$|display_asleep$|ax_self_reference$|truncated:)/;
 
 /** Read one app's tree and the candidates under the title (all of them without one). */
 async function readPidUnderTitle(
@@ -335,10 +334,19 @@ async function readPidUnderTitle(
     !titled || windowsTitled
       ? []
       : tree.elements.filter((e) => e.role === "AXSheet" && (e.title ?? e.description ?? "").toLowerCase().includes(needle));
-  const sheetsTitled = titledSheets.filter(
-    (e) => e.id.startsWith("a.") || !titledSheets.some((o) => o.id.startsWith("a.") && o.elementKey === e.elementKey)
-  );
-  const sheet = sheetsTitled.length === 1 ? sheetsTitled[0] : undefined;
+  // Alias by title, not by key: the two copies may be read with different frames (a sheet still
+  // sliding in) or one with a failed frame read (gate 2 on #805).
+  const sheetTitle = (e: NativeMacAxElement) => (e.title ?? e.description ?? "").toLowerCase();
+  const isAlias = (e: NativeMacAxElement) =>
+    !e.id.startsWith("a.") && titledSheets.some((o) => o.id.startsWith("a.") && sheetTitle(o) === sheetTitle(e));
+  const sheetsTitled = titledSheets.filter((e) => !isAlias(e));
+  // Of a sheet and its alias, the copy whose read holds more controls: one copy's children may
+  // have failed to read while the other's did not (gate 2 on #805).
+  const controlsUnder = (s: NativeMacAxElement) => tree.elements.filter((e) => e.id.startsWith(`${s.id}.`) && isCandidate(e)).length;
+  const sheet =
+    sheetsTitled.length === 1
+      ? [sheetsTitled[0]!, ...titledSheets.filter(isAlias)].reduce((best, s) => (controlsUnder(s) > controlsUnder(best) ? s : best))
+      : undefined;
   const underTitle = (e: NativeMacAxElement) =>
     !titled || rootTitle(e.rootKey).toLowerCase().includes(needle) || (sheet !== undefined && e.id.startsWith(`${sheet.id}.`));
   const candidates = tree.elements

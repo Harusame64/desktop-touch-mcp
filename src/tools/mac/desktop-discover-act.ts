@@ -15,7 +15,7 @@ import { DesktopFacade, type DesktopSeeInput } from "../desktop.js";
 import { buildDesc, ok, type ToolResult } from "../_types.js";
 import { failCode, getSuggestsForCode } from "../_errors.js";
 import { coercedBoolean } from "../_coerce.js";
-import { readMacAxCandidates, type MacAxReadNotes } from "./ax-provider.js";
+import { readMacAxCandidates, UNSURE_READ, type MacAxReadNotes } from "./ax-provider.js";
 import { createMacAxExecutor } from "./ax-executor.js";
 
 export const macDiscoverSchema = {
@@ -227,7 +227,7 @@ async function macActOnce(
 }
 
 /** Warnings that mean the read after the act did not see the app whole. */
-const INCOMPLETE_READ = /^(ax_error:|ax_read_incomplete$|display_asleep$|ax_self_reference$|truncated:|no_window_matches_title$|window_titles_unavailable$|no_frontmost_app$)/;
+const INCOMPLETE_READ = { test: (w: string) => UNSURE_READ.test(w) || /^(no_window_matches_title|window_titles_unavailable|no_frontmost_app)$/.test(w) };
 
 /**
  * The touch loop diffs the read after the act against the discover. When that read was

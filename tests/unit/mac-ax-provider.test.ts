@@ -200,6 +200,26 @@ describe("readMacAxCandidates", () => {
     expect(notes.warnings).not.toContain("title_matches_several_sheets");
   });
 
+  it("takes the alias for one even when its frame differs, and reads the copy that holds the controls (gate 2 on #805)", async () => {
+    const d = mk();
+    d.listWindows.mockReturnValue([{ windowId: 2, pid: 7, layer: 0, onScreen: true, title: "保存" }]);
+    d.axTree.mockResolvedValue(
+      tree({
+        readIncomplete: true,
+        elements: [
+          // the copy under the document: its children did not read
+          el({ id: "a.0.8", rootKey: doc, role: "AXSheet", title: "保存", elementKey: "\u001f\u001f保存\u001f\u001f224,170,442,318" }),
+          // the focused-window copy, read mid-slide at another frame, with the controls
+          el({ id: "f", rootKey: "\u001f\u001f224,158,442,318", role: "AXSheet", title: "保存", elementKey: "\u001f\u001f保存\u001f\u001f224,158,442,318" }),
+          el({ id: "f.0.12", rootKey: "\u001f\u001f224,158,442,318", actions: ["AXPress"], title: "削除" }),
+        ],
+      })
+    );
+    const { r, notes } = await run(d, { windowTitle: "保存" });
+    expect(r.map((c) => c.label)).toEqual(["削除"]);
+    expect(notes.warnings).not.toContain("title_matches_several_sheets");
+  });
+
   it("stops at an earlier app whose empty read was incomplete: a later app does not answer instead (internal #273)", async () => {
     const d = mk();
     d.listWindows.mockReturnValue([
