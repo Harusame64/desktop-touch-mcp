@@ -295,7 +295,7 @@ mouse_click(x=500, y=300, windowTitle="Notepad", elementName="Save")
 mouse_click(x=500, y=300, homing=false)
 ```
 
-The `homing` parameter is available on `mouse_click`, `mouse_drag`, and `scroll`. The cache is updated automatically on every `screenshot()`, `desktop_discover()`, `focus_window()`, and `workspace_snapshot()` call.
+The `homing` parameter is available on `mouse_click`, `mouse_drag`, and `scroll`. The cache is updated automatically on every `screenshot()`, `focus_window()`, and `workspace_snapshot()` call.
 
 ### `mouse_click` image-local coords (origin + scale)
 
@@ -742,7 +742,7 @@ If `desktop_act` returns `ok: false`, read `reason` and follow the built-in reco
 - `keyboard_target_unsafe` → nothing was typed: the characters would have gone to a different control or window, or to a read-only control, or the field you named (or its window) is disabled (`if_unexpected.detail` says which; for disabled, wait out whatever disabled it and re-discover). Put the focus on the field you named, then type again — not through a foreground `keyboard` type. By title: `desktop_act` with `action='click'`. By handle: re-discover by title first — except for a common dialog, which a title resolves to by handle as well, where nothing here can focus its text field yet. For another window: `focus_window` first
 - `executor_failed` → if `if_unexpected.detail` begins "Nothing was typed", no route ran and nothing was typed — do what detail says. Otherwise the road this act took failed: for a click fall back to `click_element` / `mouse_click` / `browser_click`; for a type, focus the field and use `keyboard(action='type', method='foreground')`
 
-For `desktop_discover` warnings (`visual_provider_unavailable`, `visual_provider_warming`, `cdp_provider_failed`, …), the coordinate-based tools (`screenshot(detail='text')`, `click_element`, `mouse_click`, `terminal`, …) remain available as an escape hatch.
+For `desktop_discover` warnings (`visual_provider_unavailable`, `visual_provider_warming`, `cdp_provider_failed`, …), the tools that need no `desktop_discover` lease (`screenshot(detail='text')`, `click_element`, `mouse_click`, `terminal`, …) remain available as an escape hatch.
 
 ---
 
