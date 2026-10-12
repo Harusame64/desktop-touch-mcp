@@ -46,6 +46,7 @@ function fake(o: {
   captureThrows?: boolean;
   anchored?: boolean;
   inject?: { ok: true; verified: boolean } | { ok: false; code: string };
+  deleteFails?: number;
 } = {}): Fake {
   const calls: string[] = [];
   const deleted: string[] = [];
@@ -68,7 +69,11 @@ function fake(o: {
     },
     stillAnchored: () => { calls.push("anchored"); return o.anchored ?? true; },
     injectAt: async (anchor, id, submit) => { calls.push(`inject:${anchor.shellPid}:${id}:${submit}`); return o.inject ?? { ok: true, verified: true }; },
-    deleteSecret: async (id) => { calls.push(`delete:${id}`); deleted.push(id); },
+    deleteSecret: async (id) => {
+      calls.push(`delete:${id}`);
+      if ((o.deleteFails ?? 0) > deleted.filter((d) => d === "fail").length) { deleted.push("fail"); throw new Error("pipe closed"); }
+      deleted.push(id);
+    },
     sleep: async () => { calls.push("sleep"); },
   };
   return { deps, calls, deleted, released };
@@ -214,6 +219,18 @@ describe("runFillOnce — after the dialog, nothing is typed unless the pane is 
     const f = fake({ captureThrows: true });
     expect((await run(f)).kind).toBe("fill_aborted");
     expect(f.deleted).toEqual(["op-1"]);
+    expect(f.released).toEqual([TOKEN]);
+  });
+
+  it("an erase that fails once is retried; the result stays clean", async () => {
+    const f = fake({ deleteFails: 1 });
+    expect(await run(f)).toEqual({ kind: "filled", verified: true });
+    expect(f.deleted).toEqual(["fail", "op-1"]);
+  });
+
+  it("an erase that fails twice is REPORTED as cleanupFailed, never swallowed (codex P2)", async () => {
+    const f = fake({ deleteFails: 2 });
+    expect(await run(f)).toEqual({ kind: "filled", verified: true, cleanupFailed: true });
     expect(f.released).toEqual([TOKEN]);
   });
 

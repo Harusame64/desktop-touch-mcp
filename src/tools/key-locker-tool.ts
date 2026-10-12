@@ -406,7 +406,8 @@ const FILL_ONCE_HINTS: Record<string, string> = {
   failsafe_unknown: "The emergency-stop check failed, so nothing was typed. Retry.",
   prompt_unreadable: "The pane could not be read unambiguously. Bring it to the front (or close a same-titled window), then retry.",
   not_at_prompt: "The pane is not showing a password prompt. Send the command first and call fill_once once the prompt appears.",
-  prompt_gone: "The prompt was gone when the user finished typing (it may have timed out). Nothing was typed. Re-run the command and retry.",
+  no_credential_program: "No ssh / sudo / su / doas is running in that pane, so this is not a real password prompt. Nothing was typed.",
+  prompt_changed: "The pane changed while the dialog was open (the prompt timed out, or a different command is asking now). Nothing was typed. Re-run the command and retry.",
   target_gone: "The pane closed while the dialog was open. Nothing was typed.",
 };
 
@@ -431,15 +432,20 @@ async function handleFillOnce(paneId: string, reason: string, submit: boolean | 
   const note = sanitizeFillOnceReason(reason);
   try {
     const outcome = await wiring.fillOnce(paneId, note, submit ?? true);
+    // A one-time secret that could not be erased is REPORTED (it stays encrypted in the helper's memory
+    // until the helper exits — PR #806 codex P2), never swallowed.
+    const cleanup = outcome.cleanupFailed === true
+      ? { cleanupFailed: true, cleanupHint: "The one-time secret could not be erased from the locker; it is discarded when the locker helper exits." }
+      : {};
     switch (outcome.kind) {
       case "filled":
-        return ok({ filled: true, verified: outcome.verified });
+        return ok({ filled: true, verified: outcome.verified, ...cleanup });
       case "cancelled":
-        return ok({ filled: false, cancelled: true, hint: "The user cancelled the dialog. Nothing was typed." });
+        return ok({ filled: false, cancelled: true, hint: "The user cancelled the dialog. Nothing was typed.", ...cleanup });
       case "declined":
-        return ok({ filled: false, reason: outcome.reason, hint: FILL_ONCE_HINTS[outcome.reason] ?? "" });
+        return ok({ filled: false, reason: outcome.reason, hint: FILL_ONCE_HINTS[outcome.reason] ?? "", ...cleanup });
       case "fill_aborted":
-        return ok({ filled: false, reason: "fill_aborted", code: outcome.code, hint: "The locker refused the write (the pane changed or could not be verified). Nothing was saved." });
+        return ok({ filled: false, reason: "fill_aborted", code: outcome.code, hint: "The locker refused the write (the pane changed or could not be verified). Nothing was saved.", ...cleanup });
     }
   } catch (err) {
     return keyLockerFailure(err);

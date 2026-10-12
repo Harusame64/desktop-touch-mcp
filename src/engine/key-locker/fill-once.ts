@@ -22,8 +22,10 @@
 //     credential processes (pid + creation time). Anything else (Ctrl+C and a new `ssh other-host`, a
 //     timed-out prompt, output) declines: the user typed this secret for what they saw (PR #806 Opus P2);
 //   * the emergency stop is probed before the dialog opens and again as the last await before the write;
-//   * nothing persists — no binding, no [Never] tombstone, no consent change; the captured secret is
-//     deleted on EVERY exit (the loop's reverse-orphan rule).
+//   * nothing persists — no binding, no [Never] tombstone, no consent change. The helper keeps a fill_once
+//     secret in its own memory only (never store.json), so a server that dies mid-dialog (the emergency
+//     stop exits it) leaves nothing behind; and the secret is still deleted on EVERY exit here, with a
+//     failed erase reported as `cleanupFailed`.
 // The session being UNKNOWN or nested is deliberately NOT a gate: nothing is derived from it or bound to it.
 
 import type { PaneAnchor } from "./inject-target.js";
@@ -80,11 +82,16 @@ export type FillOnceDeclineReason =
   | "prompt_changed"         // the pane changed while the dialog was open (or its prompt went away)
   | "target_gone";           // the pane closed while the dialog was open
 
-export type FillOnceOutcome =
+export type FillOnceOutcome = (
   | { kind: "filled"; verified: boolean }
   | { kind: "cancelled" }
   | { kind: "declined"; reason: FillOnceDeclineReason }
-  | { kind: "fill_aborted"; code: string };
+  | { kind: "fill_aborted"; code: string }
+) & {
+  /** Set when the one-time secret could NOT be erased afterwards (two attempts failed): it stays encrypted
+   *  in the locker store under an id nothing points to. Reported, never swallowed (PR #806 codex P2). */
+  cleanupFailed?: true;
+};
 
 /** A `busy` claim is retried this many times, this far apart (the poll's hold is one prompt read). */
 const BUSY_RETRIES = 5;
@@ -135,38 +142,53 @@ export async function runFillOnce(
     if (procsBefore === null) return { kind: "declined", reason: "not_anchored" };
     if (procsBefore.size === 0) return { kind: "declined", reason: "no_credential_program" };
 
+    // From here on a secret may exist under `opaqueId` (a capture that threw may or may not have stored it),
+    // so every exit erases it — the filled one included.
     const opaqueId = deps.mintOpaqueId();
-    let attempted = false; // a capture that threw may or may not have stored — delete in that case too
+    let outcome: FillOnceOutcome;
     try {
-      attempted = true;
-      const cap = await deps.capture(opaqueId, dialog);
-      if (!cap.captured) return { kind: "cancelled" };
-
-      // After the dialog (arbitrary user time): the pane must be the SAME — the same prompt text and the
-      // same credential processes — then the stop and the anchor, kept adjacent to the write (the stop
-      // probe is the last await before `injectAt`, the same ordering as the loop's backstop).
-      const after = await deps.readPromptTail(paneId);
-      if (after === null) return { kind: "declined", reason: "prompt_unreadable" };
-      if (!after.isCredentialPrompt || after.tail !== before.tail) return { kind: "declined", reason: "prompt_changed" };
-      const procsAfter = deps.credentialProcesses(paneId);
-      if (procsAfter === null) return { kind: "declined", reason: "target_gone" };
-      if (!sameProcesses(procsBefore, procsAfter)) return { kind: "declined", reason: "prompt_changed" };
-      const stoppedNow = await failsafeBlocks(deps);
-      if (stoppedNow !== null) return { kind: "declined", reason: stoppedNow };
-      if (!deps.stillAnchored(paneId)) return { kind: "declined", reason: "target_gone" };
-
-      const r = await deps.injectAt(claim.anchor, opaqueId, submit);
-      return r.ok ? { kind: "filled", verified: r.verified } : { kind: "fill_aborted", code: r.code };
+      outcome = await captureAndFill(deps, { paneId, dialog, submit, opaqueId, anchor: claim.anchor, before, procsBefore });
     } catch (err) {
-      return { kind: "fill_aborted", code: `fill_once_error:${err instanceof Error ? err.message : String(err)}` };
-    } finally {
-      // Never saved: delete on EVERY exit, the filled one included. Best-effort (a failed delete leaves dead
-      // encrypted storage, not a leak).
-      if (attempted) {
-        try { await deps.deleteSecret(opaqueId); } catch { /* best-effort */ }
-      }
+      outcome = { kind: "fill_aborted", code: `fill_once_error:${err instanceof Error ? err.message : String(err)}` };
     }
+    return (await erased(deps, opaqueId)) ? outcome : { ...outcome, cleanupFailed: true };
   } finally {
     deps.release(paneId, claim.token);
   }
+}
+
+/** Erase the one-time secret: two attempts (a pipe hiccup is the usual cause); false if both failed. */
+async function erased(deps: FillOnceDeps, opaqueId: string): Promise<boolean> {
+  for (let i = 0; i < 2; i++) {
+    try { await deps.deleteSecret(opaqueId); return true; } catch { /* retry once */ }
+  }
+  return false;
+}
+
+async function captureAndFill(
+  deps: FillOnceDeps,
+  r: {
+    paneId: string; dialog: FillOnceDialog; submit: boolean; opaqueId: string; anchor: PaneAnchor;
+    before: PromptVerdict; procsBefore: Map<number, number>;
+  },
+): Promise<FillOnceOutcome> {
+  const { paneId, dialog, submit, opaqueId, anchor, before, procsBefore } = r;
+  const cap = await deps.capture(opaqueId, dialog);
+  if (!cap.captured) return { kind: "cancelled" };
+
+  // After the dialog (arbitrary user time): the pane must be the SAME — the same prompt text and the
+  // same credential processes — then the stop and the anchor, kept adjacent to the write (the stop
+  // probe is the last await before `injectAt`, the same ordering as the loop's backstop).
+  const after = await deps.readPromptTail(paneId);
+  if (after === null) return { kind: "declined", reason: "prompt_unreadable" };
+  if (!after.isCredentialPrompt || after.tail !== before.tail) return { kind: "declined", reason: "prompt_changed" };
+  const procsAfter = deps.credentialProcesses(paneId);
+  if (procsAfter === null) return { kind: "declined", reason: "target_gone" };
+  if (!sameProcesses(procsBefore, procsAfter)) return { kind: "declined", reason: "prompt_changed" };
+  const stoppedNow = await failsafeBlocks(deps);
+  if (stoppedNow !== null) return { kind: "declined", reason: stoppedNow };
+  if (!deps.stillAnchored(paneId)) return { kind: "declined", reason: "target_gone" };
+
+  const w = await deps.injectAt(anchor, opaqueId, submit);
+  return w.ok ? { kind: "filled", verified: w.verified } : { kind: "fill_aborted", code: w.code };
 }

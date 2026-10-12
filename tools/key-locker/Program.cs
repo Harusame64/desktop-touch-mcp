@@ -263,7 +263,8 @@ internal static class KeyLocker
         catch (Exception e) { Console.Error.WriteLine($"[key-locker] dialog failed: {e.Message}"); }
 
         if (secret == null) { WriteFrameReplyCaptured(server, id, false, false); return; }
-        _store.Capture(key, secret);
+        if (once) _store.CaptureEphemeral(key, secret); // fill_once: memory only, never store.json
+        else _store.Capture(key, secret);
         var rt = _store.RoundTripOk(key, secret); // in-process verify; secret stays local
         WriteFrameReplyCaptured(server, id, true, rt);
     }
@@ -518,6 +519,10 @@ internal sealed class LockerStore
 
     private readonly string _path;
     private readonly Dictionary<string, string> _entries = new(StringComparer.Ordinal); // id -> base64(DPAPI blob)
+    // fill_once secrets (PR #806): DPAPI-wrapped like the rest, but held in THIS process only and never written
+    // to store.json — so if the MCP server dies mid-dialog (e.g. the emergency stop exits it), the secret dies
+    // with this helper instead of persisting under an id nothing points to (win2 F6).
+    private readonly Dictionary<string, string> _ephemeral = new(StringComparer.Ordinal);
 
     public LockerStore(string dir)
     {
@@ -553,16 +558,35 @@ internal sealed class LockerStore
         Save();
     }
 
-    public bool Exists(string id) => _entries.ContainsKey(id);
+    /// A fill_once entry: in memory only (see `_ephemeral`).
+    public void CaptureEphemeral(string id, string secret)
+    {
+        var blob = ProtectedData.Protect(Encoding.UTF8.GetBytes(secret), Entropy, DataProtectionScope.CurrentUser);
+        _ephemeral[id] = Convert.ToBase64String(blob);
+    }
 
-    public bool Delete(string id) { var r = _entries.Remove(id); if (r) Save(); return r; }
+    private bool TryBlob(string id, out string b64)
+    {
+        if (_entries.TryGetValue(id, out var persisted)) { b64 = persisted; return true; }
+        if (_ephemeral.TryGetValue(id, out var once)) { b64 = once; return true; }
+        b64 = "";
+        return false;
+    }
+
+    public bool Exists(string id) => _entries.ContainsKey(id) || _ephemeral.ContainsKey(id);
+
+    public bool Delete(string id)
+    {
+        if (_ephemeral.Remove(id)) return true;
+        var r = _entries.Remove(id); if (r) Save(); return r;
+    }
 
     /// In-process round-trip: decrypt the stored blob and compare to `expected`. Any DPAPI
     /// integrity/decrypt failure returns false (never throws to the caller). The secret is
     /// NOT returned — only the boolean.
     public bool RoundTripOk(string id, string expected)
     {
-        if (!_entries.TryGetValue(id, out var b64)) return false;
+        if (!TryBlob(id, out var b64)) return false;
         try
         {
             var plain = ProtectedData.Unprotect(Convert.FromBase64String(b64), Entropy, DataProtectionScope.CurrentUser);
@@ -577,7 +601,7 @@ internal sealed class LockerStore
     /// console-buffer injector and the askpass serving path.
     public bool WithDecrypted(string id, Action<byte[]> use)
     {
-        if (!_entries.TryGetValue(id, out var b64)) return false;
+        if (!TryBlob(id, out var b64)) return false;
         byte[]? plain = null;
         try
         {

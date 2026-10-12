@@ -433,7 +433,7 @@ export class KeyLockerHost {
    * `dialog` (optional, secret-free) tells the user what the entry is for: `label` names the target
    * (a binding's display URI, or the locker console a `fill_once` writes into); `note` is the assistant's
    * stated reason, which the dialog marks as the assistant's words; `purpose: "fill_once"` makes it a
-   * one-time entry (not saved). Without `label` the dialog falls back to the opaque key, as before; an
+   * one-time entry, held in the helper's memory only (never written to store.json). Without `label` the dialog falls back to the opaque key, as before; an
    * older locker ignores the extra fields.
    */
   async capture(
