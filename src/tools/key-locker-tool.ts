@@ -114,11 +114,11 @@ const launchConsoleSchema = z.object({
 
 const fillOnceSchema = z.object({
   action: z.literal("fill_once").describe(
-    "Ask the USER to type a password / passphrase into the locker's secure dialog, then type it ONCE into the " +
-      "credential prompt currently shown in a launch_console pane, and forget it (nothing is saved). Use it when " +
-      "a pane is waiting at a password prompt that autofill does not handle — e.g. an ssh run INSIDE another ssh " +
-      "session (a jump host), or a login you do not want saved. The pane must be AT the prompt when you call " +
-      "(send the command first, then call this); the secret is never shown to you.",
+    "Ask the USER to type a password into the locker's secure dialog, then type it ONCE into the password " +
+      "prompt currently shown in a launch_console pane, and forget it (nothing is saved). Use it when a pane is " +
+      "waiting at a password prompt that autofill does not handle — e.g. an ssh run INSIDE another ssh session " +
+      "(a jump host), or a login you do not want saved. The pane must be AT the prompt, with the ssh / sudo / su " +
+      "that asks still running in it (send the command first, then call this); the secret is never shown to you.",
   ),
   paneId: z.string().min(1).describe("The paneId returned by launch_console (only those panes can be filled)."),
   reason: z.string().min(1).max(200).describe(
@@ -410,6 +410,15 @@ const FILL_ONCE_HINTS: Record<string, string> = {
   target_gone: "The pane closed while the dialog was open. Nothing was typed.",
 };
 
+/**
+ * The reason is display text in a security dialog: one plain line. Control characters, format characters
+ * (bidi overrides / isolates, zero-width), and line / paragraph separators are replaced by a space, so the
+ * assistant's words cannot fake extra lines or reorder the dialog's text (PR #806 Opus P3). Exported for tests.
+ */
+export function sanitizeFillOnceReason(reason: string): string {
+  return reason.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s{2,}/g, " ").trim();
+}
+
 async function handleFillOnce(paneId: string, reason: string, submit: boolean | undefined): Promise<ToolResult> {
   // Not an ACQUIRE path: a fillable pane exists only after launch_console, which already took consent.
   if (!manager().isConsentAccepted()) {
@@ -419,9 +428,7 @@ async function handleFillOnce(paneId: string, reason: string, submit: boolean | 
   if (wiring === null) {
     return fail("KeyLockerDisabled", "KeyLockerDisabled: the key locker live wiring is not active");
   }
-  // The reason is display text in a security dialog: one line, no control characters.
-  const note = Array.from(reason, (ch) => { const c = ch.codePointAt(0) ?? 0; return c < 0x20 || c === 0x7f ? " " : ch; })
-    .join("").replace(/ {2,}/g, " ").trim();
+  const note = sanitizeFillOnceReason(reason);
   try {
     const outcome = await wiring.fillOnce(paneId, note, submit ?? true);
     switch (outcome.kind) {

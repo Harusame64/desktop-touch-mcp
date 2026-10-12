@@ -12,7 +12,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import net from "node:net";
 import { randomBytes } from "node:crypto";
-import { KeyLockerHost } from "../../src/engine/key-locker-host.js";
+import { KeyLockerHost, KEY_LOCKER_PROTOCOL_VERSION } from "../../src/engine/key-locker-host.js";
 
 function pipePath(): string {
   return `\\\\.\\pipe\\dtm-locker-test-${randomBytes(8).toString("hex")}`;
@@ -37,7 +37,7 @@ function makeFakeLocker(
     promptReply?: string;
   } = {},
 ): net.Server {
-  const proto = opts.protocol ?? "1";
+  const proto = opts.protocol ?? KEY_LOCKER_PROTOCOL_VERSION;
   const reportPid = opts.reportPid ?? 4343;
   const state = opts.state ?? { store: new Set(opts.seed ?? []), captureReply: opts.captureReply ?? { captured: true, rt: true }, lastFrames: [] };
   return net.createServer((sock) => {
@@ -106,9 +106,9 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     hosts.push(host);
 
     expect(host.helperPid).toBe(515_151);
-    expect(host.protocolVersion).toBe("1");
+    expect(host.protocolVersion).toBe("2");
     expect(await host.ping()).toBe(true);
-    expect(await host.version()).toBe("1");
+    expect(await host.version()).toBe("2");
   });
 
   it("exists() reflects the store; delete() removes", async () => {
@@ -215,7 +215,7 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
 
     const [p, v, e] = await Promise.all([host.ping(), host.version(), host.exists("a")]);
     expect(p).toBe(true);
-    expect(v).toBe("1");
+    expect(v).toBe("2");
     expect(e).toBe(true);
   });
 
@@ -233,8 +233,15 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
 
   it("rejects a locker whose protocol version does not match", async () => {
     const path = pipePath();
-    await listen(makeFakeLocker(path, { protocol: "2" }), path);
-    await expect(KeyLockerHost.connectForTest(path)).rejects.toThrow(/protocol '2' != expected '1'/);
+    await listen(makeFakeLocker(path, { protocol: "3" }), path);
+    await expect(KeyLockerHost.connectForTest(path)).rejects.toThrow(/protocol '3' != expected '2'/);
+  });
+
+  it("rejects a v1 locker — the helper from before capture carried label/note/purpose (PR #806)", async () => {
+    // A stale bin/key-locker.exe would show a fill_once dialog with an opaque id and a [Save] button.
+    const path = pipePath();
+    await listen(makeFakeLocker(path, { protocol: "1" }), path);
+    await expect(KeyLockerHost.connectForTest(path)).rejects.toThrow(/protocol '1' != expected '2'/);
   });
 
   it("fails pending requests after dispose", async () => {

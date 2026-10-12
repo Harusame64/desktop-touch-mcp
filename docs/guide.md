@@ -135,7 +135,8 @@ terminal({ action:'send', paneId:'12345678', input:'ssh user@host' })
 - **A prompt autofill does not handle** (an `ssh` inside another `ssh` session, or a
   login you do not want saved): send the command, then call
   `key_locker({ action:'fill_once', paneId, reason })`. You type the password into the
-  locker's dialog; it is typed once into that pane's prompt and not saved.
+  locker's dialog; it is typed once into that pane's prompt and not saved. It types only
+  while the `ssh` / `sudo` / `su` that asks is still running in that pane.
 - **Every autofill asks you to confirm by default**; opt a binding out with
   `set_policy`. `list` / `status` / `forget` manage saved credentials.
 - `terminal` `read` / `send` accept `paneId` as an alternative to `windowTitle` —

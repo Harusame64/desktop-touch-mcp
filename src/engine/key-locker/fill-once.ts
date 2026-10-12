@@ -9,17 +9,22 @@
 // able to ask for a key at any moment. `fill_once` serves both WITHOUT deriving or storing anything: the
 // user types the secret into the locker's own dialog, it is written into ONE pane once, and it is deleted.
 //
-// Invariants (the same ones the loop keeps; nothing here weakens them):
+// Invariants (nothing here weakens the loop's):
 //   * the secret never reaches the assistant — the dialog is the locker's, the pipe carries only booleans;
 //   * injection only into a pane the locker LAUNCHED (the driver's spawn-captured anchor), re-verified by
 //     the locker at the injection instant (shell pid + creation time);
-//   * only into a prompt that reads as a credential prompt BOTH when the call is made AND again after the
-//     dialog, immediately before the write (the user may take minutes; the prompt may have gone);
-//   * the emergency stop is probed before the dialog opens and again at the injection instant;
+//   * only while a CREDENTIAL PROGRAM (ssh / sudo / su / doas) is running under that pane's shell. The prompt
+//     TEXT alone is not enough: the assistant itself can print `Password:` (a comment, `Read-Host`) into its
+//     own pane, and a secret typed into an ECHOING line is readable back with `terminal read` (PR #806 Opus
+//     P1). A real local program asking is what makes the prompt echo-off. Past the first hop the remote side
+//     can still fake a prompt — that is inherent, and the dialog is where the user judges it;
+//   * the pane must look the SAME after the dialog as before it — the same prompt text and the same
+//     credential processes (pid + creation time). Anything else (Ctrl+C and a new `ssh other-host`, a
+//     timed-out prompt, output) declines: the user typed this secret for what they saw (PR #806 Opus P2);
+//   * the emergency stop is probed before the dialog opens and again as the last await before the write;
 //   * nothing persists — no binding, no [Never] tombstone, no consent change; the captured secret is
 //     deleted on EVERY exit (the loop's reverse-orphan rule).
-// The session being UNKNOWN or nested is deliberately NOT a gate: nothing is derived from it or bound to it,
-// and the user decides, looking at the dialog, whether this pane should get this secret.
+// The session being UNKNOWN or nested is deliberately NOT a gate: nothing is derived from it or bound to it.
 
 import type { PaneAnchor } from "./inject-target.js";
 import type { PromptVerdict } from "./key-locker-capture-driver.js";
@@ -32,9 +37,10 @@ export interface FillOnceDialog {
   note: string;
 }
 
-/** The result of taking a pane for a one-shot fill (the driver serializes it against its own poll/loop). */
+/** The result of taking a pane for a one-shot fill (the driver serializes it against its own poll/loop).
+ *  `token` identifies THIS claim, so its release can never reset a different claim or record. */
 export type FillOnceClaim =
-  | { ok: true; anchor: PaneAnchor }
+  | { ok: true; anchor: PaneAnchor; token: object }
   | { ok: false; reason: "not_anchored" | "busy" };
 
 export type FillOnceInjectResult = { ok: true; verified: boolean } | { ok: false; code: string };
@@ -42,8 +48,11 @@ export type FillOnceInjectResult = { ok: true; verified: boolean } | { ok: false
 export interface FillOnceDeps {
   /** Take the pane exclusively (no concurrent poll / capture loop / second fill_once). */
   claim(paneId: string): FillOnceClaim;
-  /** Give the pane back. Called exactly once for every successful claim. */
-  release(paneId: string): void;
+  /** Give the claim back. Called exactly once for every successful claim, with its token. */
+  release(paneId: string, token: object): void;
+  /** The credential programs (ssh / sudo / su / doas) running under the anchored shell, as pid → creation
+   *  time; null when the pane is no longer anchored. */
+  credentialProcesses(paneId: string): Map<number, number> | null;
   /** Resolves while the emergency stop is NOT armed; throws (`err.name === "FailsafeError"`) while it is. */
   checkFailsafe(): Promise<void>;
   /** The credential-prompt verdict for the pane, or null when the pane cannot be read unambiguously. */
@@ -56,23 +65,30 @@ export interface FillOnceDeps {
   /** Write the secret under `opaqueId` into the anchored pane (the locker re-verifies the anchor). */
   injectAt(anchor: PaneAnchor, opaqueId: string, submit: boolean): Promise<FillOnceInjectResult>;
   deleteSecret(opaqueId: string): Promise<void>;
+  /** Wait before re-trying a `busy` claim (the driver's poll holds the pane for a moment every tick). */
+  sleep?(ms: number): Promise<void>;
 }
 
 export type FillOnceDeclineReason =
-  | "not_anchored"        // not a pane launched by key_locker launch_console (or it was closed)
-  | "busy"                // the pane's own autofill loop or another fill_once is running
-  | "failsafe_engaged"    // the emergency stop is armed
-  | "failsafe_unknown"    // the emergency-stop probe failed — decline rather than guess
-  | "prompt_unreadable"   // the pane could not be read unambiguously
-  | "not_at_prompt"       // the pane is not showing a credential prompt
-  | "prompt_gone"         // the prompt was gone by the time the user finished the dialog
-  | "target_gone";        // the pane closed while the dialog was open
+  | "not_anchored"           // not a pane launched by key_locker launch_console (or it was closed)
+  | "busy"                   // the pane's own autofill loop or another fill_once is running
+  | "failsafe_engaged"       // the emergency stop is armed
+  | "failsafe_unknown"       // the emergency-stop probe failed — decline rather than guess
+  | "prompt_unreadable"      // the pane could not be read unambiguously
+  | "not_at_prompt"          // the pane is not showing a credential prompt
+  | "no_credential_program"  // no ssh / sudo / su / doas runs under the pane's shell (a printed prompt)
+  | "prompt_changed"         // the pane changed while the dialog was open (or its prompt went away)
+  | "target_gone";           // the pane closed while the dialog was open
 
 export type FillOnceOutcome =
   | { kind: "filled"; verified: boolean }
   | { kind: "cancelled" }
   | { kind: "declined"; reason: FillOnceDeclineReason }
   | { kind: "fill_aborted"; code: string };
+
+/** A `busy` claim is retried this many times, this far apart (the poll's hold is one prompt read). */
+const BUSY_RETRIES = 5;
+const BUSY_RETRY_MS = 200;
 
 /** Probe the stop: null = clear to proceed, else the decline reason (fail-CLOSED on a probe error — this is
  *  an explicit request, so declining costs one retry, never a wrong write). */
@@ -85,15 +101,19 @@ async function failsafeBlocks(deps: FillOnceDeps): Promise<FillOnceDeclineReason
   }
 }
 
-/** Is the pane at a credential prompt right now? null = yes, else the decline reason to use. */
-async function promptBlocks(
-  deps: FillOnceDeps,
-  paneId: string,
-  whenNot: "not_at_prompt" | "prompt_gone",
-): Promise<FillOnceDeclineReason | null> {
-  const verdict = await deps.readPromptTail(paneId);
-  if (verdict === null) return "prompt_unreadable";
-  return verdict.isCredentialPrompt ? null : whenNot;
+function sameProcesses(a: Map<number, number>, b: Map<number, number>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [pid, start] of a) if (b.get(pid) !== start) return false;
+  return true;
+}
+
+async function claimWithRetry(deps: FillOnceDeps, paneId: string): Promise<FillOnceClaim> {
+  let claim = deps.claim(paneId);
+  for (let i = 0; i < BUSY_RETRIES && !claim.ok && claim.reason === "busy" && deps.sleep !== undefined; i++) {
+    await deps.sleep(BUSY_RETRY_MS);
+    claim = deps.claim(paneId);
+  }
+  return claim;
 }
 
 export async function runFillOnce(
@@ -101,15 +121,19 @@ export async function runFillOnce(
   req: { paneId: string; dialog: FillOnceDialog; submit: boolean },
 ): Promise<FillOnceOutcome> {
   const { paneId, dialog, submit } = req;
-  const claim = deps.claim(paneId);
+  const claim = await claimWithRetry(deps, paneId);
   if (!claim.ok) return { kind: "declined", reason: claim.reason };
   try {
-    // Before the dialog: the stop, then the prompt. Never open a credential dialog for a pane that is not
-    // asking for one, or while the user is holding the emergency stop.
+    // Before the dialog: the stop, the prompt, and a real program asking. Never open a credential dialog
+    // for a pane that is not asking for one, or while the user is holding the emergency stop.
     const stopped = await failsafeBlocks(deps);
     if (stopped !== null) return { kind: "declined", reason: stopped };
-    const notPrompt = await promptBlocks(deps, paneId, "not_at_prompt");
-    if (notPrompt !== null) return { kind: "declined", reason: notPrompt };
+    const before = await deps.readPromptTail(paneId);
+    if (before === null) return { kind: "declined", reason: "prompt_unreadable" };
+    if (!before.isCredentialPrompt) return { kind: "declined", reason: "not_at_prompt" };
+    const procsBefore = deps.credentialProcesses(paneId);
+    if (procsBefore === null) return { kind: "declined", reason: "not_anchored" };
+    if (procsBefore.size === 0) return { kind: "declined", reason: "no_credential_program" };
 
     const opaqueId = deps.mintOpaqueId();
     let attempted = false; // a capture that threw may or may not have stored — delete in that case too
@@ -118,11 +142,15 @@ export async function runFillOnce(
       const cap = await deps.capture(opaqueId, dialog);
       if (!cap.captured) return { kind: "cancelled" };
 
-      // After the dialog (arbitrary user time): the prompt must STILL be there, then the stop and the
-      // anchor, kept adjacent to the write (no await between the last checks and `injectAt` except the
-      // stop probe itself, which must be the last await — the same ordering as the loop's backstop).
-      const gone = await promptBlocks(deps, paneId, "prompt_gone");
-      if (gone !== null) return { kind: "declined", reason: gone };
+      // After the dialog (arbitrary user time): the pane must be the SAME — the same prompt text and the
+      // same credential processes — then the stop and the anchor, kept adjacent to the write (the stop
+      // probe is the last await before `injectAt`, the same ordering as the loop's backstop).
+      const after = await deps.readPromptTail(paneId);
+      if (after === null) return { kind: "declined", reason: "prompt_unreadable" };
+      if (!after.isCredentialPrompt || after.tail !== before.tail) return { kind: "declined", reason: "prompt_changed" };
+      const procsAfter = deps.credentialProcesses(paneId);
+      if (procsAfter === null) return { kind: "declined", reason: "target_gone" };
+      if (!sameProcesses(procsBefore, procsAfter)) return { kind: "declined", reason: "prompt_changed" };
       const stoppedNow = await failsafeBlocks(deps);
       if (stoppedNow !== null) return { kind: "declined", reason: stoppedNow };
       if (!deps.stillAnchored(paneId)) return { kind: "declined", reason: "target_gone" };
@@ -139,6 +167,6 @@ export async function runFillOnce(
       }
     }
   } finally {
-    deps.release(paneId);
+    deps.release(paneId, claim.token);
   }
 }

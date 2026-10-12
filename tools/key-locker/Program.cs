@@ -36,7 +36,9 @@ using System.Windows.Controls;
 
 internal static class KeyLocker
 {
-    private const string ProtocolVersion = "1";
+    // "2" (PR #806): capture carries label/note/purpose. Bumped so a stale helper is refused at hello instead
+    // of showing a fill_once dialog with an opaque id and a [Save] button.
+    private const string ProtocolVersion = "2";
     private const int MaxClientRejects = 8;
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -252,7 +254,7 @@ internal static class KeyLocker
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement;
             if (root.TryGetProperty("label", out var l) && l.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(l.GetString())) label = l.GetString()!;
-            if (root.TryGetProperty("note", out var n) && n.ValueKind == JsonValueKind.String) note = n.GetString() ?? "";
+            if (root.TryGetProperty("note", out var n) && n.ValueKind == JsonValueKind.String) note = PlainLine(n.GetString() ?? "");
             once = root.TryGetProperty("purpose", out var p) && p.ValueKind == JsonValueKind.String && p.GetString() == "fill_once";
         }
         catch { /* the frame already parsed once in RunControlLoop; keep the key-only defaults */ }
@@ -264,6 +266,21 @@ internal static class KeyLocker
         _store.Capture(key, secret);
         var rt = _store.RoundTripOk(key, secret); // in-process verify; secret stays local
         WriteFrameReplyCaptured(server, id, true, rt);
+    }
+
+    /// One plain display line: control, format (bidi / zero-width) and line/paragraph separators become a
+    /// space, so the assistant's note cannot fake extra lines or reorder the dialog (the MCP side does the
+    /// same; this is the backstop).
+    private static string PlainLine(string s)
+    {
+        var sb = new System.Text.StringBuilder(s.Length);
+        foreach (var ch in s)
+        {
+            var cat = char.GetUnicodeCategory(ch);
+            sb.Append(cat is System.Globalization.UnicodeCategory.Control or System.Globalization.UnicodeCategory.Format
+                or System.Globalization.UnicodeCategory.LineSeparator or System.Globalization.UnicodeCategory.ParagraphSeparator ? ' ' : ch);
+        }
+        return sb.ToString().Trim();
     }
 
     /// W-3.5: the SECRET-FREE confirm/offer backstop dialog (ADR seed §4). Shows the binding LABEL only —

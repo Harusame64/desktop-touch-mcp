@@ -44,7 +44,7 @@ import { registerExcludedPid, unregisterExcludedPid } from "./tool-exclusion.js"
 export const HELPER_EXE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "key-locker.exe");
 
 /** Wire protocol version the MCP understands; must match the helper's `hello.v`. */
-export const KEY_LOCKER_PROTOCOL_VERSION = "1";
+export const KEY_LOCKER_PROTOCOL_VERSION = "2";
 
 export type KeyLockerErrorCode =
   | "KeyLockerSpawnFailed"

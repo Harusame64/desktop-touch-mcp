@@ -257,8 +257,6 @@ const CREDENTIAL_PROGRAMS = new Set(["sudo", "doas", "ssh", "su"]);
  */
 export class KeyLockerCaptureDriver {
   private readonly panes = new Map<string, PaneRecord>();
-  /** The record each in-progress `fill_once` claimed (identity, so a release never resets a newer record). */
-  private readonly fillOnceClaims = new Map<string, PaneRecord>();
   private readonly pollTimeoutMs: number;
 
   constructor(private readonly deps: CaptureDriverDeps) {
@@ -475,33 +473,59 @@ export class KeyLockerCaptureDriver {
   }
 
   /**
-   * `fill_once` (internal #277): take an ANCHORED pane for an assistant-requested one-shot fill. Serialized
+   * `fill_once` (internal #277): take an ANCHORED pane for an assistant-requested one-shot fill, serialized
    * against this driver's own poll + capture loop through the same `pollBusy` flag (a poll that finds it set
-   * returns `busy`), and marks `pre-landed` while the shell sits at the prompt so a command delivered meanwhile
-   * is not recorded as run (§0-CORR.3). Any pending arm is DROPPED: the assistant has taken this prompt over,
-   * and a surviving arm would open a second dialog for the same prompt. Only an anchored pane qualifies — the
-   * anchor is the spawn-captured identity the locker re-verifies at injection (a user's own terminal never).
+   * returns `busy`). Any pending arm is DROPPED: the assistant has taken this prompt over, and a surviving arm
+   * would open a second dialog for the same prompt. `loopPhase` is NOT touched: a command delivered while the
+   * dialog is open really runs once the prompt times out, so it must still be recorded (PR #806 Opus P2);
+   * the fill itself declines if the pane changed. Only an anchored pane qualifies — the anchor is the
+   * spawn-captured identity the locker re-verifies at injection (a user's own terminal never).
+   * The returned `token` is the claimed record; `releaseFillOnce` resets only that record, and only while it
+   * is still the pane's record — never a pane re-anchored under the same id, nor a later claim of it.
    */
   claimForFillOnce(paneId: string): FillOnceClaim {
     const rec = this.panes.get(paneId);
     if (rec === undefined) return { ok: false, reason: "not_anchored" };
     if (rec.pollBusy || rec.loopPhase !== "none") return { ok: false, reason: "busy" };
     rec.pollBusy = true;
-    rec.loopPhase = "pre-landed";
     rec.armed = null;
-    this.fillOnceClaims.set(paneId, rec);
-    return { ok: true, anchor: rec.anchor };
+    return { ok: true, anchor: rec.anchor, token: rec };
   }
 
-  /** Give a `claimForFillOnce` pane back. Only the CLAIMED record is reset: a pane closed meanwhile has no
-   *  record, and one re-anchored under the same paneId (a reused hwnd) is a different record whose own
-   *  poll must not be un-serialized by this release. */
-  releaseFillOnce(paneId: string): void {
-    const claimed = this.fillOnceClaims.get(paneId);
-    this.fillOnceClaims.delete(paneId);
-    if (claimed === undefined || this.panes.get(paneId) !== claimed) return;
-    claimed.pollBusy = false;
-    claimed.loopPhase = "none";
+  /** Give a `claimForFillOnce` claim back (see `claimForFillOnce` for why it is keyed by the token). */
+  releaseFillOnce(paneId: string, token: object): void {
+    const rec = this.panes.get(paneId);
+    if (rec === undefined || rec !== token) return;
+    rec.pollBusy = false;
+  }
+
+  /** `fill_once`: the credential programs (ssh / sudo / su / doas) running under the pane's ANCHORED shell,
+   *  as pid → creation time, from one process snapshot; null when the pane is not anchored. A prompt the
+   *  assistant merely PRINTED has no such process; a real one does (PR #806 Opus P1). */
+  credentialProcessesOf(paneId: string): Map<number, number> | null {
+    const rec = this.panes.get(paneId);
+    if (rec === undefined) return null;
+    const snap = this.deps.snapshot();
+    const out = new Map<number, number>();
+    const children = new Map<number, number[]>();
+    for (const [pid, parentPid] of snap.parentMap) {
+      const arr = children.get(parentPid);
+      if (arr === undefined) children.set(parentPid, [pid]);
+      else arr.push(pid);
+    }
+    const seen = new Set<number>([rec.anchor.shellPid]);
+    const frontier: number[] = [rec.anchor.shellPid];
+    while (frontier.length > 0) {
+      const parent = frontier.pop() as number;
+      for (const pid of children.get(parent) ?? []) {
+        if (seen.has(pid)) continue;
+        seen.add(pid);
+        frontier.push(pid);
+        const id = snap.identify(pid);
+        if (CREDENTIAL_PROGRAMS.has(id.name) && id.startTimeMs !== 0) out.set(pid, id.startTimeMs);
+      }
+    }
+    return out;
   }
 
   /** Panes with a credential dispatch awaiting a prompt (the wiring polls exactly these). */

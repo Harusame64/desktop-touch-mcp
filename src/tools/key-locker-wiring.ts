@@ -104,7 +104,7 @@ export class KeyLockerWiring {
   private eventSubId: string | null = null;
   /** Panes this wiring launched via `ensureAnchoredConsole` (most-recent last), for reuse + the R2 cap.
    *  Host-aware since S-pid E7: reuse only hands back a pane of the REQUESTED host. */
-  private readonly launchedPanes: Array<{ paneId: string; host: "classic" | "windows-terminal"; launchTitle: string }> = [];
+  private readonly launchedPanes: Array<{ paneId: string; host: "classic" | "windows-terminal"; launchTitle: string; launchedAt: string }> = [];
   /** windowTitles already nudged toward launch_console (Phase 3 dedup — one advisory per pane, no spam). */
   private readonly nudgedTitles = new Set<string>();
 
@@ -260,7 +260,8 @@ export class KeyLockerWiring {
       );
     }
     const { paneId, title } = await this.launchAndAnchorConsole(host);
-    this.launchedPanes.push({ paneId, host, launchTitle: title });
+    const launchedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    this.launchedPanes.push({ paneId, host, launchTitle: title, launchedAt });
     return { paneId, windowTitle: title };
   }
 
@@ -272,15 +273,19 @@ export class KeyLockerWiring {
    * remote host can rewrite after login; `reason` is the assistant's text, shown as such.
    */
   async fillOnce(paneId: string, reason: string, submit: boolean): Promise<FillOnceOutcome> {
-    const launched = this.launchedPanes.find((p) => p.paneId === paneId);
+    // The LATEST launch under this id (a classic hwnd can be reused), with its launch time so the user can
+    // tell which window it is even after an ssh login has rewritten the live title.
+    const launched = [...this.launchedPanes].reverse().find((p) => p.paneId === paneId);
     const label = launched !== undefined
-      ? `the locker console "${launched.launchTitle}" (pane ${paneId})`
+      ? `the locker console opened at ${launched.launchedAt} ("${launched.launchTitle}")`
       : `the locker console (pane ${paneId})`;
     const m = this.manager;
     return runFillOnce(
       {
         claim: (id) => this.driver.claimForFillOnce(id),
-        release: (id) => this.driver.releaseFillOnce(id),
+        release: (id, token) => this.driver.releaseFillOnce(id, token),
+        credentialProcesses: (id) => this.driver.credentialProcessesOf(id),
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
         // "per-tool": this is a foreground tool call, so a refusal shows the user the usual notice.
         checkFailsafe: () => checkFailsafe("per-tool"),
         readPromptTail: (id) => this.readPromptTail(id),

@@ -17,8 +17,10 @@
   autofill does not handle.** For example, an `ssh` you run inside another `ssh` session (a jump
   host), where autofill stays out because it cannot see the inner login. You type the password
   into the locker's own dialog, which shows the assistant's reason. It is typed once into that
-  `launch_console` pane's current password prompt and then forgotten; nothing is saved. Nothing is
-  typed if the pane is no longer at a password prompt when you close the dialog.
+  `launch_console` pane's current password prompt and then forgotten; nothing is saved. It types
+  only while an `ssh`, `sudo`, `su` or `doas` is running in that pane, and only if the pane still
+  shows the same prompt when you close the dialog. Past the first `ssh` hop, the prompt comes from
+  the remote machine, so check that the dialog's reason matches what you expect there.
 - The locker's secret-entry dialog now says what the entry is for (for example
   `ssh://user@host:22`), instead of an internal id.
 
