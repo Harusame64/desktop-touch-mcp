@@ -297,7 +297,9 @@ export class KeyLockerWiring {
         injectAt: async (anchor, id, sub) => {
           const target = assembleInjectTarget(anchor, sub);
           if (target === null) return { ok: false, code: "target_gone" };
-          return m.withHost((h) => h.inject(id, target));
+          // The locker writes only while the console has echo OFF — a real ssh / sudo password read. The
+          // process gate alone is a name check; a backgrounded ssh plus a `Read-Host` would pass it.
+          return m.withHost((h) => h.inject(id, { ...target, requireEchoOff: true }));
         },
         deleteSecret: (id) => m.withHost((h) => h.delete(id)).then(() => undefined),
       },

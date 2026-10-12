@@ -134,6 +134,10 @@ export interface InjectTarget {
   shellStartMs: number;
   /** Append Enter after the secret. */
   submit?: boolean;
+  /** fill_once (PR #806): write only while the console has echo OFF (a real password read); else the
+   *  locker aborts `echo_on`. A staged `Read-Host` / `set /p` prompt echoes, and the secret would be
+   *  readable back from the pane. */
+  requireEchoOff?: boolean;
 }
 
 /** Git credential-field context bound into a ticket for serve-time `context_mismatch` (§3.1). */
@@ -148,7 +152,10 @@ export interface MintTicketContext {
  *  but stays in the union for wire back-compat so `normalizeAbort` never downgrades an in-flight old reply. */
 export type InjectAbortCode =
   | "target_mismatch" | "target_gone" | "not_foreground" | "target_multiplexed"
-  | "no_secret" | "bad_target" | "executor_failed";
+  | "no_secret" | "bad_target" | "executor_failed"
+  // PR #806: a fill_once write (`requireEchoOff`) found the console ECHOING input — a staged prompt, not a
+  // real password read. Nothing was written.
+  | "echo_on";
 
 /** `inject` result: verified+injected, or a typed abort code. */
 export type InjectClientResult =
@@ -172,7 +179,7 @@ export type PromptChoice = ConfirmChoice | OfferChoice;
 
 const INJECT_ABORT_CODES: readonly InjectAbortCode[] = [
   "target_mismatch", "target_gone", "not_foreground", "target_multiplexed",
-  "no_secret", "bad_target", "executor_failed",
+  "no_secret", "bad_target", "executor_failed", "echo_on",
 ];
 
 /** Map a wire `e` string onto a known abort code so `InjectClientResult.code` never lies. */

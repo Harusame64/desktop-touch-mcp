@@ -292,13 +292,18 @@ describe("KeyLockerCaptureDriver.claimForFillOnce / releaseFillOnce", () => {
     expect(d.armedPaneIds()).not.toContain("1234");
   });
 
-  it("still RECORDS a command dispatched while the dialog is open — it really runs once the prompt goes (Opus P2)", () => {
-    const d = makeDriver();
+  it("DROPS a command dispatched while the dialog holds the prompt — the prompt swallows it (Opus round 2 P2)", async () => {
+    // Recording it would leave an arm for a command that never ran; the retried prompt could then be
+    // filled under that command's binding.
+    const d = makeDriver(SHELLS, async () => PROMPT(true));
     d.onLocalPaneLaunched("1234", ANCHOR);
     const c = d.claimForFillOnce("1234");
-    d.onDispatch("1234", "sudo -v");                 // the prompt timed out; this ran
-    expect(d.armedPaneIds()).toContain("1234");      // recorded and armed, not silently dropped
+    d.onDispatch("1234", "sudo -v");                 // swallowed by the password prompt
     if (c.ok) d.releaseFillOnce("1234", c.token);
+    expect(d.armedPaneIds()).not.toContain("1234");  // no arm survives the release
+    expect(await d.poll("1234")).toEqual({ status: "idle" }); // the retried prompt is not autofilled
+    d.onDispatch("1234", "sudo -v");                 // after release, dispatches record again
+    expect(d.armedPaneIds()).toContain("1234");
   });
 
   it("a stale release never resets a LATER claim of a re-anchored pane (Opus P3)", () => {

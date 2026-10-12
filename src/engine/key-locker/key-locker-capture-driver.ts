@@ -476,9 +476,12 @@ export class KeyLockerCaptureDriver {
    * `fill_once` (internal #277): take an ANCHORED pane for an assistant-requested one-shot fill, serialized
    * against this driver's own poll + capture loop through the same `pollBusy` flag (a poll that finds it set
    * returns `busy`). Any pending arm is DROPPED: the assistant has taken this prompt over, and a surviving arm
-   * would open a second dialog for the same prompt. `loopPhase` is NOT touched: a command delivered while the
-   * dialog is open really runs once the prompt times out, so it must still be recorded (PR #806 Opus P2);
-   * the fill itself declines if the pane changed. Only an anchored pane qualifies — the anchor is the
+   * would open a second dialog for the same prompt. `loopPhase` is `pre-landed` while the claim is held, so a
+   * command delivered meanwhile is DROPPED, as during the loop's own dialog (§0-CORR.3): the shell is blocked
+   * at the password prompt, which swallows it, and recording it would leave an arm for a command that never
+   * ran — the next prompt could then be filled under the wrong binding (PR #806 Opus round 2, P2). If the
+   * prompt had already timed out and the command did run, the cost is a missed autofill (the W-2b scan still
+   * sinks an unregistered ssh to UNKNOWN), never a wrong fill. Only an anchored pane qualifies — the anchor is the
    * spawn-captured identity the locker re-verifies at injection (a user's own terminal never).
    * The returned `token` is the claimed record; `releaseFillOnce` resets only that record, and only while it
    * is still the pane's record — never a pane re-anchored under the same id, nor a later claim of it.
@@ -488,6 +491,7 @@ export class KeyLockerCaptureDriver {
     if (rec === undefined) return { ok: false, reason: "not_anchored" };
     if (rec.pollBusy || rec.loopPhase !== "none") return { ok: false, reason: "busy" };
     rec.pollBusy = true;
+    rec.loopPhase = "pre-landed";
     rec.armed = null;
     return { ok: true, anchor: rec.anchor, token: rec };
   }
@@ -497,6 +501,7 @@ export class KeyLockerCaptureDriver {
     const rec = this.panes.get(paneId);
     if (rec === undefined || rec !== token) return;
     rec.pollBusy = false;
+    rec.loopPhase = "none";
   }
 
   /** `fill_once`: the credential programs (ssh / sudo / su / doas) running under the pane's ANCHORED shell,

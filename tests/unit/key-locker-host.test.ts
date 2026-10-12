@@ -30,6 +30,7 @@ function makeFakeLocker(
     reportPid?: number;
     firstFrame?: string;
     protocol?: string;
+    consoleEchoes?: boolean;
     seed?: string[];
     captureReply?: { captured: boolean; rt: boolean };
     state?: FakeState;
@@ -69,6 +70,13 @@ function makeFakeLocker(
             const reply = opts.promptReply ?? "autofill";
             if (reply === "__err__") write({ id: req.id, ok: false, r: "", e: "bad_prompt" });
             else write({ id: req.id, ok: true, r: reply }); // r = the choice; NO secret ever on the wire
+            break;
+          }
+          case "inject": {
+            // Mirrors Injection.cs's fill_once gate: `requireEchoOff` and an echoing console → echo_on.
+            const t = (req as unknown as { t?: { requireEchoOff?: boolean } }).t;
+            if (t?.requireEchoOff === true && opts.consoleEchoes === true) write({ id: req.id, ok: false, r: "", e: "echo_on" });
+            else write({ id: req.id, ok: true, r: "", verified: true });
             break;
           }
           case "shutdown": write({ id: req.id, ok: true, r: "bye" }); break;
@@ -154,6 +162,20 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     const parsed = JSON.parse(state.lastFrames.find((f) => f.includes('"capture"'))!) as Record<string, unknown>;
     expect(Object.keys(parsed).sort()).toEqual(["id", "k", "label", "m", "note", "purpose"]);
     expect(parsed).toMatchObject({ k: "opaque-1", label: "locker console 1234", note: "log in to the build box", purpose: "fill_once" });
+  });
+
+  it("inject() carries requireEchoOff on the wire, and echo_on comes back as itself, not executor_failed (#806)", async () => {
+    const path = pipePath();
+    const state: FakeState = { store: new Set(), captureReply: { captured: true, rt: true }, lastFrames: [] };
+    await listen(makeFakeLocker(path, { state, consoleEchoes: true }), path);
+    const host = await KeyLockerHost.connectForTest(path);
+    hosts.push(host);
+
+    const target = { shellPid: 4321, shellStartMs: 10, submit: true };
+    expect(await host.inject("op-1", target)).toEqual({ ok: true, verified: true }); // the loop's write: no gate
+    expect(await host.inject("op-1", { ...target, requireEchoOff: true })).toEqual({ ok: false, code: "echo_on" });
+    const frame = JSON.parse(state.lastFrames.filter((f) => f.includes('"inject"')).at(-1)!) as { t: Record<string, unknown> };
+    expect(frame.t.requireEchoOff).toBe(true);
   });
 
   it("capture() reports a cancelled dialog as {captured:false}", async () => {

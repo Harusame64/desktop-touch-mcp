@@ -30,8 +30,11 @@ using System.Text.Json;
 /// `getWindowProcessId(hwnd)` and this side re-reads the same API on the same hwnd, so it matches by
 /// construction. Classic keeps `AttachConsole(ConsolePid)` byte-identical; a wt pane has NO per-pane
 /// window (Hwnd == 0) and attaches by `ShellPid`.
+/// `RequireEchoOff` (fill_once, PR #806): write only while the console's input mode has ENABLE_ECHO_INPUT
+/// OFF — a real ssh / sudo password read turns echo off; a staged prompt (`set /p`, `Read-Host`) leaves it
+/// on, and a secret typed there would be readable back from the pane.
 internal readonly record struct InjectTarget(
-    nint Hwnd, uint ConsolePid, string TitleFp, bool Submit, uint ShellPid, long ShellStartMs);
+    nint Hwnd, uint ConsolePid, string TitleFp, bool Submit, uint ShellPid, long ShellStartMs, bool RequireEchoOff = false);
 
 /// The abort reasons the re-verify predicate can raise (§2.2); null = passed.
 internal static class InjectAbort
@@ -43,6 +46,7 @@ internal static class InjectAbort
     public const string NotForeground = "not_foreground";
     public const string Mismatch = "target_mismatch";
     public const string NoSecret = "no_secret";
+    public const string EchoOn = "echo_on"; // RequireEchoOff and the console echoes input (PR #806)
 }
 
 /// Win32 CONSOLE-BUFFER injector (DF-5 fix) + the injection-instant re-verify.
@@ -98,6 +102,8 @@ internal static class Win32Input
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool CloseHandle(nint hObject);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern nint GetStdHandle(int nStdHandle);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetStdHandle(int nStdHandle, nint hHandle);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetConsoleMode(nint hConsoleHandle, out uint lpMode);
+    private const uint ENABLE_ECHO_INPUT = 0x0004;
 
     [DllImport("user32.dll")] private static extern bool IsWindow(nint hWnd);
     [DllImport("user32.dll", SetLastError = true)] private static extern uint GetWindowThreadProcessId(nint hWnd, out uint lpdwProcessId);
@@ -278,6 +284,14 @@ internal static class Win32Input
             // STILL name the same console — closes the attach→write TOCTOU window (Opus R1 P2-3).
             var abort = ReVerify(in t);
             if (abort != null) return (false, abort);
+
+            // fill_once: the reader must have echo OFF, read from the same CONIN$ we are about to write to
+            // (fail-closed when the mode cannot be read).
+            if (t.RequireEchoOff)
+            {
+                if (!GetConsoleMode(conin, out var mode)) return (false, "executor_failed");
+                if ((mode & ENABLE_ECHO_INPUT) != 0) return (false, InjectAbort.EchoOn);
+            }
 
             var ok = WriteConsoleInputW(conin, arr, (uint)arr.Length, out var written);
             return (ok && written == (uint)arr.Length, ok && written == (uint)arr.Length ? null : "executor_failed");

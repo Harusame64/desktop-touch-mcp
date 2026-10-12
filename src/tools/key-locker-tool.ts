@@ -117,8 +117,9 @@ const fillOnceSchema = z.object({
     "Ask the USER to type a password into the locker's secure dialog, then type it ONCE into the password " +
       "prompt currently shown in a launch_console pane, and forget it (nothing is saved). Use it when a pane is " +
       "waiting at a password prompt that autofill does not handle — e.g. an ssh run INSIDE another ssh session " +
-      "(a jump host), or a login you do not want saved. The pane must be AT the prompt, with the ssh / sudo / su " +
-      "that asks still running in it (send the command first, then call this); the secret is never shown to you.",
+      "(a jump host), or a login you do not want saved. The pane must be AT a real password prompt — an ssh / sudo " +
+      "running in it, with the console not echoing input (send the command first, then call this). Only English " +
+      "'password' prompts are recognised for now. The secret is never shown to you.",
   ),
   paneId: z.string().min(1).describe("The paneId returned by launch_console (only those panes can be filled)."),
   reason: z.string().min(1).max(200).describe(
@@ -445,7 +446,15 @@ async function handleFillOnce(paneId: string, reason: string, submit: boolean | 
       case "declined":
         return ok({ filled: false, reason: outcome.reason, hint: FILL_ONCE_HINTS[outcome.reason] ?? "", ...cleanup });
       case "fill_aborted":
-        return ok({ filled: false, reason: "fill_aborted", code: outcome.code, hint: "The locker refused the write (the pane changed or could not be verified). Nothing was saved.", ...cleanup });
+        return ok({
+          filled: false,
+          reason: "fill_aborted",
+          code: outcome.code,
+          hint: outcome.code === "echo_on"
+            ? "The pane's console is showing what is typed, so this is not a real password prompt. Nothing was typed."
+            : "The locker refused the write (the pane changed or could not be verified). Nothing was typed or saved.",
+          ...cleanup,
+        });
     }
   } catch (err) {
     return keyLockerFailure(err);

@@ -21,7 +21,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { existsSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { KeyLockerHost } from "../../src/engine/key-locker-host.js";
+import { KeyLockerHost, KEY_LOCKER_PROTOCOL_VERSION } from "../../src/engine/key-locker-host.js";
 import { hasExcludedPids } from "../../src/engine/tool-exclusion.js";
 
 const HELPER_EXE = join(process.cwd(), "bin", "key-locker.exe");
@@ -149,9 +149,9 @@ describe("key-locker live smoke (pipe control plane)", () => {
     hosts.push(host);
 
     expect(host.helperPid).toBeGreaterThan(0);
-    expect(host.protocolVersion).toBe("1");
+    expect(host.protocolVersion).toBe(KEY_LOCKER_PROTOCOL_VERSION);
     expect(await host.ping()).toBe(true);
-    expect(await host.version()).toBe("1");
+    expect(await host.version()).toBe(KEY_LOCKER_PROTOCOL_VERSION);
     // Nothing captured yet → exists/delete on an unknown key are false (no dialog opened).
     expect(await host.exists("ssh:nobody")).toBe(false);
     expect(await host.delete("ssh:nobody")).toBe(false);

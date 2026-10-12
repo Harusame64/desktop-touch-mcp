@@ -372,7 +372,8 @@ internal static class KeyLocker
         TitleFp: t.TryGetProperty("titleFp", out var fp) && fp.ValueKind == JsonValueKind.String ? fp.GetString() ?? "" : "",
         Submit: t.TryGetProperty("submit", out var sub) && sub.ValueKind == JsonValueKind.True,
         ShellPid: (uint)ParseLong(t, "shellPid"),
-        ShellStartMs: ParseLong(t, "shellStartMs"));
+        ShellStartMs: ParseLong(t, "shellStartMs"),
+        RequireEchoOff: t.TryGetProperty("requireEchoOff", out var reo) && reo.ValueKind == JsonValueKind.True);
 
     /// S-pid E3b/§4 regression pins, folded into `-SelfTestL2`'s exit status:
     ///   1. a `t` frame carrying `shellPid`/`shellStartMs` (number OR decimal-string form) reconstructs
