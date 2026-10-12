@@ -649,8 +649,8 @@ Manage credentials the terminal autofills for you (SSH key passphrases, sudo / l
 passwords). The secret is entered once into the locker's own secure dialog (a separate
 helper process) and stored encrypted on this machine (Windows DPAPI, current user); it
 is **never** shown to the assistant or sent through this tool. Autofill then happens
-automatically when a bound command reaches its credential prompt — there is no manual
-fill action. But autofill **only fires in a console opened by `launch_console`** — a
+automatically when a bound command reaches its credential prompt — a saved secret is
+never filled by hand. But autofill **only fires in a console opened by `launch_console`** — a
 pre-existing terminal is never autofilled.
 
 - `action='launch_console'` launches (or reuses) an autofill-capable anchored console
@@ -663,6 +663,11 @@ pre-existing terminal is never autofilled.
   dialog and stores the secret. The first `save` (or `launch_console`) also shows a
   one-time enable confirmation (first-run consent). An `ssh` save needs the host key
   already in `known_hosts` — connect to the host once first.
+- `action='fill_once'` (`paneId`, `reason`) is for a prompt autofill does not handle — an
+  `ssh` run inside another `ssh` session, or a login you do not want saved. The user types
+  the secret into the locker's dialog (which shows the assistant's `reason`), it is typed
+  once into that `launch_console` pane's current password prompt, and it is forgotten.
+  Nothing is typed unless the pane is still at the prompt after the dialog closes.
 - `action='list'` shows saved bindings (metadata only). `action='forget'` deletes a
   binding and its secret. `action='set_policy'` toggles per-binding autofill
   confirmation (every autofill asks by default). `action='status'` reports whether the

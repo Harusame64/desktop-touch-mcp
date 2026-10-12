@@ -12,6 +12,16 @@
   `desktop_discover`, and (`modal_blocking`) when a sheet or an app-modal window is open over it —
   nothing is pressed or typed.
 
+### Added — Windows
+- **`key_locker({action:'fill_once', paneId, reason})` — type a password once into a prompt that
+  autofill does not handle.** For example, an `ssh` you run inside another `ssh` session (a jump
+  host), where autofill stays out because it cannot see the inner login. You type the password
+  into the locker's own dialog, which shows the assistant's reason. It is typed once into that
+  `launch_console` pane's current password prompt and then forgotten; nothing is saved. Nothing is
+  typed if the pane is no longer at a password prompt when you close the dialog.
+- The locker's secret-entry dialog now says what the entry is for (for example
+  `ssh://user@host:22`), instead of an internal id.
+
 ### Changed — Windows
 - **The server no longer reads the window in front on its own.** Since 1.0 it captured and OCRed
   whichever window was in front, every few seconds while the screen changed, with no tool call —

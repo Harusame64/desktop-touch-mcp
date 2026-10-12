@@ -99,7 +99,8 @@ export interface CaptureLoopDeps {
   confirmPolicyFor(canonicalKey: string): boolean;
   /** Open the locker's secure dialog for `opaqueId`; the secret stays in the locker (`captured=false` =
    *  the user cancelled). */
-  capture(opaqueId: string): Promise<{ captured: boolean }>;
+  /** `binding` lets the dialog say what the entry is for (its display URI); the dialog is secret-free. */
+  capture(opaqueId: string, binding: BindingUri): Promise<{ captured: boolean }>;
   /** Delete the locker entry for `opaqueId` (the reverse-orphan closure; a no-op on an absent key). */
   deleteSecret(opaqueId: string): Promise<void>;
   /** Assemble the pane InjectTarget (§4) and console-buffer inject the secret under `opaqueId` (L2, "pane" channel). */
@@ -193,7 +194,7 @@ export async function runCaptureLoop(deps: CaptureLoopDeps, event: CredentialEve
   let committed = false;                // did the user [Save] it? (retain the locker entry)
   let outcome: CaptureLoopOutcome;
   try {
-    const cap = await deps.capture(opaqueId); // L0 secure dialog; the secret never leaves the locker
+    const cap = await deps.capture(opaqueId, binding); // L0 secure dialog; the secret never leaves the locker
     captured = cap.captured;
     if (!captured) {
       outcome = { kind: "capture_cancelled" };

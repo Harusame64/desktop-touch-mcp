@@ -35,6 +35,7 @@ import {
 } from "../engine/key-locker/pane-id.js";
 import { getProcessIdentityByPid } from "../engine/win32.js";
 import { inject } from "../engine/key-locker/injector.js";
+import { runFillOnce, type FillOnceOutcome } from "../engine/key-locker/fill-once.js";
 import {
   KeyLockerCaptureDriver,
   type CaptureDriverDeps,
@@ -103,7 +104,7 @@ export class KeyLockerWiring {
   private eventSubId: string | null = null;
   /** Panes this wiring launched via `ensureAnchoredConsole` (most-recent last), for reuse + the R2 cap.
    *  Host-aware since S-pid E7: reuse only hands back a pane of the REQUESTED host. */
-  private readonly launchedPanes: Array<{ paneId: string; host: "classic" | "windows-terminal" }> = [];
+  private readonly launchedPanes: Array<{ paneId: string; host: "classic" | "windows-terminal"; launchTitle: string }> = [];
   /** windowTitles already nudged toward launch_console (Phase 3 dedup — one advisory per pane, no spam). */
   private readonly nudgedTitles = new Set<string>();
 
@@ -259,8 +260,44 @@ export class KeyLockerWiring {
       );
     }
     const { paneId, title } = await this.launchAndAnchorConsole(host);
-    this.launchedPanes.push({ paneId, host });
+    this.launchedPanes.push({ paneId, host, launchTitle: title });
     return { paneId, windowTitle: title };
+  }
+
+  /**
+   * TOOL entry (`key_locker fill_once`, internal #277): the assistant asks the user to type a secret into the
+   * locker's dialog, and it is written ONCE into this anchored pane's current credential prompt, then deleted.
+   * The gates and their order live in the pure `runFillOnce`; this binds the live seams. The dialog's `label`
+   * is LOCKER-derived — the pane's LAUNCH title (a nonce the locker chose), never its live title, which a
+   * remote host can rewrite after login; `reason` is the assistant's text, shown as such.
+   */
+  async fillOnce(paneId: string, reason: string, submit: boolean): Promise<FillOnceOutcome> {
+    const launched = this.launchedPanes.find((p) => p.paneId === paneId);
+    const label = launched !== undefined
+      ? `the locker console "${launched.launchTitle}" (pane ${paneId})`
+      : `the locker console (pane ${paneId})`;
+    const m = this.manager;
+    return runFillOnce(
+      {
+        claim: (id) => this.driver.claimForFillOnce(id),
+        release: (id) => this.driver.releaseFillOnce(id),
+        // "per-tool": this is a foreground tool call, so a refusal shows the user the usual notice.
+        checkFailsafe: () => checkFailsafe("per-tool"),
+        readPromptTail: (id) => this.readPromptTail(id),
+        mintOpaqueId: () => randomUUID(),
+        capture: (id, dialog) =>
+          m.withHost((h) => h.capture(id, { label: dialog.label, note: dialog.note, purpose: "fill_once" }))
+            .then((r) => ({ captured: r.captured })),
+        stillAnchored: (id) => this.driver.hasPane(id),
+        injectAt: async (anchor, id, sub) => {
+          const target = assembleInjectTarget(anchor, sub);
+          if (target === null) return { ok: false, code: "target_gone" };
+          return m.withHost((h) => h.inject(id, target));
+        },
+        deleteSecret: (id) => m.withHost((h) => h.delete(id)).then(() => undefined),
+      },
+      { paneId, dialog: { label, note: reason }, submit },
+    );
   }
 
   /** A launched pane is REUSABLE only if it is alive (classic: live console window, hwnd-direct; wt: the
@@ -345,7 +382,8 @@ export class KeyLockerWiring {
       isNever: (k) => this.nevers().has(k),
       onNever: (k) => this.nevers().add(k),
 
-      capture: (id) => m.withHost((h) => h.capture(id)).then((r) => ({ captured: r.captured })),
+      // The dialog names the binding (its display URI — dispatched-command-derived, never prompt text).
+      capture: (id, b) => m.withHost((h) => h.capture(id, { label: formatBindingUri(b) })).then((r) => ({ captured: r.captured })),
       deleteSecret: (id) => m.withHost((h) => h.delete(id)).then(() => undefined),
       injectPane: (anchor, binding, opaqueId, submit) => this.injectPane(anchor, binding, opaqueId, submit),
       // gap4 confirm/offer: the W-3.5 secret-free `prompt` verb (label-only). `confirm` → fill vs decline.

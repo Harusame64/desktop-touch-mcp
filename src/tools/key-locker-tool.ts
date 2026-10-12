@@ -2,11 +2,16 @@
 //
 // Plan: desktop-touch-mcp-internal:docs/adr-014-v2-r3-l4-tool-surface-plan.md §1
 //
-// A MANAGEMENT + pre-seed surface only — five actions: list / save / forget / set_policy / status.
-// There is NO `autofill` action: autofill happens automatically in L3's capture-on-use loop when a
-// credential prompt is detected for a bound command; a manual "fill now" tool would duplicate the loop
-// and let the model drive injection out of band (OQ-R3-1). The tool NEVER sees a secret — `save` opens
-// the LOCKER's secure dialog (secret goes locker→DPAPI), everything else is metadata / control.
+// A MANAGEMENT + pre-seed surface — list / save / forget / set_policy / status / launch_console — plus
+// `fill_once`. There is still NO stored-secret `autofill` action: a SAVED secret is filled only by L3's
+// capture-on-use loop when a credential prompt is detected for a bound command (OQ-R3-1). `fill_once`
+// (internal #277, user decision 2026-10-12) is the one exception to "the model never drives an
+// injection", and it is bounded so that exception cannot reach a stored secret: the USER types the secret
+// into the locker's dialog for THIS request, it goes into ONE anchored pane's current credential prompt,
+// and it is deleted — nothing is derived, bound or saved (`engine/key-locker/fill-once.ts`). It exists
+// for prompts the loop cannot serve (a nested hop, where the inner login is unobservable). The tool NEVER
+// sees a secret — `save` / `fill_once` open the LOCKER's secure dialog, everything else is metadata /
+// control.
 //
 // Consent (L4 §2): every action except `status` requires first-run consent. `save` ACQUIRES it (prompts
 // the locker's `-Consent` dialog via `ensureConsent`); the others check and fail with a typed
@@ -107,6 +112,22 @@ const launchConsoleSchema = z.object({
   ),
 });
 
+const fillOnceSchema = z.object({
+  action: z.literal("fill_once").describe(
+    "Ask the USER to type a password / passphrase into the locker's secure dialog, then type it ONCE into the " +
+      "credential prompt currently shown in a launch_console pane, and forget it (nothing is saved). Use it when " +
+      "a pane is waiting at a password prompt that autofill does not handle — e.g. an ssh run INSIDE another ssh " +
+      "session (a jump host), or a login you do not want saved. The pane must be AT the prompt when you call " +
+      "(send the command first, then call this); the secret is never shown to you.",
+  ),
+  paneId: z.string().min(1).describe("The paneId returned by launch_console (only those panes can be filled)."),
+  reason: z.string().min(1).max(200).describe(
+    "One short sentence the dialog shows the user as YOUR reason (e.g. 'log in to 192.168.1.20 via the jump " +
+      "host'). Shown as the assistant's words; never put a secret here.",
+  ),
+  submit: z.boolean().optional().describe("true (default) = press Enter after typing the secret; false = type only."),
+});
+
 export const keyLockerSchema = z.discriminatedUnion("action", [
   listSchema,
   saveSchema,
@@ -114,6 +135,7 @@ export const keyLockerSchema = z.discriminatedUnion("action", [
   setPolicySchema,
   statusSchema,
   launchConsoleSchema,
+  fillOnceSchema,
 ]);
 
 export type KeyLockerArgs = z.infer<typeof keyLockerSchema>;
@@ -279,7 +301,7 @@ async function handleSave(uri: string): Promise<ToolResult> {
   const opaqueId = randomBytes(16).toString("hex");
   let captured: boolean;
   try {
-    const r = await manager().withHost((h) => h.capture(opaqueId));
+    const r = await manager().withHost((h) => h.capture(opaqueId, { label: meta.displayUri }));
     captured = r.captured;
   } catch (err) {
     return keyLockerFailure(err);
@@ -376,6 +398,47 @@ async function handleLaunchConsole(
   }
 }
 
+/** What the assistant should do next after a declined fill_once (no secret, no pane text). */
+const FILL_ONCE_HINTS: Record<string, string> = {
+  not_anchored: "Only a pane opened by key_locker launch_console can be filled. Launch one, run the command in it, then call fill_once.",
+  busy: "The pane's own autofill or another fill_once is in progress. Wait for it to finish, then retry.",
+  failsafe_engaged: "The emergency stop is armed (pointer in the screen corner). Nothing was typed. Retry after it is released.",
+  failsafe_unknown: "The emergency-stop check failed, so nothing was typed. Retry.",
+  prompt_unreadable: "The pane could not be read unambiguously. Bring it to the front (or close a same-titled window), then retry.",
+  not_at_prompt: "The pane is not showing a password prompt. Send the command first and call fill_once once the prompt appears.",
+  prompt_gone: "The prompt was gone when the user finished typing (it may have timed out). Nothing was typed. Re-run the command and retry.",
+  target_gone: "The pane closed while the dialog was open. Nothing was typed.",
+};
+
+async function handleFillOnce(paneId: string, reason: string, submit: boolean | undefined): Promise<ToolResult> {
+  // Not an ACQUIRE path: a fillable pane exists only after launch_console, which already took consent.
+  if (!manager().isConsentAccepted()) {
+    return fail("KeyLockerConsentRequired", "KeyLockerConsentRequired: enable the key locker (launch_console) before fill_once");
+  }
+  const wiring = keyLockerWiring();
+  if (wiring === null) {
+    return fail("KeyLockerDisabled", "KeyLockerDisabled: the key locker live wiring is not active");
+  }
+  // The reason is display text in a security dialog: one line, no control characters.
+  const note = Array.from(reason, (ch) => { const c = ch.codePointAt(0) ?? 0; return c < 0x20 || c === 0x7f ? " " : ch; })
+    .join("").replace(/ {2,}/g, " ").trim();
+  try {
+    const outcome = await wiring.fillOnce(paneId, note, submit ?? true);
+    switch (outcome.kind) {
+      case "filled":
+        return ok({ filled: true, verified: outcome.verified });
+      case "cancelled":
+        return ok({ filled: false, cancelled: true, hint: "The user cancelled the dialog. Nothing was typed." });
+      case "declined":
+        return ok({ filled: false, reason: outcome.reason, hint: FILL_ONCE_HINTS[outcome.reason] ?? "" });
+      case "fill_aborted":
+        return ok({ filled: false, reason: "fill_aborted", code: outcome.code, hint: "The locker refused the write (the pane changed or could not be verified). Nothing was saved." });
+    }
+  } catch (err) {
+    return keyLockerFailure(err);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Handler + registration
 // ─────────────────────────────────────────────────────────────────────────────
@@ -400,6 +463,8 @@ export const keyLockerHandler = async (args: KeyLockerArgs): Promise<ToolResult>
       return handleSetPolicy(a.uri, a.confirmEveryInjection);
     case "launch_console":
       return handleLaunchConsole(a.fresh, a.host);
+    case "fill_once":
+      return handleFillOnce(a.paneId, a.reason, a.submit);
   }
 };
 
@@ -444,10 +509,13 @@ export function registerKeyLockerTools(server: McpServer): void {
           "whether the locker is enabled (consent) and how many bindings exist. action='launch_console' opens " +
           "(or reuses) an autofill-capable anchored pane and returns {paneId, windowTitle} — by default a new " +
           "tab in the user's current Windows Terminal window (host:'classic' opens a dedicated classic console " +
-          "window instead).",
+          "window instead). action='fill_once' asks the user to type a secret into the locker's dialog and " +
+          "types it once into the password prompt currently shown in a launch_console pane, then forgets it.",
         prefer:
-          "Autofill is AUTOMATIC when a bound command triggers a credential prompt in the terminal — there " +
-          "is no manual fill action. But autofill ONLY fires in a pane opened by launch_console (a " +
+          "Autofill is AUTOMATIC when a bound command triggers a credential prompt in the terminal — you " +
+          "never fill a SAVED secret by hand. For a prompt autofill does not handle (an ssh inside another ssh " +
+          "session, or a login the user does not want saved), send the command, then call fill_once on that " +
+          "pane. Autofill and fill_once ONLY work in a pane opened by launch_console (a " +
           "pre-existing terminal is never autofilled): to autofill, first launch_console, then run the ssh / " +
           "sudo command with terminal({action:'run'|'send', paneId}) — pass the `paneId` field, not the " +
           "`windowTitle`. Keep the returned paneId; there is no pane-listing action, but launch_console " +

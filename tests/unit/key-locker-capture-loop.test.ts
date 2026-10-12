@@ -187,7 +187,8 @@ describe("runCaptureLoop — NO MATCH (capture → inject → landed → OFFER �
   it("landed + [Save] ⇒ bind the captured opaqueId + RETAIN (no delete)", async () => {
     const deps = makeDeps();
     expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "saved", verified: true });
-    expect(deps.capture).toHaveBeenCalledWith("opaque-abc");
+    // The dialog is told which binding the entry is for (it shows the display URI — #277).
+    expect(deps.capture).toHaveBeenCalledWith("opaque-abc", { scheme: "sudo", host: "localhost", targetUser: "root" });
     expect(deps.offerSave).toHaveBeenCalledOnce();
     expect(deps.bindBinding).toHaveBeenCalledWith("sudo://localhost/root", "opaque-abc", {
       scheme: "sudo",

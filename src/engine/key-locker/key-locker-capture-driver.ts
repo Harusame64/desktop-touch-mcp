@@ -65,6 +65,7 @@ import type { SessionContext } from "./command-derivation.js";
 import { awaitLanded, type ExitCompletion } from "./landed-detection.js";
 import type { PaneAnchor } from "./inject-target.js";
 import type { InjectResult } from "./injector.js";
+import type { FillOnceClaim } from "./fill-once.js";
 import {
   ENV_ASSIGN_RE,
   classifySshLogin,
@@ -133,7 +134,7 @@ export interface CaptureDriverDeps {
   /** OPTIONAL [Never] tombstone writer — unwired ⇒ "never" behaves like "not now". */
   onNever?(canonicalKey: string): void;
   /** Open the locker's secure dialog for `opaqueId` (secret stays in the locker). */
-  capture(opaqueId: string): Promise<{ captured: boolean }>;
+  capture(opaqueId: string, binding: BindingUri): Promise<{ captured: boolean }>;
   /** Delete the locker entry for `opaqueId` (the reverse-orphan closure). */
   deleteSecret(opaqueId: string): Promise<void>;
   /** Assemble the pane InjectTarget from the SPAWN-captured anchor (`assembleInjectTarget`) + console-buffer
@@ -256,6 +257,8 @@ const CREDENTIAL_PROGRAMS = new Set(["sudo", "doas", "ssh", "su"]);
  */
 export class KeyLockerCaptureDriver {
   private readonly panes = new Map<string, PaneRecord>();
+  /** The record each in-progress `fill_once` claimed (identity, so a release never resets a newer record). */
+  private readonly fillOnceClaims = new Map<string, PaneRecord>();
   private readonly pollTimeoutMs: number;
 
   constructor(private readonly deps: CaptureDriverDeps) {
@@ -471,6 +474,36 @@ export class KeyLockerCaptureDriver {
     return this.panes.has(paneId);
   }
 
+  /**
+   * `fill_once` (internal #277): take an ANCHORED pane for an assistant-requested one-shot fill. Serialized
+   * against this driver's own poll + capture loop through the same `pollBusy` flag (a poll that finds it set
+   * returns `busy`), and marks `pre-landed` while the shell sits at the prompt so a command delivered meanwhile
+   * is not recorded as run (§0-CORR.3). Any pending arm is DROPPED: the assistant has taken this prompt over,
+   * and a surviving arm would open a second dialog for the same prompt. Only an anchored pane qualifies — the
+   * anchor is the spawn-captured identity the locker re-verifies at injection (a user's own terminal never).
+   */
+  claimForFillOnce(paneId: string): FillOnceClaim {
+    const rec = this.panes.get(paneId);
+    if (rec === undefined) return { ok: false, reason: "not_anchored" };
+    if (rec.pollBusy || rec.loopPhase !== "none") return { ok: false, reason: "busy" };
+    rec.pollBusy = true;
+    rec.loopPhase = "pre-landed";
+    rec.armed = null;
+    this.fillOnceClaims.set(paneId, rec);
+    return { ok: true, anchor: rec.anchor };
+  }
+
+  /** Give a `claimForFillOnce` pane back. Only the CLAIMED record is reset: a pane closed meanwhile has no
+   *  record, and one re-anchored under the same paneId (a reused hwnd) is a different record whose own
+   *  poll must not be un-serialized by this release. */
+  releaseFillOnce(paneId: string): void {
+    const claimed = this.fillOnceClaims.get(paneId);
+    this.fillOnceClaims.delete(paneId);
+    if (claimed === undefined || this.panes.get(paneId) !== claimed) return;
+    claimed.pollBusy = false;
+    claimed.loopPhase = "none";
+  }
+
   /** Panes with a credential dispatch awaiting a prompt (the wiring polls exactly these). */
   armedPaneIds(): string[] {
     const out: string[] = [];
@@ -635,7 +668,7 @@ export class KeyLockerCaptureDriver {
       // PRE-DIALOG probe (layer 2 — see `failsafeDeclines`): the secure capture dialog must not open
       // while the stop is armed. `{ captured: false }` is the loop's existing "user gave nothing"
       // path (`capture_cancelled`): no secret is ever requested, stored, or touched.
-      capture: async (id) => ((await this.failsafeDeclines()) ? { captured: false } : this.deps.capture(id)),
+      capture: async (id, b) => ((await this.failsafeDeclines()) ? { captured: false } : this.deps.capture(id, b)),
       deleteSecret: (id) => this.deps.deleteSecret(id),
       // INJECTION-INSTANT re-check (Codex R4 line 524 — the AUTHORITATIVE disclosure guard). The poll's
       // early-decline ran BEFORE the loop; but `confirmPolicyFor`/`confirmInjection`/`capture` (a secure UI

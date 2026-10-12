@@ -231,7 +231,7 @@ Apple Silicon の Mac（macOS 14 以降）では、同じ `npx` で macOS 用の
 | `workspace_launch` | アプリを起動し、新しいウィンドウ（HWND）を自動で見つける（ローカライズされたタイトルにも対応）。 |
 | `run_macro` | 最大 50 の操作を 1 往復にまとめて実行する。 |
 | `clipboard` / `notification_show` | システムのテキストのやりとりと、利用者への通知。 |
-| `key_locker` | ターミナルが自動入力する認証情報（SSH 鍵のパスフレーズ、sudo / ログインパスワード）を管理。秘密情報はロッカー自身のセキュアダイアログに一度だけ入力し、この PC 上で暗号化保存（Windows DPAPI）— アシスタントには一切見えない。`action='launch_console'` で自動入力対応コンソールを起動（返る `paneId` を `terminal` に渡して `ssh`/`sudo` を流す）、`save` / `list` / `forget` / `set_policy` / `status` で登録を管理。自動入力は `launch_console` で開いたコンソールでのみ発火。`DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1` で無効化。 |
+| `key_locker` | ターミナルが自動入力する認証情報（SSH 鍵のパスフレーズ、sudo / ログインパスワード）を管理。秘密情報はロッカー自身のセキュアダイアログに一度だけ入力し、この PC 上で暗号化保存（Windows DPAPI）— アシスタントには一切見えない。`action='launch_console'` で自動入力対応コンソールを起動（返る `paneId` を `terminal` に渡して `ssh`/`sudo` を流す）、`save` / `list` / `forget` / `set_policy` / `status` で登録を管理。`fill_once` は自動入力が扱わないプロンプトに、利用者が入力したパスワードを一度だけ入れる（保存しない）。自動入力と `fill_once` は `launch_console` で開いたコンソールでのみ動く。`DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1` で無効化。 |
 
 ### 📊 Office（Excel）
 | ツール | 概要 |

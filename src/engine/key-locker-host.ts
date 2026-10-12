@@ -429,9 +429,22 @@ export class KeyLockerHost {
    * Open the secure dialog for `key`, capture + DPAPI-store the secret, and verify it in-process.
    * The secret NEVER crosses the pipe — only {captured, rt} come back. `captured=false` means the
    * user cancelled. Uses the long capture budget (blocks on human input).
+   *
+   * `dialog` (optional, secret-free) tells the user what the entry is for: `label` names the target
+   * (a binding's display URI, or the locker console a `fill_once` writes into); `note` is the assistant's
+   * stated reason, which the dialog marks as the assistant's words; `purpose: "fill_once"` makes it a
+   * one-time entry (not saved). Without `label` the dialog falls back to the opaque key, as before; an
+   * older locker ignores the extra fields.
    */
-  async capture(key: string): Promise<{ captured: boolean; rt: boolean }> {
-    const reply = await this.request("capture", key, CAPTURE_TIMEOUT_MS);
+  async capture(
+    key: string,
+    dialog?: { label?: string; note?: string; purpose?: "save" | "fill_once" },
+  ): Promise<{ captured: boolean; rt: boolean }> {
+    const extra: Record<string, unknown> = {};
+    if (dialog?.label !== undefined) extra.label = dialog.label;
+    if (dialog?.note !== undefined) extra.note = dialog.note;
+    if (dialog?.purpose !== undefined) extra.purpose = dialog.purpose;
+    const reply = await this.request("capture", key, CAPTURE_TIMEOUT_MS, extra);
     return { captured: reply.captured === true, rt: reply.rt === true };
   }
 

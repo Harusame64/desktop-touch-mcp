@@ -239,7 +239,7 @@ On an Apple Silicon Mac (macOS 14 or later) the same `npx` command starts a macO
 | `workspace_launch` | Launch apps and auto-detect new HWNDs (supports localized titles). |
 | `run_macro` | Batch up to 50 operations into a single round-trip for maximum efficiency. |
 | `clipboard` / `notification_show` | System-level text exchange and user alerts. |
-| `key_locker` | Manage credentials the terminal autofills for you (SSH key passphrases, sudo / login passwords). Secrets are entered once into the locker's own secure dialog and stored encrypted on this machine (Windows DPAPI); they are never shown to the assistant. `action='launch_console'` opens an autofill-capable console (returns a `paneId` to drive `ssh`/`sudo` into via `terminal`); `save` / `list` / `forget` / `set_policy` / `status` manage bindings. Autofill only fires in a console opened by `launch_console`. Disable with `DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1`. |
+| `key_locker` | Manage credentials the terminal autofills for you (SSH key passphrases, sudo / login passwords). Secrets are entered once into the locker's own secure dialog and stored encrypted on this machine (Windows DPAPI); they are never shown to the assistant. `action='launch_console'` opens an autofill-capable console (returns a `paneId` to drive `ssh`/`sudo` into via `terminal`); `save` / `list` / `forget` / `set_policy` / `status` manage bindings; `fill_once` asks you to type a password once into a prompt autofill does not handle (nothing saved). Autofill and `fill_once` only work in a console opened by `launch_console`. Disable with `DESKTOP_TOUCH_DISABLE_KEY_LOCKER=1`. |
 
 ### 📊 Office (Excel)
 | Tool | Description |

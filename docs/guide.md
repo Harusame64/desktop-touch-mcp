@@ -132,6 +132,10 @@ terminal({ action:'send', paneId:'12345678', input:'ssh user@host' })
 - **Autofill only fires in a console opened by `launch_console`** — a pre-existing
   terminal is never autofilled. The console is a classic visible Windows console,
   so you can watch it and take over at any prompt yourself.
+- **A prompt autofill does not handle** (an `ssh` inside another `ssh` session, or a
+  login you do not want saved): send the command, then call
+  `key_locker({ action:'fill_once', paneId, reason })`. You type the password into the
+  locker's dialog; it is typed once into that pane's prompt and not saved.
 - **Every autofill asks you to confirm by default**; opt a binding out with
   `set_policy`. `list` / `status` / `forget` manage saved credentials.
 - `terminal` `read` / `send` accept `paneId` as an alternative to `windowTitle` —

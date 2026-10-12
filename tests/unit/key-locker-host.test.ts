@@ -143,6 +143,19 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     expect(parsed.k).toBe("ssh:example.com");
   });
 
+  it("capture() with a dialog sends only the secret-free label / note / purpose beside the key (#277)", async () => {
+    const path = pipePath();
+    const state: FakeState = { store: new Set(), captureReply: { captured: true, rt: true }, lastFrames: [] };
+    await listen(makeFakeLocker(path, { state }), path);
+    const host = await KeyLockerHost.connectForTest(path);
+    hosts.push(host);
+
+    await host.capture("opaque-1", { label: "locker console 1234", note: "log in to the build box", purpose: "fill_once" });
+    const parsed = JSON.parse(state.lastFrames.find((f) => f.includes('"capture"'))!) as Record<string, unknown>;
+    expect(Object.keys(parsed).sort()).toEqual(["id", "k", "label", "m", "note", "purpose"]);
+    expect(parsed).toMatchObject({ k: "opaque-1", label: "locker console 1234", note: "log in to the build box", purpose: "fill_once" });
+  });
+
   it("capture() reports a cancelled dialog as {captured:false}", async () => {
     const path = pipePath();
     await listen(makeFakeLocker(path, { captureReply: { captured: false, rt: false } }), path);
