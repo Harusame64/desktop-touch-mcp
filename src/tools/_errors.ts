@@ -1150,7 +1150,7 @@ const SUGGESTS: Record<string, string[]> = {
     "This tool is Windows-only.",
   ],
   KeyLockerHandshakeRejected: [
-    "The locker helper started but its secure handshake was rejected. Restart the MCP server so a fresh locker session is created.",
+    "The locker helper started but its secure handshake was rejected. Restart the MCP server so a fresh locker session is created. If the message names a protocol mismatch, the installed bin/key-locker.exe does not match this server: reinstall the same version instead.",
   ],
   KeyLockerPipeUnavailable: [
     "The connection to the locker helper was lost. Retry; if it persists, restart the MCP server.",

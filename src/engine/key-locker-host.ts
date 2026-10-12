@@ -369,7 +369,8 @@ export class KeyLockerHost {
         if (hello.v !== KEY_LOCKER_PROTOCOL_VERSION) {
           reject(new KeyLockerError(
             "KeyLockerHandshakeRejected",
-            `locker protocol '${hello.v}' != expected '${KEY_LOCKER_PROTOCOL_VERSION}'`,
+            `locker protocol '${hello.v}' != expected '${KEY_LOCKER_PROTOCOL_VERSION}' — bin/key-locker.exe is from a ` +
+              `different desktop-touch version than this server; reinstall the same version (a restart does not fix it)`,
           ));
           return;
         }
