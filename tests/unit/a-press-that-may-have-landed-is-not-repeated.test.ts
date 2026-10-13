@@ -19,6 +19,7 @@ import type { Aim } from "../../src/engine/aim.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
 import type { ExecutorDeps } from "../../src/tools/desktop-executor.js";
 import { classifyUiaRouteFailure, describeUiaRouteFailure } from "../../src/engine/uia-route-failure.js";
+import { getSuggestsForCode } from "../../src/tools/_errors.js";
 
 /** The engine's sentence, read from the Rust source so the two sides cannot drift apart unnoticed. */
 function rustConst(name: string): string {
@@ -87,5 +88,17 @@ describe("a title-only click whose UIA press may have landed", () => {
     const d = deps({ uiaClick: failingWith("InvokePattern not supported by this element") });
     await act(d);
     expect(d.mouseClick).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the advice that comes back with the refusal (review on 208131d0)", () => {
+  it("does not send the caller to press again with click_element when the press may have landed", () => {
+    const lines = getSuggestsForCode("AimRouteFailed");
+    const mayHaveLanded = lines.find((l) => l.includes("the press call failed after it was made"));
+    expect(mayHaveLanded).toBeDefined();
+    expect(mayHaveLanded).toContain("do NOT press again, click_element included");
+    // The click_element suggestion that remains is for the other failures only.
+    const clickElementLine = lines.find((l) => l.includes("click_element(name=…) is worth one try"));
+    expect(clickElementLine?.startsWith("Otherwise")).toBe(true);
   });
 });

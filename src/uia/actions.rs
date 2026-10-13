@@ -211,19 +211,27 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
                 focused_by: Some(focused_by.into()),
             }),
             Err(e) => {
-                // internal #232 — the call was made, so a failure other than a timeout may still follow
-                // a press that happened (`mod.rs::PRESS_OUTCOME_UNKNOWN`).
-                let error = if super::is_timeout(&e) {
-                    super::STOPPED_ANSWERING.to_string()
+                // internal #232 — the call was made, so most failures may still follow a press that happened
+                // (`mod.rs::PRESS_OUTCOME_UNKNOWN`). Three answers say the provider refused BEFORE acting
+                // (READ in the InvokePattern docs, not measured here): not enabled, and not supported / not
+                // implemented by a proxy that exposes the pattern anyway. Those keep their nothing-done words,
+                // so the title road's downgrade for a control with no working Invoke still runs.
+                let hr = e.code().0 as u32;
+                let (error, code) = if super::is_timeout(&e) {
+                    (super::STOPPED_ANSWERING, None)
+                } else if hr == UIA_E_ELEMENTNOTENABLED {
+                    ("Element is disabled", Some("ElementDisabled"))
+                } else if hr == UIA_E_NOTSUPPORTED || hr == windows::Win32::Foundation::E_NOTIMPL.0 as u32 {
+                    ("InvokePattern not supported by this element", Some("PatternNotSupported"))
                 } else {
                     eprintln!("[uia] Invoke failed after the call was made: {e}");
-                    super::PRESS_OUTCOME_UNKNOWN.to_string()
+                    (super::PRESS_OUTCOME_UNKNOWN, None)
                 };
                 Ok(ActionResult {
                     ok: false,
                     element: None,
-                    error: Some(error),
-                    code: None,
+                    error: Some(error.into()),
+                    code: code.map(Into::into),
                     focused_by: Some(focused_by.into()),
                 })
             }
