@@ -32,9 +32,12 @@ vi.mock("../../src/engine/cursor.js", () => ({
   moveCursorTo: vi.fn(async () => undefined),
 }));
 
-const { mockRunActionGuard, mockFindContainingWindowFresh } = vi.hoisted(() => ({
+const { mockRunActionGuard, mockFindContainingWindowFresh, mockWindowFromPoint, mockEnumWindows } = vi.hoisted(() => ({
   mockRunActionGuard: vi.fn(),
   mockFindContainingWindowFresh: vi.fn(),
+  // internal #202 — the OS hit test; `undefined` (the default) is a build without the binding.
+  mockWindowFromPoint: vi.fn(),
+  mockEnumWindows: vi.fn(),
 }));
 
 vi.mock("../../src/tools/_action-guard.js", () => ({
@@ -46,7 +49,9 @@ vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
-    enumWindowsInZOrder: vi.fn(() => []),
+    enumWindowsInZOrder: mockEnumWindows,
+    windowFromPoint: mockWindowFromPoint,
+    isExcludedWindowHandle: vi.fn(() => false),
     restoreAndFocusWindow: vi.fn(),
     getWindowIdentity: vi.fn(() => ({ processName: "test.exe", pid: 1234, processStartTimeMs: 0 })),
     readScrollInfo: vi.fn(() => null),
@@ -136,6 +141,8 @@ function parseResult(r: { content: { type: string; text: string }[] }) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockWindowFromPoint.mockReturnValue(undefined);
+  mockEnumWindows.mockReturnValue([]);
   mockRunActionGuard.mockResolvedValue({
     summary: { kind: "auto", status: "ok", canContinue: true, next: "" },
     block: false,
@@ -190,6 +197,32 @@ describe("mouse_drag endpoint guard descriptor (Round 2 P1-2)", () => {
     // The refusal must be the one that tells the caller how to consent —
     // not a title-mismatch refusal that knows nothing about the flag.
     expect(JSON.stringify(r)).toContain("allowCrossWindowDrag");
+    expect(mockReleaseButton).not.toHaveBeenCalled();
+  });
+
+  it("under a click-through overlay, the cross-window check asks the OS too, and still refuses (PR #818 Opus P2)", async () => {
+    // The rectangle pick sees the overlay at both ends — "the same window" — which would let the drag through.
+    mockFindContainingWindowFresh.mockImplementation(() => cachedWindow(197314n, "EAWorkWindow"));
+    const row = (hwnd: bigint, title: string) => ({ ...cachedWindow(hwnd, title), isActive: false, isMinimized: false });
+    mockEnumWindows.mockReturnValue([row(197314n, "EAWorkWindow"), row(100n, "Notepad"), row(200n, "Explorer")]);
+    mockWindowFromPoint.mockImplementation((x: number) => {
+      const root = x < 300 ? 100n : 200n;
+      return { child: root, root, ownerChain: [], rootThreadId: 1, rootProcessId: 2, rootHasCaption: true };
+    });
+
+    const r = parseResult(await mouseDragHandler({
+      startX: 100, startY: 100,
+      endX: 500, endY: 300,
+      windowTitle: "Notepad",
+      homing: false,
+      speed: 0,
+      verifyDelivery: false,
+    }));
+
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r)).toContain("CrossWindowDragBlocked");
+    expect(JSON.stringify(r)).toContain("hwnd=100");
+    expect(JSON.stringify(r)).toContain("hwnd=200");
     expect(mockReleaseButton).not.toHaveBeenCalled();
   });
 });

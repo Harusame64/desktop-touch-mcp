@@ -504,8 +504,13 @@ async function resolveWindowTargetByHwnd(
  *
  * The rectangles answer when the OS cannot be asked (an addon without the binding), when it says nothing
  * is there, or when the window it names is not in the enumeration — the guard as it was, never wider.
+ *
+ * Exported for `mouse_drag`'s tab-strip and cross-window checks, which must ask the same question as the
+ * start guard: with only the start guard asking the OS, a titled drag under the overlay passed it and then
+ * met two checks that saw the overlay at both ends — same window, no tab strip — and waved through the
+ * drags they exist to stop (PR #818 Opus review P2).
  */
-function windowTakingPointAt(x: number, y: number): CachedWindow | "excluded" | null {
+export function windowTakingPointAt(x: number, y: number): CachedWindow | "excluded" | null {
   const at = win32.windowFromPoint?.(x, y);
   if (at !== undefined && at !== null) {
     // Before anything is read about it: the excluded window must stop the press and not be described.
@@ -525,10 +530,10 @@ async function resolveCoordinateTarget(
   const { x, y, windowTitle } = descriptor;
   const warnings: string[] = [];
 
-  // Window-cache first (sub-ms); a miss re-enumerates once rather than
-  // reporting "target not found" for a window that is simply not in the cache
-  // right now. Without that, expiring an entry would make a live, unmoved
-  // window unclickable until some unrelated tool happened to list windows.
+  // The OS hit test first, then the window cache (`windowTakingPointAt`). A cache miss re-enumerates
+  // once rather than reporting "target not found" for a window that is simply not in the cache right
+  // now. Without that, expiring an entry would make a live, unmoved window unclickable until some
+  // unrelated tool happened to list windows.
   const owner = windowTakingPointAt(x, y);
   if (owner === "excluded") {
     // A tool-excluded window (the key locker's dialog) takes the press: refuse, and do not name it.

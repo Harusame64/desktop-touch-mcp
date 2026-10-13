@@ -12,7 +12,6 @@ import {
 import {
   updateWindowCache,
   findContainingWindow,
-  findContainingWindowFresh,
   getCachedWindowByTitle,
   computeWindowDelta,
   getSnapshot,
@@ -43,6 +42,7 @@ import { captureFrame, type RawFrame } from "../engine/layer-buffer.js";
 import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled } from "./_action-guard.js";
 import { detectTabDragRisk } from "../engine/perception/tab-drag-heuristic.js";
+import { windowTakingPointAt } from "../engine/perception/action-target.js";
 import { resolveWindowTarget, findPlainTopLevelWindowByTitle } from "./_resolve-window.js";
 import { offDesktopTarget, offDesktopFailure, type OffDesktopTarget } from "./_off-desktop.js";
 import {
@@ -933,7 +933,8 @@ export const mouseDragHandler = async ({
       if (!allowTabDrag) {
         // Refreshing lookup: a miss here SKIPS the tab-strip check entirely, so
         // an expired entry must not be allowed to silently disarm it.
-        const startWinForTab = findContainingWindowFresh(tsx, tsy);
+        const startTaker = windowTakingPointAt(tsx, tsy);
+        const startWinForTab = startTaker === "excluded" ? null : startTaker;
         if (startWinForTab) {
           const identity = getWindowIdentity(startWinForTab.hwnd);
           const tabRisk = detectTabDragRisk(
@@ -955,10 +956,12 @@ export const mouseDragHandler = async ({
       if (!allowCrossWindowDrag) {
         // Refreshing lookups: two misses make `startHwnd === endHwnd === null`,
         // which compares equal and lets a cross-window drag through unchecked.
-        const startWin = findContainingWindowFresh(tsx, tsy);
-        const endWin   = findContainingWindowFresh(tex, tey);
-        const startHwnd = startWin ? String(startWin.hwnd) : null;
-        const endHwnd   = endWin   ? String(endWin.hwnd)   : null;
+        // The same OS-first question as the start guard (internal #202). An excluded window has a key of
+        // its own, so it never compares equal to the window it covers.
+        const keyOf = (w: ReturnType<typeof windowTakingPointAt>): string | null =>
+          w === "excluded" ? "excluded" : w ? String(w.hwnd) : null;
+        const startHwnd = keyOf(windowTakingPointAt(tsx, tsy));
+        const endHwnd   = keyOf(windowTakingPointAt(tex, tey));
         if (startHwnd !== endHwnd) {
           return failWith(
             new Error(
