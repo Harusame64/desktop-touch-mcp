@@ -2165,16 +2165,27 @@ export class WinFormsComboWriteRefusedError extends Error implements CallerFacin
   readonly callerDetail: string;
   /** Refused before any route ran (internal #242). */
   readonly noRouteTried = true as const;
-  constructor(entity: UiEntity, action: "type" | "setValue") {
+  constructor(entity: UiEntity, action: "type" | "setValue", aimHwnd?: bigint) {
     super(`not writing "${entity.label ?? entity.entityId}" through UI Automation: a WinForms combo box does not see that change`);
     this.name = "WinFormsComboWriteRefusedError";
     // Each step measured by win2 on FX238 (2026-10-13): desktop_act click on a window named by title lands as a
     // mouse click (the combo has no Invoke) and selects all its text, 2/2; on a window named by handle that click
     // is refused (aim_route_failed), so mouse_click is the way in; ctrl+a does NOT select in this control, Home
     // then Shift+End does; keyboard type then Tab reached the model, 2/2 and 3/3.
-    const click =
-      `Click it — desktop_act(action:'click') on a window named by title; on a window named by handle that click is ` +
-      `refused, so use mouse_click at its rectangle.`;
+    //
+    // On the handle road the point is in the sentence: discover shows `rect` only to debug calls, so a caller
+    // told "at its rectangle" would have no coordinates to pass (PR #815 codex P2). mouse_click with the hwnd
+    // guards that the point is inside that window.
+    let click: string;
+    if (aimHwnd === undefined) {
+      click = `Click it — desktop_act(action:'click').`;
+    } else {
+      const r = entity.rect;
+      const at = r !== undefined
+        ? `mouse_click({hwnd:'${aimHwnd}', x:${Math.round(r.x + r.width / 2)}, y:${Math.round(r.y + r.height / 2)}}), the centre of its rectangle when discover read it`
+        : `mouse_click({hwnd:'${aimHwnd}', x, y}) at its clickAt from screenshot({detail:'text', hwnd:'${aimHwnd}'})`;
+      click = `Click it with ${at} (desktop_act's click is refused on a window named by handle).`;
+    }
     const put = action === "setValue"
       ? ` The click selects its old text; if it did not, select it with keyboard Home then Shift+End (ctrl+a does not select in this control).`
       : ` The click selects its old text, which typing would replace: press keyboard End first to add to it.`;
@@ -2550,7 +2561,7 @@ export function createDesktopExecutor(
         // screen and the application is not told, so `ok:true` would report a value its model never took.
         // Before the try below, whose catch would hand the refusal to the keyboard rung as a failed write.
         if (d.comboWindowFacts !== undefined && (await editableWinFormsComboOf(entity, d.comboWindowFacts)) !== undefined) {
-          throw new WinFormsComboWriteRefusedError(entity, action);
+          throw new WinFormsComboWriteRefusedError(entity, action, aimHwnd);
         }
         try {
           const written = await d.uiaSetValue(winTitle, text, name, automationId, aimHwnd);

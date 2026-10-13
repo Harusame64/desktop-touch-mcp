@@ -88,13 +88,28 @@ describe("a WinForms editable combo box", () => {
           expect(d.keyboardTypeBg).not.toHaveBeenCalled();
           expect(err?.callerDetail).toMatch(/^Nothing was written: "A17 Combo" is a WinForms combo box/);
           expect(err?.callerDetail).toContain("keyboard({action:'type', text})");
-          expect(err?.callerDetail).toContain("use mouse_click at its rectangle");
+          if (roadName === "title road") {
+            expect(err?.callerDetail).toContain("Click it — desktop_act(action:'click').");
+            expect(err?.callerDetail).not.toContain("mouse_click");
+          } else {
+            // The point a caller can pass: discover shows `rect` only to debug calls (PR #815 codex P2).
+            expect(err?.callerDetail).toContain("Click it with mouse_click({hwnd:'4919', x:400, y:310}), the centre of its rectangle");
+          }
           expect(err?.callerDetail).toContain(action === "setValue" ? "Home then Shift+End" : "press keyboard End first");
           expect(err?.callerDetail).not.toMatch(/select[^.]*with keyboard ctrl\+a/);
         });
       }
     }
   }
+
+  it("handle road, an entity without a rectangle: the advice says where to read the point, not a made-up one", async () => {
+    const d = deps({ comboWindowFacts: facts(comboAs(CBS_DROPDOWN)) });
+    const { rect: _rect, ...noRect } = entity("ComboBox", COMBO);
+    const { e: err } = await write(handleRoad, d, noRect as UiEntity, "setValue");
+    expect(err?.name).toBe("WinFormsComboWriteRefusedError");
+    expect(err?.callerDetail).toContain("mouse_click({hwnd:'4919', x, y}) at its clickAt from screenshot({detail:'text', hwnd:'4919'})");
+    expect(err?.callerDetail).not.toMatch(/x:\d/);
+  });
 
   it("CBS_SIMPLE has an Edit too and is refused alike", async () => {
     const d = deps({ comboWindowFacts: facts(comboAs(CBS_SIMPLE)) });
