@@ -335,7 +335,7 @@ export type TouchResult =
        * internal #233 — on `executor_failed` only: the refusal's advice class, chosen by its class
        * (`adviceClass` on the error). Read by `desktop-register.ts` to choose the advice; not published.
        */
-      adviceClass?: "collection_item_select";
+      adviceClass?: "collection_item_select" | "collection_item_select_no_invoke";
     };
 
 /**
@@ -947,8 +947,9 @@ export class GuardedTouchLoop {
       // same opt-in as `callerDetail`), so the advice does not tell the caller routes were tried.
       const noRouteTried = (err as { noRouteTried?: unknown } | null)?.noRouteTried === true;
       // internal #233 — a refusal whose advice is its own (`adviceClass` on the class, the same opt-in).
-      const adviceClass = (err as { adviceClass?: unknown } | null)?.adviceClass === "collection_item_select"
-        ? ("collection_item_select" as const)
+      const claimed = (err as { adviceClass?: unknown } | null)?.adviceClass;
+      const adviceClass = claimed === "collection_item_select" || claimed === "collection_item_select_no_invoke"
+        ? claimed
         : undefined;
       return {
         ok: false,

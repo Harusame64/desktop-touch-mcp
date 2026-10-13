@@ -2307,8 +2307,12 @@ const COLLECTION_ITEM_CONTROL_TYPES = ["ListItem", "DataItem", "TreeItem"] as co
 
 /**
  * internal #233 — the item is clicked as a checked single mouse click instead of through UI Automation.
- * Not caller-facing: the click road's own catch takes it, and either downgrades to that click (title
- * road) or refuses it ({@link CollectionItemSelectRefusedError} `needs_title_road`, handle road).
+ * Not caller-facing: the UIA road is left, and the item takes the mouse road at the end of the executor,
+ * the one a mouse-first item takes — with its checks against the aimed window (`resolvePressPoint`), on
+ * the title road and the handle road alike. MEASURED win2 2026-10-13 (PR #819 issuecomment-6146450595,
+ * G1–G8): mouse-first collection items (a raw tree leaf, an Explorer nav node, a Chrome `<li>`, a WPF
+ * item) were already clicked on the handle road through that road; refusing these instead, because they
+ * also have an Invoke, clicked or refused the same kind of item by a pattern the caller cannot see.
  *
  * MEASURED win2 2026-10-13 (internal #233, issuecomment-6145660788 and after), for the two cases:
  *   - a TreeItem (raw SysTreeView32, WinForms 4.8 and .NET 10): Select on a tree with nothing selected
@@ -2326,7 +2330,7 @@ class SingleClickNeeded extends Error {
       `a click on "${entity.label ?? entity.entityId}" (${entity.controlType ?? "item"}) is made as a single mouse click: ` +
         (item === "tree_item"
           ? "UI Automation's select on a tree can change the selection twice"
-          : "the item cannot be selected through UI Automation, and its Invoke does more than a click"),
+          : "the item cannot be selected through UI Automation"),
       options,
     );
     this.name = "SingleClickNeeded";
@@ -2380,7 +2384,7 @@ async function selectCollectionItem(
       : routeFailure === "target_stopped_answering" ? "may_land"
       : "failed";
     probeRefusal("uia_select", "executor_failed", aimHwnd, entity, { selectRefused: kind, routeFailure: routeFailure ?? null, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
-    throw new CollectionItemSelectRefusedError(entity, kind, routeFailure, aimHwnd, { cause: err });
+    throw new CollectionItemSelectRefusedError(entity, kind, routeFailure, { cause: err });
   }
 }
 
@@ -2392,25 +2396,30 @@ async function selectCollectionItem(
  *   - `not_selected` — Select was taken and the item did not read as selected afterwards.
  *   - `may_land` — the window stopped answering during the select, which may still land.
  *   - `no_engine` — selecting needs the native engine, and it is unavailable.
- *   - `needs_title_road` — the item is clicked as a single mouse click (a tree item, or one with no
- *     SelectionItemPattern), and a window named by handle does not take a coordinate press.
  *   - `failed` — the select call failed any other way.
  */
 export class CollectionItemSelectRefusedError extends Error implements CallerFacingRefusal {
   readonly callerDetail: string;
-  /** Read by `guarded-touch.ts` and carried to the advice (`executorFailedAdviceFor`). */
-  readonly adviceClass = "collection_item_select" as const;
+  /**
+   * Read by `guarded-touch.ts` and carried to the advice (`executorFailedAdviceFor`). `_no_invoke` when
+   * discover read no InvokePattern on the item: the advice then does not send the caller to an invoke
+   * that cannot run (PR #819, a ReadOnly DataGridView cell has none).
+   */
+  readonly adviceClass: "collection_item_select" | "collection_item_select_no_invoke";
   constructor(
     entity: UiEntity,
-    readonly kind: "not_selected" | "may_land" | "no_engine" | "needs_title_road" | "failed",
+    readonly kind: "not_selected" | "may_land" | "no_engine" | "failed",
     routeFailure: ReturnType<typeof classifyUiaRouteFailure>,
-    aimHwnd: bigint | undefined,
     options?: ErrorOptions,
   ) {
     super(`not clicking "${entity.label ?? entity.entityId}" (${entity.controlType ?? "item"}): ${kind}`, options);
     this.name = "CollectionItemSelectRefusedError";
     const label = quotedLabel(entity);
-    const invoke = `If opening or running it is what you want, use desktop_act(action:'invoke').`;
+    const hasInvoke = (entity.patterns ?? []).includes("InvokePattern");
+    this.adviceClass = hasInvoke ? "collection_item_select" : "collection_item_select_no_invoke";
+    const invoke = hasInvoke
+      ? `If opening or running it is what you want, use desktop_act(action:'invoke').`
+      : `It has no UI Automation Invoke to open it with.`;
     switch (kind) {
       case "not_selected":
         this.callerDetail = `Nothing was pressed, and nothing changed: UI Automation took the select for "${label}", but the item did not become selected. ${invoke}`;
@@ -2423,13 +2432,8 @@ export class CollectionItemSelectRefusedError extends Error implements CallerFac
         break;
       case "no_engine":
         this.callerDetail =
-          `Nothing was pressed: selecting "${label}" needs the native UI Automation engine, which is unavailable, ` +
-          `and it is not invoked instead, because its Invoke opens or runs it. ${invoke}`;
-        break;
-      case "needs_title_road":
-        this.callerDetail =
-          `Nothing was pressed: "${label}" is clicked as a single mouse click, which a window named by handle does not take. ` +
-          `Name the window by title, or use mouse_click({hwnd:'${aimHwnd ?? ""}', x, y}) if you mean to click it. ${invoke}`;
+          `Nothing was pressed: selecting "${label}" needs the native UI Automation engine, which is unavailable` +
+          (hasInvoke ? `, and it is not invoked instead, because Invoke opens or runs it. ` : `. `) + invoke;
         break;
       case "failed":
         this.callerDetail =
@@ -2715,6 +2719,10 @@ export function createDesktopExecutor(
     //     bare `"keyboard"` return (PR #330 contract、OQ-SR5-1 で SR-5 再判断)。
     const preferredAllows = (executor: AdvertisedExecutorKind): boolean =>
       entity.preferredExecutors === undefined || entity.preferredExecutors.includes(executor);
+
+    // internal #233 — set on the UIA road when a collection item is to be clicked as a single mouse click
+    // (`SingleClickNeeded`); the mouse road at the end takes it.
+    let singleClick: SingleClickNeeded | undefined;
 
     // ── UIA route ────────────────────────────────────────────────────────────
     if (entity.sources.includes("uia") && !uiaBlocked && preferredAllows("uia")) {
@@ -3008,18 +3016,15 @@ export function createDesktopExecutor(
       // selected on every provider, with no DBLCLK in any case. The user's decision: a click selects;
       // opening or running the item is `action:"invoke"`, which keeps the Invoke below.
       //
-      // A tree item, and an item with no SelectionItemPattern, are clicked instead with the checked single
-      // mouse click below (`SingleClickNeeded`): a real single click is the select being imitated. Every
-      // other failure of the select is refused, and nothing is pressed.
-      let singleClick: SingleClickNeeded | undefined;
+      // A tree item, and an item with no SelectionItemPattern, leave the UIA road for the mouse road at the
+      // end (`SingleClickNeeded`): a real single click is the select being imitated. Every other failure
+      // of the select is refused, and nothing is pressed.
       if (action === "click" && entity.controlType !== undefined && (COLLECTION_ITEM_CONTROL_TYPES as readonly string[]).includes(entity.controlType)) {
         const selected = await selectCollectionItem(d, entity, winTitle, name, automationId, aimHwnd, addressed);
         if (!(selected instanceof SingleClickNeeded)) return selected;
         singleClick = selected;
       }
-      try {
-        // internal #233 — into the catch below, which makes the single click, or refuses it on the handle road.
-        if (singleClick !== undefined) throw singleClick;
+      if (singleClick === undefined) try {
         const pressed = await d.uiaClick(winTitle, name, automationId, aimHwnd);
         probeRoute("uia", aimHwnd, entity, { why: "uia_invoke", focusedBy: pressed?.focusedBy ?? null, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
         return "uia";
@@ -3058,12 +3063,6 @@ export function createDesktopExecutor(
         // So the ladder ends here when the aim was a handle. An honest failure lets the caller
         // re-discover; a blind press lets it believe. Unpinned calls keep the downgrade — a title
         // was never a promise about which window — but it is no longer BLIND: see below.
-        // internal #233 — a collection item to be clicked as a single mouse click, on a window named by handle:
-        // refused as every aimed coordinate press is, in words that say what to do instead.
-        if (uiaErr instanceof SingleClickNeeded && aimHwnd !== undefined) {
-          probeRefusal("uia_select", "executor_failed", aimHwnd, entity, { selectRefused: "needs_title_road", singleClick: uiaErr.item, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
-          throw new CollectionItemSelectRefusedError(entity, "needs_title_road", undefined, aimHwnd, { cause: uiaErr });
-        }
         if (aimHwnd !== undefined) {
           // Which failure it was, when the backend's answer is a known one (`uia-route-failure.ts`).
           // An element that has gone and one that cannot be invoked have opposite recoveries, and
@@ -3383,7 +3382,10 @@ export function createDesktopExecutor(
     // mouse を含まない場合の throw を mouseBlocked と同経路で扱う。text drop
     // 防止 throw を先に評価する順序は維持しているため、text 付き action は
     // mouseBlocked と同等に上の text-drop branch で扱われる。
-    if (!preferredAllows("mouse")) {
+    // internal #233 — not for a single-click collection item: the engine has just said a click is how it is
+    // selected, and its click was this road before (the UIA downgrade) whatever `preferredExecutors` named
+    // (a ValuePattern cell is `["uia","keyboard"]`). An item that rules the mouse out is still refused above.
+    if (!preferredAllows("mouse") && singleClick === undefined) {
       // Round 8 P3-2 反映: mouseBlocked 経路の error message と統一して LLM 観測時の
       // log 差分を減らす。R-SR1-2-e (sub-plan §5.5) で「mouseBlocked と同経路で扱う」
       // と明記済の throw、文言も bit-equal にする。
@@ -3414,8 +3416,7 @@ export function createDesktopExecutor(
     // ADR-036 probe — the press this ADR is about: a coordinate taken from a rect remembered at
     // discover time. Both points are written: `point` is where it went, `remembered` is where the
     // snapshot said it was, and a row where they differ is the homing correction doing its work.
-    probeRoute("mouse", aimHwnd, entity, {
-      why: "visual_or_read_entity",
+    const pressedAt = {
       point: { x, y },
       remembered,
       rect: entity.rect,
@@ -3423,7 +3424,11 @@ export function createDesktopExecutor(
       // against. A row where `aimHwnd` is null and `coordHwnd` is not is item 12 doing its work.
       coordHwnd: coordHwnd !== undefined ? coordHwnd.toString() : null,
       coordHwndFrom: aimHwnd !== undefined ? "aim" : coordHwnd !== undefined ? "entity_origin" : null,
-    });
+    };
+    // internal #233 — the same press, named for why it is a press: a collection item the engine selects by
+    // a single click. Two literal calls: the vocabulary scanner reads a `why` only as a literal.
+    if (singleClick !== undefined) probeRoute("mouse", aimHwnd, entity, { why: "collection_item_single_click", singleClick: singleClick.item, ...pressedAt });
+    else probeRoute("mouse", aimHwnd, entity, { why: "visual_or_read_entity", ...pressedAt });
     await probedStep("mouse_press", aimHwnd, entity, () => d.mouseClick(x, y));
     return "mouse";
   };

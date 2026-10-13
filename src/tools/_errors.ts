@@ -1378,6 +1378,7 @@ export function executorFailedAdviceFor(
   adviceClass?: ExecutorFailedAdviceClass,
 ): string[] {
   if (adviceClass === "collection_item_select") return [...COLLECTION_ITEM_SELECT_ADVICE];
+  if (adviceClass === "collection_item_select_no_invoke") return COLLECTION_ITEM_SELECT_ADVICE.filter((l) => !l.includes("action:'invoke'"));
   if (noRouteTried) return [EXECUTOR_FAILED_NO_ROUTE_TRIED];
   const all = SUGGESTS.ExecutorFailed ?? [];
   // Picked from the list by what each line is about, so the list stays the one source of the
@@ -1397,12 +1398,13 @@ export function executorFailedAdviceFor(
 }
 
 /** The refusal classes with advice of their own (`executorFailedAdviceFor`). */
-export type ExecutorFailedAdviceClass = "collection_item_select";
+export type ExecutorFailedAdviceClass = "collection_item_select" | "collection_item_select_no_invoke";
 
 /**
  * internal #233 — `CollectionItemSelectRefusedError` (`desktop-executor.ts`): a click on a list, tree or
  * grid item that was not made. No click_element (its Invoke opens, runs or edits the item) and no
- * mouse_click (the refusal's detail names the one coordinate click that applies, when one does).
+ * mouse_click. `_no_invoke` (discover read no InvokePattern on the item) drops the invoke line: it would
+ * send the caller to an act that cannot run.
  */
 const COLLECTION_ITEM_SELECT_ADVICE: readonly string[] = [
   "Follow detail: it says what was and was not done to this item, and what to do instead",

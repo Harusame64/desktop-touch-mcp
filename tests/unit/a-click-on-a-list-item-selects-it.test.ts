@@ -10,7 +10,8 @@
  * Round 2 (win2, issuecomment-6145660788 and after): Select on a tree with nothing selected changes the
  * selection twice, and a DataGridView cell (a DataItem with no SelectionItem) starts editing on Invoke;
  * a real single click selects either once, 3/3. So a tree item, and an item the engine cannot select,
- * are clicked with the checked single mouse click on the title road, and refused on the handle road.
+ * are clicked with the checked single mouse click a mouse-first item gets, on both roads (round 3: win2
+ * G1–G8 found the handle road clicked mouse-first items and refused these).
  * Chromium's content keeps Invoke, which selects there (`<select size=5>`: `change`, no dblclick).
  *
  * These cells pin the dispatch on both roads, the single click and its refusal, the refusals with
@@ -66,6 +67,8 @@ function entity(controlType: string, originHwnd?: bigint): UiEntity {
     locator: { uia: { name: "report.txt", automationId: "7", via: "native" } },
     affordances: [{ verb: "read", executors: ["uia"], confidence: 0.9, preconditions: [], postconditions: [] }],
     generation: "gen-1", evidenceDigest: "d", rect: { x: 300, y: 300, width: 200, height: 20 }, controlType,
+    // What discover reads on an item the UIA road takes (`registry.ts`: Invoke puts UIA first).
+    patterns: ["InvokePattern", "SelectionItemPattern"],
     // What the registry gives an element with InvokePattern (`registry.ts`): UIA first, the mouse second.
     preferredExecutors: ["uia", "mouse"],
     origin: { kind: "window", id: "FX233", ...(originHwnd !== undefined && { hwnd: originHwnd.toString() }) },
@@ -231,42 +234,71 @@ describe("a click on a collection item", () => {
 });
 
 describe("an item clicked as a single mouse click (a tree item, or one the engine cannot select)", () => {
-  for (const [why, uiaSelect, controlType] of [["a tree item", TREE, "TreeItem"], ["no SelectionItem (a DataGridView cell)", NO_SELECTION_ITEM, "DataItem"]] as const) {
-    it(`is clicked once at its centre on the title road, never invoked — ${why}`, async () => {
-      const d = deps({ uiaSelect: uiaSelect() });
-      const { v, e: err } = await act(titleRoad, d, entity(controlType), "click");
-      expect(err).toBeNull();
-      expect(v).toMatchObject({ kind: "mouse", downgrade: { from: "uia" } });
-      expect(d.mouseClick).toHaveBeenCalledTimes(1);
-      expect(d.mouseClick).toHaveBeenCalledWith(400, 310);
-      expect(d.uiaClick).not.toHaveBeenCalled();
-      expect(routeRows().find((r) => r.route === "mouse")).toMatchObject({ why: "uia_downgrade" });
-    });
+  // The window the press is checked against: the call's handle, or the one the entity was read in.
+  const RECT_OK = { x: 0, y: 0, width: 1000, height: 1000 };
+  for (const [why, uiaSelect, controlType] of [["a .NET 10 parent node with Invoke", TREE, "TreeItem"], ["no SelectionItem (a DataGridView cell)", NO_SELECTION_ITEM, "DataItem"]] as const) {
+    for (const [roadName, road] of roads) {
+      it(`is clicked once at its centre through the checked mouse road, never invoked — ${why}, ${roadName}`, async () => {
+        const d = deps({ uiaSelect: uiaSelect(), aimRect: vi.fn(async () => RECT_OK), pointOwner: vi.fn(() => ({ kind: "aim" as const, via: "os_hit_test" as const })) });
+        const { v, e: err } = await act(road, d, entity(controlType, FORM), "click");
+        expect(err).toBeNull();
+        // The mouse-first road's answer: no downgrade, because nothing failed.
+        expect(v).toBe("mouse");
+        expect(d.mouseClick).toHaveBeenCalledTimes(1);
+        expect(d.mouseClick).toHaveBeenCalledWith(400, 310);
+        expect(d.uiaClick).not.toHaveBeenCalled();
+        // The same checks a mouse-first item gets, against the aimed (or read-in) window.
+        expect(d.aimRect).toHaveBeenCalledWith(FORM);
+        expect(d.pointOwner).toHaveBeenCalled();
+        expect(routeRows().find((r) => r.route === "mouse")).toMatchObject({
+          why: "collection_item_single_click",
+          singleClick: controlType === "TreeItem" ? "tree_item" : "no_selection_item",
+          coordHwnd: FORM.toString(),
+        });
+      });
 
-    it(`is checked against the window it was read in before it is pressed — ${why}`, async () => {
-      // The point is outside the window the entity was captured in: the ladder refuses, nothing is pressed.
-      const d = deps({ uiaSelect: uiaSelect(), aimRect: vi.fn(async () => ({ x: 0, y: 0, width: 100, height: 100 })) });
-      const { v, e: err } = await act(titleRoad, d, entity(controlType, FORM), "click");
-      expect(v).toBeNull();
-      expect(err?.name).toBe("AimedPointOutsideWindowError");
-      expect(d.aimRect).toHaveBeenCalledWith(FORM);
-      expect(d.mouseClick).not.toHaveBeenCalled();
-      expect(d.uiaClick).not.toHaveBeenCalled();
-    });
+      it(`is refused, pressing nothing, when another window takes the point — ${why}, ${roadName}`, async () => {
+        const d = deps({
+          uiaSelect: uiaSelect(),
+          aimRect: vi.fn(async () => RECT_OK),
+          pointOwner: vi.fn(() => ({ kind: "other" as const, hwnd: 777n, title: "Over it", via: "os_hit_test" as const })),
+        });
+        const { v, e: err } = await act(road, d, entity(controlType, FORM), "click");
+        expect(v).toBeNull();
+        expect(err?.name).toBe("AimOccludedError");
+        expect(d.mouseClick).not.toHaveBeenCalled();
+        expect(d.uiaClick).not.toHaveBeenCalled();
+      });
 
-    it(`is refused on the handle road, pressing nothing, and says how to click it — ${why}`, async () => {
-      const d = deps({ uiaSelect: uiaSelect() });
-      const { v, e: err } = await act(handleRoad, d, entity(controlType), "click");
-      expect(v).toBeNull();
-      expect(err?.name).toBe("CollectionItemSelectRefusedError");
-      expect(err?.adviceClass).toBe("collection_item_select");
-      expect(err?.callerDetail).toMatch(/^Nothing was pressed: "report\.txt" is clicked as a single mouse click, which a window named by handle does not take\./);
-      expect(err?.callerDetail).toContain("Name the window by title, or use mouse_click({hwnd:'4919', x, y})");
-      expect(d.mouseClick).not.toHaveBeenCalled();
-      expect(d.uiaClick).not.toHaveBeenCalled();
-      expect(routeRows().at(-1)).toMatchObject({ route: "refusal", rung: "uia_select", refused: "executor_failed", selectRefused: "needs_title_road" });
-    });
+      it(`is refused, pressing nothing, when the point is outside the window — ${why}, ${roadName}`, async () => {
+        const d = deps({ uiaSelect: uiaSelect(), aimRect: vi.fn(async () => ({ x: 0, y: 0, width: 100, height: 100 })) });
+        const { v, e: err } = await act(road, d, entity(controlType, FORM), "click");
+        expect(v).toBeNull();
+        expect(err?.name).toBe("AimedPointOutsideWindowError");
+        expect(d.mouseClick).not.toHaveBeenCalled();
+        expect(d.uiaClick).not.toHaveBeenCalled();
+      });
+    }
   }
+
+  it("is clicked even when the registry did not list the mouse (a ValuePattern cell is uia + keyboard)", async () => {
+    // A ReadOnly-like cell: no Invoke, no SelectionItem; before this PR its click was the UIA downgrade.
+    const d = deps({ uiaSelect: NO_SELECTION_ITEM() });
+    const e: UiEntity = { ...entity("DataItem"), preferredExecutors: ["uia", "keyboard"], patterns: ["ValuePattern"] };
+    const { v, e: err } = await act(titleRoad, d, e, "click");
+    expect(err).toBeNull();
+    expect(v).toBe("mouse");
+    expect(d.mouseClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("is not clicked when the mouse is ruled out for the item", async () => {
+    const d = deps({ uiaSelect: NO_SELECTION_ITEM() });
+    const e: UiEntity = { ...entity("DataItem"), unsupportedExecutors: ["mouse"] };
+    const { v } = await act(titleRoad, d, e, "click");
+    expect(v).toBeNull();
+    expect(d.mouseClick).not.toHaveBeenCalled();
+    expect(d.uiaClick).not.toHaveBeenCalled();
+  });
 
   it("a ListItem the registry routes to the mouse (WPF, no UIA road) still takes the mouse road", async () => {
     const d = deps();
@@ -386,6 +418,28 @@ describe("through the loop to the envelope", () => {
       const tryNext = (ifUnexpected.try_next ?? []).map((r) => r.action);
       expect(tryNext).toEqual(ADVICE);
       for (const line of tryNext) expect(line).not.toMatch(/click_element|mouse_click|Nothing was typed/);
+    });
+  }
+});
+
+describe("an item with no Invoke is not sent to one", () => {
+  for (const [kind, uiaSelect] of [
+    ["not_selected", () => engineSays("The item was not selected", "SelectNotApplied")],
+    ["no_engine", () => engineSays("Selecting an item needs the native UI Automation engine, which is unavailable", "NativeEngineUnavailable")],
+    ["failed", () => engineSays("Select failed: 0x80040201")],
+  ] as const) {
+    it(`says it has none, in detail and advice — ${kind}`, async () => {
+      // A ReadOnly-like item: discover read a SelectionItem and a Value, no Invoke.
+      const e: UiEntity = { ...entity("DataItem"), patterns: ["SelectionItemPattern", "ValuePattern"] };
+      const { e: err } = await act(titleRoad, deps({ uiaSelect: uiaSelect() }), e, "click");
+      expect(err?.name).toBe("CollectionItemSelectRefusedError");
+      expect(err?.adviceClass).toBe("collection_item_select_no_invoke");
+      expect(err?.callerDetail).not.toMatch(/its Invoke|action:'invoke'/);
+      expect(err?.callerDetail).toContain("It has no UI Automation Invoke to open it with.");
+      const { executorFailedAdviceFor } = await import("../../src/tools/_errors.js");
+      const lines = executorFailedAdviceFor("click", false, "collection_item_select_no_invoke");
+      expect(lines[0]).toMatch(/^Follow detail/);
+      for (const line of lines) expect(line).not.toMatch(/invoke|click_element|mouse_click/i);
     });
   }
 });
