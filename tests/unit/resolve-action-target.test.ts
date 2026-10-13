@@ -10,7 +10,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const { mockEnumWindows, mockBuildWindowIdentity, mockRefreshWin32Fluents,
         mockFindContainingWindow, mockGetCachedWindowByTitle,
-        mockGetWindowProcessId, mockListTabsLight } = vi.hoisted(() => ({
+        mockGetWindowProcessId, mockListTabsLight,
+        mockWindowFromPoint, mockIsExcluded } = vi.hoisted(() => ({
+  mockWindowFromPoint: vi.fn(),
+  mockIsExcluded: vi.fn(),
   mockEnumWindows: vi.fn(),
   mockBuildWindowIdentity: vi.fn(),
   mockRefreshWin32Fluents: vi.fn(),
@@ -25,6 +28,10 @@ vi.mock("../../src/engine/win32.js", () => ({
   // Used by the coordinate path's title-hint verdict. The allowance is pid
   // equality, which covers owned dialogs and same-application siblings alike.
   getWindowProcessId: mockGetWindowProcessId,
+  // internal #202 — the OS hit test the coordinate guard asks first. `undefined` (the default below) is
+  // an addon without the binding, which leaves the rectangle cases in this file as they were.
+  windowFromPoint: mockWindowFromPoint,
+  isExcludedWindowHandle: mockIsExcluded,
 }));
 
 vi.mock("../../src/engine/perception/sensors-win32.js", () => ({
@@ -75,6 +82,10 @@ function makeIdentity(hwnd: string) {
 }
 
 beforeEach(() => {
+  mockWindowFromPoint.mockReset();
+  mockWindowFromPoint.mockReturnValue(undefined);
+  mockIsExcluded.mockReset();
+  mockIsExcluded.mockReturnValue(false);
   mockEnumWindows.mockReset();
   mockBuildWindowIdentity.mockReset();
   mockRefreshWin32Fluents.mockReset();
@@ -392,5 +403,67 @@ describe("resolveActionTarget — does not pollute manual lens registry (B-4)", 
     const newIds = compiledLensIds.slice(before);
     expect(newIds.length).toBe(20);
     expect(newIds.every(id => id.startsWith("auto-"))).toBe(true);
+  });
+});
+
+describe("resolveActionTarget — coordinate: the OS hit test names the window (internal #202)", () => {
+  // win2, 2026-10-13: Dell's EAWorkWindow covers the work area (WS_EX_LAYERED | TOPMOST, per-pixel alpha, no
+  // WS_EX_TRANSPARENT). WindowFromPoint named the fixture under it at 3/3 points, and a real click landed on
+  // the fixture 3/3; the rectangle pick named the overlay, and every guarded mouse_click was refused.
+  const OVERLAY = makeWindow("197314", "EAWorkWindow", false, 0);
+  const SENTINEL = { ...makeWindow("4919", "K232 Sentinel", false, 3), region: { x: 250, y: 250, width: 560, height: 400 } };
+  const at = (root: string) => ({ child: BigInt(root), root: BigInt(root), ownerChain: [], rootThreadId: 1, rootProcessId: 2, rootHasCaption: true });
+
+  beforeEach(() => {
+    mockEnumWindows.mockReturnValue([OVERLAY, SENTINEL]);
+    // The rectangle pick: the overlay is frontmost and contains every point.
+    mockFindContainingWindow.mockReturnValue({ ...OVERLAY, timestamp: Date.now() });
+    mockBuildWindowIdentity.mockReturnValue(makeIdentity("4919"));
+    mockRefreshWin32Fluents.mockReturnValue([]);
+  });
+
+  it("a point under a click-through overlay resolves to the window the OS says takes it, and matches its title", async () => {
+    mockWindowFromPoint.mockReturnValue(at("4919"));
+    const r = await resolveActionTarget({ kind: "coordinate", x: 530, y: 460, windowTitle: "K232 Sentinel" }, { actionKind: "mouseClick" });
+    expect(r.titleMismatch).toBeUndefined();
+    expect(r.lens).not.toBeNull();
+    expect(r.lens?.binding.hwnd).toBe("4919");
+  });
+
+  it("CONTROL: without the binding the rectangles answer, and the overlay still refuses (the guard as it was)", async () => {
+    const r = await resolveActionTarget({ kind: "coordinate", x: 530, y: 460, windowTitle: "K232 Sentinel" }, { actionKind: "mouseClick" });
+    expect(r.titleMismatch?.resolved).toBe("EAWorkWindow");
+  });
+
+  it("a window the OS names that really is another one still refuses — the hit test is not a pass", async () => {
+    const OTHER = makeWindow("5000", "Some Other App", false, 1);
+    mockEnumWindows.mockReturnValue([OVERLAY, OTHER, SENTINEL]);
+    mockWindowFromPoint.mockReturnValue(at("5000"));
+    mockGetWindowProcessId.mockImplementation((h: bigint) => (String(h) === "5000" ? 77 : 88));
+    const r = await resolveActionTarget({ kind: "coordinate", x: 530, y: 460, windowTitle: "K232 Sentinel" }, { actionKind: "mouseClick" });
+    expect(r.lens).toBeNull();
+    expect(r.titleMismatch?.resolved).toBe("Some Other App");
+  });
+
+  it("Windows says nothing is there (null): the rectangles answer, as before", async () => {
+    mockWindowFromPoint.mockReturnValue(null);
+    const r = await resolveActionTarget({ kind: "coordinate", x: 530, y: 460, windowTitle: "K232 Sentinel" }, { actionKind: "mouseClick" });
+    expect(r.titleMismatch?.resolved).toBe("EAWorkWindow");
+  });
+
+  it("a root the enumeration does not list: the rectangles answer, never a window made up from the handle", async () => {
+    mockWindowFromPoint.mockReturnValue(at("9999"));
+    const r = await resolveActionTarget({ kind: "coordinate", x: 530, y: 460, windowTitle: "K232 Sentinel" }, { actionKind: "mouseClick" });
+    expect(r.titleMismatch?.resolved).toBe("EAWorkWindow");
+  });
+
+  it("an excluded window under the point refuses, and is not named in any warning", async () => {
+    mockWindowFromPoint.mockReturnValue(at("4919"));
+    mockIsExcluded.mockImplementation((h: bigint) => String(h) === "4919");
+    const r = await resolveActionTarget({ kind: "coordinate", x: 530, y: 460, windowTitle: "K232 Sentinel" }, { actionKind: "mouseClick" });
+    expect(r.lens).toBeNull();
+    expect(r.titleMismatch).toBeUndefined();
+    expect(r.warnings.join(" ")).not.toContain("K232");
+    expect(r.warnings.join(" ")).not.toContain("4919");
   });
 });

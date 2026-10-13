@@ -12,7 +12,7 @@ import { getWindowRectByHwnd, enumWindowsInZOrder } from "./win32.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface CachedWindow {
+export interface CachedWindow {
   hwnd: bigint;
   title: string;
   region: { x: number; y: number; width: number; height: number };

@@ -29,7 +29,7 @@ import { enumWindowsInZOrder, type WindowZInfo } from "../win32.js";
 import * as win32 from "../win32.js";
 import { refreshWin32Fluents, buildWindowIdentity } from "./sensors-win32.js";
 import { handleObservationKey } from "../identity-tracker.js";
-import { findContainingWindowFresh } from "../window-cache.js";
+import { findContainingWindowFresh, type CachedWindow } from "../window-cache.js";
 import { getOrCreateSlot, updateSlot } from "./hot-target-cache.js";
 import { logResolve } from "../../tools/_resolve-log.js";
 
@@ -492,6 +492,32 @@ async function resolveWindowTargetByHwnd(
 // Coordinate resolution
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * internal #202 — the top-level window that would take a press at `(x, y)`.
+ *
+ * The OS first: `WindowFromPoint` resolves real hit regions, so a full-screen per-pixel-alpha overlay
+ * (Dell's EAWorkWindow: WS_EX_LAYERED | TOPMOST, no WS_EX_TRANSPARENT) is skipped exactly where a real
+ * click goes through it. A rectangle + z-order pick names the overlay at every point, and refused every
+ * guarded mouse_click on the desktop that carries it (win2, 2026-10-13, internal #202: WindowFromPoint
+ * named the fixture at 3/3 points and the unguarded click landed there 3/3). desktop_act's press already
+ * asks the OS (`point-owner.ts`, ADR-036 item 6); this is the same question for the coordinate guard.
+ *
+ * The rectangles answer when the OS cannot be asked (an addon without the binding), when it says nothing
+ * is there, or when the window it names is not in the enumeration — the guard as it was, never wider.
+ */
+function windowTakingPointAt(x: number, y: number): CachedWindow | "excluded" | null {
+  const at = win32.windowFromPoint?.(x, y);
+  if (at !== undefined && at !== null) {
+    // Before anything is read about it: the excluded window must stop the press and not be described.
+    if (win32.isExcludedWindowHandle?.(at.root)) return "excluded";
+    let rows: WindowZInfo[] = [];
+    try { rows = enumWindowsInZOrder(); } catch { /* the rectangles answer below */ }
+    const row = rows.find((w) => w.hwnd === at.root && !w.isMinimized);
+    if (row) return { hwnd: row.hwnd, title: row.title, region: { ...row.region }, zOrder: row.zOrder, timestamp: Date.now() };
+  }
+  return findContainingWindowFresh(x, y);
+}
+
 async function resolveCoordinateTarget(
   descriptor: Extract<ActionTargetDescriptor, { kind: "coordinate" }>,
   actionKind: ActionKind
@@ -503,7 +529,13 @@ async function resolveCoordinateTarget(
   // reporting "target not found" for a window that is simply not in the cache
   // right now. Without that, expiring an entry would make a live, unmoved
   // window unclickable until some unrelated tool happened to list windows.
-  const cached = findContainingWindowFresh(x, y);
+  const owner = windowTakingPointAt(x, y);
+  if (owner === "excluded") {
+    // A tool-excluded window (the key locker's dialog) takes the press: refuse, and do not name it.
+    warnings.push(`point (${x},${y}) is over a window this server does not act on`);
+    return { lens: null, localStore: null, identity: null, candidates: 0, warnings };
+  }
+  const cached = owner;
   if (!cached) {
     return { lens: null, localStore: null, identity: null, candidates: 0, warnings };
   }
