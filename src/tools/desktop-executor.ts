@@ -2376,10 +2376,25 @@ async function selectCollectionItem(
     }
     const code = (err as { uiaCode?: unknown } | null)?.uiaCode;
     if (code === "MouseClickNeeded") return new SingleClickNeeded(entity, "tree_item", { cause: err });
+    // A tree item never needed the engine's select: without the engine it takes the same single click
+    // the engine would have sent it to (PR #819 codex P2). The question the engine answers first — is it
+    // Chromium content, which keeps Invoke — cannot be asked then, and the click is the checked one.
+    if (code === "NativeEngineUnavailable" && entity.controlType === "TreeItem") return new SingleClickNeeded(entity, "tree_item", { cause: err });
     // Belt to the engine's own check (PR #819 codex P1): an item discover READ with SelectionItemPattern that
     // now answers "not supported" is not the same item, or not answering — not one to click at its old point.
     if (code === "PatternNotSupported" && !(entity.patterns ?? []).includes("SelectionItemPattern")) return new SingleClickNeeded(entity, "no_selection_item", { cause: err });
     const routeFailure = code === undefined ? classifyUiaRouteFailure(err) : undefined;
+    // An item found gone at the act is `entity_not_found`, as on the click road below, with the same
+    // evidence rule (both halves native): the published sentence for that reason says re-discover, and
+    // nothing was pressed (win2 J2, 2026-10-13: a row removed after discover answered executor_failed).
+    if (routeFailure === "element_not_found" && whoAnswered(err, entity).bothNative) {
+      probeRefusal("uia_select", "entity_not_found", aimHwnd, entity, { routeFailure: "element_not_found", addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
+      throw new TargetGoneError(
+        `UIA found no element for "${entity.label ?? entity.entityId}" to select: ${err instanceof Error ? err.message : String(err)}.`,
+        { cause: err },
+        `UIA found no element for "${quotedLabel(entity)}" in the window this act named (it may have gone, been renamed, or moved); nothing was pressed.`,
+      );
+    }
     const kind = code === "SelectNotApplied" ? "not_selected"
       : code === "SelectOutcomeUnknown" ? "outcome_unknown"
       : code === "NativeEngineUnavailable" ? "no_engine"

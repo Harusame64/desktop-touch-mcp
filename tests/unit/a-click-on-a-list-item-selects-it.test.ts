@@ -351,6 +351,33 @@ describe("an item clicked as a single mouse click (a tree item, or one the engin
     expect(d.uiaClick).not.toHaveBeenCalled();
   });
 
+  it("without the native engine, a tree item still takes the checked single click (PR #819 codex P2)", async () => {
+    const d = deps({ uiaSelect: engineSays("Selecting needs the native engine", "NativeEngineUnavailable") });
+    const { v, e: err } = await act(titleRoad, d, entity("TreeItem"), "click");
+    expect(err).toBeNull();
+    expect(v).toBe("mouse");
+    expect(d.mouseClick).toHaveBeenCalledTimes(1);
+    expect(d.uiaClick).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: without the native engine, a list item is still refused (its select cannot be made)", async () => {
+    const d = deps({ uiaSelect: engineSays("Selecting needs the native engine", "NativeEngineUnavailable") });
+    const { v, e: err } = await act(titleRoad, d, entity("ListItem"), "click");
+    expect(v).toBeNull();
+    expect(err?.name).toBe("CollectionItemSelectRefusedError");
+    expect(d.mouseClick).not.toHaveBeenCalled();
+  });
+
+  it("an item found gone at the act is entity_not_found's TargetGoneError, nothing pressed (win2 J2)", async () => {
+    const d = deps({ uiaSelect: engineSays("Element not found") });
+    const { v, e: err } = await act(titleRoad, d, entity("ListItem"), "click");
+    expect(v).toBeNull();
+    expect(err?.name).toBe("TargetGoneError");
+    expect(err?.callerDetail).toContain("nothing was pressed");
+    expect(d.mouseClick).not.toHaveBeenCalled();
+    expect(d.uiaClick).not.toHaveBeenCalled();
+  });
+
   it("is not clicked when the mouse is ruled out for the item", async () => {
     const d = deps({ uiaSelect: NO_SELECTION_ITEM() });
     const e: UiEntity = { ...cell(), unsupportedExecutors: ["mouse"] };
