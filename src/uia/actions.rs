@@ -805,7 +805,7 @@ fn find_value_target(
     let control_type = opts.control_type.as_deref().filter(|c| !c.is_empty());
     let automation_id = opts.automation_id.as_deref().filter(|a| !a.is_empty());
     if let Some(h) = opts.element_hwnd.as_deref()
-        && let Some(elem) = element_at_own_handle(ctx, window, h, name, automation_id, control_type, exact)
+        && let Some(elem) = element_at_own_handle(ctx, window, h, name, automation_id, control_type, exact, opts.rect.as_ref())
     {
         return Ok(elem);
     }
@@ -828,6 +828,7 @@ fn find_value_target(
 
 /// The element at `hwnd`, when it is still the one discovered: same name (exact or contained, as the
 /// search would compare it), same AutomationId and type when they were given, and inside `window`.
+/// Without an AutomationId, the element must also hold the centre of the discovered rect.
 /// `None` for anything that cannot be read, so the search runs instead. The AutomationId is checked
 /// because a recreated handle can be reused by a sibling, and the search would have found the element
 /// by its id (PR 側 codex, P1 on `6e7a3d9d`).
@@ -839,6 +840,7 @@ fn element_at_own_handle(
     automation_id: Option<&str>,
     control_type: Option<&str>,
     exact: bool,
+    rect: Option<&BoundingRect>,
 ) -> Option<IUIAutomationElement> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, IsWindow};
@@ -869,7 +871,16 @@ fn element_at_own_handle(
                 .is_ok_and(|id| super::control_type_name(id).eq_ignore_ascii_case(c)),
             None => true,
         };
-        (name_ok && id_ok && type_ok).then_some(elem)
+        // Without an AutomationId, where the discovered rect is: a handle reused by a sibling of the
+        // same name and type sits somewhere else (PR 側 codex, P1 on `a26bebc7`). A window that moved
+        // since discover fails this too, and the search below — which uses the same rect — decides.
+        let rect_ok = automation_id.is_some()
+            || rect.is_none_or(|r| {
+                let (cx, cy) = (r.x + r.width / 2, r.y + r.height / 2);
+                elem.CachedBoundingRectangle()
+                    .is_ok_and(|b| b.left <= cx && cx < b.right && b.top <= cy && cy < b.bottom)
+            });
+        (name_ok && id_ok && type_ok && rect_ok).then_some(elem)
     }
 }
 
@@ -1096,8 +1107,8 @@ fn find_among_descendants(
 }
 
 /// The walk itself, in that order, collecting up to `limit` elements `matches` accepts (internal
-/// #289 asks for every exact match, not the first). Empty when none did; an error only when a step
-/// timed out with nothing found — what was found before it is kept, as the first-match walk kept it.
+/// #289 asks for every exact match, not the first). Empty when none did; an error when a step timed
+/// out before the walk finished or the limit was reached.
 fn collect_among_descendants(
     ctx: &UiaContext,
     window: &IUIAutomationElement,
@@ -1155,7 +1166,10 @@ fn collect_among_descendants(
         }
     }
 
-    if timed_out.get() && found.is_empty() {
+    // A walk that did not finish is not an answer about what is in the window: an exhaustive caller
+    // could take the one match it saw as unique while a duplicate went unread (PR 側 codex, P1 on
+    // `a26bebc7`). The first-match caller never gets here with a match.
+    if timed_out.get() {
         return Err(napi::Error::from_reason(super::NOT_ANSWERING));
     }
     Ok(found)
