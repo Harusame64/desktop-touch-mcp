@@ -7,7 +7,8 @@
   `AutoGuardBlocked` everywhere under a click-through full-screen overlay, such as the one Dell's display
   manager draws. The guard now asks Windows which window a click at that point would reach, the same
   question `desktop_act` already asks. Before, it judged by window rectangles alone, so the overlay
-  covered every point (a known issue since 2.0.0).
+  covered every point (a known issue since 2.0.0). `mouse_drag`'s checks against dragging across windows or
+  out of a tab strip ask the same question, so they still refuse those drags under such an overlay.
 
 ## [2.3.1] - 2026-10-13 — ssh key passphrases in fill_once, a key locker that exits with the server, and two false successes refused
 

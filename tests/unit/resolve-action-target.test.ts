@@ -1,7 +1,7 @@
 /**
  * tests/unit/resolve-action-target.test.ts
  * Unit tests for resolveActionTarget and normalizeTitle.
- * window: 8 cases, coordinate: 5 cases, browserTab: 5 cases
+ * window, coordinate (rectangle pick, title hint, and the OS hit test of internal #202), browserTab
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
