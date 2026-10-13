@@ -45,6 +45,19 @@ internal static class KeyLocker
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetNamedPipeClientProcessId(IntPtr Pipe, out uint ClientProcessId);
 
+    private const uint SYNCHRONIZE = 0x00100000;
+    private const uint INFINITE = 0xFFFFFFFF;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint dwDesiredAccess, [MarshalAs(UnmanagedType.Bool)] bool bInheritHandle, uint dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+
+    /// Set once the MCP server process has exited (internal #282). A dialog the user finishes after this point
+    /// is discarded: nothing is stored and nothing is replied.
+    private static volatile bool _serverGone;
+
     private static LockerStore _store = null!;
     private static ServingRegistry _serving = null!;
     private static Application? _app;
@@ -163,6 +176,15 @@ internal static class KeyLocker
                 return 4;
             }
 
+            // Hold a handle to the verified client now, while it is known to be alive, so a later PID reuse cannot
+            // stand in for it. The handle is never closed: it lives as long as this process.
+            var mcpProcess = OpenProcess(SYNCHRONIZE, false, mcpPid);
+            if (mcpProcess == IntPtr.Zero)
+            {
+                Console.Error.WriteLine($"key-locker: cannot watch the MCP server (pid {mcpPid}, error {Marshal.GetLastWin32Error()}); exiting.");
+                return 4;
+            }
+
             WriteFrame(server, $"{{\"t\":\"hello\",\"pid\":{Environment.ProcessId},\"v\":\"{ProtocolVersion}\"}}");
 
             // WPF needs an STA dispatcher for the secure dialog. Run the pipe control loop on
@@ -175,7 +197,16 @@ internal static class KeyLocker
                 finally { try { _app.Dispatcher.Invoke(() => _app.Shutdown()); } catch { /* app already gone */ } }
             }) { IsBackground = true, Name = "locker-pipe" };
             loop.SetApartmentState(ApartmentState.MTA);
+            // internal #282: the pipe loop only notices a closed pipe between frames, and a modal dialog blocks it
+            // (HandleCapture / HandlePrompt wait on the UI thread). Watch the server process itself, so the helper
+            // and any open dialog go away with it.
+            var watch = new Thread(() =>
+            {
+                WaitForSingleObject(mcpProcess, INFINITE);
+                OnServerGone(mcpPid);
+            }) { IsBackground = true, Name = "locker-watch-mcp" };
             loop.Start();
+            watch.Start();
             _app.Run();
             return 0;
         }
@@ -183,6 +214,26 @@ internal static class KeyLocker
         {
             try { server.Dispose(); } catch { /* ignore */ }
         }
+    }
+
+    /// The MCP server exited. Close every open dialog (each returns its cancel answer, so nothing is stored or
+    /// typed) and shut the dispatcher down; if that has not ended the process within a few seconds, exit hard.
+    private static void OnServerGone(uint mcpPid)
+    {
+        _serverGone = true;
+        Console.Error.WriteLine($"[key-locker] MCP server (pid {mcpPid}) exited; closing dialogs and exiting.");
+        var app = _app;
+        try
+        {
+            app?.Dispatcher.InvokeAsync(() =>
+            {
+                foreach (var w in app.Windows.Cast<Window>().ToList()) { try { w.Close(); } catch { /* already closing */ } }
+                app.Shutdown();
+            });
+        }
+        catch { /* dispatcher already gone */ }
+        Thread.Sleep(3000);
+        Environment.Exit(5);
     }
 
     private static bool WaitForVerifiedClient(NamedPipeServerStream server, uint mcpPid)
@@ -262,6 +313,7 @@ internal static class KeyLocker
         try { secret = _app!.Dispatcher.Invoke(() => SecureDialog.Prompt(label, note, once)); }
         catch (Exception e) { Console.Error.WriteLine($"[key-locker] dialog failed: {e.Message}"); }
 
+        if (_serverGone) return; // internal #282: nobody is left to use it, and an autofill capture must not reach store.json
         if (secret == null) { WriteFrameReplyCaptured(server, id, false, false); return; }
         if (once) _store.CaptureEphemeral(key, secret); // fill_once: memory only, never store.json
         else _store.Capture(key, secret);
@@ -309,6 +361,7 @@ internal static class KeyLocker
             Console.Error.WriteLine($"[key-locker] prompt dialog failed: {e.Message}");
             choice = kind == "confirm" ? "type_it" : "not_now"; // fail-closed
         }
+        if (_serverGone) return; // internal #282: the pipe is gone with the server
         WriteReply(server, id, true, choice, null);
     }
 

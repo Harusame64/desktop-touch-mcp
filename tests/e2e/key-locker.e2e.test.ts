@@ -319,3 +319,55 @@ describe("key-locker FIRST_PIPE_INSTANCE fail-loud", () => {
     expect(exit).toBe(3);
   }, 40_000);
 });
+
+// internal #282: the helper and its open dialog must go away with the MCP server. The pipe loop only sees a
+// closed pipe between frames, and a capture dialog blocks it, so before the fix the helper outlived the server
+// with its dialog on screen. This cell OPENS A REAL WPF DIALOG on the desktop for a few seconds (nobody types
+// into it), so it runs only when DTM_E2E_LOCKER_DIALOG=1.
+describe.runIf(process.env.DTM_E2E_LOCKER_DIALOG === "1")("key-locker exits with the MCP server (internal #282)", () => {
+  const kids: ChildProcess[] = [];
+  afterEach(() => { for (const c of kids) killTree(c.pid); kids.length = 0; });
+
+  it("closes an open capture dialog and exits when the server process dies", async () => {
+    expect(existsSync(HELPER_EXE)).toBe(true);
+    const name = `dtm-locker-282-${randomBytes(8).toString("hex")}`;
+    const storeDir = freshStoreDir();
+    try {
+      // A stand-in MCP server: connects, reads hello, asks for a capture (the dialog opens), then just waits.
+      const clientScript =
+        `$c=New-Object System.IO.Pipes.NamedPipeClientStream('.','${name}',[System.IO.Pipes.PipeDirection]::InOut);` +
+        "$c.Connect(20000);$r=New-Object System.IO.StreamReader($c);$null=$r.ReadLine();" +
+        "$w=New-Object System.IO.StreamWriter($c);$w.AutoFlush=$true;$w.NewLine=\"`n\";" +
+        "$w.WriteLine('{\"id\":1,\"m\":\"capture\",\"k\":\"e2e-282\",\"purpose\":\"fill_once\",\"label\":\"e2e internal #282 (closes by itself)\"}');" +
+        "Write-Host 'SENT';Start-Sleep -Seconds 60;";
+      const server = spawn("powershell.exe", ["-NoProfile", "-Command", clientScript], { stdio: ["ignore", "pipe", "ignore"] });
+      kids.push(server);
+      expect(server.pid).toBeDefined();
+
+      const helper = spawn(HELPER_EXE, ["-PipeName", name, "-McpPid", String(server.pid), "-StoreDir", storeDir], {
+        detached: true, stdio: "ignore", windowsHide: false,
+      });
+      kids.push(helper);
+      let helperExit: number | null | undefined;
+      helper.on("exit", (code) => { helperExit = code; });
+
+      await new Promise<void>((resolve, reject) => {
+        let out = "";
+        const t = setTimeout(() => reject(new Error("stand-in server never sent the capture")), 20_000);
+        server.stdout!.on("data", (d) => {
+          out += d.toString("utf8");
+          if (out.includes("SENT")) { clearTimeout(t); resolve(); }
+        });
+      });
+      // Let the dialog come up, and make sure the helper is still waiting on it.
+      await new Promise((r) => setTimeout(r, 1_500));
+      expect(helperExit).toBeUndefined();
+
+      killTree(server.pid);
+      expect(await pollUntil(() => helperExit !== undefined, 10_000)).toBe(true);
+      expect(existsSync(join(storeDir, "store.json"))).toBe(false);
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
