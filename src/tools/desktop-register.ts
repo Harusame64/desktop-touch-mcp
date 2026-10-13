@@ -900,7 +900,7 @@ export const desktopTouchSchema = {
   lease:  leaseSchema.describe("Lease returned by desktop_discover. Expires after TTL; re-call desktop_discover if desktop_act fails with lease_expired."),
   action: z.enum(["auto", "invoke", "click", "type", "setValue", "select"]).optional().describe(
     "NOTE: action='select' is REFUSED on every target (action_not_offered) — nothing here offers it and no road performs it; click the item instead. " +
-    "A click on a list, tree or grid item read through UI Automation selects it, as a single click does, except in Chromium-based content (UI Automation FrameworkId 'Chrome'), which keeps Invoke; action='invoke' opens or runs it. " +
+    "A click on a list, tree or grid item read through UI Automation selects it, as a single click does, except in Chromium-based content (UI Automation FrameworkId 'Chrome'), which keeps Invoke; action='invoke' opens or runs it when the item has a UI Automation Invoke (an item without one, such as a WPF list item, takes a single click either way). " +
     "type/setValue on a button, check box, radio button, hyperlink or menu item (as UI Automation reports it) is refused the same way. " +
     "Action to perform. 'auto' selects the best affordance from the entity. " +
     "'setValue' (Phase 4: absorbs former set_element_value) sets a UIA ValuePattern value or fills a CDP controlled input — pass the new value via text. " +
