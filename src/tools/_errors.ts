@@ -1370,7 +1370,8 @@ export function getSuggestsForCode(code: string): string[] {
  *   known from its name.
  */
 export function executorFailedAdviceFor(action: string | undefined, noRouteTried: boolean): string[] {
-  if (noRouteTried) return [EXECUTOR_FAILED_NO_ROUTE_TRIED];
+  // internal #233 — a click can be refused before any route too (a list item that has only Invoke).
+  if (noRouteTried) return [action === "click" || action === "invoke" ? EXECUTOR_FAILED_NOTHING_PRESSED : EXECUTOR_FAILED_NO_ROUTE_TRIED];
   const all = SUGGESTS.ExecutorFailed ?? [];
   // Picked from the list by what each line is about, so the list stays the one source of the
   // words. A line reworded past its test is a programming error, not a quieter answer: it throws.
@@ -1391,6 +1392,9 @@ export function executorFailedAdviceFor(action: string | undefined, noRouteTried
 // The one line for an `executor_failed` refused before any route ran (internal #242).
 const EXECUTOR_FAILED_NO_ROUTE_TRIED =
   "Nothing was typed and no route was tried: detail says why no route here could carry the text to this element, and what to do instead — follow it";
+// …and for a click or invoke refused before any route ran (internal #233).
+const EXECUTOR_FAILED_NOTHING_PRESSED =
+  "Nothing was pressed and no route was tried: detail says why no route here could press this element as asked, and what to do instead — follow it";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Error classification

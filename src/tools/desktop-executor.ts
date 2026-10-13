@@ -2372,10 +2372,10 @@ export class CollectionItemSelectRefusedError extends Error implements CallerFac
         `Nothing was pressed: "${label}" cannot be selected through UI Automation, and a click on it would open or run it. ${invoke}`;
     } else if (kind === "not_selected") {
       this.callerDetail =
-        `Nothing changed: UI Automation took the select for "${label}", but the item did not become selected, and it was not pressed instead. ${invoke}`;
+        `Nothing was pressed, and nothing changed: UI Automation took the select for "${label}", but the item did not become selected. ${invoke}`;
     } else {
       this.callerDetail =
-        `Selecting "${label}" through UI Automation failed` +
+        `Nothing was pressed: selecting "${label}" through UI Automation failed` +
         (routeFailure !== undefined ? ` because ${describeUiaRouteFailure(routeFailure)}` : "") +
         `, and the act was not finished as a press. ${invoke}`;
     }

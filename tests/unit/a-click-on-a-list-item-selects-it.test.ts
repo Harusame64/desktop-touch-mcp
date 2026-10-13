@@ -152,7 +152,7 @@ describe("a click on a collection item", () => {
       expect(v).toBeNull();
       expect(err?.name).toBe("CollectionItemSelectRefusedError");
       expect(err?.noRouteTried).toBeUndefined();
-      expect(err?.callerDetail).toMatch(/^Nothing changed: /);
+      expect(err?.callerDetail).toMatch(/^Nothing was pressed, and nothing changed: /);
       expect(d.uiaClick).not.toHaveBeenCalled();
       expect(d.mouseClick).not.toHaveBeenCalled();
     });
@@ -162,7 +162,7 @@ describe("a click on a collection item", () => {
       const { v, e: err } = await act(road, d, entity("TreeItem"), "click");
       expect(v).toBeNull();
       expect(err?.name).toBe("CollectionItemSelectRefusedError");
-      expect(err?.callerDetail).toMatch(/^Selecting "report\.txt" through UI Automation failed, and the act was not finished as a press\./);
+      expect(err?.callerDetail).toMatch(/^Nothing was pressed: selecting "report\.txt" through UI Automation failed, and the act was not finished as a press\./);
       // The backend's own text is not the caller's (ADR-036 item 13).
       expect(err?.callerDetail).not.toContain("0x80040201");
       expect(d.uiaClick).not.toHaveBeenCalled();
@@ -173,7 +173,7 @@ describe("a click on a collection item", () => {
       const d = deps({ uiaSelect: engineSays("Window stopped answering during the act") });
       const { e: err } = await act(road, d, entity("ListItem"), "click");
       expect(err?.name).toBe("CollectionItemSelectRefusedError");
-      expect(err?.callerDetail).toMatch(/^Selecting "report\.txt" through UI Automation failed because /);
+      expect(err?.callerDetail).toMatch(/^Nothing was pressed: selecting "report\.txt" through UI Automation failed because /);
       expect(d.uiaClick).not.toHaveBeenCalled();
       expect(d.mouseClick).not.toHaveBeenCalled();
     });

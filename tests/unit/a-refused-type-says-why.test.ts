@@ -150,10 +150,16 @@ describe("the advice", () => {
   const ROUTES_TRIED = /has already tried/;
 
   it("says only 'follow detail' when no route was tried, whatever the action", () => {
-    for (const action of ["type", "setValue", "click", "auto", undefined]) {
+    for (const action of ["type", "setValue", "auto", undefined]) {
       const lines = executorFailedAdviceFor(action, true);
       expect(lines, String(action)).toHaveLength(1);
       expect(lines[0], String(action)).toMatch(/^Nothing was typed and no route was tried: detail says why .* follow it$/);
+    }
+    // internal #233 — a click refused before any route (a list item with only Invoke) pressed nothing.
+    for (const action of ["click", "invoke"]) {
+      const lines = executorFailedAdviceFor(action, true);
+      expect(lines, action).toHaveLength(1);
+      expect(lines[0], action).toMatch(/^Nothing was pressed and no route was tried: detail says why .* follow it$/);
     }
   });
 
