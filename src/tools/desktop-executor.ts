@@ -2156,6 +2156,9 @@ export class KeyboardCannotReplaceError extends Error implements CallerFacingRef
   }
 }
 
+/** The longest title prefix the combo refusal repeats in each of its calls, so the sentence fits the detail cap. */
+const COMBO_ADVICE_TITLE_MAX = 60;
+
 /**
  * internal #238 — a type or setValue into a WinForms editable combo box (`winforms-combo.ts`). UI Automation
  * changes its text without the application seeing the change, so the write is not made and the caller is
@@ -2179,9 +2182,13 @@ export class WinFormsComboWriteRefusedError extends Error implements CallerFacin
     //
     // Every keyboard call names the window: keyboard refuses a call with neither windowTitle nor hwnd
     // (DestinationRequired), and the advice copied as written failed that way, 3/3 (win2, 2.3.1 dogfood D3).
-    const win = aimHwnd !== undefined
-      ? `hwnd:'${aimHwnd}'`
-      : `windowTitle:${JSON.stringify(aimTitle !== undefined && aimTitle.trim() !== "" ? aimTitle : "@active")}`;
+    //
+    // By handle wherever one is known, the window discover read included: a title can be long enough to push
+    // the last steps past the 1,000-character detail cap in `guarded-touch.ts` (PR #817 codex P2). Without a
+    // handle, a prefix of the title — keyboard matches windowTitle by substring, so the prefix still names it.
+    const keyHwnd = aimHwnd ?? observedHwndOfOrigin(entity.origin);
+    const title = aimTitle !== undefined && aimTitle.trim() !== "" ? aimTitle.slice(0, COMBO_ADVICE_TITLE_MAX) : "@active";
+    const win = keyHwnd !== undefined ? `hwnd:'${keyHwnd}'` : `windowTitle:${JSON.stringify(title)}`;
     let click: string;
     if (aimHwnd === undefined) {
       click = `Click it — desktop_act(action:'click').`;

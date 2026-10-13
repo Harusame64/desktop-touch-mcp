@@ -89,7 +89,8 @@ describe("a WinForms editable combo box", () => {
           expect(err?.callerDetail).toMatch(/^Nothing was written: "A17 Combo" is a WinForms combo box/);
           // Every keyboard call names its window: keyboard refuses one with neither (DestinationRequired), and
           // the advice copied as written failed that way, 3/3 (win2, 2.3.1 dogfood D3).
-          const win = roadName === "title road" ? `windowTitle:"FX238"` : `hwnd:'4919'`;
+          // By handle on both roads: the title road's entity carries the window discover read (PR #817 codex P2).
+          const win = `hwnd:'4919'`;
           expect(err?.callerDetail).toContain(`keyboard({action:'type', text, ${win}})`);
           expect(err?.callerDetail).toContain(`keyboard({action:'press', keys:'tab', ${win}})`);
           const calls = err?.callerDetail?.match(/(keyboard|mouse_click)\(\{[^}]*\}\)/g) ?? [];
@@ -121,9 +122,29 @@ describe("a WinForms editable combo box", () => {
     for (const c of err?.callerDetail?.match(/(keyboard|mouse_click|screenshot)\(\{[^}]*\}\)/g) ?? []) expect(c).toContain("hwnd:'4919'");
   });
 
+  /** An entity whose origin records no window handle: the title is all the advice has to name it by. */
+  const noOriginHwnd = (): UiEntity => ({ ...entity("ComboBox", COMBO), origin: { kind: "window", id: "FX238" } });
+
+  it("title road, no known handle: the keyboard steps name the window by its title", async () => {
+    const d = deps({ comboWindowFacts: facts(comboAs(CBS_DROPDOWN)) });
+    const { e: err } = await write(titleRoad, d, noOriginHwnd(), "setValue");
+    for (const c of err?.callerDetail?.match(/keyboard\(\{[^}]*\}\)/g) ?? []) expect(c).toContain(`windowTitle:"FX238"`);
+    expect(err?.callerDetail).toContain(`keyboard({action:'press', keys:'tab', windowTitle:"FX238"})`);
+  });
+
+  it("title road, a long title: a prefix names it, and the last step still fits the detail cap", async () => {
+    const long = "FX238 " + "x".repeat(300);
+    const d = deps({ comboWindowFacts: facts(comboAs(CBS_DROPDOWN)) });
+    const { e: err } = await write({ windowTitle: long }, d, noOriginHwnd(), "setValue");
+    const prefix = JSON.stringify(long.slice(0, 60));
+    expect(err?.callerDetail).toContain(`keyboard({action:'press', keys:'tab', windowTitle:${prefix}})`);
+    // `guarded-touch.ts` cuts a refusal's detail at 1,000 characters.
+    expect(err?.callerDetail?.length).toBeLessThanOrEqual(1000);
+  });
+
   it("title road, a blank title: the keyboard steps aim at @active, never at a title keyboard would refuse", async () => {
     const d = deps({ comboWindowFacts: facts(comboAs(CBS_DROPDOWN)) });
-    const { e: err } = await write({ windowTitle: "  " }, d, entity("ComboBox", COMBO), "type");
+    const { e: err } = await write({ windowTitle: "  " }, d, noOriginHwnd(), "type");
     expect(err?.name).toBe("WinFormsComboWriteRefusedError");
     expect(err?.callerDetail).toContain(`keyboard({action:'type', text, windowTitle:"@active"})`);
     expect(err?.callerDetail).not.toContain(`windowTitle:"  "`);
