@@ -197,6 +197,15 @@ Record every narrowing here so the exceptions stay visible:
   - D4: regressions, 3/3 each.
 
   D3 found that the advice could not be followed as written: its keyboard steps named no window. That was fixed in #817, and D3 was rerun literally on both roads, 3/3 each. #812's passphrase cells P1–P5 ran on 4fafa9e4, and the key-locker code has not changed since. On the handle road, the advised `mouse_click` was blocked by the Dell EAWorkWindow overlay guard on win2's machine (internal #202, not a 2.3.1 change). Side finding, not a regression: on the launcher's 404 path, Node 24 exits 127 with a libuv assertion (internal #290).
+  Before the tag, #818 (guarded clicks under click-through overlays, internal #202) and #819 (a click on a list, tree or grid item selects it, internal #233) were folded into the unpublished 2.3.1. The user kept it a patch. A final win2 dogfood ran from a clean build of 0bc6a703 (code = main 39765f80, native addon 0cd6cc4e), on #820:
+  - F0: version, HTTP 6/6, npx.
+  - F1: #818 under a stand-in overlay.
+  - F2: #819 on Explorer, DataGridView and LISTBOX.
+  - F3: the combo refusal, with its advice copied literally.
+  - F4: a hard kill with the locker dialog open.
+  - F5: regressions, 3/3.
+
+  All passed.
 
 ### HTTP Transport Verification (Required)
 
