@@ -441,8 +441,7 @@ export class KeyLockerWiring {
   /** fill_once's prompt read: the loop's verdict, widened to OpenSSH's key-unlock prompts
    *  (`widenForFillOnce`, internal#280). Never used by the capture loop. */
   private async readFillOncePromptTail(paneId: string): Promise<PromptVerdict | null> {
-    const v = await this.readPromptTail(paneId);
-    return widenForFillOnce(v, v === null ? null : lastNonEmptyPromptLine(v.tail));
+    return widenForFillOnce(await this.readPromptTail(paneId));
   }
 
   /** Mode-B readPaneAfterAuth (gap5): BOUNDED POLL until the hidden prompt clears or the window elapses — an

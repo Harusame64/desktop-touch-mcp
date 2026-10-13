@@ -28,6 +28,7 @@
 //     failed erase reported as `cleanupFailed`.
 // The session being UNKNOWN or nested is deliberately NOT a gate: nothing is derived from it or bound to it.
 
+import { stripAnsi } from "../ansi.js";
 import type { PaneAnchor } from "./inject-target.js";
 import type { PromptVerdict } from "./key-locker-capture-driver.js";
 
@@ -102,18 +103,33 @@ export type FillOnceOutcome = (
  *  dialog, not the console).
  *  Only here, not in the capture loop: the loop fills a stored HOST password, and writing that into a KEY
  *  passphrase prompt would be the wrong secret (and its capture would bind a passphrase to the host).
- *  Here the user types the secret for the prompt they see. Anchored at the line start and the final colon;
- *  the credential-program and echo-off gates still apply. */
-const KEY_UNLOCK_PROMPT = /^Enter (?:passphrase|PIN) for .+:$/i;
+ *  Here the user types the secret for the prompt they see. Anchored at the prompt's start and the final
+ *  colon; the credential-program and echo-off gates still apply.
+ *
+ *  A long key path soft-wraps, and the terminal's text read breaks the row there (PR #812 codex P2), so the
+ *  cursor row alone can be just `id_ed25519':`. So the cursor row and the rows directly above it (up to
+ *  KEY_UNLOCK_MAX_ROWS) are joined with all whitespace removed (a wrap may fall on a space, and the read may
+ *  pad or trim it). A match still has to START a row with `Enter` and END the cursor row with the colon.
+ *  Joined rows only take ssh's own quoted form `Enter passphrase for key '<path>':` with no quote inside the
+ *  path: `.+` across rows would also span an ANSWERED prompt, its output and a later row ending in `:`. */
+const KEY_UNLOCK_ROW = /^Enter(?:passphrase|PIN)for.+:$/i;
+const KEY_UNLOCK_WRAPPED = /^Enterpassphraseforkey'[^']+':$/i;
+const KEY_UNLOCK_MAX_ROWS = 6;
 
-export function isKeyUnlockPromptLine(line: string | null): boolean {
-  return line !== null && KEY_UNLOCK_PROMPT.test(line.replace(/[ \t]+$/, ""));
+export function isKeyUnlockPrompt(tail: string | null): boolean {
+  if (!tail) return false;
+  const rows = stripAnsi(tail).replace(/\r\n/g, "\n").split("\n");
+  while (rows.length > 0 && rows[rows.length - 1]!.trim() === "") rows.pop();
+  for (let k = 1; k <= KEY_UNLOCK_MAX_ROWS && k <= rows.length; k++) {
+    const joined = rows.slice(rows.length - k).join("").replace(/\s+/g, "");
+    if ((k === 1 ? KEY_UNLOCK_ROW : KEY_UNLOCK_WRAPPED).test(joined)) return true;
+  }
+  return false;
 }
 
-/** fill_once's verdict: the loop's, widened to the key-unlock prompts. `cursorRow` is the tail's last
- *  non-empty line (ANSI stripped) — the row the loop's own classifier read. */
-export function widenForFillOnce(v: PromptVerdict | null, cursorRow: string | null): PromptVerdict | null {
-  if (v === null || v.isCredentialPrompt || !isKeyUnlockPromptLine(cursorRow)) return v;
+/** fill_once's verdict: the loop's, widened to the key-unlock prompts read from its own `tail`. */
+export function widenForFillOnce(v: PromptVerdict | null): PromptVerdict | null {
+  if (v === null || v.isCredentialPrompt || !isKeyUnlockPrompt(v.tail)) return v;
   return { ...v, isCredentialPrompt: true, stillHiddenPrompt: true };
 }
 
