@@ -48,6 +48,20 @@ pub struct SetValueOptions {
     pub hwnd: Option<String>,
     /// internal #216 — as on `ClickElementOptions`.
     pub classic: Option<bool>,
+    /// internal #289 — the discovered element's own window handle (`locator.uia.nativeWindowHandle`),
+    /// as a decimal string. Tried before any search: a name is matched as a substring, and the first
+    /// field whose name CONTAINS the entity's took the write (win2 FX289: "Display Name" before
+    /// "Name"). See `find_value_target`.
+    pub element_hwnd: Option<String>,
+    /// internal #289 — the discovered element's control type, as the reads report it ("Edit").
+    pub control_type: Option<String>,
+    /// internal #289 — `name` is the element's UI Automation Name exactly as THIS client read it, so
+    /// it is compared whole, with the control type, instead of as a substring. The TS side sets it
+    /// only for an entity the native client read: names of system parts follow the reading client's
+    /// UI language (win2 FX289 N3), and a type read by the managed client can differ.
+    pub exact_name: Option<bool>,
+    /// internal #289 — the discovered element's rect, which picks one of several exact matches.
+    pub rect: Option<BoundingRect>,
 }
 
 #[napi_derive::napi(object)]
@@ -509,13 +523,7 @@ fn set_value_impl(
         }
     };
 
-    let elem = match find_element_in_window(
-        ctx,
-        &window,
-        opts.name.as_deref(),
-        opts.automation_id.as_deref(),
-        None,
-    ) {
+    let elem = match find_value_target(ctx, &window, opts) {
         Ok(e) => e,
         Err(e) => {
             return Ok(ActionResult {
@@ -757,6 +765,122 @@ fn value_not_applied(before: Option<&str>, after: Option<&str>, written: &str) -
     }
 }
 
+/// internal #289 — the element a value write goes to.
+///
+/// MEASURED win2 (2026-10-14, main `935c27c9`, fixture FX289, 3/3 each): with no AutomationId, the
+/// search below took the first element whose name CONTAINS the entity's, so a write to "Name" went
+/// into an earlier "Display Name" and answered `ok:true`, on WinForms (.NET 10) and WPF alike, and on
+/// the handle road too. A second field with the same name took the first one's write, and a label
+/// named "Name" before the box stopped the search on the label. discover's name matched the native
+/// Name byte for byte on every layout measured, and WinForms names a box after the label before it,
+/// so the label and its box can share an exact name: the type is part of the match, not a tie-break.
+///
+/// In order:
+/// 1. The element's own window handle, when the read recorded one (every WinForms control measured
+///    had one; no WPF control did). Believed only when the element there still has the name and the
+///    type, and lives in the window this call resolved: a handle can be recreated for another control.
+/// 2. With `exact_name`, every element whose Name equals the name and whose type is the type. One
+///    is the answer; of several, the one whose rect holds the centre of the discovered rect.
+///    Several left, or none, is "not found", as for an element that has gone: this road writes
+///    nothing to a guess, and what the executor does next is what it does for a gone field.
+/// 3. Otherwise the substring search, as before — an AutomationId, or an entity another client read.
+fn find_value_target(
+    ctx: &UiaContext,
+    window: &IUIAutomationElement,
+    opts: &SetValueOptions,
+) -> napi::Result<IUIAutomationElement> {
+    let exact = opts.exact_name == Some(true);
+    let name = opts.name.as_deref().filter(|n| !n.is_empty());
+    let control_type = opts.control_type.as_deref().filter(|c| !c.is_empty());
+    if let Some(h) = opts.element_hwnd.as_deref()
+        && let Some(elem) = element_at_own_handle(ctx, window, h, name, control_type, exact)
+    {
+        return Ok(elem);
+    }
+    let automation_id = opts.automation_id.as_deref().filter(|a| !a.is_empty());
+    if let (true, None, Some(name), Some(control_type)) = (exact, automation_id, name, control_type) {
+        let found = collect_among_descendants(ctx, window, EXACT_MATCH_LIMIT, |elem| {
+            exact_match(elem, name, control_type)
+        })?;
+        return match found.len() {
+            1 => Ok(found.into_iter().next().unwrap()),
+            0 => Err(napi::Error::from_reason("Element not found")),
+            // In the words of any other "not found", whole: the executor's classifier matches them
+            // whole (`uia-route-failure.ts`), and only as `element_not_found` does the keyboard rung
+            // refuse a windowless field rather than type into whatever holds the focus.
+            _ => one_at_rect(found, opts.rect.as_ref())
+                .ok_or_else(|| napi::Error::from_reason("Element not found")),
+        };
+    }
+    find_element_in_window(ctx, window, opts.name.as_deref(), opts.automation_id.as_deref(), None)
+}
+
+/// How many exact matches are read before the search stops; more than one already needs the rect.
+const EXACT_MATCH_LIMIT: usize = 8;
+
+/// The element at `hwnd`, when it is still the one discovered: same name (exact or contained, as the
+/// search would compare it), same type when one was given, and inside `window`. `None` for anything
+/// that cannot be read, so the search runs instead.
+fn element_at_own_handle(
+    ctx: &UiaContext,
+    window: &IUIAutomationElement,
+    hwnd: &str,
+    name: Option<&str>,
+    control_type: Option<&str>,
+    exact: bool,
+) -> Option<IUIAutomationElement> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, IsWindow};
+    let raw: i64 = hwnd.parse().ok().filter(|r| *r > 0)?;
+    let own = HWND(raw as *mut std::ffi::c_void);
+    unsafe {
+        if !IsWindow(Some(own)).as_bool() {
+            return None;
+        }
+        let root = window.CachedNativeWindowHandle().ok()?;
+        if root.0.is_null() || GetAncestor(own, GA_ROOT).0 != GetAncestor(root, GA_ROOT).0 {
+            return None;
+        }
+        let elem = ctx.automation.ElementFromHandle(own).ok()?;
+        let elem = elem.BuildUpdatedCache(&ctx.cache_request).ok()?;
+        let read = elem.CachedName().ok()?.to_string();
+        let name_ok = match name {
+            Some(n) if exact => read == n,
+            Some(n) => read.to_lowercase().contains(&n.to_lowercase()),
+            None => true,
+        };
+        let type_ok = match control_type {
+            Some(c) => super::cached_control_type(&elem)
+                .is_ok_and(|id| super::control_type_name(id).eq_ignore_ascii_case(c)),
+            None => true,
+        };
+        (name_ok && type_ok).then_some(elem)
+    }
+}
+
+/// Name equal (not contained: the read and the write are the same client, `exact_name`) and type
+/// equal, as the reads report the type (`mod.rs::reported_control_type`).
+fn exact_match(elem: &IUIAutomationElement, name: &str, control_type: &str) -> bool {
+    unsafe {
+        elem.CachedName().is_ok_and(|n| n == name)
+            && super::cached_control_type(elem)
+                .is_ok_and(|id| super::control_type_name(id).eq_ignore_ascii_case(control_type))
+    }
+}
+
+/// Of several exact matches, the one whose rect holds the centre of the discovered rect, when exactly
+/// one does. A centre, not an equal rect: the read may have clipped the rect it recorded.
+fn one_at_rect(found: Vec<IUIAutomationElement>, rect: Option<&BoundingRect>) -> Option<IUIAutomationElement> {
+    let rect = rect?;
+    let (cx, cy) = (rect.x + rect.width / 2, rect.y + rect.height / 2);
+    let mut at = found.into_iter().filter(|elem| unsafe {
+        elem.CachedBoundingRectangle()
+            .is_ok_and(|r| r.left <= cx && cx < r.right && r.top <= cy && cy < r.bottom)
+    });
+    let first = at.next()?;
+    at.next().is_none().then_some(first)
+}
+
 fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<ActionResult> {
     let window = match resolve_root(ctx, opts.hwnd.as_deref(), &opts.window_title) {
         Ok(w) => w,
@@ -948,7 +1072,24 @@ fn find_among_descendants(
 ) -> napi::Result<IUIAutomationElement> {
     let name_lower = name.map(|n| n.to_lowercase());
     let ct_lower = control_type.map(|c| c.to_lowercase());
+    collect_among_descendants(ctx, window, 1, |elem| {
+        matches_with_ct(elem, &name_lower, automation_id, &ct_lower)
+    })?
+    .into_iter()
+    .next()
+    .ok_or_else(|| napi::Error::from_reason("Element not found"))
+}
 
+/// The walk itself, in that order, collecting up to `limit` elements `matches` accepts (internal
+/// #289 asks for every exact match, not the first). Empty when none did; an error only when a step
+/// timed out before the limit was reached.
+fn collect_among_descendants(
+    ctx: &UiaContext,
+    window: &IUIAutomationElement,
+    limit: usize,
+    matches: impl Fn(&IUIAutomationElement) -> bool,
+) -> napi::Result<Vec<IUIAutomationElement>> {
+    let mut found = Vec::new();
     let mut stack: Vec<(IUIAutomationElement, u32)> = Vec::with_capacity(64);
     // internal #216 — a step that timed out is not "no such element": without this, a window too busy
     // to answer was reported as one that no longer holds the element.
@@ -982,8 +1123,11 @@ fn find_among_descendants(
             stack.push((sib, depth));
         }
 
-        if matches_with_ct(&elem, &name_lower, automation_id, &ct_lower) {
-            return Ok(elem);
+        if matches(&elem) {
+            found.push(elem.clone());
+            if found.len() >= limit {
+                return Ok(found);
+            }
         }
 
         if depth < MAX_SEARCH_DEPTH
@@ -999,7 +1143,7 @@ fn find_among_descendants(
     if timed_out.get() {
         return Err(napi::Error::from_reason(super::NOT_ANSWERING));
     }
-    Err(napi::Error::from_reason("Element not found"))
+    Ok(found)
 }
 
 /// Match element by name (case-insensitive substring), automationId (exact),

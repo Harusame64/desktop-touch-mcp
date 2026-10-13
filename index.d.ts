@@ -451,7 +451,7 @@ export declare function uiaEngineEvidence(): NativeUiaEvidence
 export declare function uiaClassicInUse(): boolean
 
 export declare function uiaClickElement(opts: { windowTitle: string; name?: string; automationId?: string; controlType?: string; hwnd?: string; classic?: boolean; select?: boolean }): Promise<NativeActionResult>
-export declare function uiaSetValue(opts: { windowTitle: string; value: string; name?: string; automationId?: string; hwnd?: string; classic?: boolean }): Promise<NativeActionResult>
+export declare function uiaSetValue(opts: { windowTitle: string; value: string; name?: string; automationId?: string; hwnd?: string; classic?: boolean; elementHwnd?: string; controlType?: string; exactName?: boolean; rect?: NativeBoundingRect }): Promise<NativeActionResult>
 export declare function uiaInsertText(opts: { windowTitle: string; value: string; name?: string; automationId?: string; hwnd?: string }): Promise<NativeActionResult>
 export declare function uiaGetElementBounds(opts: { windowTitle: string; name?: string; automationId?: string; controlType?: string }): Promise<NativeElementBounds | null>
 export declare function uiaGetElementChildren(opts: { windowTitle: string; name?: string; automationId?: string; controlType?: string; maxDepth: number; maxElements: number; timeoutMs: number }): Promise<Array<NativeUiElement>>

@@ -60,7 +60,7 @@ describe("createDesktopExecutor — route selection", () => {
     const exec = createDesktopExecutor({ windowTitle: "App" }, deps);
     const result = await exec(entity({ sources: ["uia"] }), "type", "hello");
     expect(result).toBe("uia");
-    expect(deps.uiaSetValue).toHaveBeenCalledWith("App", "hello", "Start", undefined, undefined);
+    expect(deps.uiaSetValue).toHaveBeenCalledWith("App", "hello", "Start", undefined, undefined, { rect: { x: 100, y: 200, width: 80, height: 30 } });
   });
 
   it("CDP source + click → cdpClick with selector and tabId", async () => {

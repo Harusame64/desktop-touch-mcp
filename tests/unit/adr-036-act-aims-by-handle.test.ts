@@ -68,7 +68,7 @@ describe("ADR-036 — the handle reaches the backend", () => {
     });
     const exec = createDesktopExecutor({ windowTitle: "Untitled - Notepad", hwnd: "4919" }, deps);
     await exec(entity({ role: "textbox" }), "type", "hello");
-    expect(deps.uiaSetValue).toHaveBeenCalledWith("Untitled - Notepad", "hello", "Start", undefined, 4919n);
+    expect(deps.uiaSetValue).toHaveBeenCalledWith("Untitled - Notepad", "hello", "Start", undefined, 4919n, { rect: { x: 100, y: 200, width: 80, height: 30 } });
     // The fallback must not quietly go back to aiming by title: it is the rung that actually
     // writes when ValuePattern cannot re-find the element, which is the common Notepad case.
     expect(deps.keyboardTypeBg).toHaveBeenCalledWith("Untitled - Notepad", "hello", 4919n);

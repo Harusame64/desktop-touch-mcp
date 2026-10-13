@@ -1975,13 +1975,49 @@ const CLASSIC_NEEDS_NATIVE = "The classic UI Automation client needs the native 
 /** `src/uia/mod.rs::STOPPED_ANSWERING`, matched whole by `uia-route-failure.ts`. */
 const STOPPED_ANSWERING = "Window stopped answering during the act";
 
+/**
+ * internal #289 — what the discovered element was, so the value write can find THAT element rather
+ * than the first whose name contains its name (`src/uia/actions.rs::find_value_target`).
+ */
+export interface ValueWriteAddress {
+  /** `locator.uia.nativeWindowHandle`: the element's own window, decimal. */
+  elementHwnd?: string;
+  /** The entity's control type as read ("Edit"). */
+  controlType?: string;
+  /** The entity's rect at discover. */
+  rect?: { x: number; y: number; width: number; height: number };
+  /**
+   * Which client read the element (`locator.uia.via`), when the name passed is that read's own Name
+   * (not a label put in its place). The name and type are compared whole only by the same client: a
+   * system part's Name follows the reading client's UI language (win2 FX289 N3).
+   */
+  nameReadBy?: "native" | "powershell";
+}
+
+/** The native engine's half of a {@link ValueWriteAddress}. An older engine ignores the fields. */
+function nativeValueAddress(address: ValueWriteAddress | undefined): {
+  elementHwnd?: string; controlType?: string; exactName?: boolean; rect?: { x: number; y: number; width: number; height: number };
+} {
+  if (address === undefined) return {};
+  const r = address.rect;
+  const rect = r !== undefined && [r.x, r.y, r.width, r.height].every(Number.isFinite)
+    ? { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) }
+    : undefined;
+  return {
+    ...(address.elementHwnd !== undefined && { elementHwnd: address.elementHwnd }),
+    ...(address.controlType !== undefined && { controlType: address.controlType }),
+    ...(address.nameReadBy === "native" && address.controlType !== undefined && { exactName: true }),
+    ...(rect !== undefined && { rect }),
+  };
+}
+
 export async function setElementValue(
   windowTitle: string,
   value: string,
   name?: string,
   automationId?: string,
   /** (H3) When hwnd is provided, bypass title-based root search (fixes Save As / common dialogs). */
-  options?: { hwnd?: bigint }
+  options?: { hwnd?: bigint; address?: ValueWriteAddress }
 ): Promise<{ ok: boolean; error?: string; code?: string; via?: "native" | "powershell"; focusedBy?: string }> {
   refuseUiaTitleIfExcluded(windowTitle, options?.hwnd);
   if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
@@ -1996,6 +2032,7 @@ export async function setElementValue(
         automationId: automationId ?? undefined,
         ...(options?.hwnd !== undefined && { hwnd: options.hwnd.toString() }),
         ...(uiaClassicRequested() && { classic: true }),
+        ...nativeValueAddress(options?.address),
       });
       if (uiaClassicRequested()) markClassicUsed();
       // `via` on a failure only: item 16 weighs a "not found" by it, and a success has nothing to

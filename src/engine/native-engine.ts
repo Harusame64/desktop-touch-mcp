@@ -365,6 +365,14 @@ export interface NativeUia {
     hwnd?: string;
       /** internal #216 — through the classic client (`src/engine/uia-client-scope.ts`). */
     classic?: boolean;
+    /** internal #289 — the element's own window handle, tried before any search (`src/uia/actions.rs::find_value_target`). */
+    elementHwnd?: string;
+    /** internal #289 — the element's control type as read ("Edit"). */
+    controlType?: string;
+    /** internal #289 — `name` is this client's own read of the Name: compared whole, with the type. */
+    exactName?: boolean;
+    /** internal #289 — the discovered rect, which picks one of several exact matches. Whole pixels. */
+    rect?: { x: number; y: number; width: number; height: number };
   }): Promise<NativeActionResult>;
   uiaInsertText?(opts: {
     windowTitle: string;
