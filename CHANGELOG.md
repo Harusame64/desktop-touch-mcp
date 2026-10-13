@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed — Windows
+- A `desktop_act` click whose UI Automation press failed after it was sent is no longer pressed a second
+  time with the mouse. The press may already have happened (a dialog that closed itself, a check box that
+  toggled), so the act is now refused with `aim_route_failed` and says to look at the window before
+  pressing again.
+
 ## [2.3.0] - 2026-10-12 — macOS preview, one-time password fill for the key locker, and quieter background reading
 
 ### Added — macOS (preview)

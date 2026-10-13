@@ -210,13 +210,23 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
                 code: None,
                 focused_by: Some(focused_by.into()),
             }),
-            Err(e) => Ok(ActionResult {
-                ok: false,
-                element: None,
-                error: Some(failure_text(&e)),
-                code: None,
-                focused_by: Some(focused_by.into()),
-            }),
+            Err(e) => {
+                // internal #232 — the call was made, so a failure other than a timeout may still follow
+                // a press that happened (`mod.rs::PRESS_OUTCOME_UNKNOWN`).
+                let error = if super::is_timeout(&e) {
+                    super::STOPPED_ANSWERING.to_string()
+                } else {
+                    eprintln!("[uia] Invoke failed after the call was made: {e}");
+                    super::PRESS_OUTCOME_UNKNOWN.to_string()
+                };
+                Ok(ActionResult {
+                    ok: false,
+                    element: None,
+                    error: Some(error),
+                    code: None,
+                    focused_by: Some(focused_by.into()),
+                })
+            }
         }
     }
 }

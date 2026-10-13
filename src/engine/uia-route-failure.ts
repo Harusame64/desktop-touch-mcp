@@ -69,6 +69,7 @@ export type UiaRouteFailure =
   | "element_read_only"
   | "target_not_answering"
   | "target_stopped_answering"
+  | "press_outcome_unknown"
   | "classic_client_busy"
   | "classic_client_unavailable";
 
@@ -89,6 +90,9 @@ const WHOLE: ReadonlyMap<string, UiaRouteFailure> = new Map([
   // running past its own 8 s (`uia-bridge.ts`). The request may already be with the window and run
   // when it answers (gate 2 on `fb2db897`), so it is not reported as nothing done.
   ["Window stopped answering during the act", "target_stopped_answering"],
+  // internal #232 — any other failure of the native press call itself (`src/uia/mod.rs::PRESS_OUTCOME_UNKNOWN`).
+  // The call was made, so the press may have happened: not "nothing done", and not a reason to press again.
+  ["The press call failed after it was made; it may have taken effect", "press_outcome_unknown"],
   // internal #216 — `src/uia/thread.rs::CLASSIC_BUSY`: an earlier `uiaClient: "classic"` call still
   // holds the classic client's thread.
   ["The classic UI Automation client is busy with an earlier call", "classic_client_busy"],
@@ -132,6 +136,8 @@ export function describeUiaRouteFailure(kind: UiaRouteFailure): string {
       return "an earlier call through the classic client (uiaClient: \"classic\") is still running, so nothing was sent — wait until it finishes; until then, acts on the window it touched can move the keyboard focus even through the default client";
     case "classic_client_unavailable":
       return "the classic client (uiaClient: \"classic\") cannot run here (the native engine is unavailable), so nothing was sent — use the default client";
+    case "press_outcome_unknown":
+      return "the press call failed after it was made, so it may have taken effect — look at the window before pressing again, so it is not done twice";
     case "target_stopped_answering":
       return "the window stopped answering UI Automation during the press or write (it may be busy); it may still take effect when the window answers — look at it before trying again, so it is not done twice";
   }

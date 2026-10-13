@@ -36,6 +36,12 @@ pub(crate) const NOT_ANSWERING: &str = "Window is not answering";
 /// must not be told nothing was done.
 pub(crate) const STOPPED_ANSWERING: &str = "Window stopped answering during the act";
 
+/// internal #232 — any other failure of the press call itself, after the element was found and the
+/// focus moved to it. The call was made, so the press may have happened (a dialog that closed itself
+/// during the call, an RPC disconnect); the caller must not be told nothing was done, and the act must
+/// not press again by coordinates. The backend's own text goes to stderr only: it is matched by no one.
+pub(crate) const PRESS_OUTCOME_UNKNOWN: &str = "The press call failed after it was made; it may have taken effect";
+
 /// Whether a UI Automation call failed because the provider did not answer in time.
 pub(crate) fn is_timeout(e: &windows::core::Error) -> bool {
     e.code().0 as u32 == UIA_E_TIMEOUT

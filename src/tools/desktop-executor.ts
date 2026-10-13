@@ -2914,8 +2914,10 @@ export function createDesktopExecutor(
         }
         // internal #216 — nor is a window that did not answer pressed by its remembered point: the UIA
         // press may still be pending with it, and the point may be under another window by now
-        // (gate 2 on `fb2db897`).
-        if (routeFailure === "target_not_answering" || routeFailure === "target_stopped_answering" || routeFailure === "classic_client_busy" || routeFailure === "classic_client_unavailable") {
+        // (gate 2 on `fb2db897`). internal #232 — nor one whose press call failed after it was made: the
+        // first press may have landed, and a coordinate press would be the second (a check box toggled
+        // back, a button pressed twice).
+        if (routeFailure === "target_not_answering" || routeFailure === "target_stopped_answering" || routeFailure === "press_outcome_unknown" || routeFailure === "classic_client_busy" || routeFailure === "classic_client_unavailable") {
           probeRefusal("uia_downgrade", "aim_route_failed", undefined, entity, { routeFailure, readVia, clickVia, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
           throw new AimedRouteFailedError(
             `UIA click for "${entity.label ?? entity.entityId}" on the title-only road: ${routeFailure}. Not pressing where it used to be.`,
