@@ -87,7 +87,10 @@ describe("a WinForms editable combo box", () => {
           expect(d.uiaSetValue).not.toHaveBeenCalled();
           expect(d.keyboardTypeBg).not.toHaveBeenCalled();
           expect(err?.callerDetail).toMatch(/^Nothing was written: "A17 Combo" is a WinForms combo box/);
-          expect(err?.callerDetail).toContain("keyboard(action:'type')");
+          expect(err?.callerDetail).toContain("keyboard({action:'type', text})");
+          expect(err?.callerDetail).toContain("use mouse_click at its rectangle");
+          expect(err?.callerDetail).toContain(action === "setValue" ? "Home then Shift+End" : "press keyboard End first");
+          expect(err?.callerDetail).not.toMatch(/select[^.]*with keyboard ctrl\+a/);
         });
       }
     }

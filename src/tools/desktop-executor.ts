@@ -2165,13 +2165,23 @@ export class WinFormsComboWriteRefusedError extends Error implements CallerFacin
   readonly callerDetail: string;
   /** Refused before any route ran (internal #242). */
   readonly noRouteTried = true as const;
-  constructor(entity: UiEntity) {
+  constructor(entity: UiEntity, action: "type" | "setValue") {
     super(`not writing "${entity.label ?? entity.entityId}" through UI Automation: a WinForms combo box does not see that change`);
     this.name = "WinFormsComboWriteRefusedError";
+    // Each step measured by win2 on FX238 (2026-10-13): desktop_act click on a window named by title lands as a
+    // mouse click (the combo has no Invoke) and selects all its text, 2/2; on a window named by handle that click
+    // is refused (aim_route_failed), so mouse_click is the way in; ctrl+a does NOT select in this control, Home
+    // then Shift+End does; keyboard type then Tab reached the model, 2/2 and 3/3.
+    const click =
+      `Click it — desktop_act(action:'click') on a window named by title; on a window named by handle that click is ` +
+      `refused, so use mouse_click at its rectangle.`;
+    const put = action === "setValue"
+      ? ` The click selects its old text; if it did not, select it with keyboard Home then Shift+End (ctrl+a does not select in this control).`
+      : ` The click selects its old text, which typing would replace: press keyboard End first to add to it.`;
     this.callerDetail =
       `Nothing was written: "${quotedLabel(entity)}" is a WinForms combo box, and UI Automation can change its text ` +
-      `without the application seeing the change. Click it, select its old text if the click did not, type the new ` +
-      `text with keyboard(action:'type'), then move the focus away (Tab, or the next control) so the application takes it.`;
+      `without the application seeing the change. ${click}${put} Then keyboard({action:'type', text}), and move the ` +
+      `focus away (keyboard Tab) so the application takes it.`;
   }
 }
 
@@ -2540,7 +2550,7 @@ export function createDesktopExecutor(
         // screen and the application is not told, so `ok:true` would report a value its model never took.
         // Before the try below, whose catch would hand the refusal to the keyboard rung as a failed write.
         if (d.comboWindowFacts !== undefined && (await editableWinFormsComboOf(entity, d.comboWindowFacts)) !== undefined) {
-          throw new WinFormsComboWriteRefusedError(entity);
+          throw new WinFormsComboWriteRefusedError(entity, action);
         }
         try {
           const written = await d.uiaSetValue(winTitle, text, name, automationId, aimHwnd);
