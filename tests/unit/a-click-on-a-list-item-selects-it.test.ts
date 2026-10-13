@@ -177,7 +177,9 @@ describe("a click on a collection item", () => {
       expect(err?.name).toBe("CollectionItemSelectRefusedError");
       expect(err?.adviceClass).toBe("collection_item_select");
       expect(err?.noRouteTried).toBeUndefined();
-      expect(err?.callerDetail).toMatch(/^Nothing was pressed, and nothing changed: /);
+      expect(err?.callerDetail).toMatch(/^Nothing was pressed, and the item was not selected: /);
+      // The focus step ran before the select (PR #819 codex P2): the detail must not claim nothing changed.
+      expect(err?.callerDetail).not.toContain("nothing changed");
       expect(d.uiaClick).not.toHaveBeenCalled();
       expect(d.mouseClick).not.toHaveBeenCalled();
       expect(routeRows().at(-1)).toMatchObject({ route: "refusal", rung: "uia_select", refused: "executor_failed", selectRefused: "not_selected" });
@@ -448,7 +450,7 @@ describe("through the loop to the envelope", () => {
       const result = await touch(d, action);
       expect(result).toMatchObject({ ok: false, reason: "executor_failed", adviceClass: "collection_item_select" });
       const detail = (result as { detail?: string }).detail;
-      expect(detail).toMatch(/^Nothing was pressed, and nothing changed: /);
+      expect(detail).toMatch(/^Nothing was pressed, and the item was not selected: /);
 
       const { getDesktopFacade, desktopActRawHandler } = await import("../../src/tools/desktop-register.js");
       vi.spyOn(getDesktopFacade(), "touch").mockResolvedValue(result);

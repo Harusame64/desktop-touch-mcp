@@ -2431,7 +2431,7 @@ export class CollectionItemSelectRefusedError extends Error implements CallerFac
       : `It has no UI Automation Invoke to open it with.`;
     switch (kind) {
       case "not_selected":
-        this.callerDetail = `Nothing was pressed, and nothing changed: UI Automation took the select for "${label}", but the item did not become selected. ${invoke}`;
+        this.callerDetail = `Nothing was pressed, and the item was not selected: UI Automation took the select for "${label}", but the item did not become selected. The focus may have moved to its list, which can make an application commit a field it was editing. ${invoke}`;
         break;
       case "may_land":
         // Not "Nothing was pressed": the act was sent, and the advice would read that as nothing done. Not
