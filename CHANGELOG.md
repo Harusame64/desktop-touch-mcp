@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed — Windows
+- A `mouse_click` that names its window (`windowTitle` or `hwnd`) is no longer refused with
+  `AutoGuardBlocked` everywhere under a click-through full-screen overlay, such as the one Dell's display
+  manager draws. The guard now asks Windows which window a click at that point would reach, the same
+  question `desktop_act` already asks. Before, it judged by window rectangles alone, so the overlay
+  covered every point (a known issue since 2.0.0).
+
 ## [2.3.1] - 2026-10-13 — ssh key passphrases in fill_once, a key locker that exits with the server, and two false successes refused
 
 ### Fixed — Windows
