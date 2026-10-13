@@ -781,7 +781,7 @@ fn value_not_applied(before: Option<&str>, after: Option<&str>, written: &str) -
 ///    had one; no WPF control did). Believed only when the element there still has the name and the
 ///    type, and lives in the window this call resolved: a handle can be recreated for another control.
 /// 2. With `exact_name`, every element whose Name equals the name and whose type is the type. One
-///    is the answer; of several, the one whose rect holds the centre of the discovered rect. When
+///    is the answer; of several, the one still at the discovered rect (`in_place`). When
 ///    the rect cannot pick one (the form scrolled, or one match sits inside another), the answer
 ///    is `ElementAmbiguous`: nothing is written, and the executor refuses it before the keyboard
 ///    rung. None at all (the field was renamed since discover) goes on to step 3.
@@ -812,9 +812,14 @@ fn find_value_target(
     if let (true, None, Some(name), Some(control_type)) = (exact, automation_id, name, control_type) {
         // Every exact match, not the first few: a form of repeated rows can hold more, and the one the
         // rect names can come late in the walk (PR 側 codex, P2 on `6e7a3d9d`).
-        let found = collect_among_descendants(ctx, window, usize::MAX, |elem| {
+        let Collected { found, skipped } = collect_among_descendants(ctx, window, usize::MAX, |elem| {
             exact_match(elem, name, control_type)
         })?;
+        // A walk that skipped a branch cannot say a match is the only one, nor that the rect picks
+        // the only one in its place: refused like an ambiguity, so nothing is written to a guess.
+        if skipped && !found.is_empty() {
+            return Err(napi::Error::from_reason(ELEMENT_AMBIGUOUS_TEXT));
+        }
         if found.len() == 1 {
             return Ok(found.into_iter().next().unwrap());
         }
@@ -828,7 +833,7 @@ fn find_value_target(
 
 /// The element at `hwnd`, when it is still the one discovered: same name (exact or contained, as the
 /// search would compare it), same AutomationId and type when they were given, and inside `window`.
-/// Without an AutomationId, the element must also hold the centre of the discovered rect.
+/// Without an AutomationId, the element must also still be where discover saw it (`in_place`).
 /// `None` for anything that cannot be read, so the search runs instead. The AutomationId is checked
 /// because a recreated handle can be reused by a sibling, and the search would have found the element
 /// by its id (PR 側 codex, P1 on `6e7a3d9d`).
@@ -875,11 +880,7 @@ fn element_at_own_handle(
         // same name and type sits somewhere else (PR 側 codex, P1 on `a26bebc7`). A window that moved
         // since discover fails this too, and the search below — which uses the same rect — decides.
         let rect_ok = automation_id.is_some()
-            || rect.is_none_or(|r| {
-                let (cx, cy) = (r.x + r.width / 2, r.y + r.height / 2);
-                elem.CachedBoundingRectangle()
-                    .is_ok_and(|b| b.left <= cx && cx < b.right && b.top <= cy && cy < b.bottom)
-            });
+            || rect.is_none_or(|r| elem.CachedBoundingRectangle().is_ok_and(|now| in_place(&now, r)));
         (name_ok && id_ok && type_ok && rect_ok).then_some(elem)
     }
 }
@@ -894,18 +895,29 @@ fn exact_match(elem: &IUIAutomationElement, name: &str, control_type: &str) -> b
     }
 }
 
-/// Of several exact matches, the one whose rect holds the centre of the discovered rect, when exactly
-/// one does. A centre, not an equal rect: the read may have clipped the rect it recorded.
+/// Of several exact matches, the one still where discover saw it, when exactly one is.
 fn one_at_rect(found: Vec<IUIAutomationElement>, rect: Option<&BoundingRect>) -> Option<IUIAutomationElement> {
     let rect = rect?;
-    let (cx, cy) = (rect.x + rect.width / 2, rect.y + rect.height / 2);
-    let mut at = found.into_iter().filter(|elem| unsafe {
-        elem.CachedBoundingRectangle()
-            .is_ok_and(|r| r.left <= cx && cx < r.right && r.top <= cy && cy < r.bottom)
-    });
+    let mut at = found.into_iter().filter(|elem| unsafe { elem.CachedBoundingRectangle().is_ok_and(|now| in_place(&now, rect)) });
     let first = at.next()?;
     at.next().is_none().then_some(first)
 }
+
+/// Whether `now` is the discovered rect, to within `IN_PLACE_PX` on every edge. Not "holds its centre":
+/// MEASURED win2 (2026-10-14, FX289 N7b, d0c59841, 3/3), with two "Name" boxes overlapping at discover
+/// and the second then moved 34 px down, the first box still held the old centre and took the write
+/// under `ok:true`. The native read records the element's `BoundingRectangle` in whole pixels; a rect
+/// from elsewhere (an OCR candidate merged into the entity) can miss by more, and then nothing is in
+/// place — a refusal, not a wrong write.
+fn in_place(now: &windows::Win32::Foundation::RECT, discovered: &BoundingRect) -> bool {
+    let near = |a: i32, b: i32| (a - b).abs() <= IN_PLACE_PX;
+    near(now.left, discovered.x)
+        && near(now.top, discovered.y)
+        && near(now.right, discovered.x + discovered.width)
+        && near(now.bottom, discovered.y + discovered.height)
+}
+
+const IN_PLACE_PX: i32 = 2;
 
 fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<ActionResult> {
     let window = match resolve_root(ctx, opts.hwnd.as_deref(), &opts.window_title) {
@@ -1101,9 +1113,20 @@ fn find_among_descendants(
     collect_among_descendants(ctx, window, 1, |elem| {
         matches_with_ct(elem, &name_lower, automation_id, &ct_lower)
     })?
+    .found
     .into_iter()
     .next()
     .ok_or_else(|| napi::Error::from_reason("Element not found"))
+}
+
+/// What [`collect_among_descendants`] saw.
+struct Collected {
+    found: Vec<IUIAutomationElement>,
+    /// A step failed with an error that is not "no such element" — an element went away mid-walk —
+    /// and its branch was skipped. Only an exhaustive caller has to care: a first match is a match
+    /// whatever was skipped, but "the only match" is not, when part of the tree went unread (PR 側
+    /// codex, P1 on `d0c59841`).
+    skipped: bool,
 }
 
 /// The walk itself, in that order, collecting up to `limit` elements `matches` accepts (internal
@@ -1114,8 +1137,11 @@ fn collect_among_descendants(
     window: &IUIAutomationElement,
     limit: usize,
     matches: impl Fn(&IUIAutomationElement) -> bool,
-) -> napi::Result<Vec<IUIAutomationElement>> {
+) -> napi::Result<Collected> {
     let mut found = Vec::new();
+    // windows-rs answers "no sibling / no child" as an EMPTY error (code 0, `tabs.rs`); anything else
+    // is a step that failed.
+    let skipped = std::cell::Cell::new(false);
     let mut stack: Vec<(IUIAutomationElement, u32)> = Vec::with_capacity(64);
     // internal #216 — a step that timed out is not "no such element": without this, a window too busy
     // to answer was reported as one that no longer holds the element.
@@ -1125,6 +1151,8 @@ fn collect_among_descendants(
         Err(e) => {
             if super::is_timeout(&e) {
                 timed_out.set(true);
+            } else if !e.code().is_ok() {
+                skipped.set(true);
             }
             None
         }
@@ -1152,7 +1180,7 @@ fn collect_among_descendants(
         if matches(&elem) {
             found.push(elem.clone());
             if found.len() >= limit {
-                return Ok(found);
+                return Ok(Collected { found, skipped: skipped.get() });
             }
         }
 
@@ -1172,7 +1200,7 @@ fn collect_among_descendants(
     if timed_out.get() {
         return Err(napi::Error::from_reason(super::NOT_ANSWERING));
     }
-    Ok(found)
+    Ok(Collected { found, skipped: skipped.get() })
 }
 
 /// Match element by name (case-insensitive substring), automationId (exact),
