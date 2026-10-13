@@ -336,7 +336,28 @@ fn select_item(ctx: &UiaContext, elem: &IUIAutomationElement) -> ActionResult {
             };
         }
 
-        if !sel.CurrentIsSelected().map(|b| b == true).unwrap_or(false) {
+        // A read that FAILS is not a read of false: Select has already returned, and the item may be
+        // selected (PR #819 codex P2). Only a successful read of false is `SelectNotApplied`.
+        let is_selected = match sel.CurrentIsSelected() {
+            Ok(b) => b == true,
+            Err(e) => {
+                let (error, code) = if super::is_timeout(&e) {
+                    (super::STOPPED_ANSWERING.to_string(), None)
+                } else {
+                    (format!("The select was sent, and whether the item is selected could not be read: {e}"), Some("SelectOutcomeUnknown".to_string()))
+                };
+                return ActionResult {
+                    ok: false,
+                    element: None,
+                    error: Some(error),
+                    code,
+                    focused_by: Some(focused_by.into()),
+                    selected: None,
+                    notified: None,
+                };
+            }
+        };
+        if !is_selected {
             return ActionResult {
                 ok: false,
                 element: None,

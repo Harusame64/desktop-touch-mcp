@@ -2379,6 +2379,7 @@ async function selectCollectionItem(
     if (code === "PatternNotSupported") return new SingleClickNeeded(entity, "no_selection_item", { cause: err });
     const routeFailure = code === undefined ? classifyUiaRouteFailure(err) : undefined;
     const kind = code === "SelectNotApplied" ? "not_selected"
+      : code === "SelectOutcomeUnknown" ? "outcome_unknown"
       : code === "NativeEngineUnavailable" ? "no_engine"
       // The select may already be with the window, and land when it answers (`mod.rs::STOPPED_ANSWERING`).
       : routeFailure === "target_stopped_answering" ? "may_land"
@@ -2395,6 +2396,8 @@ async function selectCollectionItem(
  * that press, and never a mouse click this refusal has just declined.
  *   - `not_selected` — Select was taken and the item did not read as selected afterwards.
  *   - `may_land` — the window stopped answering during the select, which may still land.
+ *   - `outcome_unknown` — Select returned, and reading back whether the item is selected failed: it may be
+ *     (PR #819 codex P2; a failed read is not a read of false).
  *   - `no_engine` — selecting needs the native engine, and it is unavailable.
  *   - `failed` — the select call failed any other way.
  */
@@ -2408,7 +2411,7 @@ export class CollectionItemSelectRefusedError extends Error implements CallerFac
   readonly adviceClass: "collection_item_select" | "collection_item_select_no_invoke";
   constructor(
     entity: UiEntity,
-    readonly kind: "not_selected" | "may_land" | "no_engine" | "failed",
+    readonly kind: "not_selected" | "may_land" | "outcome_unknown" | "no_engine" | "failed",
     routeFailure: ReturnType<typeof classifyUiaRouteFailure>,
     options?: ErrorOptions,
   ) {
@@ -2429,6 +2432,11 @@ export class CollectionItemSelectRefusedError extends Error implements CallerFac
         this.callerDetail =
           `The select for "${label}" was sent, and the window stopped answering before it said whether the item was selected: ` +
           `it may still be selected when the window answers. It was not pressed another way. Look at the window before acting on it again.`;
+        break;
+      case "outcome_unknown":
+        this.callerDetail =
+          `The select for "${label}" was sent, and whether the item became selected could not be read back: ` +
+          `it may be selected. It was not pressed another way. Look at the window before acting on it again.`;
         break;
       case "no_engine":
         this.callerDetail =

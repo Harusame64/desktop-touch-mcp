@@ -183,6 +183,19 @@ describe("a click on a collection item", () => {
       expect(routeRows().at(-1)).toMatchObject({ route: "refusal", rung: "uia_select", refused: "executor_failed", selectRefused: "not_selected" });
     });
 
+    it(`a select whose read-back FAILED is not "nothing changed": it may be selected — ${roadName}`, async () => {
+      // PR #819 codex P2: a failed IsSelected read after a successful Select was reported as a read of false.
+      const d = deps({ uiaSelect: engineSays("The select was sent, and whether the item is selected could not be read: 0x80040201", "SelectOutcomeUnknown") });
+      const { v, e: err } = await act(road, d, entity("ListItem"), "click");
+      expect(v).toBeNull();
+      expect(err?.name).toBe("CollectionItemSelectRefusedError");
+      expect(err?.callerDetail).not.toMatch(/^Nothing was pressed/);
+      expect(err?.callerDetail).toContain("it may be selected");
+      expect(d.uiaClick).not.toHaveBeenCalled();
+      expect(d.mouseClick).not.toHaveBeenCalled();
+      expect(routeRows().at(-1)).toMatchObject({ route: "refusal", rung: "uia_select", refused: "executor_failed", selectRefused: "outcome_unknown" });
+    });
+
     it(`refuses a select that failed any other way, pressing nothing — ${roadName}`, async () => {
       const d = deps({ uiaSelect: engineSays("Select failed: 0x80040201") });
       const { v, e: err } = await act(road, d, entity("ListItem"), "click");
