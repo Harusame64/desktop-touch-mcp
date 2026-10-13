@@ -526,11 +526,12 @@ fn set_value_impl(
     let elem = match find_value_target(ctx, &window, opts) {
         Ok(e) => e,
         Err(e) => {
+            let code = (e.reason == ELEMENT_AMBIGUOUS_TEXT).then(|| "ElementAmbiguous".to_string());
             return Ok(ActionResult {
                 ok: false,
                 element: None,
                 error: Some(e.reason),
-                code: None,
+                code,
                 focused_by: None,
                 selected: None,
                 notified: None,
@@ -780,15 +781,20 @@ fn value_not_applied(before: Option<&str>, after: Option<&str>, written: &str) -
 ///    had one; no WPF control did). Believed only when the element there still has the name and the
 ///    type, and lives in the window this call resolved: a handle can be recreated for another control.
 /// 2. With `exact_name`, every element whose Name equals the name and whose type is the type. One
-///    is the answer; of several, the one whose rect holds the centre of the discovered rect, and
-///    when the rect cannot pick one (the form scrolled, or one match sits inside another), the
-///    first of them in tree order — which is the one the substring search would have taken among
-///    them. None at all (the field was renamed since discover) goes on to step 3.
+///    is the answer; of several, the one whose rect holds the centre of the discovered rect. When
+///    the rect cannot pick one (the form scrolled, or one match sits inside another), the answer
+///    is `ElementAmbiguous`: nothing is written, and the executor refuses it before the keyboard
+///    rung. None at all (the field was renamed since discover) goes on to step 3.
 /// 3. Otherwise the substring search, as before — an AutomationId, or an entity another client read.
 ///
-/// No step answers "not found" where the substring search found something. A new "not found"
-/// would not be safe: on the handle road the keyboard rung types into a windowless field's focus
-/// holder (gate 2 on `fe26cec7`), where the old search wrote the right field through the pattern.
+/// The ambiguity is not "not found", and not the first match. As "not found", on the handle road the
+/// keyboard rung typed into a windowless field's focus holder (gate 2 on `fe26cec7`); as the first
+/// match, the pattern wrote a sibling under `ok:true` (PR 側 codex, P1 on `44476ac2`). A re-discover
+/// reads the rects again, which is what tells the matches apart.
+/// internal #289 — the writer's words when several elements match exactly and the rect cannot pick
+/// one; `set_value_impl` answers them with the code `ElementAmbiguous`.
+const ELEMENT_AMBIGUOUS_TEXT: &str = "Two or more elements have this element's exact name and type, and its rect does not tell them apart";
+
 fn find_value_target(
     ctx: &UiaContext,
     window: &IUIAutomationElement,
@@ -813,8 +819,8 @@ fn find_value_target(
             return Ok(found.into_iter().next().unwrap());
         }
         if !found.is_empty() {
-            let first = found[0].clone();
-            return Ok(one_at_rect(found, opts.rect.as_ref()).unwrap_or(first));
+            return one_at_rect(found, opts.rect.as_ref())
+                .ok_or_else(|| napi::Error::from_reason(ELEMENT_AMBIGUOUS_TEXT));
         }
     }
     find_element_in_window(ctx, window, opts.name.as_deref(), opts.automation_id.as_deref(), None)

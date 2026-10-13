@@ -51,6 +51,7 @@ import {
   ValueNotAppliedError,
   AIM_WINDOW_GONE,
   VALUE_NOT_APPLIED,
+  ELEMENT_AMBIGUOUS,
 } from "../engine/aim.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
 import type { AdvertisedExecutorKind } from "../capabilities/registry.js";
@@ -2998,6 +2999,20 @@ export function createDesktopExecutor(
               `after the write, so this act does not report it written and tried nothing else. Re-run desktop_discover and check the field before writing again.`,
             );
           }
+          // internal #289 — several elements have the entity's exact name and type, and its rect no
+          // longer tells them apart. Not a rung: the keyboard rung would type into whatever holds the
+          // focus, and a windowless field (WPF) has no handle to check that against. Refused as
+          // `entity_not_found`, whose recovery — discover again — reads the rects that tell them apart.
+          if ((uiaErr as { uiaCode?: unknown } | null)?.uiaCode === ELEMENT_AMBIGUOUS) {
+            probeRefusal("uia_set_value", "entity_not_found", aimHwnd, entity, { routeFailure: "element_ambiguous", addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
+            throw new TargetGoneError(
+              `UIA found several elements named exactly like "${entity.label ?? entity.entityId}", and its rect no longer tells them apart. Not typing it another way.`,
+              { cause: uiaErr },
+              `Several fields in that window have the exact name and type of "${quotedLabel(entity)}", and its position ` +
+              `from desktop_discover no longer tells them apart (the window may have scrolled or moved), so nothing was written. ` +
+              `Re-run desktop_discover and act on the new lease.`,
+            );
+          }
           // internal #216 — a window that did not answer is not a rung either. The keyboard rung reads
           // the focus of a thread that is not running and refuses with `other_control`, a reason
           // that sends the caller to move the focus (win2, R18b/R21b: a 10 s hang, 7.0 s, then
@@ -3583,6 +3598,9 @@ function getSharedRealDeps(): ExecutorDeps {
       // Internal #182 — the provider took the write and the value did not move. Typed here, where the
       // backend's code is read, so the ladder can refuse it before the keyboard rung.
       if (!r.ok && r.code === VALUE_NOT_APPLIED) throw new ValueNotAppliedError(r.error ?? "UIA SetValue changed nothing");
+      // internal #289 — several elements matched exactly and the rect could not pick one. Typed here, so
+      // the ladder refuses it before the keyboard rung, whose receiver would be a guess too.
+      if (!r.ok && r.code === ELEMENT_AMBIGUOUS) throw Object.assign(new Error(r.error ?? "UIA value target is ambiguous"), { uiaCode: ELEMENT_AMBIGUOUS, uiaVia: r.via });
       // Which client answered, carried on the error as `uiaClick` carries it: the type road's item 16
       // believes a "not found" only from the native client, about an entity the native client read.
       if (!r.ok) throw Object.assign(new Error(r.error ?? "UIA setElementValue failed"), { uiaVia: r.via });

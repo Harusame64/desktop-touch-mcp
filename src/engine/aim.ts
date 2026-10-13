@@ -186,6 +186,13 @@ export class TargetGoneError extends Error implements CallerFacingRefusal {
 export const VALUE_NOT_APPLIED = "ValueNotApplied";
 
 /**
+ * internal #289 — backend code for "several elements have the entity's exact name and type, and its
+ * rect does not tell them apart" (the native writer, `src/uia/actions.rs::find_value_target`). Nothing
+ * was written; the executor refuses it before the keyboard rung, as `entity_not_found`.
+ */
+export const ELEMENT_AMBIGUOUS = "ElementAmbiguous";
+
+/**
  * The value road wrote, the provider said yes, and nothing changed.
  *
  * MEASURED 2026-09-24 (win2, the AB test's arm B-7, internal `7055e3dc` / `d58b673d`, 3 of 3): `type`

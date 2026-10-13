@@ -136,3 +136,43 @@ describe("#289 — the bridge gives the engine its fields", () => {
     for (const k of ["elementHwnd", "controlType", "exactName", "rect"]) expect(opts).not.toHaveProperty(k);
   });
 });
+
+describe("#289 — an ambiguity is refused, not typed and not guessed", () => {
+  // Gate 2 on `fe26cec7` and PR codex on `44476ac2` named the two wrong answers: as "not found", the
+  // keyboard rung typed into a windowless field's focus holder on the handle road; as the first match,
+  // the pattern wrote a sibling under `ok:true`. The engine answers `ElementAmbiguous` instead.
+  async function ambiguous() {
+    const { ELEMENT_AMBIGUOUS } = await import("../../src/engine/aim.js");
+    return vi.fn(async () => {
+      throw Object.assign(new Error("Two or more elements have this element's exact name and type, and its rect does not tell them apart"), { uiaCode: ELEMENT_AMBIGUOUS, uiaVia: "native" });
+    });
+  }
+
+  it("on the handle road, a windowless field: refused before the keyboard rung, nothing typed", async () => {
+    const d = deps();
+    d.uiaSetValue = await ambiguous();
+    const exec = createDesktopExecutor({ windowTitle: "FX289", hwnd: "4919" }, d);
+    const err = await exec(field({ name: "Name", via: "native", nativeWindowHandleRead: "zero" }), "setValue", "N1").then(() => null, (e: unknown) => e as Error);
+    expect(err?.name).toBe("TargetGoneError");
+    expect((err as { callerDetail?: string }).callerDetail).toMatch(/Re-run desktop_discover/);
+    expect(d.keyboardTypeBg).not.toHaveBeenCalled();
+  });
+
+  it("the production dep types the engine's code", async () => {
+    vi.doMock("../../src/engine/uia-bridge.js", async (orig) => ({
+      ...(await orig<typeof import("../../src/engine/uia-bridge.js")>()),
+      setElementValue: vi.fn(async () => ({ ok: false, error: "Two or more elements…", code: "ElementAmbiguous", via: "native" as const })),
+    }));
+    const { _realExecutorDepsForTest } = await import("../../src/tools/desktop-executor.js");
+    const err = await _realExecutorDepsForTest().uiaSetValue("FX289", "N1", "Name").then(() => null, (e: unknown) => e as { uiaCode?: unknown });
+    expect(err?.uiaCode).toBe("ElementAmbiguous");
+  });
+
+  it("CONTROL: a plain not-found still goes to the keyboard rung, as before", async () => {
+    const d = deps();
+    d.uiaSetValue = vi.fn(async () => { throw Object.assign(new Error("Element not found"), { uiaVia: "native" }); });
+    const exec = createDesktopExecutor({ windowTitle: "FX289", hwnd: "4919" }, d);
+    await exec(field({ name: "Name", via: "native", nativeWindowHandleRead: "zero" }), "setValue", "N1").catch(() => undefined);
+    expect(d.keyboardTypeBg).toHaveBeenCalled();
+  });
+});
