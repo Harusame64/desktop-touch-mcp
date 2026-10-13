@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed — Windows
+- `key_locker` `fill_once` now accepts ssh's key passphrase prompt (`Enter passphrase for key '…':`,
+  and the `ssh-add` / security-key PIN forms). It was declined with `not_at_prompt`. Autofill of saved
+  credentials is unchanged.
+
 ## [2.3.0] - 2026-10-12 — macOS preview, one-time password fill for the key locker, and quieter background reading
 
 ### Added — macOS (preview)

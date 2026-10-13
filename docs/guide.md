@@ -137,7 +137,8 @@ terminal({ action:'send', paneId:'12345678', input:'ssh user@host' })
   `key_locker({ action:'fill_once', paneId, reason })`. You type the password into the
   locker's dialog; it is typed once into that pane's prompt and not saved. It types only
   into a real password prompt (an `ssh` / `sudo` running in that pane, with the console not
-  showing what is typed), and only English `password` prompts for now.
+  showing what is typed), and only English `password` prompts and ssh's
+  `Enter passphrase for key …:` for now.
 - **Every autofill asks you to confirm by default**; opt a binding out with
   `set_policy`. `list` / `status` / `forget` manage saved credentials.
 - `terminal` `read` / `send` accept `paneId` as an alternative to `windowTitle` —

@@ -11,7 +11,9 @@ import { describe, expect, it, vi } from "vitest";
 // key-locker-tool imports the failsafe, which loads the nut-js mouse at module scope.
 vi.mock("../../src/engine/nutjs.js", () => ({ mouse: { getPosition: vi.fn() } }));
 
-import { runFillOnce, type FillOnceDeps, type FillOnceOutcome } from "../../src/engine/key-locker/fill-once.js";
+import {
+  isKeyUnlockPromptLine, runFillOnce, widenForFillOnce, type FillOnceDeps, type FillOnceOutcome,
+} from "../../src/engine/key-locker/fill-once.js";
 import { KeyLockerCaptureDriver, type CaptureDriverDeps, type PromptVerdict } from "../../src/engine/key-locker/key-locker-capture-driver.js";
 import type { PaneAnchor } from "../../src/engine/key-locker/inject-target.js";
 import { SessionTracker } from "../../src/engine/key-locker/session-tracker.js";
@@ -363,5 +365,45 @@ describe("sanitizeFillOnceReason", () => {
     expect(sanitizeFillOnceReason("a\u2028b\u2029c\u0085d")).toBe("a b c d");
     expect(sanitizeFillOnceReason("x\u202Etxt.exe\u2066y\u200Bz")).toBe("x txt.exe y z");
     expect(sanitizeFillOnceReason("  log in to 192.168.1.20 via the jump host  ")).toBe("log in to 192.168.1.20 via the jump host");
+  });
+});
+
+describe("fill_once accepts OpenSSH's key-unlock prompts (internal #280)", () => {
+  // The user's own case: Windows OpenSSH unlocking a key, which the loop's classifier declined not_at_prompt.
+  const accepted = [
+    "Enter passphrase for key 'owner\\.ssh\\ssh_key':",
+    "Enter passphrase for key 'C:\\Users\\a/.ssh/id_ed25519': ",
+    "Enter passphrase for /home/a/.ssh/id_rsa:", // ssh-add
+    "Enter PIN for ED25519-SK key /home/a/.ssh/id_ed25519_sk:", // FIDO
+  ];
+  const declined = [
+    "Enter passphrase for key 'x'", // no colon: not waiting for input
+    "PS C:\\> echo Enter passphrase for key x:", // a command line that only mentions it
+    "$ Enter passphrase for key 'x':", // prefixed: not at the line start
+    "Enter passphrase (empty for no passphrase):", // ssh-keygen choosing a NEW passphrase
+    "Enter passphrase for key 'x': typed",
+  ];
+  it.each(accepted)("accepts %j", (line) => expect(isKeyUnlockPromptLine(line)).toBe(true));
+  it.each(declined)("declines %j", (line) => expect(isKeyUnlockPromptLine(line)).toBe(false));
+
+  it("widens only a non-prompt verdict whose cursor row is a key-unlock prompt", () => {
+    const tail = "PS> ssh jump\nEnter passphrase for key 'k':";
+    const no: PromptVerdict = { isCredentialPrompt: false, tail, stillHiddenPrompt: false };
+    expect(widenForFillOnce(no, "Enter passphrase for key 'k':")).toEqual({ isCredentialPrompt: true, tail, stillHiddenPrompt: true });
+    expect(widenForFillOnce(no, "PS C:\\>")).toBe(no);
+    expect(widenForFillOnce(null, "Enter passphrase for key 'k':")).toBeNull(); // unreadable stays unreadable
+    const yes: PromptVerdict = { isCredentialPrompt: true, tail: "Password:", stillHiddenPrompt: true };
+    expect(widenForFillOnce(yes, "Password:")).toBe(yes);
+  });
+
+  it("a key-unlock prompt reaches the dialog and fills through runFillOnce; unwidened it declines", async () => {
+    const row = "Enter passphrase for key 'owner\\.ssh\\ssh_key':";
+    const raw = PROMPT(false, `PS> ssh jump\n${row}`);
+    const widened = fake({ prompts: [widenForFillOnce(raw, row), widenForFillOnce(raw, row)] });
+    expect(await run(widened)).toEqual({ kind: "filled", verified: true });
+    expect(opened(widened)).toBe(true);
+    const plain = fake({ prompts: [raw] });
+    expect(await run(plain)).toEqual({ kind: "declined", reason: "not_at_prompt" });
+    expect(opened(plain)).toBe(false);
   });
 });

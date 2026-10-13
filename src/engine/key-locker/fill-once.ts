@@ -93,6 +93,27 @@ export type FillOnceOutcome = (
   cleanupFailed?: true;
 };
 
+/** The prompt forms `fill_once` accepts BEYOND the loop's classifier (`readPromptTail`'s password /
+ *  passphrase / sudo patterns): OpenSSH's key-unlock prompts, which name the key AFTER the word —
+ *  `Enter passphrase for key 'C:\Users\a\.ssh\id_ed25519':` (ssh), `Enter passphrase for /home/a/.ssh/id_rsa:`
+ *  (ssh-add), `Enter PIN for ED25519-SK key /x:` (FIDO). internal#280: they declined `not_at_prompt`.
+ *  Only here, not in the capture loop: the loop fills a stored HOST password, and writing that into a KEY
+ *  passphrase prompt would be the wrong secret (and its capture would bind a passphrase to the host).
+ *  Here the user types the secret for the prompt they see. Anchored at the line start and the final colon;
+ *  the credential-program and echo-off gates still apply. */
+const KEY_UNLOCK_PROMPT = /^Enter (?:passphrase|PIN) for .+:$/i;
+
+export function isKeyUnlockPromptLine(line: string | null): boolean {
+  return line !== null && KEY_UNLOCK_PROMPT.test(line.replace(/[ \t]+$/, ""));
+}
+
+/** fill_once's verdict: the loop's, widened to the key-unlock prompts. `cursorRow` is the tail's last
+ *  non-empty line (ANSI stripped) — the row the loop's own classifier read. */
+export function widenForFillOnce(v: PromptVerdict | null, cursorRow: string | null): PromptVerdict | null {
+  if (v === null || v.isCredentialPrompt || !isKeyUnlockPromptLine(cursorRow)) return v;
+  return { ...v, isCredentialPrompt: true, stillHiddenPrompt: true };
+}
+
 /** A `busy` claim is retried this many times, this far apart (the poll's hold is one prompt read). */
 const BUSY_RETRIES = 5;
 const BUSY_RETRY_MS = 200;

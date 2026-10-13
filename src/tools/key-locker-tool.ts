@@ -118,8 +118,8 @@ const fillOnceSchema = z.object({
       "prompt currently shown in a launch_console pane, and forget it (nothing is saved). Use it when a pane is " +
       "waiting at a password prompt that autofill does not handle — e.g. an ssh run INSIDE another ssh session " +
       "(a jump host), or a login you do not want saved. The pane must be AT a real password prompt — an ssh / sudo " +
-      "running in it, with the console not echoing input (send the command first, then call this). Only English " +
-      "'password' prompts are recognised for now. The secret is never shown to you.",
+      "running in it, with the console not echoing input (send the command first, then call this). English " +
+      "'password' prompts and ssh's 'Enter passphrase for key ...:' are recognised. The secret is never shown to you.",
   ),
   paneId: z.string().min(1).describe("The paneId returned by launch_console (only those panes can be filled)."),
   reason: z.string().min(1).max(200).describe(

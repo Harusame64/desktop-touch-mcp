@@ -669,7 +669,8 @@ pre-existing terminal is never autofilled.
   once into that `launch_console` pane's current password prompt, and it is forgotten.
   It types only while an `ssh` / `sudo` runs in that pane with the console not echoing input,
   and only if the pane shows the same prompt after the dialog closes. The prompt check reads the English
-  `password` prompt forms; a key passphrase or a Japanese prompt is declined for now.
+  `password` prompt forms and ssh's key-unlock prompt (`Enter passphrase for key …:`); a
+  Japanese prompt is declined for now.
 - `action='list'` shows saved bindings (metadata only). `action='forget'` deletes a
   binding and its secret. `action='set_policy'` toggles per-binding autofill
   confirmation (every autofill asks by default). `action='status'` reports whether the
