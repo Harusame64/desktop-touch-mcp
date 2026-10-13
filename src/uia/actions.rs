@@ -30,6 +30,10 @@ pub struct ClickElementOptions {
     pub hwnd: Option<String>,
     /// internal #216 — act through the older client 2.0 used (`thread.rs::execute_classic_with_timeout`).
     pub classic: Option<bool>,
+    /// internal #233 — select the item (`SelectionItemPattern.Select`) instead of invoking it. UI
+    /// Automation's Invoke on a list item acts as a double-click (win2 2026-10-13), so a click on a
+    /// collection item comes here; `action:"invoke"` keeps Invoke.
+    pub select: Option<bool>,
 }
 
 #[napi_derive::napi(object)]
@@ -128,6 +132,7 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
                 error: Some(e.reason),
                 code,
                 focused_by: None,
+                selected: None,
             });
         }
     };
@@ -147,6 +152,7 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
                 error: Some(e.reason),
                 code: None,
                 focused_by: None,
+                selected: None,
             });
         }
     };
@@ -164,7 +170,12 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
             error: Some("Element is disabled".into()),
             code: Some("ElementDisabled".into()),
             focused_by: None,
+            selected: None,
         });
+    }
+
+    if opts.select == Some(true) {
+        return Ok(select_item(ctx, &elem));
     }
 
     // Try InvokePattern
@@ -178,6 +189,7 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
                     error: Some("InvokePattern not supported by this element".into()),
                     code: Some("PatternNotSupported".into()),
                     focused_by: None,
+                    selected: None,
                 });
             }
         };
@@ -190,6 +202,7 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
                     error: Some("InvokePattern cast failed".into()),
                     code: Some("PatternNotSupported".into()),
                     focused_by: None,
+                    selected: None,
                 });
             }
         };
@@ -209,6 +222,7 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
                 error: None,
                 code: None,
                 focused_by: Some(focused_by.into()),
+                selected: None,
             }),
             Err(e) => {
                 // internal #232 — the call was made, so most failures may still follow a press that happened
@@ -233,9 +247,136 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
                     error: Some(error.into()),
                     code: code.map(Into::into),
                     focused_by: Some(focused_by.into()),
+                    selected: None,
                 })
             }
         }
+    }
+}
+
+/// internal #233 — select a collection item instead of invoking it (`ClickElementOptions::select`).
+///
+/// MEASURED win2 2026-10-13 (internal #233 comments): UI Automation's Invoke on a list item acts as a
+/// double-click — Explorer opens the file, a SysListView32 sends NM_DBLCLK, a Win32 LISTBOX sends
+/// LBN_DBLCLK, a WinForms ListBox fires DoubleClick — and a WinForms ListView's Invoke does nothing yet
+/// reports ok. `SelectionItemPattern.Select` selected on every provider, with no DBLCLK in any case.
+/// But on a raw Win32 LISTBOX it sends no LBN_SELCHANGE, and on a WinForms ListBox the application sees
+/// nothing (SelectedItem and SelectedIndices stay stale, ClearSelected is a no-op). Select followed by
+/// the LBN_SELCHANGE the list's parent would get from a real click (`notify_list_box_selchange`) gave
+/// exactly one SELCHANGE / SelectedIndexChanged and left WinForms' record as a real click leaves it.
+fn select_item(ctx: &UiaContext, elem: &IUIAutomationElement) -> ActionResult {
+    unsafe {
+        let sel: IUIAutomationSelectionItemPattern =
+            match elem.GetCurrentPatternAs(UIA_SelectionItemPatternId) {
+                Ok(p) => p,
+                Err(_) => {
+                    return ActionResult {
+                        ok: false,
+                        element: None,
+                        error: Some("SelectionItemPattern not supported by this element".into()),
+                        code: Some("PatternNotSupported".into()),
+                        focused_by: None,
+                        selected: None,
+                    };
+                }
+            };
+
+        let name = elem.CurrentName().map(|b| b.to_string()).unwrap_or_default();
+        // As on the Invoke road: the focus moves to what is clicked first (`focus_first.rs`).
+        let focused_by = super::focus_first::move_focus_first(ctx, elem);
+
+        if let Err(e) = sel.Select() {
+            // Select is not a press that can open or run the item, so a failure after the call is not
+            // `PRESS_OUTCOME_UNKNOWN`; a timeout still is "may run when the window answers".
+            let error = if super::is_timeout(&e) {
+                super::STOPPED_ANSWERING.to_string()
+            } else {
+                format!("Select failed: {e}")
+            };
+            return ActionResult {
+                ok: false,
+                element: None,
+                error: Some(error),
+                code: None,
+                focused_by: Some(focused_by.into()),
+                selected: None,
+            };
+        }
+
+        if let Some(list) = super::focus_first::list_window_of_item(ctx, elem) {
+            notify_list_box_selchange(list);
+        }
+
+        if !sel.CurrentIsSelected().map(|b| b == true).unwrap_or(false) {
+            return ActionResult {
+                ok: false,
+                element: None,
+                error: Some("The item was not selected".into()),
+                code: Some("SelectNotApplied".into()),
+                focused_by: Some(focused_by.into()),
+                selected: None,
+            };
+        }
+
+        ActionResult {
+            ok: true,
+            element: Some(name),
+            error: None,
+            code: None,
+            focused_by: Some(focused_by.into()),
+            selected: Some(true),
+        }
+    }
+}
+
+/// `LBS_NOTIFY`: the list box tells its parent about selection changes (WinUser.h).
+const LBS_NOTIFY: u32 = 0x0001;
+/// `LBN_SELCHANGE` (WinUser.h).
+const LBN_SELCHANGE: u32 = 1;
+/// How long the list's parent is given to take the notification. The Select before it already went to
+/// the same thread; this keeps a thread that stopped pumping from holding the act's worker with no limit.
+const NOTIFY_MS: u32 = 2_000;
+
+/// internal #233 — send a list box's parent the `WM_COMMAND(LBN_SELCHANGE)` a real click sends, which
+/// `Select` does not (win2 2026-10-13, measured on a raw Win32 LISTBOX and a WinForms ListBox, class
+/// `WindowsForms10.LISTBOX.*`). Only a window whose class contains `LISTBOX` and whose style has
+/// `LBS_NOTIFY`: a list that does not notify sends nothing on a real click either.
+unsafe fn notify_list_box_selchange(list: windows::Win32::Foundation::HWND) {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_STYLE, GetClassNameW, GetDlgCtrlID, GetParent, GetWindowLongW, SMTO_ABORTIFHUNG,
+        SendMessageTimeoutW, WM_COMMAND,
+    };
+    unsafe {
+        let mut buf = [0u16; 256];
+        let len = GetClassNameW(list, &mut buf);
+        if len <= 0 {
+            return;
+        }
+        let class = String::from_utf16_lossy(&buf[..len as usize]);
+        if !class.to_ascii_uppercase().contains("LISTBOX") {
+            return;
+        }
+        let style = GetWindowLongW(list, GWL_STYLE) as u32;
+        if style & LBS_NOTIFY == 0 {
+            return;
+        }
+        let Ok(parent) = GetParent(list) else { return };
+        if parent.0.is_null() {
+            return;
+        }
+        let id = GetDlgCtrlID(list) as u32 & 0xFFFF;
+        let wparam = (id | (LBN_SELCHANGE << 16)) as usize;
+        let mut result: usize = 0;
+        let _ = SendMessageTimeoutW(
+            parent,
+            WM_COMMAND,
+            WPARAM(wparam),
+            LPARAM(list.0 as isize),
+            SMTO_ABORTIFHUNG,
+            NOTIFY_MS,
+            Some(&mut result),
+        );
     }
 }
 
@@ -260,6 +401,7 @@ fn set_value_impl(
                 error: Some(e.reason),
                 code,
                 focused_by: None,
+                selected: None,
             });
         }
     };
@@ -279,6 +421,7 @@ fn set_value_impl(
                 error: Some(e.reason),
                 code: None,
                 focused_by: None,
+                selected: None,
             });
         }
     };
@@ -293,6 +436,7 @@ fn set_value_impl(
                     error: Some("ValuePattern not supported by this element".into()),
                     code: Some("PatternNotSupported".into()),
                     focused_by: None,
+                    selected: None,
                 });
             }
         };
@@ -305,6 +449,7 @@ fn set_value_impl(
                     error: Some("ValuePattern cast failed".into()),
                     code: Some("PatternNotSupported".into()),
                     focused_by: None,
+                    selected: None,
                 });
             }
         };
@@ -322,6 +467,7 @@ fn set_value_impl(
                 error: Some("Element is disabled".into()),
                 code: Some("ElementDisabled".into()),
                 focused_by: None,
+                selected: None,
             });
         }
 
@@ -353,6 +499,7 @@ fn set_value_impl(
                 error: Some("Value is read-only".into()),
                 code: Some("ElementReadOnly".into()),
                 focused_by: None,
+                selected: None,
             });
         }
 
@@ -420,6 +567,7 @@ fn set_value_impl(
                         )),
                         code: Some("ValueNotApplied".into()),
                         focused_by: Some(focused_by.into()),
+                        selected: None,
                     });
                 }
                 // After the read-back, not before it: a focus move that reformats the text would
@@ -443,6 +591,7 @@ fn set_value_impl(
                     error: None,
                     code: None,
                     focused_by: Some(focused_by.into()),
+                    selected: None,
                 })
             }
             // A write that failed on an element that said read-only is named read-only, in words
@@ -453,6 +602,7 @@ fn set_value_impl(
                 error: Some("Value is read-only".into()),
                 code: Some("ElementReadOnly".into()),
                 focused_by: Some(focused_by.into()),
+                selected: None,
             }),
             Err(e) => Ok(ActionResult {
                 ok: false,
@@ -460,6 +610,7 @@ fn set_value_impl(
                 error: Some(failure_text(&e)),
                 code: None,
                 focused_by: Some(focused_by.into()),
+                selected: None,
             }),
         }
     }
@@ -505,6 +656,7 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
                 error: Some(e.reason),
                 code,
                 focused_by: None,
+                selected: None,
             });
         }
     };
@@ -524,6 +676,7 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
                 error: Some(e.reason),
                 code: None,
                 focused_by: None,
+                selected: None,
             });
         }
     };
@@ -536,6 +689,7 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
             error: Some("Element is disabled".into()),
             code: Some("ElementDisabled".into()),
             focused_by: None,
+            selected: None,
         });
     }
 
@@ -560,6 +714,7 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
                     error: Some("TextPattern2 cast failed".into()),
                     code: Some("TextPattern2NotSupported".into()),
                     focused_by: None,
+                    selected: None,
                 })
             }
             Err(_) => Ok(ActionResult {
@@ -568,6 +723,7 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
                 error: Some("TextPattern2 not supported by this element".into()),
                 code: Some("TextPattern2NotSupported".into()),
                 focused_by: None,
+                selected: None,
             }),
         }
     }

@@ -168,6 +168,9 @@ pub struct ActionResult {
     /// `"not_answering"`, `"attach_failed"` or `"failed"` (internal #216). `None` when the act never
     /// got that far.
     pub focused_by: Option<String>,
+    /// internal #233 — `Some(true)` only when a `select` click (`ClickElementOptions::select`) went
+    /// through `SelectionItemPattern.Select` and the item then read as selected; `None` everywhere else.
+    pub selected: Option<bool>,
 }
 
 // ─── Element bounds ──────────────────────────────────────────────────────────

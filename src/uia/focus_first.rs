@@ -170,7 +170,7 @@ unsafe fn is_child(hwnd: HWND) -> bool {
 /// A list item's list, when the list has a window of its own — the shape R17c measured (a WinForms
 /// ListBox). Only ListItem: other items inside a windowed container (tree, grid) were not measured,
 /// and they take UI Automation's own `SetFocus`.
-unsafe fn list_window_of_item(ctx: &UiaContext, elem: &IUIAutomationElement) -> Option<HWND> {
+pub(crate) unsafe fn list_window_of_item(ctx: &UiaContext, elem: &IUIAutomationElement) -> Option<HWND> {
     let is_item = unsafe { elem.CurrentControlType() }
         .map(|t| t.0 == UIA_ListItemControlTypeId.0)
         .unwrap_or(false);

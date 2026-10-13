@@ -33,6 +33,7 @@
     "terminal_send",
     "uia_click",
     "uia_downgrade",
+    "uia_select",
     "uia_set_value",
     "uia_set_value_then_keyboard",
     "window_gone",
@@ -49,6 +50,7 @@
     "coordinate_outside_reachable_bounds",
     "cursor_placement_blocked",
     "entity_not_found",
+    "executor_failed",
     "keyboard_target_unsafe",
     "value_not_applied",
     "window_excluded"
@@ -72,6 +74,7 @@
     "terminal_send",
     "uia_downgrade",
     "uia_invoke",
+    "uia_select",
     "uia_set_value",
     "uia_set_value_failed",
     "unattributable_window",

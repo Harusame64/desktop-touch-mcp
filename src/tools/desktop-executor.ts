@@ -135,6 +135,13 @@ export interface ExecutorDeps {
    */
   /** Resolves with how the focus was moved to the element before the press, when the backend says (internal #216). */
   uiaClick(windowTitle: string, name?: string, automationId?: string, hwnd?: bigint): Promise<{ focusedBy?: string } | void>;
+  /**
+   * internal #233 — UIA SelectionItemPattern: select a collection item (ListItem, DataItem, TreeItem)
+   * where a click lands on one, instead of `uiaClick`'s Invoke, which acts as a double-click on these
+   * items (win2 2026-10-13). `hwnd` as in {@link ExecutorDeps.uiaClick}. Throws on failure, with the
+   * engine's code on the error as `uiaCode` (`PatternNotSupported`, `SelectNotApplied`).
+   */
+  uiaSelect(windowTitle: string, name?: string, automationId?: string, controlType?: string, hwnd?: bigint): Promise<{ focusedBy?: string } | void>;
   /** UIA ValuePattern: type text into a textbox. `hwnd` as in {@link ExecutorDeps.uiaClick}. */
   uiaSetValue(windowTitle: string, value: string, name?: string, automationId?: string, hwnd?: bigint): Promise<{ focusedBy?: string } | void>;
   /** CDP: click a DOM element by CSS selector. */
@@ -2295,6 +2302,86 @@ export class NoTextRouteError extends Error implements CallerFacingRefusal {
  * paragraph) and the envelope cuts `detail` at 1000 characters, so an uncut label could push out the
  * class the sentence exists to name, and the caller would read "no class" (2ゲート目, round 3 on #622).
  */
+/**
+ * internal #233 — the UIA control types a click selects rather than invokes (`selectCollectionItem`).
+ * MenuItem and TabItem are not here: neither was measured, and a tab's Invoke is not a double-click.
+ */
+const COLLECTION_ITEM_CONTROL_TYPES = ["ListItem", "DataItem", "TreeItem"] as const;
+
+/**
+ * internal #233 — a click on a collection item, as a select (`ExecutorDeps.uiaSelect`). Every failure
+ * ends here as a refusal: the two refusals the window has always had (`window_excluded`,
+ * `aim_window_gone`) keep their own types, and the rest are {@link CollectionItemSelectRefusedError}.
+ */
+async function selectCollectionItem(
+  d: ExecutorDeps,
+  entity: UiEntity,
+  winTitle: string,
+  name: string | undefined,
+  automationId: string | undefined,
+  aimHwnd: bigint | undefined,
+  addressed: ReturnType<typeof uiaAddressAxes>,
+): Promise<ExecutorKind> {
+  try {
+    const selected = await d.uiaSelect(winTitle, name, automationId, entity.controlType, aimHwnd);
+    probeRoute("uia", aimHwnd, entity, { why: "uia_select", focusedBy: selected?.focusedBy ?? null, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
+    return "uia";
+  } catch (err) {
+    if (err instanceof WindowExcludedError) {
+      probeRefusal("uia_select", "window_excluded", aimHwnd, entity, { addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
+      throw err;
+    }
+    if (err instanceof AimedWindowGoneError) {
+      probeRefusal("uia_select", "aim_window_gone", aimHwnd, entity, { addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
+      throw err;
+    }
+    const code = (err as { uiaCode?: unknown } | null)?.uiaCode;
+    const kind = code === "PatternNotSupported" ? "only_invoke" : code === "SelectNotApplied" ? "not_selected" : "failed";
+    const routeFailure = kind === "failed" ? classifyUiaRouteFailure(err) : undefined;
+    probeRefusal("uia_select", "executor_failed", aimHwnd, entity, { selectRefused: kind, routeFailure: routeFailure ?? null, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
+    throw new CollectionItemSelectRefusedError(entity, kind, routeFailure, { cause: err });
+  }
+}
+
+/**
+ * internal #233 — a click on a collection item that could not be made as a select. Nothing is pressed
+ * instead: Invoke and a coordinate click are both presses this road exists not to make. `executor_failed`,
+ * with this sentence as its `detail`.
+ *   - `only_invoke` — the item has no SelectionItemPattern, so the only UIA press is Invoke, which
+ *     opens or runs it. Refused before any route ran.
+ *   - `not_selected` — Select was taken and the item did not read as selected afterwards.
+ *   - `failed` — the select call failed (the item gone, the window not answering, the engine missing).
+ */
+export class CollectionItemSelectRefusedError extends Error implements CallerFacingRefusal {
+  readonly callerDetail: string;
+  /** Set for `only_invoke` only: refused before any route ran (internal #242). */
+  readonly noRouteTried?: true;
+  constructor(
+    entity: UiEntity,
+    readonly kind: "only_invoke" | "not_selected" | "failed",
+    routeFailure: ReturnType<typeof classifyUiaRouteFailure>,
+    options?: ErrorOptions,
+  ) {
+    super(`not clicking "${entity.label ?? entity.entityId}" (${entity.controlType ?? "item"}): its select ${kind === "only_invoke" ? "is not offered" : kind === "not_selected" ? "did not take" : "failed"}`, options);
+    this.name = "CollectionItemSelectRefusedError";
+    const label = quotedLabel(entity);
+    const invoke = `If opening or running it is what you want, use desktop_act(action:'invoke').`;
+    if (kind === "only_invoke") {
+      this.noRouteTried = true;
+      this.callerDetail =
+        `Nothing was pressed: "${label}" cannot be selected through UI Automation, and a click on it would open or run it. ${invoke}`;
+    } else if (kind === "not_selected") {
+      this.callerDetail =
+        `Nothing changed: UI Automation took the select for "${label}", but the item did not become selected, and it was not pressed instead. ${invoke}`;
+    } else {
+      this.callerDetail =
+        `Selecting "${label}" through UI Automation failed` +
+        (routeFailure !== undefined ? ` because ${describeUiaRouteFailure(routeFailure)}` : "") +
+        `, and the act was not finished as a press. ${invoke}`;
+    }
+  }
+}
+
 function quotedLabel(entity: UiEntity): string {
   const label = entity.label ?? entity.entityId;
   return label.length > 200 ? `${label.slice(0, 200)}…` : label;
@@ -2850,6 +2937,18 @@ export function createDesktopExecutor(
           }
         }
       }
+      // internal #233 — a click on a collection item selects it; it does not Invoke it. MEASURED win2
+      // 2026-10-13 (internal #233 comments): UI Automation's Invoke on a ListItem acts as a double-click
+      // (Explorer opened the file; SysListView32 NM_DBLCLK, Win32 LISTBOX LBN_DBLCLK, WinForms ListBox
+      // DoubleClick), and on a WinForms ListView it did nothing and reported ok. SelectionItem.Select
+      // selected on every provider, with no DBLCLK in any case. The user's decision: a click selects;
+      // opening or running the item is `action:"invoke"`, which keeps the Invoke below.
+      //
+      // No rung after it. The mouse downgrade is a real click on the item — the very press this is
+      // about — so a select that cannot be made is refused, on both roads, and nothing is pressed.
+      if (action === "click" && entity.controlType !== undefined && (COLLECTION_ITEM_CONTROL_TYPES as readonly string[]).includes(entity.controlType)) {
+        return await selectCollectionItem(d, entity, winTitle, name, automationId, aimHwnd, addressed);
+      }
       try {
         const pressed = await d.uiaClick(winTitle, name, automationId, aimHwnd);
         probeRoute("uia", aimHwnd, entity, { why: "uia_invoke", focusedBy: pressed?.focusedBy ?? null, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
@@ -3294,6 +3393,17 @@ function getSharedRealDeps(): ExecutorDeps {
       // Which client answered, carried on the error: item 16 believes a "not found" only from the
       // native client, about an entity the native client read.
       if (!r.ok) throw Object.assign(new Error(r.error ?? "UIA click failed"), { uiaVia: r.via });
+      return r.focusedBy !== undefined ? { focusedBy: r.focusedBy } : undefined;
+    },
+
+    async uiaSelect(windowTitle, name, automationId, controlType, hwnd) {
+      // internal #233 — native only: `selectElement` throws without the engine, and never Invokes instead.
+      const { selectElement } = await import("../engine/uia-bridge.js");
+      const r = await selectElement(windowTitle, name, automationId, controlType, hwnd !== undefined ? { hwnd } : undefined);
+      if (!r.ok && r.code === AIM_WINDOW_GONE) throw new AimedWindowGoneError(hwnd, r.error);
+      // The engine's code rides on the error, so the executor can tell "this item has only Invoke"
+      // and "the item did not become selected" from a select that failed.
+      if (!r.ok) throw Object.assign(new Error(r.error ?? "UIA select failed"), { uiaVia: r.via, uiaCode: r.code });
       return r.focusedBy !== undefined ? { focusedBy: r.focusedBy } : undefined;
     },
 

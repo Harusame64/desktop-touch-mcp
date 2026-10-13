@@ -348,6 +348,8 @@ export interface NativeUia {
     hwnd?: string;
       /** internal #216 — through the classic client (`src/engine/uia-client-scope.ts`). */
     classic?: boolean;
+    /** internal #233 — `SelectionItemPattern.Select` instead of Invoke (`uia-bridge.ts::selectElement`). */
+    select?: boolean;
   }): Promise<NativeActionResult>;
   uiaSetValue?(opts: {
     windowTitle: string;

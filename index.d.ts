@@ -116,6 +116,7 @@ export interface NativeActionResult {
   error?: string | null
   code?: string | null
   focusedBy?: string | null
+  selected?: boolean | null
 }
 
 // ─── Element bounds ──────────────────────────────────────────────────────────
@@ -448,7 +449,7 @@ export declare function uiaEngineEvidence(): NativeUiaEvidence
 /** internal #216 — whether a `uiaClient: "classic"` call is still running on its thread. */
 export declare function uiaClassicInUse(): boolean
 
-export declare function uiaClickElement(opts: { windowTitle: string; name?: string; automationId?: string; controlType?: string; hwnd?: string; classic?: boolean }): Promise<NativeActionResult>
+export declare function uiaClickElement(opts: { windowTitle: string; name?: string; automationId?: string; controlType?: string; hwnd?: string; classic?: boolean; select?: boolean }): Promise<NativeActionResult>
 export declare function uiaSetValue(opts: { windowTitle: string; value: string; name?: string; automationId?: string; hwnd?: string; classic?: boolean }): Promise<NativeActionResult>
 export declare function uiaInsertText(opts: { windowTitle: string; value: string; name?: string; automationId?: string; hwnd?: string }): Promise<NativeActionResult>
 export declare function uiaGetElementBounds(opts: { windowTitle: string; name?: string; automationId?: string; controlType?: string }): Promise<NativeElementBounds | null>
