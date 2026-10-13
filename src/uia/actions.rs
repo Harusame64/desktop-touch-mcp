@@ -797,14 +797,16 @@ fn find_value_target(
     let exact = opts.exact_name == Some(true);
     let name = opts.name.as_deref().filter(|n| !n.is_empty());
     let control_type = opts.control_type.as_deref().filter(|c| !c.is_empty());
+    let automation_id = opts.automation_id.as_deref().filter(|a| !a.is_empty());
     if let Some(h) = opts.element_hwnd.as_deref()
-        && let Some(elem) = element_at_own_handle(ctx, window, h, name, control_type, exact)
+        && let Some(elem) = element_at_own_handle(ctx, window, h, name, automation_id, control_type, exact)
     {
         return Ok(elem);
     }
-    let automation_id = opts.automation_id.as_deref().filter(|a| !a.is_empty());
     if let (true, None, Some(name), Some(control_type)) = (exact, automation_id, name, control_type) {
-        let found = collect_among_descendants(ctx, window, EXACT_MATCH_LIMIT, |elem| {
+        // Every exact match, not the first few: a form of repeated rows can hold more, and the one the
+        // rect names can come late in the walk (PR 側 codex, P2 on `6e7a3d9d`).
+        let found = collect_among_descendants(ctx, window, usize::MAX, |elem| {
             exact_match(elem, name, control_type)
         })?;
         if found.len() == 1 {
@@ -818,17 +820,17 @@ fn find_value_target(
     find_element_in_window(ctx, window, opts.name.as_deref(), opts.automation_id.as_deref(), None)
 }
 
-/// How many exact matches are read before the search stops; more than one already needs the rect.
-const EXACT_MATCH_LIMIT: usize = 8;
-
 /// The element at `hwnd`, when it is still the one discovered: same name (exact or contained, as the
-/// search would compare it), same type when one was given, and inside `window`. `None` for anything
-/// that cannot be read, so the search runs instead.
+/// search would compare it), same AutomationId and type when they were given, and inside `window`.
+/// `None` for anything that cannot be read, so the search runs instead. The AutomationId is checked
+/// because a recreated handle can be reused by a sibling, and the search would have found the element
+/// by its id (PR 側 codex, P1 on `6e7a3d9d`).
 fn element_at_own_handle(
     ctx: &UiaContext,
     window: &IUIAutomationElement,
     hwnd: &str,
     name: Option<&str>,
+    automation_id: Option<&str>,
     control_type: Option<&str>,
     exact: bool,
 ) -> Option<IUIAutomationElement> {
@@ -852,12 +854,16 @@ fn element_at_own_handle(
             Some(n) => read.to_lowercase().contains(&n.to_lowercase()),
             None => true,
         };
+        let id_ok = match automation_id {
+            Some(a) => elem.CachedAutomationId().is_ok_and(|id| id == a),
+            None => true,
+        };
         let type_ok = match control_type {
             Some(c) => super::cached_control_type(&elem)
                 .is_ok_and(|id| super::control_type_name(id).eq_ignore_ascii_case(c)),
             None => true,
         };
-        (name_ok && type_ok).then_some(elem)
+        (name_ok && id_ok && type_ok).then_some(elem)
     }
 }
 
