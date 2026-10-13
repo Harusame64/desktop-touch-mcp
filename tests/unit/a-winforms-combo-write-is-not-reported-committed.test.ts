@@ -35,6 +35,8 @@ function entity(controlType: string, hwnd: bigint): UiEntity {
     locator: { uia: { name: "A17 Combo", automationId: "", via: "native", nativeWindowHandle: hwnd.toString(), nativeWindowHandleRead: "value" } },
     affordances: [{ verb: "type", executors: ["uia", "keyboard"], confidence: 0.9, preconditions: [], postconditions: [] }],
     generation: "gen-1", evidenceDigest: "d", rect: { x: 300, y: 300, width: 200, height: 20 }, controlType,
+    // What the registry gives a ValuePattern element (`registry.ts`): UIA first, the keyboard second.
+    preferredExecutors: ["uia", "keyboard"],
     origin: { kind: "window", id: "FX238", hwnd: FORM.toString() },
   };
 }
@@ -112,7 +114,7 @@ describe("a WinForms editable combo box", () => {
       execute: (ent, a, t) => exec(ent, a, t),
       resolvePostTouchEntities: async () => [e],
     }).touch({ lease, action: "setValue", text: "M1 typed" });
-    expect(result).toMatchObject({ ok: false, reason: "executor_failed" });
+    expect(result).toMatchObject({ ok: false, reason: "executor_failed", noRouteTried: true });
     expect((result as { detail?: string }).detail).toMatch(/UI Automation can change its text without the application seeing the change/);
   });
 });
@@ -148,6 +150,16 @@ describe("CONTROL: what keeps the write it had", () => {
 
   it("style bits that cannot be read: not this control", async () => {
     const d = deps({ comboWindowFacts: facts({ [COMBO.toString()]: { className: WF_COMBO_CLASS, style: null, parent: FORM } }) });
+    await written(d, entity("ComboBox", COMBO));
+  });
+
+  it("an Edit whose parent cannot be read: not this control", async () => {
+    const d = deps({ comboWindowFacts: facts({ [INNER_EDIT.toString()]: { className: "Edit", style: WS_CHILD_VISIBLE, parent: COMBO } }) });
+    await written(d, entity("Edit", INNER_EDIT));
+  });
+
+  it("a class that only CONTAINS the WinForms name is not it — the match is anchored", async () => {
+    const d = deps({ comboWindowFacts: facts(comboAs(CBS_DROPDOWN, "MyApp.WindowsForms10.COMBOBOX.app.0.1")) });
     await written(d, entity("ComboBox", COMBO));
   });
 
