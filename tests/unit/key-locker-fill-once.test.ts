@@ -373,8 +373,8 @@ describe("fill_once accepts OpenSSH's key-unlock prompts (internal #280)", () =>
   const accepted = [
     "Enter passphrase for key 'owner\\.ssh\\ssh_key':",
     "Enter passphrase for key 'C:\\Users\\a/.ssh/id_ed25519': ",
-    "Enter passphrase for /home/a/.ssh/id_rsa:", // ssh-add
-    "Enter PIN for ED25519-SK key /home/a/.ssh/id_ed25519_sk:", // FIDO
+    "Enter passphrase for /home/a/.ssh/id_rsa:", // the ssh-add shape (its own gate declines ssh-add)
+    "Enter PIN for ED25519-SK key /home/a/.ssh/id_ed25519_sk:", // a security key
   ];
   const declined = [
     "Enter passphrase for key 'x'", // no colon: not waiting for input

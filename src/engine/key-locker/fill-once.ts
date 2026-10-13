@@ -95,8 +95,9 @@ export type FillOnceOutcome = (
 
 /** The prompt forms `fill_once` accepts BEYOND the loop's classifier (`readPromptTail`'s password /
  *  passphrase / sudo patterns): OpenSSH's key-unlock prompts, which name the key AFTER the word —
- *  `Enter passphrase for key 'C:\Users\a\.ssh\id_ed25519':` (ssh), `Enter passphrase for /home/a/.ssh/id_rsa:`
- *  (ssh-add), `Enter PIN for ED25519-SK key /x:` (FIDO). internal#280: they declined `not_at_prompt`.
+ *  `Enter passphrase for key 'C:\Users\a\.ssh\id_ed25519':` and, for a security key, `Enter PIN for
+ *  ED25519-SK key /x:`. internal#280: they declined `not_at_prompt`. (`ssh-add` asks in the same shape but is
+ *  not a credential program, so `no_credential_program` still declines it.)
  *  Only here, not in the capture loop: the loop fills a stored HOST password, and writing that into a KEY
  *  passphrase prompt would be the wrong secret (and its capture would bind a passphrase to the host).
  *  Here the user types the secret for the prompt they see. Anchored at the line start and the final colon;
