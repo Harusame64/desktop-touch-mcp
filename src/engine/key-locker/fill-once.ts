@@ -106,9 +106,10 @@ export type FillOnceOutcome = (
  *  Here the user types the secret for the prompt they see. Anchored at the prompt's start and the final
  *  colon; the credential-program and echo-off gates still apply.
  *
- *  A long key path soft-wraps, and the terminal's text read breaks the row there (PR #812 codex P2), so the
- *  cursor row alone can be just `id_ed25519':`. So the cursor row and the rows directly above it (up to
- *  KEY_UNLOCK_MAX_ROWS) are joined with all whitespace removed (a wrap may fall on a space, and the read may
+ *  A long key path soft-wraps. Classic conhost's read keeps a logical line whole (padded to a multiple of the
+ *  width — measured on win2, PR #812), so its cursor row already matches; Windows Terminal's read is said to
+ *  break the row at the wrap (PR #812 codex P2; not measured — no wt on the rig), leaving `id_ed25519':`.
+ *  So the cursor row and the rows directly above it (up to KEY_UNLOCK_MAX_ROWS) are joined with all whitespace removed (a wrap may fall on a space, and the read may
  *  pad or trim it). A match still has to START a row with `Enter` and END the cursor row with the colon.
  *  Joined rows only take ssh's own quoted form `Enter passphrase for key '<path>':` with no quote inside the
  *  path: `.+` across rows would also span an ANSWERED prompt, its output and a later row ending in `:`. */
