@@ -331,6 +331,11 @@ export type TouchResult =
        * Absent when a route ran, or when the throw did not say.
        */
       noRouteTried?: true;
+      /**
+       * internal #233 — on `executor_failed` only: the refusal's advice class, chosen by its class
+       * (`adviceClass` on the error). Read by `desktop-register.ts` to choose the advice; not published.
+       */
+      adviceClass?: "collection_item_select";
     };
 
 /**
@@ -941,12 +946,17 @@ export class GuardedTouchLoop {
       // internal #242 — a refusal made before any route ran says so (`noRouteTried` on the class,
       // same opt-in as `callerDetail`), so the advice does not tell the caller routes were tried.
       const noRouteTried = (err as { noRouteTried?: unknown } | null)?.noRouteTried === true;
+      // internal #233 — a refusal whose advice is its own (`adviceClass` on the class, the same opt-in).
+      const adviceClass = (err as { adviceClass?: unknown } | null)?.adviceClass === "collection_item_select"
+        ? ("collection_item_select" as const)
+        : undefined;
       return {
         ok: false,
         reason: "executor_failed",
         diff: [],
         ...(detail !== undefined && { detail }),
         ...(noRouteTried && { noRouteTried: true as const }),
+        ...(adviceClass !== undefined && { adviceClass }),
       };
     }
     // Issue #327 item C: normalise bare-kind / rich-outcome return shapes so

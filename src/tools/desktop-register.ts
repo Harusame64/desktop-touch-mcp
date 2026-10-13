@@ -900,7 +900,7 @@ export const desktopTouchSchema = {
   lease:  leaseSchema.describe("Lease returned by desktop_discover. Expires after TTL; re-call desktop_discover if desktop_act fails with lease_expired."),
   action: z.enum(["auto", "invoke", "click", "type", "setValue", "select"]).optional().describe(
     "NOTE: action='select' is REFUSED on every target (action_not_offered) — nothing here offers it and no road performs it; click the item instead. " +
-    "A click on a list, tree or grid item selects it; action='invoke' opens or runs it. " +
+    "A click on a list, tree or grid item read through UI Automation (outside a browser page) selects it, as a single click does; action='invoke' opens or runs it. " +
     "type/setValue on a button, check box, radio button, hyperlink or menu item (as UI Automation reports it) is refused the same way. " +
     "Action to perform. 'auto' selects the best affordance from the entity. " +
     "'setValue' (Phase 4: absorbs former set_element_value) sets a UIA ValuePattern value or fills a CDP controlled input — pass the new value via text. " +
@@ -1288,7 +1288,7 @@ const desktopActRawHandlerInner = async (
       {
         optIn: false,
         detail: result.detail,
-        tryNext: executorFailedAdviceFor(input.action, result.noRouteTried === true).map((action) => ({ action })),
+        tryNext: executorFailedAdviceFor(input.action, result.noRouteTried === true, result.adviceClass).map((action) => ({ action })),
       },
     );
     return {
@@ -1496,7 +1496,7 @@ const desktopActRawHandlerInner = async (
     const failure = toFailureEnvelope(
       Err(new ActionNotOfferedError(
         "ActionNotOffered: the target does not offer this action, and nothing was done. " +
-        "Ask for the action you mean — desktop_act(action='click') or action='invoke' presses it"
+        "Ask for the action you mean — desktop_act(action='click') presses it (a list, tree or grid item read through UI Automation, it selects), and action='invoke' invokes it"
       )),
       { optIn: false, detail: result.detail },
     );
@@ -2211,7 +2211,7 @@ export function registerDesktopTools(server: McpServer): void {
       "  keyboard_target_unsafe → the background write would not have reached the field this act named (the focus is on a different control or in a different window, the receiving control does not take typed text, or the field — or its window — is disabled); nothing was typed. if_unexpected.detail names which. For disabled, answer or wait out whatever disabled it, then re-call desktop_discover — it does not list a disabled field, so missing there means still disabled; clicking it does not help. For read_only on the field you named, that field does not take text — typing again will not change it; name the field that does. Otherwise put the focus on the field you named, then type again — if_unexpected.detail names the way back for the road this act took: on a window named by title, desktop_act(action='click') on the same entity does it; on a window named by handle no route here focuses a text field yet, so re-call desktop_discover by the window's title and click it from there (a common dialog's title resolves to a handle too, so that road does not open there). For other_window, V1 focus_window on the field's window first — it comes forward with the focus it last had, and a window over the field makes a click answer aim_occluded — do NOT type through the foreground instead;",
       "  foreground_not_allowed → typing into Windows Terminal needs the foreground, and it was not allowed (declined, dismissed, unanswered, cannot ask; the terminal in front, split, not a terminal tab, on another desktop, changed or unreadable; text or title that cannot be shown in full; or the paste failed); if_unexpected.detail says which, and whether anything was typed. Do NOT type into it another way after a no;",
       "  aim_blocked_by_excluded_window → a window this server may not act through is over the point, so nothing was done; the window you named is NOT the excluded one and is still actionable. Use V1 click_element, which does not use coordinates, or retry once the point is clear — do NOT retry by coordinate, and note that nothing in the response describes the window in the way;",
-      "  action_not_offered → the target does not offer this action and NOTHING WAS DONE — no road was taken, so it is not a failed executor. Ask for what you mean: action='click' / 'invoke' presses it; the entity's affordances say which actions it offers. No provider advertises 'select', so a select on any target is this refusal. A type or setValue on a control UI Automation reports as a button, check box, radio button, hyperlink or menu item is this refusal too: none of them takes text, and nothing was typed;",
+      "  action_not_offered → the target does not offer this action and NOTHING WAS DONE — no road was taken, so it is not a failed executor. Ask for what you mean: action='click' presses it (a list, tree or grid item read through UI Automation, it selects) and 'invoke' invokes it; the entity's affordances say which actions it offers. No provider advertises 'select', so a select on any target is this refusal. A type or setValue on a control UI Automation reports as a button, check box, radio button, hyperlink or menu item is this refusal too: none of them takes text, and nothing was typed;",
       "  value_not_applied → the write was accepted and nothing read back changed: a type or setValue through the native UI Automation client to a control that is not a text field (not Edit or Document) whose value read back unchanged for a moment after the write (nothing else was tried), or a type into Word's body after which the visible page text read back unchanged (it may have landed out of view). Do not retry it or type into the same control another way (on a WinForms NumericUpDown a keystroke landed at its caret); look at the field or document, or re-call desktop_discover, before writing again;",
       "  window_excluded → this window is excluded from every tool surface of this server (the key locker's own windows are); nothing was clicked and no route here can click it. Act on another window;",
       "  executor_failed → when if_unexpected.detail begins 'Nothing was typed' or 'Nothing was pressed', nothing was typed or pressed: do what detail says. Otherwise the road this act took failed: for a click or invoke fall back to V1 tools (click_element / mouse_click / browser_click); for a type or setValue, focus the field and use V1 keyboard(action='type', method='foreground'). if_unexpected.try_next carries the lines for this act;",

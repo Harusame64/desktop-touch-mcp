@@ -185,6 +185,7 @@ export interface NativeActionResult {
   code?: string | null
   focusedBy?: string | null
   selected?: boolean | null
+  notified?: boolean | null
 }
 
 export interface NativeElementBounds {

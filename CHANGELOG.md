@@ -13,10 +13,13 @@
 ### Changed — Windows
 - **A `desktop_act` click on a list, tree or grid item now selects it.** To open or run the item, use
   `action:"invoke"`. Before, the click went through UI Automation's Invoke, which acts as a double-click
-  on these items: Explorer opened the file, and list boxes reported a double-click. A WinForms list view's
-  Invoke did nothing, yet answered `ok:true`. A Win32 or WinForms list box is told of the new selection
-  the way a real click tells it. An item that cannot be selected this way is refused with
-  `executor_failed`, and nothing is pressed. Buttons and other controls, and `click_element`, are unchanged.
+  on list items: Explorer opened the file, and list boxes reported a double-click. A WinForms list view's
+  Invoke did nothing, yet answered `ok:true`; a WinForms DataGridView cell's Invoke started editing it. A
+  list item is now selected through UI Automation, and a Win32 or WinForms list box is told of the new
+  selection the way a real click tells it. A tree item, and an item UI Automation cannot select (a
+  DataGridView cell), are clicked with a single mouse click instead; on a window named by handle that
+  click is refused, and nothing is pressed. Items in a browser page are unchanged, and so are buttons,
+  other controls and `click_element`.
 
 ## [2.3.1] - 2026-10-13 — ssh key passphrases in fill_once, a key locker that exits with the server, and two false successes refused
 

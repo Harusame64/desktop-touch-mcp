@@ -171,6 +171,9 @@ pub struct ActionResult {
     /// internal #233 — `Some(true)` only when a `select` click (`ClickElementOptions::select`) went
     /// through `SelectionItemPattern.Select` and the item then read as selected; `None` everywhere else.
     pub selected: Option<bool>,
+    /// internal #233 — on a `select` that took, in a Win32 or WinForms list box that notifies: whether
+    /// the `LBN_SELCHANGE` its parent gets from a real click was delivered. `None` when none was due.
+    pub notified: Option<bool>,
 }
 
 // ─── Element bounds ──────────────────────────────────────────────────────────

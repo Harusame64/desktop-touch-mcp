@@ -133,6 +133,7 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
                 code,
                 focused_by: None,
                 selected: None,
+                notified: None,
             });
         }
     };
@@ -153,6 +154,7 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
                 code: None,
                 focused_by: None,
                 selected: None,
+                notified: None,
             });
         }
     };
@@ -171,11 +173,19 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
             code: Some("ElementDisabled".into()),
             focused_by: None,
             selected: None,
+            notified: None,
         });
     }
 
+    // internal #233 — Chromium's content keeps the Invoke below, as before: there Invoke on a list
+    // option SELECTS it (`change`, no dblclick; win2 2026-10-13, a `<select size=5>`), and a plain `<li>`
+    // with Invoke and no SelectionItem would otherwise be left with no road. The framework is read here
+    // because the server's entities do not carry it.
     if opts.select == Some(true) {
-        return Ok(select_item(ctx, &elem));
+        let framework = unsafe { elem.CurrentFrameworkId() }.map(|b| b.to_string()).unwrap_or_default();
+        if framework != "Chrome" {
+            return Ok(select_item(ctx, &elem));
+        }
     }
 
     // Try InvokePattern
@@ -190,6 +200,7 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
                     code: Some("PatternNotSupported".into()),
                     focused_by: None,
                     selected: None,
+                    notified: None,
                 });
             }
         };
@@ -203,6 +214,7 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
                     code: Some("PatternNotSupported".into()),
                     focused_by: None,
                     selected: None,
+                    notified: None,
                 });
             }
         };
@@ -223,6 +235,7 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
                 code: None,
                 focused_by: Some(focused_by.into()),
                 selected: None,
+                notified: None,
             }),
             Err(e) => {
                 // internal #232 — the call was made, so most failures may still follow a press that happened
@@ -248,6 +261,7 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
                     code: code.map(Into::into),
                     focused_by: Some(focused_by.into()),
                     selected: None,
+                    notified: None,
                 })
             }
         }
@@ -264,8 +278,25 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
 /// nothing (SelectedItem and SelectedIndices stay stale, ClearSelected is a no-op). Select followed by
 /// the LBN_SELCHANGE the list's parent would get from a real click (`notify_list_box_selchange`) gave
 /// exactly one SELCHANGE / SelectedIndexChanged and left WinForms' record as a real click leaves it.
+///
+/// A tree item is not selected this way (`MOUSE_CLICK_NEEDED`): MEASURED win2 2026-10-13 on raw
+/// SysTreeView32, WinForms 4.8 and .NET 10, Select on a tree with nothing selected focuses the tree
+/// first, the tree selects its first node, and the application gets TWO selection changes; a real
+/// single click gives one, to the target, 3/3. Nothing is done here, and the server clicks it.
 fn select_item(ctx: &UiaContext, elem: &IUIAutomationElement) -> ActionResult {
     unsafe {
+        let is_tree_item = elem.CurrentControlType().map(|t| t.0 == UIA_TreeItemControlTypeId.0).unwrap_or(false);
+        if is_tree_item {
+            return ActionResult {
+                ok: false,
+                element: None,
+                error: Some("This item is selected with a single mouse click".into()),
+                code: Some(MOUSE_CLICK_NEEDED.into()),
+                focused_by: None,
+                selected: None,
+                notified: None,
+            };
+        }
         let sel: IUIAutomationSelectionItemPattern =
             match elem.GetCurrentPatternAs(UIA_SelectionItemPatternId) {
                 Ok(p) => p,
@@ -277,6 +308,7 @@ fn select_item(ctx: &UiaContext, elem: &IUIAutomationElement) -> ActionResult {
                         code: Some("PatternNotSupported".into()),
                         focused_by: None,
                         selected: None,
+                        notified: None,
                     };
                 }
             };
@@ -300,6 +332,7 @@ fn select_item(ctx: &UiaContext, elem: &IUIAutomationElement) -> ActionResult {
                 code: None,
                 focused_by: Some(focused_by.into()),
                 selected: None,
+                notified: None,
             };
         }
 
@@ -311,14 +344,13 @@ fn select_item(ctx: &UiaContext, elem: &IUIAutomationElement) -> ActionResult {
                 code: Some("SelectNotApplied".into()),
                 focused_by: Some(focused_by.into()),
                 selected: None,
+                notified: None,
             };
         }
 
         // Only once the select has taken: a list told "the selection changed" when it did not would act
         // on a selection the user never made.
-        if let Some(list) = super::focus_first::list_window_of_item(ctx, elem) {
-            notify_list_box_selchange(list);
-        }
+        let notified = super::focus_first::list_window_of_item(ctx, elem).and_then(|list| notify_list_box_selchange(list));
 
         ActionResult {
             ok: true,
@@ -327,9 +359,13 @@ fn select_item(ctx: &UiaContext, elem: &IUIAutomationElement) -> ActionResult {
             code: None,
             focused_by: Some(focused_by.into()),
             selected: Some(true),
+            notified,
         }
     }
 }
+
+/// The code `select_item` answers for an item the server clicks with a single mouse click instead.
+const MOUSE_CLICK_NEEDED: &str = "MouseClickNeeded";
 
 /// `LBS_NOTIFY`: the list box tells its parent about selection changes (WinUser.h).
 const LBS_NOTIFY: u32 = 0x0001;
@@ -341,9 +377,10 @@ const NOTIFY_MS: u32 = 2_000;
 
 /// internal #233 — send a list box's parent the `WM_COMMAND(LBN_SELCHANGE)` a real click sends, which
 /// `Select` does not (win2 2026-10-13, measured on a raw Win32 LISTBOX and a WinForms ListBox, class
-/// `WindowsForms10.LISTBOX.*`). Only a window whose class contains `LISTBOX` and whose style has
-/// `LBS_NOTIFY`: a list that does not notify sends nothing on a real click either.
-unsafe fn notify_list_box_selchange(list: windows::Win32::Foundation::HWND) {
+/// `WindowsForms10.LISTBOX.*`). Only those two classes — `ListBox`, or the `WindowsForms10.LISTBOX.`
+/// prefix, either case — and only with `LBS_NOTIFY`: a list that does not notify sends nothing on a
+/// real click either. `None` when no notification was due, `Some(false)` when it could not be delivered.
+unsafe fn notify_list_box_selchange(list: windows::Win32::Foundation::HWND) -> Option<bool> {
     use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
         GWL_STYLE, GetClassNameW, GetDlgCtrlID, GetParent, GetWindowLongW, SMTO_ABORTIFHUNG,
@@ -353,24 +390,27 @@ unsafe fn notify_list_box_selchange(list: windows::Win32::Foundation::HWND) {
         let mut buf = [0u16; 256];
         let len = GetClassNameW(list, &mut buf);
         if len <= 0 {
-            return;
+            return None;
         }
         let class = String::from_utf16_lossy(&buf[..len as usize]);
-        if !class.to_ascii_uppercase().contains("LISTBOX") {
-            return;
+        if !is_list_box_class(&class) {
+            return None;
         }
         let style = GetWindowLongW(list, GWL_STYLE) as u32;
         if style & LBS_NOTIFY == 0 {
-            return;
+            return None;
         }
-        let Ok(parent) = GetParent(list) else { return };
-        if parent.0.is_null() {
-            return;
-        }
+        let parent = match GetParent(list) {
+            Ok(p) if !p.0.is_null() => p,
+            _ => {
+                eprintln!("[uia] LBN_SELCHANGE not sent: the list box has no parent");
+                return Some(false);
+            }
+        };
         let id = GetDlgCtrlID(list) as u32 & 0xFFFF;
         let wparam = (id | (LBN_SELCHANGE << 16)) as usize;
         let mut result: usize = 0;
-        let _ = SendMessageTimeoutW(
+        let sent = SendMessageTimeoutW(
             parent,
             WM_COMMAND,
             WPARAM(wparam),
@@ -379,7 +419,18 @@ unsafe fn notify_list_box_selchange(list: windows::Win32::Foundation::HWND) {
             NOTIFY_MS,
             Some(&mut result),
         );
+        if sent.0 == 0 {
+            eprintln!("[uia] LBN_SELCHANGE to the list box's parent failed or timed out");
+            return Some(false);
+        }
+        Some(true)
     }
+}
+
+/// A raw Win32 list box (`ListBox`) or a WinForms one (`WindowsForms10.LISTBOX.app…`), in either case.
+fn is_list_box_class(class: &str) -> bool {
+    class.eq_ignore_ascii_case("ListBox")
+        || class.get(..23).is_some_and(|p| p.eq_ignore_ascii_case("WindowsForms10.LISTBOX."))
 }
 
 /// A pattern call's failure in words: the backend's own, except a timeout, which is this crate's
@@ -404,6 +455,7 @@ fn set_value_impl(
                 code,
                 focused_by: None,
                 selected: None,
+                notified: None,
             });
         }
     };
@@ -424,6 +476,7 @@ fn set_value_impl(
                 code: None,
                 focused_by: None,
                 selected: None,
+                notified: None,
             });
         }
     };
@@ -439,6 +492,7 @@ fn set_value_impl(
                     code: Some("PatternNotSupported".into()),
                     focused_by: None,
                     selected: None,
+                    notified: None,
                 });
             }
         };
@@ -452,6 +506,7 @@ fn set_value_impl(
                     code: Some("PatternNotSupported".into()),
                     focused_by: None,
                     selected: None,
+                    notified: None,
                 });
             }
         };
@@ -470,6 +525,7 @@ fn set_value_impl(
                 code: Some("ElementDisabled".into()),
                 focused_by: None,
                 selected: None,
+                notified: None,
             });
         }
 
@@ -502,6 +558,7 @@ fn set_value_impl(
                 code: Some("ElementReadOnly".into()),
                 focused_by: None,
                 selected: None,
+                notified: None,
             });
         }
 
@@ -570,6 +627,7 @@ fn set_value_impl(
                         code: Some("ValueNotApplied".into()),
                         focused_by: Some(focused_by.into()),
                         selected: None,
+                        notified: None,
                     });
                 }
                 // After the read-back, not before it: a focus move that reformats the text would
@@ -594,6 +652,7 @@ fn set_value_impl(
                     code: None,
                     focused_by: Some(focused_by.into()),
                     selected: None,
+                    notified: None,
                 })
             }
             // A write that failed on an element that said read-only is named read-only, in words
@@ -605,6 +664,7 @@ fn set_value_impl(
                 code: Some("ElementReadOnly".into()),
                 focused_by: Some(focused_by.into()),
                 selected: None,
+                notified: None,
             }),
             Err(e) => Ok(ActionResult {
                 ok: false,
@@ -613,6 +673,7 @@ fn set_value_impl(
                 code: None,
                 focused_by: Some(focused_by.into()),
                 selected: None,
+                notified: None,
             }),
         }
     }
@@ -659,6 +720,7 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
                 code,
                 focused_by: None,
                 selected: None,
+                notified: None,
             });
         }
     };
@@ -679,6 +741,7 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
                 code: None,
                 focused_by: None,
                 selected: None,
+                notified: None,
             });
         }
     };
@@ -692,6 +755,7 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
             code: Some("ElementDisabled".into()),
             focused_by: None,
             selected: None,
+            notified: None,
         });
     }
 
@@ -717,6 +781,7 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
                     code: Some("TextPattern2NotSupported".into()),
                     focused_by: None,
                     selected: None,
+                    notified: None,
                 })
             }
             Err(_) => Ok(ActionResult {
@@ -726,6 +791,7 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
                 code: Some("TextPattern2NotSupported".into()),
                 focused_by: None,
                 selected: None,
+                notified: None,
             }),
         }
     }

@@ -1901,8 +1901,11 @@ export async function clickElement(
  * a WinForms ListBox fires DoubleClick. Select selected on every provider with no DBLCLK; the engine
  * adds the LBN_SELCHANGE a list box's parent gets from a real click (`src/uia/actions.rs::select_item`).
  *
+ * A tree item is not selected (code `MouseClickNeeded`, the server clicks it instead), and Chromium's
+ * content is still invoked, which selects there; `selected` is set only when the engine selected.
+ *
  * Native only. There is no PowerShell twin, and none is borrowed: the PowerShell click script
- * Invokes, which is the very press this exists to avoid. So a missing engine throws, and a native
+ * Invokes, which acts as a double-click on these items. So a missing engine throws, and a native
  * call that throws is not done again elsewhere.
  */
 export async function selectElement(
@@ -1911,10 +1914,10 @@ export async function selectElement(
   automationId?: string,
   controlType?: string,
   options?: { hwnd?: bigint }
-): Promise<{ ok: boolean; element?: string; error?: string; code?: string; via?: "native"; focusedBy?: string; selected?: boolean }> {
+): Promise<{ ok: boolean; element?: string; error?: string; code?: string; via?: "native"; focusedBy?: string; selected?: boolean; notified?: boolean }> {
   refuseUiaTitleIfExcluded(windowTitle, options?.hwnd);
   if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
-  if (!nativeUia?.uiaClickElement) throw new Error(SELECT_NEEDS_NATIVE);
+  if (!nativeUia?.uiaClickElement) throw Object.assign(new Error(SELECT_NEEDS_NATIVE), { uiaCode: SELECT_NEEDS_NATIVE_CODE });
   try {
     const result = await nativeUia.uiaClickElement({
       windowTitle,
@@ -1933,7 +1936,9 @@ export async function selectElement(
       code: result.code ?? undefined,
       via: "native",
       ...(result.focusedBy ? { focusedBy: result.focusedBy } : {}),
+      // `selected` only when the engine selected: a Chromium item is still invoked (`actions.rs`).
       ...(result.selected === true ? { selected: true } : {}),
+      ...(typeof result.notified === "boolean" ? { notified: result.notified } : {}),
     };
   } catch (e) {
     // As in `clickElement`: a call that ran past its 8 s may still select when the window answers.
@@ -1945,6 +1950,8 @@ export async function selectElement(
 
 /** What `selectElement` throws when the native engine is unavailable (no PowerShell road for it). */
 export const SELECT_NEEDS_NATIVE = "Selecting an item needs the native UI Automation engine, which is unavailable";
+/** The code `selectElement`'s throw carries as `uiaCode`, so the executor can say the engine is missing. */
+export const SELECT_NEEDS_NATIVE_CODE = "NativeEngineUnavailable";
 
 /** The native engine's words for an act that ran past its 8 s (`src/uia/thread.rs::run_with_timeout`). */
 function isNativeActTimeout(e: unknown): boolean {

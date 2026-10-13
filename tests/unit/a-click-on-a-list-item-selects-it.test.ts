@@ -5,18 +5,25 @@
  * double-click — Explorer opened the file, a SysListView32 sent NM_DBLCLK, a Win32 LISTBOX LBN_DBLCLK, a
  * WinForms ListBox fired DoubleClick — and a WinForms ListView's Invoke did nothing and reported ok.
  * SelectionItem.Select selected on every provider, with zero DBLCLK. The user's decision: a click on a
- * ListItem, DataItem or TreeItem selects it through SelectionItemPattern; `action:"invoke"` keeps Invoke.
+ * ListItem, DataItem or TreeItem selects it; `action:"invoke"` keeps Invoke.
  *
- * These cells pin the dispatch on both roads, the three refusals (no press after any of them — neither
- * Invoke nor the mouse), the route's `why`, the production dep's mapping of the engine's codes, and the
- * bridge's refusal to run without the native engine.
+ * Round 2 (win2, issuecomment-6145660788 and after): Select on a tree with nothing selected changes the
+ * selection twice, and a DataGridView cell (a DataItem with no SelectionItem) starts editing on Invoke;
+ * a real single click selects either once, 3/3. So a tree item, and an item the engine cannot select,
+ * are clicked with the checked single mouse click on the title road, and refused on the handle road.
+ * Chromium's content keeps Invoke, which selects there (`<select size=5>`: `change`, no dblclick).
+ *
+ * These cells pin the dispatch on both roads, the single click and its refusal, the refusals with
+ * nothing pressed, the route's `why`, the production dep's mapping, the bridge without the engine, the
+ * advice by the refusal's class, and the loop through to the envelope.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExecutorDeps } from "../../src/tools/desktop-executor.js";
-import type { UiEntity } from "../../src/engine/world-graph/types.js";
+import type { EntityLease, UiEntity } from "../../src/engine/world-graph/types.js";
 import type { Aim } from "../../src/engine/aim.js";
 
 const FORM = 4919n;
@@ -42,7 +49,8 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function entity(controlType: string): UiEntity {
+/** `origin` without a handle unless asked: the title road's single click is then not checked against a window. */
+function entity(controlType: string, originHwnd?: bigint): UiEntity {
   return {
     entityId: `e-${controlType}`, role: "listitem", label: "report.txt", confidence: 0.9, sources: ["uia"],
     locator: { uia: { name: "report.txt", automationId: "7", via: "native" } },
@@ -50,14 +58,14 @@ function entity(controlType: string): UiEntity {
     generation: "gen-1", evidenceDigest: "d", rect: { x: 300, y: 300, width: 200, height: 20 }, controlType,
     // What the registry gives an element with InvokePattern (`registry.ts`): UIA first, the mouse second.
     preferredExecutors: ["uia", "mouse"],
-    origin: { kind: "window", id: "FX233", hwnd: FORM.toString() },
+    origin: { kind: "window", id: "FX233", ...(originHwnd !== undefined && { hwnd: originHwnd.toString() }) },
   };
 }
 
 function deps(over: Partial<ExecutorDeps> = {}): ExecutorDeps {
   return {
     uiaClick: vi.fn(async () => {}),
-    uiaSelect: vi.fn(async () => ({ focusedBy: "win32_list" })),
+    uiaSelect: vi.fn(async () => ({ focusedBy: "win32_list", selected: true, notified: true })),
     uiaSetValue: vi.fn(async () => {}),
     cdpClick: vi.fn(async () => {}),
     cdpFill: vi.fn(async () => {}),
@@ -72,11 +80,13 @@ const titleRoad = { windowTitle: "FX233" };
 const handleRoad: Aim = { kind: "aim", title: "FX233", hwnd: FORM };
 const roads = [["title road", titleRoad], ["handle road", handleRoad]] as const;
 
+type Refusal = { name?: string; callerDetail?: string; noRouteTried?: true; adviceClass?: string };
+
 async function act(target: typeof titleRoad | Aim, d: ExecutorDeps, e: UiEntity, action: "click" | "invoke") {
   const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
   return createDesktopExecutor(target, d)(e, action).then(
-    (v) => ({ v, e: null as null | { name?: string; callerDetail?: string; noRouteTried?: true } }),
-    (err: unknown) => ({ v: null, e: err as { name?: string; callerDetail?: string; noRouteTried?: true } }),
+    (v) => ({ v, e: null as null | Refusal }),
+    (err: unknown) => ({ v: null, e: err as Refusal }),
   );
 }
 
@@ -91,10 +101,13 @@ function routeRows(): Array<Record<string, unknown>> {
 const engineSays = (error: string, uiaCode?: string) =>
   vi.fn(async () => { throw Object.assign(new Error(error), { uiaVia: "native", uiaCode }); });
 
+const NO_SELECTION_ITEM = () => engineSays("SelectionItemPattern not supported by this element", "PatternNotSupported");
+const TREE = () => engineSays("This item is selected with a single mouse click", "MouseClickNeeded");
+
 describe("a click on a collection item", () => {
   for (const [roadName, road] of roads) {
     for (const controlType of ["ListItem", "DataItem", "TreeItem"]) {
-      it(`selects a ${controlType} and never invokes it — ${roadName}`, async () => {
+      it(`asks the engine to select a ${controlType} and never invokes it — ${roadName}`, async () => {
         const d = deps();
         const { v, e: err } = await act(road, d, entity(controlType), "click");
         expect(err).toBeNull();
@@ -108,12 +121,23 @@ describe("a click on a collection item", () => {
       });
     }
 
-    it(`says on its route row that it was a select — ${roadName}`, async () => {
+    it(`says on its route row that it was a select, and whether the list box was told — ${roadName}`, async () => {
       await act(road, deps(), entity("ListItem"), "click");
       const rows = routeRows();
       expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({ route: "uia", why: "uia_select", focusedBy: "win32_list" });
+      expect(rows[0]).toMatchObject({ route: "uia", why: "uia_select", focusedBy: "win32_list", notified: true });
       expect(rows[0]!.addressedWindowBy).toBe(roadName === "handle road" ? "handle" : "title");
+    });
+
+    it(`reports a Chromium item the engine invoked as main did: uia_invoke, nothing else pressed — ${roadName}`, async () => {
+      // The engine answers ok without `selected` when it invoked (Chromium's content, `actions.rs`).
+      const d = deps({ uiaSelect: vi.fn(async () => ({ focusedBy: "kept_behind" })) });
+      const { v, e: err } = await act(road, d, entity("ListItem"), "click");
+      expect(err).toBeNull();
+      expect(v).toBe("uia");
+      expect(routeRows()[0]).toMatchObject({ route: "uia", why: "uia_invoke", notified: null });
+      expect(d.uiaClick).not.toHaveBeenCalled();
+      expect(d.mouseClick).not.toHaveBeenCalled();
     });
 
     it(`keeps Invoke for action:"invoke" — ${roadName}`, async () => {
@@ -133,33 +157,22 @@ describe("a click on a collection item", () => {
       expect(d.uiaSelect).not.toHaveBeenCalled();
     });
 
-    it(`refuses an item that has only Invoke, pressing nothing — ${roadName}`, async () => {
-      const d = deps({ uiaSelect: engineSays("SelectionItemPattern not supported by this element", "PatternNotSupported") });
-      const { v, e: err } = await act(road, d, entity("ListItem"), "click");
-      expect(v).toBeNull();
-      expect(err?.name).toBe("CollectionItemSelectRefusedError");
-      expect(err?.noRouteTried).toBe(true);
-      expect(err?.callerDetail).toMatch(/^Nothing was pressed: "report\.txt" cannot be selected through UI Automation, and a click on it would open or run it\./);
-      expect(err?.callerDetail).toContain("desktop_act(action:'invoke')");
-      expect(d.uiaClick).not.toHaveBeenCalled();
-      expect(d.mouseClick).not.toHaveBeenCalled();
-      expect(routeRows().at(-1)).toMatchObject({ route: "refusal", rung: "uia_select", refused: "executor_failed", selectRefused: "only_invoke" });
-    });
-
     it(`refuses a select that did not take, saying nothing changed — ${roadName}`, async () => {
       const d = deps({ uiaSelect: engineSays("The item was not selected", "SelectNotApplied") });
       const { v, e: err } = await act(road, d, entity("DataItem"), "click");
       expect(v).toBeNull();
       expect(err?.name).toBe("CollectionItemSelectRefusedError");
+      expect(err?.adviceClass).toBe("collection_item_select");
       expect(err?.noRouteTried).toBeUndefined();
       expect(err?.callerDetail).toMatch(/^Nothing was pressed, and nothing changed: /);
       expect(d.uiaClick).not.toHaveBeenCalled();
       expect(d.mouseClick).not.toHaveBeenCalled();
+      expect(routeRows().at(-1)).toMatchObject({ route: "refusal", rung: "uia_select", refused: "executor_failed", selectRefused: "not_selected" });
     });
 
     it(`refuses a select that failed any other way, pressing nothing — ${roadName}`, async () => {
       const d = deps({ uiaSelect: engineSays("Select failed: 0x80040201") });
-      const { v, e: err } = await act(road, d, entity("TreeItem"), "click");
+      const { v, e: err } = await act(road, d, entity("ListItem"), "click");
       expect(v).toBeNull();
       expect(err?.name).toBe("CollectionItemSelectRefusedError");
       expect(err?.callerDetail).toMatch(/^Nothing was pressed: selecting "report\.txt" through UI Automation failed, and the act was not finished as a press\./);
@@ -169,39 +182,212 @@ describe("a click on a collection item", () => {
       expect(d.mouseClick).not.toHaveBeenCalled();
     });
 
-    it(`refuses a select whose window stopped answering, in the engine's words — ${roadName}`, async () => {
+    it(`refuses a select whose window stopped answering without saying nothing was pressed — ${roadName}`, async () => {
       const d = deps({ uiaSelect: engineSays("Window stopped answering during the act") });
       const { e: err } = await act(road, d, entity("ListItem"), "click");
       expect(err?.name).toBe("CollectionItemSelectRefusedError");
-      expect(err?.callerDetail).toMatch(/^Nothing was pressed: selecting "report\.txt" through UI Automation failed because /);
+      // The select may land when the window answers: "Nothing was pressed" would read as nothing done.
+      expect(err?.callerDetail).not.toMatch(/^Nothing was/);
+      expect(err?.callerDetail).toMatch(/^The select for "report\.txt" was sent, .* it may still be selected when the window answers\./);
       expect(d.uiaClick).not.toHaveBeenCalled();
       expect(d.mouseClick).not.toHaveBeenCalled();
+    });
+
+    it(`says the engine is missing when it is — ${roadName}`, async () => {
+      const d = deps({ uiaSelect: engineSays("Selecting an item needs the native UI Automation engine, which is unavailable", "NativeEngineUnavailable") });
+      const { e: err } = await act(road, d, entity("ListItem"), "click");
+      expect(err?.name).toBe("CollectionItemSelectRefusedError");
+      expect(err?.callerDetail).toMatch(/^Nothing was pressed: selecting "report\.txt" needs the native UI Automation engine, which is unavailable/);
+      expect(d.uiaClick).not.toHaveBeenCalled();
+      expect(d.mouseClick).not.toHaveBeenCalled();
+    });
+
+    it(`keeps the window's own refusals, with a select row — ${roadName}`, async () => {
+      const { WindowExcludedError } = await import("../../src/engine/tool-exclusion.js");
+      const { AimedWindowGoneError } = await import("../../src/engine/aim.js");
+      for (const [refused, make] of [
+        ["window_excluded", () => new WindowExcludedError("FX233", "secure")],
+        ["aim_window_gone", () => new AimedWindowGoneError(FORM, "gone")],
+      ] as const) {
+        const d = deps({ uiaSelect: vi.fn(async () => { throw make(); }) });
+        const { e: err } = await act(road, d, entity("ListItem"), "click");
+        expect(err?.name, refused).toBe(refused === "window_excluded" ? "WindowExcludedError" : "AimedWindowGoneError");
+        expect(routeRows().at(-1), refused).toMatchObject({ route: "refusal", rung: "uia_select", refused });
+        expect(d.uiaClick).not.toHaveBeenCalled();
+        expect(d.mouseClick).not.toHaveBeenCalled();
+      }
     });
   }
 });
 
+describe("an item clicked as a single mouse click (a tree item, or one the engine cannot select)", () => {
+  for (const [why, uiaSelect, controlType] of [["a tree item", TREE, "TreeItem"], ["no SelectionItem (a DataGridView cell)", NO_SELECTION_ITEM, "DataItem"]] as const) {
+    it(`is clicked once at its centre on the title road, never invoked — ${why}`, async () => {
+      const d = deps({ uiaSelect: uiaSelect() });
+      const { v, e: err } = await act(titleRoad, d, entity(controlType), "click");
+      expect(err).toBeNull();
+      expect(v).toMatchObject({ kind: "mouse", downgrade: { from: "uia" } });
+      expect(d.mouseClick).toHaveBeenCalledTimes(1);
+      expect(d.mouseClick).toHaveBeenCalledWith(400, 310);
+      expect(d.uiaClick).not.toHaveBeenCalled();
+      expect(routeRows().find((r) => r.route === "mouse")).toMatchObject({ why: "uia_downgrade" });
+    });
+
+    it(`is checked against the window it was read in before it is pressed — ${why}`, async () => {
+      // The point is outside the window the entity was captured in: the ladder refuses, nothing is pressed.
+      const d = deps({ uiaSelect: uiaSelect(), aimRect: vi.fn(async () => ({ x: 0, y: 0, width: 100, height: 100 })) });
+      const { v, e: err } = await act(titleRoad, d, entity(controlType, FORM), "click");
+      expect(v).toBeNull();
+      expect(err?.name).toBe("AimedPointOutsideWindowError");
+      expect(d.aimRect).toHaveBeenCalledWith(FORM);
+      expect(d.mouseClick).not.toHaveBeenCalled();
+      expect(d.uiaClick).not.toHaveBeenCalled();
+    });
+
+    it(`is refused on the handle road, pressing nothing, and says how to click it — ${why}`, async () => {
+      const d = deps({ uiaSelect: uiaSelect() });
+      const { v, e: err } = await act(handleRoad, d, entity(controlType), "click");
+      expect(v).toBeNull();
+      expect(err?.name).toBe("CollectionItemSelectRefusedError");
+      expect(err?.adviceClass).toBe("collection_item_select");
+      expect(err?.callerDetail).toMatch(/^Nothing was pressed: "report\.txt" is clicked as a single mouse click, which a window named by handle does not take\./);
+      expect(err?.callerDetail).toContain("Name the window by title, or use mouse_click({hwnd:'4919', x, y})");
+      expect(d.mouseClick).not.toHaveBeenCalled();
+      expect(d.uiaClick).not.toHaveBeenCalled();
+      expect(routeRows().at(-1)).toMatchObject({ route: "refusal", rung: "uia_select", refused: "executor_failed", selectRefused: "needs_title_road" });
+    });
+  }
+
+  it("a ListItem the registry routes to the mouse (WPF, no UIA road) still takes the mouse road", async () => {
+    const d = deps();
+    const e: UiEntity = { ...entity("ListItem"), preferredExecutors: ["mouse"], unsupportedExecutors: ["uia"] };
+    const { v } = await act(titleRoad, d, e, "click");
+    expect(v).toBe("mouse");
+    expect(d.mouseClick).toHaveBeenCalledTimes(1);
+    expect(d.uiaSelect).not.toHaveBeenCalled();
+    expect(d.uiaClick).not.toHaveBeenCalled();
+  });
+});
+
+describe("Chromium's content keeps Invoke in the engine", () => {
+  const rust = () => readFileSync(fileURLToPath(new URL("../../src/uia/actions.rs", import.meta.url)), "utf8");
+
+  it("reads the framework before selecting, and leaves Chrome to the Invoke below (src/uia/actions.rs)", () => {
+    // No Windows here to run the engine: the branch is pinned in its source, where the cell can see it.
+    const src = rust();
+    const impl = src.slice(src.indexOf("fn click_element_impl("), src.indexOf("// Try InvokePattern"));
+    expect(impl).toMatch(/if opts\.select == Some\(true\) \{\s+let framework = unsafe \{ elem\.CurrentFrameworkId\(\) \}[^;]*;\s+if framework != "Chrome" \{\s+return Ok\(select_item\(ctx, &elem\)\);/);
+  });
+
+  it("and a tree item is not selected there (MouseClickNeeded), before any pattern is asked for", () => {
+    const src = rust();
+    const body = src.slice(src.indexOf("fn select_item("), src.indexOf("fn select_item(") + 2000);
+    expect(body.indexOf("UIA_TreeItemControlTypeId")).toBeGreaterThan(0);
+    expect(body.indexOf("UIA_TreeItemControlTypeId")).toBeLessThan(body.indexOf("UIA_SelectionItemPatternId"));
+    expect(body).toContain("code: Some(MOUSE_CLICK_NEEDED.into())");
+  });
+});
+
 describe("the production select dep and its bridge", () => {
-  it("carries the engine's code on the error, and never falls back to the click", async () => {
+  it("carries the engine's code on the error, maps a gone window, and never falls back to the click", async () => {
     const clickElement = vi.fn(async () => ({ ok: true }));
     const answers = [
       { ok: false, error: "SelectionItemPattern not supported by this element", code: "PatternNotSupported", via: "native" as const },
       { ok: false, error: "The item was not selected", code: "SelectNotApplied", via: "native" as const },
+      { ok: false, error: "the window is gone", code: "aim_window_gone", via: "native" as const },
+      { ok: true, via: "native" as const, focusedBy: "win32_list", selected: true, notified: false },
     ];
     const selectElement = vi.fn(async () => answers.shift()!);
     vi.doMock("../../src/engine/uia-bridge.js", async (orig) => ({ ...(await orig<object>()), selectElement, clickElement }));
     const { _realExecutorDepsForTest } = await import("../../src/tools/desktop-executor.js");
+    const { AimedWindowGoneError } = await import("../../src/engine/aim.js");
     const d = _realExecutorDepsForTest();
     const first = await d.uiaSelect("FX233", "report.txt", "7", "ListItem", FORM).then(() => null, (e: unknown) => e as { uiaCode?: string });
     const second = await d.uiaSelect("FX233", "report.txt", "7", "ListItem").then(() => null, (e: unknown) => e as { uiaCode?: string });
+    const third = await d.uiaSelect("FX233", "report.txt", "7", "ListItem", FORM).then(() => null, (e: unknown) => e);
+    const fourth = await d.uiaSelect("FX233", "report.txt", "7", "ListItem");
     expect(first?.uiaCode).toBe("PatternNotSupported");
     expect(second?.uiaCode).toBe("SelectNotApplied");
+    expect(third).toBeInstanceOf(AimedWindowGoneError);
+    expect(fourth).toEqual({ focusedBy: "win32_list", selected: true, notified: false });
     expect(selectElement).toHaveBeenNthCalledWith(1, "FX233", "report.txt", "7", "ListItem", { hwnd: FORM });
     expect(clickElement).not.toHaveBeenCalled();
   });
 
-  it("refuses to select without the native engine, rather than invoking through PowerShell", async () => {
+  it("refuses to select without the native engine, rather than invoking through PowerShell, and says why", async () => {
     vi.doMock("../../src/engine/native-engine.js", async (orig) => ({ ...(await orig<object>()), nativeUia: null }));
     const { selectElement, SELECT_NEEDS_NATIVE } = await import("../../src/engine/uia-bridge.js");
-    await expect(selectElement("FX233", "report.txt", "7", "ListItem")).rejects.toThrow(SELECT_NEEDS_NATIVE);
+    const err = await selectElement("FX233", "report.txt", "7", "ListItem").then(() => null, (e: unknown) => e as Error & { uiaCode?: string });
+    expect(err?.message).toBe(SELECT_NEEDS_NATIVE);
+    expect(err?.uiaCode).toBe("NativeEngineUnavailable");
+  });
+});
+
+describe("through the loop to the envelope", () => {
+  const ADVICE = [
+    "Follow detail: it says what was and was not done to this item, and what to do instead",
+    "To open or run the item rather than select it, use desktop_act(action:'invoke')",
+    "Re-run desktop_discover and act on a fresh lease — the item may have moved, changed or gone since it was read",
+  ];
+
+  async function touch(d: ExecutorDeps, action?: "click") {
+    const { createDesktopExecutor } = await import("../../src/tools/desktop-executor.js");
+    const { GuardedTouchLoop } = await import("../../src/engine/world-graph/guarded-touch.js");
+    const { LeaseStore } = await import("../../src/engine/world-graph/lease-store.js");
+    const e = entity("ListItem");
+    const store = new LeaseStore({ nowFn: () => 0, defaultTtlMs: 60_000 });
+    const lease = store.issue(e, "v1");
+    const exec = createDesktopExecutor(titleRoad, d);
+    return new GuardedTouchLoop(store, {
+      resolveLiveEntities: () => [e],
+      currentGeneration: () => "gen-1",
+      isModalBlocking: () => false,
+      checkViewport: () => null,
+      execute: (en, a, text) => exec(en, a, text),
+      resolvePostTouchEntities: async () => [e],
+    }).touch({ lease, ...(action !== undefined && { action }) });
+  }
+
+  it("resolves an omitted action to the select (a ListItem advertises no verb, so auto is click)", async () => {
+    const d = deps();
+    const result = await touch(d);
+    expect(result).toMatchObject({ ok: true, executor: "uia" });
+    expect(d.uiaSelect).toHaveBeenCalledTimes(1);
+    expect(d.uiaClick).not.toHaveBeenCalled();
+  });
+
+  for (const action of [undefined, "click"] as const) {
+    it(`gives a refused select its own advice, never click_element or mouse_click — action ${String(action)}`, async () => {
+      const d = deps({ uiaSelect: engineSays("The item was not selected", "SelectNotApplied") });
+      const result = await touch(d, action);
+      expect(result).toMatchObject({ ok: false, reason: "executor_failed", adviceClass: "collection_item_select" });
+      const detail = (result as { detail?: string }).detail;
+      expect(detail).toMatch(/^Nothing was pressed, and nothing changed: /);
+
+      const { getDesktopFacade, desktopActRawHandler } = await import("../../src/tools/desktop-register.js");
+      vi.spyOn(getDesktopFacade(), "touch").mockResolvedValue(result);
+      const lease: EntityLease = { entityId: "e-ListItem", viewId: "v1", targetGeneration: "gen-1", expiresAtMs: Number.MAX_SAFE_INTEGER, evidenceDigest: "d" };
+      const reply = await desktopActRawHandler({ lease, ...(action !== undefined && { action }) });
+      const parsed = JSON.parse((reply.content[0] as { text: string }).text) as Record<string, unknown>;
+      expect(parsed["reason"]).toBe("executor_failed");
+      const ifUnexpected = parsed["if_unexpected"] as { detail?: string; try_next?: Array<{ action: string }> };
+      expect(ifUnexpected.detail).toBe(detail);
+      const tryNext = (ifUnexpected.try_next ?? []).map((r) => r.action);
+      expect(tryNext).toEqual(ADVICE);
+      for (const line of tryNext) expect(line).not.toMatch(/click_element|mouse_click|Nothing was typed/);
+    });
+  }
+});
+
+describe("the advice chooses by the refusal's class, not the action", () => {
+  it("answers collection_item_select with its own list whatever the action", async () => {
+    const { executorFailedAdviceFor } = await import("../../src/tools/_errors.js");
+    for (const action of [undefined, "auto", "click", "invoke", "type"]) {
+      for (const noRouteTried of [false, true]) {
+        const lines = executorFailedAdviceFor(action, noRouteTried, "collection_item_select");
+        expect(lines[0], String(action)).toMatch(/^Follow detail/);
+        for (const line of lines) expect(line).not.toMatch(/click_element|mouse_click|Nothing was typed/);
+      }
+    }
   });
 });
