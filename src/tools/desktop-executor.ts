@@ -2181,7 +2181,7 @@ export class WinFormsComboWriteRefusedError extends Error implements CallerFacin
     // (DestinationRequired), and the advice copied as written failed that way, 3/3 (win2, 2.3.1 dogfood D3).
     const win = aimHwnd !== undefined
       ? `hwnd:'${aimHwnd}'`
-      : `windowTitle:${JSON.stringify(aimTitle !== undefined && aimTitle !== "" ? aimTitle : "@active")}`;
+      : `windowTitle:${JSON.stringify(aimTitle !== undefined && aimTitle.trim() !== "" ? aimTitle : "@active")}`;
     let click: string;
     if (aimHwnd === undefined) {
       click = `Click it — desktop_act(action:'click').`;
@@ -2193,7 +2193,7 @@ export class WinFormsComboWriteRefusedError extends Error implements CallerFacin
       click = `Click it with ${at} (desktop_act's click is refused on a window named by handle).`;
     }
     const put = action === "setValue"
-      ? ` The click selects its old text; if it did not, select it with keyboard({action:'press', keys:'home', ${win}}) then keys:'shift+end' (ctrl+a does not select in this control).`
+      ? ` The click selects its old text; if it did not, select it with keyboard({action:'press', keys:'home', ${win}}) then keyboard({action:'press', keys:'shift+end', ${win}}) (ctrl+a does not select in this control).`
       : ` The click selects its old text, which typing would replace: press keyboard({action:'press', keys:'end', ${win}}) first to add to it.`;
     this.callerDetail =
       `Nothing was written: "${quotedLabel(entity)}" is a WinForms combo box, and UI Automation can change its text ` +

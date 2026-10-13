@@ -103,7 +103,7 @@ describe("a WinForms editable combo box", () => {
             expect(err?.callerDetail).toContain("Click it with mouse_click({hwnd:'4919', x:400, y:310}), the centre of its rectangle");
           }
           expect(err?.callerDetail).toContain(action === "setValue"
-            ? `keyboard({action:'press', keys:'home', ${win}}) then keys:'shift+end'`
+            ? `keyboard({action:'press', keys:'home', ${win}}) then keyboard({action:'press', keys:'shift+end', ${win}})`
             : `press keyboard({action:'press', keys:'end', ${win}}) first`);
           expect(err?.callerDetail).not.toMatch(/select[^.]*with keyboard ctrl\+a/);
         });
@@ -118,6 +118,15 @@ describe("a WinForms editable combo box", () => {
     expect(err?.name).toBe("WinFormsComboWriteRefusedError");
     expect(err?.callerDetail).toContain("mouse_click({hwnd:'4919', x, y}) at its clickAt from screenshot({detail:'text', hwnd:'4919'})");
     expect(err?.callerDetail).not.toMatch(/x:\d/);
+    for (const c of err?.callerDetail?.match(/(keyboard|mouse_click|screenshot)\(\{[^}]*\}\)/g) ?? []) expect(c).toContain("hwnd:'4919'");
+  });
+
+  it("title road, a blank title: the keyboard steps aim at @active, never at a title keyboard would refuse", async () => {
+    const d = deps({ comboWindowFacts: facts(comboAs(CBS_DROPDOWN)) });
+    const { e: err } = await write({ windowTitle: "  " }, d, entity("ComboBox", COMBO), "type");
+    expect(err?.name).toBe("WinFormsComboWriteRefusedError");
+    expect(err?.callerDetail).toContain(`keyboard({action:'type', text, windowTitle:"@active"})`);
+    expect(err?.callerDetail).not.toContain(`windowTitle:"  "`);
   });
 
   it("CBS_SIMPLE has an Edit too and is refused alike", async () => {
