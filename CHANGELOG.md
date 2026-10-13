@@ -18,8 +18,8 @@
   list item is now selected through UI Automation, and a Win32 or WinForms list box is told of the new
   selection the way a real click tells it. A tree item, and an item UI Automation cannot select (a
   DataGridView cell), are clicked with a single mouse click instead, checked against their window as any
-  coordinate click is. Items in a browser page are unchanged, and so are buttons, other controls and
-  `click_element`.
+  coordinate click is. Chromium-based content (UI Automation FrameworkId "Chrome") keeps Invoke, and
+  buttons, other controls and `click_element` are unchanged.
 
 ## [2.3.1] - 2026-10-13 — ssh key passphrases in fill_once, a key locker that exits with the server, and two false successes refused
 

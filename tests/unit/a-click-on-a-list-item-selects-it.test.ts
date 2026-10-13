@@ -214,7 +214,37 @@ describe("a click on a collection item", () => {
       expect(err?.name).toBe("CollectionItemSelectRefusedError");
       // The select may land when the window answers: "Nothing was pressed" would read as nothing done.
       expect(err?.callerDetail).not.toMatch(/^Nothing was/);
-      expect(err?.callerDetail).toMatch(/^The select for "report\.txt" was sent, .* it may still be selected when the window answers\./);
+      // Neutral: on Chromium's content the engine invoked, so "select" would be wrong (opus on PR #819, P2-1).
+      expect(err?.callerDetail).toMatch(/^The click on "report\.txt" was sent, .* it may have taken effect, or take effect when the window answers\./);
+      expect(err?.callerDetail).not.toMatch(/select/i);
+      expect(err?.callerDetail).toContain("do not press it again (click_element included)");
+      expect(d.uiaClick).not.toHaveBeenCalled();
+      expect(d.mouseClick).not.toHaveBeenCalled();
+    });
+
+    it(`refuses a Chromium Invoke that failed after the call, saying it may have pressed — ${roadName}`, async () => {
+      // What the production dep throws when the engine invoked (FrameworkId Chrome, no `selected` in the
+      // answer) and the press failed after it was made (`mod.rs::PRESS_OUTCOME_UNKNOWN`, code None).
+      const d = deps({ uiaSelect: engineSays("The press call failed after it was made; it may have taken effect") });
+      const { v, e: err } = await act(road, d, entity("ListItem"), "click");
+      expect(v).toBeNull();
+      expect(err?.name).toBe("CollectionItemSelectRefusedError");
+      expect(err?.callerDetail).not.toMatch(/^Nothing was/);
+      expect(err?.callerDetail).toMatch(/^The click on "report\.txt" was sent as a UI Automation press, which failed after the call was made: it may have taken effect\./);
+      expect(err?.callerDetail).toContain("do not press it again (click_element included)");
+      expect(d.uiaClick).not.toHaveBeenCalled();
+      expect(d.mouseClick).not.toHaveBeenCalled();
+      expect(routeRows().at(-1)).toMatchObject({ route: "refusal", rung: "uia_select", selectRefused: "press_unknown", routeFailure: "press_outcome_unknown" });
+    });
+
+    it(`refuses a single-click item with no rectangle in its own words and advice — ${roadName}`, async () => {
+      const d = deps({ uiaSelect: NO_SELECTION_ITEM() });
+      const { rect: _rect, ...noRect } = entity("DataItem");
+      const { v, e: err } = await act(road, d, noRect as UiEntity, "click");
+      expect(v).toBeNull();
+      expect(err?.name).toBe("CollectionItemSelectRefusedError");
+      expect(err?.adviceClass).toBe("collection_item_select");
+      expect(err?.callerDetail).toMatch(/^Nothing was pressed: "report\.txt" is selected with a single mouse click, and discover recorded no rectangle to click\./);
       expect(d.uiaClick).not.toHaveBeenCalled();
       expect(d.mouseClick).not.toHaveBeenCalled();
     });

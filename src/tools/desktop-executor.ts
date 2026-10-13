@@ -2383,6 +2383,9 @@ async function selectCollectionItem(
       : code === "NativeEngineUnavailable" ? "no_engine"
       // The select may already be with the window, and land when it answers (`mod.rs::STOPPED_ANSWERING`).
       : routeFailure === "target_stopped_answering" ? "may_land"
+      // Chromium's content is invoked, not selected (`actions.rs`): an Invoke that failed after the call may
+      // have pressed the item (`mod.rs::PRESS_OUTCOME_UNKNOWN`), and a second press would press it twice.
+      : routeFailure === "press_outcome_unknown" ? "press_unknown"
       : "failed";
     probeRefusal("uia_select", "executor_failed", aimHwnd, entity, { selectRefused: kind, routeFailure: routeFailure ?? null, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
     throw new CollectionItemSelectRefusedError(entity, kind, routeFailure, { cause: err });
@@ -2398,7 +2401,10 @@ async function selectCollectionItem(
  *   - `may_land` — the window stopped answering during the select, which may still land.
  *   - `outcome_unknown` — Select returned, and reading back whether the item is selected failed: it may be
  *     (PR #819 codex P2; a failed read is not a read of false).
+ *   - `press_unknown` — on Chromium's content, where the engine invokes, the Invoke failed after the call
+ *     was made: it may have pressed the item (opus on PR #819, P2-1).
  *   - `no_engine` — selecting needs the native engine, and it is unavailable.
+ *   - `no_rect` — the item is clicked as a single mouse click, and discover recorded no rectangle for it.
  *   - `failed` — the select call failed any other way.
  */
 export class CollectionItemSelectRefusedError extends Error implements CallerFacingRefusal {
@@ -2411,7 +2417,7 @@ export class CollectionItemSelectRefusedError extends Error implements CallerFac
   readonly adviceClass: "collection_item_select" | "collection_item_select_no_invoke";
   constructor(
     entity: UiEntity,
-    readonly kind: "not_selected" | "may_land" | "outcome_unknown" | "no_engine" | "failed",
+    readonly kind: "not_selected" | "may_land" | "outcome_unknown" | "press_unknown" | "no_engine" | "no_rect" | "failed",
     routeFailure: ReturnType<typeof classifyUiaRouteFailure>,
     options?: ErrorOptions,
   ) {
@@ -2428,10 +2434,22 @@ export class CollectionItemSelectRefusedError extends Error implements CallerFac
         this.callerDetail = `Nothing was pressed, and nothing changed: UI Automation took the select for "${label}", but the item did not become selected. ${invoke}`;
         break;
       case "may_land":
-        // Not "Nothing was pressed": the select was sent, and the advice would read that as nothing done.
+        // Not "Nothing was pressed": the act was sent, and the advice would read that as nothing done. Not
+        // "select" either: on Chromium's content the engine invokes (`actions.rs`).
         this.callerDetail =
-          `The select for "${label}" was sent, and the window stopped answering before it said whether the item was selected: ` +
-          `it may still be selected when the window answers. It was not pressed another way. Look at the window before acting on it again.`;
+          `The click on "${label}" was sent, and the window stopped answering before it said what happened: ` +
+          `it may have taken effect, or take effect when the window answers. It was not pressed another way. ` +
+          `Look at the window first, and do not press it again (click_element included).`;
+        break;
+      case "press_unknown":
+        this.callerDetail =
+          `The click on "${label}" was sent as a UI Automation press, which failed after the call was made: it may have taken effect. ` +
+          `Look at the window first, and do not press it again (click_element included).`;
+        break;
+      case "no_rect":
+        this.callerDetail =
+          `Nothing was pressed: "${label}" is selected with a single mouse click, and discover recorded no rectangle to click. ` +
+          `Re-run desktop_discover, and act on the fresh lease.`;
         break;
       case "outcome_unknown":
         this.callerDetail =
@@ -3402,6 +3420,13 @@ export function createDesktopExecutor(
       );
     }
     if (!entity.rect) {
+      // internal #233 — a single-click collection item keeps its own refusal and advice: the generic
+      // throw below is `executor_failed` with advice that names click_element, whose Invoke is the press
+      // this road exists not to make (opus on PR #819, P3-1).
+      if (singleClick !== undefined) {
+        probeRefusal("uia_select", "executor_failed", aimHwnd, entity, { selectRefused: "no_rect", singleClick: singleClick.item });
+        throw new CollectionItemSelectRefusedError(entity, "no_rect", undefined, { cause: singleClick });
+      }
       throw new Error(
         `No executor available for entity "${entity.label ?? entity.entityId}": no rect for mouse fallback`
       );
