@@ -6,10 +6,10 @@
 - When the server exits while a key locker dialog is open, the dialog now closes and the locker exits with
   it, and nothing typed into it is saved or typed anywhere. Before, the dialog stayed on screen after the
   server was gone, and a server that shut down normally could leave a second, windowless locker running.
-- A `desktop_act` click whose UI Automation press failed after it was sent is no longer pressed a second
-  time with the mouse. The press may already have happened (a dialog that closed itself, a check box that
-  toggled), so the act is now refused with `aim_route_failed` and says to look at the window before
-  pressing again.
+- A `desktop_act` click whose UI Automation press failed after it was sent is now refused with
+  `aim_route_failed`, saying the press may already have happened: look at the window before pressing
+  again. Before, it fell back to a mouse press at the same point, and when the press had closed its
+  own window, it answered that nothing was clicked.
 
 ## [2.3.0] - 2026-10-12 — macOS preview, one-time password fill for the key locker, and quieter background reading
 
