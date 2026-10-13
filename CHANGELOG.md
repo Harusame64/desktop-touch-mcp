@@ -3,14 +3,14 @@
 ## [Unreleased]
 
 ### Fixed — Windows
-- **`desktop_act` `type` / `setValue` now writes into the field that `desktop_discover` returned.**
-  Before, when the field had no AutomationId, the write went to the first element whose name *contained*
-  the field's name, and still answered `ok:true`. A write meant for "Name" could land in an earlier
-  "Display Name", and of two fields both named "Name", the first one always took the write. The write
-  now finds the field by its own window handle when it has one (WinForms and Win32 controls). Otherwise
-  it uses the exact name together with the control type, and the field's position when several match.
-  When that still leaves more than one candidate, the act treats the field as one it cannot find,
-  instead of writing into the first. `set_element_value` is unchanged.
+- **`desktop_act` `type` / `setValue` no longer writes into another field whose name contains the
+  field's name.** Before, when the field had no AutomationId, the write went to the first element whose
+  name *contained* the field's name, and answered `ok:true`: a write meant for "Name" could land in an
+  earlier "Display Name", and of two fields both named "Name" the first always took it. The write now
+  finds the field by its own window handle when it has one (WinForms and Win32 controls), and otherwise,
+  for a field the native engine read, by its exact name and control type, using the field's position
+  when several match.
+  `set_element_value` is unchanged.
 
 ## [2.3.1] - 2026-10-13 — a click on a list item selects it, ssh key passphrases in fill_once, and guarded clicks under overlays
 
