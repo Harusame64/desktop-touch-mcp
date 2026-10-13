@@ -284,7 +284,8 @@ describe("Chromium's content keeps Invoke in the engine", () => {
     const body = src.slice(src.indexOf("fn select_item("), src.indexOf("fn select_item(") + 2000);
     expect(body.indexOf("UIA_TreeItemControlTypeId")).toBeGreaterThan(0);
     expect(body.indexOf("UIA_TreeItemControlTypeId")).toBeLessThan(body.indexOf("UIA_SelectionItemPatternId"));
-    expect(body).toContain("code: Some(MOUSE_CLICK_NEEDED.into())");
+    // The guard itself, returned before Select: a weakened condition keeps the names and loses the branch.
+    expect(body).toMatch(/let is_tree_item = elem\.CurrentControlType\(\)\.map\(\|t\| t\.0 == UIA_TreeItemControlTypeId\.0\)\.unwrap_or\(false\);\s+if is_tree_item \{\s+return ActionResult \{[^}]*code: Some\(MOUSE_CLICK_NEEDED\.into\(\)\)/);
   });
 });
 
