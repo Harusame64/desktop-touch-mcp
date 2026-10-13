@@ -2192,6 +2192,13 @@ export class WinFormsComboWriteRefusedError extends Error implements CallerFacin
     const keyHwnd = aimHwnd ?? observedHwndOfOrigin(entity.origin);
     // The bound is on the title as written into the call, after escaping: a backslash or quote doubles in
     // JSON, so a 60-character cut taken before escaping could still overflow (PR #817 codex P2).
+    //
+    // KEPT AS A PREFIX, knowingly. A prefix can match a sibling window that shares it (PR #817 codex P2 on
+    // b3909203), and the full title can push the last steps past the cap (the two P2s before it): the two
+    // reviews ask for opposite things on this line. It is reached only with no handle at all — neither the
+    // act's nor the one discover read the entity in — which no measured road produced; both measured roads
+    // name the window by handle. Every call here also goes through keyboard's own guard, which names the
+    // window it focused. Revisit if a handle-less road is ever measured.
     let title = aimTitle !== undefined && aimTitle.trim() !== "" ? aimTitle : "@active";
     while (JSON.stringify(title).length > COMBO_ADVICE_TITLE_MAX) title = title.slice(0, -1);
     const win = keyHwnd !== undefined ? `hwnd:'${keyHwnd}'` : `windowTitle:${JSON.stringify(title)}`;
