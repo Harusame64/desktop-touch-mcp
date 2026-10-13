@@ -391,28 +391,28 @@
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 945,
+      "line": 946,
       "tool": "mouse_drag",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1867,
+      "line": 1870,
       "tool": "scroll",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1945,
+      "line": 1948,
       "tool": "scroll",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 2027,
+      "line": 2030,
       "tool": "get_cursor_position",
       "errKind": "identifier",
       "contextShape": "none"
