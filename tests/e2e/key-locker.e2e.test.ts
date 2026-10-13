@@ -191,7 +191,8 @@ describe("key-locker live smoke (pipe control plane)", () => {
 
 describe("key-locker rogue client rejection (kernel client-verify)", () => {
   let child: ChildProcess | undefined;
-  afterEach(() => { killTree(child?.pid); child = undefined; });
+  let standIn: ChildProcess | undefined;
+  afterEach(() => { killTree(child?.pid); child = undefined; killTree(standIn?.pid); standIn = undefined; });
 
   it("rejects a client whose PID != the locker's -McpPid", async () => {
     expect(existsSync(HELPER_EXE)).toBe(true);
@@ -199,7 +200,11 @@ describe("key-locker rogue client rejection (kernel client-verify)", () => {
     // Launch the real locker but tell it a DIFFERENT process is its MCP. Our connect (this
     // process's pid) must be rejected by the C# kernel client-verify → we CONNECT but get no hello.
     const name = `dtm-locker-rogue-${randomBytes(8).toString("hex")}`;
-    const wrongMcpPid = process.pid + 100_000;
+    // A LIVE other process: since internal #282 the locker opens a handle to its -McpPid at start and exits
+    // (code 4) when it cannot, so a made-up pid would no longer reach the client verify this cell is about.
+    standIn = spawn("powershell.exe", ["-NoProfile", "-Command", "Start-Sleep -Seconds 60"], { stdio: "ignore", windowsHide: true });
+    expect(standIn.pid).toBeDefined();
+    const wrongMcpPid = standIn.pid!;
     child = spawn(HELPER_EXE, ["-PipeName", name, "-McpPid", String(wrongMcpPid)], {
       detached: true, stdio: "ignore", windowsHide: false,
     });
@@ -317,6 +322,52 @@ describe("key-locker FIRST_PIPE_INSTANCE fail-loud", () => {
       setTimeout(() => resolve(-999), 12_000);
     });
     expect(exit).toBe(3);
+  }, 40_000);
+});
+
+// internal #282: a helper whose server dies BEFORE it connects exits too. win2 2026-10-13: the server's own
+// shutdown spawned a fresh helper (fixed in KeyLockerManager.close()), which waited on its pipe for minutes.
+// Headless: no dialog, no client ever connects.
+describe("key-locker exits when its server dies before connecting (internal #282)", () => {
+  const kids: ChildProcess[] = [];
+  afterEach(() => { for (const c of kids) killTree(c.pid); kids.length = 0; });
+
+  it("exits with code 5 once the -McpPid process is gone, with no client", async () => {
+    expect(existsSync(HELPER_EXE)).toBe(true);
+    const server = spawn("powershell.exe", ["-NoProfile", "-Command", "Start-Sleep -Seconds 60"], { stdio: "ignore", windowsHide: true });
+    kids.push(server);
+    expect(server.pid).toBeDefined();
+    const helper = spawn(HELPER_EXE, ["-PipeName", `dtm-locker-282b-${randomBytes(8).toString("hex")}`, "-McpPid", String(server.pid)], {
+      detached: true, stdio: "ignore", windowsHide: false,
+    });
+    kids.push(helper);
+    let helperExit: number | null | undefined;
+    helper.on("exit", (code) => { helperExit = code; });
+
+    await new Promise((r) => setTimeout(r, 1_500));
+    expect(helperExit).toBeUndefined(); // waiting for its client, as it should
+
+    killTree(server.pid);
+    expect(await pollUntil(() => helperExit !== undefined, 10_000)).toBe(true);
+    expect(helperExit).toBe(5);
+  }, 40_000);
+
+  it("refuses to start (code 4) when its -McpPid is not a running process", async () => {
+    expect(existsSync(HELPER_EXE)).toBe(true);
+    // A pid that WAS a process and has exited — not a made-up number, which could name a live process.
+    const gone = spawn("cmd.exe", ["/c", "exit 0"], { stdio: "ignore", windowsHide: true });
+    const gonePid = gone.pid!;
+    await new Promise<void>((r) => gone.once("exit", () => r()));
+    await new Promise((r) => setTimeout(r, 200)); // let node release its handle to it
+    const exit = await new Promise<number | null>((resolve) => {
+      const h = spawn(HELPER_EXE, ["-PipeName", `dtm-locker-282c-${randomBytes(8).toString("hex")}`, "-McpPid", String(gonePid)], {
+        detached: true, stdio: "ignore", windowsHide: false,
+      });
+      kids.push(h);
+      h.on("exit", (code) => resolve(code));
+      setTimeout(() => resolve(-999), 12_000);
+    });
+    expect(exit).toBe(4);
   }, 40_000);
 });
 

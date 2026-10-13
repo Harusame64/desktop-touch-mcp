@@ -144,6 +144,22 @@ internal static class KeyLocker
         if (string.IsNullOrEmpty(pipeName)) { Console.Error.WriteLine("key-locker: missing -PipeName"); return 2; }
         if (mcpPid == 0) { Console.Error.WriteLine("key-locker: missing/invalid -McpPid"); return 2; }
 
+        // internal #282: watch the MCP server from the start, not only once it has connected. The server spawned
+        // this process, so it is alive now; holding the handle from here means a later PID reuse cannot stand in
+        // for it, and a server that dies before it connects (win2 2026-10-13: a helper spawned during the
+        // server's own shutdown) does not leave this process waiting on the pipe forever. Never closed.
+        var mcpProcess = OpenProcess(SYNCHRONIZE, false, mcpPid);
+        if (mcpProcess == IntPtr.Zero)
+        {
+            Console.Error.WriteLine($"key-locker: cannot watch the MCP server (pid {mcpPid}, error {Marshal.GetLastWin32Error()}); exiting.");
+            return 4;
+        }
+        new Thread(() =>
+        {
+            WaitForSingleObject(mcpProcess, INFINITE);
+            OnServerGone(mcpPid);
+        }) { IsBackground = true, Name = "locker-watch-mcp" }.Start();
+
         NamedPipeServerStream server;
         try
         {
@@ -176,15 +192,6 @@ internal static class KeyLocker
                 return 4;
             }
 
-            // Hold a handle to the verified client now, while it is known to be alive, so a later PID reuse cannot
-            // stand in for it. The handle is never closed: it lives as long as this process.
-            var mcpProcess = OpenProcess(SYNCHRONIZE, false, mcpPid);
-            if (mcpProcess == IntPtr.Zero)
-            {
-                Console.Error.WriteLine($"key-locker: cannot watch the MCP server (pid {mcpPid}, error {Marshal.GetLastWin32Error()}); exiting.");
-                return 4;
-            }
-
             WriteFrame(server, $"{{\"t\":\"hello\",\"pid\":{Environment.ProcessId},\"v\":\"{ProtocolVersion}\"}}");
 
             // WPF needs an STA dispatcher for the secure dialog. Run the pipe control loop on
@@ -197,16 +204,10 @@ internal static class KeyLocker
                 finally { try { _app.Dispatcher.Invoke(() => _app.Shutdown()); } catch { /* app already gone */ } }
             }) { IsBackground = true, Name = "locker-pipe" };
             loop.SetApartmentState(ApartmentState.MTA);
-            // internal #282: the pipe loop only notices a closed pipe between frames, and a modal dialog blocks it
-            // (HandleCapture / HandlePrompt wait on the UI thread). Watch the server process itself, so the helper
-            // and any open dialog go away with it.
-            var watch = new Thread(() =>
-            {
-                WaitForSingleObject(mcpProcess, INFINITE);
-                OnServerGone(mcpPid);
-            }) { IsBackground = true, Name = "locker-watch-mcp" };
+            // (internal #282: the pipe loop only notices a closed pipe between frames, and a modal dialog blocks it —
+            // HandleCapture / HandlePrompt wait on the UI thread — so the server's exit is caught by
+            // `locker-watch-mcp`, started above, not here.)
             loop.Start();
-            watch.Start();
             _app.Run();
             return 0;
         }
@@ -218,11 +219,13 @@ internal static class KeyLocker
 
     /// The MCP server exited. Close every open dialog (each returns its cancel answer, so nothing is stored or
     /// typed) and shut the dispatcher down; if that has not ended the process within a few seconds, exit hard.
+    /// Before the dispatcher exists (still waiting for the client), there is nothing to close: exit at once.
     private static void OnServerGone(uint mcpPid)
     {
         _serverGone = true;
         Console.Error.WriteLine($"[key-locker] MCP server (pid {mcpPid}) exited; closing dialogs and exiting.");
         var app = _app;
+        if (app == null) Environment.Exit(5);
         try
         {
             app?.Dispatcher.InvokeAsync(() =>
