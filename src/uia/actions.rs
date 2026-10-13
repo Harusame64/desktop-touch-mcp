@@ -303,10 +303,6 @@ fn select_item(ctx: &UiaContext, elem: &IUIAutomationElement) -> ActionResult {
             };
         }
 
-        if let Some(list) = super::focus_first::list_window_of_item(ctx, elem) {
-            notify_list_box_selchange(list);
-        }
-
         if !sel.CurrentIsSelected().map(|b| b == true).unwrap_or(false) {
             return ActionResult {
                 ok: false,
@@ -316,6 +312,12 @@ fn select_item(ctx: &UiaContext, elem: &IUIAutomationElement) -> ActionResult {
                 focused_by: Some(focused_by.into()),
                 selected: None,
             };
+        }
+
+        // Only once the select has taken: a list told "the selection changed" when it did not would act
+        // on a selection the user never made.
+        if let Some(list) = super::focus_first::list_window_of_item(ctx, elem) {
+            notify_list_box_selchange(list);
         }
 
         ActionResult {
