@@ -166,7 +166,8 @@ export class KeyLockerWiring {
     if (this.eventSubId !== null) { unsubscribe(this.eventSubId); this.eventSubId = null; }
     setTerminalDispatchHook(null);
     setCredentialAdvisor(null);
-    return this.manager.dispose().catch(() => {});
+    // close(), not dispose(): an op that fails because the host is going away must not start a new one (#282).
+    return this.manager.close().catch(() => {});
   }
 
   /**

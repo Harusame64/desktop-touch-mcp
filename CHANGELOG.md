@@ -5,6 +5,9 @@
 ### Fixed — Windows
 - `key_locker` `fill_once` now accepts ssh's key passphrase prompt (`Enter passphrase for key '…':`).
   It was declined with `not_at_prompt`. Autofill of saved credentials is unchanged.
+- When the server exits while a key locker dialog is open, the dialog now closes and the locker exits with
+  it, and nothing typed into it is saved or typed anywhere. Before, the dialog stayed on screen after the
+  server was gone, and a server that shut down normally could leave a second, windowless locker running.
 
 ## [2.3.0] - 2026-10-12 — macOS preview, one-time password fill for the key locker, and quieter background reading
 
