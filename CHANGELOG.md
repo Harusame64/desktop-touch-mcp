@@ -1,14 +1,6 @@
 # Changelog
 
-## [Unreleased]
-
-### Fixed — Windows
-- A `mouse_click` that names its window (`windowTitle` or `hwnd`) is no longer refused with
-  `AutoGuardBlocked` everywhere under a click-through full-screen overlay, such as the one Dell's display
-  manager draws. The guard now asks Windows which window a click at that point would reach, the same
-  question `desktop_act` already asks. Before, it judged by window rectangles alone, so the overlay
-  covered every point (a known issue since 2.0.0). `mouse_drag`'s checks against dragging across windows or
-  out of a tab strip ask the same question, so they still refuse those drags under such an overlay.
+## [2.3.1] - 2026-10-13 — a click on a list item selects it, ssh key passphrases in fill_once, and guarded clicks under overlays
 
 ### Changed — Windows
 - **A `desktop_act` click on a list, tree or grid item now selects it.** To open or run the item, use
@@ -20,8 +12,6 @@
   DataGridView cell), are clicked with a single mouse click instead, checked against their window as any
   coordinate click is. Chromium-based content (UI Automation FrameworkId "Chrome") keeps Invoke, and
   buttons, other controls and `click_element` are unchanged.
-
-## [2.3.1] - 2026-10-13 — ssh key passphrases in fill_once, a key locker that exits with the server, and two false successes refused
 
 ### Fixed — Windows
 - `key_locker` `fill_once` now accepts ssh's key passphrase prompt (`Enter passphrase for key '…':`).
@@ -38,6 +28,12 @@
   change, so the act answered `ok:true` while the application kept the old value. The reply says how to
   write it so the application sees it: click the box, type with `keyboard`, then move the focus away.
   A WinForms drop-down list, a WPF combo box and other text fields are unchanged.
+- A `mouse_click` that names its window (`windowTitle` or `hwnd`) is no longer refused with
+  `AutoGuardBlocked` everywhere under a click-through full-screen overlay, such as the one Dell's display
+  manager draws. The guard now asks Windows which window a click at that point would reach, the same
+  question `desktop_act` already asks. Before, it judged by window rectangles alone, so the overlay
+  covered every point (a known issue since 2.0.0). `mouse_drag`'s checks against dragging across windows or
+  out of a tab strip ask the same question, so they still refuse those drags under such an overlay.
 
 ## [2.3.0] - 2026-10-12 — macOS preview, one-time password fill for the key locker, and quieter background reading
 
