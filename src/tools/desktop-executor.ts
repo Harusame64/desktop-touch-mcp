@@ -64,6 +64,7 @@ import {
 // `keyboard` tool's road judges the same bit on the same classes (arm A, 2026-09-16).
 import { editReadOnlyOf, hwnd32, sameHwnd } from "../engine/receiver-facts.js";
 import { KEYBOARD_HOST_CLASSES, keyboardHostOf } from "../engine/keyboard-hosts.js";
+import { editableWinFormsComboOf, type ComboWindowFactsReader } from "../engine/winforms-combo.js";
 
 // ── Injectable backend interface ──────────────────────────────────────────────
 
@@ -245,6 +246,12 @@ export interface ExecutorDeps {
    * evidence of anything. Optional; absent means not asked.
    */
   windowTakesInput?(hwnd: bigint): Promise<boolean | undefined> | boolean | undefined;
+  /**
+   * internal #238 — a window's class, style bits and parent, to recognise a WinForms editable combo box
+   * (`winforms-combo.ts`). `undefined` means it could not be read, which is not evidence of anything.
+   * Optional; absent means not asked, and the write goes on as before.
+   */
+  comboWindowFacts?: ComboWindowFactsReader;
   /**
    * ADR-036 item 6 — who would take a press at this point, from the aim's point of view.
    *
@@ -2150,6 +2157,25 @@ export class KeyboardCannotReplaceError extends Error implements CallerFacingRef
 }
 
 /**
+ * internal #238 — a type or setValue into a WinForms editable combo box (`winforms-combo.ts`). UI Automation
+ * changes its text without the application seeing the change, so the write is not made and the caller is
+ * told how to make one the application does see. `executor_failed`, with this sentence as its `detail`.
+ */
+export class WinFormsComboWriteRefusedError extends Error implements CallerFacingRefusal {
+  readonly callerDetail: string;
+  /** Refused before any route ran (internal #242). */
+  readonly noRouteTried = true as const;
+  constructor(entity: UiEntity) {
+    super(`not writing "${entity.label ?? entity.entityId}" through UI Automation: a WinForms combo box does not see that change`);
+    this.name = "WinFormsComboWriteRefusedError";
+    this.callerDetail =
+      `Nothing was written: "${quotedLabel(entity)}" is a WinForms combo box, and UI Automation can change its text ` +
+      `without the application seeing the change. Click it, select its old text if the click did not, type the new ` +
+      `text with keyboard(action:'type'), then move the focus away (Tab, or the next control) so the application takes it.`;
+  }
+}
+
+/**
  * internal #224 — a field whose only road is the window it is drawn in, when that window is not usable
  * now (closed or recreated since discover, moved under another window, or refusing injected input), or
  * when this server cannot post into a given window at all (a backend without the resolve, or the
@@ -2510,6 +2536,12 @@ export function createDesktopExecutor(
       // surface executor_failed cleanly. On combined failure we surface a joint
       // error message so the LLM sees both rungs' diagnostics in one envelope.
       if ((action === "type" || action === "setValue") && text !== undefined) {
+        // internal #238 — not through UI Automation into a WinForms editable combo box: the text changes on
+        // screen and the application is not told, so `ok:true` would report a value its model never took.
+        // Before the try below, whose catch would hand the refusal to the keyboard rung as a failed write.
+        if (d.comboWindowFacts !== undefined && (await editableWinFormsComboOf(entity, d.comboWindowFacts)) !== undefined) {
+          throw new WinFormsComboWriteRefusedError(entity);
+        }
         try {
           const written = await d.uiaSetValue(winTitle, text, name, automationId, aimHwnd);
           // ADR-036 family 2, observation only — WHAT THIS CALL ADDRESSED BY.
@@ -3552,6 +3584,13 @@ function getSharedRealDeps(): ExecutorDeps {
         className: getWindowClassName,
         title: getWindowTitleW,
       });
+    },
+
+    async comboWindowFacts(hwnd) {
+      const { getWindowClassName, getWindowStyle, getWindowParent } = await import("../engine/win32.js");
+      const className = getWindowClassName(hwnd);
+      if (className === "") return undefined; // no such window, or this build cannot ask
+      return { className, style: getWindowStyle(hwnd), parent: getWindowParent(hwnd) };
     },
 
     async windowTakesInput(hwnd) {

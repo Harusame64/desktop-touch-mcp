@@ -10,6 +10,11 @@
   `aim_route_failed`, saying the press may already have happened: look at the window before pressing
   again. Before, it fell back to a mouse press at the same point, and when the press had closed its
   own window, it answered that nothing was clicked.
+- `desktop_act` `type` / `setValue` into a WinForms editable combo box is now refused with `executor_failed`,
+  and nothing is written. UI Automation changed its text on screen without the application seeing the
+  change, so the act answered `ok:true` while the application kept the old value. The reply says how to
+  write it so the application sees it: click the box, type with `keyboard`, then move the focus away.
+  A WinForms drop-down list, a WPF combo box and other text fields are unchanged.
 
 ## [2.3.0] - 2026-10-12 — macOS preview, one-time password fill for the key locker, and quieter background reading
 
