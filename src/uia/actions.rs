@@ -313,9 +313,18 @@ fn select_item(ctx: &UiaContext, elem: &IUIAutomationElement) -> ActionResult {
                         || hr == windows::Win32::Foundation::E_NOINTERFACE.0 as u32
                         || hr == UIA_E_NOTSUPPORTED
                         || hr == windows::Win32::Foundation::E_NOTIMPL.0 as u32;
-                    let (error, code) = if absent {
-                        ("SelectionItemPattern not supported by this element".to_string(), Some("PatternNotSupported".to_string()))
-                    } else if super::is_timeout(&e) {
+                    if absent {
+                        return ActionResult {
+                            ok: false,
+                            element: None,
+                            error: Some("SelectionItemPattern not supported by this element".into()),
+                            code: Some("PatternNotSupported".into()),
+                            focused_by: None,
+                            selected: None,
+                            notified: None,
+                        };
+                    }
+                    let (error, code): (String, Option<String>) = if super::is_timeout(&e) {
                         (super::STOPPED_ANSWERING.to_string(), None)
                     } else {
                         (format!("Select failed: the SelectionItemPattern lookup failed: {e}"), None)
