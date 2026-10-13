@@ -2321,10 +2321,10 @@ const COLLECTION_ITEM_CONTROL_TYPES = ["ListItem", "DataItem", "TreeItem"] as co
  * A real single click is the select this road imitates, so it is the fallback, not a hazard.
  */
 class SingleClickNeeded extends Error {
-  constructor(entity: UiEntity, readonly why: "tree_item" | "no_selection_item", options?: ErrorOptions) {
+  constructor(entity: UiEntity, readonly item: "tree_item" | "no_selection_item", options?: ErrorOptions) {
     super(
       `a click on "${entity.label ?? entity.entityId}" (${entity.controlType ?? "item"}) is made as a single mouse click: ` +
-        (why === "tree_item"
+        (item === "tree_item"
           ? "UI Automation's select on a tree can change the selection twice"
           : "the item cannot be selected through UI Automation, and its Invoke does more than a click"),
       options,
@@ -2353,13 +2353,13 @@ async function selectCollectionItem(
 ): Promise<ExecutorKind | SingleClickNeeded> {
   try {
     const selected = await d.uiaSelect(winTitle, name, automationId, entity.controlType, aimHwnd);
-    probeRoute("uia", aimHwnd, entity, {
-      why: selected?.selected === true ? "uia_select" : "uia_invoke",
-      focusedBy: selected?.focusedBy ?? null,
-      // Whether a list box's parent was told, as a real click tells it (`actions.rs::notify_list_box_selchange`).
-      notified: selected?.notified ?? null,
-      addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy,
-    });
+    // Two literal calls, not a ternary: the vocabulary scanner reads a `why` only as a literal.
+    if (selected?.selected === true) {
+      // `notified`: whether a list box's parent was told, as a real click tells it (`actions.rs::notify_list_box_selchange`).
+      probeRoute("uia", aimHwnd, entity, { why: "uia_select", focusedBy: selected.focusedBy ?? null, notified: selected.notified ?? null, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
+    } else {
+      probeRoute("uia", aimHwnd, entity, { why: "uia_invoke", focusedBy: selected?.focusedBy ?? null, notified: null, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
+    }
     return "uia";
   } catch (err) {
     if (err instanceof WindowExcludedError) {
@@ -3061,7 +3061,7 @@ export function createDesktopExecutor(
         // internal #233 — a collection item to be clicked as a single mouse click, on a window named by handle:
         // refused as every aimed coordinate press is, in words that say what to do instead.
         if (uiaErr instanceof SingleClickNeeded && aimHwnd !== undefined) {
-          probeRefusal("uia_select", "executor_failed", aimHwnd, entity, { selectRefused: "needs_title_road", singleClick: uiaErr.why, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
+          probeRefusal("uia_select", "executor_failed", aimHwnd, entity, { selectRefused: "needs_title_road", singleClick: uiaErr.item, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
           throw new CollectionItemSelectRefusedError(entity, "needs_title_road", undefined, aimHwnd, { cause: uiaErr });
         }
         if (aimHwnd !== undefined) {

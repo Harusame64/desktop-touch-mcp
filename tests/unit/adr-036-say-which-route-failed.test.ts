@@ -103,7 +103,7 @@ describe("the native writer's own words are the classifier's words (gate 2 on #7
     "InvokePattern cast failed", "ValuePattern cast failed", "TextPattern2 cast failed", "TextPattern2 not supported by this element",
     // internal #233 — the select road decides on the engine's code (`PatternNotSupported`, `SelectNotApplied`),
     // carried as `uiaCode` by the dep, never on these words (`desktop-executor.ts::selectCollectionItem`).
-    "SelectionItemPattern not supported by this element", "The item was not selected",
+    "SelectionItemPattern not supported by this element", "The item was not selected", "This item is selected with a single mouse click",
   ];
 
   it("finds the literals it is about (the scan is not empty)", () => {
