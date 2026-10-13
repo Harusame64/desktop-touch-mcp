@@ -18,7 +18,7 @@ import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
-const PACKAGE_VERSION = "2.3.0";
+const PACKAGE_VERSION = "2.3.1";
 const RELEASE_TAG = `v${PACKAGE_VERSION}`;
 const REPO_API_URL = `https://api.github.com/repos/Harusame64/desktop-touch-mcp/releases/tags/${RELEASE_TAG}`;
 // The release zip for this machine. Windows (any arch, as before) gets the Windows build; Apple
@@ -34,7 +34,7 @@ export function assetNameFor(platform, arch) {
 const ASSET_NAME = assetNameFor(process.platform, process.arch) ?? WINDOWS_ASSET;
 const RELEASE_METADATA_FILE = ".desktop-touch-release.json";
 const RELEASE_MANIFEST = {
-  tagName: "v2.3.0",
+  tagName: "v2.3.1",
   // One SHA256 per release zip, written by the npm-publish job (scripts/update-sha.mjs).
   sha256: {
     "desktop-touch-mcp-windows.zip": "PENDING",
