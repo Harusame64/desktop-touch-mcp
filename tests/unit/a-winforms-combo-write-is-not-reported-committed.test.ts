@@ -87,7 +87,14 @@ describe("a WinForms editable combo box", () => {
           expect(d.uiaSetValue).not.toHaveBeenCalled();
           expect(d.keyboardTypeBg).not.toHaveBeenCalled();
           expect(err?.callerDetail).toMatch(/^Nothing was written: "A17 Combo" is a WinForms combo box/);
-          expect(err?.callerDetail).toContain("keyboard({action:'type', text})");
+          // Every keyboard call names its window: keyboard refuses one with neither (DestinationRequired), and
+          // the advice copied as written failed that way, 3/3 (win2, 2.3.1 dogfood D3).
+          const win = roadName === "title road" ? `windowTitle:"FX238"` : `hwnd:'4919'`;
+          expect(err?.callerDetail).toContain(`keyboard({action:'type', text, ${win}})`);
+          expect(err?.callerDetail).toContain(`keyboard({action:'press', keys:'tab', ${win}})`);
+          const calls = err?.callerDetail?.match(/(keyboard|mouse_click)\(\{[^}]*\}\)/g) ?? [];
+          expect(calls.length).toBeGreaterThanOrEqual(3);
+          for (const c of calls) expect(c).toContain(win);
           if (roadName === "title road") {
             expect(err?.callerDetail).toContain("Click it — desktop_act(action:'click').");
             expect(err?.callerDetail).not.toContain("mouse_click");
@@ -95,7 +102,9 @@ describe("a WinForms editable combo box", () => {
             // The point a caller can pass: discover shows `rect` only to debug calls (PR #815 codex P2).
             expect(err?.callerDetail).toContain("Click it with mouse_click({hwnd:'4919', x:400, y:310}), the centre of its rectangle");
           }
-          expect(err?.callerDetail).toContain(action === "setValue" ? "Home then Shift+End" : "press keyboard End first");
+          expect(err?.callerDetail).toContain(action === "setValue"
+            ? `keyboard({action:'press', keys:'home', ${win}}) then keys:'shift+end'`
+            : `press keyboard({action:'press', keys:'end', ${win}}) first`);
           expect(err?.callerDetail).not.toMatch(/select[^.]*with keyboard ctrl\+a/);
         });
       }
