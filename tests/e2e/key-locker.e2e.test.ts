@@ -367,7 +367,43 @@ describe("key-locker exits when its server dies before connecting (internal #282
       h.on("exit", (code) => resolve(code));
       setTimeout(() => resolve(-999), 12_000);
     });
-    expect(exit).toBe(4);
+    // 4 is the expected answer. 5 is acceptable: if something still holds a handle to the exited process
+    // (its conhost, briefly), OpenProcess succeeds on the dead process and the wait returns at once. Either way
+    // the helper did not wait for a client (review on 036ed740).
+    expect([4, 5]).toContain(exit);
+  }, 40_000);
+});
+
+// internal #282 (review on 036ed740): the first-run consent dialog goes away with the server too. Opens a real
+// window, so it runs only with DTM_E2E_LOCKER_DIALOG=1.
+describe.runIf(process.env.DTM_E2E_LOCKER_DIALOG === "1")("key-locker consent dialog exits with the MCP server (internal #282)", () => {
+  const kids: ChildProcess[] = [];
+  afterEach(() => { for (const c of kids) killTree(c.pid); kids.length = 0; });
+
+  it("closes the consent dialog when the server process dies, and writes no consent.json", async () => {
+    expect(existsSync(HELPER_EXE)).toBe(true);
+    const storeDir = freshStoreDir();
+    try {
+      const server = spawn("powershell.exe", ["-NoProfile", "-Command", "Start-Sleep -Seconds 60"], { stdio: "ignore", windowsHide: true });
+      kids.push(server);
+      expect(server.pid).toBeDefined();
+      const dialog = spawn(HELPER_EXE, ["-Consent", "-StoreDir", storeDir, "-McpPid", String(server.pid)], {
+        detached: true, stdio: "ignore", windowsHide: false,
+      });
+      kids.push(dialog);
+      let dialogExit: number | null | undefined;
+      dialog.on("exit", (code) => { dialogExit = code; });
+
+      await new Promise((r) => setTimeout(r, 2_000));
+      expect(dialogExit).toBeUndefined(); // the dialog is up and waiting for the user
+
+      killTree(server.pid);
+      expect(await pollUntil(() => dialogExit !== undefined, 10_000)).toBe(true);
+      expect(dialogExit).toBe(5);
+      expect(existsSync(join(storeDir, "consent.json"))).toBe(false);
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
   }, 40_000);
 });
 
@@ -389,7 +425,8 @@ describe.runIf(process.env.DTM_E2E_LOCKER_DIALOG === "1")("key-locker exits with
         `$c=New-Object System.IO.Pipes.NamedPipeClientStream('.','${name}',[System.IO.Pipes.PipeDirection]::InOut);` +
         "$c.Connect(20000);$r=New-Object System.IO.StreamReader($c);$null=$r.ReadLine();" +
         "$w=New-Object System.IO.StreamWriter($c);$w.AutoFlush=$true;$w.NewLine=\"`n\";" +
-        "$w.WriteLine('{\"id\":1,\"m\":\"capture\",\"k\":\"e2e-282\",\"purpose\":\"fill_once\",\"label\":\"e2e internal #282 (closes by itself)\"}');" +
+        // No `purpose`: the autofill capture, the dialog whose answer is written to store.json when it is confirmed.
+        "$w.WriteLine('{\"id\":1,\"m\":\"capture\",\"k\":\"e2e-282\",\"label\":\"e2e internal #282 (closes by itself)\"}');" +
         "Write-Host 'SENT';Start-Sleep -Seconds 60;";
       const server = spawn("powershell.exe", ["-NoProfile", "-Command", clientScript], { stdio: ["ignore", "pipe", "ignore"] });
       kids.push(server);
@@ -416,6 +453,9 @@ describe.runIf(process.env.DTM_E2E_LOCKER_DIALOG === "1")("key-locker exits with
 
       killTree(server.pid);
       expect(await pollUntil(() => helperExit !== undefined, 10_000)).toBe(true);
+      // 0: the dispatcher shut down and Main returned. Anything else means the hard fallback ran (it kills the
+      // process after 3 s), which is an exit too but says the dialog did not close cleanly.
+      expect(helperExit).toBe(0);
       expect(existsSync(join(storeDir, "store.json"))).toBe(false);
     } finally {
       rmSync(storeDir, { recursive: true, force: true });

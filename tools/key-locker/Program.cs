@@ -107,7 +107,13 @@ internal static class KeyLocker
         // effects-gate (capture/inject/mint) stays closed until this file exists, so spawning this to
         // ASK is allowed pre-consent (the gate is on secret effects, not process spawn). Runs before the
         // store is even opened.
-        if (consent) return RunConsent(storeDir);
+        // internal #282 (review on 036ed740): the consent dialog goes away with the server too. The server passes
+        // -McpPid here as well; a launch without it (an older server) keeps the old behaviour.
+        if (consent)
+        {
+            if (mcpPid != 0 && !StartServerWatch(mcpPid)) return 4;
+            return RunConsent(storeDir);
+        }
 
         // DF-5 console-injector self-test seams — no store/pipe/GUI. The child role runs as conhost's
         // client and cooked-reads a line; the parent role spawns it, runs the real Win32Input injector,
@@ -144,21 +150,10 @@ internal static class KeyLocker
         if (string.IsNullOrEmpty(pipeName)) { Console.Error.WriteLine("key-locker: missing -PipeName"); return 2; }
         if (mcpPid == 0) { Console.Error.WriteLine("key-locker: missing/invalid -McpPid"); return 2; }
 
-        // internal #282: watch the MCP server from the start, not only once it has connected. The server spawned
-        // this process, so it is alive now; holding the handle from here means a later PID reuse cannot stand in
-        // for it, and a server that dies before it connects (win2 2026-10-13: a helper spawned during the
-        // server's own shutdown) does not leave this process waiting on the pipe forever. Never closed.
-        var mcpProcess = OpenProcess(SYNCHRONIZE, false, mcpPid);
-        if (mcpProcess == IntPtr.Zero)
-        {
-            Console.Error.WriteLine($"key-locker: cannot watch the MCP server (pid {mcpPid}, error {Marshal.GetLastWin32Error()}); exiting.");
-            return 4;
-        }
-        new Thread(() =>
-        {
-            WaitForSingleObject(mcpProcess, INFINITE);
-            OnServerGone(mcpPid);
-        }) { IsBackground = true, Name = "locker-watch-mcp" }.Start();
+        // internal #282: watch the MCP server from the start, not only once it has connected, so a server that dies
+        // before it connects (win2 2026-10-13: a helper spawned during the server's own shutdown) does not leave
+        // this process waiting on the pipe forever.
+        if (!StartServerWatch(mcpPid)) return 4;
 
         NamedPipeServerStream server;
         try
@@ -200,7 +195,10 @@ internal static class KeyLocker
             _app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
             var loop = new Thread(() =>
             {
+                // A reply written after the server died throws on the dead pipe; on this background thread that would be
+                // an unhandled exception (and a WER report). The server is gone either way: end the loop quietly.
                 try { RunControlLoop(server); }
+                catch (IOException e) { Console.Error.WriteLine($"[key-locker] pipe closed mid-reply: {e.Message}"); }
                 finally { try { _app.Dispatcher.Invoke(() => _app.Shutdown()); } catch { /* app already gone */ } }
             }) { IsBackground = true, Name = "locker-pipe" };
             loop.SetApartmentState(ApartmentState.MTA);
@@ -217,6 +215,25 @@ internal static class KeyLocker
         }
     }
 
+    /// internal #282: open a handle to the MCP server and end this process when it exits (`OnServerGone`). The
+    /// server spawned this process, so it is alive now; holding the handle from here means a later PID reuse
+    /// cannot stand in for it. The handle is never closed. False (and the caller exits 4) when it cannot be opened.
+    private static bool StartServerWatch(uint mcpPid)
+    {
+        var mcpProcess = OpenProcess(SYNCHRONIZE, false, mcpPid);
+        if (mcpProcess == IntPtr.Zero)
+        {
+            Console.Error.WriteLine($"key-locker: cannot watch the MCP server (pid {mcpPid}, error {Marshal.GetLastWin32Error()}); exiting.");
+            return false;
+        }
+        new Thread(() =>
+        {
+            WaitForSingleObject(mcpProcess, INFINITE);
+            OnServerGone(mcpPid);
+        }) { IsBackground = true, Name = "locker-watch-mcp" }.Start();
+        return true;
+    }
+
     /// The MCP server exited. Close every open dialog (each returns its cancel answer, so nothing is stored or
     /// typed) and shut the dispatcher down; if that has not ended the process within a few seconds, exit hard.
     /// Before the dispatcher exists (still waiting for the client), there is nothing to close: exit at once.
@@ -224,6 +241,8 @@ internal static class KeyLocker
     {
         _serverGone = true;
         Console.Error.WriteLine($"[key-locker] MCP server (pid {mcpPid}) exited; closing dialogs and exiting.");
+        // The consent dialog's Application is its own (`Application.Current`), not `_app`; and before the pipe client
+        // connects there is no dispatcher at all. Neither has anything to keep: exit at once.
         var app = _app;
         if (app == null) Environment.Exit(5);
         try
@@ -236,7 +255,10 @@ internal static class KeyLocker
         }
         catch { /* dispatcher already gone */ }
         Thread.Sleep(3000);
-        Environment.Exit(5);
+        // Still here: the dispatcher did not shut down. Do not rely on Environment.Exit, whose exit handlers could
+        // wait on that same dispatcher; end the process without them (no WER, unlike FailFast).
+        Console.Error.WriteLine("[key-locker] dispatcher did not shut down; terminating.");
+        System.Diagnostics.Process.GetCurrentProcess().Kill();
     }
 
     private static bool WaitForVerifiedClient(NamedPipeServerStream server, uint mcpPid)

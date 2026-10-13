@@ -556,7 +556,8 @@ export class KeyLockerManager {
    */
   protected spawnConsentDialog(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const child = spawn(HELPER_EXE, ["-Consent", "-StoreDir", this.storeDir], { windowsHide: false });
+      // -McpPid: the dialog closes by itself if this server exits while it is open (internal #282).
+      const child = spawn(HELPER_EXE, ["-Consent", "-StoreDir", this.storeDir, "-McpPid", String(process.pid)], { windowsHide: false });
       child.once("error", reject);            // exe missing / spawn failure
       child.once("exit", () => resolve());     // dialog closed (accepted or declined) — re-read decides
     });
@@ -577,12 +578,6 @@ export class KeyLockerManager {
   }
 
   /**
-   * Tear down the live host (MCP shutdown / idle dormancy). Idempotent. If a start is IN FLIGHT, wait
-   * for it first and dispose the host it produces — else a shutdown racing an in-flight `withHost` would
-   * orphan the just-spawned `key-locker.exe` (the `starting` promise sets `this.host` AFTER dispose read
-   * the still-null field — Opus PR#497 R1 P2 leak).
-   */
-  /**
    * The server's shutdown: dispose the host for good. Unlike `dispose()` (also the idle dormancy, after which
    * the next op lazily restarts), every later `withHost` / `ensureConsent` throws `KeyLockerClosedError`
    * instead of spawning a helper (internal #282). Idempotent.
@@ -592,6 +587,12 @@ export class KeyLockerManager {
     await this.dispose();
   }
 
+  /**
+   * Tear down the live host (MCP shutdown / idle dormancy). Idempotent. If a start is IN FLIGHT, wait
+   * for it first and dispose the host it produces — else a shutdown racing an in-flight `withHost` would
+   * orphan the just-spawned `key-locker.exe` (the `starting` promise sets `this.host` AFTER dispose read
+   * the still-null field — Opus PR#497 R1 P2 leak).
+   */
   async dispose(): Promise<void> {
     const pending = this.starting;
     if (pending !== null) {
