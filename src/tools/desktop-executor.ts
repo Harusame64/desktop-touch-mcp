@@ -2376,7 +2376,9 @@ async function selectCollectionItem(
     }
     const code = (err as { uiaCode?: unknown } | null)?.uiaCode;
     if (code === "MouseClickNeeded") return new SingleClickNeeded(entity, "tree_item", { cause: err });
-    if (code === "PatternNotSupported") return new SingleClickNeeded(entity, "no_selection_item", { cause: err });
+    // Belt to the engine's own check (PR #819 codex P1): an item discover READ with SelectionItemPattern that
+    // now answers "not supported" is not the same item, or not answering — not one to click at its old point.
+    if (code === "PatternNotSupported" && !(entity.patterns ?? []).includes("SelectionItemPattern")) return new SingleClickNeeded(entity, "no_selection_item", { cause: err });
     const routeFailure = code === undefined ? classifyUiaRouteFailure(err) : undefined;
     const kind = code === "SelectNotApplied" ? "not_selected"
       : code === "SelectOutcomeUnknown" ? "outcome_unknown"

@@ -75,6 +75,11 @@ function entity(controlType: string, originHwnd?: bigint): UiEntity {
   };
 }
 
+/** A DataGridView cell as discover reads it (win2, 2026-10-13): Invoke and Value, no SelectionItem. */
+function cell(originHwnd?: bigint): UiEntity {
+  return { ...entity("DataItem", originHwnd), patterns: ["InvokePattern", "ValuePattern"] };
+}
+
 function deps(over: Partial<ExecutorDeps> = {}): ExecutorDeps {
   return {
     uiaClick: vi.fn(async () => {}),
@@ -241,7 +246,7 @@ describe("a click on a collection item", () => {
 
     it(`refuses a single-click item with no rectangle in its own words and advice — ${roadName}`, async () => {
       const d = deps({ uiaSelect: NO_SELECTION_ITEM() });
-      const { rect: _rect, ...noRect } = entity("DataItem");
+      const { rect: _rect, ...noRect } = cell();
       const { v, e: err } = await act(road, d, noRect as UiEntity, "click");
       expect(v).toBeNull();
       expect(err?.name).toBe("CollectionItemSelectRefusedError");
@@ -285,7 +290,7 @@ describe("an item clicked as a single mouse click (a tree item, or one the engin
     for (const [roadName, road] of roads) {
       it(`is clicked once at its centre through the checked mouse road, never invoked — ${why}, ${roadName}`, async () => {
         const d = deps({ uiaSelect: uiaSelect(), aimRect: vi.fn(async () => RECT_OK), pointOwner: vi.fn(() => ({ kind: "aim" as const, via: "os_hit_test" as const })) });
-        const { v, e: err } = await act(road, d, entity(controlType, FORM), "click");
+        const { v, e: err } = await act(road, d, controlType === "DataItem" ? cell(FORM) : entity(controlType, FORM), "click");
         expect(err).toBeNull();
         // The mouse-first road's answer: no downgrade, because nothing failed.
         expect(v).toBe("mouse");
@@ -308,7 +313,7 @@ describe("an item clicked as a single mouse click (a tree item, or one the engin
           aimRect: vi.fn(async () => RECT_OK),
           pointOwner: vi.fn(() => ({ kind: "other" as const, hwnd: 777n, title: "Over it", via: "os_hit_test" as const })),
         });
-        const { v, e: err } = await act(road, d, entity(controlType, FORM), "click");
+        const { v, e: err } = await act(road, d, controlType === "DataItem" ? cell(FORM) : entity(controlType, FORM), "click");
         expect(v).toBeNull();
         expect(err?.name).toBe("AimOccludedError");
         expect(d.mouseClick).not.toHaveBeenCalled();
@@ -317,7 +322,7 @@ describe("an item clicked as a single mouse click (a tree item, or one the engin
 
       it(`is refused, pressing nothing, when the point is outside the window — ${why}, ${roadName}`, async () => {
         const d = deps({ uiaSelect: uiaSelect(), aimRect: vi.fn(async () => ({ x: 0, y: 0, width: 100, height: 100 })) });
-        const { v, e: err } = await act(road, d, entity(controlType, FORM), "click");
+        const { v, e: err } = await act(road, d, controlType === "DataItem" ? cell(FORM) : entity(controlType, FORM), "click");
         expect(v).toBeNull();
         expect(err?.name).toBe("AimedPointOutsideWindowError");
         expect(d.mouseClick).not.toHaveBeenCalled();
@@ -336,9 +341,19 @@ describe("an item clicked as a single mouse click (a tree item, or one the engin
     expect(d.mouseClick).toHaveBeenCalledTimes(1);
   });
 
+  it("an item discover read WITH SelectionItem that now answers 'not supported' is refused, not clicked at its old point (PR #819 codex P1)", async () => {
+    const d = deps({ uiaSelect: NO_SELECTION_ITEM() });
+    const { v, e: err } = await act(titleRoad, d, entity("ListItem"), "click");
+    expect(v).toBeNull();
+    expect(err?.name).toBe("CollectionItemSelectRefusedError");
+    expect(err?.callerDetail).toMatch(/^Nothing was pressed/);
+    expect(d.mouseClick).not.toHaveBeenCalled();
+    expect(d.uiaClick).not.toHaveBeenCalled();
+  });
+
   it("is not clicked when the mouse is ruled out for the item", async () => {
     const d = deps({ uiaSelect: NO_SELECTION_ITEM() });
-    const e: UiEntity = { ...entity("DataItem"), unsupportedExecutors: ["mouse"] };
+    const e: UiEntity = { ...cell(), unsupportedExecutors: ["mouse"] };
     const { v } = await act(titleRoad, d, e, "click");
     expect(v).toBeNull();
     expect(d.mouseClick).not.toHaveBeenCalled();

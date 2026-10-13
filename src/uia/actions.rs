@@ -300,12 +300,31 @@ fn select_item(ctx: &UiaContext, elem: &IUIAutomationElement) -> ActionResult {
         let sel: IUIAutomationSelectionItemPattern =
             match elem.GetCurrentPatternAs(UIA_SelectionItemPatternId) {
                 Ok(p) => p,
-                Err(_) => {
+                Err(e) => {
+                    // Only an ABSENT pattern is `PatternNotSupported`, which the executor turns into a single
+                    // mouse click at the item's rectangle. A lookup that failed for another reason — the row
+                    // gone (UIA_E_ELEMENTNOTAVAILABLE), the provider timing out — must not become a click at
+                    // a rectangle something else may now occupy (PR #819 codex P1). windows-rs reports a null
+                    // pattern as an error whose code is S_OK or E_POINTER; providers also answer
+                    // E_NOINTERFACE, UIA_E_NOTSUPPORTED or E_NOTIMPL for "not here" (READ, not measured).
+                    let hr = e.code().0 as u32;
+                    let absent = hr == 0
+                        || hr == windows::Win32::Foundation::E_POINTER.0 as u32
+                        || hr == windows::Win32::Foundation::E_NOINTERFACE.0 as u32
+                        || hr == UIA_E_NOTSUPPORTED
+                        || hr == windows::Win32::Foundation::E_NOTIMPL.0 as u32;
+                    let (error, code) = if absent {
+                        ("SelectionItemPattern not supported by this element".to_string(), Some("PatternNotSupported".to_string()))
+                    } else if super::is_timeout(&e) {
+                        (super::STOPPED_ANSWERING.to_string(), None)
+                    } else {
+                        (format!("Select failed: the SelectionItemPattern lookup failed: {e}"), None)
+                    };
                     return ActionResult {
                         ok: false,
                         element: None,
-                        error: Some("SelectionItemPattern not supported by this element".into()),
-                        code: Some("PatternNotSupported".into()),
+                        error: Some(error),
+                        code,
                         focused_by: None,
                         selected: None,
                         notified: None,
