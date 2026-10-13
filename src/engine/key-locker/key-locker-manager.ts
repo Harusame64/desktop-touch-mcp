@@ -56,6 +56,20 @@ export class KeyLockerDisabledError extends Error {
   }
 }
 
+/**
+ * Typed reject for a secret op after `close()` — the server is shutting down (internal #282). Without it, an op
+ * that failed BECAUSE shutdown disposed the host (a pending capture, then the loop's clean-up `delete`) went
+ * back through `withHost` and lazily spawned a fresh `key-locker.exe` that nothing would ever connect to or
+ * dispose (win2, 2026-10-13: a second helper created at the quit second, alive minutes later; the 2.3.0 shape).
+ */
+export class KeyLockerClosedError extends Error {
+  readonly code = "KeyLockerClosed";
+  constructor() {
+    super("KeyLockerClosed: the key locker is shutting down with the server");
+    this.name = "KeyLockerClosedError";
+  }
+}
+
 /** Mirrors the locker's default store dir (Program.cs: %LOCALAPPDATA%\desktop-touch-mcp\locker). */
 function defaultStoreDir(): string {
   const localAppData = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local");
@@ -133,6 +147,7 @@ export class KeyLockerManager {
   private consenting: Promise<void> | null = null; // in-flight `-Consent` dialog (dedupes concurrent prompts)
   private inFlight = 0;        // secret ops currently running through withHost (idle-dispose never runs mid-op)
   private lastActivityMs = 0;  // clock stamp of the last withHost completion (idle-dispose dormancy timer)
+  private closed = false;      // set by close() at shutdown: no host (or consent dialog) is ever started again
 
   // W-3 (§2.1): the single live session tracker + ssh session-end watch this manager owns. The watch is
   // built with a snapshot seam that adapts the real Win32 process-tree bindings (or a test fake) into the
@@ -479,6 +494,7 @@ export class KeyLockerManager {
    * the effects gate (L4 §2). The host is reused across calls; `dispose()` tears it down.
    */
   async withHost<T>(fn: (host: KeyLockerHost) => Promise<T>): Promise<T> {
+    if (this.closed) throw new KeyLockerClosedError();
     if (this.isDisabled()) {
       throw new KeyLockerDisabledError();
     }
@@ -525,6 +541,7 @@ export class KeyLockerManager {
    * ⇒ throws `KeyLockerDisabledError` and never prompts. Concurrent calls share ONE dialog.
    */
   async ensureConsent(): Promise<boolean> {
+    if (this.closed) throw new KeyLockerClosedError();
     if (this.isDisabled()) throw new KeyLockerDisabledError();
     if (this.isConsentAccepted()) return true;
     this.consenting ??= this.spawnConsentDialog().finally(() => { this.consenting = null; });
@@ -539,7 +556,8 @@ export class KeyLockerManager {
    */
   protected spawnConsentDialog(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const child = spawn(HELPER_EXE, ["-Consent", "-StoreDir", this.storeDir], { windowsHide: false });
+      // -McpPid: the dialog closes by itself if this server exits while it is open (internal #282).
+      const child = spawn(HELPER_EXE, ["-Consent", "-StoreDir", this.storeDir, "-McpPid", String(process.pid)], { windowsHide: false });
       child.once("error", reject);            // exe missing / spawn failure
       child.once("exit", () => resolve());     // dialog closed (accepted or declined) — re-read decides
     });
@@ -557,6 +575,16 @@ export class KeyLockerManager {
       .then((h) => { this.host = h; this.starting = null; return h; })
       .catch((e) => { this.starting = null; throw e; });
     return this.starting;
+  }
+
+  /**
+   * The server's shutdown: dispose the host for good. Unlike `dispose()` (also the idle dormancy, after which
+   * the next op lazily restarts), every later `withHost` / `ensureConsent` throws `KeyLockerClosedError`
+   * instead of spawning a helper (internal #282). Idempotent.
+   */
+  async close(): Promise<void> {
+    this.closed = true;
+    await this.dispose();
   }
 
   /**

@@ -191,7 +191,8 @@ describe("key-locker live smoke (pipe control plane)", () => {
 
 describe("key-locker rogue client rejection (kernel client-verify)", () => {
   let child: ChildProcess | undefined;
-  afterEach(() => { killTree(child?.pid); child = undefined; });
+  let standIn: ChildProcess | undefined;
+  afterEach(() => { killTree(child?.pid); child = undefined; killTree(standIn?.pid); standIn = undefined; });
 
   it("rejects a client whose PID != the locker's -McpPid", async () => {
     expect(existsSync(HELPER_EXE)).toBe(true);
@@ -199,7 +200,11 @@ describe("key-locker rogue client rejection (kernel client-verify)", () => {
     // Launch the real locker but tell it a DIFFERENT process is its MCP. Our connect (this
     // process's pid) must be rejected by the C# kernel client-verify → we CONNECT but get no hello.
     const name = `dtm-locker-rogue-${randomBytes(8).toString("hex")}`;
-    const wrongMcpPid = process.pid + 100_000;
+    // A LIVE other process: since internal #282 the locker opens a handle to its -McpPid at start and exits
+    // (code 4) when it cannot, so a made-up pid would no longer reach the client verify this cell is about.
+    standIn = spawn("powershell.exe", ["-NoProfile", "-Command", "Start-Sleep -Seconds 60"], { stdio: "ignore", windowsHide: true });
+    expect(standIn.pid).toBeDefined();
+    const wrongMcpPid = standIn.pid!;
     child = spawn(HELPER_EXE, ["-PipeName", name, "-McpPid", String(wrongMcpPid)], {
       detached: true, stdio: "ignore", windowsHide: false,
     });
@@ -318,4 +323,142 @@ describe("key-locker FIRST_PIPE_INSTANCE fail-loud", () => {
     });
     expect(exit).toBe(3);
   }, 40_000);
+});
+
+// internal #282: a helper whose server dies BEFORE it connects exits too. win2 2026-10-13: the server's own
+// shutdown spawned a fresh helper (fixed in KeyLockerManager.close()), which waited on its pipe for minutes.
+// Headless: no dialog, no client ever connects.
+describe("key-locker exits when its server dies before connecting (internal #282)", () => {
+  const kids: ChildProcess[] = [];
+  afterEach(() => { for (const c of kids) killTree(c.pid); kids.length = 0; });
+
+  it("exits with code 5 once the -McpPid process is gone, with no client", async () => {
+    expect(existsSync(HELPER_EXE)).toBe(true);
+    const server = spawn("powershell.exe", ["-NoProfile", "-Command", "Start-Sleep -Seconds 60"], { stdio: "ignore", windowsHide: true });
+    kids.push(server);
+    expect(server.pid).toBeDefined();
+    const helper = spawn(HELPER_EXE, ["-PipeName", `dtm-locker-282b-${randomBytes(8).toString("hex")}`, "-McpPid", String(server.pid)], {
+      detached: true, stdio: "ignore", windowsHide: false,
+    });
+    kids.push(helper);
+    let helperExit: number | null | undefined;
+    helper.on("exit", (code) => { helperExit = code; });
+
+    await new Promise((r) => setTimeout(r, 1_500));
+    expect(helperExit).toBeUndefined(); // waiting for its client, as it should
+
+    killTree(server.pid);
+    expect(await pollUntil(() => helperExit !== undefined, 10_000)).toBe(true);
+    expect(helperExit).toBe(5);
+  }, 40_000);
+
+  it("refuses to start (code 4) when its -McpPid is not a running process", async () => {
+    expect(existsSync(HELPER_EXE)).toBe(true);
+    // A pid that WAS a process and has exited — not a made-up number, which could name a live process.
+    const gone = spawn("cmd.exe", ["/c", "exit 0"], { stdio: "ignore", windowsHide: true });
+    const gonePid = gone.pid!;
+    await new Promise<void>((r) => gone.once("exit", () => r()));
+    await new Promise((r) => setTimeout(r, 200)); // let node release its handle to it
+    const exit = await new Promise<number | null>((resolve) => {
+      const h = spawn(HELPER_EXE, ["-PipeName", `dtm-locker-282c-${randomBytes(8).toString("hex")}`, "-McpPid", String(gonePid)], {
+        detached: true, stdio: "ignore", windowsHide: false,
+      });
+      kids.push(h);
+      h.on("exit", (code) => resolve(code));
+      setTimeout(() => resolve(-999), 12_000);
+    });
+    // 4 is the expected answer. 5 is acceptable: if something still holds a handle to the exited process
+    // (its conhost, briefly), OpenProcess succeeds on the dead process and the wait returns at once. Either way
+    // the helper did not wait for a client (review on 036ed740).
+    expect([4, 5]).toContain(exit);
+  }, 40_000);
+});
+
+// internal #282 (review on 036ed740): the first-run consent dialog goes away with the server too. Opens a real
+// window, so it runs only with DTM_E2E_LOCKER_DIALOG=1.
+describe.runIf(process.env.DTM_E2E_LOCKER_DIALOG === "1")("key-locker consent dialog exits with the MCP server (internal #282)", () => {
+  const kids: ChildProcess[] = [];
+  afterEach(() => { for (const c of kids) killTree(c.pid); kids.length = 0; });
+
+  it("closes the consent dialog when the server process dies, and writes no consent.json", async () => {
+    expect(existsSync(HELPER_EXE)).toBe(true);
+    const storeDir = freshStoreDir();
+    try {
+      const server = spawn("powershell.exe", ["-NoProfile", "-Command", "Start-Sleep -Seconds 60"], { stdio: "ignore", windowsHide: true });
+      kids.push(server);
+      expect(server.pid).toBeDefined();
+      const dialog = spawn(HELPER_EXE, ["-Consent", "-StoreDir", storeDir, "-McpPid", String(server.pid)], {
+        detached: true, stdio: "ignore", windowsHide: false,
+      });
+      kids.push(dialog);
+      let dialogExit: number | null | undefined;
+      dialog.on("exit", (code) => { dialogExit = code; });
+
+      await new Promise((r) => setTimeout(r, 2_000));
+      expect(dialogExit).toBeUndefined(); // the dialog is up and waiting for the user
+
+      killTree(server.pid);
+      expect(await pollUntil(() => dialogExit !== undefined, 10_000)).toBe(true);
+      expect(dialogExit).toBe(5);
+      expect(existsSync(join(storeDir, "consent.json"))).toBe(false);
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  }, 40_000);
+});
+
+// internal #282: the helper and its open dialog must go away with the MCP server. The pipe loop only sees a
+// closed pipe between frames, and a capture dialog blocks it, so before the fix the helper outlived the server
+// with its dialog on screen. This cell OPENS A REAL WPF DIALOG on the desktop for a few seconds (nobody types
+// into it), so it runs only when DTM_E2E_LOCKER_DIALOG=1.
+describe.runIf(process.env.DTM_E2E_LOCKER_DIALOG === "1")("key-locker exits with the MCP server (internal #282)", () => {
+  const kids: ChildProcess[] = [];
+  afterEach(() => { for (const c of kids) killTree(c.pid); kids.length = 0; });
+
+  it("closes an open capture dialog and exits when the server process dies", async () => {
+    expect(existsSync(HELPER_EXE)).toBe(true);
+    const name = `dtm-locker-282-${randomBytes(8).toString("hex")}`;
+    const storeDir = freshStoreDir();
+    try {
+      // A stand-in MCP server: connects, reads hello, asks for a capture (the dialog opens), then just waits.
+      const clientScript =
+        `$c=New-Object System.IO.Pipes.NamedPipeClientStream('.','${name}',[System.IO.Pipes.PipeDirection]::InOut);` +
+        "$c.Connect(20000);$r=New-Object System.IO.StreamReader($c);$null=$r.ReadLine();" +
+        "$w=New-Object System.IO.StreamWriter($c);$w.AutoFlush=$true;$w.NewLine=\"`n\";" +
+        // No `purpose`: the autofill capture, the dialog whose answer is written to store.json when it is confirmed.
+        "$w.WriteLine('{\"id\":1,\"m\":\"capture\",\"k\":\"e2e-282\",\"label\":\"e2e internal #282 (closes by itself)\"}');" +
+        "Write-Host 'SENT';Start-Sleep -Seconds 60;";
+      const server = spawn("powershell.exe", ["-NoProfile", "-Command", clientScript], { stdio: ["ignore", "pipe", "ignore"] });
+      kids.push(server);
+      expect(server.pid).toBeDefined();
+
+      const helper = spawn(HELPER_EXE, ["-PipeName", name, "-McpPid", String(server.pid), "-StoreDir", storeDir], {
+        detached: true, stdio: "ignore", windowsHide: false,
+      });
+      kids.push(helper);
+      let helperExit: number | null | undefined;
+      helper.on("exit", (code) => { helperExit = code; });
+
+      await new Promise<void>((resolve, reject) => {
+        let out = "";
+        const t = setTimeout(() => reject(new Error("stand-in server never sent the capture")), 20_000);
+        server.stdout!.on("data", (d) => {
+          out += d.toString("utf8");
+          if (out.includes("SENT")) { clearTimeout(t); resolve(); }
+        });
+      });
+      // Let the dialog come up, and make sure the helper is still waiting on it.
+      await new Promise((r) => setTimeout(r, 1_500));
+      expect(helperExit).toBeUndefined();
+
+      killTree(server.pid);
+      expect(await pollUntil(() => helperExit !== undefined, 10_000)).toBe(true);
+      // 0: the dispatcher shut down and Main returned. Anything else means the hard fallback ran (it kills the
+      // process after 3 s), which is an exit too but says the dialog did not close cleanly.
+      expect(helperExit).toBe(0);
+      expect(existsSync(join(storeDir, "store.json"))).toBe(false);
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

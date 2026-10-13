@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { KeyLockerHost } from "../../src/engine/key-locker-host.js";
 import {
+  KeyLockerClosedError,
   KeyLockerConsentRequiredError,
   KeyLockerDisabledError,
   KeyLockerManager,
@@ -167,6 +168,35 @@ describe("KeyLockerManager.withHost — the effects gate (no spawn before consen
     await Promise.all([inFlight, disposing]);
     expect(mgr.startCalls).toBe(1);
     expect(mgr.disposed).toBe(1); // the just-spawned host WAS torn down, not orphaned
+  });
+});
+
+describe("KeyLockerManager.close — the server's shutdown (internal #282)", () => {
+  it("disposes the host, and an op after it throws instead of spawning a fresh helper", async () => {
+    const d = freshDir();
+    writeConsent(d, { version: 1, acceptedAt: new Date().toISOString() });
+    const mgr = new FakeHostManager({ storeDir: d });
+    mgr.settleStart();
+    await mgr.withHost(async () => "a");
+    await mgr.close();
+    expect(mgr.disposed).toBe(1);
+    // win2 2026-10-13: the loop's clean-up after the disposed capture went back through withHost and
+    // started a second helper at the quit second. After close() it must not.
+    await expect(mgr.withHost(async () => "b")).rejects.toBeInstanceOf(KeyLockerClosedError);
+    await expect(mgr.ensureConsent()).rejects.toBeInstanceOf(KeyLockerClosedError);
+    expect(mgr.startCalls).toBe(1);
+    expect(mgr.consentCalls).toBe(0);
+  });
+
+  it("dispose() alone still lets the next op restart (the idle dormancy path is unchanged — the control)", async () => {
+    const d = freshDir();
+    writeConsent(d, { version: 1, acceptedAt: new Date().toISOString() });
+    const mgr = new FakeHostManager({ storeDir: d });
+    mgr.settleStart();
+    await mgr.withHost(async () => "a");
+    await mgr.dispose();
+    await expect(mgr.withHost(async () => "b")).resolves.toBe("b");
+    expect(mgr.startCalls).toBe(2);
   });
 });
 
