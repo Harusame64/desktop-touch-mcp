@@ -26,6 +26,16 @@ import type { ExecutorDeps } from "../../src/tools/desktop-executor.js";
 import type { EntityLease, UiEntity } from "../../src/engine/world-graph/types.js";
 import type { Aim } from "../../src/engine/aim.js";
 
+// The real nut.js binding needs libXtst on Linux runners; the executor's graph imports it (PR #819 codex P1).
+vi.mock("../../src/engine/nutjs.js", () => ({
+  mouse: { click: vi.fn(), doubleClick: vi.fn(), setPosition: vi.fn(), pressButton: vi.fn(), releaseButton: vi.fn(), drag: vi.fn(), config: { mouseSpeed: 1000 } },
+  keyboard: { pressKey: vi.fn(), releaseKey: vi.fn(), type: vi.fn() },
+  Button: { LEFT: "left", RIGHT: "right", MIDDLE: "middle" },
+  Point: vi.fn((x: number, y: number) => ({ x, y })),
+  straightTo: vi.fn((p: unknown) => p),
+  DEFAULT_MOUSE_SPEED: 1000,
+}));
+
 const FORM = 4919n;
 
 let dir: string;
