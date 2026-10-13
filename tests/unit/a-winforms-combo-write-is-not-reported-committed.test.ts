@@ -136,9 +136,21 @@ describe("a WinForms editable combo box", () => {
     const long = "FX238 " + "x".repeat(300);
     const d = deps({ comboWindowFacts: facts(comboAs(CBS_DROPDOWN)) });
     const { e: err } = await write({ windowTitle: long }, d, noOriginHwnd(), "setValue");
-    const prefix = JSON.stringify(long.slice(0, 60));
+    const prefix = JSON.stringify(long.slice(0, 58));
     expect(err?.callerDetail).toContain(`keyboard({action:'press', keys:'tab', windowTitle:${prefix}})`);
     // `guarded-touch.ts` cuts a refusal's detail at 1,000 characters.
+    expect(err?.callerDetail?.length).toBeLessThanOrEqual(1000);
+  });
+
+  it("title road, the worst case: a 200-character label and a title that doubles when escaped still fit with the Tab step", async () => {
+    const title = "C:\\" + "\\".repeat(80);
+    const e = { ...noOriginHwnd(), label: "L".repeat(300) };
+    const d = deps({ comboWindowFacts: facts(comboAs(CBS_DROPDOWN)) });
+    const { e: err } = await write({ windowTitle: title }, d, e, "setValue");
+    const tab = err?.callerDetail?.match(/keyboard\(\{action:'press', keys:'tab', windowTitle:("(?:[^"\\]|\\.)*")\}\)/);
+    expect(tab).not.toBeNull();
+    expect(tab![1].length).toBeLessThanOrEqual(60);
+    expect(title.startsWith(JSON.parse(tab![1]) as string)).toBe(true);
     expect(err?.callerDetail?.length).toBeLessThanOrEqual(1000);
   });
 

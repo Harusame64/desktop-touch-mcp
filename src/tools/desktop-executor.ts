@@ -2156,7 +2156,10 @@ export class KeyboardCannotReplaceError extends Error implements CallerFacingRef
   }
 }
 
-/** The longest title prefix the combo refusal repeats in each of its calls, so the sentence fits the detail cap. */
+/**
+ * The longest title, as written into a call (quoted and escaped), that the combo refusal repeats in each of
+ * its calls, so the sentence fits the 1,000-character detail cap with a 200-character label.
+ */
 const COMBO_ADVICE_TITLE_MAX = 60;
 
 /**
@@ -2187,7 +2190,10 @@ export class WinFormsComboWriteRefusedError extends Error implements CallerFacin
     // the last steps past the 1,000-character detail cap in `guarded-touch.ts` (PR #817 codex P2). Without a
     // handle, a prefix of the title — keyboard matches windowTitle by substring, so the prefix still names it.
     const keyHwnd = aimHwnd ?? observedHwndOfOrigin(entity.origin);
-    const title = aimTitle !== undefined && aimTitle.trim() !== "" ? aimTitle.slice(0, COMBO_ADVICE_TITLE_MAX) : "@active";
+    // The bound is on the title as written into the call, after escaping: a backslash or quote doubles in
+    // JSON, so a 60-character cut taken before escaping could still overflow (PR #817 codex P2).
+    let title = aimTitle !== undefined && aimTitle.trim() !== "" ? aimTitle : "@active";
+    while (JSON.stringify(title).length > COMBO_ADVICE_TITLE_MAX) title = title.slice(0, -1);
     const win = keyHwnd !== undefined ? `hwnd:'${keyHwnd}'` : `windowTitle:${JSON.stringify(title)}`;
     let click: string;
     if (aimHwnd === undefined) {
