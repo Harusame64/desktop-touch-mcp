@@ -58,6 +58,7 @@
   "why": [
     "cdp_click",
     "cdp_fill",
+    "collection_item_single_click",
     "enumeration_failed",
     "excluded_window",
     "keyboard_only_entity",

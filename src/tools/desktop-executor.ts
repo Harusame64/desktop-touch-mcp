@@ -3416,19 +3416,18 @@ export function createDesktopExecutor(
     // ADR-036 probe — the press this ADR is about: a coordinate taken from a rect remembered at
     // discover time. Both points are written: `point` is where it went, `remembered` is where the
     // snapshot said it was, and a row where they differ is the homing correction doing its work.
-    const pressedAt = {
-      point: { x, y },
-      remembered,
-      rect: entity.rect,
-      // Both, because they are different facts: what the call named, and what the ladder ran
-      // against. A row where `aimHwnd` is null and `coordHwnd` is not is item 12 doing its work.
-      coordHwnd: coordHwnd !== undefined ? coordHwnd.toString() : null,
-      coordHwndFrom: aimHwnd !== undefined ? "aim" : coordHwnd !== undefined ? "entity_origin" : null,
-    };
+    // Both handles, because they are different facts: what the call named, and what the ladder ran
+    // against. A row where `aimHwnd` is null and `coordHwnd` is not is item 12 doing its work.
+    const coordHwndRow = coordHwnd !== undefined ? coordHwnd.toString() : null;
+    const coordHwndFrom = aimHwnd !== undefined ? "aim" : coordHwnd !== undefined ? "entity_origin" : null;
     // internal #233 — the same press, named for why it is a press: a collection item the engine selects by
-    // a single click. Two literal calls: the vocabulary scanner reads a `why` only as a literal.
-    if (singleClick !== undefined) probeRoute("mouse", aimHwnd, entity, { why: "collection_item_single_click", singleClick: singleClick.item, ...pressedAt });
-    else probeRoute("mouse", aimHwnd, entity, { why: "visual_or_read_entity", ...pressedAt });
+    // a single click. Two literal calls with their fields written out: the vocabulary scanner reads a
+    // `why` only as a literal, and cannot see into a spread.
+    if (singleClick !== undefined) {
+      probeRoute("mouse", aimHwnd, entity, { why: "collection_item_single_click", singleClick: singleClick.item, point: { x, y }, remembered, rect: entity.rect, coordHwnd: coordHwndRow, coordHwndFrom });
+    } else {
+      probeRoute("mouse", aimHwnd, entity, { why: "visual_or_read_entity", point: { x, y }, remembered, rect: entity.rect, coordHwnd: coordHwndRow, coordHwndFrom });
+    }
     await probedStep("mouse_press", aimHwnd, entity, () => d.mouseClick(x, y));
     return "mouse";
   };
