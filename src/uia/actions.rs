@@ -652,6 +652,21 @@ fn set_value_impl(
         // an element is written first, and the focus moves only after a write not read back as refused
         // (where the value cannot be read back, nothing refuses it).
         // The classic client moves the focus by itself on the write, so it is not deferred there.
+        // internal #289 — the caller stops waiting at `DEFAULT_TIMEOUT_MS`, and this task is not
+        // cancelled: an exhaustive walk over a large tree that answers every step can end past it, and
+        // a write made then lands after the caller was told the act timed out (PR 側 codex, P1 on
+        // `6b3b9737`). Nothing is focused or written once that time is spent.
+        if submitted.elapsed() >= std::time::Duration::from_millis(u64::from(DEFAULT_TIMEOUT_MS)) {
+            return Ok(ActionResult {
+                ok: false,
+                element: None,
+                error: Some(super::STOPPED_ANSWERING.to_string()),
+                code: None,
+                focused_by: None,
+                selected: None,
+                notified: None,
+            });
+        }
         let move_first = !said_read_only || ctx.classic;
         let mut focused_by = if move_first {
             super::focus_first::move_focus_first(ctx, &elem)
@@ -879,8 +894,10 @@ fn element_at_own_handle(
         // Without an AutomationId, where the discovered rect is: a handle reused by a sibling of the
         // same name and type sits somewhere else (PR 側 codex, P1 on `a26bebc7`). A window that moved
         // since discover fails this too, and the search below — which uses the same rect — decides.
+        // No rect to compare either (discover could not read one) is not "in place": the search decides
+        // (PR 側 codex, P1 on `6b3b9737`).
         let rect_ok = automation_id.is_some()
-            || rect.is_none_or(|r| elem.CachedBoundingRectangle().is_ok_and(|now| in_place(&now, r)));
+            || rect.is_some_and(|r| elem.CachedBoundingRectangle().is_ok_and(|now| in_place(&now, r)));
         (name_ok && id_ok && type_ok && rect_ok).then_some(elem)
     }
 }
