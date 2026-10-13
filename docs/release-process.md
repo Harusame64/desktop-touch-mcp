@@ -189,6 +189,14 @@ Record every narrowing here so the exceptions stay visible:
   2.3.0 at about 14:28:50Z. **Verify npm publish** polls for 2 minutes (12 × 10 s), so it gave up
   first. A red Verify step is therefore not proof that nothing was published: check
   `npm view @harusame64/desktop-touch-mcp@X.Y.Z version` for several minutes before cutting a patch.
+- **v2.3.1 (2026-10-13)** — a dogfood pass by win2 on 94c7aea2 (#816):
+  - D0: version, HTTP 6/6, npx from the packed tarball.
+  - D1: the key locker exits with the server — hard kill and graceful stop, 3/3 each.
+  - D2: `press_outcome_unknown` — one press per run.
+  - D3: the WinForms combo refusal.
+  - D4: regressions, 3/3 each.
+
+  D3 found that the advice could not be followed as written: its keyboard steps named no window. That was fixed in #817, and D3 was rerun literally on both roads, 3/3 each. #812's passphrase cells P1–P5 ran on 4fafa9e4, and the key-locker code has not changed since. On the handle road, the advised `mouse_click` was blocked by the Dell EAWorkWindow overlay guard on win2's machine (internal #202, not a 2.3.1 change). Side finding, not a regression: on the launcher's 404 path, Node 24 exits 127 with a libuv assertion (internal #290).
 
 ### HTTP Transport Verification (Required)
 
