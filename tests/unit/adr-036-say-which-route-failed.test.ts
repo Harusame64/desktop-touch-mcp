@@ -99,7 +99,12 @@ describe("the native writer's own words are the classifier's words (gate 2 on #7
   const rust = readFileSync(fileURLToPath(new URL("../../src/uia/actions.rs", import.meta.url)), "utf8");
   const literals = [...new Set([...rust.matchAll(/error: Some\("([^"]+)"\.into\(\)\)/g)].map((m) => m[1]!))];
   /** Written by the native side and deliberately not classified: nothing decides on them. */
-  const UNCLASSIFIED = ["InvokePattern cast failed", "ValuePattern cast failed", "TextPattern2 cast failed", "TextPattern2 not supported by this element"];
+  const UNCLASSIFIED = [
+    "InvokePattern cast failed", "ValuePattern cast failed", "TextPattern2 cast failed", "TextPattern2 not supported by this element",
+    // internal #233 — the select road decides on the engine's code (`PatternNotSupported`, `SelectNotApplied`),
+    // carried as `uiaCode` by the dep, never on these words (`desktop-executor.ts::selectCollectionItem`).
+    "SelectionItemPattern not supported by this element", "The item was not selected",
+  ];
 
   it("finds the literals it is about (the scan is not empty)", () => {
     expect(literals).toContain("Value is read-only");
