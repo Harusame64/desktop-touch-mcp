@@ -55,7 +55,7 @@ function facts(over: Partial<KeyboardFacts> = {}): KeyboardFacts {
 describe("the rule", () => {
   it("refuses other_control when the value road left the focus outside the named element (V4, V5)", () => {
     expect(judgeKeyboardTarget(facts({ valueRoadFocusInside: false })))
-      .toEqual({ kind: "refuse", ground: "other_control", subject: "named", referenceFrom: "origin" });
+      .toEqual({ kind: "refuse", ground: "other_control", subject: "focus_outside_named", referenceFrom: "origin" });
   });
 
   it("CONTROL: posts, marked as before, when the focus is on it or inside it (V1–V3)", () => {
@@ -75,9 +75,16 @@ describe("the rule", () => {
       .toMatchObject({ kind: "refuse", ground: "other_control" });
   });
 
-  it("does not speak for a receiver in another window — the refusal's sentence says 'same window'", () => {
+  it("is decided before the receiver is read: in another window, or not read at all (gate 2)", () => {
     expect(judgeKeyboardTarget(facts({ receiver: DIALOG, receiverRoot: DIALOG, valueRoadFocusInside: false })))
+      .toMatchObject({ kind: "refuse", ground: "other_control" });
+    expect(judgeKeyboardTarget(facts({ receiver: null, receiverRoot: null, valueRoadFocusInside: false })))
+      .toMatchObject({ kind: "refuse", ground: "other_control" });
+    // CONTROL: without the fact, those are the designed "cannot say".
+    expect(judgeKeyboardTarget(facts({ receiver: DIALOG, receiverRoot: DIALOG })))
       .toMatchObject({ kind: "post", confirmed: false, why: "receiver_in_other_window" });
+    expect(judgeKeyboardTarget(facts({ receiver: null, receiverRoot: null })))
+      .toMatchObject({ kind: "post", confirmed: false, why: "receiver_unknown" });
   });
 
   it("is not read for a field with a window of its own: that window decides", () => {
@@ -86,6 +93,9 @@ describe("the rule", () => {
     // …and where that window cannot say either, it stays the designed "cannot say": the windowless
     // ground was measured on windowless fields only.
     expect(judgeKeyboardTarget(facts({ entityHwnd: CTRL, entityRoot: HWND, valueRoadFocusInside: false })))
+      .toMatchObject({ kind: "post", confirmed: false, why: "receiver_is_window" });
+    // …nor for one whose recorded handle went stale: a field that had a window is not the measured shape.
+    expect(judgeKeyboardTarget(facts({ entityHwnd: CTRL, entityRoot: null, valueRoadFocusInside: false })))
       .toMatchObject({ kind: "post", confirmed: false, why: "receiver_is_window" });
   });
 
@@ -148,7 +158,11 @@ async function type(d: ExecutorDeps) {
 describe("the rung", () => {
   it("refuses before anything is posted when the focus is outside the field (V4, V5)", async () => {
     const d = deps(setValueThrew(false));
-    await expect(type(d)).rejects.toMatchObject({ name: "KeyboardTargetUnsafeError", ground: "other_control" });
+    const err = await type(d).then(() => null, (e: unknown) => e as { name?: string; ground?: string; callerDetail?: string });
+    expect(err).toMatchObject({ name: "KeyboardTargetUnsafeError", ground: "other_control" });
+    // A field that cannot take the focus (V4) would refuse again after a click: the way back says when to stop.
+    expect(err?.callerDetail).toMatch(/Click the field this act named/);
+    expect(err?.callerDetail).toMatch(/If this refusal repeats, the field does not take the keyboard focus/);
     expect(d.keyboardPost).not.toHaveBeenCalled();
     expect(d.keyboardTypeBg).not.toHaveBeenCalled();
   });

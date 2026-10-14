@@ -142,11 +142,17 @@ unsafe fn legacy_take_focus(elem: &IUIAutomationElement) -> &'static str {
 ///
 /// `Some(false)` only when the walk up from the focused element reached the desktop without meeting
 /// `elem`. `None` when the window is not in front — UI Automation reports the foreground's focus, not
-/// the focus a window behind would type into — or when any step could not be read.
+/// the focus a window behind would type into — or when any step could not be read. `None` too for an
+/// element with a window of its own: the keyboard rung compares that window by handle, and does not
+/// read this (gate 2).
 pub(crate) fn focus_inside(ctx: &UiaContext, elem: &IUIAutomationElement) -> Option<bool> {
     unsafe {
-        if !window_is_in_front(ctx, elem) {
+        if own_window(elem).is_some() || !window_is_in_front(ctx, elem) {
             return None;
+        }
+        // One call for the common answer: the focus step put it on the element itself.
+        if elem.CurrentHasKeyboardFocus().map(|b| b == true).unwrap_or(false) {
+            return Some(true);
         }
         let focused = ctx.automation.GetFocusedElement().ok()?;
         let root = ctx.automation.GetRootElement().ok()?;

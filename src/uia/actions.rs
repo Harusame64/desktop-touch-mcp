@@ -538,8 +538,8 @@ fn set_value_impl(
         }
     };
 
-    let elem = match find_value_target(ctx, &window, opts) {
-        Ok(e) => e,
+    let (elem, found_exactly) = match find_value_target(ctx, &window, opts) {
+        Ok(found) => found,
         Err(e) => {
             let code = (e.reason == ELEMENT_AMBIGUOUS_TEXT).then(|| "ElementAmbiguous".to_string());
             return Ok(ActionResult {
@@ -779,7 +779,20 @@ fn set_value_impl(
                 // with the focus on another control before the act — so the focus before the act is
                 // not the fact; and when the field could not take the focus, nothing landed (3/3) or
                 // the characters went into the focused neighbour (3/3), both under `ok:true`.
-                focus_inside: super::focus_first::focus_inside(ctx, &elem),
+                //
+                // Asked only about an element found by its exact name and type: one found by a name
+                // that merely contains the field's is not known to be the field, and its focus says
+                // nothing about where the named field's characters go (gate 2). Not after a timeout:
+                // the walk would wait on the same window that stopped answering, and the caller is
+                // told the write may still land, before any keyboard rung (gate 2).
+                focus_inside: if found_exactly
+                    && !super::is_timeout(&e)
+                    && submitted.elapsed() < std::time::Duration::from_millis(u64::from(DEFAULT_TIMEOUT_MS))
+                {
+                    super::focus_first::focus_inside(ctx, &elem)
+                } else {
+                    None
+                },
             }),
         }
     }
@@ -843,11 +856,14 @@ fn value_not_applied(before: Option<&str>, after: Option<&str>, written: &str) -
 /// one; `set_value_impl` answers them with the code `ElementAmbiguous`.
 const ELEMENT_AMBIGUOUS_TEXT: &str = "Two or more elements have this element's exact name and type, and its rect does not tell them apart";
 
+///
+/// The second value is whether the element was found by step 2 — the one road on which it is known to
+/// be the element discover read rather than one whose name merely contains it (internal #292).
 fn find_value_target(
     ctx: &UiaContext,
     window: &IUIAutomationElement,
     opts: &SetValueOptions,
-) -> napi::Result<IUIAutomationElement> {
+) -> napi::Result<(IUIAutomationElement, bool)> {
     let exact = opts.exact_name == Some(true);
     let name = opts.name.as_deref().filter(|n| !n.is_empty());
     let control_type = opts.control_type.as_deref().filter(|c| !c.is_empty());
@@ -855,7 +871,7 @@ fn find_value_target(
     if let Some(h) = opts.element_hwnd.as_deref()
         && let Some(elem) = element_at_own_handle(ctx, window, h, name, automation_id, control_type, exact, opts.rect.as_ref())
     {
-        return Ok(elem);
+        return Ok((elem, false));
     }
     if let (true, None, Some(name), Some(control_type)) = (exact, automation_id, name, control_type) {
         // Every exact match, not the first few: a form of repeated rows can hold more, and the one the
@@ -869,14 +885,15 @@ fn find_value_target(
             return Err(napi::Error::from_reason(ELEMENT_AMBIGUOUS_TEXT));
         }
         if found.len() == 1 {
-            return Ok(found.into_iter().next().unwrap());
+            return Ok((found.into_iter().next().unwrap(), true));
         }
         if !found.is_empty() {
             return one_at_rect(found, opts.rect.as_ref())
+                .map(|e| (e, true))
                 .ok_or_else(|| napi::Error::from_reason(ELEMENT_AMBIGUOUS_TEXT));
         }
     }
-    find_element_in_window(ctx, window, opts.name.as_deref(), opts.automation_id.as_deref(), None)
+    find_element_in_window(ctx, window, opts.name.as_deref(), opts.automation_id.as_deref(), None).map(|e| (e, false))
 }
 
 /// The element at `hwnd`, when it is still the one discovered: same name (exact or contained, as the
