@@ -164,7 +164,9 @@ pub(crate) fn focus_inside(ctx: &UiaContext, elem: &IUIAutomationElement) -> Opt
                 return Some(true);
             }
             if ctx.automation.CompareElements(&current, &root).ok()? == true {
-                return Some(false);
+                // The foreground can change during the walk (a toast, another app): then the focus read
+                // was another window's, and says nothing about this one (gate 2).
+                return window_is_in_front(ctx, elem).then_some(false);
             }
             current = walker.GetParentElement(&current).ok()?;
         }

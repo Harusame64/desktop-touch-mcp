@@ -784,10 +784,12 @@ fn set_value_impl(
                 // that merely contains the field's is not known to be the field, and its focus says
                 // nothing about where the named field's characters go (gate 2). Not after a timeout:
                 // the walk would wait on the same window that stopped answering, and the caller is
-                // told the write may still land, before any keyboard rung (gate 2).
+                // told the write may still land, before any keyboard rung (gate 2). With the deferred
+                // focus move's room left, as for that move: the walk is cross-process too.
                 focus_inside: if found_exactly
                     && !super::is_timeout(&e)
-                    && submitted.elapsed() < std::time::Duration::from_millis(u64::from(DEFAULT_TIMEOUT_MS))
+                    && submitted.elapsed()
+                        < std::time::Duration::from_millis(u64::from(DEFAULT_TIMEOUT_MS - DEFERRED_FOCUS_ROOM_MS))
                 {
                     super::focus_first::focus_inside(ctx, &elem)
                 } else {
@@ -856,9 +858,9 @@ fn value_not_applied(before: Option<&str>, after: Option<&str>, written: &str) -
 /// one; `set_value_impl` answers them with the code `ElementAmbiguous`.
 const ELEMENT_AMBIGUOUS_TEXT: &str = "Two or more elements have this element's exact name and type, and its rect does not tell them apart";
 
-///
-/// The second value is whether the element was found by step 2 — the one road on which it is known to
-/// be the element discover read rather than one whose name merely contains it (internal #292).
+/// The element a value write goes to, and whether it was found by step 2 above — the one road on which
+/// it is known to be the element discover read rather than one whose name merely contains it (internal
+/// #292).
 fn find_value_target(
     ctx: &UiaContext,
     window: &IUIAutomationElement,
