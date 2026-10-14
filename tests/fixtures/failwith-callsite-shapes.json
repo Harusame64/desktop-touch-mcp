@@ -580,21 +580,21 @@
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 968,
+      "line": 969,
       "tool": "set_element_value",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 1111,
+      "line": 1112,
       "tool": "scope_element",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/ui-elements.ts",
-      "line": 1157,
+      "line": 1158,
       "tool": "scope_element",
       "errKind": "identifier",
       "contextShape": "object-plain"
