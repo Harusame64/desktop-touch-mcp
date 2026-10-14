@@ -174,6 +174,11 @@ pub struct ActionResult {
     /// internal #233 — on a `select` that took, in a Win32 or WinForms list box that notifies: whether
     /// the `LBN_SELCHANGE` its parent gets from a real click was delivered. `None` when none was due.
     pub notified: Option<bool>,
+    /// internal #292 — on a value write whose `SetValue` failed after the focus step: whether UI
+    /// Automation's keyboard focus is then on the element or inside it (`focus_first::focus_inside`).
+    /// `None` when it was not asked or could not say — and always for a window that is not in front,
+    /// whose focus UI Automation does not report.
+    pub focus_inside: Option<bool>,
 }
 
 // ─── Element bounds ──────────────────────────────────────────────────────────

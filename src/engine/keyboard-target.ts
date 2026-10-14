@@ -105,6 +105,13 @@ export interface KeyboardFacts {
    * element is READ-ONLY. Optional so a caller that predates it says nothing (read as false).
    */
   valueRoadSaidReadOnly?: boolean;
+  /**
+   * Internal #292 — where the native value writer found UI Automation's keyboard focus right after its
+   * failed write, which comes after it moved the focus to the element: on the element or inside it
+   * (`true`), elsewhere (`false`), or not said (`null`). Asked only when the element's window is in
+   * front; compared as elements, not by name. Optional so a caller that predates it says nothing.
+   */
+  valueRoadFocusInside?: boolean | null;
 }
 
 export type KeyboardVerdict =
@@ -146,6 +153,14 @@ function same(a: bigint, b: bigint): boolean {
  * 3. T's root is not R: refuse `other_window` when E is usable. Otherwise cannot say, whether or not
  *    T's window is owned by R. This comes before step 4, so a receiver that is itself another
  *    top-level window is refused rather than read as "the window itself".
+ * 3½. E is not usable, and the value road, just before, found UI Automation's focus outside the named
+ *    element → refuse `other_control`. A field with no window of its own cannot be compared by handle
+ *    (T is then R, step 4), so the element's own focus is the fact: WPF takes posted characters into
+ *    its focused element. MEASURED win2 (internal `dev/k292/r292.md`): a field whose SetValue throws,
+ *    and that could not take the focus, answered `ok:true` with nothing typed (3/3) or with the
+ *    characters in the focused neighbour (3/3); where the focus step had moved the focus into it, they
+ *    landed in it 9/9 — even with the focus elsewhere before the act. So it is the focus after the
+ *    value road's focus step, not before the act. Not said (`null`) decides nothing.
  * 4. T is R itself → cannot say. The native side answers this both when the thread has no focus and
  *    when it could not ask. WPF lands here.
  * 5. E is usable and T's parent walk reached its root without meeting E → refuse `other_control`.
@@ -254,6 +269,9 @@ function judgeTheReceiver(
     if (eUsable) return refuse("other_window", "named");
     return cannotSay(f.ownerChain.some((o) => same(o, reference)) ? "receiver_in_owned_window" : "receiver_in_other_window");
   }
+
+  // 3½.
+  if (!eUsable && f.valueRoadFocusInside === false) return refuse("other_control", "named");
 
   // 4.
   if (same(receiver, receiverRoot)) return cannotSay("receiver_is_window");

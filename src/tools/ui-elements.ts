@@ -682,8 +682,9 @@ export const setElementValueHandler = async ({
     // Channel 1 is aimed at the handle — the bridge addresses it through `FromHandle` — so the
     // debt names the handle (ADR-036).
     observationOwedFor = { title: effectiveTitle, ...(resolvedWin && { hwnd: resolvedWin.hwnd }) };
-    // `focusedBy` (internal #216) is for desktop_act's probe rows; this tool's reply does not change.
-    const { focusedBy: _focusedBy, ...r1 } = await setElementValue(
+    // `focusedBy` (internal #216) and `focusInside` (internal #292) are for desktop_act; this tool's
+    // reply does not change.
+    const { focusedBy: _focusedBy, focusInside: _focusInside, ...r1 } = await setElementValue(
       effectiveTitle, value, name, automationId,
       resolvedWin ? { hwnd: resolvedWin.hwnd } : undefined,
     );

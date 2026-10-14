@@ -118,6 +118,7 @@ export interface NativeActionResult {
   focusedBy?: string | null
   selected?: boolean | null
   notified?: boolean | null
+  focusInside?: boolean | null
 }
 
 // ─── Element bounds ──────────────────────────────────────────────────────────

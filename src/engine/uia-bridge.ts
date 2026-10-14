@@ -2018,7 +2018,7 @@ export async function setElementValue(
   automationId?: string,
   /** (H3) When hwnd is provided, bypass title-based root search (fixes Save As / common dialogs). */
   options?: { hwnd?: bigint; address?: ValueWriteAddress }
-): Promise<{ ok: boolean; error?: string; code?: string; via?: "native" | "powershell"; focusedBy?: string }> {
+): Promise<{ ok: boolean; error?: string; code?: string; via?: "native" | "powershell"; focusedBy?: string; focusInside?: boolean }> {
   refuseUiaTitleIfExcluded(windowTitle, options?.hwnd);
   if (options?.hwnd !== undefined) refuseUiaHwndIfExcluded(options.hwnd);
   // A handle is authoritative here too — see `clickElement` above for why the read half's gate
@@ -2038,7 +2038,15 @@ export async function setElementValue(
       // `via` on a failure only: item 16 weighs a "not found" by it, and a success has nothing to
       // weigh — V1 `set_element_value` spreads this object into its reply, and gains no field.
       // internal #216 — `focusedBy` as in `clickElement`. V1 `set_element_value` drops it from its reply.
-      return { ok: result.ok, error: result.error ?? undefined, code: result.code ?? undefined, ...(!result.ok && { via: "native" as const }), ...(result.focusedBy ? { focusedBy: result.focusedBy } : {}) };
+      // internal #292 — `focusInside` on a failed write only, for the keyboard rung; dropped there too.
+      return {
+        ok: result.ok,
+        error: result.error ?? undefined,
+        code: result.code ?? undefined,
+        ...(!result.ok && { via: "native" as const }),
+        ...(result.focusedBy ? { focusedBy: result.focusedBy } : {}),
+        ...(!result.ok && typeof result.focusInside === "boolean" && { focusInside: result.focusInside }),
+      };
     } catch (e) {
       // internal #216 — as in `clickElement`: no second write through PowerShell after a native one
       // ran past its 8 s.

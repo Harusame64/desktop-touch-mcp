@@ -1788,6 +1788,8 @@ function keyboardLanding(
     // 2026-09-16: `c4-refuse-other-control` does not fire for a WinForms edit whose control
     // demonstrably has a window, and until this field nothing in the record said which case it was.
     facts.entityHwndRead = entity.locator?.uia?.nativeWindowHandleRead ?? null;
+    // internal #292 — the fact the windowless refusal is decided on, on every row it could be.
+    if (valueRoadError !== undefined) facts.valueRoadFocusInside = focusInsideOf(valueRoadError);
     addLandingFacts(facts, receiverFacts(receipt, entity.rect ?? null, entity.locator?.uia?.nativeWindowHandle ?? null));
   } catch {
     facts.landingError = true;
@@ -1901,6 +1903,16 @@ function whoAnswered(
 }
 
 /**
+ * internal #292 — where the native value writer found UI Automation's focus right after its failed
+ * write: on the named element or inside it (`true`), elsewhere (`false`), or not said (`null`: another
+ * client answered, the window was not in front, or a step could not be read).
+ */
+function focusInsideOf(valueRoadError: unknown): boolean | null {
+  const raw = (valueRoadError as { uiaFocusInside?: unknown } | null | undefined)?.uiaFocusInside;
+  return typeof raw === "boolean" ? raw : null;
+}
+
+/**
  * The rule's facts (`engine/keyboard-target.ts`), from what {@link ExecutorDeps.keyboardResolve} read,
  * and whether the named control's window and the captured window take input.
  */
@@ -1927,6 +1939,7 @@ function keyboardFactsOf(
     originTakesInput: takesInput.origin,
     valueRoadSaidDisabled: valueRoadError !== undefined && classifyUiaRouteFailure(valueRoadError) === "element_disabled",
     valueRoadSaidReadOnly: valueRoadError !== undefined && classifyUiaRouteFailure(valueRoadError) === "element_read_only",
+    valueRoadFocusInside: focusInsideOf(valueRoadError),
   };
 }
 
@@ -3603,7 +3616,14 @@ function getSharedRealDeps(): ExecutorDeps {
       if (!r.ok && r.code === ELEMENT_AMBIGUOUS) throw Object.assign(new Error(r.error ?? "UIA value target is ambiguous"), { uiaCode: ELEMENT_AMBIGUOUS, uiaVia: r.via });
       // Which client answered, carried on the error as `uiaClick` carries it: the type road's item 16
       // believes a "not found" only from the native client, about an entity the native client read.
-      if (!r.ok) throw Object.assign(new Error(r.error ?? "UIA setElementValue failed"), { uiaVia: r.via });
+      // internal #292 — and where the native writer found the focus right after the failed write, for
+      // the keyboard rung that types next (`valueRoadFocusInside`).
+      if (!r.ok) {
+        throw Object.assign(new Error(r.error ?? "UIA setElementValue failed"), {
+          uiaVia: r.via,
+          ...(r.focusInside !== undefined && { uiaFocusInside: r.focusInside }),
+        });
+      }
       return r.focusedBy !== undefined ? { focusedBy: r.focusedBy } : undefined;
     },
 
