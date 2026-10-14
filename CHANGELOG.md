@@ -17,9 +17,10 @@
   that follows could not tell where the characters would go, and answered `ok:true` with
   `landing.confirmed: false`. When the field could not take the focus, nothing was typed, or the
   characters went into the control that held the focus. The act now checks, right after the failed write,
-  whether the focus is on the field or inside it. If the focus is elsewhere in the window, it is refused
-  with `keyboard_target_unsafe` (`other_control`) and nothing is typed. When the window is not in front,
-  or the focus cannot be read, it types as before.
+  whether the focus is on the field or inside it. If the focus is elsewhere, it is refused with
+  `keyboard_target_unsafe` (`other_control`) and nothing is typed. The check runs only for a field found
+  by its exact name and control type. When the window is not in front, or the focus cannot be read, it
+  types as before.
 
 ## [2.3.1] - 2026-10-13 — a click on a list item selects it, ssh key passphrases in fill_once, and guarded clicks under overlays
 
