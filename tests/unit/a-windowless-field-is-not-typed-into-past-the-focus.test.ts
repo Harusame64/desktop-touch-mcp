@@ -83,6 +83,10 @@ describe("the rule", () => {
   it("is not read for a field with a window of its own: that window decides", () => {
     const own = facts({ entityHwnd: CTRL, entityRoot: HWND, receiver: CTRL, valueRoadFocusInside: false });
     expect(judgeKeyboardTarget(own)).toEqual({ kind: "post", confirmed: true, referenceFrom: "entity" });
+    // …and where that window cannot say either, it stays the designed "cannot say": the windowless
+    // ground was measured on windowless fields only.
+    expect(judgeKeyboardTarget(facts({ entityHwnd: CTRL, entityRoot: HWND, valueRoadFocusInside: false })))
+      .toMatchObject({ kind: "post", confirmed: false, why: "receiver_is_window" });
   });
 
   it("marks the post when the other_control ground is switched off", () => {
@@ -199,8 +203,13 @@ describe("the production dep and the bridge", () => {
     expect(await bridgeSays({ ok: false, error: "x", focusInside: false })).toMatchObject({ ok: false, via: "native", focusInside: false });
   });
 
-  it("CONTROL: the engine's null is not an answer, and a success carries none", async () => {
+  // One bridge per cell: it reads the engine when it loads, so a second call in the same cell would
+  // still see the first cell's engine.
+  it("CONTROL: the engine's null is not an answer", async () => {
     expect(await bridgeSays({ ok: false, error: "x", focusInside: null })).not.toHaveProperty("focusInside");
+  });
+
+  it("CONTROL: a success carries none", async () => {
     expect(await bridgeSays({ ok: true, focusInside: true })).not.toHaveProperty("focusInside");
   });
 });
