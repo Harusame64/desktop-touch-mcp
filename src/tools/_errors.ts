@@ -637,9 +637,9 @@ const SUGGESTS: Record<string, string[]> = {
   // on the same control". Measured on a WinForms NumericUpDown: a keystroke fallback landed at the
   // inner edit's caret and produced a different wrong value.
   ValueNotApplied: [
-    "The write was accepted, but what it should have changed read back unchanged, so this act does not report it written: a control's value through UI Automation (the native client; nothing else was tried), or Word's visible page text after a type (the text may have landed out of view, or later).",
+    "The write was accepted, but what it should have changed read back unchanged, so this act does not report it written: a control's value through UI Automation (the native client; nothing else was tried), or Word's visible page text after a type (the text may have landed out of view, or later). For a WinForms combo box, the text read back DIFFERENT from what was typed — an AutoComplete may have completed it — and the detail says what the box now holds.",
     "Do NOT retry the same act blindly. For a control: do NOT fall back to keyboard / type into the same control — on a WinForms NumericUpDown a keystroke landed at its caret and left a different wrong value ('42420' for '4242'). For Word: look at the document first (screenshot), so the text is not typed twice.",
-    "For a control, re-run desktop_discover and check the field before writing again — a control that applies a value later than that reads back unchanged; if it still holds its old value, look for the field that holds the text (a spin box or combo box can expose an inner edit).",
+    "For a control, re-run desktop_discover and check the field before writing again — a control that applies a value later than that reads back unchanged; if it still holds its old value, look for the field that holds the text (a spin box or combo box can expose an inner edit). For a WinForms combo box that read back different, nothing was undone: it holds the text the detail names, and the application takes it when the focus leaves the box — set it again only if that is not the value you want.",
   ],
   WindowExcluded: [
     "This window is excluded from every tool surface of this server, by design: the key locker's own windows are excluded so a secret being typed cannot be read or driven by the same session. Nothing was done to it.",

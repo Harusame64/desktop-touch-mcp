@@ -22,6 +22,15 @@
   by its exact name and control type. When the window is not in front, or the focus cannot be read, it
   types as before.
 
+### Changed — Windows
+- **`desktop_act` `type` / `setValue` now writes a WinForms editable combo box in a way the application
+  sees.** In 2.3.1 such a write was refused, because UI Automation changed the box's text without the
+  application noticing. The text is now typed into the box's own text field without taking the
+  foreground, and the application takes it when the focus leaves the box, as it would from a person
+  typing. The box's text is then read back. If it differs from what was asked, for example because an
+  AutoComplete completed "ap" to "apple", the act fails with `value_not_applied` and says what the box now
+  holds. A line break, tab or other control character is refused before anything is typed.
+
 ## [2.3.1] - 2026-10-13 — a click on a list item selects it, ssh key passphrases in fill_once, and guarded clicks under overlays
 
 ### Changed — Windows
