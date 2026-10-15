@@ -268,7 +268,7 @@ export interface ExecutorDeps {
    * (`src/uia/combo_write.rs`): focus, select all, post the characters, read the text back. Optional;
    * absent means step 1's refusal stands.
    */
-  comboWrite?(combo: bigint, value: string): Promise<ComboWriteOutcome>;
+  comboWrite?(combo: bigint, value: string, root?: bigint): Promise<ComboWriteOutcome>;
   /**
    * ADR-036 item 6 — who would take a press at this point, from the aim's point of view.
    *
@@ -2284,7 +2284,10 @@ async function writeWinFormsCombo(
       `Refusing to type for entity ${entity.entityId}: disabled, the combo box (${combo}) does not take input`,
     );
   }
-  const r = await d.comboWrite(combo, text);
+  // The window the entity was read in, which the combo must still belong to: its handle can have been
+  // recreated for a control elsewhere (gate 1 on #824). The UIA write searches within the window instead.
+  const root = aimHwnd ?? observedHwndOfOrigin(entity.origin);
+  const r = await d.comboWrite(combo, text, root);
   if (!r.ok) {
     if (r.posted > 0) {
       probeRefusal("winforms_combo", "value_not_applied", aimHwnd, entity, { code: r.code ?? null, posted: r.posted, total: r.total, addressedWindowBy });
@@ -4100,7 +4103,7 @@ function getSharedRealDeps(): ExecutorDeps {
       return { className, style: getWindowStyle(hwnd), parent: getWindowParent(hwnd) };
     },
 
-    async comboWrite(combo, value) {
+    async comboWrite(combo, value, root) {
       // The key locker's windows are excluded from every by-identity write: this road posts to a handle
       // and never passes the UIA bridge, which is where that check stands for the value road (gate 2).
       const { refuseUiaHwndIfExcluded } = await import("../engine/uia-bridge.js");
@@ -4108,7 +4111,7 @@ function getSharedRealDeps(): ExecutorDeps {
       const { nativeUia } = await import("../engine/native-engine.js");
       // Without the engine nothing is posted, and the executor answers step 1's refusal.
       if (!nativeUia?.win32WriteCombo) return { ok: false, posted: 0, total: 0, error: "The native engine cannot write a combo box here" };
-      const r = await nativeUia.win32WriteCombo(combo, value);
+      const r = await nativeUia.win32WriteCombo(combo, value, root);
       return {
         ok: r.ok,
         posted: r.posted,

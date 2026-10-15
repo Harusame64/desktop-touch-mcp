@@ -458,7 +458,7 @@ export declare function uiaGetElements(opts: { windowTitle: string; maxDepth?: n
 export declare function uiaGetFocusedAndPoint(opts: { cursorX: number; cursorY: number }): Promise<NativeFocusAndPointResult>
 export declare function uiaGetFocusedElement(): Promise<NativeUiaFocusInfo | null>
 /** internal #238 step 2 — write a WinForms editable combo box through its inner Edit's own messages. */
-export declare function win32WriteCombo(combo: bigint, value: string): Promise<NativeComboWriteResult>
+export declare function win32WriteCombo(combo: bigint, value: string, root?: bigint | undefined | null): Promise<NativeComboWriteResult>
 /** ADR-036 H2 — whether the native UIA engine ran in this process, as the engine and the OS answer. */
 export declare function uiaEngineEvidence(): NativeUiaEvidence
 /** internal #216 — whether a `uiaClient: "classic"` call is still running on its thread. */

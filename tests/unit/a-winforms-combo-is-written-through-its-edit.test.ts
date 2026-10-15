@@ -88,7 +88,8 @@ describe("the write", () => {
           const { v, e: err } = await write(d, e, "new", action, road);
           expect(err).toBeNull();
           expect(v).toBe("keyboard");
-          expect(d.comboWrite).toHaveBeenCalledWith(COMBO, "new");
+          // With the window it was read in, which the combo must still belong to (gate 1 on #824).
+          expect(d.comboWrite).toHaveBeenCalledWith(COMBO, "new", FORM);
           expect(d.uiaSetValue).not.toHaveBeenCalled();
           expect(d.keyboardTypeBg).not.toHaveBeenCalled();
         });
@@ -101,6 +102,13 @@ describe("the write", () => {
     await write(d, entity("ComboBox", COMBO), "List C");
     expect(d.uiaSetValue).toHaveBeenCalled();
     expect(d.comboWrite).not.toHaveBeenCalled();
+  });
+
+  it("with no window known (no handle, nothing recorded), asks no root rather than a guessed one", async () => {
+    const d = deps();
+    const { origin: _origin, ...noOrigin } = entity("ComboBox", COMBO);
+    await write(d, noOrigin as UiEntity, "new");
+    expect(d.comboWrite).toHaveBeenCalledWith(COMBO, "new", undefined);
   });
 
   it("CONTROL: without the backend, step 1's refusal stands", async () => {
@@ -145,7 +153,7 @@ describe("the read-back", () => {
   it("an empty write that reads back empty succeeds", async () => {
     const d = deps();
     expect((await write(d, entity("ComboBox", COMBO), "")).v).toBe("keyboard");
-    expect(d.comboWrite).toHaveBeenCalledWith(COMBO, "");
+    expect(d.comboWrite).toHaveBeenCalledWith(COMBO, "", FORM);
   });
 });
 
@@ -224,13 +232,13 @@ describe("the production dep", () => {
       nativeUia: engine,
     }));
     const { _realExecutorDepsForTest } = await import("../../src/tools/desktop-executor.js");
-    return _realExecutorDepsForTest().comboWrite!(COMBO, "new");
+    return _realExecutorDepsForTest().comboWrite!(COMBO, "new", FORM);
   }
 
   it("hands the combo's handle and the text to the engine, and drops its nulls", async () => {
     const win32WriteCombo = vi.fn(async () => ({ ok: true, focusedBy: "win32", posted: 3, total: 3, text: "new", error: null, code: null }));
     expect(await prodWrite({ win32WriteCombo })).toEqual({ ok: true, focusedBy: "win32", posted: 3, total: 3, text: "new" });
-    expect(win32WriteCombo).toHaveBeenCalledWith(COMBO, "new");
+    expect(win32WriteCombo).toHaveBeenCalledWith(COMBO, "new", FORM);
   });
 
   it("an unread text stays unread (null is not an empty string)", async () => {

@@ -205,6 +205,7 @@ pub fn uia_get_focused_and_point(
 pub struct Win32WriteComboTask {
     combo: u64,
     value: String,
+    root: Option<u64>,
 }
 
 #[cfg(windows)]
@@ -213,7 +214,7 @@ impl Task for Win32WriteComboTask {
     type JsValue = uia::types::ComboWriteResult;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        Ok(uia::combo_write::write_combo(self.combo, &self.value))
+        Ok(uia::combo_write::write_combo(self.combo, &self.value, self.root))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -222,12 +223,14 @@ impl Task for Win32WriteComboTask {
 }
 
 /// internal #238 step 2 — focus the combo's Edit, select its text, post `value` as characters, and read
-/// the text back. `combo` is the combo box's own window handle.
+/// the text back. `combo` is the combo box's own window handle; `root`, when given, the top-level window
+/// it was read in, which it must still belong to.
 #[cfg(windows)]
 #[napi]
-pub fn win32_write_combo(combo: BigInt, value: String) -> AsyncTask<Win32WriteComboTask> {
+pub fn win32_write_combo(combo: BigInt, value: String, root: Option<BigInt>) -> AsyncTask<Win32WriteComboTask> {
     let (_sign, combo, _lossless) = combo.get_u64();
-    AsyncTask::new(Win32WriteComboTask { combo, value })
+    let root = root.map(|r| r.get_u64().1);
+    AsyncTask::new(Win32WriteComboTask { combo, value, root })
 }
 
 /// Get currently focused element info.

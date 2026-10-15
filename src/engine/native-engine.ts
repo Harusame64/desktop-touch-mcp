@@ -334,7 +334,7 @@ export interface NativeUia {
   }): Promise<NativeFocusAndPointResult>;
   uiaGetFocusedElement?(): Promise<NativeUiaFocusInfo | null>;
   /** internal #238 step 2 — `src/uia/combo_write.rs`. */
-  win32WriteCombo?(combo: bigint, value: string): Promise<NativeComboWriteResult>;
+  win32WriteCombo?(combo: bigint, value: string, root?: bigint): Promise<NativeComboWriteResult>;
 
   // Phase C: Actions
   uiaClickElement?(opts: {

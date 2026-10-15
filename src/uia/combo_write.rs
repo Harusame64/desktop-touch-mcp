@@ -15,7 +15,7 @@
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, IsWindow, PostMessageW, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_CHAR, WM_GETTEXT,
+    FindWindowExW, GA_ROOT, GetAncestor, IsWindow, PostMessageW, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_CHAR, WM_GETTEXT,
     WM_GETTEXTLENGTH,
 };
 use windows::core::w;
@@ -104,11 +104,21 @@ unsafe fn settled_text(edit: HWND) -> Option<String> {
 }
 
 /// Focus the combo's Edit, select all its text, post `value` as characters, and read the text back.
-pub fn write_combo(combo: u64, value: &str) -> ComboWriteResult {
+///
+/// `root`, when given, is the top-level window the combo was read in: a handle recreated since then can
+/// name a control in another window, so a combo whose root is not that window is not written (gate 1 on
+/// #824). Not a check against a sibling in the same window taking the handle.
+pub fn write_combo(combo: u64, value: &str, root: Option<u64>) -> ComboWriteResult {
     let combo = HWND(combo as isize as *mut std::ffi::c_void);
     unsafe {
         if !IsWindow(Some(combo)).as_bool() {
             return failed("Gone", "The combo box's window no longer exists", None);
+        }
+        // In the low 32 bits, as every handle comparison here: one side can arrive sign-extended.
+        if let Some(root) = root
+            && (GetAncestor(combo, GA_ROOT).0 as usize as u64) as u32 != root as u32
+        {
+            return failed("Gone", "The combo box's handle now belongs to another window", None);
         }
         let Some(edit) = edit_of(combo) else {
             return failed("NoEdit", "The combo box has no text box of its own", None);
