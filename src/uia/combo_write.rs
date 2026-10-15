@@ -50,6 +50,7 @@ fn failed(code: &str, error: &str, focused_by: Option<&str>) -> ComboWriteResult
         posted: 0,
         total: 0,
         text: None,
+        processed: None,
         error: Some(error.to_string()),
         code: Some(code.to_string()),
     }
@@ -100,10 +101,11 @@ unsafe fn text_of(edit: HWND) -> Option<String> {
 /// marker was not reached in time, or the text kept changing: what the box will hold cannot be said.
 ///
 /// The flag is shared: an AutoComplete that appends after the marker sets it again, and then the marker is
-/// never seen (gate 2). So when it is not seen in time, the text is still read: one that differs from
-/// `value` is returned (a completed or cut text is not the asked one, whichever caused it), and only one
-/// that equals it is `None`, because then the queued characters may not have been processed yet.
-unsafe fn settled_text(edit: HWND, value: &str) -> Option<String> {
+/// never seen (gate 2; win2 K5 on `6f24ef8a`, 3/3). So when it is not seen in time, the text is still read,
+/// and returned with `false` when it moved from `before` to something other than `value` — a completed text,
+/// or characters still arriving. One that still reads `before` (a window blocked in a wait that pumps sent
+/// messages took the characters 10 s later, win2 M3-sleepPumps) or reads `value` cannot be told: `None`.
+unsafe fn settled_text(edit: HWND, value: &str, before: Option<&str>) -> Option<(String, bool)> {
     let pause = || std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
     let started = std::time::Instant::now();
     let mut reached = false;
@@ -115,7 +117,10 @@ unsafe fn settled_text(edit: HWND, value: &str) -> Option<String> {
         pause();
     }
     let text = unsafe { stable_text(edit) }?;
-    (reached || text != value).then_some(text)
+    if reached {
+        return Some((text, true));
+    }
+    (text != value && Some(text.as_str()) != before).then_some((text, false))
 }
 
 /// The text once it has read the same for `STABLE_MS`; `None` when it kept changing for `SETTLE_MAX_MS`.
@@ -185,6 +190,7 @@ pub fn write_combo(combo: u64, value: &str, root: Option<u64>) -> ComboWriteResu
         // processed in order, so when the flag reads clear again, every character before it was processed.
         // A WinForms ComboBox does not read its Edit's modify flag. Not settable: no marker, no confirmation.
         let marked = send(edit, EM_SETMODIFY, 1, 0).is_some();
+        let before = text_of(edit);
         let units: Vec<u16> = if value.is_empty() { vec![BACKSPACE] } else { value.encode_utf16().collect() };
         let total = value.encode_utf16().count() as u32;
         let mut posted = 0u32;
@@ -203,11 +209,15 @@ pub fn write_combo(combo: u64, value: &str, root: Option<u64>) -> ComboWriteResu
                 posted += 1;
             }
         }
-        let text = if marked && PostMessageW(Some(edit), EM_SETMODIFY, WPARAM(0), LPARAM(0)).is_ok() {
-            settled_text(edit, value)
+        let read = if marked && PostMessageW(Some(edit), EM_SETMODIFY, WPARAM(0), LPARAM(0)).is_ok() {
+            settled_text(edit, value, before.as_deref())
         } else {
             None
         };
-        ComboWriteResult { ok: true, focused_by: Some(by.to_string()), posted, total, text, error: None, code: None }
+        let (text, processed) = match read {
+            Some((t, p)) => (Some(t), Some(p)),
+            None => (None, None),
+        };
+        ComboWriteResult { ok: true, focused_by: Some(by.to_string()), posted, total, text, processed, error: None, code: None }
     }
 }

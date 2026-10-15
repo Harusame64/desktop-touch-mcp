@@ -2223,6 +2223,8 @@ export interface ComboWriteOutcome {
    * stopped changing; undefined when it could not be read, or did not get there in time.
    */
   text?: string;
+  /** false: `text` was read before the characters were seen processed, after it had moved off its old text. */
+  processed?: boolean;
   error?: string;
   code?: string;
 }
@@ -2302,11 +2304,12 @@ async function writeWinFormsCombo(
     // other step that failed leaves the caller step 1's way to do it by hand.
     if (r.code === "NotAnswering") {
       probeRefusal("winforms_combo", "aim_route_failed", aimHwnd, entity, { routeFailure: "target_not_answering", code: r.code, addressedWindowBy });
+      // In this road's own words: it asked the window's thread directly, not through UI Automation (win2).
       throw new AimedRouteFailedError(
         `WinForms combo write for "${entity.label ?? entity.entityId}": target_not_answering. Not typing it another way.`,
         aimHwnd,
         undefined,
-        `The write to "${quotedLabel(entity)}" failed because ${describeUiaRouteFailure("target_not_answering")}.`,
+        `Nothing was typed into "${quotedLabel(entity)}": its window did not answer (it may be busy). Wait and try again.`,
       );
     }
     if (r.code === "Gone" || r.code === "Moved") {
@@ -2338,12 +2341,18 @@ async function writeWinFormsCombo(
   }
   if (r.text !== text) {
     probeRefusal("winforms_combo", "value_not_applied", aimHwnd, entity, { check: "combo_text_differs", focusedBy: r.focusedBy ?? null, addressedWindowBy });
+    // Read before the characters were seen processed (an AutoComplete re-raises the marker's flag, win2 K5
+    // on 6f24ef8a): the box may still have been changing, so the sentence does not say what it holds now.
     throw new ValueNotAppliedError(
       "The combo box's text read back different from the text typed into it",
       undefined,
-      `The characters were typed into "${quotedLabel(entity)}", but it now reads ${shownValue(r.text)}, not the text asked for — ` +
-      `an AutoComplete may have completed it. Nothing was undone, and the application takes this text when the focus leaves the box. ` +
-      `Set it again if that is not the value you want.`,
+      r.processed === false
+        ? `The characters were typed into "${quotedLabel(entity)}", but it read ${shownValue(r.text)} when checked, not the text asked for — ` +
+          `an AutoComplete may have completed it, or the characters were still arriving. Nothing was undone. ` +
+          `Look at the box (screenshot) before setting it again, so it is not typed twice.`
+        : `The characters were typed into "${quotedLabel(entity)}", but it now reads ${shownValue(r.text)}, not the text asked for — ` +
+          `an AutoComplete may have completed it. Nothing was undone, and the application takes this text when the focus leaves the box. ` +
+          `Set it again if that is not the value you want.`,
     );
   }
   probeRoute("keyboard", aimHwnd, entity, { why: "winforms_combo", verdict: "posted", focusedBy: r.focusedBy ?? null, addressedWindowBy });
@@ -4131,6 +4140,7 @@ function getSharedRealDeps(): ExecutorDeps {
         total: r.total,
         ...(r.focusedBy != null && { focusedBy: r.focusedBy }),
         ...(r.text != null && { text: r.text }),
+        ...(r.processed != null && { processed: r.processed }),
         ...(r.error != null && { error: r.error }),
         ...(r.code != null && { code: r.code }),
       };

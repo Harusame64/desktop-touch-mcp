@@ -196,6 +196,7 @@ export interface NativeComboWriteResult {
   posted: number
   total: number
   text?: string | null
+  processed?: boolean | null
   error?: string | null
   code?: string | null
 }

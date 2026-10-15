@@ -129,6 +129,15 @@ describe("the read-back", () => {
     expect(err?.callerDetail).toMatch(/AutoComplete/);
   });
 
+  it("a text read before the characters were seen processed does not say what the box holds now (win2 K5 on 6f24ef8a)", async () => {
+    const d = deps({}, () => ({ ok: true, focusedBy: "win32", posted: 2, total: 2, text: "apple", processed: false }));
+    const { e: err } = await write(d, entity("ComboBox", COMBO), "ap");
+    expect(err?.name).toBe("ValueNotAppliedError");
+    expect(err?.callerDetail).toMatch(/it read "apple" when checked/);
+    expect(err?.callerDetail).toMatch(/Look at the box \(screenshot\) before setting it again/);
+    expect(err?.callerDetail).not.toMatch(/now reads/);
+  });
+
   it("never cuts a surrogate pair when it caps the value (gate 2)", async () => {
     const d = deps({}, () => ({ ok: true, posted: 1, total: 1, text: "a".repeat(119) + "😀😀" }));
     const { e: err } = await write(d, entity("ComboBox", COMBO), "y");
@@ -200,7 +209,8 @@ describe("a write the backend could not make", () => {
     const d = deps({}, () => ({ ok: false, posted: 0, total: 3, code: "NotAnswering", error: "Window is not answering" }));
     const { e: err } = await write(d, entity("ComboBox", COMBO), "new");
     expect(err?.name).toBe("AimedRouteFailedError");
-    expect(err?.callerDetail).toMatch(/did not answer UI Automation|not answer/);
+    expect(err?.callerDetail).toMatch(/its window did not answer \(it may be busy\)/);
+    expect(err?.callerDetail).not.toMatch(/UI Automation/);
   });
 
   it("a box that is gone is not found, not 'do it by hand' (gate 2)", async () => {
@@ -248,8 +258,8 @@ describe("the production dep", () => {
   }
 
   it("hands the combo's handle and the text to the engine, and drops its nulls", async () => {
-    const win32WriteCombo = vi.fn(async () => ({ ok: true, focusedBy: "win32", posted: 3, total: 3, text: "new", error: null, code: null }));
-    expect(await prodWrite({ win32WriteCombo })).toEqual({ ok: true, focusedBy: "win32", posted: 3, total: 3, text: "new" });
+    const win32WriteCombo = vi.fn(async () => ({ ok: true, focusedBy: "win32", posted: 3, total: 3, text: "new", processed: true, error: null, code: null }));
+    expect(await prodWrite({ win32WriteCombo })).toEqual({ ok: true, focusedBy: "win32", posted: 3, total: 3, text: "new", processed: true });
     expect(win32WriteCombo).toHaveBeenCalledWith(COMBO, "new", FORM);
   });
 

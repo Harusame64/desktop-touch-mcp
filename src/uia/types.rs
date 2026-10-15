@@ -194,6 +194,10 @@ pub struct ComboWriteResult {
     pub total: u32,
     /// The Edit's text, read back after the post; `None` when it could not be read.
     pub text: Option<String>,
+    /// Whether `text` was read after the marker behind the characters was seen processed. `Some(false)`:
+    /// it was not, and the text had moved to something other than the asked text — the characters may
+    /// still have been arriving.
+    pub processed: Option<bool>,
     pub error: Option<String>,
     /// `Gone`, `Moved`, `Disabled`, `NoEdit`, `NotAnswering`, `FocusFailed`, `SelectFailed` or `PostFailed`.
     pub code: Option<String>,
