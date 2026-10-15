@@ -2227,6 +2227,8 @@ export interface ComboWriteOutcome {
   processed?: boolean;
   error?: string;
   code?: string;
+  /** The act thread's limit passed: the write may still be running (gate 1 on #824). */
+  timedOut?: boolean;
 }
 
 /** The longest actual value a not-applied sentence repeats (the detail cap is 1,000 characters). */
@@ -2310,6 +2312,17 @@ async function writeWinFormsCombo(
         aimHwnd,
         undefined,
         `Nothing was typed into "${quotedLabel(entity)}": its window did not answer (it may be busy). Wait and try again.`,
+      );
+    }
+    // The window stopped answering during the write: the text may still arrive, so this says to look first.
+    if (r.code === "StoppedAnswering" || r.timedOut === true) {
+      probeRefusal("winforms_combo", "aim_route_failed", aimHwnd, entity, { routeFailure: "target_stopped_answering", code: r.code, addressedWindowBy });
+      throw new AimedRouteFailedError(
+        `WinForms combo write for "${entity.label ?? entity.entityId}": target_stopped_answering.`,
+        aimHwnd,
+        undefined,
+        `The window of "${quotedLabel(entity)}" stopped answering during the write, so whether the text landed is not known — it may still arrive. ` +
+        `Look at the box (screenshot) before typing again, so it is not typed twice.`,
       );
     }
     if (r.code === "Gone" || r.code === "Moved") {
@@ -4133,7 +4146,17 @@ function getSharedRealDeps(): ExecutorDeps {
       const { nativeUia } = await import("../engine/native-engine.js");
       // Without the engine nothing is posted, and the executor answers step 1's refusal.
       if (!nativeUia?.win32WriteCombo) return { ok: false, posted: 0, total: 0, error: "The native engine cannot write a combo box here" };
-      const r = await nativeUia.win32WriteCombo(combo, value, root);
+      let r: Awaited<ReturnType<NonNullable<typeof nativeUia.win32WriteCombo>>>;
+      try {
+        r = await nativeUia.win32WriteCombo(combo, value, root);
+      } catch (e) {
+        // The act thread's limit (gate 1 on #824): the write may still be running, so whether the text
+        // landed is not known. Any other throw is a call that never reached the window.
+        if (e instanceof Error && /^UIA operation timed out after \d+ms$/.test(e.message)) {
+          return { ok: false, posted: 0, total: value.length, timedOut: true, error: e.message };
+        }
+        return { ok: false, posted: 0, total: 0, error: e instanceof Error ? e.message : String(e) };
+      }
       return {
         ok: r.ok,
         posted: r.posted,

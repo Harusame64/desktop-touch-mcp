@@ -148,7 +148,12 @@ unsafe fn stable_text(edit: HWND) -> Option<String> {
 /// `root`, when given, is the top-level window the combo was read in: a handle recreated since then can
 /// name a control in another window, so a combo whose root is not that window is not written (gate 1 on
 /// #824). Not a check against a sibling in the same window taking the handle.
-pub fn write_combo(combo: u64, value: &str, root: Option<u64>) -> ComboWriteResult {
+///
+/// Run on the act thread under the action's limit (`lib.rs`), so a window that blocks in its focus
+/// handling cannot hold the call forever (gate 1 on #824). That limit does not cancel this function, so
+/// once `deadline` has passed after the focus moved, nothing is selected or posted: the caller has
+/// already been told the window stopped answering, and characters arriving later would surprise it.
+pub fn write_combo(combo: u64, value: &str, root: Option<u64>, submitted: std::time::Instant, deadline: std::time::Duration) -> ComboWriteResult {
     let combo = HWND(combo as isize as *mut std::ffi::c_void);
     unsafe {
         if !IsWindow(Some(combo)).as_bool() {
@@ -182,6 +187,9 @@ pub fn write_combo(combo: u64, value: &str, root: Option<u64>) -> ComboWriteResu
         }
         if by != BY_WIN32 {
             return failed("FocusFailed", "The keyboard focus could not be moved into the combo box", Some(by));
+        }
+        if submitted.elapsed() >= deadline {
+            return failed("StoppedAnswering", super::STOPPED_ANSWERING, Some(by));
         }
         if send(edit, EM_SETSEL, 0, -1).is_none() {
             return failed("SelectFailed", "The combo box's text could not be selected", Some(by));

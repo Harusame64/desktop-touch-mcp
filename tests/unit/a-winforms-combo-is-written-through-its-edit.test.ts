@@ -213,6 +213,19 @@ describe("a write the backend could not make", () => {
     expect(err?.callerDetail).not.toMatch(/UI Automation/);
   });
 
+  it("a window that stopped answering during the write says the text may still arrive (gate 1 on #824)", async () => {
+    const d = deps({}, () => ({ ok: false, posted: 0, total: 3, code: "StoppedAnswering", error: "x" }));
+    const { e: err } = await write(d, entity("ComboBox", COMBO), "new");
+    expect(err?.name).toBe("AimedRouteFailedError");
+    expect(err?.callerDetail).toMatch(/may still arrive/);
+    expect(err?.callerDetail).toMatch(/so it is not typed twice/);
+  });
+
+  it("the same when the engine's own limit passed rather than its deadline", async () => {
+    const d = deps({}, () => ({ ok: false, posted: 0, total: 3, timedOut: true }));
+    expect((await write(d, entity("ComboBox", COMBO), "new")).e?.callerDetail).toMatch(/may still arrive/);
+  });
+
   it("a box that is gone is not found, not 'do it by hand' (gate 2)", async () => {
     const d = deps({}, () => ({ ok: false, posted: 0, total: 0, code: "Gone", error: "x" }));
     const { e: err } = await write(d, entity("ComboBox", COMBO), "new");
@@ -276,6 +289,18 @@ describe("the production dep", () => {
     }));
     await expect(prodWrite({ win32WriteCombo })).rejects.toMatchObject({ name: "WindowExcludedError" });
     expect(win32WriteCombo).not.toHaveBeenCalled();
+  });
+
+  it("the act thread's limit is 'stopped answering', not a call that never ran (gate 1 on #824)", async () => {
+    const win32WriteCombo = vi.fn(async () => { throw new Error("UIA operation timed out after 8000ms"); });
+    expect(await prodWrite({ win32WriteCombo })).toMatchObject({ ok: false, timedOut: true });
+  });
+
+  it("CONTROL: another throw never reached the window", async () => {
+    const win32WriteCombo = vi.fn(async () => { throw new Error("UIA COM thread unavailable"); });
+    const r = await prodWrite({ win32WriteCombo });
+    expect(r).toMatchObject({ ok: false, posted: 0 });
+    expect(r).not.toHaveProperty("timedOut");
   });
 
   it("without the engine, nothing is posted", async () => {

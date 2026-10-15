@@ -199,7 +199,8 @@ pub struct ComboWriteResult {
     /// still have been arriving.
     pub processed: Option<bool>,
     pub error: Option<String>,
-    /// `Gone`, `Moved`, `Disabled`, `NoEdit`, `NotAnswering`, `FocusFailed`, `SelectFailed` or `PostFailed`.
+    /// `Gone`, `Moved`, `Disabled`, `NoEdit`, `NotAnswering`, `StoppedAnswering`, `FocusFailed`, `SelectFailed`
+    /// or `PostFailed`.
     pub code: Option<String>,
 }
 

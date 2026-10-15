@@ -200,6 +200,10 @@ pub fn uia_get_focused_and_point(
     AsyncTask::new(UiaGetFocusedAndPointTask(opts))
 }
 
+/// internal #238 step 2 — the caller's limit for a combo write, as `actions.rs` gives a value write.
+#[cfg(windows)]
+const COMBO_WRITE_TIMEOUT_MS: u32 = 8_000;
+
 /// internal #238 step 2 — write a WinForms editable combo box through its inner Edit's own messages.
 #[cfg(windows)]
 pub struct Win32WriteComboTask {
@@ -214,7 +218,15 @@ impl Task for Win32WriteComboTask {
     type JsValue = uia::types::ComboWriteResult;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        Ok(uia::combo_write::write_combo(self.combo, &self.value, self.root))
+        // The act thread and its limit, as `uia_set_value` (gate 1 on #824): `SetFocus` waits on the window's
+        // thread with no limit of its own. The write's own deadline leaves the select, the post and the
+        // read-back (at most about 3.3 s) inside the limit.
+        let (combo, value, root) = (self.combo, self.value.clone(), self.root);
+        let submitted = std::time::Instant::now();
+        uia::thread::execute_act_with_timeout(
+            move |_ctx| Ok(uia::combo_write::write_combo(combo, &value, root, submitted, std::time::Duration::from_millis(4_500))),
+            COMBO_WRITE_TIMEOUT_MS,
+        )
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
