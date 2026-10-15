@@ -191,11 +191,11 @@ describe("refused before anything is typed", () => {
     }
   });
 
-  it("a combo box whose window does not take input", async () => {
+  it("the disabled check is the engine's, which walks every container (gate 2): the executor asks no window of its own", async () => {
     const d = deps({ windowTakesInput: vi.fn(() => false) });
-    const { e: err } = await write(d, entity("ComboBox", COMBO), "new");
-    expect(err).toMatchObject({ name: "KeyboardTargetUnsafeError", ground: "disabled" });
-    expect(d.comboWrite).not.toHaveBeenCalled();
+    await write(d, entity("ComboBox", COMBO), "new");
+    expect(d.windowTakesInput).not.toHaveBeenCalled();
+    expect(d.comboWrite).toHaveBeenCalled();
   });
 });
 
@@ -213,17 +213,20 @@ describe("a write the backend could not make", () => {
     expect(err?.callerDetail).not.toMatch(/UI Automation/);
   });
 
-  it("a window that stopped answering during the write says the text may still arrive (gate 1 on #824)", async () => {
+  it("the engine's own deadline stopped it before anything was posted: says nothing was typed (gate 2)", async () => {
     const d = deps({}, () => ({ ok: false, posted: 0, total: 3, code: "StoppedAnswering", error: "x" }));
+    const { e: err } = await write(d, entity("ComboBox", COMBO), "new");
+    expect(err?.name).toBe("AimedRouteFailedError");
+    expect(err?.callerDetail).toMatch(/^Nothing was typed/);
+    expect(err?.callerDetail).not.toMatch(/may still arrive/);
+  });
+
+  it("the act thread's limit passed during the write: the text may still arrive, so look first (gate 1 on #824)", async () => {
+    const d = deps({}, () => ({ ok: false, posted: 0, total: 3, timedOut: true }));
     const { e: err } = await write(d, entity("ComboBox", COMBO), "new");
     expect(err?.name).toBe("AimedRouteFailedError");
     expect(err?.callerDetail).toMatch(/may still arrive/);
     expect(err?.callerDetail).toMatch(/so it is not typed twice/);
-  });
-
-  it("the same when the engine's own limit passed rather than its deadline", async () => {
-    const d = deps({}, () => ({ ok: false, posted: 0, total: 3, timedOut: true }));
-    expect((await write(d, entity("ComboBox", COMBO), "new")).e?.callerDetail).toMatch(/may still arrive/);
   });
 
   it("a box that is gone is not found, not 'do it by hand' (gate 2)", async () => {

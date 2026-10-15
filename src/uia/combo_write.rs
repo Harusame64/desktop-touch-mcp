@@ -21,7 +21,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::w;
 
-use super::focus_first::{BY_WIN32, answers, win32_focus};
+use super::focus_first::{BY_WIN32, win32_focus};
 use super::types::ComboWriteResult;
 
 /// `EM_SETSEL` — in windows-rs's `Win32_UI_Controls`, which this crate does not enable.
@@ -133,7 +133,8 @@ unsafe fn settled_text(edit: HWND, value: &str, before: Option<&str>) -> Option<
     let started = std::time::Instant::now();
     let mut reached = false;
     while started.elapsed() < std::time::Duration::from_millis(PROCESSED_MS) {
-        if unsafe { send(edit, EM_GETMODIFY, 0, 0) }? == 0 {
+        // A read that timed out is "not yet", not a reason to stop reading (gate 2).
+        if unsafe { send(edit, EM_GETMODIFY, 0, 0) } == Some(0) {
             reached = true;
             break;
         }
@@ -195,11 +196,13 @@ pub fn write_combo(combo: u64, value: &str, root: Option<u64>, submitted: std::t
         let Some(edit) = edit_of(combo) else {
             return failed("NoEdit", "The combo box has no text box of its own", None);
         };
-        if !answers(edit) {
-            return failed("NotAnswering", super::NOT_ANSWERING, None);
+        // A task that waited its turn on the act thread past the deadline does not move the focus: the
+        // caller may already have been answered (gate 2).
+        if submitted.elapsed() >= deadline {
+            return failed("StoppedAnswering", super::STOPPED_ANSWERING, None);
         }
+        // `win32_focus` asks the window to answer first, and says so when it does not.
         let by = win32_focus(edit, BY_WIN32);
-        // A thread that stopped answering between the two asks is still "not answering" (gate 2).
         if by == super::focus_first::NOT_ANSWERING {
             return failed("NotAnswering", super::NOT_ANSWERING, Some(by));
         }

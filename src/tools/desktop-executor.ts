@@ -2278,15 +2278,6 @@ async function writeWinFormsCombo(
     probeRefusal("winforms_combo", "executor_failed", aimHwnd, entity, { check: "control_character", addressedWindowBy });
     throw new ComboTextNotTypableError(entity);
   }
-  if (d.windowTakesInput !== undefined && (await d.windowTakesInput(combo)) === false) {
-    probeRefusal("winforms_combo", "keyboard_target_unsafe", aimHwnd, entity, { ground: "disabled", addressedWindowBy });
-    throw new KeyboardTargetUnsafeError(
-      "disabled",
-      "named",
-      aimHwnd !== undefined ? "handle" : "title",
-      `Refusing to type for entity ${entity.entityId}: disabled, the combo box (${combo}) does not take input`,
-    );
-  }
   // The window the entity was read in, which the combo must still belong to: its handle can have been
   // recreated for a control elsewhere (gate 1 on #824). The UIA write searches within the window instead.
   const root = aimHwnd ?? observedHwndOfOrigin(entity.origin);
@@ -2314,9 +2305,19 @@ async function writeWinFormsCombo(
         `Nothing was typed into "${quotedLabel(entity)}": its window did not answer (it may be busy). Wait and try again.`,
       );
     }
-    // The window stopped answering during the write: the text may still arrive, so this says to look first.
-    if (r.code === "StoppedAnswering" || r.timedOut === true) {
+    // The engine stopped before posting anything once its deadline passed: nothing was typed (gate 2).
+    if (r.code === "StoppedAnswering") {
       probeRefusal("winforms_combo", "aim_route_failed", aimHwnd, entity, { routeFailure: "target_stopped_answering", code: r.code, addressedWindowBy });
+      throw new AimedRouteFailedError(
+        `WinForms combo write for "${entity.label ?? entity.entityId}": target_stopped_answering before anything was posted.`,
+        aimHwnd,
+        undefined,
+        `Nothing was typed into "${quotedLabel(entity)}": its window was too slow to answer (it may be busy). Wait and try again.`,
+      );
+    }
+    // The act thread's limit passed during the write: the text may still arrive, so this says to look first.
+    if (r.timedOut === true) {
+      probeRefusal("winforms_combo", "aim_route_failed", aimHwnd, entity, { routeFailure: "target_stopped_answering", timedOut: true, addressedWindowBy });
       throw new AimedRouteFailedError(
         `WinForms combo write for "${entity.label ?? entity.entityId}": target_stopped_answering.`,
         aimHwnd,
