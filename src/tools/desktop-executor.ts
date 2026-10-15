@@ -2218,7 +2218,10 @@ export interface ComboWriteOutcome {
   focusedBy?: string;
   posted: number;
   total: number;
-  /** The combo's text read back after the post; undefined when it could not be read. */
+  /**
+   * The combo's text read back once a marker posted behind the characters was processed and the text
+   * stopped changing; undefined when it could not be read, or did not get there in time.
+   */
   text?: string;
   error?: string;
   code?: string;
