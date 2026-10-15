@@ -16,7 +16,7 @@
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, GA_ROOT, GA_ROOTOWNER, GetAncestor, GetParent, IsWindow, PostMessageW, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_CHAR, WM_GETTEXT,
+    FindWindowExW, GA_ROOT, GW_OWNER, GetAncestor, GetParent, GetWindow, IsWindow, PostMessageW, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_CHAR, WM_GETTEXT,
     WM_GETTEXTLENGTH,
 };
 use windows::core::w;
@@ -61,6 +61,29 @@ fn failed(code: &str, error: &str, focused_by: Option<&str>) -> ComboWriteResult
 /// Not `GetComboBoxInfo`, which needs a windows-rs feature this crate does not enable for one call.
 unsafe fn edit_of(combo: HWND) -> Option<HWND> {
     unsafe { FindWindowExW(Some(combo), None, w!("Edit"), None) }.ok().filter(|h| !h.0.is_null())
+}
+
+/// Whether `root` is the combo's top-level window or one of that window's owners, compared in the low 32
+/// bits (one side can arrive sign-extended). UI Automation lists an owned dialog under its owner, so the
+/// window an entity was read in can be the owner (gate 2). Walked one owner at a time, not `GA_ROOTOWNER`:
+/// that answers the LAST owner, and a form shown with `ShowDialog()` is itself owned by the window that was
+/// active, so the dialog's direct owner was skipped (win2 D1 on `9cd0df4a`, 3/3).
+unsafe fn root_or_owner_is(combo: HWND, root: u64) -> bool {
+    let low = |h: HWND| (h.0 as usize as u64) as u32;
+    let mut current = unsafe { GetAncestor(combo, GA_ROOT) };
+    for _ in 0..16 {
+        if current.0.is_null() {
+            return false;
+        }
+        if low(current) == root as u32 {
+            return true;
+        }
+        current = match unsafe { GetWindow(current, GW_OWNER) } {
+            Ok(owner) => owner,
+            Err(_) => return false,
+        };
+    }
+    false
 }
 
 /// Whether the combo and every window above it up to its top-level window take input. Bounded; a walk that
@@ -159,13 +182,8 @@ pub fn write_combo(combo: u64, value: &str, root: Option<u64>, submitted: std::t
         if !IsWindow(Some(combo)).as_bool() {
             return failed("Gone", "The combo box's window no longer exists", None);
         }
-        // In the low 32 bits, as every handle comparison here: one side can arrive sign-extended. The owner
-        // of the combo's dialog counts too: UI Automation lists an owned dialog under its owner, so the
-        // window an entity was read in can be the owner (gate 2).
-        let low = |h: HWND| (h.0 as usize as u64) as u32;
         if let Some(root) = root
-            && low(GetAncestor(combo, GA_ROOT)) != root as u32
-            && low(GetAncestor(combo, GA_ROOTOWNER)) != root as u32
+            && !root_or_owner_is(combo, root)
         {
             return failed("Moved", "The combo box's handle now belongs to another window", None);
         }
