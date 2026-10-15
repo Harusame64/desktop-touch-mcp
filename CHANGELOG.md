@@ -29,7 +29,9 @@
   foreground, and the application takes it when the focus leaves the box, as it would from a person
   typing. The box's text is then read back. If it differs from what was asked, for example because an
   AutoComplete completed "ap" to "apple", the act fails with `value_not_applied` and says what the box now
-  holds. A line break, tab or other control character is refused before anything is typed.
+  holds. When the text cannot be read back in time, the act answers `ok:true` with
+  `landing.confirmed: false`. A line break, tab or other control character is refused before anything is
+  typed. As with other fields, the keyboard focus stays in the box.
 
 ## [2.3.1] - 2026-10-13 — a click on a list item selects it, ssh key passphrases in fill_once, and guarded clicks under overlays
 

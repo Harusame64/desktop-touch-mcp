@@ -210,6 +210,18 @@ describe("a write the backend could not make", () => {
     expect(err?.callerDetail).toMatch(/Re-run desktop_discover/);
   });
 
+  it("a handle that now belongs to another window says so, not that the box is gone (gate 2)", async () => {
+    const d = deps({}, () => ({ ok: false, posted: 0, total: 0, code: "Moved", error: "x" }));
+    const { e: err } = await write(d, entity("ComboBox", COMBO), "new");
+    expect(err?.name).toBe("TargetGoneError");
+    expect(err?.callerDetail).toMatch(/now belongs to a control in another window/);
+  });
+
+  it("a box in a disabled container is refused as disabled (gate 2)", async () => {
+    const d = deps({}, () => ({ ok: false, posted: 0, total: 0, code: "Disabled", error: "x" }));
+    expect((await write(d, entity("ComboBox", COMBO), "new")).e).toMatchObject({ name: "KeyboardTargetUnsafeError", ground: "disabled" });
+  });
+
   it("a failure after the focus moved does not claim no route was tried (gate 2)", async () => {
     const after = deps({}, () => ({ ok: false, focusedBy: "win32", posted: 0, total: 3, code: "SelectFailed", error: "x" }));
     expect(((await write(after, entity("ComboBox", COMBO), "new")).e as { noRouteTried?: boolean }).noRouteTried).toBe(false);

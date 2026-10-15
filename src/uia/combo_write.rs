@@ -14,8 +14,9 @@
 //! No UI Automation here: every step is a window message to the Edit's thread, each bounded.
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, GA_ROOT, GetAncestor, IsWindow, PostMessageW, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_CHAR, WM_GETTEXT,
+    FindWindowExW, GA_ROOT, GA_ROOTOWNER, GetAncestor, GetParent, IsWindow, PostMessageW, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_CHAR, WM_GETTEXT,
     WM_GETTEXTLENGTH,
 };
 use windows::core::w;
@@ -61,6 +62,26 @@ unsafe fn edit_of(combo: HWND) -> Option<HWND> {
     unsafe { FindWindowExW(Some(combo), None, w!("Edit"), None) }.ok().filter(|h| !h.0.is_null())
 }
 
+/// Whether the combo and every window above it up to its top-level window take input. Bounded; a walk that
+/// does not reach the top answers yes, as the rest of this crate reads a fact it could not get.
+unsafe fn enabled_up_to_root(combo: HWND) -> bool {
+    let root = unsafe { GetAncestor(combo, GA_ROOT) };
+    let mut current = combo;
+    for _ in 0..32 {
+        if !unsafe { IsWindowEnabled(current) }.as_bool() {
+            return false;
+        }
+        if current == root {
+            return true;
+        }
+        match unsafe { GetParent(current) } {
+            Ok(p) if !p.0.is_null() => current = p,
+            _ => return true,
+        }
+    }
+    true
+}
+
 unsafe fn send(hwnd: HWND, msg: u32, w: usize, l: isize) -> Option<usize> {
     let mut result: usize = 0;
     let r = unsafe { SendMessageTimeoutW(hwnd, msg, WPARAM(w), LPARAM(l), SMTO_ABORTIFHUNG, SEND_MS, Some(&mut result)) };
@@ -77,15 +98,29 @@ unsafe fn text_of(edit: HWND) -> Option<String> {
 
 /// The Edit's text once the posted characters were processed and it stopped changing. `None` when the
 /// marker was not reached in time, or the text kept changing: what the box will hold cannot be said.
-unsafe fn settled_text(edit: HWND) -> Option<String> {
+///
+/// The flag is shared: an AutoComplete that appends after the marker sets it again, and then the marker is
+/// never seen (gate 2). So when it is not seen in time, the text is still read: one that differs from
+/// `value` is returned (a completed or cut text is not the asked one, whichever caused it), and only one
+/// that equals it is `None`, because then the queued characters may not have been processed yet.
+unsafe fn settled_text(edit: HWND, value: &str) -> Option<String> {
     let pause = || std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
     let started = std::time::Instant::now();
-    while unsafe { send(edit, EM_GETMODIFY, 0, 0) }? != 0 {
-        if started.elapsed() >= std::time::Duration::from_millis(PROCESSED_MS) {
-            return None;
+    let mut reached = false;
+    while started.elapsed() < std::time::Duration::from_millis(PROCESSED_MS) {
+        if unsafe { send(edit, EM_GETMODIFY, 0, 0) }? == 0 {
+            reached = true;
+            break;
         }
         pause();
     }
+    let text = unsafe { stable_text(edit) }?;
+    (reached || text != value).then_some(text)
+}
+
+/// The text once it has read the same for `STABLE_MS`; `None` when it kept changing for `SETTLE_MAX_MS`.
+unsafe fn stable_text(edit: HWND) -> Option<String> {
+    let pause = || std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
     let settling = std::time::Instant::now();
     let mut last = unsafe { text_of(edit) }?;
     let mut since = std::time::Instant::now();
@@ -114,11 +149,20 @@ pub fn write_combo(combo: u64, value: &str, root: Option<u64>) -> ComboWriteResu
         if !IsWindow(Some(combo)).as_bool() {
             return failed("Gone", "The combo box's window no longer exists", None);
         }
-        // In the low 32 bits, as every handle comparison here: one side can arrive sign-extended.
+        // In the low 32 bits, as every handle comparison here: one side can arrive sign-extended. The owner
+        // of the combo's dialog counts too: UI Automation lists an owned dialog under its owner, so the
+        // window an entity was read in can be the owner (gate 2).
+        let low = |h: HWND| (h.0 as usize as u64) as u32;
         if let Some(root) = root
-            && (GetAncestor(combo, GA_ROOT).0 as usize as u64) as u32 != root as u32
+            && low(GetAncestor(combo, GA_ROOT)) != root as u32
+            && low(GetAncestor(combo, GA_ROOTOWNER)) != root as u32
         {
-            return failed("Gone", "The combo box's handle now belongs to another window", None);
+            return failed("Moved", "The combo box's handle now belongs to another window", None);
+        }
+        // A posted character ignores a disabled parent: a WinForms GroupBox or Panel disables only itself, so
+        // the combo's own flag and its top-level window's do not say it (gate 2).
+        if !enabled_up_to_root(combo) {
+            return failed("Disabled", "The combo box, or a container it is in, is disabled", None);
         }
         let Some(edit) = edit_of(combo) else {
             return failed("NoEdit", "The combo box has no text box of its own", None);
@@ -146,10 +190,13 @@ pub fn write_combo(combo: u64, value: &str, root: Option<u64>) -> ComboWriteResu
         let mut posted = 0u32;
         for u in &units {
             if PostMessageW(Some(edit), WM_CHAR, WPARAM(*u as usize), LPARAM(0)).is_err() {
-                let mut r = failed("PostFailed", "Not every character could be posted to the combo box", Some(by));
+                // The marker is not posted, so its flag is cleared here rather than left set (gate 2).
+                if marked {
+                    let _ = send(edit, EM_SETMODIFY, 0, 0);
+                }
+                let mut r = failed("PostFailed", "Not every UTF-16 unit could be posted to the combo box", Some(by));
                 r.posted = posted;
                 r.total = total;
-                r.text = text_of(edit);
                 return r;
             }
             if !value.is_empty() {
@@ -157,7 +204,7 @@ pub fn write_combo(combo: u64, value: &str, root: Option<u64>) -> ComboWriteResu
             }
         }
         let text = if marked && PostMessageW(Some(edit), EM_SETMODIFY, WPARAM(0), LPARAM(0)).is_ok() {
-            settled_text(edit)
+            settled_text(edit, value)
         } else {
             None
         };

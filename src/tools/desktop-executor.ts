@@ -2261,13 +2261,12 @@ async function writeWinFormsCombo(
   action: "type" | "setValue",
   aimHwnd: bigint | undefined,
   winTitle: string,
+  /** The executor's own ADR-020 answer for the keyboard (`preferredAllows` and `unsupportedExecutors`). */
+  keyboardAllowed: boolean,
 ): Promise<ExecutorKind | ExecutorOutcome> {
   if (d.comboWrite === undefined) throw new WinFormsComboWriteRefusedError(entity, action, aimHwnd, winTitle);
-  // This road types: an entity whose capabilities rule the keyboard out keeps step 1's refusal (ADR-020 —
-  // `preferredExecutors` decides each executor's eligibility; gate 2).
-  if (entity.unsupportedExecutors?.includes("keyboard") || (entity.preferredExecutors !== undefined && !entity.preferredExecutors.includes("keyboard"))) {
-    throw new WinFormsComboWriteRefusedError(entity, action, aimHwnd, winTitle);
-  }
+  // This road types: an entity whose capabilities rule the keyboard out keeps step 1's refusal (gate 2).
+  if (!keyboardAllowed) throw new WinFormsComboWriteRefusedError(entity, action, aimHwnd, winTitle);
   const addressedWindowBy = addressedWindowByOf(winTitle, aimHwnd);
   // A combo box takes one line. A line break would arrive as Enter, which a form can take as its default
   // button; a tab or another control character is not text. Refused before anything is touched.
@@ -2292,7 +2291,7 @@ async function writeWinFormsCombo(
     if (r.posted > 0) {
       probeRefusal("winforms_combo", "value_not_applied", aimHwnd, entity, { code: r.code ?? null, posted: r.posted, total: r.total, addressedWindowBy });
       throw new ValueNotAppliedError(
-        `Only ${r.posted} of ${r.total} characters were posted to the combo box`,
+        `Only ${r.posted} of ${r.total} UTF-16 units were posted to the combo box`,
         undefined,
         `Only part of the text was typed into "${quotedLabel(entity)}" before the rest could not be sent. ` +
         `Look at the box (screenshot) and set it again, so it is not typed twice.`,
@@ -2310,12 +2309,24 @@ async function writeWinFormsCombo(
         `The write to "${quotedLabel(entity)}" failed because ${describeUiaRouteFailure("target_not_answering")}.`,
       );
     }
-    if (r.code === "Gone") {
+    if (r.code === "Gone" || r.code === "Moved") {
       probeRefusal("winforms_combo", "entity_not_found", aimHwnd, entity, { code: r.code, addressedWindowBy });
       throw new TargetGoneError(
-        `The combo box "${entity.label ?? entity.entityId}" no longer exists`,
+        `The combo box "${entity.label ?? entity.entityId}" ${r.code === "Gone" ? "no longer exists" : "has a handle that now belongs to another window"}`,
         undefined,
-        `"${quotedLabel(entity)}" is gone (its window no longer exists), and nothing was typed. Re-run desktop_discover.`,
+        r.code === "Gone"
+          ? `"${quotedLabel(entity)}" is gone (its window no longer exists), and nothing was typed. Re-run desktop_discover.`
+          : `The handle discover read for "${quotedLabel(entity)}" now belongs to a control in another window, so nothing was typed. Re-run desktop_discover.`,
+      );
+    }
+    // A combo box in a disabled container: the posted characters would have ignored it (gate 2).
+    if (r.code === "Disabled") {
+      probeRefusal("winforms_combo", "keyboard_target_unsafe", aimHwnd, entity, { ground: "disabled", code: r.code, addressedWindowBy });
+      throw new KeyboardTargetUnsafeError(
+        "disabled",
+        "named",
+        aimHwnd !== undefined ? "handle" : "title",
+        `Refusing to type for entity ${entity.entityId}: disabled, the combo box (${combo}) or a container it is in`,
       );
     }
     probeRefusal("winforms_combo", "executor_failed", aimHwnd, entity, { code: r.code ?? null, focusedBy: r.focusedBy ?? null, addressedWindowBy });
@@ -2977,7 +2988,9 @@ export function createDesktopExecutor(
         // screen and the application is not told, so `ok:true` would report a value its model never took.
         // Before the try below, whose catch would hand the refusal to the keyboard rung as a failed write.
         const combo = d.comboWindowFacts !== undefined ? await editableWinFormsComboOf(entity, d.comboWindowFacts) : undefined;
-        if (combo !== undefined) return await writeWinFormsCombo(d, entity, combo, text, action, aimHwnd, winTitle);
+        if (combo !== undefined) {
+          return await writeWinFormsCombo(d, entity, combo, text, action, aimHwnd, winTitle, preferredAllows("keyboard") && !blocked.includes("keyboard"));
+        }
         try {
           const valueAddress = valueWriteAddress(entity);
           const written = await d.uiaSetValue(winTitle, text, name, automationId, aimHwnd, valueAddress);
