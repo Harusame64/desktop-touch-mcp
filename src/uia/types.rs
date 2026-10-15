@@ -195,7 +195,7 @@ pub struct ComboWriteResult {
     /// The Edit's text, read back after the post; `None` when it could not be read.
     pub text: Option<String>,
     pub error: Option<String>,
-    /// `NoEdit`, `NotAnswering`, `FocusFailed`, `SelectFailed` or `PostFailed`.
+    /// `Gone`, `NoEdit`, `NotAnswering`, `FocusFailed`, `SelectFailed` or `PostFailed`.
     pub code: Option<String>,
 }
 

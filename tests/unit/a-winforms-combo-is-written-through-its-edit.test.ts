@@ -17,12 +17,12 @@ import type { ComboWriteOutcome, ExecutorDeps } from "../../src/tools/desktop-ex
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
 import type { Aim } from "../../src/engine/aim.js";
 import type { ComboWindowFacts } from "../../src/engine/winforms-combo.js";
-import { classifyUiaRouteFailure } from "../../src/engine/uia-route-failure.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.resetModules();
   vi.doUnmock("../../src/engine/native-engine.js");
+  vi.doUnmock("../../src/engine/uia-bridge.js");
 });
 
 const FORM = 4919n;
@@ -121,6 +121,13 @@ describe("the read-back", () => {
     expect(err?.callerDetail).toMatch(/AutoComplete/);
   });
 
+  it("never cuts a surrogate pair when it caps the value (gate 2)", async () => {
+    const d = deps({}, () => ({ ok: true, posted: 1, total: 1, text: "a".repeat(119) + "😀😀" }));
+    const { e: err } = await write(d, entity("ComboBox", COMBO), "y");
+    expect(err?.callerDetail).toContain(`"${"a".repeat(119)}😀…"`);
+    expect(err?.callerDetail).not.toMatch(/\\ud83d/i);
+  });
+
   it("caps the value it repeats", async () => {
     const long = "x".repeat(500);
     const d = deps({}, () => ({ ok: true, posted: 1, total: 1, text: long }));
@@ -143,7 +150,7 @@ describe("the read-back", () => {
 });
 
 describe("refused before anything is typed", () => {
-  for (const text of ["a\nb", "a\rb", "a\tb", "\u0007"]) {
+  for (const text of ["a\nb", "a\rb", "a\tb", "\u0007", "a\u0085b", "a\u2028b", "a\u2029b", "\u009f"]) {
     it(`a control character — ${JSON.stringify(text)}`, async () => {
       const d = deps();
       const { e: err } = await write(d, entity("ComboBox", COMBO), text);
@@ -156,6 +163,15 @@ describe("refused before anything is typed", () => {
   it("CONTROL: printable text beyond ASCII is typed (C3: \"a b 日本 😀\")", async () => {
     const d = deps();
     expect((await write(d, entity("ComboBox", COMBO), "a b 日本 😀")).v).toBe("keyboard");
+  });
+
+  it("an entity whose capabilities rule the keyboard out keeps step 1's refusal (ADR-020, gate 2)", async () => {
+    for (const over of [{ preferredExecutors: ["uia"] }, { unsupportedExecutors: ["keyboard"] }] as Partial<UiEntity>[]) {
+      const d = deps();
+      const { e: err } = await write(d, { ...entity("ComboBox", COMBO), ...over }, "new");
+      expect(err?.name).toBe("WinFormsComboWriteRefusedError");
+      expect(d.comboWrite).not.toHaveBeenCalled();
+    }
   });
 
   it("a combo box whose window does not take input", async () => {
@@ -172,10 +188,25 @@ describe("a write the backend could not make", () => {
     expect((await write(d, entity("ComboBox", COMBO), "new")).e?.name).toBe("WinFormsComboWriteRefusedError");
   });
 
-  it("a window that stopped answering keeps the words the classifier names", async () => {
+  it("a window that stopped answering is refused as the value road refuses it, not sent to type by hand (gate 2)", async () => {
     const d = deps({}, () => ({ ok: false, posted: 0, total: 3, code: "NotAnswering", error: "Window is not answering" }));
     const { e: err } = await write(d, entity("ComboBox", COMBO), "new");
-    expect(classifyUiaRouteFailure(err)).toBe("target_not_answering");
+    expect(err?.name).toBe("AimedRouteFailedError");
+    expect(err?.callerDetail).toMatch(/did not answer UI Automation|not answer/);
+  });
+
+  it("a box that is gone is not found, not 'do it by hand' (gate 2)", async () => {
+    const d = deps({}, () => ({ ok: false, posted: 0, total: 0, code: "Gone", error: "x" }));
+    const { e: err } = await write(d, entity("ComboBox", COMBO), "new");
+    expect(err?.name).toBe("TargetGoneError");
+    expect(err?.callerDetail).toMatch(/Re-run desktop_discover/);
+  });
+
+  it("a failure after the focus moved does not claim no route was tried (gate 2)", async () => {
+    const after = deps({}, () => ({ ok: false, focusedBy: "win32", posted: 0, total: 3, code: "SelectFailed", error: "x" }));
+    expect(((await write(after, entity("ComboBox", COMBO), "new")).e as { noRouteTried?: boolean }).noRouteTried).toBe(false);
+    const before = deps({}, () => ({ ok: false, focusedBy: "failed", posted: 0, total: 3, code: "FocusFailed", error: "x" }));
+    expect(((await write(before, entity("ComboBox", COMBO), "new")).e as { noRouteTried?: boolean }).noRouteTried).toBe(true);
   });
 
   it("part of the text posted: not reported written, and told to look before typing again", async () => {
@@ -205,6 +236,16 @@ describe("the production dep", () => {
   it("an unread text stays unread (null is not an empty string)", async () => {
     const r = await prodWrite({ win32WriteCombo: vi.fn(async () => ({ ok: true, posted: 3, total: 3, text: null })) });
     expect(r).not.toHaveProperty("text");
+  });
+
+  it("refuses the key locker's windows before the engine is asked (gate 2)", async () => {
+    const win32WriteCombo = vi.fn(async () => ({ ok: true, posted: 3, total: 3, text: "new" }));
+    vi.doMock("../../src/engine/uia-bridge.js", async (orig) => ({
+      ...(await orig<typeof import("../../src/engine/uia-bridge.js")>()),
+      refuseUiaHwndIfExcluded: vi.fn(() => { throw Object.assign(new Error("excluded"), { name: "WindowExcludedError" }); }),
+    }));
+    await expect(prodWrite({ win32WriteCombo })).rejects.toMatchObject({ name: "WindowExcludedError" });
+    expect(win32WriteCombo).not.toHaveBeenCalled();
   });
 
   it("without the engine, nothing is posted", async () => {

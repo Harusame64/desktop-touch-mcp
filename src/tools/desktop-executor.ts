@@ -2231,7 +2231,15 @@ export interface ComboWriteOutcome {
 const COMBO_VALUE_SHOWN_MAX = 120;
 
 function shownValue(value: string): string {
-  return JSON.stringify(value.length > COMBO_VALUE_SHOWN_MAX ? `${value.slice(0, COMBO_VALUE_SHOWN_MAX)}…` : value);
+  // By code point, so a cut never leaves half of a surrogate pair (gate 2).
+  const points = Array.from(value);
+  return JSON.stringify(points.length > COMBO_VALUE_SHOWN_MAX ? `${points.slice(0, COMBO_VALUE_SHOWN_MAX).join("")}…` : value);
+}
+
+/** A character a one-line box should not be sent: C0, DEL, C1, and the Unicode line and paragraph separators. */
+function isLineOrControl(ch: string): boolean {
+  const c = ch.codePointAt(0)!;
+  return c < 0x20 || (c >= 0x7f && c <= 0x9f) || c === 0x2028 || c === 0x2029;
 }
 
 /**
@@ -2255,10 +2263,15 @@ async function writeWinFormsCombo(
   winTitle: string,
 ): Promise<ExecutorKind | ExecutorOutcome> {
   if (d.comboWrite === undefined) throw new WinFormsComboWriteRefusedError(entity, action, aimHwnd, winTitle);
+  // This road types: an entity whose capabilities rule the keyboard out keeps step 1's refusal (ADR-020 —
+  // `preferredExecutors` decides each executor's eligibility; gate 2).
+  if (entity.unsupportedExecutors?.includes("keyboard") || (entity.preferredExecutors !== undefined && !entity.preferredExecutors.includes("keyboard"))) {
+    throw new WinFormsComboWriteRefusedError(entity, action, aimHwnd, winTitle);
+  }
   const addressedWindowBy = addressedWindowByOf(winTitle, aimHwnd);
   // A combo box takes one line. A line break would arrive as Enter, which a form can take as its default
   // button; a tab or another control character is not text. Refused before anything is touched.
-  if ([...text].some((ch) => { const c = ch.codePointAt(0)!; return c < 0x20 || c === 0x7f; })) {
+  if ([...text].some(isLineOrControl)) {
     probeRefusal("winforms_combo", "executor_failed", aimHwnd, entity, { check: "control_character", addressedWindowBy });
     throw new ComboTextNotTypableError(entity);
   }
@@ -2282,11 +2295,28 @@ async function writeWinFormsCombo(
         `Look at the box (screenshot) and set it again, so it is not typed twice.`,
       );
     }
+    // Nothing was posted. A window that stopped answering is refused as the value road refuses it, so the
+    // caller is not sent to press or type into a hung window (gate 2); a box that is gone is not found; any
+    // other step that failed leaves the caller step 1's way to do it by hand.
+    if (r.code === "NotAnswering") {
+      probeRefusal("winforms_combo", "aim_route_failed", aimHwnd, entity, { routeFailure: "target_not_answering", code: r.code, addressedWindowBy });
+      throw new AimedRouteFailedError(
+        `WinForms combo write for "${entity.label ?? entity.entityId}": target_not_answering. Not typing it another way.`,
+        aimHwnd,
+        undefined,
+        `The write to "${quotedLabel(entity)}" failed because ${describeUiaRouteFailure("target_not_answering")}.`,
+      );
+    }
+    if (r.code === "Gone") {
+      probeRefusal("winforms_combo", "entity_not_found", aimHwnd, entity, { code: r.code, addressedWindowBy });
+      throw new TargetGoneError(
+        `The combo box "${entity.label ?? entity.entityId}" no longer exists`,
+        undefined,
+        `"${quotedLabel(entity)}" is gone (its window no longer exists), and nothing was typed. Re-run desktop_discover.`,
+      );
+    }
     probeRefusal("winforms_combo", "executor_failed", aimHwnd, entity, { code: r.code ?? null, focusedBy: r.focusedBy ?? null, addressedWindowBy });
-    // Nothing was posted. A window that stopped answering keeps the words the classifier names; any other
-    // step that failed leaves the caller step 1's way to do it by hand.
-    if (r.code === "NotAnswering") throw new Error(r.error ?? "Window is not answering");
-    throw new WinFormsComboWriteRefusedError(entity, action, aimHwnd, winTitle);
+    throw new WinFormsComboWriteRefusedError(entity, action, aimHwnd, winTitle, r.focusedBy === "win32");
   }
   if (r.text === undefined) {
     probeRoute("keyboard", aimHwnd, entity, { why: "winforms_combo", verdict: "unconfirmed:text_unread", focusedBy: r.focusedBy ?? null, addressedWindowBy });
@@ -2332,11 +2362,12 @@ const COMBO_ADVICE_TITLE_MAX = 60;
  */
 export class WinFormsComboWriteRefusedError extends Error implements CallerFacingRefusal {
   readonly callerDetail: string;
-  /** Refused before any route ran (internal #242). */
-  readonly noRouteTried = true as const;
-  constructor(entity: UiEntity, action: "type" | "setValue", aimHwnd: bigint | undefined, aimTitle: string | undefined) {
+  /** Refused before any route ran (internal #242) — unless step 2's write got as far as moving the focus. */
+  readonly noRouteTried: boolean;
+  constructor(entity: UiEntity, action: "type" | "setValue", aimHwnd: bigint | undefined, aimTitle: string | undefined, routeTried = false) {
     super(`not writing "${entity.label ?? entity.entityId}" through UI Automation: a WinForms combo box does not see that change`);
     this.name = "WinFormsComboWriteRefusedError";
+    this.noRouteTried = !routeTried;
     // Each step measured by win2 on FX238 (2026-10-13): desktop_act click on a window named by title lands as a
     // mouse click (the combo has no Invoke) and selects all its text, 2/2; on a window named by handle that click
     // is refused (aim_route_failed), so mouse_click is the way in; ctrl+a does NOT select in this control, Home
@@ -4070,6 +4101,10 @@ function getSharedRealDeps(): ExecutorDeps {
     },
 
     async comboWrite(combo, value) {
+      // The key locker's windows are excluded from every by-identity write: this road posts to a handle
+      // and never passes the UIA bridge, which is where that check stands for the value road (gate 2).
+      const { refuseUiaHwndIfExcluded } = await import("../engine/uia-bridge.js");
+      refuseUiaHwndIfExcluded(combo);
       const { nativeUia } = await import("../engine/native-engine.js");
       // Without the engine nothing is posted, and the executor answers step 1's refusal.
       if (!nativeUia?.win32WriteCombo) return { ok: false, posted: 0, total: 0, error: "The native engine cannot write a combo box here" };

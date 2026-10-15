@@ -50,7 +50,7 @@ function refuseUiaTitleIfExcluded(windowTitle: string, handle?: bigint): void {
  * the secure dialog with any benign title string attached. The handle registry is the same one
  * `enumWindowsInZOrder` consults, and it short-circuits to `false` when no locker is alive.
  */
-function refuseUiaHwndIfExcluded(hwnd: bigint): void {
+export function refuseUiaHwndIfExcluded(hwnd: bigint): void {
   if (!isExcludedWindowHandle(hwnd)) return;
   // ADR-036 — that predicate fails CLOSED on a PID it cannot read, and a window that has been
   // destroyed reads as PID 0. So while a locker is armed, an ordinary closed window came back as

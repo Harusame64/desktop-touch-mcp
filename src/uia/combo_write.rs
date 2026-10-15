@@ -108,7 +108,7 @@ pub fn write_combo(combo: u64, value: &str) -> ComboWriteResult {
     let combo = HWND(combo as isize as *mut std::ffi::c_void);
     unsafe {
         if !IsWindow(Some(combo)).as_bool() {
-            return failed("NoEdit", "The combo box's window no longer exists", None);
+            return failed("Gone", "The combo box's window no longer exists", None);
         }
         let Some(edit) = edit_of(combo) else {
             return failed("NoEdit", "The combo box has no text box of its own", None);
@@ -117,6 +117,10 @@ pub fn write_combo(combo: u64, value: &str) -> ComboWriteResult {
             return failed("NotAnswering", super::NOT_ANSWERING, None);
         }
         let by = win32_focus(edit, BY_WIN32);
+        // A thread that stopped answering between the two asks is still "not answering" (gate 2).
+        if by == super::focus_first::NOT_ANSWERING {
+            return failed("NotAnswering", super::NOT_ANSWERING, Some(by));
+        }
         if by != BY_WIN32 {
             return failed("FocusFailed", "The keyboard focus could not be moved into the combo box", Some(by));
         }
