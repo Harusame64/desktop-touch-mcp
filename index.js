@@ -57,6 +57,8 @@ export const computeSsimResidual = nativeBinding.computeSsimResidual;
 export const uiaGetElements = nativeBinding.uiaGetElements;
 export const uiaGetFocusedAndPoint = nativeBinding.uiaGetFocusedAndPoint;
 export const uiaGetFocusedElement = nativeBinding.uiaGetFocusedElement;
+// internal #238 step 2 — a WinForms editable combo box, written through its inner Edit
+export const win32WriteCombo = nativeBinding.win32WriteCombo;
 // ADR-036 H2 — whether the native UIA engine ran in this process, from the engine and the OS
 export const uiaEngineEvidence = nativeBinding.uiaEngineEvidence;
 export const uiaClassicInUse = nativeBinding.uiaClassicInUse;

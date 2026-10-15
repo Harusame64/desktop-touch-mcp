@@ -189,6 +189,17 @@ export interface NativeActionResult {
   focusInside?: boolean | null
 }
 
+/** internal #238 step 2 — what `win32WriteCombo` did. `ok` is "posted", not "landed": compare `text`. */
+export interface NativeComboWriteResult {
+  ok: boolean
+  focusedBy?: string | null
+  posted: number
+  total: number
+  text?: string | null
+  error?: string | null
+  code?: string | null
+}
+
 export interface NativeElementBounds {
   name: string
   controlType: string

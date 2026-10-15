@@ -181,6 +181,24 @@ pub struct ActionResult {
     pub focus_inside: Option<bool>,
 }
 
+/// internal #238 step 2 — what `uia::combo_write::write_combo` did (`win32WriteCombo`).
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct ComboWriteResult {
+    /// The characters were posted to the Edit. Not that they landed: compare `text`.
+    pub ok: bool,
+    /// How the focus was moved (`focus_first.rs`), when it was asked.
+    pub focused_by: Option<String>,
+    /// UTF-16 units posted, of `total`.
+    pub posted: u32,
+    pub total: u32,
+    /// The Edit's text, read back after the post; `None` when it could not be read.
+    pub text: Option<String>,
+    pub error: Option<String>,
+    /// `NoEdit`, `NotAnswering`, `FocusFailed`, `SelectFailed` or `PostFailed`.
+    pub code: Option<String>,
+}
+
 // ─── Element bounds ──────────────────────────────────────────────────────────
 
 #[napi(object)]

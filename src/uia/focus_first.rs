@@ -228,7 +228,7 @@ pub(crate) unsafe fn list_window_of_item(ctx: &UiaContext, elem: &IUIAutomationE
 /// `AttachThreadInput` to the window's thread, Win32 `SetFocus`, detach — after the thread has
 /// answered once. Not `SetForegroundWindow`: the foreground is not asked for, and a window behind
 /// stays behind (R17b).
-unsafe fn win32_focus(hwnd: HWND, by: &'static str) -> &'static str {
+pub(crate) unsafe fn win32_focus(hwnd: HWND, by: &'static str) -> &'static str {
     unsafe {
         if !answers(hwnd) {
             return NOT_ANSWERING;
@@ -259,7 +259,7 @@ unsafe fn win32_focus(hwnd: HWND, by: &'static str) -> &'static str {
 /// `win32_window_answers` (`win32/dwm.rs`), except that a failed send counts as "no" here whether
 /// or not the OS calls the window hung yet: the cost of a wrong "no" is a focus not moved, the cost
 /// of a wrong "yes" is a wait with no limit.
-unsafe fn answers(hwnd: HWND) -> bool {
+pub(crate) unsafe fn answers(hwnd: HWND) -> bool {
     let mut result: usize = 0;
     let r = unsafe {
         SendMessageTimeoutW(hwnd, WM_NULL, WPARAM(0), LPARAM(0), SMTO_ABORTIFHUNG, ANSWER_MS, Some(&mut result))

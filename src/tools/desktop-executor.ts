@@ -264,6 +264,12 @@ export interface ExecutorDeps {
    */
   comboWindowFacts?: ComboWindowFactsReader;
   /**
+   * internal #238 step 2 — write a WinForms editable combo box through its inner Edit's own messages
+   * (`src/uia/combo_write.rs`): focus, select all, post the characters, read the text back. Optional;
+   * absent means step 1's refusal stands.
+   */
+  comboWrite?(combo: bigint, value: string): Promise<ComboWriteOutcome>;
+  /**
    * ADR-036 item 6 — who would take a press at this point, from the aim's point of view.
    *
    * `"other"` blocks the press: the window on top would have taken it. `"owned"` allows it even
@@ -2206,6 +2212,110 @@ export class KeyboardCannotReplaceError extends Error implements CallerFacingRef
   }
 }
 
+/** internal #238 step 2 — what {@link ExecutorDeps.comboWrite} did. `ok` is "posted"; `text` is what landed. */
+export interface ComboWriteOutcome {
+  ok: boolean;
+  focusedBy?: string;
+  posted: number;
+  total: number;
+  /** The combo's text read back after the post; undefined when it could not be read. */
+  text?: string;
+  error?: string;
+  code?: string;
+}
+
+/** The longest actual value a not-applied sentence repeats (the detail cap is 1,000 characters). */
+const COMBO_VALUE_SHOWN_MAX = 120;
+
+function shownValue(value: string): string {
+  return JSON.stringify(value.length > COMBO_VALUE_SHOWN_MAX ? `${value.slice(0, COMBO_VALUE_SHOWN_MAX)}…` : value);
+}
+
+/**
+ * internal #238 step 2 — a type or setValue into a WinForms editable combo box, through the box's inner
+ * Edit: the keyboard focus moved into it as `focus_first.rs` moves it for a WinForms field, its text
+ * selected, the characters posted, the text read back. MEASURED win2 2026-10-15 (internal
+ * `dev/k238s2-measure`, `r238s2.md`, `r238s2-S.md`): the application's bound model took the asked text
+ * once the focus left, in front 3/3 and behind 3/3, the window in front keeping the foreground; an
+ * AutoComplete that appends turned "ap" into "apple" 3/3, which the read-back catches. The user's
+ * decision (2026-10-15): a text that reads back different is a failure that says what the box now holds.
+ *
+ * Without the backend, step 1's refusal stands, with its advice to do the same by hand.
+ */
+async function writeWinFormsCombo(
+  d: ExecutorDeps,
+  entity: UiEntity,
+  combo: bigint,
+  text: string,
+  action: "type" | "setValue",
+  aimHwnd: bigint | undefined,
+  winTitle: string,
+): Promise<ExecutorKind | ExecutorOutcome> {
+  if (d.comboWrite === undefined) throw new WinFormsComboWriteRefusedError(entity, action, aimHwnd, winTitle);
+  const addressedWindowBy = addressedWindowByOf(winTitle, aimHwnd);
+  // A combo box takes one line. A line break would arrive as Enter, which a form can take as its default
+  // button; a tab or another control character is not text. Refused before anything is touched.
+  if (/[\u0000-\u001f\u007f]/u.test(text)) {
+    probeRefusal("winforms_combo", "control_character", aimHwnd, entity, { addressedWindowBy });
+    throw new ComboTextNotTypableError(entity);
+  }
+  if (d.windowTakesInput !== undefined && (await d.windowTakesInput(combo)) === false) {
+    probeRefusal("winforms_combo", "keyboard_target_unsafe", aimHwnd, entity, { ground: "disabled", addressedWindowBy });
+    throw new KeyboardTargetUnsafeError(
+      "disabled",
+      "named",
+      aimHwnd !== undefined ? "handle" : "title",
+      `Refusing to type for entity ${entity.entityId}: disabled, the combo box (${combo}) does not take input`,
+    );
+  }
+  const r = await d.comboWrite(combo, text);
+  if (!r.ok) {
+    if (r.posted > 0) {
+      probeRefusal("winforms_combo", "value_not_applied", aimHwnd, entity, { code: r.code ?? null, posted: r.posted, total: r.total, addressedWindowBy });
+      throw new ValueNotAppliedError(
+        `Only ${r.posted} of ${r.total} characters were posted to the combo box`,
+        undefined,
+        `Only part of the text was typed into "${quotedLabel(entity)}" before the rest could not be sent. ` +
+        `Look at the box (screenshot) and set it again, so it is not typed twice.`,
+      );
+    }
+    probeRefusal("winforms_combo", r.code === "NotAnswering" ? "target_not_answering" : "executor_failed", aimHwnd, entity, { code: r.code ?? null, focusedBy: r.focusedBy ?? null, addressedWindowBy });
+    // Nothing was posted. A window that stopped answering keeps the words the classifier names; any other
+    // step that failed leaves the caller step 1's way to do it by hand.
+    if (r.code === "NotAnswering") throw new Error(r.error ?? "Window is not answering");
+    throw new WinFormsComboWriteRefusedError(entity, action, aimHwnd, winTitle);
+  }
+  if (r.text === undefined) {
+    probeRoute("keyboard", aimHwnd, entity, { why: "winforms_combo", verdict: "unconfirmed:text_unread", focusedBy: r.focusedBy ?? null, addressedWindowBy });
+    return { kind: "keyboard", landing: { confirmed: false, why: "text_unread", referenceFrom: "entity" } };
+  }
+  if (r.text !== text) {
+    probeRefusal("winforms_combo", "value_not_applied", aimHwnd, entity, { check: "combo_text_differs", focusedBy: r.focusedBy ?? null, addressedWindowBy });
+    throw new ValueNotAppliedError(
+      "The combo box's text read back different from the text typed into it",
+      undefined,
+      `The characters were typed into "${quotedLabel(entity)}", but it now reads ${shownValue(r.text)}, not the text asked for — ` +
+      `an AutoComplete may have completed it. Nothing was undone, and the application takes this text when the focus leaves the box. ` +
+      `Set it again if that is not the value you want.`,
+    );
+  }
+  probeRoute("keyboard", aimHwnd, entity, { why: "winforms_combo", verdict: "posted", focusedBy: r.focusedBy ?? null, addressedWindowBy });
+  return "keyboard";
+}
+
+/** internal #238 step 2 — a line break or control character for a one-line combo box. Nothing was typed. */
+export class ComboTextNotTypableError extends Error implements CallerFacingRefusal {
+  readonly callerDetail: string;
+  readonly noRouteTried = true as const;
+  constructor(entity: UiEntity) {
+    super(`not typing into "${entity.label ?? entity.entityId}": the text has a line break or control character`);
+    this.name = "ComboTextNotTypableError";
+    this.callerDetail =
+      `Nothing was typed: "${quotedLabel(entity)}" is a one-line combo box, and the text has a line break, tab or other control character. ` +
+      `A line break would arrive as Enter, which the form can take as pressing its default button. Remove it and type again.`;
+  }
+}
+
 /**
  * The longest title, as written into a call (quoted and escaped), that the combo refusal repeats in each of
  * its calls, so the sentence fits the 1,000-character detail cap with a 200-character label.
@@ -2829,9 +2939,8 @@ export function createDesktopExecutor(
         // internal #238 — not through UI Automation into a WinForms editable combo box: the text changes on
         // screen and the application is not told, so `ok:true` would report a value its model never took.
         // Before the try below, whose catch would hand the refusal to the keyboard rung as a failed write.
-        if (d.comboWindowFacts !== undefined && (await editableWinFormsComboOf(entity, d.comboWindowFacts)) !== undefined) {
-          throw new WinFormsComboWriteRefusedError(entity, action, aimHwnd, winTitle);
-        }
+        const combo = d.comboWindowFacts !== undefined ? await editableWinFormsComboOf(entity, d.comboWindowFacts) : undefined;
+        if (combo !== undefined) return await writeWinFormsCombo(d, entity, combo, text, action, aimHwnd, winTitle);
         try {
           const valueAddress = valueWriteAddress(entity);
           const written = await d.uiaSetValue(winTitle, text, name, automationId, aimHwnd, valueAddress);
@@ -3955,6 +4064,21 @@ function getSharedRealDeps(): ExecutorDeps {
       const className = getWindowClassName(hwnd);
       if (className === "") return undefined; // no such window, or this build cannot ask
       return { className, style: getWindowStyle(hwnd), parent: getWindowParent(hwnd) };
+    },
+
+    async comboWrite(combo, value) {
+      const { nativeUia } = await import("../engine/native-engine.js");
+      if (!nativeUia?.win32WriteCombo) return { ok: false, posted: 0, total: 0, code: "NoEngine", error: "The native engine cannot write a combo box here" };
+      const r = await nativeUia.win32WriteCombo(combo, value);
+      return {
+        ok: r.ok,
+        posted: r.posted,
+        total: r.total,
+        ...(r.focusedBy != null && { focusedBy: r.focusedBy }),
+        ...(r.text != null && { text: r.text }),
+        ...(r.error != null && { error: r.error }),
+        ...(r.code != null && { code: r.code }),
+      };
     },
 
     async windowTakesInput(hwnd) {

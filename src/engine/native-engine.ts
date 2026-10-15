@@ -17,6 +17,7 @@ import type {
   NativeUiElementsResult,
   NativeFocusAndPointResult,
   NativeUiaFocusInfo,
+  NativeComboWriteResult,
   NativeActionResult,
   NativeElementBounds,
   NativeUiElement,
@@ -332,6 +333,8 @@ export interface NativeUia {
     cursorY: number;
   }): Promise<NativeFocusAndPointResult>;
   uiaGetFocusedElement?(): Promise<NativeUiaFocusInfo | null>;
+  /** internal #238 step 2 — `src/uia/combo_write.rs`. */
+  win32WriteCombo?(combo: bigint, value: string): Promise<NativeComboWriteResult>;
 
   // Phase C: Actions
   uiaClickElement?(opts: {

@@ -35,6 +35,8 @@ export type LandingWhy =
   | "entity_windowless"
   | "entity_handle_stale"
   | "parents_unread"
+  /** internal #238 step 2 — characters posted into a WinForms combo box whose text could not be read back. */
+  | "text_unread"
   | `ground_disabled:${KeyboardGround}`;
 
 /**

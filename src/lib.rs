@@ -200,6 +200,36 @@ pub fn uia_get_focused_and_point(
     AsyncTask::new(UiaGetFocusedAndPointTask(opts))
 }
 
+/// internal #238 step 2 — write a WinForms editable combo box through its inner Edit's own messages.
+#[cfg(windows)]
+pub struct Win32WriteComboTask {
+    combo: u64,
+    value: String,
+}
+
+#[cfg(windows)]
+impl Task for Win32WriteComboTask {
+    type Output = uia::types::ComboWriteResult;
+    type JsValue = uia::types::ComboWriteResult;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        Ok(uia::combo_write::write_combo(self.combo, &self.value))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// internal #238 step 2 — focus the combo's Edit, select its text, post `value` as characters, and read
+/// the text back. `combo` is the combo box's own window handle.
+#[cfg(windows)]
+#[napi]
+pub fn win32_write_combo(combo: BigInt, value: String) -> AsyncTask<Win32WriteComboTask> {
+    let (_sign, combo, _lossless) = combo.get_u64();
+    AsyncTask::new(Win32WriteComboTask { combo, value })
+}
+
 /// Get currently focused element info.
 #[cfg(windows)]
 #[napi]

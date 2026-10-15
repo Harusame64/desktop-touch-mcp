@@ -123,6 +123,17 @@ export interface NativeActionResult {
 
 // ─── Element bounds ──────────────────────────────────────────────────────────
 
+/** internal #238 step 2 — what `win32WriteCombo` did. `ok` is "posted", not "landed": compare `text`. */
+export interface NativeComboWriteResult {
+  ok: boolean
+  focusedBy?: string | null
+  posted: number
+  total: number
+  text?: string | null
+  error?: string | null
+  code?: string | null
+}
+
 export interface NativeElementBounds {
   name: string
   controlType: string
@@ -446,6 +457,8 @@ export declare function computeSsimResidual(
 export declare function uiaGetElements(opts: { windowTitle: string; maxDepth?: number; maxElements?: number; fetchValues?: boolean; hwnd?: string; readBodyText?: boolean; classic?: boolean }): Promise<NativeUiElementsResult>
 export declare function uiaGetFocusedAndPoint(opts: { cursorX: number; cursorY: number }): Promise<NativeFocusAndPointResult>
 export declare function uiaGetFocusedElement(): Promise<NativeUiaFocusInfo | null>
+/** internal #238 step 2 — write a WinForms editable combo box through its inner Edit's own messages. */
+export declare function win32WriteCombo(combo: bigint, value: string): Promise<NativeComboWriteResult>
 /** ADR-036 H2 — whether the native UIA engine ran in this process, as the engine and the OS answer. */
 export declare function uiaEngineEvidence(): NativeUiaEvidence
 /** internal #216 — whether a `uiaClient: "classic"` call is still running on its thread. */
