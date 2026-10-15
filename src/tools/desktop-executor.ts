@@ -2255,8 +2255,8 @@ async function writeWinFormsCombo(
   const addressedWindowBy = addressedWindowByOf(winTitle, aimHwnd);
   // A combo box takes one line. A line break would arrive as Enter, which a form can take as its default
   // button; a tab or another control character is not text. Refused before anything is touched.
-  if (/[\u0000-\u001f\u007f]/u.test(text)) {
-    probeRefusal("winforms_combo", "control_character", aimHwnd, entity, { addressedWindowBy });
+  if ([...text].some((ch) => { const c = ch.codePointAt(0)!; return c < 0x20 || c === 0x7f; })) {
+    probeRefusal("winforms_combo", "executor_failed", aimHwnd, entity, { check: "control_character", addressedWindowBy });
     throw new ComboTextNotTypableError(entity);
   }
   if (d.windowTakesInput !== undefined && (await d.windowTakesInput(combo)) === false) {
@@ -2279,7 +2279,7 @@ async function writeWinFormsCombo(
         `Look at the box (screenshot) and set it again, so it is not typed twice.`,
       );
     }
-    probeRefusal("winforms_combo", r.code === "NotAnswering" ? "target_not_answering" : "executor_failed", aimHwnd, entity, { code: r.code ?? null, focusedBy: r.focusedBy ?? null, addressedWindowBy });
+    probeRefusal("winforms_combo", "executor_failed", aimHwnd, entity, { code: r.code ?? null, focusedBy: r.focusedBy ?? null, addressedWindowBy });
     // Nothing was posted. A window that stopped answering keeps the words the classifier names; any other
     // step that failed leaves the caller step 1's way to do it by hand.
     if (r.code === "NotAnswering") throw new Error(r.error ?? "Window is not answering");
@@ -4068,7 +4068,8 @@ function getSharedRealDeps(): ExecutorDeps {
 
     async comboWrite(combo, value) {
       const { nativeUia } = await import("../engine/native-engine.js");
-      if (!nativeUia?.win32WriteCombo) return { ok: false, posted: 0, total: 0, code: "NoEngine", error: "The native engine cannot write a combo box here" };
+      // Without the engine nothing is posted, and the executor answers step 1's refusal.
+      if (!nativeUia?.win32WriteCombo) return { ok: false, posted: 0, total: 0, error: "The native engine cannot write a combo box here" };
       const r = await nativeUia.win32WriteCombo(combo, value);
       return {
         ok: r.ok,

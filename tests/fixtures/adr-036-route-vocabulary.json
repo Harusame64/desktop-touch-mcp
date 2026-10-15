@@ -1,6 +1,7 @@
 {
   "landingWhyOnTheRow": [
-    "receiver_unknown"
+    "receiver_unknown",
+    "text_unread"
   ],
   "landingWhyFromTheUnion": [
     "verdict.why"
@@ -38,7 +39,8 @@
     "uia_set_value_then_keyboard",
     "window_gone",
     "window_off_desktop",
-    "window_resized"
+    "window_resized",
+    "winforms_combo"
   ],
   "refused": [
     "aim_blocked_by_excluded_window",
@@ -81,7 +83,8 @@
     "unattributable_window",
     "visual_or_read_entity",
     "window_off_desktop",
-    "window_resized"
+    "window_resized",
+    "winforms_combo"
   ],
   "touchFailReason": [
     "action_not_offered",
@@ -118,7 +121,8 @@
     "receiver_in_owned_window",
     "receiver_is_window",
     "receiver_unknown",
-    "reference_unknown"
+    "reference_unknown",
+    "text_unread"
   ],
   "keyboardGround": [
     "disabled",
