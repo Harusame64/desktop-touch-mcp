@@ -256,7 +256,7 @@ desktop_state          → 期待通りに状態が変わったか確認
 ```
 browser_click(selector)               → Chrome / Edge (CDP、再描画に強い)
 desktop_act(lease, action='click')    → ネイティブ / ダイアログ / ビジュアル (entity ベース)
-click_element(name | automationId)    → desktop_act が ok:false の時の UIA フォールバック
+click_element(name | automationId)    → desktop_act が ok:false の時の UIA フォールバック（リスト・ツリー・グリッドの項目には使わない）
 mouse_click(x, y, origin?, scale?)    → 最終手段。dotByDot screenshot の origin+scale を使うこと
 ```
 

@@ -1,3 +1,4 @@
+import type { CollectionItemAdviceClass } from "../engine/collection-item.js";
 import {
   renderAdviceForCaller,
   ADVICE_WITHHELD_FLOOR,
@@ -1420,7 +1421,7 @@ const COLLECTION_ITEM_SELECT_ADVICE: readonly string[] = [
  * the file, a DataGridView cell starts editing, a .NET 10 parent node expands without selecting), and a
  * ReadOnly cell has no Invoke at all (win2 on PR #819). A line that forbids click_element stays.
  */
-export function collectionItemRefusalAdviceFor(code: string, adviceClass: "collection_item_select" | "collection_item_select_no_invoke"): string[] {
+export function collectionItemRefusalAdviceFor(code: string, adviceClass: CollectionItemAdviceClass): string[] {
   return [
     ...getSuggestsForCode(code).filter((line) => !SENDS_TO_CLICK_ELEMENT.test(line)),
     COLLECTION_ITEM_NOT_CLICK_ELEMENT,

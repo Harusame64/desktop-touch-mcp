@@ -264,7 +264,7 @@ Clicking — priority order:
 ```
 browser_click(selector)               → Chrome / Edge (CDP, stable across repaints)
 desktop_act(lease, action='click')    → native / dialog / visual (entity-based; use after desktop_discover)
-click_element(name | automationId)    → native UIA fallback if desktop_act returns ok:false
+click_element(name | automationId)    → native UIA fallback if desktop_act returns ok:false (not for list/tree/grid items)
 mouse_click(x, y, origin?, scale?)    → pixel last resort; origin+scale from dotByDot screenshots only
 ```
 

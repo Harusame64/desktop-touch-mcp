@@ -819,7 +819,10 @@ export class GuardedTouchLoop {
       outcome = await this.env.execute(entity, concreteAction, text);
     } catch (err) {
       // internal #291 — a click on a collection item that a coordinate refusal stopped: its advice
-      // must not send it to click_element, whose Invoke opens, runs or edits these items.
+      // must not send it to click_element, whose Invoke opens, runs or edits these items. Put on every
+      // refusal whose advice names click_element; `aim_route_failed` is not reached by such a click today
+      // (the select road refuses as `executor_failed`, the mouse road never throws it), so its mark is
+      // defensive (gate 2 on #833).
       const itemAdvice = collectionItemAdviceClass(entity, concreteAction);
       const itemAdviceField = itemAdvice !== undefined ? { adviceClass: itemAdvice } : {};
       /**

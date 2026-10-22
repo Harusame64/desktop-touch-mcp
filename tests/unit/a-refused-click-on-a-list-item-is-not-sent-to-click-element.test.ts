@@ -69,6 +69,12 @@ describe("the loop marks a refused click on a collection item", () => {
     });
   }
 
+  it("marks it when the action is omitted, as a real UIA item reads (affordances 'read', so auto is click)", async () => {
+    const real = { ...item("ListItem", ["InvokePattern"]), affordances: [{ verb: "read" as const, executors: ["uia" as const], confidence: 0.9, preconditions: [], postconditions: [] }] };
+    const r = await touch(real, named("AimOccludedError"));
+    expect(r).toMatchObject({ ok: false, reason: "aim_occluded", adviceClass: "collection_item_select" });
+  });
+
   it("CONTROL: an invoke on the same item is not marked — opening it is what was asked", async () => {
     const r = await touch(item("ListItem", ["InvokePattern"]), named("AimOccludedError"), "invoke");
     expect(r).toMatchObject({ ok: false, reason: "aim_occluded" });
@@ -107,13 +113,13 @@ describe("the advice for it", () => {
 describe("through desktop_act", () => {
   const lease: EntityLease = { entityId: "it", viewId: "v1", targetGeneration: GEN, expiresAtMs: Number.MAX_SAFE_INTEGER, evidenceDigest: "d-it" };
 
-  async function answer(reason: string, adviceClass?: "collection_item_select") {
+  async function answer(reason: string, adviceClass?: "collection_item_select" | "collection_item_select_no_invoke") {
     vi.spyOn(getDesktopFacade(), "touch").mockResolvedValue({ ok: false, reason, diff: [], ...(adviceClass !== undefined && { adviceClass }) } as never);
     const r = await desktopActRawHandler({ lease, action: "click" });
     return JSON.parse((r.content[0] as { text: string }).text) as { if_unexpected: { try_next: Array<{ action: string }> } };
   }
 
-  for (const reason of ["aim_occluded", "aim_route_failed", "aim_blocked_by_excluded_window"] as const) {
+  for (const reason of ["aim_occluded", "aim_route_failed", "aim_blocked_by_excluded_window", "coordinate_outside_reachable_bounds", "cursor_placement_blocked"] as const) {
     it(`${reason}: try_next does not send a collection item to click_element`, async () => {
       const marked = await answer(reason, "collection_item_select");
       expect(marked.if_unexpected.try_next.some((t) => SENDS.test(t.action))).toBe(false);
@@ -123,4 +129,10 @@ describe("through desktop_act", () => {
       expect(plain.if_unexpected.try_next.some((t) => SENDS.test(t.action))).toBe(true);
     });
   }
+
+  it("an item without Invoke is not offered action:'invoke'", async () => {
+    const r = await answer("aim_occluded", "collection_item_select_no_invoke");
+    expect(r.if_unexpected.try_next.some((t) => /do NOT use click_element on it/.test(t.action))).toBe(true);
+    expect(r.if_unexpected.try_next.some((t) => /action:'invoke'/.test(t.action))).toBe(false);
+  });
 });

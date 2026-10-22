@@ -23,6 +23,7 @@ import {
 } from "../engine/landing-advice.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { coercedBoolean } from "./_coerce.js";
+import type { CollectionItemAdviceClass } from "../engine/collection-item.js";
 import { collectionItemRefusalAdviceFor, executorFailedAdviceFor, failCode, getSuggestsForCode } from "./_errors.js";
 import { DesktopFacade, type CandidateProvider, type DesktopSeeInput, type DesktopWindowMeta } from "./desktop.js";
 import type {
@@ -1065,7 +1066,7 @@ async function startPreActWatch(facade: DesktopFacade, viewId: string, opt: { af
  */
 function itemAdvice(
   code: string,
-  adviceClass: "collection_item_select" | "collection_item_select_no_invoke" | undefined,
+  adviceClass: CollectionItemAdviceClass | undefined,
 ): { tryNext?: { action: string }[] } {
   return adviceClass === undefined ? {} : { tryNext: collectionItemRefusalAdviceFor(code, adviceClass).map((action) => ({ action })) };
 }
@@ -1408,9 +1409,7 @@ const desktopActRawHandlerInner = async (
     const failure = toFailureEnvelope(
       Err(new AimOccludedError(
         "AimOccluded: another window drawn over the point this act would have pressed would take the press — nothing was done. Windows' own hit test decides this where the native addon can ask it; otherwise the window list does, and any window on top counts unless it has both WS_EX_TRANSPARENT and WS_EX_LAYERED. " +
-        (result.adviceClass !== undefined
-          ? "Bring the intended window forward, then click it with desktop_act again — not with click_element, whose Invoke opens, runs or edits a list, tree or grid item"
-          : "Bring the intended window forward, or use click_element, which does not press a coordinate")
+        "Bring the intended window forward, or use click_element, which does not press a coordinate"
       )),
       { optIn: false, detail: result.detail, ...itemAdvice("AimOccluded", result.adviceClass) },
     );
@@ -1463,9 +1462,7 @@ const desktopActRawHandlerInner = async (
       Err(new AimRouteFailedError(
         "AimRouteFailed: the route to the window this act named failed, and the act was not finished as a coordinate press. " +
         "Nothing was clicked or typed, unless if_unexpected.detail says the press or write may still take effect — then look at the window before anything else, and do not press again. " +
-        (result.adviceClass !== undefined
-          ? "Otherwise re-run desktop_discover — not click_element, whose Invoke opens, runs or edits a list, tree or grid item"
-          : "Otherwise re-run desktop_discover, or try click_element on the same entity")
+        "Otherwise re-run desktop_discover, or try click_element on the same entity"
       )),
       { optIn: false, detail: result.detail, ...itemAdvice("AimRouteFailed", result.adviceClass) },
     );
@@ -1481,10 +1478,7 @@ const desktopActRawHandlerInner = async (
     const failure = toFailureEnvelope(
       Err(new AimBlockedByExcludedRefusalError(
         "AimBlockedByExcludedWindow: a window this server may not act through is over the point this act would have pressed — nothing was clicked. " +
-        "The window you named is not the excluded one. " +
-        (result.adviceClass !== undefined
-          ? "Retry once the point is clear — not through click_element, whose Invoke opens, runs or edits a list, tree or grid item"
-          : "Act through click_element, or retry once the point is clear")
+        "The window you named is not the excluded one. Act through click_element, or retry once the point is clear"
       )),
       { optIn: false, detail: result.detail, ...itemAdvice("AimBlockedByExcludedWindow", result.adviceClass) },
     );
@@ -2240,8 +2234,8 @@ export function registerDesktopTools(server: McpServer): void {
       "  modal_blocking → response.blockingElement (when present) names the blocker. role:'dialog' means a separate dialog window has disabled the target's window: blockingElement.hwnd is that dialog — re-call desktop_discover with target.hwnd=blockingElement.hwnd, answer it there, then retry (name is its title, which may be empty or shared, so neither click_element(name) nor focus_window(title=name) reaches it). Any other role: a window the desktop_discover snapshot holds, where the OS could not say whether it blocks this entity — with blockingElement.hwnd, re-call desktop_discover with target.hwnd=blockingElement.hwnd and answer it there; without it, dismiss via V1 click_element(name=blockingElement.name). Then re-call desktop_discover on the original target and act on the new lease — this refusal came from that snapshot, so the same lease is refused again;",
       "  entity_outside_viewport → scroll it back via V1 scroll(action='to_element'/'raw'), or re-call desktop_discover if its window moved or closed;",
       "  origin_window_not_visible → the element's window is minimised or hidden — V1 focus_window(windowTitle) to restore it, then re-call desktop_discover;",
-      "  coordinate_outside_reachable_bounds → the point is not on any connected monitor — the coordinates are stale: re-call desktop_discover (on builds without the native input module only the primary monitor is reachable; move the window there first). V1 click_element works without moving the cursor;",
-      "  cursor_placement_blocked → the pointer could not be placed at that point (an app is holding the cursor, the session is not interactive right now, or the monitor layout just changed); nothing was clicked. V1 click_element acts without the cursor; otherwise free the cursor or reconnect the session and retry, and re-call desktop_discover if a monitor was added or removed;",
+      "  coordinate_outside_reachable_bounds → the point is not on any connected monitor — the coordinates are stale: re-call desktop_discover (on builds without the native input module only the primary monitor is reachable; move the window there first). V1 click_element works without moving the cursor (not on a list, tree or grid item, whose Invoke opens, runs or edits it);",
+      "  cursor_placement_blocked → the pointer could not be placed at that point (an app is holding the cursor, the session is not interactive right now, or the monitor layout just changed); nothing was clicked. V1 click_element acts without the cursor (not on a list, tree or grid item, whose Invoke opens, runs or edits it); otherwise free the cursor or reconnect the session and retry, and re-call desktop_discover if a monitor was added or removed;",
       "  aim_window_gone → the window this act was aimed at no longer exists; nothing was clicked. Re-call desktop_discover — do NOT retry by coordinate, the entity's rect is where that window used to be and another window may occupy it now;",
       "  aim_identity_changed → the window this act named has gone and its handle now names a different window (another process, or another window of the same program); nothing was done, and the lease describes a window that is gone. Re-call desktop_discover — do NOT retry with the same handle or by coordinate;",
       "  aim_occluded → another window drawn over the point would take the press, so nothing was done — by Windows' own hit test, which does not count an overlay that lets presses through there; a build whose native addon cannot ask Windows judges from the window list, where any window on top counts unless it has both WS_EX_TRANSPARENT and WS_EX_LAYERED. Bring the intended window forward, or use V1 click_element, which does not use coordinates (not on a list, tree or grid item, whose Invoke opens, runs or edits it) — re-calling desktop_discover alone does not help, the coordinates are already right;",
