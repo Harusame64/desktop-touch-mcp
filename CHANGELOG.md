@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Fixed — Windows
+- **`desktop_discover` no longer reads the window in front when `target.hwnd` is not a window handle.**
+  An empty, zero, negative or non-numeric `target.hwnd`, sent without `windowTitle` or `tabId`, was read as
+  no target, so the discover read the foreground window and an act on its lease wrote there with
+  `ok:true`. It is now refused with `InvalidArgs` and nothing is read. With a `windowTitle` or `tabId`
+  beside it, the call still aims by that.
 - **`desktop_act` `type` / `setValue` no longer writes into another field whose name contains the
   field's name.** Before, when the field had no AutomationId, the write went to the first element whose
   name *contained* the field's name, and answered `ok:true`: a write meant for "Name" could land in an

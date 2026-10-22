@@ -95,7 +95,8 @@ export async function fetchUiaCandidates(
   // same value in the same discover. With the handle unread there is no scoping, so this reads
   // `windowTitle` — the caller's title if it passed one, the FOREGROUND window if it did not —
   // while every candidate still carries the caller's raw handle string as its target id
-  // (2ゲート目の指摘).
+  // (2ゲート目の指摘). From the tool, the no-title case is refused before this runs
+  // (desktop-register.ts `unusableHandleRefusal`, internal #295).
   const hwndWarnings = pinned === undefined && target.hwnd ? ["target_hwnd_unparseable"] : [];
   // ADR-036 item 14a — what this lane asks for, known before the read, so a read that throws still
   // says it. `read` is filled once the bridge answers; the row is written where the lane returns.

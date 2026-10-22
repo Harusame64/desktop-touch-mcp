@@ -17,7 +17,9 @@
  *                             against `target.windowTitle` if there is one and against the
  *                             FOREGROUND window if there is not — either way not necessarily the
  *                             window the caller named, while the candidates still carry the
- *                             caller's raw handle string as their target id (ADR-036)
+ *                             caller's raw handle string as their target id (ADR-036). From the
+ *                             tool, the no-title case is refused before this runs
+ *                             (desktop-register.ts `unusableHandleRefusal`, internal #295)
  */
 
 import type { Rect, UiEntityCandidate } from "../../engine/vision-gpu/types.js";

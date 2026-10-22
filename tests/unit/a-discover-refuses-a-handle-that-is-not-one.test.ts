@@ -8,6 +8,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   desktopDiscoverRawHandler,
+  desktopDiscoverRegistrationHandler,
   getDesktopFacade,
   unusableHandleRefusal,
   _resetFacadeForTest,
@@ -23,7 +24,7 @@ function spySee() {
 }
 
 describe("discover by a target.hwnd that is not a handle", () => {
-  it.each(["", "abc", "0", "-1", " "])("refuses %j alone, with InvalidArgs, and reads nothing", async (hwnd) => {
+  it.each(["", "abc", "0", "-1", " ", "1e3", "12abc"])("refuses %j alone, with InvalidArgs, and reads nothing", async (hwnd) => {
     const see = spySee();
     const result = await desktopDiscoverRawHandler({ target: { hwnd } });
     const body = JSON.parse((result.content[0] as { text: string }).text) as { ok: boolean; code: string; error: string };
@@ -33,18 +34,29 @@ describe("discover by a target.hwnd that is not a handle", () => {
     expect(see).not.toHaveBeenCalled();
   });
 
-  it("still reads by a handle, decimal or hex", async () => {
+  it("still reads by a handle, decimal or hex, as BigInt reads it (whitespace around it is allowed)", async () => {
     const see = spySee();
     await desktopDiscoverRawHandler({ target: { hwnd: "123" } });
     await desktopDiscoverRawHandler({ target: { hwnd: "0x7B" } });
-    expect(see).toHaveBeenCalledTimes(2);
+    await desktopDiscoverRawHandler({ target: { hwnd: " 123" } });
+    expect(see).toHaveBeenCalledTimes(3);
+  });
+
+  it("refuses through the registered tool too, the one run_macro calls, and inside an envelope", async () => {
+    const see = spySee();
+    const result = await desktopDiscoverRegistrationHandler({ target: { hwnd: "" }, include: ["envelope"] });
+    const body = JSON.parse((result.content[0] as { text: string }).text) as { data: { ok: boolean; code: string } };
+    expect(body.data.ok).toBe(false);
+    expect(body.data.code).toBe("InvalidArgs");
+    expect(see).not.toHaveBeenCalled();
   });
 
   it("still aims by a title or a tab sent beside it", async () => {
     const see = spySee();
     await desktopDiscoverRawHandler({ target: { hwnd: "", windowTitle: "メモ帳" } });
     await desktopDiscoverRawHandler({ target: { hwnd: "-1", tabId: "t1" } });
-    expect(see).toHaveBeenCalledTimes(2);
+    await desktopDiscoverRawHandler({ target: { hwnd: "", windowTitle: "メモ帳", tabId: "" } });
+    expect(see).toHaveBeenCalledTimes(3);
   });
 
   it("refuses when the title and the tab beside it are empty too", () => {

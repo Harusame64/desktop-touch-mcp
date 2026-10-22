@@ -1005,7 +1005,7 @@ export function unusableHandleRefusal(target: TargetSpec | undefined): string | 
   if (target.windowTitle || target.tabId) return undefined;
   return (
     `desktop_discover: target.hwnd ${JSON.stringify(target.hwnd)} is not a window handle, which is a positive integer ` +
-    "(decimal, or hex with 0x) as desktop_state and windows[] give it. Nothing was read. " +
+    "(decimal, or hex with 0x) as desktop_state (focusedWindow.hwnd) and desktop_discover's windows[] give it. Nothing was read. " +
     "Pass a window handle or target.windowTitle, or omit target to read the foreground window."
   );
 }
