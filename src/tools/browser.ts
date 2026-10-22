@@ -406,8 +406,11 @@ async function ensureWindowFocused(titleHint: string): Promise<bigint | undefine
   // internal #274 (gate 2 on #834) — only a Chromium frame can be the browser: a terminal or an editor
   // whose title holds the tab's title would otherwise be focused, and the click check would then refuse
   // naming the real browser under the point. A window whose class could not be read is kept.
-  const windows = enumWindowsInZOrder().filter(isChromiumFrameOrUnknown);
-  updateWindowCache(windows);
+  // The cache takes the whole enumeration: it treats its argument as the full snapshot and drops what
+  // is absent (codex P2 on #834). Only the search below is narrowed.
+  const all = enumWindowsInZOrder();
+  updateWindowCache(all);
+  const windows = all.filter(isChromiumFrameOrUnknown);
   const active = windows.find((w) => w.isActive);
   if (active && active.title.toLowerCase().includes(titleHint.toLowerCase())) {
     return active.hwnd; // already focused
@@ -427,12 +430,13 @@ async function ensureWindowFocused(titleHint: string): Promise<bigint | undefine
  * Ensure a browser window is focused before sending mouse events.
  * Falls back to generic Chrome/Edge title search when tab title cannot be resolved.
  */
-async function ensureBrowserFocused(port: number): Promise<bigint | undefined> {
-  // Try to match by current tab title from CDP
+async function ensureBrowserFocused(port: number, tabId: string | null = null): Promise<bigint | undefined> {
+  // Try to match by the tab's title from CDP — the tab the click is for when one was named (codex P1 on
+  // #834: the first page tab's window is the wrong reference for a tab in a second browser window).
   let tabTitle: string | undefined;
   try {
     const tabs = await listTabs(port);
-    const pageTab = tabs.find((t) => t.type === "page");
+    const pageTab = (tabId !== null ? tabs.find((t) => t.id === tabId) : undefined) ?? tabs.find((t) => t.type === "page");
     tabTitle = pageTab?.title;
   } catch {
     // ignore — fall back to browser name search
@@ -443,8 +447,9 @@ async function ensureBrowserFocused(port: number): Promise<bigint | undefined> {
   }
 
   // Fall back to browser process name
-  const windows = enumWindowsInZOrder().filter(isChromiumFrameOrUnknown);
-  updateWindowCache(windows);
+  const all = enumWindowsInZOrder();
+  updateWindowCache(all);
+  const windows = all.filter(isChromiumFrameOrUnknown);
   const active = windows.find((w) => w.isActive);
   if (
     active &&
@@ -714,7 +719,7 @@ export async function osClickAndVerify(
   // been brought forward; the cursor has still not moved.)
   assertCoordinateReachable(x, y);
 
-  const browserHwnd = await ensureBrowserFocused(port);
+  const browserHwnd = await ensureBrowserFocused(port, tabId);
 
   // internal #274 — after the browser is brought forward and before the cursor moves: who would take a
   // press at the point. win2 (2.3.0 dogfood) saw Edge's first-run panel, a window Edge owns, cover the

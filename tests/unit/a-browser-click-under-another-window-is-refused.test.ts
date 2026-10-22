@@ -20,6 +20,12 @@ const mocks = vi.hoisted(() => ({
   move: vi.fn(async () => {}),
   windows: [] as unknown[],
   focused: [] as bigint[],
+  cached: [] as unknown[][],
+}));
+
+vi.mock("../../src/engine/window-cache.js", async (orig) => ({
+  ...(await orig<typeof import("../../src/engine/window-cache.js")>()),
+  updateWindowCache: (ws: unknown[]) => { mocks.cached.push(ws); },
 }));
 
 vi.mock("../../src/engine/nutjs.js", async (orig) => ({
@@ -36,7 +42,10 @@ vi.mock("../../src/engine/reachable-bounds.js", async (orig) => ({
 }));
 vi.mock("../../src/engine/cdp-bridge.js", async (orig) => ({
   ...(await orig<typeof import("../../src/engine/cdp-bridge.js")>()),
-  listTabs: vi.fn(async () => [{ id: "t1", type: "page", title: "Shop", url: "https://example.test/" }]),
+  listTabs: vi.fn(async () => [
+    { id: "t1", type: "page", title: "Shop", url: "https://example.test/" },
+    { id: "t2", type: "page", title: "Cart", url: "https://example.test/cart" },
+  ]),
   evaluateInTab: vi.fn(async () => { throw new Error("no CDP in this cell"); }),
 }));
 vi.mock("../../src/engine/win32.js", async (orig) => ({
@@ -51,6 +60,7 @@ afterEach(() => {
   mocks.click.mockClear();
   mocks.move.mockClear();
   mocks.focused.length = 0;
+  mocks.cached.length = 0;
   mocks.windows = [EDGE];
 });
 mocks.windows = [EDGE];
@@ -101,6 +111,21 @@ describe("which window the point is asked about", () => {
   it("not a non-browser window whose title holds the tab's title (gate 2 on #834)", async () => {
     mocks.windows = [{ ...EDGE, hwnd: 1n, title: "Shop - notes.txt", className: "Notepad", isActive: true }, { ...EDGE, isActive: false }];
     expect(await ask()).toEqual([4242n]);
+  });
+
+  it("the window of the tab the click is for, not the first tab's (codex P1 on #834)", async () => {
+    const CART = { ...EDGE, hwnd: 5151n, title: "Cart - Microsoft Edge", isActive: false };
+    mocks.windows = [EDGE, CART];
+    const asked: bigint[] = [];
+    await osClickAndVerify(283, 125, null, "t2", 9222, (aim) => { asked.push(aim); return owners.aim!; });
+    expect(asked).toEqual([5151n]);
+  });
+
+  it("the window cache still gets every window, not only the browser frames (codex P2 on #834)", async () => {
+    const NOTES = { ...EDGE, hwnd: 1n, title: "notes.txt", className: "Notepad", isActive: false };
+    mocks.windows = [NOTES, EDGE];
+    await ask();
+    expect(mocks.cached[0]).toContainEqual(NOTES);
   });
 
   it("with no browser window found, nothing is asked and it clicks as before", async () => {
