@@ -654,7 +654,8 @@ fn set_value_impl(
         // are not checked at all, and every other type is read again for up to
         // `NOT_APPLIED_SETTLE_MS` before the write is called not applied. A password field, a type
         // or a value that cannot be read decides nothing — each answers as it did before the check.
-        let checked = !elem.CurrentIsPassword().map(|b| b == true).unwrap_or(true)
+        let not_password = !elem.CurrentIsPassword().map(|b| b == true).unwrap_or(true);
+        let checked = not_password
             && elem
                 .CurrentControlType()
                 .map(|t| write_is_checked(t.0))
@@ -694,11 +695,14 @@ fn set_value_impl(
         } else {
             super::focus_first::NOT_MOVED_READ_ONLY
         };
-        let before = if checked {
+        // internal #287 — read for every field that is not a password, not only the checked types: a
+        // write that FAILS is compared with it below, and the WPF TextBox measured there is an Edit.
+        let prior = if not_password {
             vp.CurrentValue().ok().map(|b| b.to_string())
         } else {
             None
         };
+        let before = if checked { prior.clone() } else { None };
         let bstr = windows::core::BSTR::from(&*opts.value);
         match vp.SetValue(&bstr) {
             Ok(()) => {
@@ -763,39 +767,76 @@ fn set_value_impl(
                 notified: None,
                 focus_inside: None,
             }),
-            Err(e) => Ok(ActionResult {
-                ok: false,
-                element: None,
-                error: Some(failure_text(&e)),
-                code: None,
-                focused_by: Some(focused_by.into()),
-                selected: None,
-                notified: None,
-                // internal #292 — the keyboard rung types next, into whatever holds the focus. For a
-                // field with no window of its own the rung cannot compare handles, so where the focus
-                // is now is read here, after the focus step and before anything else moves it.
-                // MEASURED win2 (internal `dev/k292/r292.md`, `53b4bda9`): a WPF field whose SetValue
-                // throws took the characters 9/9 when the focus step had moved the focus into it, even
-                // with the focus on another control before the act — so the focus before the act is
-                // not the fact; and when the field could not take the focus, nothing landed (3/3) or
-                // the characters went into the focused neighbour (3/3), both under `ok:true`.
-                //
-                // Asked only about an element found by its exact name and type: one found by a name
-                // that merely contains the field's is not known to be the field, and its focus says
-                // nothing about where the named field's characters go (gate 2). Not after a timeout:
-                // the walk would wait on the same window that stopped answering, and the caller is
-                // told the write may still land, before any keyboard rung (gate 2). With the deferred
-                // focus move's room left, as for that move: the walk is cross-process too.
-                focus_inside: if found_exactly
+            // internal #287 — a provider can write the value and then fail the call. MEASURED win2
+            // (2026-10-22, main `25078031`, WPF fixture K287-FX, 3/3 each): such a failure and one that
+            // wrote nothing came back as the same text, the keyboard rung typed the value again, and
+            // the field held `abcabc` under `ok:true`. Only the value tells them apart, so it is read
+            // again: the value asked for is the write having taken; another value that moved is
+            // refused (`ValueChangedThenFailed`), with no rung after it; an unmoved or unreadable one
+            // goes on as before. Not after a timeout (the read would wait on the window that stopped
+            // answering), and with the deferred focus move's room left, as for `focus_inside` below.
+            Err(e) => {
+                let after = if prior.is_some()
                     && !super::is_timeout(&e)
                     && submitted.elapsed()
                         < std::time::Duration::from_millis(u64::from(DEFAULT_TIMEOUT_MS - DEFERRED_FOCUS_ROOM_MS))
                 {
-                    super::focus_first::focus_inside(ctx, &elem)
+                    vp.CurrentValue().ok().map(|b| b.to_string())
                 } else {
                     None
-                },
-            }),
+                };
+                if after.is_some() && after != prior {
+                    let took = after.as_deref() == Some(&*opts.value);
+                    return Ok(ActionResult {
+                        ok: took,
+                        element: None,
+                        error: (!took).then(|| {
+                            format!(
+                                "SetValue failed ({}), and the element's value changed to something other than the value asked for",
+                                failure_text(&e)
+                            )
+                        }),
+                        code: (!took).then(|| VALUE_CHANGED_THEN_FAILED.into()),
+                        focused_by: Some(focused_by.into()),
+                        selected: None,
+                        notified: None,
+                        focus_inside: None,
+                    });
+                }
+                Ok(ActionResult {
+                    ok: false,
+                    element: None,
+                    error: Some(failure_text(&e)),
+                    code: None,
+                    focused_by: Some(focused_by.into()),
+                    selected: None,
+                    notified: None,
+                    // internal #292 — the keyboard rung types next, into whatever holds the focus. For a
+                    // field with no window of its own the rung cannot compare handles, so where the focus
+                    // is now is read here, after the focus step and before anything else moves it.
+                    // MEASURED win2 (internal `dev/k292/r292.md`, `53b4bda9`): a WPF field whose SetValue
+                    // throws took the characters 9/9 when the focus step had moved the focus into it, even
+                    // with the focus on another control before the act — so the focus before the act is
+                    // not the fact; and when the field could not take the focus, nothing landed (3/3) or
+                    // the characters went into the focused neighbour (3/3), both under `ok:true`.
+                    //
+                    // Asked only about an element found by its exact name and type: one found by a name
+                    // that merely contains the field's is not known to be the field, and its focus says
+                    // nothing about where the named field's characters go (gate 2). Not after a timeout:
+                    // the walk would wait on the same window that stopped answering, and the caller is
+                    // told the write may still land, before any keyboard rung (gate 2). With the deferred
+                    // focus move's room left, as for that move: the walk is cross-process too.
+                    focus_inside: if found_exactly
+                        && !super::is_timeout(&e)
+                        && submitted.elapsed()
+                            < std::time::Duration::from_millis(u64::from(DEFAULT_TIMEOUT_MS - DEFERRED_FOCUS_ROOM_MS))
+                    {
+                        super::focus_first::focus_inside(ctx, &elem)
+                    } else {
+                        None
+                    },
+                })
+            }
         }
     }
 }
@@ -803,6 +844,8 @@ fn set_value_impl(
 /// How long a write that reads back unchanged is read again before it is called not applied
 /// (internal #182). win2 saw Chromium's value ~120 ms after SetValue returned; this is that, with room.
 const NOT_APPLIED_SETTLE_MS: u64 = 300;
+/// internal #287 — SetValue failed after the element's value had moved to another value.
+const VALUE_CHANGED_THEN_FAILED: &str = "ValueChangedThenFailed";
 const NOT_APPLIED_POLL_MS: u64 = 30;
 
 /// Internal #182 — which control types the not-applied check asks. Edit and Document are not: the

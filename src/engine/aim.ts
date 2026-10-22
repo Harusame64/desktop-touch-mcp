@@ -186,6 +186,13 @@ export class TargetGoneError extends Error implements CallerFacingRefusal {
 export const VALUE_NOT_APPLIED = "ValueNotApplied";
 
 /**
+ * internal #287 — backend code for "SetValue failed, and the element's value had moved to something
+ * other than the value asked for" (the native client's `set_value_impl`). The write may have landed
+ * in part, so the executor refuses it before the keyboard rung, which would type it a second time.
+ */
+export const VALUE_CHANGED_THEN_FAILED = "ValueChangedThenFailed";
+
+/**
  * internal #289 — backend code for "several elements have the entity's exact name and type, and its
  * rect does not tell them apart" (the native writer, `src/uia/actions.rs::find_value_target`). Nothing
  * was written; the executor refuses it before the keyboard rung, as `entity_not_found`.

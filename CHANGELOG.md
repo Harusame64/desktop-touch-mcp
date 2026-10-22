@@ -8,6 +8,13 @@
   no target, so the discover read the foreground window and an act on its lease wrote there with
   `ok:true`. It is now refused with `InvalidArgs` and nothing is read. With a `windowTitle` or `tabId`
   beside it, the call still aims by that.
+- **`desktop_act` `type` / `setValue` no longer types the text a second time when a field's value write
+  fails after it has written.** Some fields write the value through UI Automation and then report the
+  write as failed. The act then typed the text again with the keyboard, and the field held it twice
+  (`abcabc`) under `ok:true`. After a failed write, the field's value is now read again. If it holds the
+  value asked for, the act answers `ok:true`. If it changed to another value, the act is refused with
+  `value_not_applied` and nothing else is typed. If it did not change, the act goes on to the keyboard
+  as before.
 - **`desktop_act` `type` / `setValue` no longer writes into another field whose name contains the
   field's name.** Before, when the field had no AutomationId, the write went to the first element whose
   name *contained* the field's name, and answered `ok:true`: a write meant for "Name" could land in an
