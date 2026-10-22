@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Fixed — Windows
+- **`browser_click` no longer clicks a point another window covers.** It clicks with the OS cursor, so a
+  window on top of the element took the click while the call answered `ok: true` (Edge's first-run
+  welcome panel did this). After bringing the browser forward and before moving the cursor, it now asks
+  Windows which window is at the point. If it is another window, or a panel, popup or dialog of the
+  browser itself, nothing is clicked and the call fails with `BrowserPointCovered`, naming the window (a
+  window this server may not act through is not named). When Windows cannot say, it clicks as before.
 - **A refused click on a list, tree or grid item no longer advises `click_element`.** When such a click
   was refused because a window covered the point, the pointer could not be placed or reached, or a
   window this server may not act through was on top (`aim_occluded`, `cursor_placement_blocked`,

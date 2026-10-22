@@ -1,0 +1,103 @@
+/**
+ * internal #274 — `browser_click` does not click a point another window covers.
+ *
+ * MEASURED win2 (2.3.0 dogfood, main `3953af04`, 2026-10-08; same on 2.2.0): Edge's first-run welcome
+ * panel, a separate window Edge owns, covered the whole browser. `browser_click` on a button answered
+ * `ok: true` with `verifyDelivery` `unverifiable` / `no_dom_mutation`; the OS click landed on the panel
+ * and nothing happened in the page.
+ *
+ * The click is an OS cursor click, so the check is Windows' own answer to "who takes a press here"
+ * (`whoIsUnderPoint`), asked after the browser is brought forward and before the cursor moves.
+ */
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { PointOwner } from "../../src/engine/point-owner.js";
+
+const mocks = vi.hoisted(() => ({
+  click: vi.fn(async () => {}),
+  move: vi.fn(async () => {}),
+}));
+
+vi.mock("../../src/engine/nutjs.js", async (orig) => ({
+  ...(await orig<typeof import("../../src/engine/nutjs.js")>()),
+  mouse: { click: mocks.click, config: {} },
+}));
+vi.mock("../../src/engine/cursor.js", async (orig) => ({
+  ...(await orig<typeof import("../../src/engine/cursor.js")>()),
+  moveCursorTo: mocks.move,
+}));
+vi.mock("../../src/engine/reachable-bounds.js", async (orig) => ({
+  ...(await orig<typeof import("../../src/engine/reachable-bounds.js")>()),
+  assertCoordinateReachable: () => {},
+}));
+vi.mock("../../src/engine/cdp-bridge.js", async (orig) => ({
+  ...(await orig<typeof import("../../src/engine/cdp-bridge.js")>()),
+  listTabs: vi.fn(async () => [{ id: "t1", type: "page", title: "Shop", url: "https://example.test/" }]),
+  evaluateInTab: vi.fn(async () => { throw new Error("no CDP in this cell"); }),
+}));
+vi.mock("../../src/engine/win32.js", async (orig) => ({
+  ...(await orig<typeof import("../../src/engine/win32.js")>()),
+  enumWindowsInZOrder: () => [
+    { hwnd: 4242n, title: "Shop - Microsoft Edge", isActive: true, region: { x: 0, y: 0, width: 1200, height: 900 }, zOrder: 0 },
+  ],
+  restoreAndFocusWindow: () => {},
+}));
+
+const { osClickAndVerify, browserPointCover, browserPointCoveredFailure } = await import("../../src/tools/browser.js");
+
+afterEach(() => {
+  mocks.click.mockClear();
+  mocks.move.mockClear();
+});
+
+const owners: Record<string, PointOwner> = {
+  owned: { kind: "owned", hwnd: 777n, title: "Welcome to Microsoft Edge", via: "os_hit_test" },
+  other: { kind: "other", hwnd: 888n, title: "Notepad", via: "os_hit_test" },
+  blocked: { kind: "blocked", why: "excluded_window", via: "os_hit_test" },
+  aim: { kind: "aim", via: "os_hit_test" },
+  unknown: { kind: "unknown", why: "unattributable_window", via: "os_hit_test" },
+};
+
+describe("osClickAndVerify asks who is on top before it moves the cursor", () => {
+  for (const kind of ["owned", "other", "blocked"] as const) {
+    it(`${kind}: nothing is moved or clicked, and the cover comes back`, async () => {
+      const asked: Array<[bigint, number, number]> = [];
+      const r = await osClickAndVerify(283, 125, null, null, 9222, (aim, x, y) => { asked.push([aim, x, y]); return owners[kind]!; });
+      expect(asked).toEqual([[4242n, 283, 125]]);
+      expect(r).toHaveProperty("covered");
+      expect(mocks.move).not.toHaveBeenCalled();
+      expect(mocks.click).not.toHaveBeenCalled();
+    });
+  }
+
+  for (const kind of ["aim", "unknown"] as const) {
+    it(`${kind}: it clicks as before`, async () => {
+      const r = await osClickAndVerify(283, 125, null, null, 9222, () => owners[kind]!);
+      expect(r).not.toHaveProperty("covered");
+      expect(mocks.move).toHaveBeenCalledWith(283, 125);
+      expect(mocks.click).toHaveBeenCalledTimes(1);
+    });
+  }
+});
+
+describe("the refusal", () => {
+  it("names the browser's own window and another window, and never the excluded one", () => {
+    const text = (k: keyof typeof owners) => {
+      const r = browserPointCoveredFailure(browserPointCover(owners[k]!)!, 283, 125, { selector: "#buy" });
+      return JSON.parse((r.content[0] as { text: string }).text) as { ok: boolean; code: string; error: string; context: Record<string, unknown> };
+    };
+    const owned = text("owned");
+    expect(owned).toMatchObject({ ok: false, code: "BrowserPointCovered" });
+    expect(owned.error).toContain("a window of the browser itself");
+    expect(owned.error).toContain("Welcome to Microsoft Edge");
+    expect(owned.error).toContain("Nothing was clicked");
+    expect(text("other").error).toContain("\"Notepad\" (hwnd 888)");
+    const blocked = text("blocked");
+    expect(blocked.error).toContain("a window this server may not act through");
+    expect(blocked.error).not.toMatch(/hwnd/);
+  });
+
+  it("is not made for the browser window or for no answer", () => {
+    expect(browserPointCover(owners.aim!)).toBeUndefined();
+    expect(browserPointCover(owners.unknown!)).toBeUndefined();
+  });
+});

@@ -5,6 +5,7 @@ import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 import { moveCursorTo } from "../engine/cursor.js";
 import { enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
 import { updateWindowCache } from "../engine/window-cache.js";
+import { whoIsUnderPoint, type PointOwner } from "../engine/point-owner.js";
 import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { failWith, failCode } from "./_errors.js";
@@ -396,12 +397,12 @@ export function _resetTabContextCache(): void {
  * Otherwise finds the window by title and brings it to the front.
  * Updates the window cache after enumeration.
  */
-async function ensureWindowFocused(titleHint: string): Promise<void> {
+async function ensureWindowFocused(titleHint: string): Promise<bigint | undefined> {
   const windows = enumWindowsInZOrder();
   updateWindowCache(windows);
   const active = windows.find((w) => w.isActive);
   if (active && active.title.toLowerCase().includes(titleHint.toLowerCase())) {
-    return; // already focused
+    return active.hwnd; // already focused
   }
   const target = windows.find((w) =>
     w.title.toLowerCase().includes(titleHint.toLowerCase())
@@ -409,14 +410,16 @@ async function ensureWindowFocused(titleHint: string): Promise<void> {
   if (target) {
     restoreAndFocusWindow(target.hwnd);
     await new Promise<void>((r) => setTimeout(r, 100));
+    return target.hwnd;
   }
+  return undefined;
 }
 
 /**
  * Ensure a browser window is focused before sending mouse events.
  * Falls back to generic Chrome/Edge title search when tab title cannot be resolved.
  */
-async function ensureBrowserFocused(port: number): Promise<void> {
+async function ensureBrowserFocused(port: number): Promise<bigint | undefined> {
   // Try to match by current tab title from CDP
   let tabTitle: string | undefined;
   try {
@@ -428,8 +431,7 @@ async function ensureBrowserFocused(port: number): Promise<void> {
   }
 
   if (tabTitle) {
-    await ensureWindowFocused(tabTitle);
-    return;
+    return ensureWindowFocused(tabTitle);
   }
 
   // Fall back to browser process name
@@ -440,7 +442,7 @@ async function ensureBrowserFocused(port: number): Promise<void> {
     active &&
     (active.title.includes("Google Chrome") || active.title.includes("Microsoft Edge"))
   ) {
-    return;
+    return active.hwnd;
   }
   const browserWindow = windows.find((w) =>
     w.title.includes("Google Chrome") || w.title.includes("Microsoft Edge")
@@ -448,7 +450,9 @@ async function ensureBrowserFocused(port: number): Promise<void> {
   if (browserWindow) {
     restoreAndFocusWindow(browserWindow.hwnd);
     await new Promise<void>((r) => setTimeout(r, 100));
+    return browserWindow.hwnd;
   }
+  return undefined;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -626,6 +630,44 @@ type VerifyDeliveryHint = {
   };
 };
 
+/** internal #274 — what is on top of the click point instead of the browser window. */
+export type BrowserPointCover =
+  | { covered: "other" | "owned"; hwnd: bigint; title: string }
+  | { covered: "excluded" };
+
+/** internal #274 — `undefined` when the browser window (or nothing known) is under the point. */
+export function browserPointCover(owner: PointOwner): BrowserPointCover | undefined {
+  if (owner.kind === "other" || owner.kind === "owned") return { covered: owner.kind, hwnd: owner.hwnd, title: owner.title };
+  if (owner.kind === "blocked") return { covered: "excluded" };
+  return undefined;
+}
+
+/**
+ * internal #274 — the failure for a click whose point another window covers. Inline failCode (the
+ * BrowserTargetMinimized precedent). An excluded window is not named (R3).
+ */
+export function browserPointCoveredFailure(cover: BrowserPointCover, x: number, y: number, ctx: Record<string, unknown>): ToolResult {
+  const what =
+    cover.covered === "excluded"
+      ? "a window this server may not act through"
+      : cover.covered === "owned"
+        ? `a window of the browser itself (a panel, popup or dialog), ${cover.title ? `"${cover.title}" ` : ""}(hwnd ${cover.hwnd})`
+        : `another window, ${cover.title ? `"${cover.title}" ` : ""}(hwnd ${cover.hwnd})`;
+  return failCode(
+    "BrowserPointCovered",
+    `browser_click: ${what} is on top of the element's point (${x}, ${y}), so the click would land on it. Nothing was clicked.`,
+    {
+      suggest: [
+        "Close or move what is on top (a panel, popup or dialog of the browser is dismissed in the browser), then retry browser_click.",
+        "To enter text, browser_fill sets the value through the page and does not use an OS click.",
+      ],
+      context: { ...ctx, at: { x, y }, coveredBy: cover.covered },
+    },
+  );
+}
+
+const isCover = (r: VerifyDeliveryHint | BrowserPointCover): r is BrowserPointCover => "covered" in r;
+
 /**
  * Shared OS-click + CDP delivery verification (Issue #181 matrix doc §3.1), used
  * by both the selector path and the by-axis path of browser_click. Focuses the
@@ -639,13 +681,14 @@ type VerifyDeliveryHint = {
  * intentionally NOT a delivery signal (a plain click on a focusable control
  * always moves focus; treating that as delivered would mask silent-fail).
  */
-async function osClickAndVerify(
+export async function osClickAndVerify(
   x: number,
   y: number,
   probeSelector: string | null,
   tabId: string | null,
   port: number,
-): Promise<VerifyDeliveryHint> {
+  pointOwner: (aim: bigint, x: number, y: number) => PointOwner = whoIsUnderPoint,
+): Promise<VerifyDeliveryHint | BrowserPointCover> {
   // ADR-029: every browser_click path (selector, by-axis, actionability rescue)
   // funnels here, and this is an OS cursor click — CDP only resolves the
   // coordinates and verifies delivery afterwards. A browser window on another
@@ -655,7 +698,16 @@ async function osClickAndVerify(
   // and before focusing the browser, so a refused click has no side effect.
   assertCoordinateReachable(x, y);
 
-  await ensureBrowserFocused(port);
+  const browserHwnd = await ensureBrowserFocused(port);
+
+  // internal #274 — after the browser is brought forward and before the cursor moves: who would take a
+  // press at the point. win2 (2.3.0 dogfood) saw Edge's first-run panel, a window Edge owns, cover the
+  // page: the click landed on the panel and answered ok:true. A window the browser owns is not the page
+  // either, so it refuses too. With no browser window found, or no answer, it clicks as before.
+  if (browserHwnd !== undefined) {
+    const cover = browserPointCover(pointOwner(browserHwnd, x, y));
+    if (cover !== undefined) return cover;
+  }
 
   // Phase 2a: same choke point as every other cursor move — native
   // multi-monitor placement with the nut.js fallback behind it.
@@ -1454,7 +1506,9 @@ async function handleBrowserClickByAxis(args: {
 
   // Resolved: OS-click at the physical point (probe with null selector — the
   // resolver located the element by coords; document-level mutation probe).
-  const verifyDelivery = await osClickAndVerify(outcome.physical.x, outcome.physical.y, null, tabId ?? null, port);
+  const clicked = await osClickAndVerify(outcome.physical.x, outcome.physical.y, null, tabId ?? null, port);
+  if (isCover(clicked)) return browserPointCoveredFailure(clicked, outcome.physical.x, outcome.physical.y, ctx);
+  const verifyDelivery = clicked;
   const tabCtx = await getTabContext(tabId ?? null, port);
 
   // Rich block (narrate:"rich") — same CDP navigation-diff shape as the selector path.
@@ -1600,7 +1654,9 @@ async function attemptSelectorActionabilityRescue(args: {
     return browserMinimizedFailure(ctx);
   }
 
-  const verifyDelivery = await osClickAndVerify(outcome.physical.x, outcome.physical.y, null, tabId ?? null, port);
+  const clicked = await osClickAndVerify(outcome.physical.x, outcome.physical.y, null, tabId ?? null, port);
+  if (isCover(clicked)) return browserPointCoveredFailure(clicked, outcome.physical.x, outcome.physical.y, ctx);
+  const verifyDelivery = clicked;
   const tabCtx = await getTabContext(tabId ?? null, port);
 
   // Rich block (narrate:"rich") — same CDP navigation-diff shape as the selector
@@ -1827,7 +1883,9 @@ export const browserClickElementHandler = async ({
     }
     // OS click + CDP delivery verification (Issue #181, shared with the by-axis
     // path). Focus → move → probe → click → settle → read → verifyDelivery.
-    const verifyDelivery = await osClickAndVerify(coords.x, coords.y, effectiveSelector, effectiveTabId ?? null, port);
+    const clicked = await osClickAndVerify(coords.x, coords.y, effectiveSelector, effectiveTabId ?? null, port);
+    if (isCover(clicked)) return browserPointCoveredFailure(clicked, coords.x, coords.y, { selector: effectiveSelector });
+    const verifyDelivery = clicked;
 
     const tabCtx = await getTabContext(effectiveTabId ?? null, port);
 
