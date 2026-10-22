@@ -1531,7 +1531,7 @@ const desktopActRawHandlerInner = async (
   if (!result.ok && result.reason === "value_not_applied") {
     const failure = toFailureEnvelope(
       Err(new ValueNotAppliedRefusalError(
-        "ValueNotApplied: the write was accepted, but what it should have changed read back unchanged (a control's value through the native UI Automation client, or Word's page text). " +
+        "ValueNotApplied: the write did not leave the value asked for — it was accepted and what it should have changed read back unchanged (a control's value through the native UI Automation client, or Word's page text), a WinForms combo box read back different, or the native UI Automation write failed after the field's value had changed to another value. " +
         "if_unexpected.detail names the control and what was read"
       )),
       { optIn: false, detail: result.detail },

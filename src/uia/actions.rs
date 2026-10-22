@@ -703,6 +703,21 @@ fn set_value_impl(
             None
         };
         let before = if checked { prior.clone() } else { None };
+        // The read above is cross-process too, on the commonest fields since #287, so the clock is
+        // asked again before writing: a write that lands after the caller was told the act timed out
+        // is the #289 shape (gate 2 on #832).
+        if submitted.elapsed() >= std::time::Duration::from_millis(u64::from(DEFAULT_TIMEOUT_MS)) {
+            return Ok(ActionResult {
+                ok: false,
+                element: None,
+                error: Some(super::STOPPED_ANSWERING.to_string()),
+                code: None,
+                focused_by: Some(focused_by.into()),
+                selected: None,
+                notified: None,
+                focus_inside: None,
+            });
+        }
         let bstr = windows::core::BSTR::from(&*opts.value);
         match vp.SetValue(&bstr) {
             Ok(()) => {
@@ -775,6 +790,10 @@ fn set_value_impl(
             // (`ValueChangedThenFailed`), with no rung after it; an unmoved or unreadable one goes on
             // as before. Not after a timeout (the read would wait on the window that stopped
             // answering), and with the deferred focus move's room left, as for `focus_inside` below.
+            // "Moved" is not only a partial write: a field that reformats itself on taking the focus,
+            // or a provider that wrote a normalised form ("1,000" for "1000") and then threw, reads as
+            // moved too. Both are refused with "may have been written" rather than typed again; neither
+            // is measured (gate 2 on #832).
             Err(e) => {
                 let after = if prior.is_some()
                     && !super::is_timeout(&e)

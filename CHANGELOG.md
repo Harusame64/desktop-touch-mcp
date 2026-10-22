@@ -13,8 +13,10 @@
   write as failed. The act then typed the text again with the keyboard, and the field held it twice
   (`abcabc`) under `ok:true`. After a failed write, the field's value is now read again. If it holds the
   value asked for, the act answers `ok:true`. If it changed to another value, the act is refused with
-  `value_not_applied` and nothing else is typed. If it did not change, the act goes on to the keyboard
-  as before.
+  `value_not_applied` and nothing else is typed. If it did not change or cannot be read, the act goes on
+  to the keyboard as before. This is the native UI Automation client only; the PowerShell client does
+  not read the value again. `set_element_value` gets the same read: a failed write that left the value
+  asked for now answers success.
 - **`desktop_act` `type` / `setValue` no longer writes into another field whose name contains the
   field's name.** Before, when the field had no AutomationId, the write went to the first element whose
   name *contained* the field's name, and answered `ok:true`: a write meant for "Name" could land in an
