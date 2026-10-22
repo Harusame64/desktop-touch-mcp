@@ -771,9 +771,9 @@ fn set_value_impl(
             // (2026-10-22, main `25078031`, WPF fixture K287-FX, 3/3 each): such a failure and one that
             // wrote nothing came back as the same text, the keyboard rung typed the value again, and
             // the field held `abcabc` under `ok:true`. Only the value tells them apart, so it is read
-            // again: the value asked for is the write having taken; another value that moved is
-            // refused (`ValueChangedThenFailed`), with no rung after it; an unmoved or unreadable one
-            // goes on as before. Not after a timeout (the read would wait on the window that stopped
+            // again: the value asked for answers as written; another value that moved is refused
+            // (`ValueChangedThenFailed`), with no rung after it; an unmoved or unreadable one goes on
+            // as before. Not after a timeout (the read would wait on the window that stopped
             // answering), and with the deferred focus move's room left, as for `focus_inside` below.
             Err(e) => {
                 let after = if prior.is_some()
@@ -785,8 +785,10 @@ fn set_value_impl(
                 } else {
                     None
                 };
-                if after.is_some() && after != prior {
-                    let took = after.as_deref() == Some(&*opts.value);
+                // The value asked for is the field as asked, whatever it held before: a write that
+                // failed into a field already holding it is not typed again either.
+                let took = after.as_deref() == Some(&*opts.value);
+                if took || (after.is_some() && after != prior) {
                     return Ok(ActionResult {
                         ok: took,
                         element: None,
