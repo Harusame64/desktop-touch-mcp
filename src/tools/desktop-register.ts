@@ -64,7 +64,7 @@ import {
 } from "../errors/typed-errors.js";
 import type { WindowBlockAnswer, SnapshotWindowAnswer, TouchAction, RoiCapture, RoiCaptureMaterial, SemanticDiff, ViewportVerdict } from "../engine/world-graph/guarded-touch.js";
 import { SnapshotIngress } from "../engine/world-graph/candidate-ingress.js";
-import type { TargetSpec } from "../engine/world-graph/session-registry.js";
+import { parseTargetHwnd, type TargetSpec } from "../engine/world-graph/session-registry.js";
 import { composeCandidates, composeCandidatesOnly } from "./desktop-providers/compose-providers.js";
 import { getVisualRuntime } from "../engine/vision-gpu/runtime.js";
 import { PocVisualBackend } from "../engine/vision-gpu/poc-backend.js";
@@ -991,7 +991,28 @@ export async function withClassicNote(client: UiaClient | undefined, run: () => 
   }
 }
 
+/**
+ * internal #295 — a `target.hwnd` that is not a handle, sent with nothing else to aim by, is refused.
+ *
+ * `parseTargetHwnd` reads `""`, `"abc"`, `"0"` and `"-1"` as no handle, and the discover then read the
+ * foreground window as if no target had been given: win2's act on an empty handle wrote into the window
+ * in front and answered ok:true. A caller who named a window gets an answer to act on instead.
+ * With a title or a tab beside it, the call still aims by that, as before (`parseTargetHwnd`'s doc).
+ * Only the tool's own input is checked; the facade's internal keys reach `composeCandidates` directly.
+ */
+export function unusableHandleRefusal(target: TargetSpec | undefined): string | undefined {
+  if (target?.hwnd === undefined || parseTargetHwnd(target) !== undefined) return undefined;
+  if (target.windowTitle || target.tabId) return undefined;
+  return (
+    `desktop_discover: target.hwnd ${JSON.stringify(target.hwnd)} is not a window handle, which is a positive integer ` +
+    "(decimal, or hex with 0x) as desktop_state and windows[] give it. Nothing was read. " +
+    "Pass a window handle or target.windowTitle, or omit target to read the foreground window."
+  );
+}
+
 const desktopDiscoverRawHandlerInner = async (input: unknown): Promise<ToolResult> => {
+  const refusal = unusableHandleRefusal((input as DesktopSeeInput | undefined)?.target);
+  if (refusal) return failCode("InvalidArgs", refusal, { suggest: getSuggestsForCode("InvalidArgs") });
   const facade = getDesktopFacade();
   const output = await facade.see(input as DesktopSeeInput);
   // internal #211 (D) — watch the window from now to the act, to learn whether it repaints itself.
