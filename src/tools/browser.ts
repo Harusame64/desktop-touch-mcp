@@ -397,8 +397,16 @@ export function _resetTabContextCache(): void {
  * Otherwise finds the window by title and brings it to the front.
  * Updates the window cache after enumeration.
  */
+/** Chrome's and Edge's top-level frames are `Chrome_WidgetWin_1`; an unread class decides nothing. */
+function isChromiumFrameOrUnknown(w: { className?: string }): boolean {
+  return w.className === undefined || w.className === "" || w.className === "Chrome_WidgetWin_1";
+}
+
 async function ensureWindowFocused(titleHint: string): Promise<bigint | undefined> {
-  const windows = enumWindowsInZOrder();
+  // internal #274 (gate 2 on #834) — only a Chromium frame can be the browser: a terminal or an editor
+  // whose title holds the tab's title would otherwise be focused, and the click check would then refuse
+  // naming the real browser under the point. A window whose class could not be read is kept.
+  const windows = enumWindowsInZOrder().filter(isChromiumFrameOrUnknown);
   updateWindowCache(windows);
   const active = windows.find((w) => w.isActive);
   if (active && active.title.toLowerCase().includes(titleHint.toLowerCase())) {
@@ -435,7 +443,7 @@ async function ensureBrowserFocused(port: number): Promise<bigint | undefined> {
   }
 
   // Fall back to browser process name
-  const windows = enumWindowsInZOrder();
+  const windows = enumWindowsInZOrder().filter(isChromiumFrameOrUnknown);
   updateWindowCache(windows);
   const active = windows.find((w) => w.isActive);
   if (
@@ -637,7 +645,10 @@ export type BrowserPointCover =
 
 /** internal #274 — `undefined` when the browser window (or nothing known) is under the point. */
 export function browserPointCover(owner: PointOwner): BrowserPointCover | undefined {
-  if (owner.kind === "other" || owner.kind === "owned") return { covered: owner.kind, hwnd: owner.hwnd, title: owner.title };
+  if (owner.kind === "other") return { covered: "other", hwnd: owner.hwnd, title: owner.title };
+  // Owned refuses on Windows' own hit test only, as desktop_act's presses do: the window list cannot see
+  // a per-pixel overlay's transparency, and would answer for every point under one (gate 2 on #834).
+  if (owner.kind === "owned" && owner.via === "os_hit_test") return { covered: "owned", hwnd: owner.hwnd, title: owner.title };
   if (owner.kind === "blocked") return { covered: "excluded" };
   return undefined;
 }
@@ -695,7 +706,9 @@ export async function osClickAndVerify(
   // monitor is therefore subject to whatever limits coordinate movement has, and
   // worse: a click that landed somewhere else but happened to mutate some DOM
   // node would be reported back as `delivered`. Checked before the cursor moves
-  // and before focusing the browser, so a refused click has no side effect.
+  // and before focusing the browser, so a refused click has no side effect. (The
+  // covered-point refusal below comes after the focus, so the browser may have
+  // been brought forward; the cursor has still not moved.)
   assertCoordinateReachable(x, y);
 
   const browserHwnd = await ensureBrowserFocused(port);

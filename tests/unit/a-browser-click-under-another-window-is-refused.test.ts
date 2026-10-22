@@ -12,9 +12,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PointOwner } from "../../src/engine/point-owner.js";
 
+type W = { hwnd: bigint; title: string; isActive: boolean; className?: string; region: { x: number; y: number; width: number; height: number }; zOrder: number };
+const EDGE: W = { hwnd: 4242n, title: "Shop - Microsoft Edge", isActive: true, className: "Chrome_WidgetWin_1", region: { x: 0, y: 0, width: 1200, height: 900 }, zOrder: 0 };
+
 const mocks = vi.hoisted(() => ({
   click: vi.fn(async () => {}),
   move: vi.fn(async () => {}),
+  windows: [] as unknown[],
+  focused: [] as bigint[],
 }));
 
 vi.mock("../../src/engine/nutjs.js", async (orig) => ({
@@ -36,10 +41,8 @@ vi.mock("../../src/engine/cdp-bridge.js", async (orig) => ({
 }));
 vi.mock("../../src/engine/win32.js", async (orig) => ({
   ...(await orig<typeof import("../../src/engine/win32.js")>()),
-  enumWindowsInZOrder: () => [
-    { hwnd: 4242n, title: "Shop - Microsoft Edge", isActive: true, region: { x: 0, y: 0, width: 1200, height: 900 }, zOrder: 0 },
-  ],
-  restoreAndFocusWindow: () => {},
+  enumWindowsInZOrder: () => mocks.windows,
+  restoreAndFocusWindow: (h: bigint) => { mocks.focused.push(h); },
 }));
 
 const { osClickAndVerify, browserPointCover, browserPointCoveredFailure } = await import("../../src/tools/browser.js");
@@ -47,7 +50,10 @@ const { osClickAndVerify, browserPointCover, browserPointCoveredFailure } = awai
 afterEach(() => {
   mocks.click.mockClear();
   mocks.move.mockClear();
+  mocks.focused.length = 0;
+  mocks.windows = [EDGE];
 });
+mocks.windows = [EDGE];
 
 const owners: Record<string, PointOwner> = {
   owned: { kind: "owned", hwnd: 777n, title: "Welcome to Microsoft Edge", via: "os_hit_test" },
@@ -77,6 +83,36 @@ describe("osClickAndVerify asks who is on top before it moves the cursor", () =>
       expect(mocks.click).toHaveBeenCalledTimes(1);
     });
   }
+});
+
+describe("which window the point is asked about", () => {
+  const ask = async () => {
+    const asked: bigint[] = [];
+    await osClickAndVerify(283, 125, null, null, 9222, (aim) => { asked.push(aim); return owners.aim!; });
+    return asked;
+  };
+
+  it("the browser window it brought forward, when it was not in front", async () => {
+    mocks.windows = [{ ...EDGE, isActive: false }];
+    expect(await ask()).toEqual([4242n]);
+    expect(mocks.focused).toEqual([4242n]);
+  });
+
+  it("not a non-browser window whose title holds the tab's title (gate 2 on #834)", async () => {
+    mocks.windows = [{ ...EDGE, hwnd: 1n, title: "Shop - notes.txt", className: "Notepad", isActive: true }, { ...EDGE, isActive: false }];
+    expect(await ask()).toEqual([4242n]);
+  });
+
+  it("with no browser window found, nothing is asked and it clicks as before", async () => {
+    mocks.windows = [];
+    expect(await ask()).toEqual([]);
+    expect(mocks.click).toHaveBeenCalledTimes(1);
+  });
+
+  it("an owned window from the window list (no hit test) is not a refusal, as in desktop_act", () => {
+    expect(browserPointCover({ kind: "owned", hwnd: 1n, title: "x", via: "enumeration" })).toBeUndefined();
+    expect(browserPointCover({ kind: "other", hwnd: 1n, title: "x", via: "enumeration" })).toBeDefined();
+  });
 });
 
 describe("the refusal", () => {
