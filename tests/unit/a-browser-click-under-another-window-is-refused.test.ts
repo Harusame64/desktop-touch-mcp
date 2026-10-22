@@ -109,9 +109,10 @@ describe("which window the point is asked about", () => {
     expect(mocks.click).toHaveBeenCalledTimes(1);
   });
 
-  it("an owned window from the window list (no hit test) is not a refusal, as in desktop_act", () => {
+  it("an answer from the window list (no hit test) is not a refusal — it cannot see an overlay's transparency", () => {
     expect(browserPointCover({ kind: "owned", hwnd: 1n, title: "x", via: "enumeration" })).toBeUndefined();
-    expect(browserPointCover({ kind: "other", hwnd: 1n, title: "x", via: "enumeration" })).toBeDefined();
+    expect(browserPointCover({ kind: "other", hwnd: 1n, title: "x", via: "enumeration" })).toBeUndefined();
+    expect(browserPointCover({ kind: "blocked", why: "excluded_window", via: "enumeration" })).toBeDefined();
   });
 });
 

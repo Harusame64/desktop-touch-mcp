@@ -8,7 +8,8 @@
   welcome panel did this). After bringing the browser forward and before moving the cursor, it now asks
   Windows which window is at the point. If it is another window, or a panel, popup or dialog of the
   browser itself, nothing is clicked and the call fails with `BrowserPointCovered`, naming the window (a
-  window this server may not act through is not named). When Windows cannot say, it clicks as before.
+  window this server may not act through is not named). When Windows' hit test cannot answer, it clicks
+  as before.
 - **A refused click on a list, tree or grid item no longer advises `click_element`.** When such a click
   was refused because a window covered the point, the pointer could not be placed or reached, or a
   window this server may not act through was on top (`aim_occluded`, `cursor_placement_blocked`,

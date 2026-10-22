@@ -645,10 +645,13 @@ export type BrowserPointCover =
 
 /** internal #274 — `undefined` when the browser window (or nothing known) is under the point. */
 export function browserPointCover(owner: PointOwner): BrowserPointCover | undefined {
-  if (owner.kind === "other") return { covered: "other", hwnd: owner.hwnd, title: owner.title };
-  // Owned refuses on Windows' own hit test only, as desktop_act's presses do: the window list cannot see
-  // a per-pixel overlay's transparency, and would answer for every point under one (gate 2 on #834).
-  if (owner.kind === "owned" && owner.via === "os_hit_test") return { covered: "owned", hwnd: owner.hwnd, title: owner.title };
+  // Another window or one the browser owns refuses on Windows' own hit test only: the window list
+  // cannot see a per-pixel overlay's transparency or a non-rectangular window, and would answer for
+  // every point under a full-screen overlay (gate 2 and codex P2 on #834). This is a new refusal on a
+  // road that clicked before, so the weaker answer clicks as before.
+  if ((owner.kind === "other" || owner.kind === "owned") && owner.via === "os_hit_test") {
+    return { covered: owner.kind, hwnd: owner.hwnd, title: owner.title };
+  }
   if (owner.kind === "blocked") return { covered: "excluded" };
   return undefined;
 }
