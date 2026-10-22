@@ -5,6 +5,7 @@ import type { Rect, UiEntityCandidate } from "../vision-gpu/types.js";
 import { classifyModal, isUiaWindow } from "./session-registry.js";
 import { probeAim } from "../aim-probe.js";
 import { resolveCandidates } from "./resolver.js";
+import { collectionItemAdviceClass, type CollectionItemAdviceClass } from "../collection-item.js";
 
 export type TouchAction = "auto" | "invoke" | "click" | "type" | "setValue" | "select";
 
@@ -332,10 +333,14 @@ export type TouchResult =
        */
       noRouteTried?: true;
       /**
-       * internal #233 — on `executor_failed` only: the refusal's advice class, chosen by its class
-       * (`adviceClass` on the error). Read by `desktop-register.ts` to choose the advice; not published.
+       * internal #233 — on `executor_failed`: the refusal's advice class, chosen by its class
+       * (`adviceClass` on the error). internal #291 — and on the coordinate refusals a click can meet
+       * (`aim_occluded`, `aim_route_failed`, `aim_blocked_by_excluded_window`,
+       * `coordinate_outside_reachable_bounds`, `cursor_placement_blocked`) when the click was on a
+       * collection item, so their advice does not send it to click_element. Read by
+       * `desktop-register.ts` to choose the advice; not published.
        */
-      adviceClass?: "collection_item_select" | "collection_item_select_no_invoke";
+      adviceClass?: CollectionItemAdviceClass;
     };
 
 /**
@@ -813,6 +818,10 @@ export class GuardedTouchLoop {
     try {
       outcome = await this.env.execute(entity, concreteAction, text);
     } catch (err) {
+      // internal #291 — a click on a collection item that a coordinate refusal stopped: its advice
+      // must not send it to click_element, whose Invoke opens, runs or edits these items.
+      const itemAdvice = collectionItemAdviceClass(entity, concreteAction);
+      const itemAdviceField = itemAdvice !== undefined ? { adviceClass: itemAdvice } : {};
       /**
        * ADR-036 item 13 — the sentence the thrower declared fit to publish, or nothing.
        *
@@ -846,14 +855,14 @@ export class GuardedTouchLoop {
       // error crosses module boundaries where a duplicated class identity would
       // silently fail the check.
       if (err instanceof Error && err.name === "CoordinateOutsideReachableBounds") {
-        return { ok: false, reason: "coordinate_outside_reachable_bounds", diff: [], ...(detail !== undefined && { detail }) };
+        return { ok: false, reason: "coordinate_outside_reachable_bounds", diff: [], ...(detail !== undefined && { detail }), ...itemAdviceField };
       }
       // ADR-029 Phase 2a: same reasoning for a cursor that could not be placed
       // at all. Its recovery (free the cursor, reconnect the session) shares
       // nothing with either executor_failed or the unreachable-coordinate
       // advice, so it must not be folded into them.
       if (err instanceof Error && err.name === "CursorPlacementBlocked") {
-        return { ok: false, reason: "cursor_placement_blocked", diff: [], ...(detail !== undefined && { detail }) };
+        return { ok: false, reason: "cursor_placement_blocked", diff: [], ...(detail !== undefined && { detail }), ...itemAdviceField };
       }
       // ADR-036 — the window the action was aimed at is gone, and this is the third refusal that
       // must not become `executor_failed` for exactly the reason written above: that reason's
@@ -886,7 +895,7 @@ export class GuardedTouchLoop {
       // Its own reason because re-discovering does not help: the coordinates are correct and the
       // press would still land in the window on top.
       if (err instanceof Error && err.name === "AimOccludedError") {
-        return { ok: false, reason: "aim_occluded", diff: [], ...(detail !== undefined && { detail }) };
+        return { ok: false, reason: "aim_occluded", diff: [], ...(detail !== undefined && { detail }), ...itemAdviceField };
       }
       // R3 tool exclusion, met at a COORDINATE rather than at a target. `window_excluded` is the
       // other half of the same registry and says the opposite thing about the caller's own window
@@ -894,7 +903,7 @@ export class GuardedTouchLoop {
       // the point" — so they do not share a reason. The advice for the first is false for this one
       // in two of its four lines (gate 2, Opus sandbox review, 2026-09-10).
       if (err instanceof Error && err.name === "AimBlockedByExcludedWindowError") {
-        return { ok: false, reason: "aim_blocked_by_excluded_window", diff: [], ...(detail !== undefined && { detail }) };
+        return { ok: false, reason: "aim_blocked_by_excluded_window", diff: [], ...(detail !== undefined && { detail }), ...itemAdviceField };
       }
       // The point the press would land on is no longer inside the window this call named. Unlike
       // `aim_window_gone` the window is alive, so re-discovering returns a rect that works.
@@ -905,7 +914,7 @@ export class GuardedTouchLoop {
       // ADR-036's whole subject arriving as the recovery is what this stops. Click and type end
       // here alike; they were giving opposite advice about the same aim.
       if (err instanceof Error && err.name === "AimedRouteFailedError") {
-        return { ok: false, reason: "aim_route_failed", diff: [], ...(detail !== undefined && { detail }) };
+        return { ok: false, reason: "aim_route_failed", diff: [], ...(detail !== undefined && { detail }), ...itemAdviceField };
       }
       // ADR-036 family 2 — the keyboard rung refused to post, on a ground its rule could state
       // (`engine/keyboard-target.ts`). Flattened, it would arrive as `executor_failed`, whose advice

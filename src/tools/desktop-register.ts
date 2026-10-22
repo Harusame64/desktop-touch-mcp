@@ -23,7 +23,7 @@ import {
 } from "../engine/landing-advice.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { coercedBoolean } from "./_coerce.js";
-import { executorFailedAdviceFor, failCode, getSuggestsForCode } from "./_errors.js";
+import { collectionItemRefusalAdviceFor, executorFailedAdviceFor, failCode, getSuggestsForCode } from "./_errors.js";
 import { DesktopFacade, type CandidateProvider, type DesktopSeeInput, type DesktopWindowMeta } from "./desktop.js";
 import type {
   EntityLease,
@@ -1059,6 +1059,17 @@ async function startPreActWatch(facade: DesktopFacade, viewId: string, opt: { af
  *  `DESKTOP_TOUCH_STAGE5_DXGI !== "0"` (default ON; opt-out by setting
  *  to `"0"`). Failures degrade silently — observation absence is
  *  bit-equal to the pre-Stage-5 envelope. */
+/**
+ * internal #291 — a coordinate refusal of a click on a list, tree or grid item takes advice without
+ * click_element (`collectionItemRefusalAdviceFor`); any other keeps its reason's table, as before.
+ */
+function itemAdvice(
+  code: string,
+  adviceClass: "collection_item_select" | "collection_item_select_no_invoke" | undefined,
+): { tryNext?: { action: string }[] } {
+  return adviceClass === undefined ? {} : { tryNext: collectionItemRefusalAdviceFor(code, adviceClass).map((action) => ({ action })) };
+}
+
 export const desktopActRawHandler = (
   input: { lease: EntityLease; action?: TouchAction; text?: string; returnCapture?: ReturnCaptureMode; uiaClient?: UiaClient },
 ): Promise<ToolResult> => withClassicNote(input?.uiaClient, () => desktopActRawHandlerInner(input));
@@ -1328,7 +1339,7 @@ const desktopActRawHandlerInner = async (
       Err(new CoordinateOutsideReachableBoundsError(
         "CoordinateOutsideReachableBounds: the entity sits outside the area mouse input can currently reach"
       )),
-      { optIn: false, detail: result.detail },
+      { optIn: false, detail: result.detail, ...itemAdvice("CoordinateOutsideReachableBounds", result.adviceClass) },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
@@ -1344,7 +1355,7 @@ const desktopActRawHandlerInner = async (
       Err(new CursorPlacementBlockedError(
         "CursorPlacementBlocked: the pointer could not be placed on the entity — nothing was clicked"
       )),
-      { optIn: false, detail: result.detail },
+      { optIn: false, detail: result.detail, ...itemAdvice("CursorPlacementBlocked", result.adviceClass) },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
@@ -1397,9 +1408,11 @@ const desktopActRawHandlerInner = async (
     const failure = toFailureEnvelope(
       Err(new AimOccludedError(
         "AimOccluded: another window drawn over the point this act would have pressed would take the press — nothing was done. Windows' own hit test decides this where the native addon can ask it; otherwise the window list does, and any window on top counts unless it has both WS_EX_TRANSPARENT and WS_EX_LAYERED. " +
-        "Bring the intended window forward, or use click_element, which does not press a coordinate"
+        (result.adviceClass !== undefined
+          ? "Bring the intended window forward, then click it with desktop_act again — not with click_element, whose Invoke opens, runs or edits a list, tree or grid item"
+          : "Bring the intended window forward, or use click_element, which does not press a coordinate")
       )),
-      { optIn: false, detail: result.detail },
+      { optIn: false, detail: result.detail, ...itemAdvice("AimOccluded", result.adviceClass) },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
@@ -1450,9 +1463,11 @@ const desktopActRawHandlerInner = async (
       Err(new AimRouteFailedError(
         "AimRouteFailed: the route to the window this act named failed, and the act was not finished as a coordinate press. " +
         "Nothing was clicked or typed, unless if_unexpected.detail says the press or write may still take effect — then look at the window before anything else, and do not press again. " +
-        "Otherwise re-run desktop_discover, or try click_element on the same entity"
+        (result.adviceClass !== undefined
+          ? "Otherwise re-run desktop_discover — not click_element, whose Invoke opens, runs or edits a list, tree or grid item"
+          : "Otherwise re-run desktop_discover, or try click_element on the same entity")
       )),
-      { optIn: false, detail: result.detail },
+      { optIn: false, detail: result.detail, ...itemAdvice("AimRouteFailed", result.adviceClass) },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
@@ -1466,9 +1481,12 @@ const desktopActRawHandlerInner = async (
     const failure = toFailureEnvelope(
       Err(new AimBlockedByExcludedRefusalError(
         "AimBlockedByExcludedWindow: a window this server may not act through is over the point this act would have pressed — nothing was clicked. " +
-        "The window you named is not the excluded one. Act through click_element, or retry once the point is clear"
+        "The window you named is not the excluded one. " +
+        (result.adviceClass !== undefined
+          ? "Retry once the point is clear — not through click_element, whose Invoke opens, runs or edits a list, tree or grid item"
+          : "Act through click_element, or retry once the point is clear")
       )),
-      { optIn: false, detail: result.detail },
+      { optIn: false, detail: result.detail, ...itemAdvice("AimBlockedByExcludedWindow", result.adviceClass) },
     );
     return {
       content: [{ type: "text" as const, text: JSON.stringify(failure, null, 2) }],
@@ -2226,12 +2244,12 @@ export function registerDesktopTools(server: McpServer): void {
       "  cursor_placement_blocked → the pointer could not be placed at that point (an app is holding the cursor, the session is not interactive right now, or the monitor layout just changed); nothing was clicked. V1 click_element acts without the cursor; otherwise free the cursor or reconnect the session and retry, and re-call desktop_discover if a monitor was added or removed;",
       "  aim_window_gone → the window this act was aimed at no longer exists; nothing was clicked. Re-call desktop_discover — do NOT retry by coordinate, the entity's rect is where that window used to be and another window may occupy it now;",
       "  aim_identity_changed → the window this act named has gone and its handle now names a different window (another process, or another window of the same program); nothing was done, and the lease describes a window that is gone. Re-call desktop_discover — do NOT retry with the same handle or by coordinate;",
-      "  aim_occluded → another window drawn over the point would take the press, so nothing was done — by Windows' own hit test, which does not count an overlay that lets presses through there; a build whose native addon cannot ask Windows judges from the window list, where any window on top counts unless it has both WS_EX_TRANSPARENT and WS_EX_LAYERED. Bring the intended window forward, or use V1 click_element, which does not use coordinates — re-calling desktop_discover alone does not help, the coordinates are already right;",
+      "  aim_occluded → another window drawn over the point would take the press, so nothing was done — by Windows' own hit test, which does not count an overlay that lets presses through there; a build whose native addon cannot ask Windows judges from the window list, where any window on top counts unless it has both WS_EX_TRANSPARENT and WS_EX_LAYERED. Bring the intended window forward, or use V1 click_element, which does not use coordinates (not on a list, tree or grid item, whose Invoke opens, runs or edits it) — re-calling desktop_discover alone does not help, the coordinates are already right;",
       "  aim_point_outside_window → the window is still open but its coordinates can no longer be followed (among them: minimised; resized, so the contents may have reflowed — refused even where the point still falls inside; moved while it was being read, so that snapshot has no single origin; measured by a lane whose moment cannot be established, such as a stored visual snapshot; or captured in a window other than the one this act named — a menu or dropdown has an origin of its own and is followed only while it is still what sits under the point); nothing was clicked. A window that moved WITHOUT resizing is followed automatically when the coordinates were measured in the same read that measured the window; a move large enough to put the point off the window is usually answered earlier, as entity_outside_viewport (that check does not look at uia / cdp / terminal entities). Re-call desktop_discover — do NOT retry by coordinate;",
-      "  aim_route_failed → the route to the window this act named failed (UIA for a click, UIA setValue + background write for type), and the act was NOT finished as a coordinate press. if_unexpected.detail names the failure when this server recognises it (not found, no pattern, disabled, read-only, the window did not answer, the classic client busy or unavailable): in these nothing was clicked or typed — except when it says the window stopped answering during the press or write, or that the press call failed after it was made: those may already have taken effect, so look at the window before anything else and do NOT press again, click_element included. When it says not found or names none: re-call desktop_discover, or try V1 click_element(name=…) on the same entity; when the route may have matched another element by the same text, click_element with controlType narrows it. When it says disabled, the element the route matched — or its whole window — does not take input now: answer or wait out whatever disabled it, then re-call desktop_discover; if it is refused the same way after that, the route may be matching another element by the same text, which click_element(name=…, controlType=…) narrows;",
+      "  aim_route_failed → the route to the window this act named failed (UIA for a click, UIA setValue + background write for type), and the act was NOT finished as a coordinate press. if_unexpected.detail names the failure when this server recognises it (not found, no pattern, disabled, read-only, the window did not answer, the classic client busy or unavailable): in these nothing was clicked or typed — except when it says the window stopped answering during the press or write, or that the press call failed after it was made: those may already have taken effect, so look at the window before anything else and do NOT press again, click_element included. When it says not found or names none: re-call desktop_discover, or try V1 click_element(name=…) on the same entity (not on a list, tree or grid item, whose Invoke opens, runs or edits it); when the route may have matched another element by the same text, click_element with controlType narrows it. When it says disabled, the element the route matched — or its whole window — does not take input now: answer or wait out whatever disabled it, then re-call desktop_discover; if it is refused the same way after that, the route may be matching another element by the same text, which click_element(name=…, controlType=…) narrows;",
       "  keyboard_target_unsafe → the background write would not have reached the field this act named (the focus is on a different control or in a different window, the receiving control does not take typed text, or the field — or its window — is disabled); nothing was typed. if_unexpected.detail names which. For disabled, answer or wait out whatever disabled it, then re-call desktop_discover — it does not list a disabled field, so missing there means still disabled; clicking it does not help. For read_only on the field you named, that field does not take text — typing again will not change it; name the field that does. Otherwise put the focus on the field you named, then type again — if_unexpected.detail names the way back for the road this act took: on a window named by title, desktop_act(action='click') on the same entity does it; on a window named by handle no route here focuses a text field yet, so re-call desktop_discover by the window's title and click it from there (a common dialog's title resolves to a handle too, so that road does not open there). For other_window, V1 focus_window on the field's window first — it comes forward with the focus it last had, and a window over the field makes a click answer aim_occluded — do NOT type through the foreground instead;",
       "  foreground_not_allowed → typing into Windows Terminal needs the foreground, and it was not allowed (declined, dismissed, unanswered, cannot ask; the terminal in front, split, not a terminal tab, on another desktop, changed or unreadable; text or title that cannot be shown in full; or the paste failed); if_unexpected.detail says which, and whether anything was typed. Do NOT type into it another way after a no;",
-      "  aim_blocked_by_excluded_window → a window this server may not act through is over the point, so nothing was done; the window you named is NOT the excluded one and is still actionable. Use V1 click_element, which does not use coordinates, or retry once the point is clear — do NOT retry by coordinate, and note that nothing in the response describes the window in the way;",
+      "  aim_blocked_by_excluded_window → a window this server may not act through is over the point, so nothing was done; the window you named is NOT the excluded one and is still actionable. Use V1 click_element, which does not use coordinates (not on a list, tree or grid item, whose Invoke opens, runs or edits it), or retry once the point is clear — do NOT retry by coordinate, and note that nothing in the response describes the window in the way;",
       "  action_not_offered → the target does not offer this action and NOTHING WAS DONE — no road was taken, so it is not a failed executor. Ask for what you mean: action='click' presses it (a list, tree or grid item read through UI Automation, it selects) and 'invoke' invokes it; the entity's affordances say which actions it offers. No provider advertises 'select', so a select on any target is this refusal. A type or setValue on a control UI Automation reports as a button, check box, radio button, hyperlink or menu item is this refusal too: none of them takes text, and nothing was typed;",
       "  value_not_applied → the write did not leave the value asked for. Either a type or setValue went through the native UI Automation client to a control that is not a text field (not Edit or Document), and its value read back unchanged for a moment after the write (nothing else was tried), or a type into Word's body after which the visible page text read back unchanged (it may have landed out of view), or a type into a WinForms combo box whose text then read back DIFFERENT (an AutoComplete may have completed it; the detail says what it held — set it again only if that is not the value you want), or a type or setValue whose UI Automation write failed after the field's value had changed to another value (part of it may have been written; nothing else was tried). For all but the combo box, do not retry it or type into the same control another way (on a WinForms NumericUpDown a keystroke landed at its caret); look at the field or document, or re-call desktop_discover, before writing again;",
       "  window_excluded → this window is excluded from every tool surface of this server (the key locker's own windows are); nothing was clicked and no route here can click it. Act on another window;",

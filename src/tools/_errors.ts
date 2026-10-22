@@ -1412,6 +1412,28 @@ const COLLECTION_ITEM_SELECT_ADVICE: readonly string[] = [
   "Re-run desktop_discover and act on a fresh lease — the item may have moved, changed or gone since it was read",
 ];
 
+/**
+ * internal #291 — the advice of a coordinate refusal (`AimOccluded`, `AimRouteFailed`,
+ * `AimBlockedByExcludedWindow`, `CoordinateOutsideReachableBounds`, `CursorPlacementBlocked`) when
+ * the click it stopped was on a list, tree or grid item. Their lines that send the caller to
+ * click_element are left out: its Invoke is the press a click on these items avoids (Explorer opens
+ * the file, a DataGridView cell starts editing, a .NET 10 parent node expands without selecting), and a
+ * ReadOnly cell has no Invoke at all (win2 on PR #819). A line that forbids click_element stays.
+ */
+export function collectionItemRefusalAdviceFor(code: string, adviceClass: "collection_item_select" | "collection_item_select_no_invoke"): string[] {
+  return [
+    ...getSuggestsForCode(code).filter((line) => !SENDS_TO_CLICK_ELEMENT.test(line)),
+    COLLECTION_ITEM_NOT_CLICK_ELEMENT,
+    ...(adviceClass === "collection_item_select" ? ["To open or run the item rather than select it, use desktop_act(action:'invoke')"] : []),
+  ];
+}
+
+/** The advice lines that recommend click_element (as opposed to forbidding it). */
+const SENDS_TO_CLICK_ELEMENT = /click_element\(name=…\) (invokes|is worth)/;
+
+const COLLECTION_ITEM_NOT_CLICK_ELEMENT =
+  "This is a list, tree or grid item: do NOT use click_element on it — on these items UI Automation's Invoke opens, runs or starts editing the item (Explorer opens the file, a grid cell starts editing). Once the cause above is cleared, click it with desktop_act again";
+
 // The one line for an `executor_failed` refused before any route ran (internal #242).
 const EXECUTOR_FAILED_NO_ROUTE_TRIED =
   "Nothing was typed and no route was tried: detail says why no route here could carry the text to this element, and what to do instead — follow it";

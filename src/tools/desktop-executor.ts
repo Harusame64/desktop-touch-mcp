@@ -54,6 +54,7 @@ import {
   VALUE_CHANGED_THEN_FAILED,
   ELEMENT_AMBIGUOUS,
 } from "../engine/aim.js";
+import { COLLECTION_ITEM_CONTROL_TYPES } from "../engine/collection-item.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
 import type { AdvertisedExecutorKind } from "../capabilities/registry.js";
 import {
@@ -2522,11 +2523,6 @@ export class NoTextRouteError extends Error implements CallerFacingRefusal {
   }
 }
 
-/**
- * internal #233 — the UIA control types a click selects rather than invokes (`selectCollectionItem`).
- * MenuItem and TabItem are not here: neither was measured, and a tab's Invoke is not a double-click.
- */
-const COLLECTION_ITEM_CONTROL_TYPES = ["ListItem", "DataItem", "TreeItem"] as const;
 
 /**
  * internal #233 — the item is clicked as a checked single mouse click instead of through UI Automation.
