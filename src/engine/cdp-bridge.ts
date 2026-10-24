@@ -386,36 +386,32 @@ export async function evaluateInTab(
 }
 
 /**
- * The browser window a tab is in, in screen DIPs, with the tab's devicePixelRatio (internal #305).
+ * The browser window a tab is in, in screen DIPs (internal #305).
  *
- * `Browser.getWindowForTarget` sent on the tab's own session answers for that tab. win2 measured
- * (2026-10-24, Chrome, two windows with the same title, normal and maximized, 100 % and 150 %):
- * bounds × devicePixelRatio equals the frame's GetWindowRect, which is the enumeration's region,
- * exactly for a normal window and within 2 px for a maximized one. The page's own
- * screenX/outerWidth do not: a maximized window reports its extended frame, or neither rect.
+ * `Browser.getWindowForTarget` sent on the tab's own session answers for that tab (win2, Chrome 155
+ * and Edge 155: identical to the browser endpoint with `targetId`, 1–4 ms). win2 measured the bounds
+ * times the monitor's scale equal to the frame's GetWindowRect, which is the enumeration's region:
+ * exactly for a normal window, within 2 px for a maximized one at 150 %. The page's own
+ * screenX/outerWidth do not match a maximized window. The scale is the monitor's, not the tab's
+ * devicePixelRatio, which includes the page zoom (codex on #837).
  *
- * Throws when either call fails; the caller falls back to finding the window by title.
+ * Throws when the call fails; the caller falls back to finding the window by title.
  */
 export async function getTabWindowBounds(
   tabId: string | null,
   port = DEFAULT_CDP_PORT
-): Promise<{ left: number; top: number; width: number; height: number; dpr: number }> {
+): Promise<{ left: number; top: number; width: number; height: number }> {
   const tab = await resolveTab(tabId, port);
   const session = await openSession(tab, port);
   const win = (await session.send("Browser.getWindowForTarget", {})) as {
     bounds?: { left?: number; top?: number; width?: number; height?: number };
   };
-  const dprRaw = (await session.send("Runtime.evaluate", {
-    expression: "window.devicePixelRatio || 1",
-    returnByValue: true,
-  })) as RuntimeEvaluateResult;
   const b = win.bounds ?? {};
-  const dpr = dprRaw.result?.value;
   if (typeof b.left !== "number" || typeof b.top !== "number" || typeof b.width !== "number" ||
-      typeof b.height !== "number" || typeof dpr !== "number" || !(dpr > 0)) {
+      typeof b.height !== "number") {
     throw new Error("Browser.getWindowForTarget gave no usable bounds");
   }
-  return { left: b.left, top: b.top, width: b.width, height: b.height, dpr };
+  return { left: b.left, top: b.top, width: b.width, height: b.height };
 }
 
 // ─── ADR-018 Phase 3 — Tier 2 wheel dispatch + observation ────────────────────
