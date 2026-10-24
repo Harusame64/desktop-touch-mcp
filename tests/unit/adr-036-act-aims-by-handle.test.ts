@@ -346,4 +346,14 @@ describe("ADR-036 — one answer to \"is this a handle\"", () => {
     expect(parseTargetHwnd({ windowTitle: "App" })).toBeUndefined();
     expect(parseTargetHwnd(undefined)).toBeUndefined();
   });
+
+  it("refuses a value past i64, which the native helpers would wrap to another window (internal #303)", () => {
+    // i64::MAX is the UIA lane's own limit; the last value it can parse is still a handle.
+    expect(parseTargetHwnd({ hwnd: "9223372036854775807" })).toBe(0x7fff_ffff_ffff_ffffn);
+    // 2^63 would be a negative handle in the native helpers' `as isize`; 2^64 - 1 is -1 there;
+    // 2^64 + 0x1234 wraps to 0x1234 through get_u64() with the lossless flag dropped.
+    for (const hwnd of ["9223372036854775808", "18446744073709551615", "18446744073709556276", "0x10000000000001234"]) {
+      expect(parseTargetHwnd({ hwnd }), `hwnd = ${hwnd}`).toBeUndefined();
+    }
+  });
 });

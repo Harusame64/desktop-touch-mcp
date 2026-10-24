@@ -18,6 +18,7 @@
  */
 
 import type { PostElementInfo } from "./_post.js";
+import { parseTargetHwnd } from "../engine/world-graph/session-registry.js";
 
 export interface AdvisoryHint {
   /** The tool/path the LLM should prefer next time (e.g. "desktop_act"). */
@@ -129,7 +130,11 @@ function buildHint(
   if (focusedElement.automationId === WEB_AREA_AUTOMATION_ID) return null;
 
   const windowTitle = typeof args["windowTitle"] === "string" ? (args["windowTitle"] as string) : undefined;
-  const hwnd = typeof args["hwnd"] === "string" || typeof args["hwnd"] === "number" ? String(args["hwnd"]) : undefined;
+  const rawHwnd = typeof args["hwnd"] === "string" || typeof args["hwnd"] === "number" ? String(args["hwnd"]) : undefined;
+  // Only a value parseTargetHwnd takes as a handle: desktop_discover refuses any other hwnd that
+  // names nothing else (#831), so advice built from "-1" beside a title would lead to InvalidArgs
+  // where the title would have worked (internal #303 item 2).
+  const hwnd = rawHwnd !== undefined && parseTargetHwnd({ hwnd: rawHwnd }) !== undefined ? rawHwnd : undefined;
   const text = typeof args["text"] === "string" ? (args["text"] as string) : undefined;
 
   // The target keys are the ones desktop_discover's schema takes (windowTitle / hwnd / tabId);

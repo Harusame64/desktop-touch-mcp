@@ -19,6 +19,9 @@ import { resolveCandidates } from "./resolver.js";
 /** Subset of DesktopSeeInput.target; defined here to avoid circular import. */
 export type TargetSpec = { windowTitle?: string; hwnd?: string; tabId?: string };
 
+/** The largest handle `parseTargetHwnd` accepts: i64::MAX, the UIA lane's own limit. */
+export const MAX_TARGET_HWND = 0x7fff_ffff_ffff_ffffn;
+
 /**
  * ADR-036 — the one place that decides whether a `TargetSpec` names a window by handle.
  *
@@ -35,6 +38,11 @@ export type TargetSpec = { windowTitle?: string; hwnd?: string; tabId?: string }
  * names a real window, and refusing it would turn a call that would have worked into a silent
  * fall back to aiming by title, which is the failure this exists to remove.
  *
+ * Nothing above the i64 range counts either (internal #303). The UIA lane parses the handle as
+ * i64 and errors past it, while the native helpers read it with `get_u64()` and drop the lossless
+ * flag: `2^64 + 0x1234` wraps to `0x1234`, another window, and a value between 2^63 and 2^64
+ * becomes a negative handle such as `-1`. A real window handle fits in 32 bits.
+ *
  * What each caller does with `undefined` stays that caller's decision; only the answer to "is
  * this a handle" is shared.
  */
@@ -43,7 +51,7 @@ export function parseTargetHwnd(target: TargetSpec | undefined): bigint | undefi
   if (raw === undefined || raw === "") return undefined;
   try {
     const h = BigInt(raw);
-    return h <= 0n ? undefined : h;
+    return h <= 0n || h > MAX_TARGET_HWND ? undefined : h;
   } catch {
     return undefined;
   }

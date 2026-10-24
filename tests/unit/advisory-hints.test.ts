@@ -64,6 +64,18 @@ describe("maybeAdvisory — keyboard(type) → desktop_act", () => {
     expect(both!.example).not.toContain("windowTitle");
   });
 
+  it("leaves out an hwnd that is not a handle and names the title instead (internal #303 item 2)", () => {
+    // desktop_discover refuses an hwnd that does not parse and names nothing else (#831), so
+    // advising {target:{hwnd:'-1'}} would lead to InvalidArgs where the title would have worked.
+    for (const hwnd of ["-1", "0", "not-a-handle", "18446744073709556276"]) {
+      const hint = maybeAdvisory("keyboard", { action: "type", windowTitle: "メモ", hwnd }, edit(), NATIVE);
+      expect(hint!.example, `hwnd = ${hwnd}`).toContain("desktop_discover({target:{windowTitle:'メモ'}})");
+      expect(hint!.example).not.toContain("hwnd");
+    }
+    const alone = maybeAdvisory("keyboard", { action: "type", hwnd: "-1" }, edit(), NATIVE);
+    expect(alone!.example).toContain("desktop_discover({})");
+  });
+
   it("truncates long text and sanitises quotes/newlines/backslashes where the hint quotes it", () => {
     const longText = "a".repeat(50) + "'b\nc\\d";
     const hint = maybeAdvisory(
