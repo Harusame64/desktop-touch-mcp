@@ -19,8 +19,8 @@ import { resolveCandidates } from "./resolver.js";
 /** Subset of DesktopSeeInput.target; defined here to avoid circular import. */
 export type TargetSpec = { windowTitle?: string; hwnd?: string; tabId?: string };
 
-/** The largest handle `parseTargetHwnd` accepts: i64::MAX, the UIA lane's own limit. */
-export const MAX_TARGET_HWND = 0x7fff_ffff_ffff_ffffn;
+/** The largest handle `parseTargetHwnd` accepts: u64::MAX, what the native helpers can hold. */
+export const MAX_TARGET_HWND = 0xffff_ffff_ffff_ffffn;
 
 /**
  * ADR-036 — the one place that decides whether a `TargetSpec` names a window by handle.
@@ -38,10 +38,11 @@ export const MAX_TARGET_HWND = 0x7fff_ffff_ffff_ffffn;
  * names a real window, and refusing it would turn a call that would have worked into a silent
  * fall back to aiming by title, which is the failure this exists to remove.
  *
- * Nothing above the i64 range counts either (internal #303). The UIA lane parses the handle as
- * i64 and errors past it, while the native helpers read it with `get_u64()` and drop the lossless
- * flag: `2^64 + 0x1234` wraps to `0x1234`, another window, and a value between 2^63 and 2^64
- * becomes a negative handle such as `-1`. A real window handle fits in 32 bits.
+ * Nothing past u64 counts either (internal #303): the native helpers read the handle with
+ * `get_u64()` and drop the lossless flag, so `2^64 + 0x1234` would wrap to `0x1234`, another
+ * window. The limit is u64 and not i64 although the UIA lane parses as i64: the native
+ * enumeration renders a handle as `h.0 as usize as u64`, so a handle sign-extended from 32 bits
+ * would arrive above i64::MAX, and whether user32 ever hands one out is not measured.
  *
  * What each caller does with `undefined` stays that caller's decision; only the answer to "is
  * this a handle" is shared.
