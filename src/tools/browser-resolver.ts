@@ -15,7 +15,7 @@
  * Plan: desktop-touch-mcp-internal:docs/adr-023-phase-1-resolver-plan.md S1/S7.
  */
 
-import { evaluateInTab } from "../engine/cdp-bridge.js";
+import { evaluateInTab, VIEWPORT_ORIGIN_JS } from "../engine/cdp-bridge.js";
 import { ELEMENT_NAME_JS } from "./_element-name-js.js";
 
 export interface CandidateCollectionArgs {
@@ -381,8 +381,7 @@ ${occluderIndexHelperJs()}`
   const dpr = window.devicePixelRatio || 1;
   const sx = window.screenX;
   const sy = window.screenY;
-  const chromeH = window.outerHeight - window.innerHeight;
-  const chromeW = Math.round((window.outerWidth - window.innerWidth) / 2);
+${VIEWPORT_ORIGIN_JS}
 
   function actNode(el) {
     const cs2 = window.getComputedStyle(el);
@@ -710,9 +709,9 @@ export interface ViewportMetrics {
   screenX: number;
   screenY: number;
   dpr: number;
-  /** outerHeight - innerHeight (tab strip + address bar) */
+  /** viewport top below screenY: tab strip + address bar (VIEWPORT_ORIGIN_JS) */
   chromeH: number;
-  /** (outerWidth - innerWidth) / 2 (left frame) */
+  /** viewport left beyond screenX: the left frame (VIEWPORT_ORIGIN_JS) */
   chromeW: number;
   innerWidth: number;
   innerHeight: number;

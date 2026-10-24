@@ -19,6 +19,7 @@ import {
   buildActionCandidateFactsJs,
   buildFillActJs,
 } from "../../src/tools/browser-resolver.js";
+import { VIEWPORT_ORIGIN_JS } from "../../src/engine/cdp-bridge.js";
 
 describe("ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extraction", () => {
   it("emits the full IIFE for a representative by:text + scope query (snapshot)", () => {
@@ -108,7 +109,7 @@ describe("ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snap
     expect(js).toContain("document.elementFromPoint(cx, cy)"); // receivesEvents hit-test
     expect(js).toContain("for (let d = 0; d <= D && node; d++)"); // self + D ancestors
     // window-level coord metrics (no second querySelector for click)
-    expect(js).toContain("const chromeH = window.outerHeight - window.innerHeight;");
+    expect(js).toContain(VIEWPORT_ORIGIN_JS);
     expect(js).toContain("viewport: { screenX: sx, screenY: sy, dpr: dpr");
     // candidate fact shape
     expect(js).toContain("chain: chainOf(el)");
