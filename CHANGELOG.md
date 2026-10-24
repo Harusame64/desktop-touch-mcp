@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.3.2] - 2026-10-24 — browser_click lands where it aims; writes go to the field you named
 
 ### Fixed — Windows
 - **`browser_click` no longer clicks a point another window covers.** It clicks with the OS cursor, so a
