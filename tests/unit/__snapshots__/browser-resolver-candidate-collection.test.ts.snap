@@ -557,8 +557,12 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   const dpr = window.devicePixelRatio || 1;
   const sx = window.screenX;
   const sy = window.screenY;
-  var chromeW = Math.round((window.outerWidth - window.innerWidth) / 2);
-  var chromeH = window.outerHeight - window.innerHeight - (window.outerWidth - window.innerWidth <= 32 ? chromeW : 0);
+  var zoom = 1;
+  var monitorScale = (window.devicePixelRatio || 1) / zoom;
+  var innerWidthDip = window.innerWidth * zoom;
+  var innerHeightDip = window.innerHeight * zoom;
+  var chromeW = Math.round((window.outerWidth - innerWidthDip) / 2);
+  var chromeH = window.outerHeight - innerHeightDip - (window.outerWidth - innerWidthDip <= 32 ? chromeW : 0);
 
   function actNode(el) {
     const cs2 = window.getComputedStyle(el);
@@ -676,7 +680,7 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   return {
     total: pool.length,
     returned: factsList.length,
-    viewport: { screenX: sx, screenY: sy, dpr: dpr, chromeH: chromeH, chromeW: chromeW, innerWidth: window.innerWidth, innerHeight: window.innerHeight },
+    viewport: { screenX: sx, screenY: sy, dpr: dpr, monitorScale: monitorScale, chromeH: chromeH, chromeW: chromeW, innerWidth: window.innerWidth, innerHeight: window.innerHeight },
     candidates: factsList,
   };
 })()
