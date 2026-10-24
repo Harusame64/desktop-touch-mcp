@@ -6,12 +6,12 @@
     "url": "https://github.com/Harusame64/desktop-touch-mcp",
     "source": "github"
   },
-  "version": "2.3.1",
+  "version": "2.3.2",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@harusame64/desktop-touch-mcp",
-      "version": "2.3.1",
+      "version": "2.3.2",
       "transport": {
         "type": "stdio"
       },
