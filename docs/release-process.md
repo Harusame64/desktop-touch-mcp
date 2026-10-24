@@ -207,6 +207,27 @@ Record every narrowing here so the exceptions stay visible:
 
   All passed.
 
+- **v2.3.2 (2026-10-24)** — the full four-step pass by win2 on a6183dbf (#842), not narrowed. The diff
+  spans browser_click, desktop_act writes, discover and the keyboard hint. Build: a clean worktree, `npm ci`,
+  `npm run build:rs` (GNU release, built on win2, not the CI addon; sha256 C3D61D9B…845A), `npm run build`.
+  Record: internal `docs/llm-audit/v2.3.2-dogfood-findings.md` (branch `dev/v232-dogfood`, 2c702ef7).
+  - Preflight and Step 1: HTTP 6/6 on 23848 with `version: 2.3.2`, 32 tools. `publish --dry-run`: 5 files.
+    npx from the packed tarball stops at the PENDING manifest, as expected before the tag.
+  - Steps 2–4: the 2.2.0 scripts. Every cell gave the 2.2.0 answer. The known terminal P3
+    (`BaselineMarkerLost`) moved from `until:pattern` to `until:quiet`; the terminal code is not in this
+    diff. Not run, as in 2.2.0: E3 (needs UAC) and the mouse 3.1 coordinate cells.
+  - D1 browser_click: restored 100 %, zoom 125 %, two same-title windows overlapping (the one behind
+    named), and both maximized (the one behind named): all hit the centre at 0/0. The maximized window
+    stayed maximized.
+  - D2: `{hwnd:'-1', windowTitle}` read the window, with `target_hwnd_unparseable`; `{hwnd:'-1'}` alone
+    → InvalidArgs.
+  - D3: the #824 WinForms combo writes; the #822 "Name" / "Display Name" write changed only "Name" on
+    .NET 10 WinForms and WPF.
+  - D4: the key locker exits with the server (hard kill and graceful, with an ssh stand-in). #818 was run
+    under the real Dell EAWorkWindow overlay. #819 on an Explorer row: click selects, invoke opens.
+  - No P1, no regression. P3s: `server_status` has no version field; the value route row still says
+    `addressedElementBy:"name_substring"` for a write that found the field by exact name and rect.
+
 ### HTTP Transport Verification (Required)
 
 Before publishing, verify HTTP mode works correctly by running the built server locally:
