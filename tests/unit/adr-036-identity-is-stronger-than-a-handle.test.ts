@@ -198,7 +198,7 @@ describe("toAim reads both shapes, and agrees with the registry about handles", 
     // sharing it would close a cycle). The agreement is what makes that safe, so it is pinned:
     // both halves of this ADR have to mean the same thing by "a handle".
     const { parseTargetHwnd } = await import("../../src/engine/world-graph/session-registry.js");
-    for (const hwnd of ["0", "-1", "", "bad", "4919", "18446744073709551615"]) {
+    for (const hwnd of ["0", "-1", "", "bad", "4919", "9223372036854775807", "9223372036854775808", "18446744073709551615", "18446744073709556276"]) {
       expect(toAim({ hwnd }).hwnd, `disagreed about ${JSON.stringify(hwnd)}`)
         .toEqual(parseTargetHwnd({ hwnd }));
     }

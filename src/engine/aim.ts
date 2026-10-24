@@ -549,8 +549,8 @@ export function toAim(input: Aim | TargetSpecLike | undefined): Aim {
 /**
  * The one place that decides whether a string names a handle.
  *
- * Same rule as `parseTargetHwnd` in `session-registry.ts` — non-positive and unreadable both mean
- * "no handle" — and deliberately a second implementation rather than an import: this module is
+ * Same rule as `parseTargetHwnd` in `session-registry.ts` — non-positive, past i64 (internal #303)
+ * and unreadable all mean "no handle" — and deliberately a second implementation rather than an import: this module is
  * imported by the engine, and the registry imports the engine. The rule is four lines and the
  * agreement between them is pinned by a test; a cycle to share it would cost more than it saves.
  *
@@ -565,7 +565,7 @@ export function parseWindowHandle(raw: string | undefined): bigint | undefined {
   if (raw === undefined || raw === "") return undefined;
   try {
     const h = BigInt(raw);
-    return h <= 0n ? undefined : h;
+    return h <= 0n || h > 0x7fff_ffff_ffff_ffffn ? undefined : h;
   } catch {
     return undefined;
   }
