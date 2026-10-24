@@ -998,7 +998,8 @@ export async function withClassicNote(client: UiaClient | undefined, run: () => 
  * `parseTargetHwnd` reads `""`, `"abc"`, `"0"` and `"-1"` as no handle, and the discover then read the
  * foreground window as if no target had been given: win2's act on an empty handle wrote into the window
  * in front and answered ok:true. A caller who named a window gets an answer to act on instead.
- * With a title or a tab beside it, the call still aims by that, as before (`parseTargetHwnd`'s doc).
+ * With a title or a tab beside it, the call aims by that (`parseTargetHwnd`'s doc); through the ingress
+ * that holds only since internal #310, when the session key stopped naming the unusable hwnd.
  * Only the tool's own input is checked; the facade's internal keys reach `composeCandidates` directly.
  */
 export function unusableHandleRefusal(target: TargetSpec | undefined): string | undefined {
