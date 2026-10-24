@@ -478,11 +478,17 @@ export async function readScrollPositionInTab(
  * side borders and outerHeight - innerHeight is the tab strip + address bar
  * PLUS the bottom border. The bottom border is taken to equal a side border
  * (internal #304: counting it put every click ~8 px below the centre). On macOS
- * there is no side border, so chromeW is 0 and nothing is taken off. A DevTools
- * pane docked to a side breaks the equal-border assumption for both axes.
+ * there is no side border, so chromeW is 0 and nothing is taken off.
+ *
+ * A side panel (DevTools docked left/right, Chrome's side panel, Edge's
+ * sidebar) also widens outerWidth - innerWidth, and then chromeW is not a
+ * border: taking it off would aim hundreds of px up, into the tab strip. When
+ * the gap is wider than two borders can be (32 px), the bottom border is left
+ * in, as before #304. chromeW itself is then off by half the panel; that was so
+ * before #304 too.
  */
 export const VIEWPORT_ORIGIN_JS = `  var chromeW = Math.round((window.outerWidth - window.innerWidth) / 2);
-  var chromeH = window.outerHeight - window.innerHeight - chromeW;`;
+  var chromeH = window.outerHeight - window.innerHeight - (window.outerWidth - window.innerWidth <= 32 ? chromeW : 0);`;
 
 /**
  * Get screen coordinates of a DOM element identified by a CSS selector.

@@ -958,7 +958,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   const sx = window.screenX;
   const sy = window.screenY;
   var chromeW = Math.round((window.outerWidth - window.innerWidth) / 2);
-  var chromeH = window.outerHeight - window.innerHeight - chromeW;
+  var chromeH = window.outerHeight - window.innerHeight - (window.outerWidth - window.innerWidth <= 32 ? chromeW : 0);
 
   function actNode(el) {
     const cs2 = window.getComputedStyle(el);

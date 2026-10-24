@@ -73,6 +73,19 @@ describe("internal #304: the viewport top inset leaves out the bottom border", (
     expect(physicalPoint(btn, vp)).toEqual({ x: 330 * 2, y: (25 + 80 + 230) * 2 });
   });
 
+  it("a side panel widens the gap: the bottom border is left in rather than aiming into the tab strip", () => {
+    // Chrome's side panel (400 css) beside the page: outerWidth - innerWidth is
+    // 416, so half of it is not a border. Taking 208 off would put the click
+    // ~200 px up, above the viewport.
+    const vp = metrics({
+      screenX: 100, screenY: 50,
+      outerWidth: 1200 + 400 + 2 * BORDER, outerHeight: TOOLBAR + 800 + BORDER,
+      innerWidth: 1200, innerHeight: 800,
+    });
+    expect(vp.chromeH).toBe(TOOLBAR + BORDER);
+    expect(physicalPoint(btn, vp).y).toBe(50 + TOOLBAR + BORDER + 230);
+  });
+
   it("both conversions read the window through the one fragment", () => {
     // The selector path (getElementScreenCoords) builds its expression inside
     // the function, so this cell reads the sources: outerHeight appears only
