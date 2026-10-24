@@ -185,8 +185,9 @@ describe("osClickAndVerify brings forward, and asks about, the tab's own window"
 /**
  * internal #305 part 2. MEASURED win2 (2026-10-24, Chrome 155 + Edge 155 open together):
  * SystemInfo.getProcessInfo's one "browser" entry equals GetWindowThreadProcessId of that browser's
- * frames and not the other's; Page.bringToFront raised the tab's window to the foreground in 40/40
- * cells, maximized and overlapping, from a background process. On #837's round, without these, an
+ * frames and not the other's; Page.bringToFront raised the tab's window to the foreground from a
+ * background process over the same browser's other window, over a terminal, and Chrome over Edge,
+ * but not Edge over Chrome (#840's round). On #837's round, without these, an
  * Edge click went into a Chrome page at the same rect, and with two maximized windows a click for the
  * window behind pressed the front window's button.
  */
@@ -210,19 +211,36 @@ describe("the CDP browser's own frames, and bringing the tab forward when its bo
   });
 
   it("the one matching frame behind another process's window is raised through CDP, not restoreAndFocusWindow", async () => {
-    // win2 on #840: with Chrome in front, focusing the Edge frame lost the foreground and the click was
-    // refused as covered; Page.bringToFront raised it over another process in 40/40 cells.
-    const chromeA = { ...frame(1051258n, RECT, true, 0), title: "K835-PAGE - Google Chrome" };
-    const edgeB = { ...frame(10554470n, { x: 200, y: 150, width: 900, height: 600 }, false, 1), title: "K835-PAGE - Microsoft Edge" };
-    mocks.windows = [chromeA, edgeB];
-    mocks.pid.set(chromeA.hwnd, 10532).set(edgeB.hwnd, 16944);
-    mocks.browserPid = 16944;
+    // win2 on #840: with another browser in front, focusing the frame lost the foreground and the
+    // click was refused as covered. Page.bringToFront raised a Chrome window over Edge (it did not
+    // raise Edge over Chrome; that case falls back and is refused as before).
+    const edgeA = { ...frame(1509488n, RECT, true, 0), title: "K835-PAGE - Microsoft Edge" };
+    const chromeB = { ...frame(3869878n, { x: 200, y: 150, width: 900, height: 600 }, false, 1), title: "K835-PAGE - Google Chrome" };
+    mocks.windows = [edgeA, chromeB];
+    mocks.pid.set(edgeA.hwnd, 38836).set(chromeB.hwnd, 24284);
+    mocks.browserPid = 24284;
     mocks.bounds = { left: 200, top: 150, width: 900, height: 600 };
-    mocks.onRaise = () => { mocks.windows = [{ ...edgeB, isActive: true, zOrder: 0 }, { ...chromeA, isActive: false, zOrder: 1 }]; };
+    mocks.onRaise = () => { mocks.windows = [{ ...chromeB, isActive: true, zOrder: 0 }, { ...edgeA, isActive: false, zOrder: 1 }]; };
+    const asked: bigint[] = [];
+    await osClickAndVerify(600, 450, null, "B7AE2D", 9222, (aim) => { asked.push(aim); return AIM; });
+    expect(mocks.raised).toEqual(["B7AE2D"]);
+    expect(mocks.focused).toEqual([]);
+    expect(asked).toEqual([chromeB.hwnd]);
+  });
+
+  it("when CDP raises nothing, the frame is focused as before and is the one asked (the click is refused if covered)", async () => {
+    // Edge behind Chrome: bringToFront answers but the foreground stays on Chrome.
+    const chromeA = { ...frame(3869088n, RECT, true, 0), title: "K835-PAGE - Google Chrome" };
+    const edgeB = { ...frame(2231482n, { x: 200, y: 150, width: 900, height: 600 }, false, 1), title: "K835-PAGE - Microsoft Edge" };
+    mocks.windows = [chromeA, edgeB];
+    mocks.pid.set(chromeA.hwnd, 24284).set(edgeB.hwnd, 38836);
+    mocks.browserPid = 38836;
+    mocks.bounds = { left: 200, top: 150, width: 900, height: 600 };
+    mocks.onRaise = () => {};
     const asked: bigint[] = [];
     await osClickAndVerify(600, 450, null, "B7AE2D", 9346, (aim) => { asked.push(aim); return AIM; });
     expect(mocks.raised).toEqual(["B7AE2D"]);
-    expect(mocks.focused).toEqual([]);
+    expect(mocks.focused).toEqual([edgeB.hwnd]);
     expect(asked).toEqual([edgeB.hwnd]);
   });
 

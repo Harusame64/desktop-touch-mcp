@@ -440,9 +440,10 @@ export async function getBrowserProcessId(port = DEFAULT_CDP_PORT): Promise<numb
 
 /**
  * Bring a tab and its window to the front with CDP `Page.bringToFront` (internal #305). win2
- * measured it raising the tab's window to the foreground in 40/40 cells (Chrome and Edge, maximized
- * and overlapping, called from a background process with another process in front), the foreground
- * moving within 1 ms of the reply.
+ * measured it raising the tab's window to the foreground, called from a background process, over the
+ * same browser's other window and over a terminal (Chrome and Edge, maximized and overlapping), and a
+ * Chrome window over Edge, within 40 ms of the reply. It did NOT raise an Edge window over a Chrome
+ * window in front (2/2); the reply is the same either way, so callers check the foreground.
  */
 export async function bringTabToFront(tabId: string, port = DEFAULT_CDP_PORT): Promise<void> {
   const tab = await resolveTab(tabId, port);

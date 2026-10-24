@@ -531,8 +531,9 @@ async function ensureBrowserFocused(port: number, tabId: string | null = null): 
         const frame = hits[0]!;
         if (!frame.isActive) {
           // CDP first: win2 measured restoreAndFocusWindow losing the foreground to another browser's
-          // window in front (the click was then refused as covered), while Page.bringToFront raised the
-          // tab's window over another process in 40/40 cells. Without CDP, as before.
+          // window in front (the click was then refused as covered). Page.bringToFront raises it in more
+          // cases (over a terminal, Chrome over Edge), though not Edge over Chrome; when it does not, the
+          // window is focused as before, and a click it cannot reach is refused as covered (#834).
           const raised = await raiseTabAmong(pageTabId, port, [frame.hwnd]);
           if (raised === undefined) {
             restoreAndFocusWindow(frame.hwnd);
