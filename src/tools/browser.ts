@@ -3,7 +3,7 @@ import { z } from "zod";
 import { mouse, Button } from "../engine/nutjs.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 import { moveCursorTo } from "../engine/cursor.js";
-import { enumWindowsInZOrder, getWindowDpi, restoreAndFocusWindow } from "../engine/win32.js";
+import { enumWindowsInZOrder, getWindowDpi, getWindowProcessId, restoreAndFocusWindow, type WindowZInfo } from "../engine/win32.js";
 import { updateWindowCache } from "../engine/window-cache.js";
 import { whoIsUnderPoint, type PointOwner } from "../engine/point-owner.js";
 import { ok, buildDesc } from "./_types.js";
@@ -23,6 +23,8 @@ import {
   getTabContext,
   isOffscreenMinimized,
   getTabWindowBounds,
+  getBrowserProcessId,
+  bringTabToFront,
   CMD_TIMEOUT_MS,
   type TabContext,
 } from "../engine/cdp-bridge.js";
@@ -403,15 +405,12 @@ function isChromiumFrameOrUnknown(w: { className?: string }): boolean {
   return w.className === undefined || w.className === "" || w.className === "Chrome_WidgetWin_1";
 }
 
-async function ensureWindowFocused(titleHint: string): Promise<bigint | undefined> {
+async function ensureWindowFocused(titleHint: string, windows: readonly WindowZInfo[]): Promise<bigint | undefined> {
   // internal #274 (gate 2 on #834) — only a Chromium frame can be the browser: a terminal or an editor
   // whose title holds the tab's title would otherwise be focused, and the click check would then refuse
   // naming the real browser under the point. A window whose class could not be read is kept.
-  // The cache takes the whole enumeration: it treats its argument as the full snapshot and drops what
-  // is absent (codex P2 on #834). Only the search below is narrowed.
-  const all = enumWindowsInZOrder();
-  updateWindowCache(all);
-  const windows = all.filter(isChromiumFrameOrUnknown);
+  // `windows` is that narrowed set (and, since internal #305, the CDP browser's own frames when its
+  // process is known); the caller has already handed the whole enumeration to the cache.
   const active = windows.find((w) => w.isActive);
   if (active && active.title.toLowerCase().includes(titleHint.toLowerCase())) {
     return active.hwnd; // already focused
@@ -441,28 +440,56 @@ const FRAME_BOUNDS_TOLERANCE_PX = 3;
  * tolerance is 3. Two frames at the same rect cannot be told apart this way, and neither can by
  * title; that answers undefined too.
  */
-export function frameForWindowBounds<T extends { region: { x: number; y: number; width: number; height: number } }>(
+export function framesAtWindowBounds<T extends { region: { x: number; y: number; width: number; height: number } }>(
   frames: readonly T[],
   bounds: { left: number; top: number; width: number; height: number },
   scaleOf: (frame: T) => number,
-): T | undefined {
+): T[] {
   const near = (a: number, b: number) => Math.abs(a - b) <= FRAME_BOUNDS_TOLERANCE_PX;
-  const hits = frames.filter((w) => {
+  return frames.filter((w) => {
     const s = scaleOf(w);
     return near(w.region.x, bounds.left * s) &&
       near(w.region.y, bounds.top * s) &&
       near(w.region.width, bounds.width * s) &&
       near(w.region.height, bounds.height * s);
   });
+}
+
+/** The one frame at the tab's window bounds, or undefined when none or several are (see above). */
+export function frameForWindowBounds<T extends { region: { x: number; y: number; width: number; height: number } }>(
+  frames: readonly T[],
+  bounds: { left: number; top: number; width: number; height: number },
+  scaleOf: (frame: T) => number,
+): T | undefined {
+  const hits = framesAtWindowBounds(frames, bounds, scaleOf);
   return hits.length === 1 ? hits[0] : undefined;
+}
+
+/**
+ * internal #305 — the frames of the CDP browser itself, when its process is known and owns any.
+ *
+ * Another Chromium browser (or a Chromium app) can show a window with the same title at the same
+ * rect: win2 saw a click for an Edge tab go into a Chrome page that way. Without a process id, or
+ * when none of the frames carries it, the frames stay as they were.
+ */
+export function framesOfBrowserProcess<T extends { hwnd: bigint }>(
+  frames: readonly T[],
+  browserPid: number | undefined,
+  pidOf: (hwnd: bigint) => number,
+): readonly T[] {
+  if (browserPid === undefined) return frames;
+  const own = frames.filter((w) => pidOf(w.hwnd) === browserPid);
+  return own.length > 0 ? own : frames;
 }
 
 /**
  * Ensure a browser window is focused before sending mouse events.
  *
- * The window is the tab's own, found by its bounds from CDP (internal #305): by title, two windows
- * showing tabs with the same title took each other's clicks. When CDP gives no bounds, or no single
- * frame matches them, it falls back to the tab's title, then to a generic Chrome/Edge title search.
+ * The window is the tab's own (internal #305): by title, two windows showing tabs with the same
+ * title took each other's clicks. Candidates are the CDP browser's own frames when its process is
+ * known; among them, the one frame at the tab's window bounds. When several share those bounds (two
+ * maximized windows), the tab is brought to the front through CDP and the frame that took the
+ * foreground is the one. Otherwise the tab's title decides, then a generic Chrome/Edge title search.
  */
 async function ensureBrowserFocused(port: number, tabId: string | null = null): Promise<bigint | undefined> {
   // Try to match by the tab's title from CDP — the tab the click is for when one was named (codex P1 on
@@ -478,6 +505,18 @@ async function ensureBrowserFocused(port: number, tabId: string | null = null): 
     // ignore — fall back to browser name search
   }
 
+  // The cache takes the whole enumeration: it treats its argument as the full snapshot and drops what
+  // is absent (codex P2 on #834). Only the search below is narrowed.
+  const all = enumWindowsInZOrder();
+  updateWindowCache(all);
+  let browserPid: number | undefined;
+  try {
+    browserPid = await getBrowserProcessId(port);
+  } catch {
+    // no process id — every Chromium frame stays a candidate, as before #305
+  }
+  const windows = framesOfBrowserProcess(all.filter(isChromiumFrameOrUnknown), browserPid, getWindowProcessId);
+
   if (pageTabId !== undefined) {
     let bounds: Awaited<ReturnType<typeof getTabWindowBounds>> | undefined;
     try {
@@ -486,27 +525,27 @@ async function ensureBrowserFocused(port: number, tabId: string | null = null): 
       // no bounds — the title search below decides, as before #305
     }
     if (bounds) {
-      const all = enumWindowsInZOrder();
-      updateWindowCache(all);
-      const frame = frameForWindowBounds(all.filter(isChromiumFrameOrUnknown), bounds, (w) => getWindowDpi(w.hwnd) / 96);
-      if (frame) {
+      const hits = framesAtWindowBounds(windows, bounds, (w) => getWindowDpi(w.hwnd) / 96);
+      if (hits.length === 1) {
+        const frame = hits[0]!;
         if (!frame.isActive) {
           restoreAndFocusWindow(frame.hwnd);
           await new Promise<void>((r) => setTimeout(r, 100));
         }
         return frame.hwnd;
       }
+      if (hits.length > 1) {
+        const raised = await raiseTabAmong(pageTabId, port, hits.map((h) => h.hwnd));
+        if (raised !== undefined) return raised;
+      }
     }
   }
 
   if (tabTitle) {
-    return ensureWindowFocused(tabTitle);
+    return ensureWindowFocused(tabTitle, windows);
   }
 
   // Fall back to browser process name
-  const all = enumWindowsInZOrder();
-  updateWindowCache(all);
-  const windows = all.filter(isChromiumFrameOrUnknown);
   const active = windows.find((w) => w.isActive);
   if (
     active &&
@@ -521,6 +560,27 @@ async function ensureBrowserFocused(port: number, tabId: string | null = null): 
     restoreAndFocusWindow(browserWindow.hwnd);
     await new Promise<void>((r) => setTimeout(r, 100));
     return browserWindow.hwnd;
+  }
+  return undefined;
+}
+
+/**
+ * internal #305 — several frames at the tab's window bounds: bring the tab forward through CDP and
+ * answer the one of them that then holds the foreground, or undefined (the caller falls back).
+ * win2 saw the foreground move within 1 ms of the reply; this looks for up to 200 ms.
+ */
+async function raiseTabAmong(tabId: string, port: number, candidates: readonly bigint[]): Promise<bigint | undefined> {
+  try {
+    await bringTabToFront(tabId, port);
+  } catch {
+    return undefined;
+  }
+  for (let i = 0; i < 5; i++) {
+    const now = enumWindowsInZOrder();
+    updateWindowCache(now);
+    const fg = now.find((w) => w.isActive && candidates.includes(w.hwnd));
+    if (fg) return fg.hwnd;
+    await new Promise<void>((r) => setTimeout(r, 50));
   }
   return undefined;
 }

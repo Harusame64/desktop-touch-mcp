@@ -23,6 +23,10 @@ const mocks = vi.hoisted(() => ({
   focused: [] as bigint[],
   bounds: undefined as undefined | { left: number; top: number; width: number; height: number },
   dpi: new Map<bigint, number>(),
+  pid: new Map<bigint, number>(),
+  browserPid: undefined as number | undefined,
+  raised: [] as string[],
+  onRaise: undefined as undefined | (() => void),
   boundsAskedFor: [] as Array<string | null>,
 }));
 
@@ -54,21 +58,35 @@ vi.mock("../../src/engine/cdp-bridge.js", async (orig) => ({
     if (!mocks.bounds) throw new Error("Browser.getWindowForTarget failed");
     return mocks.bounds;
   }),
+  getBrowserProcessId: vi.fn(async () => {
+    if (mocks.browserPid === undefined) throw new Error("SystemInfo.getProcessInfo failed");
+    return mocks.browserPid;
+  }),
+  bringTabToFront: vi.fn(async (tabId: string) => {
+    mocks.raised.push(tabId);
+    if (!mocks.onRaise) throw new Error("Page.bringToFront failed");
+    mocks.onRaise();
+  }),
 }));
 vi.mock("../../src/engine/win32.js", async (orig) => ({
   ...(await orig<typeof import("../../src/engine/win32.js")>()),
   enumWindowsInZOrder: () => mocks.windows,
   restoreAndFocusWindow: (h: bigint) => { mocks.focused.push(h); },
   getWindowDpi: (h: bigint) => mocks.dpi.get(h) ?? 96,
+  getWindowProcessId: (h: bigint) => mocks.pid.get(h) ?? 0,
 }));
 
-const { osClickAndVerify, frameForWindowBounds } = await import("../../src/tools/browser.js");
+const { osClickAndVerify, frameForWindowBounds, framesOfBrowserProcess } = await import("../../src/tools/browser.js");
 
 afterEach(() => {
   mocks.focused.length = 0;
   mocks.boundsAskedFor.length = 0;
   mocks.bounds = undefined;
   mocks.dpi.clear();
+  mocks.pid.clear();
+  mocks.browserPid = undefined;
+  mocks.raised.length = 0;
+  mocks.onRaise = undefined;
 });
 
 // win2's side-by-side cell at 100 %: the left window is first in z-order.
@@ -163,3 +181,72 @@ describe("osClickAndVerify brings forward, and asks about, the tab's own window"
     expect(asked).toEqual([LEFT.hwnd]);
   });
 });
+
+/**
+ * internal #305 part 2. MEASURED win2 (2026-10-24, Chrome 155 + Edge 155 open together):
+ * SystemInfo.getProcessInfo's one "browser" entry equals GetWindowThreadProcessId of that browser's
+ * frames and not the other's; Page.bringToFront raised the tab's window to the foreground in 40/40
+ * cells, maximized and overlapping, from a background process. On #837's round, without these, an
+ * Edge click went into a Chrome page at the same rect, and with two maximized windows a click for the
+ * window behind pressed the front window's button.
+ */
+describe("the CDP browser's own frames, and bringing the tab forward when its bounds are shared", () => {
+  const RECT = { x: 0, y: 50, width: 900, height: 600 };
+  const MAX = { x: -8, y: -8, width: 1936, height: 1048 };
+
+  it("another browser's window at the same rect is not a candidate: the Edge tab's own frame is asked", async () => {
+    const chromeA = { ...frame(1051258n, RECT, true, 0), title: "K835-PAGE - Google Chrome" };
+    const edgeA = { ...frame(3738296n, RECT, false, 1), title: "K835-PAGE - Microsoft Edge" };
+    mocks.windows = [chromeA, edgeA];
+    mocks.pid.set(chromeA.hwnd, 4336).set(edgeA.hwnd, 15864);
+    mocks.browserPid = 15864;
+    mocks.bounds = { left: 0, top: 50, width: 900, height: 600 };
+    const asked: bigint[] = [];
+    await osClickAndVerify(400, 300, null, "B7AE2D", 9346, (aim) => { asked.push(aim); return AIM; });
+    expect(asked).toEqual([edgeA.hwnd]);
+    expect(mocks.focused).toEqual([edgeA.hwnd]);
+    expect(mocks.raised).toEqual([]);
+  });
+
+  it("without bounds the title search is narrowed to the browser's frames too", async () => {
+    const chromeA = { ...frame(1051258n, RECT, true, 0), title: "K835-PAGE - Google Chrome" };
+    const edgeA = { ...frame(3738296n, RECT, false, 1), title: "K835-PAGE - Microsoft Edge" };
+    mocks.windows = [chromeA, edgeA];
+    mocks.pid.set(chromeA.hwnd, 4336).set(edgeA.hwnd, 15864);
+    mocks.browserPid = 15864;
+    const asked: bigint[] = [];
+    await osClickAndVerify(400, 300, null, "B7AE2D", 9346, (aim) => { asked.push(aim); return AIM; });
+    expect(asked).toEqual([edgeA.hwnd]);
+  });
+
+  it("two maximized windows of one browser: the tab is brought forward and the frame that took the foreground is asked", async () => {
+    const front = frame(919904n, MAX, true, 0);
+    const behind = frame(1051258n, MAX, false, 1);
+    mocks.windows = [front, behind];
+    mocks.pid.set(front.hwnd, 4336).set(behind.hwnd, 4336);
+    mocks.browserPid = 4336;
+    mocks.bounds = { left: -8, top: -8, width: 1936, height: 1048 };
+    mocks.onRaise = () => { mocks.windows = [{ ...behind, isActive: true, zOrder: 0 }, { ...front, isActive: false, zOrder: 1 }]; };
+    const asked: bigint[] = [];
+    await osClickAndVerify(400, 300, null, "EB77BA", 9222, (aim) => { asked.push(aim); return AIM; });
+    expect(mocks.raised).toEqual(["EB77BA"]);
+    expect(asked).toEqual([behind.hwnd]);
+  });
+
+  it("when bringing it forward fails, the title decides, as before", async () => {
+    const front = frame(919904n, MAX, true, 0);
+    const behind = frame(1051258n, MAX, false, 1);
+    mocks.windows = [front, behind];
+    mocks.bounds = { left: -8, top: -8, width: 1936, height: 1048 };
+    const asked: bigint[] = [];
+    await osClickAndVerify(400, 300, null, "EB77BA", 9222, (aim) => { asked.push(aim); return AIM; });
+    expect(mocks.raised).toEqual(["EB77BA"]);
+    expect(asked).toEqual([front.hwnd]);
+  });
+
+  it("a process id no frame carries narrows nothing (the control)", () => {
+    expect(framesOfBrowserProcess([LEFT, RIGHT], 9999, () => 4336)).toEqual([LEFT, RIGHT]);
+    expect(framesOfBrowserProcess([LEFT, RIGHT], undefined, () => 4336)).toEqual([LEFT, RIGHT]);
+  });
+});
+

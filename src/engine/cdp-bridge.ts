@@ -414,6 +414,42 @@ export async function getTabWindowBounds(
   return { left: b.left, top: b.top, width: b.width, height: b.height };
 }
 
+/**
+ * The CDP browser's own process id (internal #305): `SystemInfo.getProcessInfo` on the browser
+ * endpoint (`/json/version`), the one entry of type "browser". win2 measured it equal to
+ * GetWindowThreadProcessId of every frame of that browser, and different from another browser's
+ * frames (Chrome 155 and Edge 155 open together). A tab's own session refuses the call ("only
+ * supported on the browser target"). Throws when either step fails.
+ */
+export async function getBrowserProcessId(port = DEFAULT_CDP_PORT): Promise<number> {
+  const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(CONNECT_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`CDP /json/version returned HTTP ${res.status}`);
+  const version = (await res.json()) as { webSocketDebuggerUrl?: string };
+  if (!version.webSocketDebuggerUrl) throw new Error("CDP /json/version gave no webSocketDebuggerUrl");
+  const session = await openSession(
+    { id: "__browser__", title: "", url: "", type: "browser", webSocketDebuggerUrl: version.webSocketDebuggerUrl },
+    port,
+  );
+  const info = (await session.send("SystemInfo.getProcessInfo", {})) as { processInfo?: Array<{ type?: string; id?: number }> };
+  const browser = (info.processInfo ?? []).filter((p) => p.type === "browser");
+  if (browser.length !== 1 || typeof browser[0]!.id !== "number") {
+    throw new Error("SystemInfo.getProcessInfo named no single browser process");
+  }
+  return browser[0]!.id;
+}
+
+/**
+ * Bring a tab and its window to the front with CDP `Page.bringToFront` (internal #305). win2
+ * measured it raising the tab's window to the foreground in 40/40 cells (Chrome and Edge, maximized
+ * and overlapping, called from a background process with another process in front), the foreground
+ * moving within 1 ms of the reply.
+ */
+export async function bringTabToFront(tabId: string, port = DEFAULT_CDP_PORT): Promise<void> {
+  const tab = await resolveTab(tabId, port);
+  const session = await openSession(tab, port);
+  await session.send("Page.bringToFront", {});
+}
+
 // ─── ADR-018 Phase 3 — Tier 2 wheel dispatch + observation ────────────────────
 
 /**
