@@ -322,11 +322,17 @@ export class SessionRegistry {
    * Priority: hwnd > tabId > windowTitle > default.
    * NOTE: `title:` keys are unstable — window titles can change (e.g. document rename,
    * tab title update). Prefer `hwnd` or `tabId` when available to avoid orphaned sessions.
+   *
+   * The hwnd counts only when `parseTargetHwnd` takes it (internal #310). The ingress rebuilds the
+   * providers' target from this key alone, so `window:-1` beside a title became `{hwnd:"-1"}` and
+   * the UIA lane read `@active` instead of the title the caller sent. An unusable hwnd with nothing
+   * else keeps its own key, as before; the tool refuses that call before it gets here (#831).
    */
   resolveKey(target?: TargetSpec): TargetSessionKey {
-    if (target?.hwnd)        return `window:${target.hwnd}`;
+    if (target?.hwnd && parseTargetHwnd(target) !== undefined) return `window:${target.hwnd}`;
     if (target?.tabId)       return `tab:${target.tabId}`;
     if (target?.windowTitle) return `title:${target.windowTitle}`;
+    if (target?.hwnd)        return `window:${target.hwnd}`;
     return "window:__default__";
   }
 

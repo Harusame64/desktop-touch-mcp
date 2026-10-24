@@ -628,6 +628,13 @@ export class DesktopFacade {
           freshness: { from: "read" as const, observedAtMs: directReadStartedAtMs },
         });
 
+    // internal #310 — an unusable hwnd beside a title or tab is keyed by that title or tab, so the
+    // providers never see the hwnd and cannot say they could not read it. The reply still does.
+    if (input.target?.hwnd && parseTargetHwnd(input.target) === undefined &&
+        !rawResult.warnings.includes("target_hwnd_unparseable")) {
+      rawResult = { ...rawResult, warnings: [...rawResult.warnings, "target_hwnd_unparseable"] };
+    }
+
     // H4: view=debug escalation (Rule-B) — surface visual_not_attempted when the
     // visual backend is unready, regardless of whether compose's Rule-A fired.
     // Scope: Rule-B only handles the "visual unready" path (visual_provider_unavailable /
