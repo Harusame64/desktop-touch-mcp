@@ -47,6 +47,7 @@ vi.mock("../../src/engine/cdp-bridge.js", async (orig) => ({
     { id: "t2", type: "page", title: "Cart", url: "https://example.test/cart" },
   ]),
   evaluateInTab: vi.fn(async () => { throw new Error("no CDP in this cell"); }),
+  getTabWindowBounds: vi.fn(async () => { throw new Error("no CDP in this cell"); }),
 }));
 vi.mock("../../src/engine/win32.js", async (orig) => ({
   ...(await orig<typeof import("../../src/engine/win32.js")>()),

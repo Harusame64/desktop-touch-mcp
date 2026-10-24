@@ -22,6 +22,7 @@ import {
   disconnectAll,
   getTabContext,
   isOffscreenMinimized,
+  getTabWindowBounds,
   CMD_TIMEOUT_MS,
   type TabContext,
 } from "../engine/cdp-bridge.js";
@@ -426,20 +427,70 @@ async function ensureWindowFocused(titleHint: string): Promise<bigint | undefine
   return undefined;
 }
 
+/** Physical px a frame's rect may differ from the tab's window bounds × dpr and still be that window. */
+const FRAME_BOUNDS_TOLERANCE_PX = 3;
+
+/**
+ * internal #305 — the Chromium frame whose rect is the tab's window, or undefined unless exactly one is.
+ *
+ * `bounds` is `Browser.getWindowForTarget` in DIPs with the tab's devicePixelRatio; the enumeration's
+ * region is GetWindowRect in physical px. win2 measured them equal for a normal window and within 2 px
+ * for a maximized one at 150 % (−10.5 against −11), so the tolerance is 3. Two frames at the same rect
+ * cannot be told apart this way, and neither can by title; that answers undefined too.
+ */
+export function frameForWindowBounds<T extends { region: { x: number; y: number; width: number; height: number } }>(
+  frames: readonly T[],
+  bounds: { left: number; top: number; width: number; height: number; dpr: number },
+): T | undefined {
+  const near = (a: number, b: number) => Math.abs(a - b) <= FRAME_BOUNDS_TOLERANCE_PX;
+  const hits = frames.filter((w) =>
+    near(w.region.x, bounds.left * bounds.dpr) &&
+    near(w.region.y, bounds.top * bounds.dpr) &&
+    near(w.region.width, bounds.width * bounds.dpr) &&
+    near(w.region.height, bounds.height * bounds.dpr));
+  return hits.length === 1 ? hits[0] : undefined;
+}
+
 /**
  * Ensure a browser window is focused before sending mouse events.
- * Falls back to generic Chrome/Edge title search when tab title cannot be resolved.
+ *
+ * The window is the tab's own, found by its bounds from CDP (internal #305): by title, two windows
+ * showing tabs with the same title took each other's clicks. When CDP gives no bounds, or no single
+ * frame matches them, it falls back to the tab's title, then to a generic Chrome/Edge title search.
  */
 async function ensureBrowserFocused(port: number, tabId: string | null = null): Promise<bigint | undefined> {
   // Try to match by the tab's title from CDP — the tab the click is for when one was named (codex P1 on
   // #834: the first page tab's window is the wrong reference for a tab in a second browser window).
   let tabTitle: string | undefined;
+  let pageTabId: string | undefined;
   try {
     const tabs = await listTabs(port);
     const pageTab = (tabId !== null ? tabs.find((t) => t.id === tabId) : undefined) ?? tabs.find((t) => t.type === "page");
     tabTitle = pageTab?.title;
+    pageTabId = pageTab?.id;
   } catch {
     // ignore — fall back to browser name search
+  }
+
+  if (pageTabId !== undefined) {
+    let bounds: Awaited<ReturnType<typeof getTabWindowBounds>> | undefined;
+    try {
+      bounds = await getTabWindowBounds(pageTabId, port);
+    } catch {
+      // no bounds — the title search below decides, as before #305
+    }
+    if (bounds) {
+      const all = enumWindowsInZOrder();
+      updateWindowCache(all);
+      const frame = frameForWindowBounds(all.filter(isChromiumFrameOrUnknown), bounds);
+      if (frame) {
+        if (!frame.isActive) {
+          restoreAndFocusWindow(frame.hwnd);
+          await new Promise<void>((r) => setTimeout(r, 100));
+        }
+        return frame.hwnd;
+      }
+    }
   }
 
   if (tabTitle) {
