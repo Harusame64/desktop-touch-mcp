@@ -10,6 +10,20 @@
   browser itself, nothing is clicked and the call fails with `BrowserPointCovered`, naming the window (a
   window this server may not act through is not named). When Windows' hit test cannot answer, it clicks
   as before.
+- **`browser_click` no longer clicks about 8 px below the element.** The window's invisible bottom
+  border was counted as part of the toolbar, so every click landed 8–12 px low, and a thin element (a
+  strip a dozen pixels high) was missed under `ok: true`. With DevTools or a side panel docked beside
+  the page, the click is still off, by half the panel's width and by the old 8 px.
+- **`browser_click` now clicks the right point at any page zoom.** At a zoom other than 100 % the point
+  was off by up to a few hundred pixels (at 125 %, about 150 px right and 200 px down), so the click
+  missed or was refused.
+- **`browser_click` now clicks in the tab's own window when other windows show the same title.** It
+  brought forward the first browser window whose title held the tab's title, so with two windows
+  showing tabs of the same title, or a window of another Chromium browser with that title, the click
+  could land in the other window's page under `ok: true`. It now asks the browser which window the tab
+  is in, and brings that window forward, also when two maximized windows sit at the same place. When
+  Windows does not let it come forward (an Edge window behind a Chrome window), the click is refused
+  with `BrowserPointCovered`, as for any covered point.
 - **A refused click on a list, tree or grid item no longer advises `click_element`.** When such a click
   was refused because a window covered the point, the pointer could not be placed or reached, or a
   window this server may not act through was on top (`aim_occluded`, `cursor_placement_blocked`,
@@ -20,10 +34,12 @@
   with `desktop_act` again once the cause is cleared (or `action:'invoke'` to open it). The tool
   description, the server instructions and the guides say the same where they offer `click_element`.
 - **`desktop_discover` no longer reads the window in front when `target.hwnd` is not a window handle.**
-  An empty, zero, negative or non-numeric `target.hwnd`, sent without `windowTitle` or `tabId`, was read as
-  no target, so the discover read the foreground window and an act on its lease wrote there with
-  `ok:true`. It is now refused with `InvalidArgs` and nothing is read. With a `windowTitle` or `tabId`
-  beside it, the call still aims by that.
+  An empty, zero, negative, non-numeric or out-of-range `target.hwnd`, sent without `windowTitle` or
+  `tabId`, was read as no target, so the discover read the foreground window and an act on its lease
+  wrote there with `ok:true`. It is now refused with `InvalidArgs` and nothing is read. With a
+  `windowTitle` or `tabId` beside it, the call now reads that window; before, it read the window in
+  front. The hint `keyboard` gives to use `desktop_discover` + `desktop_act` instead no longer names such an
+  `hwnd`.
 - **`desktop_act` `type` / `setValue` no longer types the text a second time when a field's value write
   fails after it has written.** Some fields write the value through UI Automation and then report the
   write as failed. The act then typed the text again with the keyboard, and the field held it twice
