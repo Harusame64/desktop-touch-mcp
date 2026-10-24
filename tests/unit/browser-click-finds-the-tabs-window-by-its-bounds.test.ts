@@ -269,6 +269,35 @@ describe("the CDP browser's own frames, and bringing the tab forward when its bo
     expect(asked).toEqual([behind.hwnd]);
   });
 
+  it("the front window still in front after the raise is no evidence: the title decides (codex P1 on #840)", async () => {
+    // Two maximized windows, different titles; the wrong one is in front and CDP answers without
+    // raising anything. Accepting the front window would click into it; the title names the right one.
+    const front = { ...frame(919904n, MAX, true, 0), title: "Other - Google Chrome" };
+    const behind = frame(1051258n, MAX, false, 1);
+    mocks.windows = [front, behind];
+    mocks.pid.set(front.hwnd, 4336).set(behind.hwnd, 4336);
+    mocks.browserPid = 4336;
+    mocks.bounds = { left: -8, top: -8, width: 1936, height: 1048 };
+    mocks.onRaise = () => {};
+    const asked: bigint[] = [];
+    await osClickAndVerify(400, 300, null, "EB77BA", 9222, (aim) => { asked.push(aim); return AIM; });
+    expect(mocks.raised).toEqual(["EB77BA"]);
+    expect(asked).toEqual([behind.hwnd]);
+    expect(mocks.focused).toEqual([behind.hwnd]);
+  });
+
+  it("the tab's window already in front: nothing is raised over it, and the title keeps it", async () => {
+    const front = frame(919904n, MAX, true, 0);
+    const behind = { ...frame(1051258n, MAX, false, 1), title: "Other - Google Chrome" };
+    mocks.windows = [front, behind];
+    mocks.bounds = { left: -8, top: -8, width: 1936, height: 1048 };
+    mocks.onRaise = () => {};
+    const asked: bigint[] = [];
+    await osClickAndVerify(400, 300, null, "EB77BA", 9222, (aim) => { asked.push(aim); return AIM; });
+    expect(asked).toEqual([front.hwnd]);
+    expect(mocks.focused).toEqual([]);
+  });
+
   it("when bringing it forward fails, the title decides, as before", async () => {
     const front = frame(919904n, MAX, true, 0);
     const behind = frame(1051258n, MAX, false, 1);

@@ -543,7 +543,11 @@ async function ensureBrowserFocused(port: number, tabId: string | null = null): 
         return frame.hwnd;
       }
       if (hits.length > 1) {
-        const raised = await raiseTabAmong(pageTabId, port, hits.map((h) => h.hwnd));
+        // The frame already in front is no evidence: Page.bringToFront answers the same whether it
+        // raised anything, so a window that was active before it could be the wrong one still there
+        // (codex P1 on #840). Then the title decides, as before.
+        const before = hits.find((h) => h.isActive)?.hwnd;
+        const raised = await raiseTabAmong(pageTabId, port, hits.map((h) => h.hwnd).filter((h) => h !== before));
         if (raised !== undefined) return raised;
       }
     }
@@ -573,11 +577,13 @@ async function ensureBrowserFocused(port: number, tabId: string | null = null): 
 }
 
 /**
- * internal #305 — bring the tab forward through CDP and answer the one of `candidates` (the frames
- * at the tab's window bounds) that then holds the foreground, or undefined (the caller falls back).
+ * internal #305 — bring the tab forward through CDP and answer the one of `candidates` (frames at the
+ * tab's window bounds that were NOT already in front) that then holds the foreground, or undefined
+ * (the caller falls back).
  * win2 saw the foreground move within 1 ms of the reply; this looks for up to 200 ms.
  */
 async function raiseTabAmong(tabId: string, port: number, candidates: readonly bigint[]): Promise<bigint | undefined> {
+  if (candidates.length === 0) return undefined;
   try {
     await bringTabToFront(tabId, port);
   } catch {
