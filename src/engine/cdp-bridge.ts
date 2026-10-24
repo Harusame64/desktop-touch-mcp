@@ -533,6 +533,15 @@ export function viewportOriginJs(zoom: number): string {
 }
 
 /**
+ * The id of the tab a null `tabId` stands for — the first page tab — so that two calls about "the
+ * tab" ask the same one. `/json/list` order is not stable between calls (win2, 2026-10-24), and the
+ * zoom read for one tab with the coordinates read for another put the click off (codex on #839).
+ */
+export async function resolveTabId(tabId: string | null, port = DEFAULT_CDP_PORT): Promise<string> {
+  return (await resolveTab(tabId, port)).id;
+}
+
+/**
  * The tab's page zoom (internal #311), from CDP `Page.getLayoutMetrics` — `cssVisualViewport.zoom`,
  * 1.25 at 125 %. The page cannot tell its zoom from its monitor's scale: devicePixelRatio is their
  * product. 1 when CDP does not say, which keeps the conversion as it was before the zoom was known.
@@ -568,7 +577,9 @@ export async function getElementScreenCoords(
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT
 ): Promise<ElementCoords> {
-  const zoom = await getPageZoom(tabId, port);
+  // One tab for both reads: the zoom and the coordinates (codex on #839).
+  const tab = await resolveTabId(tabId, port);
+  const zoom = await getPageZoom(tab, port);
   const expression = `
 (function() {
   var sel = ${JSON.stringify(selector)};
@@ -620,7 +631,7 @@ ${viewportOriginJs(zoom)}
   });
 })()`;
 
-  const raw = (await evaluateInTab(expression, tabId, port)) as string;
+  const raw = (await evaluateInTab(expression, tab, port)) as string;
   let parsed: ({ error: string; zeroSize?: boolean } | (ElementCoords & { error?: undefined }));
   try {
     parsed = JSON.parse(raw) as typeof parsed;

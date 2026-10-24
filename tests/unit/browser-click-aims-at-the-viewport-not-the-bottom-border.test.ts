@@ -96,8 +96,9 @@ describe("internal #304: the viewport top inset leaves out the bottom border", (
     expect(code(bridge).match(/window\.outerHeight/g)).toHaveLength(1);
     expect(code(resolver)).not.toMatch(/window\.outerHeight/);
     expect(bridge).toContain("${viewportOriginJs(zoom)}");
-    // …with the zoom asked of CDP for the same tab (internal #311)
-    expect(bridge).toContain("const zoom = await getPageZoom(tabId, port);");
+    // …with the zoom asked of CDP for the same tab the coordinates come from (#311, codex on #839)
+    expect(bridge).toContain("const zoom = await getPageZoom(tab, port);");
+    expect(bridge).toContain("await evaluateInTab(expression, tab, port)");
     expect(resolver).toContain("${viewportOriginJs(args.pageZoom ?? 1)}");
   });
 });
