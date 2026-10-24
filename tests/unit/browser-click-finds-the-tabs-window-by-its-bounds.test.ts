@@ -204,8 +204,26 @@ describe("the CDP browser's own frames, and bringing the tab forward when its bo
     const asked: bigint[] = [];
     await osClickAndVerify(400, 300, null, "B7AE2D", 9346, (aim) => { asked.push(aim); return AIM; });
     expect(asked).toEqual([edgeA.hwnd]);
+    // CDP's raise was tried first; it failed in this cell, so the window was focused as before.
+    expect(mocks.raised).toEqual(["B7AE2D"]);
     expect(mocks.focused).toEqual([edgeA.hwnd]);
-    expect(mocks.raised).toEqual([]);
+  });
+
+  it("the one matching frame behind another process's window is raised through CDP, not restoreAndFocusWindow", async () => {
+    // win2 on #840: with Chrome in front, focusing the Edge frame lost the foreground and the click was
+    // refused as covered; Page.bringToFront raised it over another process in 40/40 cells.
+    const chromeA = { ...frame(1051258n, RECT, true, 0), title: "K835-PAGE - Google Chrome" };
+    const edgeB = { ...frame(10554470n, { x: 200, y: 150, width: 900, height: 600 }, false, 1), title: "K835-PAGE - Microsoft Edge" };
+    mocks.windows = [chromeA, edgeB];
+    mocks.pid.set(chromeA.hwnd, 10532).set(edgeB.hwnd, 16944);
+    mocks.browserPid = 16944;
+    mocks.bounds = { left: 200, top: 150, width: 900, height: 600 };
+    mocks.onRaise = () => { mocks.windows = [{ ...edgeB, isActive: true, zOrder: 0 }, { ...chromeA, isActive: false, zOrder: 1 }]; };
+    const asked: bigint[] = [];
+    await osClickAndVerify(600, 450, null, "B7AE2D", 9346, (aim) => { asked.push(aim); return AIM; });
+    expect(mocks.raised).toEqual(["B7AE2D"]);
+    expect(mocks.focused).toEqual([]);
+    expect(asked).toEqual([edgeB.hwnd]);
   });
 
   it("without bounds the title search is narrowed to the browser's frames too", async () => {

@@ -487,9 +487,10 @@ export function framesOfBrowserProcess<T extends { hwnd: bigint }>(
  *
  * The window is the tab's own (internal #305): by title, two windows showing tabs with the same
  * title took each other's clicks. Candidates are the CDP browser's own frames when its process is
- * known; among them, the one frame at the tab's window bounds. When several share those bounds (two
- * maximized windows), the tab is brought to the front through CDP and the frame that took the
- * foreground is the one. Otherwise the tab's title decides, then a generic Chrome/Edge title search.
+ * known; among them, the one frame at the tab's window bounds, brought forward through CDP
+ * (Page.bringToFront) when it is not already in front. When several share those bounds (two
+ * maximized windows), the frame that took the foreground after that is the one. Otherwise the tab's
+ * title decides, then a generic Chrome/Edge title search.
  */
 async function ensureBrowserFocused(port: number, tabId: string | null = null): Promise<bigint | undefined> {
   // Try to match by the tab's title from CDP — the tab the click is for when one was named (codex P1 on
@@ -529,8 +530,14 @@ async function ensureBrowserFocused(port: number, tabId: string | null = null): 
       if (hits.length === 1) {
         const frame = hits[0]!;
         if (!frame.isActive) {
-          restoreAndFocusWindow(frame.hwnd);
-          await new Promise<void>((r) => setTimeout(r, 100));
+          // CDP first: win2 measured restoreAndFocusWindow losing the foreground to another browser's
+          // window in front (the click was then refused as covered), while Page.bringToFront raised the
+          // tab's window over another process in 40/40 cells. Without CDP, as before.
+          const raised = await raiseTabAmong(pageTabId, port, [frame.hwnd]);
+          if (raised === undefined) {
+            restoreAndFocusWindow(frame.hwnd);
+            await new Promise<void>((r) => setTimeout(r, 100));
+          }
         }
         return frame.hwnd;
       }
@@ -565,8 +572,8 @@ async function ensureBrowserFocused(port: number, tabId: string | null = null): 
 }
 
 /**
- * internal #305 — several frames at the tab's window bounds: bring the tab forward through CDP and
- * answer the one of them that then holds the foreground, or undefined (the caller falls back).
+ * internal #305 — bring the tab forward through CDP and answer the one of `candidates` (the frames
+ * at the tab's window bounds) that then holds the foreground, or undefined (the caller falls back).
  * win2 saw the foreground move within 1 ms of the reply; this looks for up to 200 ms.
  */
 async function raiseTabAmong(tabId: string, port: number, candidates: readonly bigint[]): Promise<bigint | undefined> {
