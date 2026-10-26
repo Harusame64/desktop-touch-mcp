@@ -37,6 +37,7 @@ async function loadLauncher(home: string) {
 
 describe("launcher release pruning", () => {
   let home: string;
+  let tmpRoot: string;
   let warnings: string[];
   let launcher: any;
   let expected: any;
@@ -60,7 +61,7 @@ describe("launcher release pruning", () => {
   }
 
   beforeEach(async () => {
-    home = await mkdtemp(path.join(os.tmpdir(), "dtmcp-prune-"));
+    home = tmpRoot = await mkdtemp(path.join(os.tmpdir(), "dtmcp-prune-"));
     warnings = [];
     process.env.DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED = "1";            // the in-repo manifest is PENDING
     vi.spyOn(console, "error").mockImplementation((message?: unknown) => { warnings.push(String(message)); });
@@ -78,7 +79,7 @@ describe("launcher release pruning", () => {
     for (const d of await readdir(path.join(home, "releases")).catch(() => [] as string[])) {
       await chmod(path.join(home, "releases", d, "dist"), 0o755).catch(() => {});
     }
-    await rm(home, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    await rm(tmpRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   });
 
   it("keeps the release being run and the newest other one, and removes the rest", async () => {
@@ -222,8 +223,12 @@ describe("launcher release pruning", () => {
   it.skipIf(process.platform === "win32")(
     "keeps a release whose runtime is running though no launcher marked it (one from before the marks)",
     async () => {
+      // A cache root deep enough that the command line is longer than any display width (ps must not cut it).
+      home = path.join(home, "h".repeat(120), "o".repeat(120));
+      launcher = await loadLauncher(home);
       const dir = await seed("v2.0.0");
       await seed("v2.9.0");
+      expect(path.join(dir, "dist", "index.js").length).toBeGreaterThan(300);
       // A process whose command line names v2.0.0's runtime, as an old launcher's child does.
       const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 20000)", path.join(dir, "dist", "index.js")], { stdio: "ignore" });
       try {

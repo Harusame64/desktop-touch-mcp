@@ -888,7 +888,8 @@ export function releasesInCommandLines(text, releasesDir) {
 function runtimesInProcessList() {
   if (process.platform === "win32") return Promise.resolve(new Set());
   return new Promise((resolve, reject) => {
-    execFile("/bin/ps", ["-axo", "command="], { maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
+    // -ww: never cut a command to the display width, which could hide the dist/index.js at its end.
+    execFile("/bin/ps", ["-wwaxo", "command="], { maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
       if (error) reject(error);
       else resolve(releasesInCommandLines(stdout, RELEASES_DIR));
     });
