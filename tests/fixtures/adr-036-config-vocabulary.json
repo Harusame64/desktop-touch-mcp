@@ -127,6 +127,9 @@
       "bin:ts",
       "src:ts"
     ],
+    "DESKTOP_TOUCH_MCP_KEEP_RELEASES": [
+      "bin:ts"
+    ],
     "DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK": [
       "bin:ts"
     ],
@@ -363,7 +366,8 @@
     "toLowerCase": "unclassified",
     "trim": "unclassified",
     "some": "unclassified",
-    "DESKTOP_TOUCH_ENABLE_DIRTY_RECTS": "axis"
+    "DESKTOP_TOUCH_ENABLE_DIRTY_RECTS": "axis",
+    "DESKTOP_TOUCH_MCP_KEEP_RELEASES": "tuning"
   },
   "allowDynamic": [
     "src/utils/launch.ts:name"
@@ -398,6 +402,7 @@
     "DESKTOP_TOUCH_MCP_ALLOW_UNVERIFIED",
     "DESKTOP_TOUCH_MCP_FETCH_TIMEOUT_MS",
     "DESKTOP_TOUCH_MCP_HOME",
+    "DESKTOP_TOUCH_MCP_KEEP_RELEASES",
     "DESKTOP_TOUCH_MCP_OFFLINE_FALLBACK",
     "DESKTOP_TOUCH_MOUSE_SPEED",
     "DESKTOP_TOUCH_REQUIRE_DESTINATION",

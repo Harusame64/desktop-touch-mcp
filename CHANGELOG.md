@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed — npm launcher
+- **Old runtime releases no longer pile up in the cache (#848).** Each version left its ~184 MB runtime under
+  `<cache root>/releases/` for good. Once the server has started, the launcher now removes old releases,
+  keeping the one it runs and one other (the newest) by default. Set `DESKTOP_TOUCH_MCP_KEEP_RELEASES` to
+  keep more, or `0` to keep all. Only releases the launcher installed and verified are removed; on Windows, one in
+  use by another client cannot be moved and is skipped with a warning until the next start, and one installed in the
+  last ten minutes is left alone.
+- **A download cut short no longer leaves its folder behind.** A launcher stopped mid-download (a client
+  giving up on a slow start) left its `download-*` folder, up to the size of a release, under the cache
+  root. Such folders older than an hour are now removed.
+
 ## [2.3.2] - 2026-10-24 — browser_click lands where it aims; writes go to the field you named
 
 ### Fixed — Windows

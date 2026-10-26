@@ -10,6 +10,7 @@ import {
   readdir,
   rename,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -818,6 +819,119 @@ export async function findCachedRelease(expected) {
   return null;
 }
 
+const DEFAULT_KEEP_RELEASES = 2;
+// A release installed this recently may be about to start under another launcher (between its install and its
+// spawn nothing holds it open yet), so it is never pruned.
+const YOUNG_INSTALL_MS = 10 * 60 * 1000;
+// A download-* folder this old belongs to no running launcher: one killed mid-download (a host that gave up on a
+// slow start) skips the finally that removes it.
+const STALE_DOWNLOAD_MS = 60 * 60 * 1000;
+const TRASH_PREFIX = ".trash-";
+
+/**
+ * Parses DESKTOP_TOUCH_MCP_KEEP_RELEASES: how many releases stay in the cache, the one being run counted. 0 turns
+ * pruning off. Anything else that is not a whole number falls back to the default, with `invalidValue` set so the
+ * caller can warn once.
+ *
+ * @internal
+ */
+export function parseKeepReleases(raw) {
+  if (raw === undefined || raw === null) return { keep: DEFAULT_KEEP_RELEASES, invalidValue: null };
+  const trimmed = String(raw).trim();
+  if (!/^\d+$/.test(trimmed)) return { keep: DEFAULT_KEEP_RELEASES, invalidValue: trimmed };
+  return { keep: Number(trimmed), invalidValue: null };
+}
+
+async function readCurrentTag() {
+  try {
+    const parsed = JSON.parse(await readFile(CURRENT_FILE, "utf8"));
+    return typeof parsed?.tagName === "string" ? tagToDirName(parsed.tagName) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Removes a directory by renaming it out of the way first; false (and a warning) when it is in use. */
+async function removeRelease(dir, name) {
+  const trash = path.join(RELEASES_DIR, `${TRASH_PREFIX}${name}-${process.pid}-${Date.now().toString(36)}`);
+  try {
+    // On Windows a release in use (the running runtime's cwd, its loaded .node files) refuses the rename, so
+    // nothing inside it is touched; macOS lets it go, and the default keep of 2 covers two clients on two versions. Once renamed, a half-deleted tree no longer looks like a release.
+    await rename(dir, trash);
+  } catch (error) {
+    if (error?.code === "ENOENT") return true;                       // another launcher got there first
+    warn(`Could not remove the old release ${name} (${error?.code ?? error}); it is kept and tried again next start.`);
+    return false;
+  }
+  try {
+    await rm(trash, { recursive: true, force: true });
+  } catch (error) {
+    warn(`Could not finish removing ${trash} (${error?.code ?? error}); it is removed at a later start.`);
+  }
+  return true;
+}
+
+/**
+ * Keeps the release cache from growing by one runtime per version (#848). Runs after the server has started, so it
+ * never delays startup. Keeps the release being run, the expected tag, the one in current.json, and the newest
+ * other verified releases up to `keep` in all; removes only verified installs (isVerifiedInstall) older than
+ * YOUNG_INSTALL_MS. Also removes leftovers of earlier prunes (.trash-*) and stale download-* folders. Never throws:
+ * a failure is a warning, and startup has already happened.
+ *
+ * @internal Exported for tests.
+ */
+export async function pruneCache({ running, expectedTag, keep, now = Date.now() }) {
+  const removed = [];
+  if (keep === 0) return removed;
+  let entries;
+  try {
+    entries = await readdir(RELEASES_DIR, { withFileTypes: true });
+  } catch {
+    entries = [];
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory() && entry.name.startsWith(TRASH_PREFIX)) {
+      await rm(path.join(RELEASES_DIR, entry.name), { recursive: true, force: true }).catch(() => {});
+    }
+  }
+  const protectedTags = new Set([running, tagToDirName(expectedTag), await readCurrentTag()].filter(Boolean));
+  const verified = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || parseTagVersion(entry.name) === null) continue;
+    const dir = path.join(RELEASES_DIR, entry.name);
+    if (await isVerifiedInstall(dir, entry.name)) verified.push(entry.name);
+  }
+  verified.sort((a, b) => compareTagVersions(b, a));
+  let kept = verified.filter((name) => protectedTags.has(name)).length;
+  for (const name of verified) {
+    if (protectedTags.has(name)) continue;
+    if (kept < keep) { kept += 1; continue; }
+    const dir = path.join(RELEASES_DIR, name);
+    const installedAt = Date.parse((await readReleaseMetadata(dir))?.updatedAt ?? "");
+    if (Number.isFinite(installedAt) && now - installedAt < YOUNG_INSTALL_MS) continue;
+    if (await removeRelease(dir, name)) removed.push(name);
+  }
+  if (removed.length > 0) log(`Removed old releases to save disk space: ${removed.join(", ")} (DESKTOP_TOUCH_MCP_KEEP_RELEASES=${keep}).`);
+
+  let rootEntries;
+  try {
+    rootEntries = await readdir(CACHE_ROOT, { withFileTypes: true });
+  } catch {
+    rootEntries = [];
+  }
+  for (const entry of rootEntries) {
+    if (!entry.isDirectory() || !entry.name.startsWith("download-")) continue;
+    const dir = path.join(CACHE_ROOT, entry.name);
+    try {
+      if (now - (await stat(dir)).mtimeMs < STALE_DOWNLOAD_MS) continue;
+      await rm(dir, { recursive: true, force: true });
+    } catch (error) {
+      warn(`Could not remove the leftover download ${dir} (${error?.code ?? error}).`);
+    }
+  }
+  return removed;
+}
+
 function launchServer(releaseDir) {
   const entry = path.join(releaseDir, "dist", "index.js");
   const child = spawn(process.execPath, [entry, ...process.argv.slice(2)], {
@@ -860,6 +974,14 @@ async function main() {
 
   const releaseDir = await ensureRelease();
   launchServer(releaseDir);
+  // After the spawn: the server answers the host while old releases are removed.
+  const { keep, invalidValue } = parseKeepReleases(process.env.DESKTOP_TOUCH_MCP_KEEP_RELEASES);
+  if (invalidValue !== null) {
+    warn(`DESKTOP_TOUCH_MCP_KEEP_RELEASES="${invalidValue}" is not a whole number; keeping ${keep} releases.`);
+  }
+  pruneCache({ running: path.basename(releaseDir), expectedTag: RELEASE_TAG, keep }).catch((error) => {
+    warn(`Could not prune the release cache: ${error?.message ?? error}`);
+  });
 }
 
 /**
