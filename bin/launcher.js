@@ -883,12 +883,14 @@ export function releasesInCommandLines(text, releasesDir) {
 /**
  * The releases whose runtime is running now, read from the process list (macOS, Linux). This sees a runtime started
  * by a launcher from before running/ marks existed. Windows needs none: a running release refuses the rename.
+ * Rejects when the list cannot be read: an unknown list is not an empty one, and the prune then removes nothing.
  */
 function runtimesInProcessList() {
   if (process.platform === "win32") return Promise.resolve(new Set());
-  return new Promise((resolve) => {
-    execFile("ps", ["-axo", "command="], { maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
-      resolve(error ? new Set() : releasesInCommandLines(stdout, RELEASES_DIR));
+  return new Promise((resolve, reject) => {
+    execFile("/bin/ps", ["-axo", "command="], { maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
+      if (error) reject(error);
+      else resolve(releasesInCommandLines(stdout, RELEASES_DIR));
     });
   });
 }
@@ -953,7 +955,8 @@ async function readCurrentTag() {
  * @internal Exported for tests.
  */
 export async function removeRelease(dir, name) {
-  if ((await runningReleases()).has(name)) return false;
+  const inUse = () => runningReleases().then((names) => names.has(name), () => true);   // unknown: in use
+  if (await inUse()) return false;
   const trash = path.join(RELEASES_DIR, `${TRASH_PREFIX}${name}-${process.pid}-${Date.now().toString(36)}`);
   try {
     // On Windows a release in use (the running runtime's cwd, its loaded .node files) refuses the rename, so nothing
@@ -964,7 +967,7 @@ export async function removeRelease(dir, name) {
     warn(`Could not remove the old release ${name} (${error?.code ?? error}); it is kept and tried again next start.`);
     return false;
   }
-  if ((await runningReleases()).has(name)) {
+  if (await inUse()) {
     await rename(trash, dir).catch((error) => {
       warn(`Could not put back the release ${name} another launcher started (${error?.code ?? error}); it is installed again at its next start.`);
     });
@@ -1004,11 +1007,15 @@ export async function pruneCache({ running, expectedTag, keep, now = Date.now() 
     if (owner && Number(owner[1]) !== process.pid && isProcessAlive(Number(owner[1]))) continue;
     await rm(path.join(RELEASES_DIR, entry.name), { recursive: true, force: true }).catch(() => {});
   }
-  const protectedTags = new Set(
-    [running, tagToDirName(expectedTag), await readCurrentTag(), ...(await runningReleases())].filter(Boolean)
-  );
+  let inUse = null;
+  try {
+    inUse = await runningReleases();
+  } catch (error) {
+    warn(`Could not list the running processes (${error?.code ?? error}); no old release is removed this time.`);
+  }
+  const protectedTags = new Set([running, tagToDirName(expectedTag), await readCurrentTag(), ...(inUse ?? [])].filter(Boolean));
   const verified = [];
-  for (const entry of entries) {
+  for (const entry of inUse ? entries : []) {
     if (!entry.isDirectory() || parseTagVersion(entry.name) === null) continue;
     const dir = path.join(RELEASES_DIR, entry.name);
     if (await isVerifiedInstall(dir, entry.name)) verified.push(entry.name);
