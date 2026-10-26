@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [2.3.3] - 2026-10-26 — The launcher cleans up old releases
+
+Thanks to @yan-vision for reporting #848, with the measurements and the safety constraints the fix follows.
 
 ### Fixed — npm launcher
 - **Old runtime releases no longer pile up in the cache (#848).** Each version left its ~184 MB runtime under
