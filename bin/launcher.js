@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile, spawn } from "node:child_process";
-import { createReadStream, createWriteStream, existsSync, realpathSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   mkdir,
@@ -58,6 +58,7 @@ function warn(message) {
 
 function fail(message) {
   console.error(`[desktop-touch-mcp] ${message}`);
+  dropRunningMark();
   process.exit(1);
 }
 
@@ -642,7 +643,8 @@ async function installRelease(release, expected) {
   await mkdir(RELEASES_DIR, { recursive: true });
 
   const targetDir = releaseDirForTag(release.tagName);
-  const tempDir = await mkdtemp(path.join(CACHE_ROOT, "download-"));
+  // The pid in the name tells a later prune whether the download still has an owner.
+  const tempDir = await mkdtemp(path.join(CACHE_ROOT, `download-${process.pid}-`));
   const zipPath = path.join(tempDir, ASSET_NAME);
   const extractDir = path.join(tempDir, "extract");
 
@@ -823,10 +825,63 @@ const DEFAULT_KEEP_RELEASES = 2;
 // A release installed this recently may be about to start under another launcher (between its install and its
 // spawn nothing holds it open yet), so it is never pruned.
 const YOUNG_INSTALL_MS = 10 * 60 * 1000;
-// A download-* folder this old belongs to no running launcher: one killed mid-download (a host that gave up on a
-// slow start) skips the finally that removes it.
+// A download-* folder without a pid in its name (from a launcher before #848) is taken as abandoned at this age.
 const STALE_DOWNLOAD_MS = 60 * 60 * 1000;
 const TRASH_PREFIX = ".trash-";
+// One file per running launcher, named by its pid and holding the release directory it runs: on macOS a release in
+// use can be renamed away like any other, so the cache has to be told which releases are running.
+const RUNNING_DIR = path.join(CACHE_ROOT, "running");
+
+/** True while a process with this pid exists (EPERM: it exists, under another user). @internal */
+export function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+/** Marks `releaseName` as run by this launcher until it exits. Best effort: a failure only weakens pruning. */
+function writeRunningMark(releaseName) {
+  try {
+    mkdirSync(RUNNING_DIR, { recursive: true });
+    writeFileSync(path.join(RUNNING_DIR, String(process.pid)), releaseName, "utf8");
+  } catch {
+    // pruning still spares the release this launcher runs; others may not know it is in use
+  }
+}
+
+function dropRunningMark() {
+  try {
+    unlinkSync(path.join(RUNNING_DIR, String(process.pid)));
+  } catch {
+    // already gone, or never written
+  }
+}
+
+/** The release directories live launchers run; the marks of launchers that are gone are removed. */
+async function runningReleases() {
+  const names = new Set();
+  let entries;
+  try {
+    entries = await readdir(RUNNING_DIR);
+  } catch {
+    return names;
+  }
+  for (const entry of entries) {
+    const pid = Number(entry);
+    const file = path.join(RUNNING_DIR, entry);
+    if (!/^\d+$/.test(entry)) continue;
+    if (pid !== process.pid && !isProcessAlive(pid)) {
+      await rm(file, { force: true }).catch(() => {});
+      continue;
+    }
+    const name = (await readFile(file, "utf8").catch(() => "")).trim();
+    if (name) names.add(name);
+  }
+  return names;
+}
 
 /**
  * Parses DESKTOP_TOUCH_MCP_KEEP_RELEASES: how many releases stay in the cache, the one being run counted. 0 turns
@@ -873,9 +928,10 @@ async function removeRelease(dir, name) {
 
 /**
  * Keeps the release cache from growing by one runtime per version (#848). Runs after the server has started, so it
- * never delays startup. Keeps the release being run, the expected tag, the one in current.json, and the newest
- * other verified releases up to `keep` in all; removes only verified installs (isVerifiedInstall) older than
- * YOUNG_INSTALL_MS. Also removes leftovers of earlier prunes (.trash-*) and stale download-* folders. Never throws:
+ * never holds up startup. Keeps the release being run, the expected tag, the one in current.json, the ones other live
+ * launchers run (running/), and the newest other verified releases up to `keep` in all; removes only verified
+ * installs (isVerifiedInstall) older than YOUNG_INSTALL_MS. Also removes leftovers of earlier prunes (.trash-*) and
+ * download-* folders whose launcher is gone. Never throws:
  * a failure is a warning, and startup has already happened.
  *
  * @internal Exported for tests.
@@ -894,7 +950,9 @@ export async function pruneCache({ running, expectedTag, keep, now = Date.now() 
       await rm(path.join(RELEASES_DIR, entry.name), { recursive: true, force: true }).catch(() => {});
     }
   }
-  const protectedTags = new Set([running, tagToDirName(expectedTag), await readCurrentTag()].filter(Boolean));
+  const protectedTags = new Set(
+    [running, tagToDirName(expectedTag), await readCurrentTag(), ...(await runningReleases())].filter(Boolean)
+  );
   const verified = [];
   for (const entry of entries) {
     if (!entry.isDirectory() || parseTagVersion(entry.name) === null) continue;
@@ -923,7 +981,11 @@ export async function pruneCache({ running, expectedTag, keep, now = Date.now() 
     if (!entry.isDirectory() || !entry.name.startsWith("download-")) continue;
     const dir = path.join(CACHE_ROOT, entry.name);
     try {
-      if (now - (await stat(dir)).mtimeMs < STALE_DOWNLOAD_MS) continue;
+      // A download can take longer than any age limit while its bytes keep coming, so its owner is asked.
+      const owner = /^download-(\d+)-/.exec(entry.name);
+      if (owner) {
+        if (isProcessAlive(Number(owner[1]))) continue;
+      } else if (now - (await stat(dir)).mtimeMs < STALE_DOWNLOAD_MS) continue;
       await rm(dir, { recursive: true, force: true });
     } catch (error) {
       warn(`Could not remove the leftover download ${dir} (${error?.code ?? error}).`);
@@ -953,6 +1015,7 @@ function launchServer(releaseDir) {
   });
 
   child.on("exit", (code, signal) => {
+    dropRunningMark();
     if (signal) {
       process.exit(1);
       return;
@@ -972,7 +1035,11 @@ async function main() {
     );
   }
 
+  // Marked before resolving, so a prune by another launcher meanwhile spares it; corrected once resolved (an
+  // offline fallback may run another release).
+  writeRunningMark(tagToDirName(RELEASE_TAG));
   const releaseDir = await ensureRelease();
+  writeRunningMark(path.basename(releaseDir));
   launchServer(releaseDir);
   // After the spawn: the server answers the host while old releases are removed.
   const { keep, invalidValue } = parseKeepReleases(process.env.DESKTOP_TOUCH_MCP_KEEP_RELEASES);

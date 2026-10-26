@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -18,6 +19,13 @@ const LAUNCHER_PATH = fileURLToPath(new URL("../../bin/launcher.js", import.meta
 const LAUNCHER_URL = pathToFileURL(LAUNCHER_PATH).href;
 const METADATA_FILE = ".desktop-touch-release.json";
 const DAY = 24 * 60 * 60 * 1000;
+
+/** The pid of a process that has already exited. */
+function deadPid(): number {
+  const pid = spawnSync(process.execPath, ["-e", ""]).pid;
+  if (!pid) throw new Error("could not start a process to take a dead pid from");
+  return pid;
+}
 
 let importCounter = 0;
 
@@ -168,8 +176,36 @@ describe("launcher release pruning", () => {
     expect(await left()).toEqual(["v2.9.0"]);
   });
 
+  it("keeps a release another live launcher runs, however old, and forgets the marks of launchers that are gone", async () => {
+    // On macOS a release in use can be renamed away like any other, so the running/ marks are what spare it.
+    for (const tag of ["v2.0.0", "v2.1.0", "v2.2.0", "v2.9.0"]) await seed(tag);
+    await mkdir(path.join(home, "running"));
+    await writeFile(path.join(home, "running", String(process.ppid)), "v2.0.0", "utf8");   // alive: our parent
+    const gone = deadPid();
+    await writeFile(path.join(home, "running", String(gone)), "v2.1.0", "utf8");
+    await launcher.pruneCache({ running: "v2.9.0", expectedTag: "v2.9.0", keep: 2 });
+    // A release another launcher runs counts toward the two kept, as the one in current.json does.
+    expect(await left()).toEqual(["v2.0.0", "v2.9.0"]);
+    expect(existsSync(path.join(home, "running", String(gone)))).toBe(false);
+    expect(existsSync(path.join(home, "running", String(process.ppid)))).toBe(true);
+  });
+
+  it("asks a download folder's launcher whether it is still alive, whatever the folder's age", async () => {
+    await seed("v2.9.0");
+    const owned = path.join(home, `download-${process.ppid}-abc`);              // a long download still running
+    const orphan = path.join(home, `download-${deadPid()}-def`);                 // its launcher was killed just now
+    await mkdir(owned);
+    await mkdir(orphan);
+    const old = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    await utimes(owned, old, old);
+    await launcher.pruneCache({ running: "v2.9.0", expectedTag: "v2.9.0", keep: 2 });
+    expect(existsSync(owned)).toBe(true);
+    expect(existsSync(orphan)).toBe(false);
+  });
+
   it("removes a download folder an aborted launcher left, but not one being written now", async () => {
     await seed("v2.9.0");
+    // Named without a pid, as before #848: the age decides.
     const stale = path.join(home, "download-stale");
     const fresh = path.join(home, "download-fresh");
     await mkdir(stale);
