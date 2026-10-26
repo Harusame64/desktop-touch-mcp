@@ -69,7 +69,7 @@ The npm launcher resolves runtime strictly by npm package version. For package `
 
 Set `DESKTOP_TOUCH_MCP_HOME` to override the cache root directory.
 
-Old releases are removed once the server has started, keeping the one being run and one other (about 180 MB each on Windows). Set `DESKTOP_TOUCH_MCP_KEEP_RELEASES` to keep more (`0` keeps all). On Windows, a release another client is running cannot be moved and is skipped until a later start. Removing an old `releases/vX.Y.Z` folder by hand is also safe while no client runs it.
+Old releases are removed once the server has started, keeping the one being run and one other (about 180 MB each on Windows). Set `DESKTOP_TOUCH_MCP_KEEP_RELEASES` to keep more (`0` keeps all). A release another client is running is kept. Removing an old `releases/vX.Y.Z` folder by hand is also safe while no client runs it.
 
 > **On a shared or CI network?** The first run reads the GitHub Releases API to
 > locate the runtime zip. The anonymous limit is 60 requests/hour per IP, which a
