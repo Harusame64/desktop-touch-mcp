@@ -234,6 +234,16 @@ Record every narrowing here so the exceptions stay visible:
   initialize; download-* by pid; running/ marks). Planned for this release: before the tag, a build of the release
   head with HTTP 6/6 reporting 2.3.3 and npx from the packed tarball stopping at the PENDING manifest; after
   publish, a real `npx` of 2.3.3 on Windows (win2) and macOS (mac), with the old releases in the cache cleaned up.
+  Results:
+  - Pre-tag (win2, 19af51a7, the CI addon of 2.3.2): HTTP 6/6 with `version: 2.3.3`, 32 tools; `publish --dry-run`
+    5 files; npx from the packed tarball stopped at the PENDING manifest (and at the 404 for the missing tag with
+    ALLOW_UNVERIFIED=1, exit 1, not 127).
+  - Post-publish, macOS (mac, real cache): v2.3.0 and v2.3.2 before; installed v2.3.3, removed v2.3.0, kept v2.3.2.
+  - Post-publish, Windows (win2, real cache): 50 versions v0.15.5…v2.3.2 plus `dev-local`, 6.68 GB, with three
+    servers running from v2.3.1 (started by pre-#848 launchers, so no running/ marks). Installed v2.3.3 in 109 s;
+    v2.3.1 refused the rename (EBUSY) and was kept; initialize answered at 110 s; the prune removed 48 releases in
+    about 87 s after the spawn while the server answered; `dev-local`, v2.3.1, v2.3.2, v2.3.3 remained (0.72 GB);
+    both legacy download-* folders were removed; no .trash-* left; the v2.3.1 servers kept running untouched.
 
 ### HTTP Transport Verification (Required)
 
