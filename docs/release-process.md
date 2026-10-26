@@ -227,6 +227,13 @@ Record every narrowing here so the exceptions stay visible:
     under the real Dell EAWorkWindow overlay. #819 on an Explorer row: click selects, invoke opens.
   - No P1, no regression. P3s: `server_status` has no version field; the value route row still says
     `addressedElementBy:"name_substring"` for a write that found the field by exact name and rect.
+- **v2.3.3 (2026-10-26)** — narrowed to the launcher, by the user's decision. The diff since 2.3.2 is confined to
+  `bin/launcher.js` (#849, release-cache pruning): `git diff v2.3.2 v2.3.3 -- src/` is empty, so every tool runs the
+  2.3.2 runtime. The launcher change itself ran on win2's machine on #849 (W1–W4 and a control: a release held by a
+  running process refused the rename with EBUSY and stayed intact; prune ~2.2 s after spawn, not blocking
+  initialize; download-* by pid; running/ marks). Planned for this release: before the tag, a build of the release
+  head with HTTP 6/6 reporting 2.3.3 and npx from the packed tarball stopping at the PENDING manifest; after
+  publish, a real `npx` of 2.3.3 on Windows (win2) and macOS (mac), with the old releases in the cache cleaned up.
 
 ### HTTP Transport Verification (Required)
 
