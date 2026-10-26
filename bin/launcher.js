@@ -882,7 +882,10 @@ export function releasesInCommandLines(text, releasesDir) {
 
 /**
  * The releases whose runtime is running now, read from the process list (macOS, Linux). This sees a runtime started
- * by a launcher from before running/ marks existed. Windows needs none: a running release refuses the rename.
+ * by a launcher from before running/ marks existed. Windows reads no list: a runtime the launcher started has its
+ * cwd and its .node addon inside the release for its whole life, so the release refuses the rename (2.3.3 on win2's
+ * machine: three v2.3.1 servers kept it, EBUSY). Left uncovered there: a runtime started by hand from another
+ * folder whose addon did not load, which holds nothing inside the release and wrote no running/ mark.
  * Rejects when the list cannot be read: an unknown list is not an empty one, and the prune then removes nothing.
  */
 function runtimesInProcessList() {
