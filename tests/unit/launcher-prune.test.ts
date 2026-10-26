@@ -190,6 +190,16 @@ describe("launcher release pruning", () => {
     expect(existsSync(path.join(home, "running", String(process.ppid)))).toBe(true);
   });
 
+  it("asks for the running marks again around the move of a release", async () => {
+    // pruneCache's own snapshot of the marks can be older than a launcher that started meanwhile. The checks before
+    // and after the rename cover for each other, so this cell is red only when both are gone.
+    const dir = await seed("v2.0.0");
+    await mkdir(path.join(home, "running"));
+    await writeFile(path.join(home, "running", String(process.ppid)), "v2.0.0", "utf8");
+    await expect(launcher.removeRelease(dir, "v2.0.0")).resolves.toBe(false);
+    expect(existsSync(path.join(dir, METADATA_FILE))).toBe(true);
+  });
+
   it("asks a download folder's launcher whether it is still alive, whatever the folder's age", async () => {
     await seed("v2.9.0");
     const owned = path.join(home, `download-${process.ppid}-abc`);              // a long download still running

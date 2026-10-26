@@ -906,16 +906,32 @@ async function readCurrentTag() {
   }
 }
 
-/** Removes a directory by renaming it out of the way first; false (and a warning) when it is in use. */
-async function removeRelease(dir, name) {
+/**
+ * Removes a release by renaming it out of the way first; false (and a warning) when it cannot be moved.
+ *
+ * Another launcher starting meanwhile writes its running/ mark BEFORE it looks for its release, and this asks for
+ * the marks again just before and just after the rename, putting the release back if it turned out to be wanted.
+ * What is left is the instant between that last read and the move back, against a start that also lost the race to
+ * look at the release in it; a lock across processes would close it, at a cost the cache does not need.
+ *
+ * @internal Exported for tests.
+ */
+export async function removeRelease(dir, name) {
+  if ((await runningReleases()).has(name)) return false;
   const trash = path.join(RELEASES_DIR, `${TRASH_PREFIX}${name}-${process.pid}-${Date.now().toString(36)}`);
   try {
-    // On Windows a release in use (the running runtime's cwd, its loaded .node files) refuses the rename, so
-    // nothing inside it is touched; macOS lets it go, and the default keep of 2 covers two clients on two versions. Once renamed, a half-deleted tree no longer looks like a release.
+    // On Windows a release in use (the running runtime's cwd, its loaded .node files) refuses the rename, so nothing
+    // inside it is touched. Once renamed, a half-deleted tree no longer looks like a release.
     await rename(dir, trash);
   } catch (error) {
     if (error?.code === "ENOENT") return true;                       // another launcher got there first
     warn(`Could not remove the old release ${name} (${error?.code ?? error}); it is kept and tried again next start.`);
+    return false;
+  }
+  if ((await runningReleases()).has(name)) {
+    await rename(trash, dir).catch((error) => {
+      warn(`Could not put back the release ${name} another launcher started (${error?.code ?? error}); it is installed again at its next start.`);
+    });
     return false;
   }
   try {
