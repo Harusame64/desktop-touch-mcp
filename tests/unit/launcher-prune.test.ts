@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -166,7 +166,7 @@ describe("launcher release pruning", () => {
   );
 
   it("removes what an earlier prune left half-deleted, which is never taken for a release", async () => {
-    const trash = path.join(home, "releases", ".trash-v1.0.0-1-x");
+    const trash = path.join(home, "releases", `.trash-v1.0.0-${deadPid()}-x`);
     await mkdir(path.join(trash, "dist"), { recursive: true });
     await writeFile(path.join(trash, "dist", "index.js"), "// leftover\n", "utf8");
     await writeFile(path.join(trash, METADATA_FILE), JSON.stringify({ ...expected, tagName: "v1.0.0" }), "utf8");
@@ -199,6 +199,42 @@ describe("launcher release pruning", () => {
     await expect(launcher.removeRelease(dir, "v2.0.0")).resolves.toBe(false);
     expect(existsSync(path.join(dir, METADATA_FILE))).toBe(true);
   });
+
+  it("leaves a trash folder alone while the launcher that made it is alive (it may still put it back)", async () => {
+    await seed("v2.9.0");
+    const trash = path.join(home, "releases", `.trash-v1.0.0-${process.ppid}-x`);
+    await mkdir(trash);
+    await launcher.pruneCache({ running: "v2.9.0", expectedTag: "v2.9.0", keep: 2 });
+    expect(existsSync(trash)).toBe(true);
+  });
+
+  it("reads the releases a process list runs, by their dist/index.js", () => {
+    const root = path.join(home, "releases");
+    const ps = [
+      `/usr/local/bin/node ${path.join(root, "v2.1.0", "dist", "index.js")} --stdio`,
+      `node ${path.join(root, "v2.2.0", "dist", "other.js")}`,                  // not the runtime
+      `vim ${path.join(root, "v2.3.0")}`,
+      "/usr/bin/zsh",
+    ].join("\n");
+    expect([...launcher.releasesInCommandLines(ps, root)]).toEqual(["v2.1.0"]);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "keeps a release whose runtime is running though no launcher marked it (one from before the marks)",
+    async () => {
+      const dir = await seed("v2.0.0");
+      await seed("v2.9.0");
+      // A process whose command line names v2.0.0's runtime, as an old launcher's child does.
+      const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 20000)", path.join(dir, "dist", "index.js")], { stdio: "ignore" });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await launcher.pruneCache({ running: "v2.9.0", expectedTag: "v2.9.0", keep: 1 });
+        expect(await left()).toEqual(["v2.0.0", "v2.9.0"]);
+      } finally {
+        child.kill();
+      }
+    }
+  );
 
   it("asks a download folder's launcher whether it is still alive, whatever the folder's age", async () => {
     await seed("v2.9.0");

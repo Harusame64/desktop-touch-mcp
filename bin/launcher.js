@@ -860,9 +860,45 @@ function dropRunningMark() {
   }
 }
 
-/** The release directories live launchers run; the marks of launchers that are gone are removed. */
-async function runningReleases() {
+/**
+ * The release directories named by `<releasesDir>/<name>/dist/index.js` in a process list, one command per line.
+ *
+ * @internal Exported for tests.
+ */
+export function releasesInCommandLines(text, releasesDir) {
   const names = new Set();
+  const root = releasesDir.endsWith(path.sep) ? releasesDir : releasesDir + path.sep;
+  for (const line of String(text).split("\n")) {
+    let at = line.indexOf(root);
+    while (at !== -1) {
+      const rest = line.slice(at + root.length);
+      const name = rest.split(path.sep)[0];
+      if (name && rest.startsWith(`${name}${path.sep}dist${path.sep}index.js`)) names.add(name);
+      at = line.indexOf(root, at + 1);
+    }
+  }
+  return names;
+}
+
+/**
+ * The releases whose runtime is running now, read from the process list (macOS, Linux). This sees a runtime started
+ * by a launcher from before running/ marks existed. Windows needs none: a running release refuses the rename.
+ */
+function runtimesInProcessList() {
+  if (process.platform === "win32") return Promise.resolve(new Set());
+  return new Promise((resolve) => {
+    execFile("ps", ["-axo", "command="], { maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
+      resolve(error ? new Set() : releasesInCommandLines(stdout, RELEASES_DIR));
+    });
+  });
+}
+
+/**
+ * The release directories in use: named by a live launcher's running/ mark (the marks of launchers that are gone
+ * are removed), or running in the process list.
+ */
+async function runningReleases() {
+  const names = await runtimesInProcessList();
   let entries;
   try {
     entries = await readdir(RUNNING_DIR);
@@ -962,9 +998,11 @@ export async function pruneCache({ running, expectedTag, keep, now = Date.now() 
     entries = [];
   }
   for (const entry of entries) {
-    if (entry.isDirectory() && entry.name.startsWith(TRASH_PREFIX)) {
-      await rm(path.join(RELEASES_DIR, entry.name), { recursive: true, force: true }).catch(() => {});
-    }
+    if (!entry.isDirectory() || !entry.name.startsWith(TRASH_PREFIX)) continue;
+    // A trash folder whose pruner is alive may still be put back (removeRelease); only an orphan is swept.
+    const owner = /-(\d+)-[0-9a-z]+$/.exec(entry.name);
+    if (owner && Number(owner[1]) !== process.pid && isProcessAlive(Number(owner[1]))) continue;
+    await rm(path.join(RELEASES_DIR, entry.name), { recursive: true, force: true }).catch(() => {});
   }
   const protectedTags = new Set(
     [running, tagToDirName(expectedTag), await readCurrentTag(), ...(await runningReleases())].filter(Boolean)
