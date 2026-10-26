@@ -224,7 +224,8 @@ describe("launcher release pruning", () => {
     "keeps a release whose runtime is running though no launcher marked it (one from before the marks)",
     async () => {
       // A cache root deep enough that the command line is longer than any display width (ps must not cut it).
-      home = path.join(home, "h".repeat(120), "o".repeat(120));
+      // Padded to the length, not by a fixed amount: a short temp root (/tmp on Linux) must get there too.
+      while (path.join(home, "releases", "v2.0.0", "dist", "index.js").length <= 300) home = path.join(home, "d".repeat(100));
       launcher = await loadLauncher(home);
       const dir = await seed("v2.0.0");
       await seed("v2.9.0");
