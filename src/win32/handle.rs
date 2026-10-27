@@ -36,6 +36,8 @@ pub(crate) fn refused_or_null(h: HWND) -> bool {
 
 /// `hwnd_from_bigint`'s rule, for the entries that keep the raw value (an async task's field).
 pub(crate) fn handle_value(b: &BigInt) -> Option<u64> {
+    // napi 2 reports a negative value as not lossless (`!sign_bit && words.len() == 1`, win2 read
+    // bigint.rs), so `negative` adds nothing today; it stays as the rule, should that change.
     let (negative, value, lossless) = b.get_u64();
     let pseudo = value == HWND_BROADCAST_VALUE || matches!(value as isize, -3..=-1);
     if negative || !lossless || pseudo { None } else { Some(value) }
