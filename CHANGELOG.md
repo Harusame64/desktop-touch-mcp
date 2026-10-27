@@ -21,7 +21,8 @@
   the app's own content window. Only the content was tested, so `windows[]` never marked the frame
   `isFrozen`, and `desktop_discover` by the frame's handle could read the suspended app's last frame
   as its contents. The frame is now tested through its content: its child window while shown, and the
-  app's own window found by the frame's AppUserModelID while hidden (internal #250). A frame with no
+  app's own window found by the frame's AppUserModelID while hidden (internal #250). A minimised window
+  is now asked too, as a packaged app's frame is minimised without being hidden. A frame with no
   AppUserModelID, or whose app has no window, is still not marked.
 - **`desktop_discover` names a frozen window as frozen when UI Automation cannot read it.** A hidden
   packaged app that Windows has suspended (Settings, for one) answered `entityZeroReason:
