@@ -8,13 +8,14 @@
   `0x1234`; on Windows, `scroll` with 2^64 plus a real window's handle scrolled that window. The tools
   that take `hwnd` (`screenshot`, `get_ui_elements`, `scroll`, `keyboard`, the input pipeline and
   `desktop_discover`) now refuse a value that names no window — zero, negative, past 64 bits, or a
-  pseudo-handle such as `HWND_BROADCAST` — as `WindowNotFound` (internal #303). The native helpers read
+  pseudo-handle such as `HWND_BROADCAST` — as `WindowNotFound`, or `InvalidArgs` from
+  `desktop_discover` (internal #303). The native helpers read
   such a value as no window, and posting a message, pasting into a console, the IME and focusing now
   fail for it instead of acting on the server's own thread.
 - **A window handle between 2^32 and 2^64 no longer reaches another window.** Windows reads only the
   low 32 bits of a handle, so `4294971956` (2^32 + 0x1234) acted on window `0x1234`. Such a value is
-  now refused as `WindowNotFound` too; a handle whose high 32 bits are all ones and bit 31 is set (a
-  32-bit handle sign-extended) is still read (internal #314).
+  now refused the same way as one past 64 bits; a handle whose high 32 bits are all ones and bit 31 is
+  set (a 32-bit handle sign-extended) is still read (internal #314).
 - **`desktop_discover` names a frozen window as frozen when UI Automation cannot read it.** A hidden
   packaged app that Windows has suspended (Settings, for one) answered `entityZeroReason:
   "window_frozen"` when targeted by its handle, but `all_providers_failed` by its title. That told the
