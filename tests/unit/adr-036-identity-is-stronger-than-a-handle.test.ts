@@ -194,11 +194,10 @@ describe("toAim reads both shapes, and agrees with the registry about handles", 
   });
 
   it("answers 'no handle' for the same strings parseTargetHwnd does", async () => {
-    // Two implementations of one rule, kept apart on purpose (the registry imports the engine, so
-    // sharing it would close a cycle). The agreement is what makes that safe, so it is pinned:
-    // both halves of this ADR have to mean the same thing by "a handle".
+    // One rule since #855 (`parseTargetHwnd` calls `parseWindowHandle`); kept, so that splitting them
+    // again cannot go unnoticed: both halves of this ADR have to mean the same thing by "a handle".
     const { parseTargetHwnd } = await import("../../src/engine/world-graph/session-registry.js");
-    for (const hwnd of ["0", "-1", "", "bad", "4919", "9223372036854775808", "18446744073709551615", "18446744073709551616", "18446744073709556276"]) {
+    for (const hwnd of ["0", "-1", "", "bad", "4919", "9223372036854775808", "18446744073709551615", "18446744073709551614", "18446744073709551613", "18446744073709551612", "65535", "65534", "18446744073709551616", "18446744073709556276"]) {
       expect(toAim({ hwnd }).hwnd, `disagreed about ${JSON.stringify(hwnd)}`)
         .toEqual(parseTargetHwnd({ hwnd }));
     }

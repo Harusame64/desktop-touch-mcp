@@ -549,10 +549,9 @@ export function toAim(input: Aim | TargetSpecLike | undefined): Aim {
 /**
  * The one place that decides whether a string names a handle.
  *
- * Same rule as `parseTargetHwnd` in `session-registry.ts` — non-positive, past u64 or a pseudo-handle
- * (`HWND_BROADCAST`, -1/-2/-3 as isize; internal #303) and unreadable all mean "no handle" — and deliberately a second implementation rather than an import: this module is
- * imported by the engine, and the registry imports the engine. The rule is four lines and the
- * agreement between them is pinned by a test; a cycle to share it would cost more than it saves.
+ * Non-positive, past u64 or a pseudo-handle (`HWND_BROADCAST`, -1/-2/-3 as isize — the native reader's
+ * rule in `src/win32/handle.rs`, internal #303) and unreadable all mean "no handle". `parseTargetHwnd`
+ * in `session-registry.ts` is this function (it was a second copy until #855).
  *
  * **Exported for the resolver** (ADR-036 item 12, gate 2 2026-09-10). The world-graph decides which
  * lane's `originHwnd` becomes `origin.hwnd`, and it was deciding that with `!== undefined` — so a

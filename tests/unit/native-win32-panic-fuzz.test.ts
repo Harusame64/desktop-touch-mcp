@@ -198,13 +198,30 @@ describe.skipIf(!nativeWin32)("ADR-007 P1: native win32 panic-safety", () => {
         expect(native.win32GetScrollInfo!(hwnd, "vertical")).toBeNull();
       });
       it(`win32PostMessage(${label}, 0, 0n, 0n) does not panic`, () => {
-        // The contract here is "no panic", not specifically false:
-        // - hwnd=0 posts to the calling thread's message queue (Win32 returns TRUE).
-        // - all-ones u64 maps to HWND_BROADCAST (-1) which Win32 also accepts.
-        // - stale hwnd usually fails. We only assert the boolean shape.
-        expect(typeof native.win32PostMessage!(hwnd, 0, 0n, 0n)).toBe("boolean");
+        // Since internal #303, null and all-ones (-1 as isize, HWND_TOPMOST — refused as a
+        // pseudo-handle, read as NULL) answer false: PostMessageW(NULL) would post to this thread's
+        // own queue and answer true. A stale hwnd usually fails; only its shape is asserted.
+        const r = native.win32PostMessage!(hwnd, 0, 0n, 0n);
+        if (hwnd === 0n || hwnd === 0xffff_ffff_ffff_ffffn) expect(r).toBe(false);
+        else expect(typeof r).toBe("boolean");
       });
     }
+
+    // internal #303 — the entries for which NULL is "this thread", not "no window", refuse a value that
+    // names no window before calling Win32: posting, the IME read and write, and focusing.
+    describe("a value that names no window does not reach this thread", () => {
+      for (const [label, hwnd] of [
+        ["null", 0n], ["negative", -1n], ["HWND_BROADCAST", 0xffffn],
+        ["past u64", (1n << 64n) + 0x1234n], ["all-ones u64", 0xffff_ffff_ffff_ffffn],
+      ] as Array<[string, bigint]>) {
+        it(`${label}: post, IME read and write answer false; focus answers ok:false`, () => {
+          expect(native.win32PostMessage!(hwnd, 0, 0n, 0n)).toBe(false);
+          expect(native.win32GetImeOpenStatus!(hwnd)).toBe(false);
+          expect(native.win32SetImeOpenStatus!(hwnd, false)).toBe(false);
+          expect(native.win32ForceSetForegroundWindow!(hwnd).ok).toBe(false);
+        });
+      }
+    });
 
     it("win32GetScrollInfo rejects unknown axis with a typed Error", () => {
       // Use the foreground hwnd if available so the call reaches our axis

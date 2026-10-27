@@ -127,7 +127,10 @@ pub fn l1_push_hw_input_post_message(
 ) -> napi::Result<BigInt> {
     napi_safe_call("l1_push_hw_input_post_message", || {
         let ring_inner = ensure_l1();
-        let (_sign, hwnd_val, _lossless) = target_hwnd.get_u64();
+        // internal #303 — a value past u64 (or negative) is recorded as 0, not as its low bits. Inline, not
+        // `win32::handle`: this module builds on every platform, that one on Windows only.
+        let (negative, raw_hwnd, lossless) = target_hwnd.get_u64();
+        let hwnd_val = if negative || !lossless { 0 } else { raw_hwnd };
         // wParam: sign-preserve via get_i64 then bit-reinterpret to u64 so
         // bit-31 is never silently flipped (PR #77 / Opus review §2.3).
         let (wp_signed, _lossless2) = w_param.get_i64();

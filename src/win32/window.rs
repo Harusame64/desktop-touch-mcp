@@ -25,7 +25,8 @@ use super::types::{NativeThreadProcessId, NativeWin32Rect, NativeWindowAtPoint};
 
 // ─── HWND ↔ BigInt conversion helpers ────────────────────────────────────────
 
-/// The HWND reading is `handle.rs` (internal #303): a value that names no window is an error.
+/// The HWND reading is `handle.rs` (internal #303): a value that names no window reads as the null
+/// HWND, so these getters answer "" / null / false for it, as for a handle that is gone.
 use super::handle::hwnd_from_bigint;
 
 /// Emit an `HWND` as a positive `BigInt` (always non-negative) by routing

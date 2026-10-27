@@ -197,6 +197,11 @@ pub fn win32_get_focused_child_hwnd(
 /// Rust — it is an N-API boundary wrapper — so the shared logic lives here.
 /// Returns whether `PostMessageW` succeeded.
 pub(crate) fn post_message(hwnd: HWND, msg: u32, w_param: WPARAM, l_param: LPARAM) -> bool {
+    // internal #303 — PostMessageW(NULL) posts to this thread's own queue and succeeds. Checked here, so
+    // every caller (win32_post_message, console paste) is covered, not only the entries that remember.
+    if super::handle::refused_or_null(hwnd) {
+        return false;
+    }
     let result = unsafe { PostMessageW(Some(hwnd), msg, w_param, l_param) };
     result.is_ok()
 }
@@ -210,10 +215,6 @@ pub fn win32_post_message(
 ) -> napi::Result<bool> {
     napi_safe_call("win32_post_message", || {
         let h = hwnd_from_bigint(hwnd);
-        // internal #303 — PostMessageW(NULL) posts to this thread's own queue and succeeds.
-        if super::handle::refused_or_null(h) {
-            return Ok(false);
-        }
         // `get_u64()` returns the magnitude with a separate sign flag, which
         // would silently turn negative BigInts (`BigInt(lParam | 0)` for
         // lParam values with bit 31 set — common in WM_KEYUP scan-code

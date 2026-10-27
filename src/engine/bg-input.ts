@@ -306,6 +306,8 @@ export type ConsolePasteReason =
   | "clipboard_set_data_failed"
   | "hidden_owner_create_failed"
   | "post_paste_failed"
+  /** internal #303 — the target names no window; nothing was pasted and the clipboard was not touched. */
+  | "not_a_window"
   | "native_engine_unavailable";
 
 export interface ConsolePasteOutcome {
@@ -500,7 +502,9 @@ export type ForegroundFlashFailureReason =
   | "clipboard_lock_contention"
   | "foreground_restore_failed"
   | "wt_paste_warning_intercepted"
-  | "send_input_failed";
+  | "send_input_failed"
+  /** internal #303 — the target names no window. */
+  | "not_a_window";
 
 const KNOWN_FLASH_REASONS: ReadonlySet<string> = new Set<ForegroundFlashFailureReason>([
   "input_contains_newline",
@@ -511,6 +515,7 @@ const KNOWN_FLASH_REASONS: ReadonlySet<string> = new Set<ForegroundFlashFailureR
   "foreground_restore_failed",
   "wt_paste_warning_intercepted",
   "send_input_failed",
+  "not_a_window",
 ]);
 
 /** Result envelope for `injectViaForegroundFlash`. ok=false 時は reason 必須。 */

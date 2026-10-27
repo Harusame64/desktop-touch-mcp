@@ -160,6 +160,8 @@ pub enum ForegroundFlashErrorReason {
     WtPasteWarningIntercepted,
     /// `SendInput` が想定より少ない数しか inject できなかった (Win11 input restriction 等)。
     SendInputFailed,
+    /// internal #303 — the target names no window (refused or zero): nothing to give the foreground to.
+    NotAWindow,
     /// internal #230: `focus_terminal_pane` was asked for and the terminal pane did not take focus.
     /// Raised after the foreground and clipboard are put back; nothing was pasted.
     TerminalFocusFailed,
@@ -180,6 +182,7 @@ impl ForegroundFlashErrorReason {
             ForegroundRestoreFailed => "foreground_restore_failed",
             WtPasteWarningIntercepted => "wt_paste_warning_intercepted",
             SendInputFailed => "send_input_failed",
+            NotAWindow => "not_a_window",
             TerminalFocusFailed => "terminal_focus_failed",
             TerminalTabChanged => "terminal_tab_changed",
         }
@@ -395,7 +398,7 @@ pub fn win32_foreground_flash_inject(
         let target = hwnd_from_bigint(target_hwnd);
         // internal #303 — no target to give the foreground to: what is typed would go to whatever has it.
         if super::handle::refused_or_null(target) {
-            return Err(napi::Error::from_reason("not_a_window"));
+            return Err(err(ForegroundFlashErrorReason::NotAWindow));
         }
 
         let max_focus_wait_ms = options
@@ -433,7 +436,7 @@ pub fn win32_foreground_flash_inject(
         // 全 phase に渡って同じ owner を使う (per-call lifecycle)。
         let result: napi::Result<ForegroundFlashResult> = with_hidden_owner(|owner| -> napi::Result<ForegroundFlashResult> {
             let original_fg = unsafe { GetForegroundWindow() };
-            let already_foreground = !target.0.is_null() && original_fg.0 == target.0;
+            let already_foreground = original_fg.0 == target.0;
 
             // 2. Save clipboard (3 point の 1 つ目)
             let snapshot = save_clipboard_supported_formats(owner)

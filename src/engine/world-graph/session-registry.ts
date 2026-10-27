@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Aim } from "../aim.js";
+import { parseWindowHandle, type Aim } from "../aim.js";
 import type { UiEntityCandidate } from "../vision-gpu/types.js";
 import type { UiEntity, ExecutorKind, ExecutorOutcome } from "./types.js";
 import { LeaseStore } from "./lease-store.js";
@@ -19,14 +19,6 @@ import { resolveCandidates } from "./resolver.js";
 /** Subset of DesktopSeeInput.target; defined here to avoid circular import. */
 export type TargetSpec = { windowTitle?: string; hwnd?: string; tabId?: string };
 
-/**
- * The largest handle `parseTargetHwnd` accepts: u64::MAX less the three values that are -1/-2/-3 as an
- * `isize` (`HWND_TOPMOST`, `HWND_NOTOPMOST`, `HWND_MESSAGE`), which the native reader refuses too
- * (`src/win32/handle.rs`, internal #303).
- */
-export const MAX_TARGET_HWND = 0xffff_ffff_ffff_fffcn;
-/** `HWND_BROADCAST`: a message to it goes to every top-level window. Not a handle (internal #303). */
-export const HWND_BROADCAST = 0xffffn;
 
 /**
  * ADR-036 — the one place that decides whether a `TargetSpec` names a window by handle.
@@ -44,9 +36,9 @@ export const HWND_BROADCAST = 0xffffn;
  * names a real window, and refusing it would turn a call that would have worked into a silent
  * fall back to aiming by title, which is the failure this exists to remove.
  *
- * Nothing past u64 counts either (internal #303): the native helpers read the handle with
- * `get_u64()` and drop the lossless flag, so `2^64 + 0x1234` would wrap to `0x1234`, another
- * window. The limit is u64 and not i64 although the UIA lane parses as i64: the native
+ * Nothing past u64 counts either, nor a pseudo-handle (internal #303): the native helpers used to
+ * read the handle with `get_u64()` and drop the lossless flag, so `2^64 + 0x1234` wrapped to
+ * `0x1234`, another window; `HWND_BROADCAST` and -1/-2/-3 as isize are not windows. The limit is u64 and not i64 although the UIA lane parses as i64: the native
  * enumeration renders a handle as `h.0 as usize as u64`, so a handle sign-extended from 32 bits
  * would arrive above i64::MAX, and whether user32 ever hands one out is not measured.
  *
@@ -54,14 +46,9 @@ export const HWND_BROADCAST = 0xffffn;
  * this a handle" is shared.
  */
 export function parseTargetHwnd(target: TargetSpec | undefined): bigint | undefined {
-  const raw = target?.hwnd;
-  if (raw === undefined || raw === "") return undefined;
-  try {
-    const h = BigInt(raw);
-    return h <= 0n || h > MAX_TARGET_HWND || h === HWND_BROADCAST ? undefined : h;
-  } catch {
-    return undefined;
-  }
+  // One rule, `parseWindowHandle` (aim.ts): it was a second copy kept in step by a test, and each round of
+  // internal #303 had to edit both (Opus review of #855). aim.ts imports nothing, so this is no cycle.
+  return parseWindowHandle(target?.hwnd);
 }
 
 /**

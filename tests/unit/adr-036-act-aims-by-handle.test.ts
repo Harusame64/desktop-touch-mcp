@@ -348,8 +348,8 @@ describe("ADR-036 — one answer to \"is this a handle\"", () => {
   });
 
   it("refuses a value past u64, which the native helpers would wrap to another window (internal #303)", () => {
-    // u64::MAX is still a handle: a handle sign-extended from 32 bits renders above i64::MAX
-    // through the native enumeration, and refusing those is not something anyone has measured.
+    // Above i64::MAX is still a handle: a handle sign-extended from 32 bits renders there through the
+    // native enumeration, and refusing those is not something anyone has measured.
     expect(parseTargetHwnd({ hwnd: "9223372036854775808" })).toBe(0x8000_0000_0000_0000n);
     expect(parseTargetHwnd({ hwnd: "18446744071562067968" })).toBe(0xffff_ffff_8000_0000n);
     // u64::MAX..-2 are -1/-2/-3 as isize (HWND_TOPMOST, HWND_NOTOPMOST, HWND_MESSAGE), and 0xFFFF is
