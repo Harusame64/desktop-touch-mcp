@@ -182,8 +182,8 @@ function addWarningIfPartial(result: ProviderResult, primaryCount: number): Prov
  *   - By title: only when every window the title names (`findOcrWindowsByTitle`, the OCR lane's rule)
  *     is cloaked — a shown one is what UIA failed on, and a frozen hidden one elsewhere is another
  *     app (Opus review: "Settings" naming a running "Steam Settings" and a frozen Windows Settings).
- *     Then any of them frozen answers, so a packaged app's frame (never frozen) before its content
- *     in Z-order does not hide it (#250 is the frame read by its own handle).
+ *     Then any of them frozen answers. A packaged app's frame answers through its content
+ *     (`isWindowProcessFrozen`, #250), so by its own handle it is frozen when its app is.
  * Returns the frozen row, or undefined when nothing here can say the window is frozen. Nothing is
  * captured, and a test that throws is no answer.
  */
