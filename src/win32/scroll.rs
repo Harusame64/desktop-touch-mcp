@@ -44,7 +44,7 @@ pub fn win32_get_scroll_info(
             nPos: 0,
             nTrackPos: 0,
         };
-        let h = hwnd_from_bigint(hwnd);
+        let h = hwnd_from_bigint(hwnd)?;
         let ok = unsafe { GetScrollInfo(h, bar, &mut si) };
         if ok.is_err() {
             return Ok(None);

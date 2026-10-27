@@ -390,7 +390,7 @@ pub fn win32_foreground_flash_inject(
         // (target 側が pre-allowed になるだけで、caller が thief になる場面では
         //  AttachThreadInput / Alt unlock の方が本質)。よって本 phase では未使用。
         let _ = target_pid;
-        let target = hwnd_from_bigint(target_hwnd);
+        let target = hwnd_from_bigint(target_hwnd)?;
 
         // 1. Pre-flight validate
         validate_input(&text).map_err(err)?;

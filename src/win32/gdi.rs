@@ -107,7 +107,7 @@ pub fn win32_print_window_to_buffer(
     flags: u32,
 ) -> napi::Result<NativePrintWindowResult> {
     napi_safe_call("win32_print_window_to_buffer", || {
-        let target = hwnd_from_bigint(hwnd);
+        let target = hwnd_from_bigint(hwnd)?;
 
         // 1. Resolve client size.
         let mut rect = RECT::default();

@@ -207,9 +207,9 @@ const COMBO_WRITE_TIMEOUT_MS: u32 = 8_000;
 /// internal #238 step 2 — write a WinForms editable combo box through its inner Edit's own messages.
 #[cfg(windows)]
 pub struct Win32WriteComboTask {
-    combo: u64,
+    combo: Option<u64>,
     value: String,
-    root: Option<u64>,
+    root: Option<Option<u64>>,
 }
 
 #[cfg(windows)]
@@ -221,7 +221,10 @@ impl Task for Win32WriteComboTask {
         // The act thread and its limit, as `uia_set_value` (gate 1 on #824): `SetFocus` waits on the window's
         // thread with no limit of its own. The write's own deadline leaves the select, the post and the
         // read-back inside the limit: with every bounded send taking its full 300 ms, about 5.1 s (gate 2).
-        let (combo, value, root) = (self.combo, self.value.clone(), self.root);
+        let not_a_handle = || napi::Error::from_reason("WindowNotFound: the value is not a window handle");
+        let combo = self.combo.ok_or_else(not_a_handle)?;
+        let root = match self.root { None => None, Some(r) => Some(r.ok_or_else(not_a_handle)?) };
+        let value = self.value.clone();
         let submitted = std::time::Instant::now();
         uia::thread::execute_act_with_timeout(
             move |_ctx| Ok(uia::combo_write::write_combo(combo, &value, root, submitted, std::time::Duration::from_millis(2_500))),
@@ -240,8 +243,9 @@ impl Task for Win32WriteComboTask {
 #[cfg(windows)]
 #[napi]
 pub fn win32_write_combo(combo: BigInt, value: String, root: Option<BigInt>) -> AsyncTask<Win32WriteComboTask> {
-    let (_sign, combo, _lossless) = combo.get_u64();
-    let root = root.map(|r| r.get_u64().1);
+    // internal #303 — the shared rule; a value that names no window fails in compute.
+    let combo = crate::win32::handle::handle_value(&combo);
+    let root = root.map(|r| crate::win32::handle::handle_value(&r));
     AsyncTask::new(Win32WriteComboTask { combo, value, root })
 }
 

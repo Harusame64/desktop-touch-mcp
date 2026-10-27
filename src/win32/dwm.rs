@@ -39,7 +39,7 @@ fn hwnd_to_bigint(h: HWND) -> BigInt {
 #[napi]
 pub fn win32_get_window(hwnd: BigInt, u_cmd: u32) -> napi::Result<Option<BigInt>> {
     napi_safe_call("win32_get_window", || {
-        let h = hwnd_from_bigint(hwnd);
+        let h = hwnd_from_bigint(hwnd)?;
         let result = unsafe { GetWindow(h, GET_WINDOW_CMD(u_cmd)) };
         Ok(match result {
             Ok(other) if !other.0.is_null() => Some(hwnd_to_bigint(other)),
@@ -54,7 +54,7 @@ pub fn win32_get_window(hwnd: BigInt, u_cmd: u32) -> napi::Result<Option<BigInt>
 #[napi]
 pub fn win32_get_ancestor(hwnd: BigInt, ga_flags: u32) -> napi::Result<Option<BigInt>> {
     napi_safe_call("win32_get_ancestor", || {
-        let h = hwnd_from_bigint(hwnd);
+        let h = hwnd_from_bigint(hwnd)?;
         let ancestor = unsafe { GetAncestor(h, GET_ANCESTOR_FLAGS(ga_flags)) };
         Ok(if ancestor.0.is_null() {
             None
@@ -69,7 +69,7 @@ pub fn win32_get_ancestor(hwnd: BigInt, ga_flags: u32) -> napi::Result<Option<Bi
 #[napi]
 pub fn win32_is_window_enabled(hwnd: BigInt) -> napi::Result<bool> {
     napi_safe_call("win32_is_window_enabled", || {
-        Ok(unsafe { IsWindowEnabled(hwnd_from_bigint(hwnd)) }.as_bool())
+        Ok(unsafe { IsWindowEnabled(hwnd_from_bigint(hwnd)?) }.as_bool())
     })
 }
 
@@ -97,7 +97,7 @@ pub fn win32_is_window_enabled(hwnd: BigInt) -> napi::Result<bool> {
 #[napi]
 pub fn win32_window_answers(hwnd: BigInt, timeout_ms: u32) -> napi::Result<Option<bool>> {
     napi_safe_call("win32_window_answers", || {
-        let h = hwnd_from_bigint(hwnd);
+        let h = hwnd_from_bigint(hwnd)?;
         if !unsafe { IsWindow(Some(h)) }.as_bool() {
             return Ok(None);
         }
@@ -131,7 +131,7 @@ pub fn win32_window_answers(hwnd: BigInt, timeout_ms: u32) -> napi::Result<Optio
 #[napi]
 pub fn win32_get_last_active_popup(hwnd: BigInt) -> napi::Result<Option<BigInt>> {
     napi_safe_call("win32_get_last_active_popup", || {
-        let h = hwnd_from_bigint(hwnd);
+        let h = hwnd_from_bigint(hwnd)?;
         let popup = unsafe { GetLastActivePopup(h) };
         Ok(if popup.0.is_null() || popup.0 == h.0 {
             None
@@ -150,7 +150,7 @@ pub fn win32_get_last_active_popup(hwnd: BigInt) -> napi::Result<Option<BigInt>>
 #[napi]
 pub fn win32_is_window_cloaked(hwnd: BigInt) -> napi::Result<bool> {
     napi_safe_call("win32_is_window_cloaked", || {
-        let h = hwnd_from_bigint(hwnd);
+        let h = hwnd_from_bigint(hwnd)?;
         let mut value: u32 = 0;
         let result = unsafe {
             DwmGetWindowAttribute(
@@ -177,7 +177,7 @@ pub fn win32_is_window_cloaked(hwnd: BigInt) -> napi::Result<bool> {
 #[napi]
 pub fn win32_get_visible_frame_rect(hwnd: BigInt) -> napi::Result<Option<NativeWin32Rect>> {
     napi_safe_call("win32_get_visible_frame_rect", || {
-        let h = hwnd_from_bigint(hwnd);
+        let h = hwnd_from_bigint(hwnd)?;
         let mut rect = RECT::default();
         let result = unsafe {
             DwmGetWindowAttribute(

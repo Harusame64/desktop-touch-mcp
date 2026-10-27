@@ -21,10 +21,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use super::safety::napi_safe_call;
 use super::types::{NativeForceFocusResult, NativeThreadFocus};
 
-/// Reinterpret a JS BigInt as an HWND. `get_u64` (magnitude) is correct for an
-/// HWND handle value; the signed `get_i64` is only needed for WPARAM/LPARAM
-/// payloads (see `win32_post_message`). Shared with `console_paste` so the HWND
-/// conversion lives in one place (PR #393 R1 P3-1).
+/// The HWND reading (`handle.rs`, internal #303), re-exported for `console_paste`. The signed
+/// `get_i64` is only for WPARAM/LPARAM payloads (see `win32_post_message`).
 pub(crate) use super::handle::hwnd_from_bigint;
 
 fn hwnd_to_bigint(h: HWND) -> BigInt {
@@ -58,7 +56,7 @@ pub fn win32_force_set_foreground_window(
     hwnd: BigInt,
 ) -> napi::Result<NativeForceFocusResult> {
     napi_safe_call("win32_force_set_foreground_window", || {
-        let target = hwnd_from_bigint(hwnd);
+        let target = hwnd_from_bigint(hwnd)?;
 
         let fg_before = unsafe { GetForegroundWindow() };
         // Already in the foreground? Skip the attach dance.
@@ -120,7 +118,7 @@ pub fn win32_force_set_foreground_window(
 #[napi]
 pub fn win32_get_thread_focus(target_hwnd: BigInt) -> napi::Result<Option<NativeThreadFocus>> {
     napi_safe_call("win32_get_thread_focus", || {
-        let target = hwnd_from_bigint(target_hwnd);
+        let target = hwnd_from_bigint(target_hwnd)?;
         let thread = unsafe { GetWindowThreadProcessId(target, None) };
         if thread == 0 {
             return Ok(None);
@@ -147,7 +145,7 @@ pub fn win32_get_focused_child_hwnd(
     target_hwnd: BigInt,
 ) -> napi::Result<Option<BigInt>> {
     napi_safe_call("win32_get_focused_child_hwnd", || {
-        let target = hwnd_from_bigint(target_hwnd);
+        let target = hwnd_from_bigint(target_hwnd)?;
         let target_thread = unsafe { GetWindowThreadProcessId(target, None) };
         if target_thread == 0 {
             return Ok(None);
@@ -201,7 +199,7 @@ pub fn win32_post_message(
     l_param: BigInt,
 ) -> napi::Result<bool> {
     napi_safe_call("win32_post_message", || {
-        let h = hwnd_from_bigint(hwnd);
+        let h = hwnd_from_bigint(hwnd)?;
         // `get_u64()` returns the magnitude with a separate sign flag, which
         // would silently turn negative BigInts (`BigInt(lParam | 0)` for
         // lParam values with bit 31 set — common in WM_KEYUP scan-code

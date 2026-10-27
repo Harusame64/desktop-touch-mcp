@@ -514,7 +514,7 @@ pub fn capture_via_worker(hwnd_raw: usize, opts: WgcCaptureOptions) -> Result<Wg
 // ─── napi surface ─────────────────────────────────────────────────────────────
 
 pub struct Win32WgcCaptureTask {
-    hwnd_raw: usize,
+    hwnd_raw: Option<usize>,
     opts: WgcCaptureOptions,
 }
 
@@ -523,7 +523,8 @@ impl Task for Win32WgcCaptureTask {
     type JsValue = NativeWgcResult;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let frame = capture_via_worker(self.hwnd_raw, self.opts)
+        let hwnd_raw = self.hwnd_raw.ok_or_else(|| napi::Error::from_reason("WindowNotFound: the value is not a window handle"))?;
+        let frame = capture_via_worker(hwnd_raw, self.opts)
             .map_err(napi::Error::from_reason)?;
         Ok(NativeWgcResult {
             data: Buffer::from(frame.data),
@@ -549,9 +550,9 @@ pub fn win32_wgc_capture_window(
     hwnd: BigInt,
     opts: Option<NativeWgcCaptureOptions>,
 ) -> AsyncTask<Win32WgcCaptureTask> {
-    let (_sign, val, _lossless) = hwnd.get_u64();
+    // internal #303 — the shared rule; a value that names no window fails in compute, as capture errors do.
     AsyncTask::new(Win32WgcCaptureTask {
-        hwnd_raw: val as usize,
+        hwnd_raw: super::handle::handle_value(&hwnd).map(|v| v as usize),
         opts: opts.into(),
     })
 }

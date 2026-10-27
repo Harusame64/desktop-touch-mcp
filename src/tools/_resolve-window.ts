@@ -407,17 +407,19 @@ export async function resolveWindowTarget(params: {
 
   // ── Case 1: explicit hwnd ─────────────────────────────────────────────────
   if (params.hwnd !== undefined) {
-    let hwndb: bigint;
     try {
-      hwndb = BigInt(params.hwnd);
+      BigInt(params.hwnd);
     } catch {
       throw new Error(`WindowNotFound: hwnd "${params.hwnd}" is not a valid integer`);
     }
-    // internal #303 — the same rule as discover's (`parseWindowHandle`): zero, negative and past u64 name
-    // no window. Past u64 used to wrap in the native helpers (2^64 + 0x1234 read as 0x1234, another window).
-    if (parseWindowHandle(params.hwnd) === undefined) {
+    // internal #303 — what is a handle is `parseWindowHandle`'s rule, shared with discover: zero, negative
+    // and past u64 name no window (past u64 used to wrap in the native helpers: 2^64 + 0x1234 was read as
+    // 0x1234, another window). Unlike discover, a title beside it does not stand in for it here.
+    const parsed = parseWindowHandle(params.hwnd);
+    if (parsed === undefined) {
       throw new Error(`WindowNotFound: hwnd "${params.hwnd}" is not a window handle (a positive integer of at most 64 bits)`);
     }
+    let hwndb: bigint = parsed;
     let title = getWindowTitleW(hwndb);
     if (!title) {
       // Verify window still exists via rect (getWindowTitleW returns "" for invalid/invisible)

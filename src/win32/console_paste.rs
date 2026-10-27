@@ -160,7 +160,7 @@ pub fn win32_console_paste_no_focus(
     text: String,
 ) -> napi::Result<ConsolePasteResult> {
     napi_safe_call("win32_console_paste_no_focus", || {
-        let target = hwnd_from_bigint(hwnd);
+        let target = hwnd_from_bigint(hwnd)?;
         let crlf = normalise_crlf(&text);
 
         // The whole clipboard transaction runs under one hidden owner window
