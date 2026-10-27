@@ -38,8 +38,8 @@ import { fetchTerminalCandidates } from "./terminal-provider.js";
 import { fetchVisualCandidates }   from "./visual-provider.js";
 import { fetchOcrCandidates }      from "./ocr-provider.js";
 import { resolveWindowTarget, findPlainTopLevelWindowsByTitle } from "../_resolve-window.js";
-import { findOcrWindowByTitle } from "../../engine/ocr-bridge.js";
-import { isWindowProcessFrozen } from "../../engine/win32.js";
+import { findOcrWindowsByTitle } from "../../engine/ocr-bridge.js";
+import { enumWindowsInZOrder, isWindowProcessFrozen, type WindowZInfo } from "../../engine/win32.js";
 import { WindowExcludedError }     from "../../engine/tool-exclusion.js";
 import { probeAim, probeLane, type ProbeLane } from "../../engine/aim-probe.js";
 import { containsPoint, toAim, readWindowIdentityFields, type WindowIdentity, type WindowRect, type AimOrigin } from "../../engine/aim.js";
@@ -169,34 +169,46 @@ function addWarningIfPartial(result: ProviderResult, primaryCount: number): Prov
 // authoritative source — visual escalation would add noise, not signal.
 
 /**
- * Internal #288 — whether a window UIA could not read is frozen. The OCR lane is the only one that
- * asks (`refuseIfFrozen` in `runSomPipeline`), and it runs only when UIA read blind; when UIA FAILED,
- * the zero reason became `all_providers_failed`, telling the caller to change providers, while the
- * window's app was suspended. MEASURED by win2 (2026-10-27, v2.3.3): a frozen Settings window by its
- * handle read blind → OCR → `window_frozen`; by its title UIA answered "Window not found" (the cloaked
- * window is not among UI Automation's top-level children) → OCR skipped → `all_providers_failed`.
+ * Internal #288 — whether the window UIA could not read is a frozen one. The OCR lane is the only one
+ * that asks (`refuseIfFrozen` in `runSomPipeline`), and it runs only when UIA read blind; when UIA
+ * FAILED, the zero reason became `all_providers_failed`, telling the caller to change providers, while
+ * the window's app was suspended. MEASURED by win2 (2026-10-27, v2.3.3): a frozen Settings window by
+ * its handle read blind → OCR → `window_frozen`; by its title UIA answered "Window not found" (a
+ * cloaked window is not among UI Automation's top-level children) → OCR skipped → `all_providers_failed`.
  *
- * The window is the one the OCR lane would have read: the handle when one is pinned, otherwise
- * `findOcrWindowByTitle` — the same find, so the two never ask about different windows. Nothing is
- * captured; a window that is not frozen, or that nothing names, keeps the row it had.
+ * Only hidden windows are asked about, as in `windows[]` (`isFrozen` is asked of cloaked windows
+ * only): "restore or show the window" is no advice for one already shown.
+ *   - By handle: the pinned window, when it is cloaked and frozen.
+ *   - By title: only when every window the title names (`findOcrWindowsByTitle`, the OCR lane's rule)
+ *     is cloaked — a shown one is what UIA failed on, and a frozen hidden one elsewhere is another
+ *     app (Opus review: "Settings" naming a running "Steam Settings" and a frozen Windows Settings).
+ *     Then any of them frozen answers, so a packaged app's frame (never frozen) before its content
+ *     in Z-order does not hide it (#250 is the frame read by its own handle).
+ * Returns the frozen row, or undefined when nothing here can say the window is frozen. Nothing is
+ * captured, and a test that throws is no answer.
  */
-function frozenTestWhenUiaFailed(target: TargetSpec | undefined): ProviderResult {
-  let hwnd: bigint | undefined;
+function frozenRowWhenUiaFailed(target: TargetSpec | undefined): ProviderResult | undefined {
   try {
     const pinned = target ? parseTargetHwnd(target) : undefined;
-    hwnd = pinned ?? (target?.windowTitle ? findOcrWindowByTitle(target.windowTitle)?.hwnd : undefined);
-    if (hwnd !== undefined && isWindowProcessFrozen(hwnd) !== true) hwnd = undefined;
+    const title = target?.windowTitle;
+    let candidates: WindowZInfo[] = [];
+    if (pinned !== undefined) {
+      candidates = enumWindowsInZOrder().filter((w) => w.hwnd === pinned);
+    } else if (title && title !== "@active") {
+      candidates = findOcrWindowsByTitle(title);
+      if (candidates.some((w) => w.isCloaked !== true)) candidates = [];
+    }
+    const frozen = candidates.find((w) => w.isCloaked === true && isWindowProcessFrozen(w.hwnd) === true);
+    if (!frozen) return undefined;
+    return probeLane("ocr", "skipped", {
+      windowTitle: title ?? null,
+      pinnedHwnd: pinned !== undefined ? pinned.toString() : null,
+      why: "window_frozen",
+      testedHwnd: frozen.hwnd.toString(),
+    }, { candidates: [], warnings: ["target_window_frozen"] });
   } catch {
-    // A test that cannot be made is not an answer: the row stays the one this road always wrote.
-    hwnd = undefined;
+    return undefined;
   }
-  if (hwnd !== undefined) {
-    return probeLane("ocr", "skipped", { why: "window_frozen", testedHwnd: hwnd.toString() }, {
-      candidates: [],
-      warnings: ["target_window_frozen"],
-    });
-  }
-  return probeLane("ocr", "skipped", { why: "uia_not_blind" }, { candidates: [], warnings: [] });
 }
 
 /**
@@ -687,8 +699,9 @@ async function composeCandidatesInner(target: TargetSpec): Promise<ProviderResul
       ).catch((): ProviderResult => probeLane("ocr", "failed", { why: "rejected" }, { candidates: [], warnings: ["ocr_provider_failed"] }))
     // Not called, and said so: on this road "OCR did not look" is a decision about THIS window, and
     // without a row it prints like a lane nobody instrumented (item 14a).
+    // internal #288: a failed UIA read is not a sighted one — said as such, and a frozen window named.
     : uiaResult.warnings.includes("uia_provider_failed")
-      ? frozenTestWhenUiaFailed(target)
+      ? frozenRowWhenUiaFailed(target) ?? probeLane("ocr", "skipped", { why: "uia_failed" }, { candidates: [], warnings: [] })
       : probeLane("ocr", "skipped", { why: "uia_not_blind" }, { candidates: [], warnings: [] });
 
   const mergedAll  = withoutUnneededBlindNotice(mergeResults([uiaResult, visualResult, ocrResult]), uiaBlindForOcr);

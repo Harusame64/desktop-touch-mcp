@@ -681,6 +681,17 @@ export function clusterOcrWords(words: OcrWord[], elementGapThreshold = 35): Som
 }
 
 /**
+ * The windows a title names, by the OCR lane's rule: plain case-insensitive substring, in Z-order.
+ * The first of them is the one the OCR lane reads (ADR-029: this find is the authority on which window
+ * a visual-only entity came from); discover's frozen test when UIA could not read the target looks at
+ * all of them (internal #288).
+ */
+export function findOcrWindowsByTitle(windowTitle: string): WindowZInfo[] {
+  const wanted = windowTitle.toLowerCase();
+  return enumWindowsInZOrder().filter((w) => w.title.toLowerCase().includes(wanted));
+}
+
+/**
  * Full UIA-Blind SoM pipeline for a single window.
  *
  * Steps:
@@ -709,17 +720,6 @@ export function clusterOcrWords(words: OcrWord[], elementGapThreshold = 35): Som
  *   Applied to screen-absolute words between mergeNearbyWords and clusterOcrWords.
  *   Caller must provide screen-absolute rects (same space as OcrWord.bbox after origin offset).
  */
-/**
- * The window a title names for the OCR lane: plain case-insensitive substring, first hit in Z-order
- * (ADR-029: this find is the authority on which window a visual-only entity came from). Shared with
- * discover's frozen test when UIA could not read the target (internal #288), so both ask about the
- * same window.
- */
-export function findOcrWindowByTitle(windowTitle: string): WindowZInfo | undefined {
-  const wanted = windowTitle.toLowerCase();
-  return enumWindowsInZOrder().find((w) => w.title.toLowerCase().includes(wanted));
-}
-
 export async function runSomPipeline(
   windowTitle: string,
   hwnd?: bigint | null,
@@ -761,7 +761,7 @@ export async function runSomPipeline(
     // came from — plain case-insensitive substring, first hit in Z-order. The
     // resolved handle is returned so consumers can record it as the entity's
     // origin instead of re-running this search at act time.
-    const win = findOcrWindowByTitle(windowTitle);
+    const win = findOcrWindowsByTitle(windowTitle)[0];
     if (!win) throw new Error(`runSomPipeline: window not found: "${windowTitle}"`);
     targetHwnd = win.hwnd;
     origin = { x: win.region.x, y: win.region.y };

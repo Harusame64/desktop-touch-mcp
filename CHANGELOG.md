@@ -3,12 +3,13 @@
 ## [Unreleased]
 
 ### Fixed — Windows
-- **`desktop_discover` names a frozen window as frozen when it is targeted by title.** A packaged app
-  that Windows has suspended (Settings, Xbox while hidden) answered `entityZeroReason: "window_frozen"`
-  when targeted by its handle, but `all_providers_failed` by its title. That told the caller to change
-  providers, when the window's app was not running. When UI Automation cannot read the target, discover
-  now asks whether the window the title names is frozen, and answers `window_frozen` if it is (internal
-  #288). Nothing is captured.
+- **`desktop_discover` names a frozen window as frozen when UI Automation cannot read it.** A hidden
+  packaged app that Windows has suspended (Settings, for one) answered `entityZeroReason:
+  "window_frozen"` when targeted by its handle, but `all_providers_failed` by its title. That told the
+  caller to change providers, when the window's app was not running. When UI Automation fails on the
+  target, discover now asks whether it is a hidden, frozen window, and answers `window_frozen` if so
+  (internal #288). This covers the pinned handle, or the windows the title names when all of them are
+  hidden. Nothing is captured; a title that also names a window on screen keeps the old answer.
 
 ## [2.3.3] - 2026-10-26 — The launcher cleans up old releases
 
