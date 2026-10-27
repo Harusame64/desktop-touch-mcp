@@ -24,6 +24,11 @@
   app's own window found by the frame's AppUserModelID while hidden (internal #250). A minimised window
   is now asked too, as a packaged app's frame is minimised without being hidden. A frame with no
   AppUserModelID, or whose app has no window, is still not marked.
+- **`keyboard` with `windowTitle: "@active"` types into the foreground window when another window
+  has the same title.** `@active` was turned into the foreground window's title and the windows were
+  counted by that title again, so a second window showing the same page (minimised, for one) made the
+  call stop with `ambiguous_target`. `@active` now holds the foreground window by its handle, as `hwnd`
+  does (internal #309). A plain `windowTitle` still counts every window it matches.
 - **`desktop_discover` names a frozen window as frozen when UI Automation cannot read it.** A hidden
   packaged app that Windows has suspended (Settings, for one) answered `entityZeroReason:
   "window_frozen"` when targeted by its handle, but `all_providers_failed` by its title. That told the

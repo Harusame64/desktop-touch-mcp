@@ -350,6 +350,66 @@ function guardSuppressedFixHint(): unknown {
     .suppressSuggestedFix;
 }
 
+describe("internal #309 — @active pins the foreground window, not a search by its title", () => {
+  // win2 2026-10-28: Edge shown and in front, the same page minimised in Chrome; `@active` resolved
+  // to Edge and the guard still counted both titles and refused with ambiguous_target.
+  afterEach(async () => {
+    // Back to the module mock's own rule, which the describes after this one read.
+    vi.mocked((await import("../../src/tools/_resolve-window.js")).resolveWindowTarget).mockImplementation(
+      async (p: { hwnd?: string; windowTitle?: string }) =>
+        p.hwnd !== undefined
+          ? { hwnd: BigInt(p.hwnd), title: SHARED_TITLE, warnings: [], className: "Chrome_WidgetWin_1" } as never
+          : null
+    );
+  });
+
+  const asActive = async () => {
+    foregroundRef.hwnd = LIVE;
+    const resolveWindowTarget = vi.mocked(
+      (await import("../../src/tools/_resolve-window.js")).resolveWindowTarget
+    );
+    resolveWindowTarget.mockImplementation(async (p: { hwnd?: string; windowTitle?: string }) =>
+      p.hwnd !== undefined || p.windowTitle === "@active"
+        ? { hwnd: p.hwnd !== undefined ? BigInt(p.hwnd) : LIVE, title: SHARED_TITLE, warnings: [], className: "Chrome_WidgetWin_1" }
+        : null
+    );
+  };
+
+  it("keyboard:type with @active reaches the guard pinned to the foreground handle", async () => {
+    await asActive();
+    const r = parse(await keyboardTypeHandler({
+      ...TYPE_BASE, windowTitle: "@active", method: "foreground",
+    } as never));
+    expect(guardDescriptor()).toEqual({ kind: "window", titleIncludes: SHARED_TITLE, hwnd: LIVE });
+    expect(r.ok).toBe(true);
+  });
+
+  it("covers keyboard:press and keyboard:sequence", async () => {
+    await asActive();
+    const press = parse(await keyboardPressHandler({
+      keys: "enter", windowTitle: "@active", method: "foreground", trackFocus: false, settleMs: 0,
+    } as never));
+    expect(guardDescriptor()).toEqual({ kind: "window", titleIncludes: SHARED_TITLE, hwnd: LIVE });
+    expect(press.ok).toBe(true);
+
+    mockRunActionGuard.mockClear();
+    const seq = parse(await keyboardSequenceHandler({
+      steps: [{ keys: "ctrl+a" }], windowTitle: "@active", trackFocus: false, settleMs: 0,
+    } as never));
+    expect(guardDescriptor()).toEqual({ kind: "window", titleIncludes: SHARED_TITLE, hwnd: LIVE });
+    expect(seq.ok).toBe(true);
+  });
+
+  it("the same window named by its title is still a search, and still refused", async () => {
+    await asActive();
+    const r = parse(await keyboardTypeHandler({
+      ...TYPE_BASE, windowTitle: SHARED_TITLE, method: "foreground",
+    } as never));
+    expect(guardDescriptor()).toEqual({ kind: "window", titleIncludes: SHARED_TITLE });
+    expect(JSON.stringify(r)).toContain("ambiguous_target");
+  });
+});
+
 describe("ADR-036 — a handle-pinned call is not offered a fixId it cannot use", () => {
   // The stored fix carries the TITLE and the replay prologue skips window
   // resolution, so following the hint comes back to the guard with the handle
