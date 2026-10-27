@@ -348,9 +348,8 @@ describe("ADR-036 — one answer to \"is this a handle\"", () => {
   });
 
   it("refuses a value past u64, which the native helpers would wrap to another window (internal #303)", () => {
-    // Above i64::MAX is still a handle: a handle sign-extended from 32 bits renders there through the
-    // native enumeration, and refusing those is not something anyone has measured.
-    expect(parseTargetHwnd({ hwnd: "9223372036854775808" })).toBe(0x8000_0000_0000_0000n);
+    // Above i64::MAX is still a handle when it is a 32-bit one sign-extended: that is how the native
+    // enumeration would render a handle with bit 31 set.
     expect(parseTargetHwnd({ hwnd: "18446744071562067968" })).toBe(0xffff_ffff_8000_0000n);
     // u64::MAX..-2 are -1/-2/-3 as isize (HWND_TOPMOST, HWND_NOTOPMOST, HWND_MESSAGE), and 0xFFFF is
     // HWND_BROADCAST: pseudo-handles, refused by the native reader as well (handle.rs).
@@ -362,5 +361,18 @@ describe("ADR-036 — one answer to \"is this a handle\"", () => {
     for (const hwnd of ["18446744073709551616", "18446744073709556276", "0x10000000000001234"]) {
       expect(parseTargetHwnd({ hwnd }), `hwnd = ${hwnd}`).toBeUndefined();
     }
+  });
+
+  it("refuses a value past 32 bits that user32 would read as the window in its low 32 bits (internal #314)", () => {
+    // win2 measured 2026-10-28: for a live H = 0x107B6, H | 1 << 32, H | 0xFFFFFFFF00000000 and
+    // H | 1 << 48 each answered IsWindow TRUE with H's title and rect; (H & 0xFFFF) | 1 << 32 did not.
+    for (const hwnd of ["4295034806", "0xFFFFFFFF000107B6", "0x10000000107B6", "9223372036854775808"]) {
+      expect(parseTargetHwnd({ hwnd }), `hwnd = ${hwnd}`).toBeUndefined();
+    }
+    // The edges: the highest zero-extended handle stays, and bit 31 alone decides the all-ones form.
+    expect(parseTargetHwnd({ hwnd: "4294967295" })).toBe(0xffff_ffffn);
+    expect(parseTargetHwnd({ hwnd: "4294967296" })).toBeUndefined();
+    expect(parseTargetHwnd({ hwnd: "0xFFFFFFFF7FFFFFFF" })).toBeUndefined();
+    expect(parseTargetHwnd({ hwnd: "0xFFFFFFFF80000000" })).toBe(0xffff_ffff_8000_0000n);
   });
 });

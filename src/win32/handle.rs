@@ -21,8 +21,8 @@ use windows::Win32::Foundation::HWND;
 /// `HWND_BROADCAST`: a message to it goes to every top-level window.
 const HWND_BROADCAST_VALUE: u64 = 0xFFFF;
 
-/// The handle, or the null HWND for a value that names no window: negative, past 64 bits, or a
-/// pseudo-handle (`HWND_BROADCAST`, and -1/-2/-3 as `isize` — `HWND_TOPMOST`/`HWND_NOTOPMOST`/
+/// The handle, or the null HWND for a value that names no window: negative, past 64 bits, past 32 bits
+/// other than as the sign extension of a 32-bit handle (internal #314), or a pseudo-handle (`HWND_BROADCAST`, and -1/-2/-3 as `isize` — `HWND_TOPMOST`/`HWND_NOTOPMOST`/
 /// `HWND_MESSAGE`).
 pub(crate) fn hwnd_from_bigint(b: BigInt) -> HWND {
     HWND(handle_value(&b).unwrap_or(0) as isize as *mut std::ffi::c_void)
@@ -40,7 +40,16 @@ pub(crate) fn handle_value(b: &BigInt) -> Option<u64> {
     // bigint.rs), so `negative` adds nothing today; it stays as the rule, should that change.
     let (negative, value, lossless) = b.get_u64();
     let pseudo = value == HWND_BROADCAST_VALUE || matches!(value as isize, -3..=-1);
-    if negative || !lossless || pseudo { None } else { Some(value) }
+    if negative || !lossless || pseudo || !fits_32_bits(value) { None } else { Some(value) }
+}
+
+/// User32 reads only the low 32 bits of a handle: `H | 1 << 32` and `H | 0xFFFFFFFF00000000` answer
+/// `IsWindow` TRUE and H's title, rect and class (win2 measured 2026-10-28, internal #314), so such a
+/// value is another name for H. Kept: zero high bits, and the sign extension of a handle with bit 31
+/// set, the form `h.0 as usize as u64` would give if user32 handed one out (none in 636 handles swept).
+fn fits_32_bits(value: u64) -> bool {
+    let high = value >> 32;
+    high == 0 || (high == 0xFFFF_FFFF && value & 0x8000_0000 != 0)
 }
 
 /// The error for a value `handle_value` refuses, where an entry fails by throwing (the async captures).
@@ -72,6 +81,19 @@ mod tests {
     fn past_u64_is_no_handle_not_its_low_bits() {
         // 2^64 + 0x1234: two words; get_u64 alone answers 0x1234
         assert_eq!(handle_value(&big(false, &[0x1234, 1])), None);
+    }
+
+    #[test]
+    fn past_32_bits_is_no_handle_unless_sign_extended() {
+        // win2's aliases of a live H (internal #314): user32 read each as H
+        for v in [0x1_0001_07B6, 0xFFFF_FFFF_0001_07B6, 0x0001_0000_0001_07B6] {
+            assert_eq!(handle_value(&big(false, &[v])), None, "{v:#x}");
+        }
+        // the edges: the highest zero-extended handle, and bit 31 alone decides the all-ones form
+        assert_eq!(handle_value(&big(false, &[0xFFFF_FFFF])), Some(0xFFFF_FFFF));
+        assert_eq!(handle_value(&big(false, &[0x1_0000_0000])), None);
+        assert_eq!(handle_value(&big(false, &[0xFFFF_FFFF_7FFF_FFFF])), None);
+        assert_eq!(handle_value(&big(false, &[0xFFFF_FFFF_8000_0000])), Some(0xFFFF_FFFF_8000_0000));
     }
 
     #[test]
