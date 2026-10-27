@@ -70,6 +70,18 @@ describe("the window list says which windows are hidden, and which of those are 
     expect(isFrozen).not.toHaveBeenCalled();
   });
 
+  it("asks a minimised window too, which a packaged app's frame is without being cloaked (internal #250)", () => {
+    // win2 2026-10-28: minimised Calculator's frame 1769598 was isMinimized only, its content cloaked
+    // and frozen; a minimised Win32 app runs, and gets nothing.
+    const { rows } = listed(
+      [win(1769598n, { isMinimized: true, isCloaked: false }), win(4n, { isMinimized: true })],
+      { "1769598": true, "4": false },
+    );
+    expect(rows[0]).toMatchObject({ hwnd: "1769598", isMinimized: true, isFrozen: true });
+    expect(rows[0]).not.toHaveProperty("isCloaked");
+    expect(rows[1]).not.toHaveProperty("isFrozen");
+  });
+
   it("does not say frozen when it cannot tell", () => {
     const { rows } = listed([win(9n, { isCloaked: true })], { "9": null });
     expect(rows[0]).toMatchObject({ isCloaked: true });

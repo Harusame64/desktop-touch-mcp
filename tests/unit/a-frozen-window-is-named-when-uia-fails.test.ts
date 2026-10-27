@@ -118,6 +118,20 @@ describe("UIA could not read the target: discover asks whether the hidden window
     }
   });
 
+  it("by handle: a minimised frame, which is not cloaked, is asked too (internal #250)", async () => {
+    // win2 2026-10-28: minimised Calculator's frame was isMinimized only; its app froze in 2 s.
+    const CALC_FRAME = { hwnd: 1769598n, title: "電卓", isCloaked: false, isMinimized: true };
+    mocks.enumWindowsInZOrder.mockReturnValue([CALC_FRAME, STEAM]);
+    uiaFails();
+    FROZEN.add(CALC_FRAME.hwnd);
+    try {
+      const result = await composeCandidates({ hwnd: String(CALC_FRAME.hwnd) });
+      expect(reasonOf(result.warnings)).toBe("window_frozen");
+    } finally {
+      FROZEN.delete(CALC_FRAME.hwnd);
+    }
+  });
+
   it("a test that throws is no answer: the reason stays all_providers_failed", async () => {
     uiaFails();
     mocks.findOcrWindowsByTitle.mockImplementation(() => { throw new Error("enum failed"); });

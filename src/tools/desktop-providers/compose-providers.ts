@@ -168,6 +168,11 @@ function addWarningIfPartial(result: ProviderResult, primaryCount: number): Prov
 // there, and uia is additive. Even if uia is blind, the terminal buffer is the
 // authoritative source — visual escalation would add noise, not signal.
 
+/** Cloaked, or minimised: a packaged app's frame is minimised without being cloaked (#250). */
+function isHidden(w: WindowZInfo): boolean {
+  return w.isCloaked === true || w.isMinimized;
+}
+
 /**
  * Internal #288 — whether the window UIA could not read is a frozen one. The OCR lane is the only one
  * that asks (`refuseIfFrozen` in `runSomPipeline`), and it runs only when UIA read blind; when UIA
@@ -176,11 +181,11 @@ function addWarningIfPartial(result: ProviderResult, primaryCount: number): Prov
  * its handle read blind → OCR → `window_frozen`; by its title UIA answered "Window not found" (a
  * cloaked window is not among UI Automation's top-level children) → OCR skipped → `all_providers_failed`.
  *
- * Only hidden windows are asked about, as in `windows[]` (`isFrozen` is asked of cloaked windows
- * only): "restore or show the window" is no advice for one already shown.
- *   - By handle: the pinned window, when it is cloaked and frozen.
+ * Only hidden windows are asked about, as in `windows[]` (`isFrozen` is asked of cloaked or minimised
+ * windows, #250): "restore or show the window" is no advice for one already shown.
+ *   - By handle: the pinned window, when it is hidden and frozen.
  *   - By title: only when every window the title names (`findOcrWindowsByTitle`, the OCR lane's rule)
- *     is cloaked — a shown one is what UIA failed on, and a frozen hidden one elsewhere is another
+ *     is hidden — a shown one is what UIA failed on, and a frozen hidden one elsewhere is another
  *     app (Opus review: "Settings" naming a running "Steam Settings" and a frozen Windows Settings).
  *     Then any of them frozen answers. A packaged app's frame answers through its content
  *     (`isWindowProcessFrozen`, #250), so by its own handle it is frozen when its app is.
@@ -196,9 +201,9 @@ function frozenRowWhenUiaFailed(target: TargetSpec | undefined): ProviderResult 
       candidates = enumWindowsInZOrder().filter((w) => w.hwnd === pinned);
     } else if (title && title !== "@active") {
       candidates = findOcrWindowsByTitle(title);
-      if (candidates.some((w) => w.isCloaked !== true)) candidates = [];
+      if (candidates.some((w) => !isHidden(w))) candidates = [];
     }
-    const frozen = candidates.find((w) => w.isCloaked === true && isWindowProcessFrozen(w.hwnd) === true);
+    const frozen = candidates.find((w) => isHidden(w) && isWindowProcessFrozen(w.hwnd) === true);
     if (!frozen) return undefined;
     return probeLane("ocr", "skipped", {
       windowTitle: title ?? null,
