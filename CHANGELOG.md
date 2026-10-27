@@ -5,7 +5,8 @@
 ### Fixed — Windows
 - **A window handle past 64 bits no longer reaches another window.** The native helpers read a handle
   from JavaScript as its low 64 bits, so `18446744073709556276` (2^64 + 0x1234) acted on window
-  `0x1234`. They now read any value that is negative or does not fit as no window at all. The tools that
+  `0x1234`. They now refuse, as `WindowNotFound`, any value that names no window: negative, past 64 bits,
+  zero, or a pseudo-handle such as `HWND_BROADCAST`. The tools that
   take `hwnd` themselves (`screenshot`, `get_ui_elements`, `scroll`, `keyboard` and the input pipeline)
   refuse it as `WindowNotFound`, as `desktop_discover` already did (internal #303).
 - **`desktop_discover` names a frozen window as frozen when UI Automation cannot read it.** A hidden
