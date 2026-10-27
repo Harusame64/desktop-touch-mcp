@@ -6,7 +6,6 @@
 
 use napi::bindgen_prelude::BigInt;
 use napi_derive::napi;
-use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetScrollInfo, SB_HORZ, SB_VERT, SCROLLBAR_CONSTANTS, SCROLLINFO, SIF_PAGE, SIF_POS,
     SIF_RANGE, SIF_TRACKPOS,
@@ -15,10 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use super::safety::napi_safe_call;
 use super::types::NativeScrollInfo;
 
-fn hwnd_from_bigint(b: BigInt) -> HWND {
-    let (_sign, val, _lossless) = b.get_u64();
-    HWND(val as isize as *mut std::ffi::c_void)
-}
+use super::handle::hwnd_from_bigint;
 
 /// Query the scrollbar position of `hwnd` for the given axis.
 /// Returns `None` when the window has no scrollbar, the range is degenerate

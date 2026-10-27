@@ -18,10 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::safety::napi_safe_call;
 
-fn hwnd_from_bigint(b: BigInt) -> HWND {
-    let (_sign, val, _lossless) = b.get_u64();
-    HWND(val as isize as *mut std::ffi::c_void)
-}
+use super::handle::hwnd_from_bigint;
 
 /// Sentinel HWND values for `SetWindowPos`'s `hwndInsertAfter`. Defined
 /// inline because windows-rs 0.62 does not export them as named constants

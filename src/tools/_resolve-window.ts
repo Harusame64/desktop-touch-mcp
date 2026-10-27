@@ -21,6 +21,7 @@ import {
   enumWindowsInZOrder, getWindowOwner, getWindowClassName, isWindowEnabled, getLastActivePopup,
 } from "../engine/win32.js";
 import { WindowExcludedError } from "../engine/tool-exclusion.js";
+import { parseWindowHandle } from "../engine/aim.js";
 import { logResolve } from "./_resolve-log.js";
 import type { ResolveResolver } from "../engine/diagnostic-log.js";
 
@@ -411,6 +412,11 @@ export async function resolveWindowTarget(params: {
       hwndb = BigInt(params.hwnd);
     } catch {
       throw new Error(`WindowNotFound: hwnd "${params.hwnd}" is not a valid integer`);
+    }
+    // internal #303 — the same rule as discover's (`parseWindowHandle`): zero, negative and past u64 name
+    // no window. Past u64 used to wrap in the native helpers (2^64 + 0x1234 read as 0x1234, another window).
+    if (parseWindowHandle(params.hwnd) === undefined) {
+      throw new Error(`WindowNotFound: hwnd "${params.hwnd}" is not a window handle (a positive integer of at most 64 bits)`);
     }
     let title = getWindowTitleW(hwndb);
     if (!title) {

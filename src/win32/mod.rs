@@ -22,6 +22,8 @@ pub(crate) mod dpi;
 #[cfg(windows)]
 pub(crate) mod process;
 #[cfg(windows)]
+pub(crate) mod handle;
+#[cfg(windows)]
 pub(crate) mod input;
 #[cfg(windows)]
 pub(crate) mod window_op;

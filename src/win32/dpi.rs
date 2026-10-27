@@ -14,7 +14,7 @@
 
 use napi::bindgen_prelude::BigInt;
 use napi_derive::napi;
-use windows::Win32::Foundation::{E_ACCESSDENIED, HWND};
+use windows::Win32::Foundation::E_ACCESSDENIED;
 use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::UI::HiDpi::{
     GetDpiForMonitor, SetProcessDpiAwareness, MDT_EFFECTIVE_DPI, PROCESS_DPI_AWARENESS,
@@ -22,10 +22,7 @@ use windows::Win32::UI::HiDpi::{
 
 use super::safety::napi_safe_call;
 
-fn hwnd_from_bigint(b: BigInt) -> HWND {
-    let (_sign, val, _lossless) = b.get_u64();
-    HWND(val as isize as *mut std::ffi::c_void)
-}
+use super::handle::hwnd_from_bigint;
 
 /// Effective DPI of the monitor containing `hwnd`. Returns 96 (= 100%
 /// baseline) on any failure to match the legacy `getWindowDpi` behavior.

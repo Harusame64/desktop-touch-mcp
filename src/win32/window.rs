@@ -32,10 +32,7 @@ use super::types::{NativeThreadProcessId, NativeWin32Rect, NativeWindowAtPoint};
 /// `hwnd_to_bigint` always emits a positive bigint, so JS round-trips of
 /// HWNDs read from this addon never go negative; we accept negative input
 /// only as a defensive concession to other callers.)
-fn hwnd_from_bigint(b: BigInt) -> HWND {
-    let (_sign, val, _lossless) = b.get_u64();
-    HWND(val as isize as *mut std::ffi::c_void)
-}
+use super::handle::hwnd_from_bigint;
 
 /// Emit an `HWND` as a positive `BigInt` (always non-negative) by routing
 /// through `usize → u64`. JS-side `bigint` is therefore always >= 0n.

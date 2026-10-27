@@ -43,10 +43,7 @@ use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 use super::safety::napi_safe_call;
 use super::types::{NativeCaptureRegionResult, NativePrintWindowResult};
 
-fn hwnd_from_bigint(b: BigInt) -> HWND {
-    let (_sign, val, _lossless) = b.get_u64();
-    HWND(val as isize as *mut std::ffi::c_void)
-}
+use super::handle::hwnd_from_bigint;
 
 // ── RAII guards ──────────────────────────────────────────────────────────────
 

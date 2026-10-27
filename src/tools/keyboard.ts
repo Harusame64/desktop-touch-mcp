@@ -68,6 +68,7 @@ function toResolvedDestination(
   };
 }
 import { resolveWindowTarget } from "./_resolve-window.js";
+import { parseWindowHandle } from "../engine/aim.js";
 import { offDesktopTarget, offDesktopFailure, type OffDesktopTarget } from "./_off-desktop.js";
 import {
   makeCommitWrapper,
@@ -1567,7 +1568,8 @@ export const keyboardTypeHandler = async ({
     let resolvedHwndForIme: bigint | null = null;
     try {
       if (hwnd) {
-        resolvedHwndForIme = BigInt(hwnd);
+        // internal #303 — a value that is no handle (past u64 wrapped to another window) asks no window.
+        resolvedHwndForIme = parseWindowHandle(hwnd) ?? null;
       } else if (windowTitle) {
         const needle = windowTitle.toLowerCase();
         const w = enumWindowsInZOrder().find((x) => x.title.toLowerCase().includes(needle));

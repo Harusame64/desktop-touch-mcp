@@ -192,10 +192,7 @@ fn err(reason: ForegroundFlashErrorReason) -> napi::Error {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-fn hwnd_from_bigint(b: BigInt) -> HWND {
-    let (_sign, val, _lossless) = b.get_u64();
-    HWND(val as isize as *mut std::ffi::c_void)
-}
+use super::handle::hwnd_from_bigint;
 
 /// Pre-flight input validation (§3.3.1: single-line + < 5KiB UTF-16).
 /// 改行 (LF / CR) が混入すると WT `multiLinePasteWarning` の trigger になるため
