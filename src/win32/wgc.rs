@@ -523,7 +523,7 @@ impl Task for Win32WgcCaptureTask {
     type JsValue = NativeWgcResult;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let hwnd_raw = self.hwnd_raw.ok_or_else(|| napi::Error::from_reason("WindowNotFound: the value is not a window handle"))?;
+        let hwnd_raw = self.hwnd_raw.ok_or_else(super::handle::not_a_handle)?;
         let frame = capture_via_worker(hwnd_raw, self.opts)
             .map_err(napi::Error::from_reason)?;
         Ok(NativeWgcResult {

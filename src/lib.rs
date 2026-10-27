@@ -221,9 +221,8 @@ impl Task for Win32WriteComboTask {
         // The act thread and its limit, as `uia_set_value` (gate 1 on #824): `SetFocus` waits on the window's
         // thread with no limit of its own. The write's own deadline leaves the select, the post and the
         // read-back inside the limit: with every bounded send taking its full 300 ms, about 5.1 s (gate 2).
-        let not_a_handle = || napi::Error::from_reason("WindowNotFound: the value is not a window handle");
-        let combo = self.combo.ok_or_else(not_a_handle)?;
-        let root = match self.root { None => None, Some(r) => Some(r.ok_or_else(not_a_handle)?) };
+        let combo = self.combo.ok_or_else(crate::win32::handle::not_a_handle)?;
+        let root = self.root.map(|r| r.ok_or_else(crate::win32::handle::not_a_handle)).transpose()?;
         let value = self.value.clone();
         let submitted = std::time::Instant::now();
         uia::thread::execute_act_with_timeout(

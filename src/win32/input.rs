@@ -56,9 +56,19 @@ pub fn win32_force_set_foreground_window(
     hwnd: BigInt,
 ) -> napi::Result<NativeForceFocusResult> {
     napi_safe_call("win32_force_set_foreground_window", || {
-        let target = hwnd_from_bigint(hwnd)?;
+        let target = hwnd_from_bigint(hwnd);
 
         let fg_before = unsafe { GetForegroundWindow() };
+        // internal #303 — no window to focus. Checked first: with no foreground window (lock screen,
+        // UAC) the "already in the foreground?" test below would match NULL and answer ok.
+        if super::handle::refused_or_null(target) {
+            return Ok(NativeForceFocusResult {
+                ok: false,
+                attached: false,
+                fg_before: hwnd_to_bigint(fg_before),
+                fg_after: hwnd_to_bigint(fg_before),
+            });
+        }
         // Already in the foreground? Skip the attach dance.
         if fg_before.0 == target.0 {
             return Ok(NativeForceFocusResult {
@@ -118,7 +128,7 @@ pub fn win32_force_set_foreground_window(
 #[napi]
 pub fn win32_get_thread_focus(target_hwnd: BigInt) -> napi::Result<Option<NativeThreadFocus>> {
     napi_safe_call("win32_get_thread_focus", || {
-        let target = hwnd_from_bigint(target_hwnd)?;
+        let target = hwnd_from_bigint(target_hwnd);
         let thread = unsafe { GetWindowThreadProcessId(target, None) };
         if thread == 0 {
             return Ok(None);
@@ -145,7 +155,7 @@ pub fn win32_get_focused_child_hwnd(
     target_hwnd: BigInt,
 ) -> napi::Result<Option<BigInt>> {
     napi_safe_call("win32_get_focused_child_hwnd", || {
-        let target = hwnd_from_bigint(target_hwnd)?;
+        let target = hwnd_from_bigint(target_hwnd);
         let target_thread = unsafe { GetWindowThreadProcessId(target, None) };
         if target_thread == 0 {
             return Ok(None);
@@ -199,7 +209,11 @@ pub fn win32_post_message(
     l_param: BigInt,
 ) -> napi::Result<bool> {
     napi_safe_call("win32_post_message", || {
-        let h = hwnd_from_bigint(hwnd)?;
+        let h = hwnd_from_bigint(hwnd);
+        // internal #303 — PostMessageW(NULL) posts to this thread's own queue and succeeds.
+        if super::handle::refused_or_null(h) {
+            return Ok(false);
+        }
         // `get_u64()` returns the magnitude with a separate sign flag, which
         // would silently turn negative BigInts (`BigInt(lParam | 0)` for
         // lParam values with bit 31 set — common in WM_KEYUP scan-code

@@ -5,10 +5,12 @@
 ### Fixed — Windows
 - **A window handle past 64 bits no longer reaches another window.** The native helpers read a handle
   from JavaScript as its low 64 bits, so `18446744073709556276` (2^64 + 0x1234) acted on window
-  `0x1234`. They now refuse, as `WindowNotFound`, any value that names no window: negative, past 64 bits,
-  zero, or a pseudo-handle such as `HWND_BROADCAST`. The tools that
-  take `hwnd` themselves (`screenshot`, `get_ui_elements`, `scroll`, `keyboard` and the input pipeline)
-  refuse it as `WindowNotFound`, as `desktop_discover` already did (internal #303).
+  `0x1234`; on Windows, `scroll` with 2^64 plus a real window's handle scrolled that window. The tools
+  that take `hwnd` (`screenshot`, `get_ui_elements`, `scroll`, `keyboard`, the input pipeline and
+  `desktop_discover`) now refuse a value that names no window — zero, negative, past 64 bits, or a
+  pseudo-handle such as `HWND_BROADCAST` — as `WindowNotFound` (internal #303). The native helpers read
+  such a value as no window, and posting a message, pasting into a console, the IME and focusing now
+  fail for it instead of acting on the server's own thread.
 - **`desktop_discover` names a frozen window as frozen when UI Automation cannot read it.** A hidden
   packaged app that Windows has suspended (Settings, for one) answered `entityZeroReason:
   "window_frozen"` when targeted by its handle, but `all_providers_failed` by its title. That told the

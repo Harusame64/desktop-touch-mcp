@@ -19,8 +19,14 @@ import { resolveCandidates } from "./resolver.js";
 /** Subset of DesktopSeeInput.target; defined here to avoid circular import. */
 export type TargetSpec = { windowTitle?: string; hwnd?: string; tabId?: string };
 
-/** The largest handle `parseTargetHwnd` accepts: u64::MAX, what the native helpers can hold. */
-export const MAX_TARGET_HWND = 0xffff_ffff_ffff_ffffn;
+/**
+ * The largest handle `parseTargetHwnd` accepts: u64::MAX less the three values that are -1/-2/-3 as an
+ * `isize` (`HWND_TOPMOST`, `HWND_NOTOPMOST`, `HWND_MESSAGE`), which the native reader refuses too
+ * (`src/win32/handle.rs`, internal #303).
+ */
+export const MAX_TARGET_HWND = 0xffff_ffff_ffff_fffcn;
+/** `HWND_BROADCAST`: a message to it goes to every top-level window. Not a handle (internal #303). */
+export const HWND_BROADCAST = 0xffffn;
 
 /**
  * ADR-036 — the one place that decides whether a `TargetSpec` names a window by handle.
@@ -52,7 +58,7 @@ export function parseTargetHwnd(target: TargetSpec | undefined): bigint | undefi
   if (raw === undefined || raw === "") return undefined;
   try {
     const h = BigInt(raw);
-    return h <= 0n || h > MAX_TARGET_HWND ? undefined : h;
+    return h <= 0n || h > MAX_TARGET_HWND || h === HWND_BROADCAST ? undefined : h;
   } catch {
     return undefined;
   }

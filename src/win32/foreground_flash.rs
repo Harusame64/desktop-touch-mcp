@@ -390,10 +390,13 @@ pub fn win32_foreground_flash_inject(
         // (target 側が pre-allowed になるだけで、caller が thief になる場面では
         //  AttachThreadInput / Alt unlock の方が本質)。よって本 phase では未使用。
         let _ = target_pid;
-        let target = hwnd_from_bigint(target_hwnd)?;
-
-        // 1. Pre-flight validate
+        // 1. Pre-flight validate (the input's typed reasons come first, as before internal #303)
         validate_input(&text).map_err(err)?;
+        let target = hwnd_from_bigint(target_hwnd);
+        // internal #303 — no target to give the foreground to: what is typed would go to whatever has it.
+        if super::handle::refused_or_null(target) {
+            return Err(napi::Error::from_reason("not_a_window"));
+        }
 
         let max_focus_wait_ms = options
             .max_focus_wait_ms

@@ -83,7 +83,7 @@ pub fn win32_enum_top_level_windows() -> napi::Result<Vec<BigInt>> {
 #[napi]
 pub fn win32_get_window_text(hwnd: BigInt) -> napi::Result<String> {
     napi_safe_call("win32_get_window_text", || {
-        Ok(get_window_text(hwnd_from_bigint(hwnd)?))
+        Ok(get_window_text(hwnd_from_bigint(hwnd)))
     })
 }
 
@@ -92,7 +92,7 @@ pub fn win32_get_window_text(hwnd: BigInt) -> napi::Result<String> {
 #[napi]
 pub fn win32_get_window_rect(hwnd: BigInt) -> napi::Result<Option<NativeWin32Rect>> {
     napi_safe_call("win32_get_window_rect", || {
-        let h = hwnd_from_bigint(hwnd)?;
+        let h = hwnd_from_bigint(hwnd);
         let mut rect = RECT::default();
         let ok = unsafe { GetWindowRect(h, &mut rect) };
         if ok.is_err() {
@@ -125,7 +125,7 @@ pub fn win32_get_foreground_window() -> napi::Result<Option<BigInt>> {
 #[napi]
 pub fn win32_is_window_visible(hwnd: BigInt) -> napi::Result<bool> {
     napi_safe_call("win32_is_window_visible", || {
-        Ok(unsafe { IsWindowVisible(hwnd_from_bigint(hwnd)?).as_bool() })
+        Ok(unsafe { IsWindowVisible(hwnd_from_bigint(hwnd)).as_bool() })
     })
 }
 
@@ -133,7 +133,7 @@ pub fn win32_is_window_visible(hwnd: BigInt) -> napi::Result<bool> {
 #[napi]
 pub fn win32_is_iconic(hwnd: BigInt) -> napi::Result<bool> {
     napi_safe_call("win32_is_iconic", || {
-        Ok(unsafe { IsIconic(hwnd_from_bigint(hwnd)?).as_bool() })
+        Ok(unsafe { IsIconic(hwnd_from_bigint(hwnd)).as_bool() })
     })
 }
 
@@ -141,7 +141,7 @@ pub fn win32_is_iconic(hwnd: BigInt) -> napi::Result<bool> {
 #[napi]
 pub fn win32_is_zoomed(hwnd: BigInt) -> napi::Result<bool> {
     napi_safe_call("win32_is_zoomed", || {
-        Ok(unsafe { IsZoomed(hwnd_from_bigint(hwnd)?).as_bool() })
+        Ok(unsafe { IsZoomed(hwnd_from_bigint(hwnd)).as_bool() })
     })
 }
 
@@ -150,7 +150,7 @@ pub fn win32_is_zoomed(hwnd: BigInt) -> napi::Result<bool> {
 #[napi]
 pub fn win32_get_class_name(hwnd: BigInt) -> napi::Result<String> {
     napi_safe_call("win32_get_class_name", || {
-        let h = hwnd_from_bigint(hwnd)?;
+        let h = hwnd_from_bigint(hwnd);
         let mut buf = [0u16; 256]; // matches existing TS buffer size
         let len = unsafe { GetClassNameW(h, &mut buf) };
         if len <= 0 {
@@ -230,7 +230,7 @@ pub fn win32_get_window_thread_process_id(
     hwnd: BigInt,
 ) -> napi::Result<NativeThreadProcessId> {
     napi_safe_call("win32_get_window_thread_process_id", || {
-        let h = hwnd_from_bigint(hwnd)?;
+        let h = hwnd_from_bigint(hwnd);
         let mut pid: u32 = 0;
         let tid = unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
         Ok(NativeThreadProcessId {
@@ -248,7 +248,7 @@ pub fn win32_get_window_thread_process_id(
 #[napi]
 pub fn win32_get_window_long_ptr_w(hwnd: BigInt, n_index: i32) -> napi::Result<i32> {
     napi_safe_call("win32_get_window_long_ptr_w", || {
-        let h = hwnd_from_bigint(hwnd)?;
+        let h = hwnd_from_bigint(hwnd);
         let v = unsafe { GetWindowLongPtrW(h, WINDOW_LONG_PTR_INDEX(n_index)) };
         // LONG_PTR is isize; truncate to i32 to match the koffi `long` shape.
         Ok(v as i32)
@@ -458,7 +458,7 @@ fn find_wheel_leaf_by_hittest(top: HWND) -> Option<HWND> {
 #[napi]
 pub fn win32_find_scroll_leaf_for_top_level(top: BigInt) -> napi::Result<Option<BigInt>> {
     napi_safe_call("win32_find_scroll_leaf_for_top_level", || {
-        let top_hwnd = hwnd_from_bigint(top)?;
+        let top_hwnd = hwnd_from_bigint(top);
         let top_class = get_class_name(top_hwnd);
         if top_class.is_empty() {
             return Ok(None);
@@ -515,7 +515,7 @@ pub fn win32_find_scroll_leaf_for_top_level(top: BigInt) -> napi::Result<Option<
 #[napi]
 pub fn win32_find_wheel_leaf_by_hittest(top: BigInt) -> napi::Result<Option<BigInt>> {
     napi_safe_call("win32_find_wheel_leaf_by_hittest", || {
-        Ok(find_wheel_leaf_by_hittest(hwnd_from_bigint(top)?).map(hwnd_to_bigint))
+        Ok(find_wheel_leaf_by_hittest(hwnd_from_bigint(top)).map(hwnd_to_bigint))
     })
 }
 

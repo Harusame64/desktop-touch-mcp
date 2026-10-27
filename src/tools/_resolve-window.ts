@@ -417,7 +417,7 @@ export async function resolveWindowTarget(params: {
     // 0x1234, another window). Unlike discover, a title beside it does not stand in for it here.
     const parsed = parseWindowHandle(params.hwnd);
     if (parsed === undefined) {
-      throw new Error(`WindowNotFound: hwnd "${params.hwnd}" is not a window handle (a positive integer of at most 64 bits)`);
+      throw new Error(`WindowNotFound: hwnd "${params.hwnd}" is not a window handle (a positive integer of at most 64 bits, not a pseudo-handle such as HWND_BROADCAST)`);
     }
     let hwndb: bigint = parsed;
     let title = getWindowTitleW(hwndb);

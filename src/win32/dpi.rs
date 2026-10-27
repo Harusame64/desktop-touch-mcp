@@ -29,7 +29,7 @@ use super::handle::hwnd_from_bigint;
 #[napi]
 pub fn win32_get_window_dpi(hwnd: BigInt) -> napi::Result<u32> {
     napi_safe_call("win32_get_window_dpi", || {
-        let h = hwnd_from_bigint(hwnd)?;
+        let h = hwnd_from_bigint(hwnd);
         // MonitorFromWindow always returns a valid HMONITOR for any non-null
         // window (including DEFAULTTONEAREST fallback). For null/dead hwnd
         // it returns NULL; treat as 96.

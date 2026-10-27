@@ -352,7 +352,12 @@ describe("ADR-036 — one answer to \"is this a handle\"", () => {
     // through the native enumeration, and refusing those is not something anyone has measured.
     expect(parseTargetHwnd({ hwnd: "9223372036854775808" })).toBe(0x8000_0000_0000_0000n);
     expect(parseTargetHwnd({ hwnd: "18446744071562067968" })).toBe(0xffff_ffff_8000_0000n);
-    expect(parseTargetHwnd({ hwnd: "18446744073709551615" })).toBe(0xffff_ffff_ffff_ffffn);
+    // u64::MAX..-2 are -1/-2/-3 as isize (HWND_TOPMOST, HWND_NOTOPMOST, HWND_MESSAGE), and 0xFFFF is
+    // HWND_BROADCAST: pseudo-handles, refused by the native reader as well (handle.rs).
+    expect(parseTargetHwnd({ hwnd: "18446744073709551612" })).toBe(0xffff_ffff_ffff_fffcn);
+    for (const hwnd of ["18446744073709551615", "18446744073709551614", "18446744073709551613", "65535"]) {
+      expect(parseTargetHwnd({ hwnd }), `hwnd = ${hwnd}`).toBeUndefined();
+    }
     // 2^64 + 0x1234 wraps to 0x1234 through get_u64() with the lossless flag dropped.
     for (const hwnd of ["18446744073709551616", "18446744073709556276", "0x10000000000001234"]) {
       expect(parseTargetHwnd({ hwnd }), `hwnd = ${hwnd}`).toBeUndefined();

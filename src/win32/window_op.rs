@@ -35,7 +35,7 @@ fn hwnd_notopmost() -> HWND {
 #[napi]
 pub fn win32_show_window(hwnd: BigInt, n_cmd_show: i32) -> napi::Result<bool> {
     napi_safe_call("win32_show_window", || {
-        Ok(unsafe { ShowWindow(hwnd_from_bigint(hwnd)?, SHOW_WINDOW_CMD(n_cmd_show)) }.as_bool())
+        Ok(unsafe { ShowWindow(hwnd_from_bigint(hwnd), SHOW_WINDOW_CMD(n_cmd_show)) }.as_bool())
     })
 }
 
@@ -45,7 +45,7 @@ pub fn win32_show_window(hwnd: BigInt, n_cmd_show: i32) -> napi::Result<bool> {
 #[napi]
 pub fn win32_set_foreground_window(hwnd: BigInt) -> napi::Result<bool> {
     napi_safe_call("win32_set_foreground_window", || {
-        Ok(unsafe { SetForegroundWindow(hwnd_from_bigint(hwnd)?) }.as_bool())
+        Ok(unsafe { SetForegroundWindow(hwnd_from_bigint(hwnd)) }.as_bool())
     })
 }
 
@@ -55,7 +55,7 @@ pub fn win32_set_window_topmost(hwnd: BigInt) -> napi::Result<bool> {
     napi_safe_call("win32_set_window_topmost", || {
         let result = unsafe {
             SetWindowPos(
-                hwnd_from_bigint(hwnd)?,
+                hwnd_from_bigint(hwnd),
                 Some(hwnd_topmost()),
                 0, 0, 0, 0,
                 SET_WINDOW_POS_FLAGS(SWP_NOMOVE.0 | SWP_NOSIZE.0),
@@ -71,7 +71,7 @@ pub fn win32_clear_window_topmost(hwnd: BigInt) -> napi::Result<bool> {
     napi_safe_call("win32_clear_window_topmost", || {
         let result = unsafe {
             SetWindowPos(
-                hwnd_from_bigint(hwnd)?,
+                hwnd_from_bigint(hwnd),
                 Some(hwnd_notopmost()),
                 0, 0, 0, 0,
                 SET_WINDOW_POS_FLAGS(SWP_NOMOVE.0 | SWP_NOSIZE.0),
@@ -115,7 +115,7 @@ pub fn win32_set_window_bounds(
         }
         let result = unsafe {
             SetWindowPos(
-                hwnd_from_bigint(hwnd)?,
+                hwnd_from_bigint(hwnd),
                 None, // SWP_NOZORDER => hwndInsertAfter ignored
                 x, y, cx, cy,
                 SET_WINDOW_POS_FLAGS(flags),

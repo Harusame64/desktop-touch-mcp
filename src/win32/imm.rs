@@ -44,7 +44,11 @@ use super::handle::hwnd_from_bigint;
 #[napi]
 pub fn win32_get_ime_open_status(hwnd: BigInt) -> napi::Result<bool> {
     napi_safe_call("win32_get_ime_open_status", || {
-        let target = hwnd_from_bigint(hwnd)?;
+        let target = hwnd_from_bigint(hwnd);
+        // internal #303 — ImmGetDefaultIMEWnd(NULL) answers this thread's own IME window.
+        if super::handle::refused_or_null(target) {
+            return Ok(false);
+        }
         let ime_wnd = unsafe { ImmGetDefaultIMEWnd(target) };
         if ime_wnd.0.is_null() {
             return Ok(false);
@@ -73,7 +77,11 @@ pub fn win32_get_ime_open_status(hwnd: BigInt) -> napi::Result<bool> {
 #[napi]
 pub fn win32_set_ime_open_status(hwnd: BigInt, open: bool) -> napi::Result<bool> {
     napi_safe_call("win32_set_ime_open_status", || {
-        let target = hwnd_from_bigint(hwnd)?;
+        let target = hwnd_from_bigint(hwnd);
+        // internal #303 — ImmGetDefaultIMEWnd(NULL) answers this thread's own IME window.
+        if super::handle::refused_or_null(target) {
+            return Ok(false);
+        }
         let ime_wnd = unsafe { ImmGetDefaultIMEWnd(target) };
         if ime_wnd.0.is_null() {
             return Ok(false);

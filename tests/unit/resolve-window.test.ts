@@ -114,16 +114,17 @@ describe("resolveWindowTarget — hwnd path", () => {
   });
 
   // internal #303 — a value that parses but is no handle is refused before any window is asked about.
-  it.each(["18446744073709556276", "0", "-1"])("throws WindowNotFound for %s, which is no window handle", async (raw) => {
+  it.each(["18446744073709556276", "0", "-1", "65535", "18446744073709551615"])("throws WindowNotFound for %s, which is no window handle", async (raw) => {
     mockGetWindowTitleW.mockReturnValue("Calculator");
     await expect(resolveWindowTarget({ hwnd: raw })).rejects.toThrow(/WindowNotFound.*is not a window handle/);
     expect(mockGetWindowTitleW).not.toHaveBeenCalled();
   });
 
-  it("still takes the largest u64 as a handle (the limit is u64, not i64)", async () => {
+  it("still takes a handle above i64::MAX (the limit is u64, not i64)", async () => {
+    // a 32-bit handle sign-extended, as the native enumeration would render one
     mockGetWindowTitleW.mockReturnValue("Calculator");
-    const result = await resolveWindowTarget({ hwnd: "18446744073709551615" });
-    expect(result!.hwnd).toBe(18446744073709551615n);
+    const result = await resolveWindowTarget({ hwnd: "18446744071562072628" });
+    expect(result!.hwnd).toBe(0xffff_ffff_8000_1234n);
   });
 
   it("throws WindowNotFound when no visible window with given hwnd (empty title + null rect)", async () => {
