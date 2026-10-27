@@ -61,6 +61,9 @@ mod tests {
         assert_eq!(handle_value(&big(false, &[0x1234])), Some(0x1234));
         // zero stays the null HWND (get_active_window on the lock screen)
         assert_eq!(handle_value(&big(false, &[0])), Some(0));
+        // the edge of the pseudo-handles: -4 as isize is a handle (win2's mutation widening -3..=-1 passed)
+        assert_eq!(handle_value(&big(false, &[u64::MAX - 3])), Some(u64::MAX - 3));
+        assert_eq!(handle_value(&big(false, &[0xFFFE])), Some(0xFFFE));
         // a sign-extended 32-bit handle, if user32 ever hands one out, stays a handle
         assert_eq!(handle_value(&big(false, &[0xFFFF_FFFF_8000_1234])), Some(0xFFFF_FFFF_8000_1234));
     }
