@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 import sharp from "sharp";
 import { captureWindowBackground, capturedFrameRect } from "./image.js";
-import { enumWindowsInZOrder, getWindowDpi, printWindowToBuffer, isExcludedWindowHandle } from "./win32.js";
+import { enumWindowsInZOrder, getWindowDpi, printWindowToBuffer, isExcludedWindowHandle, type WindowZInfo } from "./win32.js";
 import { WindowExcludedError } from "./tool-exclusion.js";
 import { refuseIfFrozen } from "./window-frozen.js";
 import { nativeEngine } from "./native-engine.js";
@@ -709,6 +709,17 @@ export function clusterOcrWords(words: OcrWord[], elementGapThreshold = 35): Som
  *   Applied to screen-absolute words between mergeNearbyWords and clusterOcrWords.
  *   Caller must provide screen-absolute rects (same space as OcrWord.bbox after origin offset).
  */
+/**
+ * The window a title names for the OCR lane: plain case-insensitive substring, first hit in Z-order
+ * (ADR-029: this find is the authority on which window a visual-only entity came from). Shared with
+ * discover's frozen test when UIA could not read the target (internal #288), so both ask about the
+ * same window.
+ */
+export function findOcrWindowByTitle(windowTitle: string): WindowZInfo | undefined {
+  const wanted = windowTitle.toLowerCase();
+  return enumWindowsInZOrder().find((w) => w.title.toLowerCase().includes(wanted));
+}
+
 export async function runSomPipeline(
   windowTitle: string,
   hwnd?: bigint | null,
@@ -750,8 +761,7 @@ export async function runSomPipeline(
     // came from — plain case-insensitive substring, first hit in Z-order. The
     // resolved handle is returned so consumers can record it as the entity's
     // origin instead of re-running this search at act time.
-    const wins = enumWindowsInZOrder();
-    const win  = wins.find((w) => w.title.toLowerCase().includes(windowTitle.toLowerCase()));
+    const win = findOcrWindowByTitle(windowTitle);
     if (!win) throw new Error(`runSomPipeline: window not found: "${windowTitle}"`);
     targetHwnd = win.hwnd;
     origin = { x: win.region.x, y: win.region.y };

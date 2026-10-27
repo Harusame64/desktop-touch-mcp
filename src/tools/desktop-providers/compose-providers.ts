@@ -38,6 +38,8 @@ import { fetchTerminalCandidates } from "./terminal-provider.js";
 import { fetchVisualCandidates }   from "./visual-provider.js";
 import { fetchOcrCandidates }      from "./ocr-provider.js";
 import { resolveWindowTarget, findPlainTopLevelWindowsByTitle } from "../_resolve-window.js";
+import { findOcrWindowByTitle } from "../../engine/ocr-bridge.js";
+import { isWindowProcessFrozen } from "../../engine/win32.js";
 import { WindowExcludedError }     from "../../engine/tool-exclusion.js";
 import { probeAim, probeLane, type ProbeLane } from "../../engine/aim-probe.js";
 import { containsPoint, toAim, readWindowIdentityFields, type WindowIdentity, type WindowRect, type AimOrigin } from "../../engine/aim.js";
@@ -165,6 +167,37 @@ function addWarningIfPartial(result: ProviderResult, primaryCount: number): Prov
 // Terminal route is excluded intentionally: terminal provider is the primary
 // there, and uia is additive. Even if uia is blind, the terminal buffer is the
 // authoritative source — visual escalation would add noise, not signal.
+
+/**
+ * Internal #288 — whether a window UIA could not read is frozen. The OCR lane is the only one that
+ * asks (`refuseIfFrozen` in `runSomPipeline`), and it runs only when UIA read blind; when UIA FAILED,
+ * the zero reason became `all_providers_failed`, telling the caller to change providers, while the
+ * window's app was suspended. MEASURED by win2 (2026-10-27, v2.3.3): a frozen Settings window by its
+ * handle read blind → OCR → `window_frozen`; by its title UIA answered "Window not found" (the cloaked
+ * window is not among UI Automation's top-level children) → OCR skipped → `all_providers_failed`.
+ *
+ * The window is the one the OCR lane would have read: the handle when one is pinned, otherwise
+ * `findOcrWindowByTitle` — the same find, so the two never ask about different windows. Nothing is
+ * captured; a window that is not frozen, or that nothing names, keeps the row it had.
+ */
+function frozenTestWhenUiaFailed(target: TargetSpec | undefined): ProviderResult {
+  let hwnd: bigint | undefined;
+  try {
+    const pinned = target ? parseTargetHwnd(target) : undefined;
+    hwnd = pinned ?? (target?.windowTitle ? findOcrWindowByTitle(target.windowTitle)?.hwnd : undefined);
+    if (hwnd !== undefined && isWindowProcessFrozen(hwnd) !== true) hwnd = undefined;
+  } catch {
+    // A test that cannot be made is not an answer: the row stays the one this road always wrote.
+    hwnd = undefined;
+  }
+  if (hwnd !== undefined) {
+    return probeLane("ocr", "skipped", { why: "window_frozen", testedHwnd: hwnd.toString() }, {
+      candidates: [],
+      warnings: ["target_window_frozen"],
+    });
+  }
+  return probeLane("ocr", "skipped", { why: "uia_not_blind" }, { candidates: [], warnings: [] });
+}
 
 /**
  * UIA-blind warning codes (PWA/Electron/canvas/RDP — UIA tree unusable). The
@@ -654,7 +687,9 @@ async function composeCandidatesInner(target: TargetSpec): Promise<ProviderResul
       ).catch((): ProviderResult => probeLane("ocr", "failed", { why: "rejected" }, { candidates: [], warnings: ["ocr_provider_failed"] }))
     // Not called, and said so: on this road "OCR did not look" is a decision about THIS window, and
     // without a row it prints like a lane nobody instrumented (item 14a).
-    : probeLane("ocr", "skipped", { why: "uia_not_blind" }, { candidates: [], warnings: [] });
+    : uiaResult.warnings.includes("uia_provider_failed")
+      ? frozenTestWhenUiaFailed(target)
+      : probeLane("ocr", "skipped", { why: "uia_not_blind" }, { candidates: [], warnings: [] });
 
   const mergedAll  = withoutUnneededBlindNotice(mergeResults([uiaResult, visualResult, ocrResult]), uiaBlindForOcr);
   const merged     = webArea !== undefined ? { ...mergedAll, candidates: pageFirst(mergedAll.candidates, webArea) } : mergedAll;
