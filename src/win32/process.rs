@@ -44,7 +44,7 @@ impl Drop for SnapshotHandleGuard {
     }
 }
 
-struct ProcessHandleGuard(HANDLE);
+pub(crate) struct ProcessHandleGuard(pub(crate) HANDLE);
 impl Drop for ProcessHandleGuard {
     fn drop(&mut self) {
         unsafe {

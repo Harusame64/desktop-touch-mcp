@@ -23,6 +23,9 @@ pub(crate) mod dpi;
 pub(crate) mod process;
 #[cfg(windows)]
 pub(crate) mod handle;
+// Internal #250: the AppUserModelID that leads from a packaged app's frame window to its content.
+#[cfg(windows)]
+pub(crate) mod app_id;
 #[cfg(windows)]
 pub(crate) mod input;
 #[cfg(windows)]

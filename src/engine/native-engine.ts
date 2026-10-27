@@ -219,6 +219,10 @@ export interface NativeWin32 {
   win32GetProcessCommandLine?(pid: number): string[] | null;
   /** internal #247: whether the OS froze the process; null when it cannot be read. */
   win32ProcessIsFrozen?(pid: number): boolean | null;
+  /** internal #250: a window's AppUserModelID property; null when it has none. */
+  win32GetWindowAppUserModelId?(hwnd: bigint): string | null;
+  /** internal #250: a process's AppUserModelID; null when it is not a packaged app or cannot be opened. */
+  win32GetProcessAppUserModelId?(pid: number): string | null;
   win32GetScrollInfo?(hwnd: bigint, axis: string): NativeScrollInfo | null;
   win32PostMessage?(hwnd: bigint, msg: number, wParam: bigint, lParam: bigint): boolean;
   win32GetFocus?(): bigint | null;

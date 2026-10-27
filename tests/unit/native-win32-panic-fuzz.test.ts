@@ -26,6 +26,9 @@ describe.skipIf(!nativeWin32)("ADR-007 P1: native win32 panic-safety", () => {
       it(`win32GetClassName(${label})`, () => {
         expect(native.win32GetClassName!(hwnd)).toBe("");
       });
+      it(`win32GetWindowAppUserModelId(${label})`, () => {
+        expect(native.win32GetWindowAppUserModelId!(hwnd)).toBeNull();
+      });
       it(`win32GetWindowRect(${label})`, () => {
         expect(native.win32GetWindowRect!(hwnd)).toBeNull();
       });
@@ -235,6 +238,12 @@ describe.skipIf(!nativeWin32)("ADR-007 P1: native win32 panic-safety", () => {
       expect(r.pid).toBe(0);
       expect(r.processName).toBe("");
       expect(r.processStartTimeMs).toBe(0);
+    });
+
+    it("win32GetProcessAppUserModelId: pid 0, a non-existent pid and System are not packaged apps (internal #250)", () => {
+      expect(native.win32GetProcessAppUserModelId!(0)).toBeNull();
+      expect(native.win32GetProcessAppUserModelId!(2_147_483_647)).toBeNull();
+      expect(native.win32GetProcessAppUserModelId!(4)).toBeNull();
     });
 
     it("win32GetProcessIdentity(2147483647) (non-existent PID) returns empty identity", () => {

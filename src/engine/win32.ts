@@ -26,7 +26,9 @@ function requireNativeWin32(): NonNullable<typeof nativeWin32> {
 const GWL_EXSTYLE   = -20;
 const GWL_STYLE     = -16;
 const WS_EX_TOPMOST = 0x00000008;
+const GW_HWNDNEXT   = 2;
 const GW_OWNER      = 4;
+const GW_CHILD      = 5;
 const GA_PARENT     = 1;
 const GA_ROOT       = 2;
 const GA_ROOTOWNER  = 3;
@@ -603,9 +605,18 @@ export function getWindowIdentity(hwnd: unknown): ProcessIdentity {
  * or minimised)? Its window is still listed and can be captured, but the frame is the last one
  * before it stopped and UI Automation reads nothing. `null` when it cannot be told (no pid, the
  * process cannot be opened, an addon without the export) — never read as "running".
+ *
+ * A packaged app's frame (`ApplicationFrameWindow`) is asked about through its content
+ * (`isFrameContentFrozen`): the frame's own process, ApplicationFrameHost, is never frozen (#250).
  */
 export function isWindowProcessFrozen(hwnd: bigint): boolean | null {
-  const pid = getWindowProcessId(hwnd);
+  let className = "";
+  try { className = requireNativeWin32().win32GetClassName?.(hwnd) ?? ""; } catch { /* keep "" */ }
+  if (className === APPLICATION_FRAME_CLASS) return isFrameContentFrozen(hwnd);
+  return isProcessFrozen(getWindowProcessId(hwnd));
+}
+
+function isProcessFrozen(pid: number): boolean | null {
   if (pid === 0) return null;
   try {
     const frozen = requireNativeWin32().win32ProcessIsFrozen?.(pid);
@@ -613,6 +624,56 @@ export function isWindowProcessFrozen(hwnd: bigint): boolean | null {
   } catch {
     return null;
   }
+}
+
+const APPLICATION_FRAME_CLASS = "ApplicationFrameWindow";
+const CORE_WINDOW_CLASS = "Windows.UI.Core.CoreWindow";
+
+/**
+ * Internal #250 — whether the app shown in a packaged app's frame window is frozen.
+ *
+ * MEASURED by win2 (2026-10-27, read-only, Settings and Xbox hidden, Calculator shown): while shown
+ * the content `CoreWindow` is a child of the frame; while hidden and frozen it is top-level and no
+ * parent, owner or child link leads to it. What holds both ways is the frame's window AUMID equal to
+ * the content process's AUMID (the content window's own property is empty). So a child `CoreWindow`
+ * is taken first, and failing that the top-level `CoreWindow`s whose process has the frame's AUMID.
+ *
+ * Every content process frozen → `true`, every one running → `false`. A frame with no AUMID (an
+ * explorer.exe frame has none), no content found, or contents that disagree (two instances of one
+ * app) → `null`: which one this frame shows cannot be told.
+ */
+function isFrameContentFrozen(frame: bigint): boolean | null {
+  const pids = new Set<number>();
+  try {
+    const w32 = requireNativeWin32();
+    // A frame has a handful of children (TitleBar ×2, InputSink and the content); the bound only
+    // keeps a broken sibling chain from spinning.
+    let child = w32.win32GetWindow?.(frame, GW_CHILD) ?? null;
+    for (let n = 0; child !== null && n < 64; n++) {
+      if (w32.win32GetClassName?.(child) === CORE_WINDOW_CLASS) pids.add(getWindowProcessId(child));
+      child = w32.win32GetWindow?.(child, GW_HWNDNEXT) ?? null;
+    }
+    if (pids.size === 0) {
+      const aumid = w32.win32GetWindowAppUserModelId?.(frame);
+      if (typeof aumid !== "string" || aumid === "") return null;
+      // AUMIDs compare without case (they are package family names and app ids).
+      const want = aumid.toLowerCase();
+      for (const h of w32.win32EnumTopLevelWindows?.() ?? []) {
+        if (w32.win32GetClassName?.(h) !== CORE_WINDOW_CLASS) continue;
+        const pid = getWindowProcessId(h);
+        if (pid === 0 || pids.has(pid)) continue;
+        if (w32.win32GetProcessAppUserModelId?.(pid)?.toLowerCase() === want) pids.add(pid);
+      }
+    }
+  } catch {
+    return null;
+  }
+  pids.delete(0);
+  if (pids.size === 0) return null;
+  const answers = [...pids].map(isProcessFrozen);
+  if (answers.every((a) => a === true)) return true;
+  if (answers.every((a) => a === false)) return false;
+  return null;
 }
 
 export function getProcessCommandLineByPid(pid: number): string[] | null {
