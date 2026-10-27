@@ -549,8 +549,10 @@ export function toAim(input: Aim | TargetSpecLike | undefined): Aim {
 /**
  * The one place that decides whether a string names a handle.
  *
- * Non-positive, past u64 or a pseudo-handle (`HWND_BROADCAST`, -1/-2/-3 as isize — the native reader's
- * rule in `src/win32/handle.rs`, internal #303) and unreadable all mean "no handle". `parseTargetHwnd`
+ * Non-positive, past u64, past 32 bits other than as a sign-extended 32-bit handle (user32 reads only
+ * the low 32 bits, so `2^32 + H` is H — internal #314), a pseudo-handle (`HWND_BROADCAST`, -1/-2/-3
+ * as isize — the native reader's rule in `src/win32/handle.rs`, internal #303) and unreadable all mean
+ * "no handle". `parseTargetHwnd`
  * in `session-registry.ts` is this function (it was a second copy until #855).
  *
  * **Exported for the resolver** (ADR-036 item 12, gate 2 2026-09-10). The world-graph decides which
@@ -564,8 +566,11 @@ export function parseWindowHandle(raw: string | undefined): bigint | undefined {
   if (raw === undefined || raw === "") return undefined;
   try {
     const h = BigInt(raw);
-    // u64::MAX less -1/-2/-3 as isize, and HWND_BROADCAST: the native reader's rule (handle.rs).
-    return h <= 0n || h > 0xffff_ffff_ffff_fffcn || h === 0xffffn ? undefined : h;
+    // u64::MAX less -1/-2/-3 as isize, HWND_BROADCAST, and the high 32 bits zero or the sign extension
+    // of bit 31: the native reader's rule (handle.rs).
+    const high = h >> 32n;
+    const fits32 = high === 0n || (high === 0xffff_ffffn && (h & 0x8000_0000n) !== 0n);
+    return h <= 0n || h > 0xffff_ffff_ffff_fffcn || h === 0xffffn || !fits32 ? undefined : h;
   } catch {
     return undefined;
   }
