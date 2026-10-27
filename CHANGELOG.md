@@ -16,6 +16,13 @@
   low 32 bits of a handle, so `4294971956` (2^32 + 0x1234) acted on window `0x1234`. Such a value is
   now refused the same way as one past 64 bits; a handle whose high 32 bits are all ones and bit 31 is
   set (a 32-bit handle sign-extended) is still read (internal #314).
+- **A packaged app's frame window is named as frozen when its app is.** A hidden packaged app (Settings,
+  for one) has two windows: the frame, owned by ApplicationFrameHost, which Windows never suspends, and
+  the app's own content window. Only the content was tested, so `windows[]` never marked the frame
+  `isFrozen`, and `desktop_discover` by the frame's handle could read the suspended app's last frame
+  as its contents. The frame is now tested through its content: its child window while shown, and the
+  app's own window found by the frame's AppUserModelID while hidden (internal #250). A frame with no
+  AppUserModelID, or whose app has no window, is still not marked.
 - **`desktop_discover` names a frozen window as frozen when UI Automation cannot read it.** A hidden
   packaged app that Windows has suspended (Settings, for one) answered `entityZeroReason:
   "window_frozen"` when targeted by its handle, but `all_providers_failed` by its title. That told the
