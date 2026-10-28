@@ -118,6 +118,7 @@ describe("internal #318: the last look before the click", () => {
     expect(body.error).toContain('"Shop" (https://example.test/, tabId t1)');
     expect(body.error).toMatch(/does not switch tabs in a window that is already in front\. Nothing was clicked/);
     expect(JSON.stringify(body.suggest)).toContain('retry browser_click with tabId \\"t2\\"');
+    expect(JSON.stringify(body.suggest)).toContain("chromeTabUrlContains");
     expect(body.context).toMatchObject({ coveredBy: "tab", target: CART, showing: [SHOP] });
   });
 });

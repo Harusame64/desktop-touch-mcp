@@ -829,7 +829,7 @@ export function browserPointCoveredFailure(
       `browser_click: the tab ${shown(cover.target)} is not the one its window shows, so a click at the element's point (${x}, ${y}) would land on the tab that is${front ? `: ${shown(front)}` : ""}. browser_click does not switch tabs in a window that is already in front. Nothing was clicked.`,
       {
         suggest: [
-          `Select the tab "${cover.target.title}" in the browser window, then retry browser_click with tabId "${cover.target.tabId}". desktop_discover on the browser window lists its tabs by title in the tab strip; desktop_act on that tab selects it.`,
+          `Select the tab, then retry browser_click with tabId "${cover.target.tabId}": focus_window({ title: <the browser window's title>, chromeTabUrlContains: <part of "${cover.target.url}"> }) selects it. Or desktop_discover on the browser window with query "${cover.target.title}" and desktop_act on that tab-strip entry (its label starts with the title).`,
           "If the tab showing is the one you meant, retry with its tabId instead (showing[] in the context: tabs of the same window).",
           "To read or change the hidden tab without clicking, browser_eval and browser_fill work on a hidden tab through the page.",
         ],
