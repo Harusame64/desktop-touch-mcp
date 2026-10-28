@@ -363,8 +363,8 @@ describe("internal #309 — a refusal by title names the minimised windows that 
     const text = JSON.stringify(r);
     expect(r.ok).toBe(false);
     expect(text).toContain("ambiguous_target");
-    expect(text).toContain(`1 of the 2 windows with this title is minimised (hwnd ${SIBLING})`);
-    expect(text).toContain(`pass hwnd \\"${LIVE}\\"`);
+    expect(text).toContain(`1 of the 2 windows with this title is minimised (hwnd ${String(SIBLING)})`);
+    expect(text).toContain(`pass hwnd \\"${String(LIVE)}\\"`);
     expect(text).toContain("@active");
     expect(mockType).not.toHaveBeenCalled();
   });
