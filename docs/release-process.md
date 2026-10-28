@@ -254,6 +254,19 @@ Record every narrowing here so the exceptions stay visible:
   - D2: one cell each from #856 (2^32 + H refused), #857 (a hidden Settings frame by its handle answers
     `window_frozen`) and #858 (`@active` types into the shown window with the same page minimised).
   - D3: the usual regressions, 3/3.
+  Results (win2, 18b284d4, a clean worktree, `npm ci` + `build:rs` (GNU release, sha256 18C165BF…0E13) + `build`):
+  - D0: HTTP 6/6 on 23848, `version: 2.3.4`, 32 tools. `publish --dry-run`: 5 files. npx from the packed tarball
+    (`npx --yes --package file:<tgz> desktop-touch-mcp --help`) stopped at the PENDING manifest, exit 1. The bare
+    `npx --yes <tgz> --help` form printed nothing and exited 0 twice without installing anything, so it is not a check.
+  - D1: three runs exited on their own, code 0, 98–108 ms after stderr closed, with 0 `uncaught` lines and one `exit`
+    line (`stderr broken pipe (EPIPE) — parent exited`). In-flight: the `wait_until` answer reached stdout 2,764 ms
+    after the cut, and the process exited 15 ms later (`inflight drained after grace`).
+  - D2: #856 2^32 + H → InvalidArgs, decimal H read. #857 the hidden Settings frame by handle → `window_frozen` in
+    93 ms; `windows[]` marks the frame and its content `isCloaked` + `isFrozen`. #858 `@active` typed only into the
+    shown Edge with the same page minimised in Chrome (resolvers n=1).
+  - D3: a WinForms TextBox and DropDownList setValue, a text editor type and Calculator invoke, 3/3 each, all through
+    UIA. The DropDownList write does not fire SelectedIndexChanged; the same is true of 2.3.3.
+  - No P1, no regression.
 
 ### HTTP Transport Verification (Required)
 
