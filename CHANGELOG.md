@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Changed — Windows
+- **Bringing a maximized window forward keeps it maximized.** `focus_window`, `browser_click`, `keyboard`,
+  `mouse_click`, `terminal` and the scroll tools turned a maximized window to its normal size when they brought
+  it forward. Only a minimized window is restored now, and one minimized from maximized comes back maximized.
+  `window_dock` still turns a maximized window to its normal size before resizing it (internal #307).
 - **`browser_click` takes `forceFocus`, and says so when another app's window keeps the browser behind it.**
   When Windows keeps another app's window in front of the tab's browser window (an Edge window behind Chrome),
   the click is still refused with `BrowserPointCovered` and nothing is clicked; the refusal now says that

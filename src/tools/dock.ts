@@ -153,7 +153,7 @@ function dockKnownWindow(
 
   // Restore minimized/maximized windows first — SetWindowPos is unreliable otherwise.
   if (win.isMinimized || win.isMaximized) {
-    restoreAndFocusWindow(win.hwnd);
+    restoreAndFocusWindow(win.hwnd, { unmaximize: true });
   }
 
   const monitors = enumMonitors();
