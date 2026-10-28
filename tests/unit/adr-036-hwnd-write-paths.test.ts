@@ -350,6 +350,34 @@ function guardSuppressedFixHint(): unknown {
     .suppressSuggestedFix;
 }
 
+describe("internal #309 — a refusal by title names the minimised windows that share the title", () => {
+  it("says which match is minimised and the handle of the one on screen, and offers @active to keyboard", async () => {
+    mockEnum.mockImplementation(() => [
+      win(ELSEWHERE, "Some other app", 0),
+      { ...win(SIBLING, SHARED_TITLE, 1), isMinimized: true },
+      win(LIVE, SHARED_TITLE, 2),
+    ]);
+    const r = parse(await keyboardTypeHandler({
+      ...TYPE_BASE, windowTitle: SHARED_TITLE, method: "foreground",
+    } as never));
+    const text = JSON.stringify(r);
+    expect(r.ok).toBe(false);
+    expect(text).toContain("ambiguous_target");
+    expect(text).toContain(`1 of the 2 windows with this title is minimised (hwnd ${String(SIBLING)})`);
+    expect(text).toContain(`pass hwnd \\"${String(LIVE)}\\"`);
+    expect(text).toContain("@active");
+    expect(mockType).not.toHaveBeenCalled();
+  });
+
+  it("adds nothing when no match is minimised", async () => {
+    const r = parse(await keyboardTypeHandler({
+      ...TYPE_BASE, windowTitle: SHARED_TITLE, method: "foreground",
+    } as never));
+    expect(JSON.stringify(r)).toContain("ambiguous_target");
+    expect(JSON.stringify(r)).not.toContain("minimised");
+  });
+});
+
 describe("internal #309 — @active pins the foreground window, not a search by its title", () => {
   // win2 2026-10-28: Edge shown and in front, the same page minimised in Chrome; `@active` resolved
   // to Edge and the guard still counted both titles and refused with ambiguous_target.

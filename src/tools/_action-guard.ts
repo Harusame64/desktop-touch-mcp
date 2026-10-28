@@ -310,6 +310,26 @@ function titlelessHandleStep(): string {
     : `That hwnd is a live window, and the enumeration this guard and ${lister} both read does not list it — so neither can name it `;
 }
 
+/**
+ * Internal #309 — when some of the windows a title matched are minimised, say which, and name the
+ * handle of the one on screen. A minimised window with the same title (the same page minimised in
+ * another browser) makes a keyboard write refuse though only one window is on screen, and the
+ * generic line above does not say why. The guard still refuses rather than choosing the shown window
+ * (the user's decision, 2026-10-28): if the caller meant the minimised one, keys would go elsewhere.
+ * `@active` is offered for keyboard only, the one tool that pins it to the foreground handle (#858).
+ */
+export function minimisedTwinsNote(
+  matches: { shown: string[]; minimised: string[] } | undefined,
+  actionKind: ActionKind,
+): string {
+  if (!matches || matches.minimised.length === 0) return "";
+  const total = matches.shown.length + matches.minimised.length;
+  const minimised = `${matches.minimised.length} of the ${total} windows with this title ${matches.minimised.length === 1 ? "is" : "are"} minimised (hwnd ${matches.minimised.join(", ")})`;
+  if (matches.shown.length !== 1) return `. ${minimised}`;
+  const active = actionKind === "keyboard" ? `, or windowTitle "@active" while it is in front` : "";
+  return `. ${minimised}. To act on the one on screen, pass hwnd "${matches.shown[0]}"${active}`;
+}
+
 function nextStepFor(
   status: AutoGuardEnvelope["status"],
   target?: string,
@@ -1031,7 +1051,7 @@ export async function runActionGuard(
           kind: "auto",
           status: "ambiguous_target",
           canContinue: false,
-          next: nextStepFor("ambiguous_target"),
+          next: nextStepFor("ambiguous_target") + minimisedTwinsNote(resolved.titleMatches, actionKind),
         },
         block: true,
       };
