@@ -95,6 +95,10 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "type": "boolean",
           "default": false
         },
+        "forceFocus": {
+          "description": "When true, bring the tab's browser window forward by bypassing Windows foreground-stealing protection (AttachThreadInput) when it stays behind another app's window. The point is still checked before clicking. Default: follows env DESKTOP_TOUCH_FORCE_FOCUS (default false).",
+          "type": "boolean"
+        },
         "include": {
           "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",
           "type": "array",

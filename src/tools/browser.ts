@@ -176,6 +176,11 @@ export const browserClickElementSchema = {
     "instead of failing with ElementNotInViewport. Default false preserves the explicit " +
     "scrollIntoView-then-retry workflow. Selector mode only (by-axis resolves only in-viewport actionable targets)."
   ),
+  forceFocus: coercedBoolean().optional().describe(
+    "When true, bring the tab's browser window forward by bypassing Windows foreground-stealing protection " +
+    "(AttachThreadInput) when it stays behind another app's window. The point is still checked before clicking. " +
+    "Default: follows env DESKTOP_TOUCH_FORCE_FOCUS (default false)."
+  ),
 };
 
 // Phase 3: kept as a ZodRawShape for internal documentation / type derivation;
@@ -405,7 +410,7 @@ function isChromiumFrameOrUnknown(w: { className?: string }): boolean {
   return w.className === undefined || w.className === "" || w.className === "Chrome_WidgetWin_1";
 }
 
-async function ensureWindowFocused(titleHint: string, windows: readonly WindowZInfo[]): Promise<bigint | undefined> {
+async function ensureWindowFocused(titleHint: string, windows: readonly WindowZInfo[], force = false): Promise<bigint | undefined> {
   // internal #274 (gate 2 on #834) — only a Chromium frame can be the browser: a terminal or an editor
   // whose title holds the tab's title would otherwise be focused, and the click check would then refuse
   // naming the real browser under the point. A window whose class could not be read is kept.
@@ -419,7 +424,7 @@ async function ensureWindowFocused(titleHint: string, windows: readonly WindowZI
     w.title.toLowerCase().includes(titleHint.toLowerCase())
   );
   if (target) {
-    restoreAndFocusWindow(target.hwnd);
+    restoreAndFocusWindow(target.hwnd, { force });
     await new Promise<void>((r) => setTimeout(r, 100));
     return target.hwnd;
   }
@@ -492,7 +497,7 @@ export function framesOfBrowserProcess<T extends { hwnd: bigint }>(
  * maximized windows), the frame that took the foreground after that is the one. Otherwise the tab's
  * title decides, then a generic Chrome/Edge title search.
  */
-async function ensureBrowserFocused(port: number, tabId: string | null = null): Promise<bigint | undefined> {
+async function ensureBrowserFocused(port: number, tabId: string | null = null, force = false): Promise<bigint | undefined> {
   // Try to match by the tab's title from CDP — the tab the click is for when one was named (codex P1 on
   // #834: the first page tab's window is the wrong reference for a tab in a second browser window).
   let tabTitle: string | undefined;
@@ -536,7 +541,10 @@ async function ensureBrowserFocused(port: number, tabId: string | null = null): 
           // window is focused as before, and a click it cannot reach is refused as covered (#834).
           const raised = await raiseTabAmong(pageTabId, port, [frame.hwnd]);
           if (raised === undefined) {
-            restoreAndFocusWindow(frame.hwnd);
+            // internal #305 — Windows can keep another app's window in front (win2: an Edge window behind
+            // Chrome, 2/2). `force` (forceFocus, default off: the user's decision 2026-10-28) focuses through
+            // AttachThreadInput; the covered-point check below still decides whether to click.
+            restoreAndFocusWindow(frame.hwnd, { force });
             await new Promise<void>((r) => setTimeout(r, 100));
           }
         }
@@ -554,7 +562,7 @@ async function ensureBrowserFocused(port: number, tabId: string | null = null): 
   }
 
   if (tabTitle) {
-    return ensureWindowFocused(tabTitle, windows);
+    return ensureWindowFocused(tabTitle, windows, force);
   }
 
   // Fall back to browser process name
@@ -569,7 +577,7 @@ async function ensureBrowserFocused(port: number, tabId: string | null = null): 
     w.title.includes("Google Chrome") || w.title.includes("Microsoft Edge")
   );
   if (browserWindow) {
-    restoreAndFocusWindow(browserWindow.hwnd);
+    restoreAndFocusWindow(browserWindow.hwnd, { force });
     await new Promise<void>((r) => setTimeout(r, 100));
     return browserWindow.hwnd;
   }
@@ -796,7 +804,13 @@ export function browserPointCover(owner: PointOwner): BrowserPointCover | undefi
  * internal #274 — the failure for a click whose point another window covers. Inline failCode (the
  * BrowserTargetMinimized precedent). An excluded window is not named (R3).
  */
-export function browserPointCoveredFailure(cover: BrowserPointCover, x: number, y: number, ctx: Record<string, unknown>): ToolResult {
+export function browserPointCoveredFailure(
+  cover: BrowserPointCover,
+  x: number,
+  y: number,
+  ctx: Record<string, unknown>,
+  forced = false,
+): ToolResult {
   const what =
     cover.covered === "excluded"
       ? "a window this server may not act through"
@@ -809,6 +823,12 @@ export function browserPointCoveredFailure(cover: BrowserPointCover, x: number, 
     {
       suggest: [
         "Close or move what is on top (a panel, popup or dialog of the browser is dismissed in the browser), then retry browser_click.",
+        // internal #305 — Windows can keep another app's window in front of the browser (an Edge window
+        // behind Chrome). Forcing is opt-in (the user's decision 2026-10-28), so the refusal says how.
+        // Not for the browser's own windows (forcing does not dismiss them) nor an excluded one.
+        ...(cover.covered === "other" && !forced
+          ? ["If Windows keeps the other window in front of the browser, retry with forceFocus: true to bring the browser window forward by force (AttachThreadInput). The point is checked again before clicking."]
+          : []),
         "To enter text, browser_fill sets the value through the page and does not use an OS click.",
       ],
       context: { ...ctx, at: { x, y }, coveredBy: cover.covered },
@@ -838,6 +858,7 @@ export async function osClickAndVerify(
   tabId: string | null,
   port: number,
   pointOwner: (aim: bigint, x: number, y: number) => PointOwner = whoIsUnderPoint,
+  force = false,
 ): Promise<VerifyDeliveryHint | BrowserPointCover> {
   // ADR-029: every browser_click path (selector, by-axis, actionability rescue)
   // funnels here, and this is an OS cursor click — CDP only resolves the
@@ -850,7 +871,7 @@ export async function osClickAndVerify(
   // been brought forward; the cursor has still not moved.)
   assertCoordinateReachable(x, y);
 
-  const browserHwnd = await ensureBrowserFocused(port, tabId);
+  const browserHwnd = await ensureBrowserFocused(port, tabId, force);
 
   // internal #274 — after the browser is brought forward and before the cursor moves: who would take a
   // press at the point. win2 (2.3.0 dogfood) saw Edge's first-run panel, a window Edge owns, cover the
@@ -1575,8 +1596,10 @@ async function handleBrowserClickByAxis(args: {
   tabId?: string;
   port: number;
   lensId?: string;
+  force?: boolean;
 }): Promise<ToolResult> {
   const { by, pattern, role, scope, caseSensitive, narrate, tabId, port, lensId } = args;
+  const force = args.force ?? false;
 
   let perceptionEnvBrowser: import("../engine/perception/types.js").PostPerception | undefined;
   if (lensId) {
@@ -1658,8 +1681,8 @@ async function handleBrowserClickByAxis(args: {
 
   // Resolved: OS-click at the physical point (probe with null selector — the
   // resolver located the element by coords; document-level mutation probe).
-  const clicked = await osClickAndVerify(outcome.physical.x, outcome.physical.y, null, tabId ?? null, port);
-  if (isCover(clicked)) return browserPointCoveredFailure(clicked, outcome.physical.x, outcome.physical.y, ctx);
+  const clicked = await osClickAndVerify(outcome.physical.x, outcome.physical.y, null, tabId ?? null, port, whoIsUnderPoint, force);
+  if (isCover(clicked)) return browserPointCoveredFailure(clicked, outcome.physical.x, outcome.physical.y, ctx, force);
   const verifyDelivery = clicked;
   const tabCtx = await getTabContext(tabId ?? null, port);
 
@@ -1728,8 +1751,10 @@ async function attemptSelectorActionabilityRescue(args: {
   guardAlreadyRun?: boolean;
   narrate?: string;
   perceptionEnv?: import("../engine/perception/types.js").PostPerception;
+  force?: boolean;
 }): Promise<ToolResult> {
   const { selector, tabId, port, scrollIntoView, guardAlreadyRun, narrate } = args;
+  const force = args.force ?? false;
   const ctx = { selector };
   let perceptionEnv = args.perceptionEnv;
 
@@ -1806,8 +1831,8 @@ async function attemptSelectorActionabilityRescue(args: {
     return browserMinimizedFailure(ctx);
   }
 
-  const clicked = await osClickAndVerify(outcome.physical.x, outcome.physical.y, null, tabId ?? null, port);
-  if (isCover(clicked)) return browserPointCoveredFailure(clicked, outcome.physical.x, outcome.physical.y, ctx);
+  const clicked = await osClickAndVerify(outcome.physical.x, outcome.physical.y, null, tabId ?? null, port, whoIsUnderPoint, force);
+  if (isCover(clicked)) return browserPointCoveredFailure(clicked, outcome.physical.x, outcome.physical.y, ctx, force);
   const verifyDelivery = clicked;
   const tabCtx = await getTabContext(tabId ?? null, port);
 
@@ -1858,6 +1883,7 @@ export const browserClickElementHandler = async ({
   lensId,
   fixId,
   scrollIntoView,
+  forceFocus,
 }: {
   selector?: string;
   by?: "text" | "regex" | "role" | "ariaLabel";
@@ -1871,14 +1897,16 @@ export const browserClickElementHandler = async ({
   lensId?: string;
   fixId?: string;
   scrollIntoView?: boolean;
+  forceFocus?: boolean;
 }): Promise<ToolResult> => {
+  const force = forceFocus ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   try {
     // ADR-023 Phase 1: by-axis (semantic) targeting path. The registration
     // schema's .refine() guarantees exactly-one-of(selector | by+pattern), so a
     // present `by` means selector is absent → resolver path. The selector path
     // below is unchanged (bit-equal, NFR-1 / AC-9).
     if (by && pattern) {
-      return await handleBrowserClickByAxis({ by, pattern, role, scope, caseSensitive, narrate, tabId, port, lensId });
+      return await handleBrowserClickByAxis({ by, pattern, role, scope, caseSensitive, narrate, tabId, port, lensId, force });
     }
     if (!selector) {
       return failCode("InvalidArgs", "browser_click: provide either selector or by+pattern.", {
@@ -1923,7 +1951,7 @@ export const browserClickElementHandler = async ({
         if (e instanceof ElementZeroSizeError) {
           return await attemptSelectorActionabilityRescue({
             selector: effectiveSelector, tabId: effectiveTabId, port,
-            scrollIntoView, guardAlreadyRun: false, narrate,
+            scrollIntoView, guardAlreadyRun: false, narrate, force,
           });
         }
         throw e;
@@ -1990,7 +2018,7 @@ export const browserClickElementHandler = async ({
       if (e instanceof ElementZeroSizeError) {
         return await attemptSelectorActionabilityRescue({
           selector: effectiveSelector, tabId: effectiveTabId, port,
-          scrollIntoView, guardAlreadyRun: true, narrate, perceptionEnv: perceptionEnvBrowser,
+          scrollIntoView, guardAlreadyRun: true, narrate, perceptionEnv: perceptionEnvBrowser, force,
         });
       }
       throw e;
@@ -2035,8 +2063,8 @@ export const browserClickElementHandler = async ({
     }
     // OS click + CDP delivery verification (Issue #181, shared with the by-axis
     // path). Focus → move → probe → click → settle → read → verifyDelivery.
-    const clicked = await osClickAndVerify(coords.x, coords.y, effectiveSelector, effectiveTabId ?? null, port);
-    if (isCover(clicked)) return browserPointCoveredFailure(clicked, coords.x, coords.y, { selector: effectiveSelector });
+    const clicked = await osClickAndVerify(coords.x, coords.y, effectiveSelector, effectiveTabId ?? null, port, whoIsUnderPoint, force);
+    if (isCover(clicked)) return browserPointCoveredFailure(clicked, coords.x, coords.y, { selector: effectiveSelector }, force);
     const verifyDelivery = clicked;
 
     const tabCtx = await getTabContext(effectiveTabId ?? null, port);

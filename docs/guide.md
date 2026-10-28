@@ -436,7 +436,7 @@ Common values: `0` = teleport, `1500` = default gentle, `3000` = fast, `5000` = 
 
 Windows foreground-stealing protection can prevent `SetForegroundWindow` from succeeding when another window (such as a pinned Claude CLI) is in the foreground. This causes subsequent keystrokes or clicks to land in the wrong window — a silent failure.
 
-`mouse_click`, `keyboard(action='type')`, `keyboard(action='press')`, and `terminal(action='send')` all accept a `forceFocus` parameter that bypasses this protection using `AttachThreadInput`:
+`mouse_click`, `keyboard(action='type')`, `keyboard(action='press')`, `terminal(action='send')` and `browser_click` all accept a `forceFocus` parameter that bypasses this protection using `AttachThreadInput`:
 
 ```json
 {
@@ -451,6 +451,8 @@ Windows foreground-stealing protection can prevent `SetForegroundWindow` from su
 ```
 
 If the force attempt is refused despite `AttachThreadInput`, the response is `ok:false` with `code: "ForegroundRestricted"` (issue #202 unification — same shape as `focus_window`, `keyboard`, `terminal_send`, `mouse_click`). The action itself is **suppressed** so the keystrokes / click never land on the wrong window. Recover via `focus_window`'s auto-escalate ladder before retrying. The legacy `hints.warnings: ["ForceFocusRefused"]` shape is no longer emitted.
+
+`browser_click` answers differently: it always checks which window would take the click before moving the cursor. If another app's window is still in front of the browser, it refuses with `BrowserPointCovered` and clicks nothing. Without `forceFocus`, that refusal says to retry with `forceFocus: true`.
 
 A window on another virtual desktop is not brought forward, because that would switch the user's desktop. `keyboard`, `terminal` send and the mouse tools (when homing brings the window forward) refuse with `code: "WindowOnOtherDesktop"`, and nothing is sent. `context.sameTitleOnScreen: true` means a window with the same title is on this desktop: name that one exactly (its `hwnd` where the tool takes one, or a more specific `windowTitle`). `focus_window` still brings such a window forward.
 
@@ -468,7 +470,7 @@ A window on another virtual desktop is not brought forward, because that would s
 }
 ```
 
-Setting `DESKTOP_TOUCH_FORCE_FOCUS=1` makes `forceFocus: true` the default for all four tools without changing each call.
+Setting `DESKTOP_TOUCH_FORCE_FOCUS=1` makes `forceFocus: true` the default for all five tools without changing each call.
 
 **Known tradeoffs:**
 
