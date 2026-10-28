@@ -70,7 +70,6 @@ async function run(mode: "fixed" | "asBefore" | "deadline", waitMs: number): Pro
   child.stdin.on("error", () => {});
   child.stderr.on("data", () => {});
   let killed = false;
-  let start = Date.now();
   const exited = new Promise<number | null>((done) => child.once("exit", (code) => done(code)));
   await new Promise<void>((ready, fail) => {
     const t = setTimeout(() => fail(new Error("child never said READY")), 10_000);
@@ -80,7 +79,7 @@ async function run(mode: "fixed" | "asBefore" | "deadline", waitMs: number): Pro
   });
   // The parent stops reading stderr, as a client that went away does; stdin stays open.
   if (mode !== "deadline") child.stderr.destroy();
-  start = Date.now();
+  const start = Date.now();
   const timer = setTimeout(() => { killed = true; child.kill("SIGKILL"); }, waitMs);
   const code = await exited;
   clearTimeout(timer);
