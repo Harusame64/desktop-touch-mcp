@@ -93,6 +93,33 @@ async function run(mode: "fixed" | "asBefore" | "deadline", waitMs: number): Pro
   };
 }
 
+// The cells above rebuild the wiring in a child; they cannot see server-windows.ts lose it (win2 on
+// #863: replacing the watchBrokenStream call in the built server went unnoticed by them). These read
+// the server's code, comments removed, for the three pieces it must still call.
+describe("public #859: server-windows.ts still wires the pieces", () => {
+  const code = readFileSync(resolve(__dirname, "../../src/server-windows.ts"), "utf8")
+    .split("\n")
+    .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+    .join("\n");
+  const body = (fn: string): string => {
+    const at = code.indexOf(`function ${fn}(`);
+    expect(at, `function ${fn} not found`).toBeGreaterThanOrEqual(0);
+    return code.slice(at, code.indexOf("\n}\n", at));
+  };
+
+  it("listens on stderr with watchBrokenStream and shuts down from it", () => {
+    expect(code).toMatch(/watchBrokenStream\(process\.stderr,[\s\S]{0,400}?shutdown\(1\)/);
+  });
+
+  it("arms the exit deadline inside shutdown()", () => {
+    expect(body("shutdown")).toMatch(/armExitDeadline\(/);
+  });
+
+  it("returns early from handleUncaught after the first call", () => {
+    expect(body("handleUncaught")).toMatch(/if \(handledUncaught\) return;[\s\S]{0,80}handledUncaught = true;/);
+  });
+});
+
 describe.skipIf(!canStripTypes)("public #859: a broken stderr does not keep the server alive", () => {
   it("exits with code 1 on its own, without an uncaught loop", async () => {
     const r = await run("fixed", 5_000);
