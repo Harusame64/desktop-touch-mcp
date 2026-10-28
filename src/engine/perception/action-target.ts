@@ -108,6 +108,15 @@ export interface ResolveActionTargetResult {
   /** True when this is the first time this descriptor resolved to a live target (slot useCount was 0). */
   isNewTarget?: boolean;
   /**
+   * Internal #309 — the title matches, split by whether the window is minimised. Set by the title
+   * resolver only. A minimised window with the same title (the same page minimised in another
+   * browser, measured by win2 2026-10-28) counts toward `candidates` and makes keyboard refuse with
+   * `ambiguous_target` though one window is on screen. The refusal names both sets so the caller can
+   * pass the shown window's handle; the guard does not pick it (the user's decision: keys must not go
+   * to a window the caller may not have meant).
+   */
+  titleMatches?: { shown: string[]; minimised: string[] };
+  /**
    * The caller named a window, and the point they clicked turned out to be
    * inside a DIFFERENT one.
    *
@@ -408,8 +417,14 @@ async function resolveWindowTarget(
       `${candidates.length} windows match "${titleIncludes}"; using "${best.title}" (${foreground ? "foreground" : "frontmost"})`
     );
   }
+  const minimisedSet = new Set(rawWindows.filter((w) => w.isMinimized).map((w) => String(w.hwnd)));
+  const titleMatches = {
+    shown: candidates.filter((w) => !minimisedSet.has(w.hwnd)).map((w) => w.hwnd),
+    minimised: candidates.filter((w) => minimisedSet.has(w.hwnd)).map((w) => w.hwnd),
+  };
 
   const result = buildWindowLensResult(best.hwnd, best.title, normalized, actionKind, candidates.length, warnings);
+  result.titleMatches = titleMatches;
   applyHotCacheWindow({ kind: "window", titleIncludes: titleIncludes }, result);
   return result;
 }

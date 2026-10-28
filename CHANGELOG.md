@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed — Windows
+- **A keyboard or UI Automation write refused because two windows share a title now says when one of them is
+  minimised.** A window with the same title that is only minimised (the same page minimised in another browser)
+  still counts, and the write is still refused with `ambiguous_target` rather than sent to a window you may not
+  have meant. The refusal now names the minimised window's handle and the handle of the one on screen, and for
+  `keyboard` it adds that `windowTitle: "@active"` reaches the window in front (internal #309).
+
 ## [2.3.4] - 2026-10-28 — The server exits when its client is gone, and window handles name only the window they mean
 
 Thanks to @boluogiegie for reporting #859, with the measurements and a bounded reproduction script.
