@@ -67,6 +67,26 @@ function toResolvedDestination(
     isForeground: () => getForegroundHwnd() === resolved.hwnd,
   };
 }
+
+/**
+ * ADR-036 — the handle a keyboard call is pinned to: focus aims at it, the background path delivers
+ * to it, and the guard resolves it instead of counting windows by title.
+ *
+ * `hwnd` pins the window it names. `@active` pins the foreground window the resolver read: it is no
+ * search either, and counting windows by its title again refused it whenever another window of the
+ * same title was minimised (internal #309, measured by win2 2026-10-28: Edge shown with the same page
+ * minimised in Chrome, the foreground window chosen and the guard still at n=2). A plain
+ * `windowTitle` stays a search; see keyboard:type for why its match is not pinned.
+ */
+export function pinnedHandle(
+  hwnd: string | undefined,
+  windowTitle: string | undefined,
+  resolved: { hwnd: bigint } | null,
+): bigint | undefined {
+  if (!resolved) return undefined;
+  return hwnd !== undefined || windowTitle === "@active" ? resolved.hwnd : undefined;
+}
+
 import { resolveWindowTarget } from "./_resolve-window.js";
 import { parseWindowHandle } from "../engine/aim.js";
 import { offDesktopTarget, offDesktopFailure, type OffDesktopTarget } from "./_off-desktop.js";
@@ -1628,6 +1648,7 @@ export const keyboardTypeHandler = async ({
     }
 
     // Resolve hwnd / @active → effective window title (only when not using a fixId)
+    const askedTitle = effectiveWindowTitle;
     const resolvedWin = !fixId ? await resolveWindowTarget({ hwnd, windowTitle: effectiveWindowTitle }) : null;
     if (resolvedWin) effectiveWindowTitle = resolvedWin.title;
 
@@ -1643,7 +1664,9 @@ export const keyboardTypeHandler = async ({
     // The pinned handle can differ from the argument: when the named window is
     // blocked by its own modal, the resolver hands back the active popup. That
     // is the handle the keys will reach, so that is the one to pin.
-    const explicitHwnd = (hwnd !== undefined && resolvedWin) ? resolvedWin.hwnd : undefined;
+    //
+    // `@active` pins too (`pinnedHandle`): it names the foreground window, not a search.
+    const explicitHwnd = pinnedHandle(hwnd, askedTitle, resolvedWin);
 
     const resolvedDestination = toResolvedDestination(resolvedWin);
     const warnings: string[] = [...(resolvedWin?.warnings ?? [])];
@@ -2773,7 +2796,7 @@ export const keyboardPressHandler = async ({
 
     // ADR-036 — the pinned handle. See the derivation in keyboard:type for why
     // this reads the public `hwnd` argument rather than `resolvedWin` alone.
-    const explicitHwnd = (hwnd !== undefined && resolvedWin) ? resolvedWin.hwnd : undefined;
+    const explicitHwnd = pinnedHandle(hwnd, windowTitle, resolvedWin);
 
     const warnings: string[] = [...(resolvedWin?.warnings ?? [])];
     const homingNotes: string[] = [];
@@ -3229,6 +3252,7 @@ export const keyboardSequenceHandler = async ({
       if (typeof vr.fix.args.windowTitle === "string") effectiveWindowTitle = vr.fix.args.windowTitle;
     }
 
+    const askedTitle = effectiveWindowTitle;
     const resolvedWin = !fixId ? await resolveWindowTarget({ hwnd, windowTitle: effectiveWindowTitle }) : null;
     if (resolvedWin) effectiveWindowTitle = resolvedWin.title;
 
@@ -3237,7 +3261,7 @@ export const keyboardSequenceHandler = async ({
     // derivation for focus only; the guard then re-resolved by title and
     // refused the very calls the focus pin had just aimed correctly.
     // See keyboard:type for why the test is on the public `hwnd` argument.
-    const explicitHwnd = (hwnd !== undefined && resolvedWin) ? resolvedWin.hwnd : undefined;
+    const explicitHwnd = pinnedHandle(hwnd, askedTitle, resolvedWin);
 
     const warnings: string[] = [...(resolvedWin?.warnings ?? [])];
     const homingNotes: string[] = [];
