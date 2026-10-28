@@ -548,6 +548,16 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
     expect(dest).toEqual({ kind: "cdp", tabId: "TAB-AAA" });
   });
 
+  it("Chromium top-level class: the wheel goes to the first page that is not the browser's own (internal #308)", async () => {
+    listTabsLightMock.mockResolvedValue([
+      { id: "SW", title: "", url: "https://google.com/sw.js", type: "service_worker" },
+      { id: "DLG", title: "Sync", url: "edge://sync-confirmation-dialog/", type: "page" },
+      { id: "PAGE", title: "Google", url: "https://google.com/", type: "page" },
+    ]);
+    const dest = await resolveCdpDestinationForHwnd(0x225n, "Chrome_WidgetWin_1");
+    expect(dest).toEqual({ kind: "cdp", tabId: "PAGE" });
+  });
+
   it("Chromium top-level class + listTabsLight rejects (CDP unreachable): null (graceful fallback to Tier 1)", async () => {
     listTabsLightMock.mockRejectedValue(new Error("CDP unreachable on 127.0.0.1:9222"));
     const dest = await resolveCdpDestinationForHwnd(0x333n, "Chrome_WidgetWin_1");

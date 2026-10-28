@@ -3,6 +3,7 @@
  * Pure functions — no OS imports. Callers inject window snapshots.
  */
 
+import { defaultPageTab } from "../cdp-default-tab.js";
 import type {
   BrowserTabIdentity,
   EntityRef,
@@ -82,11 +83,13 @@ export function resolveBindingFromSnapshot(
  */
 export function resolveBrowserTabBindingFromTabs(
   spec: LensSpec,
-  tabs: Array<{ id: string; title: string; url: string }>
+  tabs: Array<{ id: string; title: string; url: string; type?: string }>
 ): ResolvedBinding | null {
   if (spec.target.kind !== "browserTab") return null;
   const { urlIncludes, titleIncludes } = spec.target.match;
-  const match = tabs.find(t => {
+  // Nothing to match on: the same tab the browser_* call works on, not a browser page listed
+  // first (internal #308, codex on #871: the guard read edge://sync-confirmation-dialog).
+  const match = !urlIncludes && !titleIncludes ? defaultPageTab(tabs) : tabs.find(t => {
     const urlOk = urlIncludes ? t.url.toLowerCase().includes(urlIncludes.toLowerCase()) : true;
     const titleOk = titleIncludes ? t.title.toLowerCase().includes(titleIncludes.toLowerCase()) : true;
     return urlOk && titleOk;

@@ -11,6 +11,7 @@
 
 import WebSocket from "ws";
 import { getCdpPort } from "../utils/desktop-config.js";
+import { defaultPageTab } from "./cdp-default-tab.js";
 
 export const DEFAULT_CDP_PORT = 9222;
 // Exported so callers that surface a CDP-timeout-derived hint (e.g.
@@ -259,21 +260,7 @@ export function portForTab(tabId: string | null | undefined): number {
   return (typeof tabId === "string" ? tabPorts.get(tabId) : undefined) ?? getCdpPort();
 }
 
-/**
- * Browser-internal schemes. A page target on one of these is the browser's own UI, not a page the
- * user opened: Edge listed `edge://sync-confirmation-dialog` (a sign-in modal) ahead of the page,
- * and a call without tabId read it (internal #308). `about:` is not here: about:blank is a page.
- */
-const INTERNAL_PAGE_SCHEME = /^(chrome|edge|devtools|chrome-untrusted|chrome-search|brave|opera|vivaldi):/i;
-
-/**
- * The tab a call without tabId works on: the first page target that is not browser-internal, else
- * the first page target (a browser showing only its New Tab page), else undefined.
- */
-export function defaultPageTab<T extends Pick<CdpTab, "type" | "url">>(tabs: readonly T[]): T | undefined {
-  const pages = tabs.filter((t) => t.type === "page");
-  return pages.find((t) => !INTERNAL_PAGE_SCHEME.test(t.url ?? "")) ?? pages[0];
-}
+export { defaultPageTab };
 
 async function resolveTab(
   tabId: string | null,
@@ -365,9 +352,10 @@ export async function listTabs(port = DEFAULT_CDP_PORT): Promise<CdpTab[]> {
  */
 export async function listTabsLight(
   port = DEFAULT_CDP_PORT
-): Promise<Array<{ id: string; title: string; url: string }>> {
+): Promise<Array<{ id: string; title: string; url: string; type: string }>> {
   const tabs = await fetchTabs(port);
-  return tabs.map(t => ({ id: t.id, title: t.title, url: t.url }));
+  // `type` is kept so a caller without a tabId can pick with defaultPageTab (internal #308).
+  return tabs.map(t => ({ id: t.id, title: t.title, url: t.url, type: t.type }));
 }
 
 /**

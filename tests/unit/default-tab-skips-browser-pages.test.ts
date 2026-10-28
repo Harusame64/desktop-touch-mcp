@@ -8,6 +8,8 @@
  */
 import { describe, expect, it } from "vitest";
 import { defaultPageTab } from "../../src/engine/cdp-bridge.js";
+import { resolveBrowserTabBindingFromTabs } from "../../src/engine/perception/lens.js";
+import type { LensSpec } from "../../src/engine/perception/types.js";
 
 const tab = (id: string, url: string, type = "page") => ({ id, url, type, title: id });
 
@@ -41,5 +43,25 @@ describe("internal #308: defaultPageTab", () => {
     const tabs = [tab("sw", "https://example.com/sw.js", "service_worker"), tab("pg", "https://example.com/")];
     expect(defaultPageTab(tabs)?.id).toBe("pg");
     expect(defaultPageTab([tab("sw", "https://example.com/sw.js", "service_worker")])).toBeUndefined();
+  });
+});
+
+// codex on #871: the perception guard of a browser_* call without tabId bound to the first listed
+// target, so it read the dialog while the call worked on the page.
+describe("internal #308: the guard's browserTab lens picks the same tab", () => {
+  const spec = (match: { urlIncludes?: string; titleIncludes?: string }) =>
+    ({ name: "__auto__", target: { kind: "browserTab", match } }) as unknown as LensSpec;
+  const tabs = [
+    tab("sw", "https://example.com/sw.js", "service_worker"),
+    tab("dlg", "edge://sync-confirmation-dialog/"),
+    tab("pg", "https://example.com/"),
+  ];
+
+  it("with nothing to match on, binds the first page that is not the browser's own", () => {
+    expect(resolveBrowserTabBindingFromTabs(spec({}), tabs)?.hwnd).toBe("pg");
+  });
+
+  it("an explicit match still wins, even on a browser page", () => {
+    expect(resolveBrowserTabBindingFromTabs(spec({ urlIncludes: "sync-confirmation" }), tabs)?.hwnd).toBe("dlg");
   });
 });
