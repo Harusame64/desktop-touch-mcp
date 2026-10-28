@@ -23,7 +23,7 @@ This project is exploring how LLM agents can interact with changing interfaces i
 
 For the public site, it is better to say this plainly:
 
-> **Windows 10 and 11 only. macOS and Linux are not supported.**
+> **Windows 10 and 11. On Apple Silicon Macs (macOS 14 or later), a limited preview with four tools — see [macOS (preview)](https://github.com/Harusame64/desktop-touch-mcp#macos-preview). Linux is not supported.**
 
 ### CTA ideas
 
@@ -58,8 +58,8 @@ The deeper question behind it is:
 
 For the public-facing site, the simplest honest message is:
 
-- Windows 10 and 11
-- Windows-only by design — it drives the desktop through Win32, UI Automation, and Chrome DevTools Protocol
+- Windows 10 and 11 — the full toolset, driving the desktop through Win32, UI Automation, and Chrome DevTools Protocol
+- macOS 14 or later on Apple Silicon — a limited preview with four tools (`desktop_state`, `desktop_discover`, `desktop_act`, `screenshot`)
 - examples and setup flow are written for Windows-first local usage
 
 ---
