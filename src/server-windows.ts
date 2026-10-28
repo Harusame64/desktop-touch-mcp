@@ -60,6 +60,7 @@ import { resolveV2Activation } from "./tools/desktop-activation.js";
 import { uiPatternStore } from "./store/ui-pattern-store.js";
 import { macroOutcomeStore } from "./store/macro-outcome-store.js";
 import { runWithAskContext, type AskContext, type AskAnswer } from "./tools/_ask-user.js";
+import { isBrokenStreamError, silenceConsole, armExitDeadline, watchBrokenStream } from "./utils/broken-stream.js";
 
 // Resolve assets/icons directory (works both in dev: dist/ and release: dist/)
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -409,10 +410,30 @@ let shutdownTimer: NodeJS.Timeout | null = null;
  *  process.exit (Codex W-4b). */
 let disposeKeyLockerWiring: (() => Promise<void>) | null = null;
 const SHUTDOWN_GRACE_MS = 60_000;
+/** Public #859: `shutdown()` exits by this deadline even when its awaits never continue. Above the
+ *  key locker's slowest legitimate dispose (an in-flight start, 15 s, plus the 0.5 s shutdown race), so
+ *  the deadline does not cut a dispose that would have finished and orphan key-locker.exe. */
+const SHUTDOWN_HARD_DEADLINE_MS = 20_000;
 
 function shutdown(exitCode = 0): void {
   if (shuttingDown) return;
   shuttingDown = true;
+  // Public #859: the `.finally` below is a promise continuation, and a loop of uncaught exceptions on
+  // `nextTick` starves every microtask. A timer still fires, so the process ends in bounded time.
+  const deadline = armExitDeadline(
+    (code) => {
+      logDiagnostic({
+        kind: "exit",
+        trigger: "shutdown deadline",
+        exitCode: code,
+        inflight: inflightIds.size,
+        shutdownPending,
+      });
+      process.exit(code);
+    },
+    exitCode,
+    SHUTDOWN_HARD_DEADLINE_MS,
+  );
   clearShutdownPending();
   if (shutdownTimer) {
     clearTimeout(shutdownTimer);
@@ -446,6 +467,7 @@ function shutdown(exitCode = 0): void {
   ])
     .catch(() => {})
     .finally(() => {
+      clearTimeout(deadline);
       // In-flight requests clean up their own server/transport instances via res.on("close").
       process.exit(exitCode);
     });
@@ -535,14 +557,24 @@ process.on("disconnect", () => shutdownFromSignal("disconnect"));
 // AND so Phase B B-3/B-4 store flush (uiPatternStore / macroOutcomeStore) is
 // not skipped — calling shutdown() routes through the existing Promise.all
 // flush gate before process.exit. (Review R1 P1-1.)
+/** Public #859: set by the first uncaught error and never cleared; the server is shutting down. */
+let handledUncaught = false;
+
 function handleUncaught(
   type: "uncaughtException" | "unhandledRejection",
   err: Error,
 ): void {
+  // Public #859: once. A broken stderr turned every report below into the next uncaught exception,
+  // about 2,500 records a second for as long as the process lived. A guard reset at the end would not
+  // help: the loop re-enters on a later tick. After the first, shutdown is already on its way.
+  if (handledUncaught) return;
+  handledUncaught = true;
+  if (isBrokenStreamError(err)) silenceConsole();
   // Codex R1 P2-1: preserve Node's default crash visibility on stderr in case
   // the diagnostic log is disabled / unwritable / the user only has stderr
-  // capture configured. Best-effort; a stderr write that fails must not
-  // re-enter the handler.
+  // capture configured. Best-effort; the try/catch cannot catch a failed write to
+  // a pipe (that error arrives later, on a tick), which is why the line above and
+  // the stderr listener below exist.
   try {
     console.error(`[desktop-touch] ${type}:`, err.stack ?? err.message ?? String(err));
   } catch {
@@ -566,6 +598,21 @@ function handleUncaught(
   });
   shutdown(1);
 }
+
+// Public #859: stderr's reader is gone (the client closed, or the launcher above us was killed). Without
+// a listener the stream error becomes an uncaught exception, and reporting it writes to stderr again.
+// Stop writing to it and shut down, as for a broken stdout; nobody is reading this process's output.
+watchBrokenStream(process.stderr, (err) => {
+  logDiagnostic({
+    kind: "exit",
+    trigger: "stderr broken pipe",
+    exitCode: 1,
+    inflight: inflightIds.size,
+    shutdownPending,
+    extra: { code: err.code },
+  });
+  shutdown(1);
+});
 
 process.on("uncaughtException", (value: unknown) => {
   handleUncaught("uncaughtException", normalizeThrown(value));
