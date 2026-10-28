@@ -11,6 +11,7 @@
 
 import WebSocket from "ws";
 import { getCdpPort } from "../utils/desktop-config.js";
+import { defaultPageTab } from "./cdp-default-tab.js";
 
 export const DEFAULT_CDP_PORT = 9222;
 // Exported so callers that surface a CDP-timeout-derived hint (e.g.
@@ -259,6 +260,7 @@ export function portForTab(tabId: string | null | undefined): number {
   return (typeof tabId === "string" ? tabPorts.get(tabId) : undefined) ?? getCdpPort();
 }
 
+
 async function resolveTab(
   tabId: string | null,
   port: number
@@ -270,8 +272,7 @@ async function resolveTab(
     );
   }
   if (tabId === null) {
-    const pageTab = tabs.find((t) => t.type === "page") ?? tabs[0];
-    return pageTab;
+    return defaultPageTab(tabs) ?? tabs[0];
   }
   const tab = tabs.find((t) => t.id === tabId);
   if (!tab) {
@@ -350,16 +351,17 @@ export async function listTabs(port = DEFAULT_CDP_PORT): Promise<CdpTab[]> {
  */
 export async function listTabsLight(
   port = DEFAULT_CDP_PORT
-): Promise<Array<{ id: string; title: string; url: string }>> {
+): Promise<Array<{ id: string; title: string; url: string; type: string }>> {
   const tabs = await fetchTabs(port);
-  return tabs.map(t => ({ id: t.id, title: t.title, url: t.url }));
+  // `type` is kept so a caller without a tabId can pick with defaultPageTab (internal #308).
+  return tabs.map(t => ({ id: t.id, title: t.title, url: t.url, type: t.type }));
 }
 
 /**
  * Evaluate a JavaScript expression in a browser tab.
  *
  * @param expression  JS expression string (may use `await`)
- * @param tabId       Target tab ID (null = first page tab)
+ * @param tabId       Target tab ID (null = the tab defaultPageTab picks)
  * @param port        CDP port (default 9222)
  * @returns           The serializable return value of the expression
  */
@@ -570,7 +572,7 @@ export function viewportOriginJs(zoom: number): string {
 }
 
 /**
- * The id of the tab a null `tabId` stands for — the first page tab — so that two calls about "the
+ * The id of the tab a null `tabId` stands for — the one defaultPageTab picks — so that two calls about "the
  * tab" ask the same one. `/json/list` order is not stable between calls (win2, 2026-10-24), and the
  * zoom read for one tab with the coordinates read for another put the click off (codex on #839).
  */

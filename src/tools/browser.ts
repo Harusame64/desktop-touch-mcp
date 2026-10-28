@@ -28,6 +28,7 @@ import {
   CMD_TIMEOUT_MS,
   type TabContext,
 } from "../engine/cdp-bridge.js";
+import { defaultPageTab } from "../engine/cdp-default-tab.js";
 import { resolveWellKnownPath, spawnDetached, killProcessesByName } from "../utils/launch.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import { setBrowserSearchHook } from "./wait-until.js";
@@ -504,7 +505,7 @@ async function ensureBrowserFocused(port: number, tabId: string | null = null, f
   let pageTabId: string | undefined;
   try {
     const tabs = await listTabs(port);
-    const pageTab = (tabId !== null ? tabs.find((t) => t.id === tabId) : undefined) ?? tabs.find((t) => t.type === "page");
+    const pageTab = (tabId !== null ? tabs.find((t) => t.id === tabId) : undefined) ?? defaultPageTab(tabs);
     tabTitle = pageTab?.title;
     pageTabId = pageTab?.id;
   } catch {
@@ -1364,7 +1365,7 @@ export const browserConnectHandler = async ({
             `${pageTabs.length} page tab(s) found:`,
             JSON.stringify({ port, active: activeTab, tabs: summary }, null, 2),
             "",
-            "Pass a tab's id to other browser_* tools to target it, or omit to use the first tab.",
+            "Pass a tab's id to other browser_* tools to target it, or omit to use the most recently used page tab (a sign-in or sync dialog is skipped).",
           ].join("\n"),
         },
       ],

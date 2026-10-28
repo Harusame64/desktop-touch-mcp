@@ -40,6 +40,7 @@ import {
   computeStripChangedFractions,
   type RawFrame,
 } from "../engine/layer-buffer.js";
+import { defaultPageTab } from "../engine/cdp-default-tab.js";
 import {
   listTabsLight,
   dispatchWheelInTab,
@@ -790,8 +791,8 @@ export async function resolveInputDestination(
  * path. (Opus Round 1 P2 — earlier shape redundantly called
  * `enumWindowsInZOrder` here, doubling the syscall cost per scroll.)
  *
- * Phase 3 picks the first listed tab as the destination — matching
- * `resolveTab(null, port)` semantics in `cdp-bridge.ts`. A future phase may
+ * Phase 3 picks the tab `defaultPageTab` picks — the same one `resolveTab(null, port)` in
+ * `cdp-bridge.ts` uses (internal #308). A future phase may
  * thread a focused-tab hint via the foreground HWND → tab mapping (ADR §7
  * OQ-Electron carry-over).
  *
@@ -807,7 +808,8 @@ export async function resolveCdpDestinationForHwnd(
   try {
     const port = getCdpPort();
     const tabs = await listTabsLight(port);
-    const firstPage = tabs[0];
+    // The tab every other call without a tabId uses, not whatever target is listed first (#308).
+    const firstPage = defaultPageTab(tabs);
     if (!firstPage) return null;
     return { kind: "cdp", tabId: firstPage.id };
   } catch {

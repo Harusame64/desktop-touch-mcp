@@ -90,112 +90,112 @@
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 946,
+      "line": 947,
       "tool": "browser_fill",
       "errKind": "member",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 957,
+      "line": 958,
       "tool": "browser_fill",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1307,
+      "line": 1308,
       "tool": "browser_form",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1321,
+      "line": 1322,
       "tool": "browser_form",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1373,
+      "line": 1374,
       "tool": "browser_open",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1425,
+      "line": 1426,
       "tool": "browser_locate",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1922,
+      "line": 1923,
       "tool": "browser_click",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 1985,
+      "line": 1986,
       "tool": "browser_click",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2196,
+      "line": 2197,
       "tool": "browser_eval",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2392,
+      "line": 2393,
       "tool": "browser_navigate",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2483,
+      "line": 2484,
       "tool": "browser_navigate",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2696,
+      "line": 2697,
       "tool": "browser_overview",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2848,
+      "line": 2849,
       "tool": "browser_open",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 2979,
+      "line": 2980,
       "tool": "browser_search",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 3107,
+      "line": 3108,
       "tool": "browser_eval",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 3127,
+      "line": 3128,
       "tool": "browser_disconnect",
       "errKind": "identifier",
       "contextShape": "none"

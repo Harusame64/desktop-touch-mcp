@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Changed — Windows
+- **A `browser_*` call without `tabId` skips the browser's sign-in and consent dialogs.** It used the first target
+  of type page, which can be one of them: Edge listed its sync dialog (`edge://sync-confirmation-dialog`) ahead of
+  the page, and `browser_click` looked for the selector there. Such a dialog is now skipped while a page exists, and
+  the guard and the `scroll` wheel route, which took the first target of any type (an extension's background page,
+  a service worker), use the same tab as the call. A New Tab or settings tab in front is still the one used
+  (internal #308).
 - **Bringing a maximized window forward keeps it maximized.** `focus_window`, `browser_click`, `keyboard`,
   `mouse_click`, `terminal` and the scroll tools turned a maximized window to its normal size when they brought
   it forward. Only a minimized window is restored now, and one minimized from maximized comes back maximized.

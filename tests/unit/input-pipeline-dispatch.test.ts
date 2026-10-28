@@ -541,11 +541,21 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
 
   it("Chromium top-level class + listTabsLight returns tabs: {kind:'cdp', tabId}", async () => {
     listTabsLightMock.mockResolvedValue([
-      { id: "TAB-AAA", title: "Google", url: "https://google.com/" },
-      { id: "TAB-BBB", title: "Bing", url: "https://bing.com/" },
+      { id: "TAB-AAA", title: "Google", url: "https://google.com/", type: "page" },
+      { id: "TAB-BBB", title: "Bing", url: "https://bing.com/", type: "page" },
     ]);
     const dest = await resolveCdpDestinationForHwnd(0x222n, "Chrome_WidgetWin_1");
     expect(dest).toEqual({ kind: "cdp", tabId: "TAB-AAA" });
+  });
+
+  it("Chromium top-level class: the wheel goes to the first page that is not the browser's own (internal #308)", async () => {
+    listTabsLightMock.mockResolvedValue([
+      { id: "SW", title: "", url: "https://google.com/sw.js", type: "service_worker" },
+      { id: "DLG", title: "Sync", url: "edge://sync-confirmation-dialog/", type: "page" },
+      { id: "PAGE", title: "Google", url: "https://google.com/", type: "page" },
+    ]);
+    const dest = await resolveCdpDestinationForHwnd(0x225n, "Chrome_WidgetWin_1");
+    expect(dest).toEqual({ kind: "cdp", tabId: "PAGE" });
   });
 
   it("Chromium top-level class + listTabsLight rejects (CDP unreachable): null (graceful fallback to Tier 1)", async () => {
@@ -599,7 +609,7 @@ describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration"
       className: "Chrome_WidgetWin_1",
     });
     listTabsLightMock.mockResolvedValue([
-      { id: "TAB-X", title: "X", url: "https://x.com/" },
+      { id: "TAB-X", title: "X", url: "https://x.com/", type: "page" },
     ]);
     const dest = await resolveInputDestination({ windowTitle: "Chrome" });
     expect(dest).toEqual({ kind: "cdp", tabId: "TAB-X" });
@@ -611,7 +621,7 @@ describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration"
       hwnd: 0xBBBn, title: "Google Chrome", className: "Chrome_WidgetWin_1", ownerHwnd: null, isMinimized: false,
     }]);
     listTabsLightMock.mockResolvedValue([
-      { id: "TAB-Y", title: "X", url: "https://x.com/" },
+      { id: "TAB-Y", title: "X", url: "https://x.com/", type: "page" },
     ]);
     const dest = await resolveInputDestination({ windowTitle: "Chrome" });
     expect(dest).toEqual({ kind: "cdp", tabId: "TAB-Y" });

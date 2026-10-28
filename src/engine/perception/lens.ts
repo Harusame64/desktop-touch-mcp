@@ -3,6 +3,7 @@
  * Pure functions — no OS imports. Callers inject window snapshots.
  */
 
+import { defaultPageTab } from "../cdp-default-tab.js";
 import type {
   BrowserTabIdentity,
   EntityRef,
@@ -82,11 +83,14 @@ export function resolveBindingFromSnapshot(
  */
 export function resolveBrowserTabBindingFromTabs(
   spec: LensSpec,
-  tabs: Array<{ id: string; title: string; url: string }>
+  tabs: Array<{ id: string; title: string; url: string; type: string }>
 ): ResolvedBinding | null {
   if (spec.target.kind !== "browserTab") return null;
   const { urlIncludes, titleIncludes } = spec.target.match;
-  const match = tabs.find(t => {
+  // Nothing to match on: the tab resolveTab(null) works on, with its fallback to tabs[0], so the
+  // guard checks the same target as the call (internal #308). That fallback also keeps a tabId the
+  // caller narrowed `tabs` to when it is not a page (a webview, a service worker).
+  const match = !urlIncludes && !titleIncludes ? (defaultPageTab(tabs) ?? tabs[0]) : tabs.find(t => {
     const urlOk = urlIncludes ? t.url.toLowerCase().includes(urlIncludes.toLowerCase()) : true;
     const titleOk = titleIncludes ? t.title.toLowerCase().includes(titleIncludes.toLowerCase()) : true;
     return urlOk && titleOk;
