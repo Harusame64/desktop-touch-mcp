@@ -1,6 +1,13 @@
 # Changelog
 
-## [Unreleased]
+## [2.3.4] - 2026-10-28 — The server exits when its client is gone, and window handles name only the window they mean
+
+Thanks to @boluogiegie for reporting #859, with the measurements and a bounded reproduction script.
+
+### Security
+- **Dependencies with open advisories were updated.** rustls 0.23.45 → 0.23.46 (GHSA-c8m5-c952-6cm4,
+  GHSA-h2v8-394m-p7vv, GHSA-w44r-93j7-qv28, GHSA-vp88-798v-h67f; it comes in through the ONNX Runtime
+  bindings) and qs 6.15.2 → 6.17.0 (GHSA-6pq8-jhm2-2vcw; it comes in through the MCP SDK's HTTP transport).
 
 ### Fixed — Windows
 - **The server exits when its client stops reading its error output, instead of looping (#859).**
@@ -10,8 +17,7 @@
   diagnostic log. A 1.16.0 server, whose log had no size cap, filled a system drive overnight. 2.x
   rotates the log, but the process still never ended. The server now stops writing to a broken stderr
   and shuts down, reports an uncaught error only once, and exits within 20 seconds of starting to shut
-  down even if its cleanup never finishes. Thanks to @boluogiegie for the report, the measurements and a
-  bounded reproduction script.
+  down even if its cleanup never finishes.
 - **A window handle past 64 bits no longer reaches another window.** The native helpers read a handle
   from JavaScript as its low 64 bits, so `18446744073709556276` (2^64 + 0x1234) acted on window
   `0x1234`; on Windows, `scroll` with 2^64 plus a real window's handle scrolled that window. The tools
