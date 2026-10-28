@@ -379,17 +379,36 @@ jobs:
       - name: Publish to npm (via npx npm@11 for OIDC support)
         run: npx -y npm@11 publish --ignore-scripts --provenance
 
-      - name: Verify npm publish
+  # Its own job, so a red verify can be re-run alone ("Re-run failed jobs") without re-running the
+  # publish step, which npm refuses for a version that already exists. 2.3.0 and 2.3.4 both went
+  # red here with the publish already done: the registry served the new `latest` about 4 minutes
+  # after the publish, and the old check waited 2 (12 x 10 s).
+  npm-verify:
+    name: Verify npm publish
+    runs-on: ubuntu-latest
+    needs: npm-publish
+    if: github.repository == 'Harusame64/desktop-touch-mcp'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Wait for the version and the latest tag on npm (up to 10 minutes)
         run: |
-          VERSION="${{ steps.tag.outputs.version }}"
-          for i in $(seq 1 12); do
-            PUBLISHED=$(npm view "@harusame64/desktop-touch-mcp" dist-tags.latest 2>/dev/null || echo "")
-            if [ "$PUBLISHED" = "$VERSION" ]; then
-              echo "npm publish verified: $PUBLISHED"
+          VERSION="${GITHUB_REF_NAME#v}"
+          PKG="@harusame64/desktop-touch-mcp"
+          for i in $(seq 1 40); do
+            HAS=$(npm view "$PKG@$VERSION" version --prefer-online 2>/dev/null || echo "")
+            LATEST=$(npm view "$PKG" dist-tags.latest --prefer-online 2>/dev/null || echo "")
+            if [ "$HAS" = "$VERSION" ] && [ "$LATEST" = "$VERSION" ]; then
+              echo "npm publish verified: $PKG@$VERSION is published and latest (attempt $i)"
               exit 0
             fi
-            echo "Waiting for npm registry propagation ($i/12, got: $PUBLISHED)"
-            sleep 10
+            echo "Waiting for npm registry propagation ($i/40, version: ${HAS:-none}, latest: ${LATEST:-none})"
+            sleep 15
           done
-          echo "::error::Expected $VERSION on npm, got $PUBLISHED"
+          echo "::error::After 10 minutes npm reports version '${HAS:-none}' and latest '${LATEST:-none}', expected $VERSION for both. The publish job may still have succeeded: check 'npm view $PKG@$VERSION version' and re-run this job alone."
           exit 1
