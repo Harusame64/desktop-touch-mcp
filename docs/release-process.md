@@ -267,6 +267,17 @@ Record every narrowing here so the exceptions stay visible:
   - D3: a WinForms TextBox and DropDownList setValue, a text editor type and Calculator invoke, 3/3 each, all through
     UIA. The DropDownList write does not fire SelectedIndexChanged; the same is true of 2.3.3.
   - No P1, no regression.
+  Post-publish (tag v2.3.4 = 210d2316; npm latest 2.3.4; the CI's "Verify npm publish" step was red from registry lag
+  while the publish step succeeded, and the published launcher's sha256 entries matched both zips):
+  - macOS (mac, real cache): `npx -y …@2.3.4 --help` installed v2.3.4 and printed the macOS-preview usage; the prune
+    removed v2.3.2 and kept v2.3.3 and v2.3.4.
+  - Windows (win2, real cache, cwd %TEMP%): `--help` installed v2.3.4 in 110 s (sha256 020a4d6f…, not pending);
+    releases went from dev-local, v2.3.2, v2.3.3 to dev-local, v2.3.3, v2.3.4. Because `--help` ends the runtime at
+    once, the launcher exited while removing v2.3.2 and left a partial `.trash-v2.3.2-*`; the next start swept it,
+    as `pruneCache` is built to. initialize over npx stdio answered in 3 s with `desktop-touch 2.3.4` and 32 tools;
+    stdin EOF exited with code 0. Three v2.3.3 servers kept their pids throughout.
+  - MCP Registry: published 2.3.4 from mac (`mcp-publisher` 1.8.4, GitHub device login relayed to the user);
+    latest = 2.3.4, active.
 
 ### HTTP Transport Verification (Required)
 
