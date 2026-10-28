@@ -107,8 +107,9 @@ describe("public #859: server-windows.ts still wires the pieces", () => {
     return code.slice(at, code.indexOf("\n}\n", at));
   };
 
-  it("listens on stderr with watchBrokenStream and shuts down from it", () => {
-    expect(code).toMatch(/watchBrokenStream\(process\.stderr,[\s\S]{0,400}?shutdown\(1\)/);
+  it("listens on stderr with watchBrokenStream and shuts down from it through requestShutdown", () => {
+    // requestShutdown, not shutdown: in-flight calls still get their answers on stdout (codex on #863).
+    expect(code).toMatch(/watchBrokenStream\(process\.stderr,[\s\S]{0,200}?requestShutdown\(/);
   });
 
   it("arms the exit deadline inside shutdown()", () => {

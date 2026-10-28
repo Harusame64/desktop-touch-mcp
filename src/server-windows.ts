@@ -601,17 +601,12 @@ function handleUncaught(
 
 // Public #859: stderr's reader is gone (the client closed, or the launcher above us was killed). Without
 // a listener the stream error becomes an uncaught exception, and reporting it writes to stderr again.
-// Stop writing to it and shut down, as for a broken stdout; nobody is reading this process's output.
+// Stop writing to it (watchBrokenStream silences the console) and shut down the way a broken stdout
+// does: through requestShutdown, which still waits for in-flight calls. A client can close stderr
+// and stdin while it reads stdout for answers (codex on #863), so a broken stderr alone is no reason
+// to drop them.
 watchBrokenStream(process.stderr, (err) => {
-  logDiagnostic({
-    kind: "exit",
-    trigger: "stderr broken pipe",
-    exitCode: 1,
-    inflight: inflightIds.size,
-    shutdownPending,
-    extra: { code: err.code },
-  });
-  shutdown(1);
+  requestShutdown(`stderr broken pipe (${err.code ?? "error"}) — parent exited`);
 });
 
 process.on("uncaughtException", (value: unknown) => {
