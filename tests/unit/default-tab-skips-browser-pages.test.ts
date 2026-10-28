@@ -9,7 +9,7 @@
  * indistinguishable from the page behind it except by URL, so it stays the target.
  */
 import { describe, expect, it } from "vitest";
-import { defaultPageTab } from "../../src/engine/cdp-bridge.js";
+import { defaultPageTab } from "../../src/engine/cdp-default-tab.js";
 import { resolveBrowserTabBindingFromTabs } from "../../src/engine/perception/lens.js";
 import type { LensSpec } from "../../src/engine/perception/types.js";
 
@@ -29,6 +29,13 @@ describe("internal #308: defaultPageTab", () => {
     "chrome://profile-customization/",
     "chrome://signin-dice-web-intercept/",
     "chrome://managed-user-profile-notice/",
+    "chrome://signout-confirmation/",
+    "chrome://history-sync-optin/",
+    "chrome://batch-upload/",
+    "chrome://privacy-sandbox-dialog/?type=notice",
+    "chrome://search-engine-choice/",
+    "chrome://profile-picker/",
+    "chrome://intro/",
     "EDGE://sync-confirmation-dialog/",
   ])("skips the sign-in dialog %s when a page exists", (url) => {
     expect(defaultPageTab([tab("dlg", url), page])?.id).toBe("pg");
@@ -71,6 +78,15 @@ describe("internal #308: the guard's browserTab lens picks the same tab", () => 
 
   it("with nothing to match on, binds the tab defaultPageTab picks", () => {
     expect(resolveBrowserTabBindingFromTabs(spec({}), tabs)?.hwnd).toBe("pg");
+  });
+
+  it("a tabId narrowed to a target that is not a page still binds (review on #871: a webview or worker was blocked)", () => {
+    expect(resolveBrowserTabBindingFromTabs(spec({}), [tab("wv", "https://example.com/", "webview")])?.hwnd).toBe("wv");
+  });
+
+  it("with no page at all, binds tabs[0] like resolveTab, so the guard and the call agree", () => {
+    const only = [tab("bg", "chrome-extension://abc/background.html", "background_page")];
+    expect(resolveBrowserTabBindingFromTabs(spec({}), only)?.hwnd).toBe("bg");
   });
 
   it("an explicit match still wins, even on the dialog", () => {

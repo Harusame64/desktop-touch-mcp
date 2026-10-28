@@ -713,7 +713,7 @@ async function resolveBrowserTabTarget(
   const warnings: string[] = [];
 
   // Dynamic import to avoid loading CDP module in non-browser contexts
-  let tabs: Array<{ id: string; title: string; url: string }>;
+  let tabs: Array<{ id: string; title: string; url: string; type: string }>;
   try {
     const cdpBridge = await import("../cdp-bridge.js");
     tabs = await cdpBridge.listTabsLight(descriptor.port);

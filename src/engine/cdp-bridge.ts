@@ -260,7 +260,6 @@ export function portForTab(tabId: string | null | undefined): number {
   return (typeof tabId === "string" ? tabPorts.get(tabId) : undefined) ?? getCdpPort();
 }
 
-export { defaultPageTab };
 
 async function resolveTab(
   tabId: string | null,

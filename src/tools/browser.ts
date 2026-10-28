@@ -25,10 +25,10 @@ import {
   getTabWindowBounds,
   getBrowserProcessId,
   bringTabToFront,
-  defaultPageTab,
   CMD_TIMEOUT_MS,
   type TabContext,
 } from "../engine/cdp-bridge.js";
+import { defaultPageTab } from "../engine/cdp-default-tab.js";
 import { resolveWellKnownPath, spawnDetached, killProcessesByName } from "../utils/launch.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import { setBrowserSearchHook } from "./wait-until.js";
