@@ -441,6 +441,35 @@ export async function getBrowserProcessId(port = DEFAULT_CDP_PORT): Promise<numb
 }
 
 /**
+ * internal #318 — the browser window each target is in, as `Browser.getWindowForTarget({targetId})` on
+ * the browser endpoint answers it: one session for all of them, without opening one on every tab. A
+ * target the call fails for is left out. Throws when the browser endpoint cannot be reached.
+ */
+export async function getWindowIdsForTargets(
+  targetIds: readonly string[],
+  port = DEFAULT_CDP_PORT,
+): Promise<Map<string, number>> {
+  const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(CONNECT_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`CDP /json/version returned HTTP ${res.status}`);
+  const version = (await res.json()) as { webSocketDebuggerUrl?: string };
+  if (!version.webSocketDebuggerUrl) throw new Error("CDP /json/version gave no webSocketDebuggerUrl");
+  const session = await openSession(
+    { id: "__browser__", title: "", url: "", type: "browser", webSocketDebuggerUrl: version.webSocketDebuggerUrl },
+    port,
+  );
+  const ids = new Map<string, number>();
+  await Promise.all(targetIds.map(async (targetId) => {
+    try {
+      const win = (await session.send("Browser.getWindowForTarget", { targetId })) as { windowId?: unknown };
+      if (typeof win.windowId === "number") ids.set(targetId, win.windowId);
+    } catch {
+      // left out
+    }
+  }));
+  return ids;
+}
+
+/**
  * Bring a tab and its window to the front with CDP `Page.bringToFront` (internal #305). win2
  * measured it raising the tab's window to the foreground, called from a background process, over the
  * same browser's other window and over a terminal (Chrome and Edge, maximized and overlapping), and a
