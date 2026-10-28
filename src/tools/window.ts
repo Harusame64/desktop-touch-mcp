@@ -158,7 +158,7 @@ export const focusWindowHandler = async ({
       // server proxied by another process), so callers got ok:true +
       // windowChanged:false and acted on the wrong target.
       //
-      // New contract (mirrors keyboard.ts:344-395 focusWindowForKeyboard):
+      // New contract (mirrors focusWindowForKeyboard in keyboard.ts):
       //   1. Try restoreAndFocusWindow(hwnd, { force }) — honors caller
       //      flag (or DESKTOP_TOUCH_FORCE_FOCUS env). SW_RESTORE goes
       //      only to a minimized window, so a maximized one stays maximized.
