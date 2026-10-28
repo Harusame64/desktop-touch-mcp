@@ -789,7 +789,10 @@ export type BrowserPointCover =
   | { covered: "other" | "owned"; hwnd: bigint; title: string }
   | { covered: "excluded" }
   // internal #318 — the tab is not the one showing; another page of the browser is.
-  | { covered: "tab" };
+  | { covered: "tab"; target: TabSummary; showing: TabSummary[] };
+
+/** internal #318 — a tab as the refusal names it. */
+export interface TabSummary { tabId: string; title: string; url: string }
 
 /** internal #274 — `undefined` when the browser window (or nothing known) is under the point. */
 export function browserPointCover(owner: PointOwner): BrowserPointCover | undefined {
@@ -816,15 +819,20 @@ export function browserPointCoveredFailure(
   forced = false,
 ): ToolResult {
   if (cover.covered === "tab") {
+    // internal #318 — the user's decision (2026-10-28): do not switch the user's tab, refuse, and give
+    // the caller everything it needs to switch and retry.
+    const front = cover.showing[0];
+    const shown = (t: TabSummary) => `"${t.title}" (${t.url}, tabId ${t.tabId})`;
     return failCode(
       "BrowserPointCovered",
-      `browser_click: the tab is not showing (document.visibilityState is "hidden") while another page of the browser is, so a click at the element's point (${x}, ${y}) would land on that page. browser_click asked the browser to bring the tab forward and it did not show. Nothing was clicked.`,
+      `browser_click: the tab ${shown(cover.target)} is not showing, so a click at the element's point (${x}, ${y}) would land on the page that is${front ? `: ${shown(front)}` : ""}. browser_click does not switch tabs. Nothing was clicked.`,
       {
         suggest: [
-          "Show the tab in the browser (select it in its window), then retry browser_click with the same tabId.",
-          "To enter text, browser_fill sets the value through the page and does not use an OS click.",
+          `Select the tab "${cover.target.title}" in the browser window, then retry browser_click with tabId "${cover.target.tabId}". desktop_discover on the browser window lists its tabs by title in the tab strip; desktop_act on that tab selects it.`,
+          "If the page showing is the one you meant, retry with its tabId instead (showing[] in the context).",
+          "To read or change the hidden tab without clicking, browser_eval and browser_fill work on a hidden tab through the page.",
         ],
-        context: { ...ctx, at: { x, y }, coveredBy: cover.covered },
+        context: { ...ctx, at: { x, y }, coveredBy: cover.covered, target: cover.target, showing: cover.showing },
       },
     );
   }
@@ -855,79 +863,73 @@ export function browserPointCoveredFailure(
 
 const isCover = (r: VerifyDeliveryHint | BrowserPointCover): r is BrowserPointCover => "covered" in r;
 
-/**
- * internal #318 — before browser_click computes its point: the tab it will click, resolved once (so
- * the point, the window brought forward and the last look ask about the same tab, not each their own
- * `/json` order), brought forward when it is hidden, and given up to 500 ms to show. The point is then
- * computed on the shown tab's layout. Any failure leaves `tabId` as it was and clicks as before.
- */
-export async function showTabForClick(
-  tabId: string | null,
-  port: number,
-  deps: {
-    resolve: (tabId: string | null, port: number) => Promise<string>;
-    hidden: (tabId: string, port: number) => Promise<boolean>;
-    bring: (tabId: string, port: number) => Promise<void>;
-    sleep: (ms: number) => Promise<void>;
-  } = {
-    resolve: resolveTabId,
-    hidden: (id, p) => tabIsHidden(id, p),
-    bring: bringTabToFront,
-    sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
-  },
-): Promise<string | null> {
-  let id: string;
-  try {
-    id = await deps.resolve(tabId, port);
-  } catch {
-    return tabId;
-  }
-  if (!(await deps.hidden(id, port))) return id;
-  try {
-    await deps.bring(id, port);
-  } catch {
-    return id;
-  }
-  for (let waited = 0; waited < 500; waited += 50) {
-    if (!(await deps.hidden(id, port))) break;
-    await deps.sleep(50);
-  }
-  return id;
-}
-
-/**
- * internal #318 — whether a page of the browser other than `tabId` says it is showing. With the
- * display off or the session locked every page reads hidden, so a hidden tab alone is not another tab
- * in front. Asks at most 12 pages; no answer is "no".
- */
-export async function anotherPageShowing(
+/** internal #318 — `evaluate` with an answer within `ms`, or a throw. One busy tab does not hold the click. */
+async function evaluateWithin(
+  evaluate: (expr: string, tabId: string | null, port: number) => Promise<unknown>,
+  expr: string,
   tabId: string,
   port: number,
-  deps: {
-    list: (port: number) => Promise<Array<{ id: string; type: string }>>;
-    evaluate: (expr: string, tabId: string | null, port: number) => Promise<unknown>;
-  } = { list: listTabs, evaluate: evaluateInTab },
-): Promise<boolean> {
-  let pages: Array<{ id: string; type: string }>;
+  ms: number,
+): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    pages = (await deps.list(port)).filter((t) => t.type === "page" && t.id !== tabId).slice(0, 12);
-  } catch {
-    return false;
+    return await Promise.race([
+      evaluate(expr, tabId, port),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("no answer")), ms); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
-  const answers = await Promise.allSettled(pages.map((t) => deps.evaluate("document.visibilityState", t.id, port)));
-  return answers.some((a) => a.status === "fulfilled" && a.value === "visible");
 }
 
-/** internal #318 — true only when the tab answers that it is hidden; any other answer or none is false. */
-export async function tabIsHidden(
+/**
+ * internal #318 — the last look before the cursor moves: is the tab the click is for showing? Nothing
+ * is switched or raised here (the user's decision 2026-10-28: refuse, do not switch tabs).
+ *
+ * Returns the refusal only when the tab answers "hidden" AND another page of the browser answers
+ * "visible": with the display off or the session locked every page reads hidden and the click still
+ * lands, so then it clicks as before. A tab still showing up within 300 ms (a window that was only just
+ * raised) clicks too. Every other case, including no answer, clicks as before. Each page gets 1 s.
+ */
+export async function hiddenTabCover(
   tabId: string | null,
   port: number,
-  evaluate: (expr: string, tabId: string | null, port: number) => Promise<unknown> = evaluateInTab,
-): Promise<boolean> {
+  deps: {
+    list: (port: number) => Promise<Array<{ id: string; type: string; title: string; url: string }>>;
+    resolve: (tabId: string | null, port: number) => Promise<string>;
+    evaluate: (expr: string, tabId: string | null, port: number) => Promise<unknown>;
+    sleep: (ms: number) => Promise<void>;
+  } = {
+    list: listTabs,
+    resolve: resolveTabId,
+    evaluate: evaluateInTab,
+    sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+  },
+): Promise<BrowserPointCover | undefined> {
+  const state = async (id: string): Promise<unknown> => {
+    try {
+      return await evaluateWithin(deps.evaluate, "document.visibilityState", id, port, 1000);
+    } catch {
+      return undefined;
+    }
+  };
   try {
-    return (await evaluate("document.visibilityState", tabId, port)) === "hidden";
+    const id = await deps.resolve(tabId, port);
+    if ((await state(id)) !== "hidden") return undefined;
+    const pages = (await deps.list(port)).filter((t) => t.type === "page");
+    const others = pages.filter((t) => t.id !== id);
+    const states = await Promise.all(others.map((t) => state(t.id)));
+    const showing = others.filter((_, n) => states[n] === "visible");
+    if (showing.length === 0) return undefined;
+    for (let waited = 0; waited < 300; waited += 50) {
+      await deps.sleep(50);
+      if ((await state(id)) !== "hidden") return undefined;
+    }
+    const summary = (t: { id: string; title: string; url: string }): TabSummary => ({ tabId: t.id, title: t.title, url: t.url });
+    const target = pages.find((t) => t.id === id) ?? { id, title: "", url: "" };
+    return { covered: "tab", target: summary(target), showing: showing.slice(0, 3).map(summary) };
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -976,13 +978,10 @@ export async function osClickAndVerify(
   }
 
   // internal #318 — after the window check, so a window on top is still named as one (with the
-  // forceFocus advice): the tab has to be the one showing in its window, or the press lands on the tab
-  // in front of it. The click handlers brought it forward before computing the point (showTabForClick);
-  // this is the last look. Refused only when another page of the browser is showing: with the display
-  // off every page reads hidden, and the click still reaches the page.
-  if (tabId !== null && (await tabIsHidden(tabId, port)) && (await anotherPageShowing(tabId, port))) {
-    return { covered: "tab" };
-  }
+  // forceFocus advice): the tab has to be the one showing, or the press lands on the tab in front of it
+  // (win2: the front tab's button took a trusted click and the reply said ok:true).
+  const hiddenTab = await hiddenTabCover(tabId, port);
+  if (hiddenTab !== undefined) return hiddenTab;
 
   // Phase 2a: same choke point as every other cursor move — native
   // multi-monitor placement with the nut.js fallback behind it.
@@ -2008,9 +2007,7 @@ export const browserClickElementHandler = async ({
     // present `by` means selector is absent → resolver path. The selector path
     // below is unchanged (bit-equal, NFR-1 / AC-9).
     if (by && pattern) {
-      // internal #318 — the tab shown and pinned before its point is computed (showTabForClick).
-      const shownTabId = (await showTabForClick(tabId ?? null, port)) ?? undefined;
-      return await handleBrowserClickByAxis({ by, pattern, role, scope, caseSensitive, narrate, tabId: shownTabId, port, lensId, force });
+      return await handleBrowserClickByAxis({ by, pattern, role, scope, caseSensitive, narrate, tabId, port, lensId, force });
     }
     if (!selector) {
       return failCode("InvalidArgs", "browser_click: provide either selector or by+pattern.", {
@@ -2028,8 +2025,6 @@ export const browserClickElementHandler = async ({
       if (typeof vr.fix.args.tabId === "string") effectiveTabId = vr.fix.args.tabId;
       consumeFix(fixId);
     }
-    // internal #318 — the tab shown and pinned before its point is computed (showTabForClick).
-    effectiveTabId = (await showTabForClick(effectiveTabId ?? null, port)) ?? undefined;
 
     let perceptionEnvBrowser: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {

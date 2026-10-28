@@ -5,10 +5,10 @@
  * behind): main answered `ok: true` at (392,360); the target page logged nothing and stayed hidden,
  * and the tab showing got a trusted pointerdown and click on its own button at that point.
  *
- * Now the click handlers resolve the tab once, bring it forward when it is hidden and wait for it to
- * show before computing the point (showTabForClick). The last look before the cursor moves refuses
- * as BrowserPointCovered / coveredBy "tab" only when the tab is still hidden and another page of the
- * browser is showing: with the display off every page reads hidden, and the click still lands.
+ * The user's decision (2026-10-28): browser_click does not switch the user's tab. The last look
+ * before the cursor moves refuses as BrowserPointCovered / coveredBy "tab" when the tab is hidden and
+ * another page of the browser is showing, and names both, so the caller can switch and retry. With the
+ * display off every page reads hidden, and the click still lands, so then it clicks as before.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PointOwner } from "../../src/engine/point-owner.js";
@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   click: vi.fn(async () => {}),
   move: vi.fn(async () => {}),
   visibility: {} as Record<string, string>,
+  bring: vi.fn(async () => {}),
 }));
 
 vi.mock("../../src/engine/window-cache.js", async (orig) => ({
@@ -52,6 +53,8 @@ vi.mock("../../src/engine/cdp-bridge.js", async (orig) => ({
   }),
   // The tab's window is EDGE (the frame title shows the other tab, so only the bounds find it).
   getTabWindowBounds: vi.fn(async () => ({ left: 0, top: 0, width: 1200, height: 900 })),
+  resolveTabId: vi.fn(async (id: string | null) => id ?? "t1"),
+  bringTabToFront: mocks.bring,
   getBrowserProcessId: vi.fn(async () => { throw new Error("no pid in this cell"); }),
 }));
 vi.mock("../../src/engine/win32.js", async (orig) => ({
@@ -61,24 +64,29 @@ vi.mock("../../src/engine/win32.js", async (orig) => ({
   getWindowDpi: () => 96,
 }));
 
-const { osClickAndVerify, browserPointCoveredFailure, tabIsHidden, showTabForClick, anotherPageShowing } =
-  await import("../../src/tools/browser.js");
+const { osClickAndVerify, browserPointCoveredFailure, hiddenTabCover } = await import("../../src/tools/browser.js");
 
 const aim: PointOwner = { kind: "aim", via: "os_hit_test" };
 const other: PointOwner = { kind: "other", hwnd: 888n, title: "Notepad", via: "os_hit_test" };
+const SHOP = { tabId: "t1", title: "Shop", url: "https://example.test/" };
+const CART = { tabId: "t2", title: "Cart", url: "https://example.test/cart" };
 
 afterEach(() => {
   mocks.click.mockClear();
   mocks.move.mockClear();
+  mocks.bring.mockClear();
   mocks.visibility = {};
 });
 
 describe("internal #318: the last look before the click", () => {
-  it("refuses when the tab is hidden and another page is showing, before the cursor moves", async () => {
+  it("refuses when the tab is hidden and another page is showing, names both, and switches nothing", async () => {
     mocks.visibility = { t2: "hidden", t1: "visible" };
-    expect(await osClickAndVerify(392, 360, "#btn", "t2", 9222, () => aim)).toEqual({ covered: "tab" });
+    expect(await osClickAndVerify(392, 360, "#btn", "t2", 9222, () => aim)).toEqual({
+      covered: "tab", target: CART, showing: [SHOP],
+    });
     expect(mocks.move).not.toHaveBeenCalled();
     expect(mocks.click).not.toHaveBeenCalled();
+    expect(mocks.bring).not.toHaveBeenCalled();
   });
 
   it("clicks when every page reads hidden (the display off), as before", async () => {
@@ -101,99 +109,81 @@ describe("internal #318: the last look before the click", () => {
     });
   });
 
-  it("says what is wrong and what to do, as BrowserPointCovered / coveredBy tab", () => {
-    const r = browserPointCoveredFailure({ covered: "tab" }, 392, 360, { selector: "#btn" });
+  it("says which tab is showing, which tab to select and how, as BrowserPointCovered / coveredBy tab", () => {
+    const r = browserPointCoveredFailure({ covered: "tab", target: CART, showing: [SHOP] }, 392, 360, { selector: "#btn" });
     const body = JSON.parse(r.content[0]!.type === "text" ? r.content[0]!.text : "{}");
     expect(body.code).toBe("BrowserPointCovered");
-    expect(body.error).toMatch(/another page of the browser is/);
-    expect(body.error).toMatch(/Nothing was clicked/);
-    expect(JSON.stringify(body.suggest)).toMatch(/same tabId/);
-    expect(body.context.coveredBy).toBe("tab");
+    expect(body.error).toContain('"Cart" (https://example.test/cart, tabId t2) is not showing');
+    expect(body.error).toContain('"Shop" (https://example.test/, tabId t1)');
+    expect(body.error).toMatch(/does not switch tabs\. Nothing was clicked/);
+    expect(JSON.stringify(body.suggest)).toContain('retry browser_click with tabId \\"t2\\"');
+    expect(body.context).toMatchObject({ coveredBy: "tab", target: CART, showing: [SHOP] });
   });
 });
 
-describe("internal #318: showTabForClick, before the point is computed", () => {
-  const make = (states: boolean[], over: Partial<Parameters<typeof showTabForClick>[2]> = {}) => {
-    const calls: string[] = [];
-    let raised = false;
-    const deps = {
-      resolve: async (id: string | null) => { calls.push(`resolve:${id}`); return id ?? "t9"; },
-      // hidden until brought forward, then each read takes the next state
-      hidden: async () => (raised ? states.shift() ?? false : true),
-      bring: async (id: string) => { calls.push(`bring:${id}`); raised = true; },
-      sleep: async (ms: number) => { calls.push(`sleep:${ms}`); },
-      ...over,
-    };
-    return { deps, calls };
-  };
-
-  it("brings a hidden tab forward and waits until it shows", async () => {
-    const { deps, calls } = make([true, true, false]);
-    expect(await showTabForClick("t2", 9222, deps)).toBe("t2");
-    expect(calls).toEqual(["resolve:t2", "bring:t2", "sleep:50", "sleep:50"]);
-  });
-
-  it("pins a missing tabId to the one tab every later step asks about", async () => {
-    const { deps, calls } = make([false]);
-    expect(await showTabForClick(null, 9222, deps)).toBe("t9");
-    expect(calls).toEqual(["resolve:null", "bring:t9"]);
-  });
-
-  it("gives up after 500 ms and lets the last look decide", async () => {
-    const { deps, calls } = make(Array(20).fill(true));
-    await showTabForClick("t2", 9222, deps);
-    expect(calls.filter((c) => c.startsWith("sleep")).length).toBe(10);
-  });
-
-  it("does nothing to a tab that is showing", async () => {
-    const { deps, calls } = make([], { hidden: async () => false });
-    await showTabForClick("t2", 9222, deps);
-    expect(calls).toEqual(["resolve:t2"]);
-  });
-
-  it("no CDP: keeps the tabId as it was", async () => {
-    const { deps } = make([], { resolve: async () => { throw new Error("down"); } });
-    expect(await showTabForClick(null, 9222, deps)).toBeNull();
-  });
-});
-
-describe("internal #318: helpers", () => {
-  it.each([["hidden", true], ["visible", false], ["prerender", false], [undefined, false]])(
-    "tabIsHidden: %s → %s",
-    async (answer, expected) => {
-      expect(await tabIsHidden("t", 9222, async () => answer)).toBe(expected);
+describe("internal #318: hiddenTabCover", () => {
+  const pages = [
+    { id: "t1", type: "page", title: "Shop", url: "https://example.test/" },
+    { id: "t2", type: "page", title: "Cart", url: "https://example.test/cart" },
+    { id: "sw", type: "service_worker", title: "", url: "https://example.test/sw.js" },
+  ];
+  const deps = (states: Record<string, unknown[] | unknown>, slept: number[] = []) => ({
+    list: async () => pages,
+    resolve: async (id: string | null) => id ?? "t1",
+    evaluate: async (_e: string, id: string | null) => {
+      const v = states[id!];
+      if (Array.isArray(v)) return v.length > 1 ? v.shift() : v[0];
+      if (v instanceof Error) throw v;
+      return v;
     },
-  );
-
-  it("tabIsHidden: an error is no answer", async () => {
-    expect(await tabIsHidden("t", 9222, async () => { throw new Error("gone"); })).toBe(false);
+    sleep: async (ms: number) => { slept.push(ms); },
   });
 
-  it("anotherPageShowing asks only the other pages", async () => {
+  it("a tab that shows within 300 ms (a window only just raised) clicks", async () => {
+    expect(await hiddenTabCover("t2", 9222, deps({ t2: ["hidden", "hidden", "visible"], t1: "visible" }))).toBeUndefined();
+  });
+
+  it("waits at most 300 ms before refusing", async () => {
+    const slept: number[] = [];
+    expect(await hiddenTabCover("t2", 9222, deps({ t2: ["hidden"], t1: "visible" }, slept))).toMatchObject({ covered: "tab" });
+    expect(slept.reduce((a, b) => a + b, 0)).toBe(300);
+  });
+
+  it("asks every other page, not a sample, and never a non-page target", async () => {
     const asked: string[] = [];
-    const list = async () => [
-      { id: "t1", type: "page" }, { id: "t2", type: "page" }, { id: "sw", type: "service_worker" },
-    ];
-    const evaluate = async (_e: string, id: string | null) => { asked.push(id!); return id === "t2" ? "visible" : "hidden"; };
-    expect(await anotherPageShowing("t2", 9222, { list, evaluate })).toBe(false);
-    expect(asked).toEqual(["t1"]);
-    expect(await anotherPageShowing("t1", 9222, { list, evaluate })).toBe(true);
+    const many = Array.from({ length: 20 }, (_, n) => ({ id: `p${n}`, type: "page", title: `P${n}`, url: `https://e.test/${n}` }));
+    const r = await hiddenTabCover("p0", 9222, {
+      ...deps({}),
+      list: async () => [...many, { id: "sw", type: "service_worker", title: "", url: "" }],
+      evaluate: async (_e, id) => { asked.push(id!); return id === "p0" ? "hidden" : id === "p17" ? "visible" : "hidden"; },
+    });
+    expect(r).toMatchObject({ covered: "tab", showing: [{ tabId: "p17" }] });
+    expect(asked).not.toContain("sw");
+    expect(new Set(asked).size).toBe(20);
   });
-});
 
-// The cells above call the pieces; these read browser_click's handler for the wiring (comments
-// removed): both paths show and pin the tab before anything computes its point.
-describe("internal #318: browser_click wires showTabForClick before the point is computed", () => {
-  it("in the by-axis path and the selector path", async () => {
-    const { readFileSync } = await import("node:fs");
-    const { resolve } = await import("node:path");
-    const code = readFileSync(resolve(__dirname, "../../src/tools/browser.ts"), "utf8")
-      .split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
-    const at = code.indexOf("export const browserClickElementHandler");
-    const handler = code.slice(at, code.indexOf("\n};\n", at));
-    expect(handler).toMatch(/const shownTabId = \(await showTabForClick\(tabId \?\? null, port\)\)[\s\S]{0,200}handleBrowserClickByAxis\(\{[^}]*tabId: shownTabId/);
-    const shown = handler.indexOf("effectiveTabId = (await showTabForClick(effectiveTabId ?? null, port))");
-    expect(shown).toBeGreaterThan(0);
-    expect(shown).toBeLessThan(handler.indexOf("getElementScreenCoords("));
+  it("a page that never answers does not hold the click (1 s each) and counts as no answer", async () => {
+    vi.useFakeTimers();
+    try {
+      const p = hiddenTabCover("t2", 9222, {
+        ...deps({ t2: "hidden" }),
+        evaluate: async (_e, id) => (id === "t2" ? "hidden" : new Promise(() => {})),
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await p).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("no answer from the tab, or no CDP, clicks as before", async () => {
+    expect(await hiddenTabCover("t2", 9222, deps({ t2: new Error("gone"), t1: "visible" }))).toBeUndefined();
+    expect(await hiddenTabCover("t2", 9222, { ...deps({}), list: async () => { throw new Error("down"); } })).toBeUndefined();
+  });
+
+  it("without a tabId, asks about the tab the call works on", async () => {
+    expect(await hiddenTabCover(null, 9222, deps({ t1: "hidden", t2: "visible" }))).toMatchObject({
+      covered: "tab", target: { tabId: "t1" }, showing: [{ tabId: "t2" }],
+    });
   });
 });
