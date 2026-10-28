@@ -25,6 +25,7 @@ import {
   getTabWindowBounds,
   getBrowserProcessId,
   bringTabToFront,
+  getWindowIdsForTargets,
   resolveTabId,
   CMD_TIMEOUT_MS,
   type TabContext,
@@ -825,11 +826,11 @@ export function browserPointCoveredFailure(
     const shown = (t: TabSummary) => `"${t.title}" (${t.url}, tabId ${t.tabId})`;
     return failCode(
       "BrowserPointCovered",
-      `browser_click: the tab ${shown(cover.target)} is not showing, so a click at the element's point (${x}, ${y}) would land on the page that is${front ? `: ${shown(front)}` : ""}. browser_click does not switch tabs. Nothing was clicked.`,
+      `browser_click: the tab ${shown(cover.target)} is not the one its window shows, so a click at the element's point (${x}, ${y}) would land on the tab that is${front ? `: ${shown(front)}` : ""}. browser_click does not switch tabs in a window that is already in front. Nothing was clicked.`,
       {
         suggest: [
           `Select the tab "${cover.target.title}" in the browser window, then retry browser_click with tabId "${cover.target.tabId}". desktop_discover on the browser window lists its tabs by title in the tab strip; desktop_act on that tab selects it.`,
-          "If the page showing is the one you meant, retry with its tabId instead (showing[] in the context).",
+          "If the tab showing is the one you meant, retry with its tabId instead (showing[] in the context: tabs of the same window).",
           "To read or change the hidden tab without clicking, browser_eval and browser_fill work on a hidden tab through the page.",
         ],
         context: { ...ctx, at: { x, y }, coveredBy: cover.covered, target: cover.target, showing: cover.showing },
@@ -883,13 +884,16 @@ async function evaluateWithin(
 }
 
 /**
- * internal #318 — the last look before the cursor moves: is the tab the click is for showing? Nothing
- * is switched or raised here (the user's decision 2026-10-28: refuse, do not switch tabs).
+ * internal #318 — the last look before the cursor moves: is the tab the click is for the one its
+ * window shows? Nothing is switched or raised here (the user's decision 2026-10-28: refuse, do not
+ * switch). When the window was not in front, ensureBrowserFocused has already brought the tab forward
+ * with it, as before (Page.bringToFront); this is about a window already in front.
  *
- * Returns the refusal only when the tab answers "hidden" AND another page of the browser answers
- * "visible": with the display off or the session locked every page reads hidden and the click still
- * lands, so then it clicks as before. A tab still showing up within 300 ms (a window that was only just
- * raised) clicks too. Every other case, including no answer, clicks as before. Each page gets 1 s.
+ * Refuses only when the tab answers "hidden" and another page IN THE SAME WINDOW answers "visible",
+ * after giving the tab 300 ms (a window only just raised). Pages in other windows are not asked: they
+ * are not where the click lands. When no page of the window answers "visible" (the display off or the
+ * session locked reads every page hidden) it cannot tell which tab is showing and clicks as before.
+ * No answer anywhere, a target that is not a page, or no window ids also click as before.
  */
 export async function hiddenTabCover(
   tabId: string | null,
@@ -898,35 +902,41 @@ export async function hiddenTabCover(
     list: (port: number) => Promise<Array<{ id: string; type: string; title: string; url: string }>>;
     resolve: (tabId: string | null, port: number) => Promise<string>;
     evaluate: (expr: string, tabId: string | null, port: number) => Promise<unknown>;
+    windows: (targetIds: readonly string[], port: number) => Promise<Map<string, number>>;
     sleep: (ms: number) => Promise<void>;
   } = {
     list: listTabs,
     resolve: resolveTabId,
     evaluate: evaluateInTab,
+    windows: getWindowIdsForTargets,
     sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
   },
 ): Promise<BrowserPointCover | undefined> {
-  const state = async (id: string): Promise<unknown> => {
+  const state = async (id: string, ms: number): Promise<unknown> => {
     try {
-      return await evaluateWithin(deps.evaluate, "document.visibilityState", id, port, 1000);
+      return await evaluateWithin(deps.evaluate, "document.visibilityState", id, port, ms);
     } catch {
       return undefined;
     }
   };
   try {
     const id = await deps.resolve(tabId, port);
-    if ((await state(id)) !== "hidden") return undefined;
     const pages = (await deps.list(port)).filter((t) => t.type === "page");
-    const others = pages.filter((t) => t.id !== id);
-    const states = await Promise.all(others.map((t) => state(t.id)));
-    const showing = others.filter((_, n) => states[n] === "visible");
+    const target = pages.find((t) => t.id === id);
+    if (!target) return undefined;
+    if ((await state(id, 1000)) !== "hidden") return undefined;
+    const windowOf = await deps.windows(pages.map((t) => t.id), port);
+    const win = windowOf.get(id);
+    if (win === undefined) return undefined;
+    const siblings = pages.filter((t) => t.id !== id && windowOf.get(t.id) === win);
+    const states = await Promise.all(siblings.map((t) => state(t.id, 1000)));
+    const showing = siblings.filter((_, n) => states[n] === "visible");
     if (showing.length === 0) return undefined;
     for (let waited = 0; waited < 300; waited += 50) {
       await deps.sleep(50);
-      if ((await state(id)) !== "hidden") return undefined;
+      if ((await state(id, 300)) !== "hidden") return undefined;
     }
     const summary = (t: { id: string; title: string; url: string }): TabSummary => ({ tabId: t.id, title: t.title, url: t.url });
-    const target = pages.find((t) => t.id === id) ?? { id, title: "", url: "" };
     return { covered: "tab", target: summary(target), showing: showing.slice(0, 3).map(summary) };
   } catch {
     return undefined;

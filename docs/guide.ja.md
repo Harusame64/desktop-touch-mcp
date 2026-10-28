@@ -273,7 +273,7 @@ Windows のフォアグラウンド保護機能により、ピン固定された
 
 強制フォーカスが拒否された場合、応答は `ok:false` + `code: "ForegroundRestricted"` (Issue #202 統一 — `focus_window` / `keyboard` / `terminal_send` / `mouse_click` で共通の shape) になります。当該操作自体は **抑止** され、誤ったウィンドウへキーストローク / クリックが届くことはありません。`focus_window` の auto-escalate ladder で先に focus を取得してから retry してください。旧 `hints.warnings: ["ForceFocusRefused"]` shape はもう発火しません。
 
-`browser_click` は振る舞いが異なります。カーソルを動かす前に、クリックを受け取る窓がどれかを必ず確かめます。ほかのアプリの窓がまだブラウザの前にあれば、`BrowserPointCovered` で断り、何もクリックしません。`forceFocus` を付けていないときは、エラーの応答で `forceFocus: true` を付けて再試行するよう案内します。タブは切り替えません。対象のタブが表示されておらず、ブラウザで別のページが表示されている場合は、`BrowserPointCovered`（`context.coveredBy: "tab"`）で操作を断り、クリックしません。応答には対象のタブ（`context.target`）と表示中のページ（`context.showing`）が含まれるので、対象のタブを選んでから再試行できます。
+`browser_click` は振る舞いが異なります。カーソルを動かす前に、クリックを受け取る窓がどれかを必ず確かめます。ほかのアプリの窓がまだブラウザの前にあれば、`BrowserPointCovered` で断り、何もクリックしません。`forceFocus` を付けていないときは、エラーの応答で `forceFocus: true` を付けて再試行するよう案内します。ブラウザの窓がすでに前面にあるときは、タブを切り替えません。対象のタブが表示されておらず、同じ窓で別のタブが表示されている場合は、`BrowserPointCovered`（`context.coveredBy: "tab"`）で操作を断り、クリックしません。応答には対象のタブ（`context.target`）と、その窓で表示中のタブ（`context.showing`）が含まれるので、対象のタブを選んでから再試行できます。（窓を前面に出すときは、これまでどおりタブも一緒に前面に出ます。）
 
 別の仮想デスクトップにある窓は、前面に出しません（利用者のデスクトップが切り替わるため）。`keyboard` / `terminal` の send / マウス系（homing で前面に出すとき）は `code: "WindowOnOtherDesktop"` で断り、何も送りません。`context.sameTitleOnScreen: true` は、同じ題名の窓がいまのデスクトップにあるという意味です。その窓を正確に指定してください（道具が受け取るなら `hwnd`、そうでなければより詳しい `windowTitle`）。`focus_window` はこれまでどおり前面に出します。
 

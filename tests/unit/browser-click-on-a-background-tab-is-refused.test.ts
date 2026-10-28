@@ -54,6 +54,7 @@ vi.mock("../../src/engine/cdp-bridge.js", async (orig) => ({
   // The tab's window is EDGE (the frame title shows the other tab, so only the bounds find it).
   getTabWindowBounds: vi.fn(async () => ({ left: 0, top: 0, width: 1200, height: 900 })),
   resolveTabId: vi.fn(async (id: string | null) => id ?? "t1"),
+  getWindowIdsForTargets: vi.fn(async (ids: readonly string[]) => new Map(ids.map((id) => [id, 1]))),
   bringTabToFront: mocks.bring,
   getBrowserProcessId: vi.fn(async () => { throw new Error("no pid in this cell"); }),
 }));
@@ -113,9 +114,9 @@ describe("internal #318: the last look before the click", () => {
     const r = browserPointCoveredFailure({ covered: "tab", target: CART, showing: [SHOP] }, 392, 360, { selector: "#btn" });
     const body = JSON.parse(r.content[0]!.type === "text" ? r.content[0]!.text : "{}");
     expect(body.code).toBe("BrowserPointCovered");
-    expect(body.error).toContain('"Cart" (https://example.test/cart, tabId t2) is not showing');
+    expect(body.error).toContain('"Cart" (https://example.test/cart, tabId t2) is not the one its window shows');
     expect(body.error).toContain('"Shop" (https://example.test/, tabId t1)');
-    expect(body.error).toMatch(/does not switch tabs\. Nothing was clicked/);
+    expect(body.error).toMatch(/does not switch tabs in a window that is already in front\. Nothing was clicked/);
     expect(JSON.stringify(body.suggest)).toContain('retry browser_click with tabId \\"t2\\"');
     expect(body.context).toMatchObject({ coveredBy: "tab", target: CART, showing: [SHOP] });
   });
@@ -136,6 +137,7 @@ describe("internal #318: hiddenTabCover", () => {
       if (v instanceof Error) throw v;
       return v;
     },
+    windows: async (ids: readonly string[]) => new Map(ids.map((id) => [id, 1])),
     sleep: async (ms: number) => { slept.push(ms); },
   });
 
@@ -149,7 +151,7 @@ describe("internal #318: hiddenTabCover", () => {
     expect(slept.reduce((a, b) => a + b, 0)).toBe(300);
   });
 
-  it("asks every other page, not a sample, and never a non-page target", async () => {
+  it("asks every other page of the window, not a sample, and never a non-page target", async () => {
     const asked: string[] = [];
     const many = Array.from({ length: 20 }, (_, n) => ({ id: `p${n}`, type: "page", title: `P${n}`, url: `https://e.test/${n}` }));
     const r = await hiddenTabCover("p0", 9222, {
@@ -174,6 +176,19 @@ describe("internal #318: hiddenTabCover", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("only pages in the target's window count: a visible page in another window does not refuse", async () => {
+    const r = await hiddenTabCover("t2", 9222, {
+      ...deps({ t2: "hidden", t1: "visible" }),
+      windows: async () => new Map([["t1", 1], ["t2", 2]]),
+    });
+    expect(r).toBeUndefined();
+  });
+
+  it("no window id for the target, or a target that is not a page, clicks as before", async () => {
+    expect(await hiddenTabCover("t2", 9222, { ...deps({ t2: "hidden", t1: "visible" }), windows: async () => new Map() })).toBeUndefined();
+    expect(await hiddenTabCover("sw", 9222, deps({ sw: "hidden", t1: "visible" }))).toBeUndefined();
   });
 
   it("no answer from the tab, or no CDP, clicks as before", async () => {
