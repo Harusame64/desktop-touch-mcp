@@ -160,8 +160,8 @@ export const focusWindowHandler = async ({
       //
       // New contract (mirrors keyboard.ts:344-395 focusWindowForKeyboard):
       //   1. Try restoreAndFocusWindow(hwnd, { force }) — honors caller
-      //      flag (or DESKTOP_TOUCH_FORCE_FOCUS env). SW_RESTORE is a
-      //      no-op for non-minimized windows.
+      //      flag (or DESKTOP_TOUCH_FORCE_FOCUS env). SW_RESTORE goes
+      //      only to a minimized window, so a maximized one stays maximized.
       //   2. Wait 100ms for the window manager to settle.
       //   3. Re-enum and check whether the target hwnd is now isActive.
       //   4. If not, and the first attempt was NOT force, escalate to

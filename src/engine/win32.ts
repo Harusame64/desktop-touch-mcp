@@ -326,14 +326,21 @@ export function getWindowRenderState(hwnd: unknown): WindowRenderState | null {
 
 /** Restore a minimized window and bring it to the foreground.
  *  Returns the actual window rect after restoration, plus force-focus result when opts.force=true.
- *  @param force When true, use AttachThreadInput to bypass Windows foreground-stealing protection. */
+ *  @param force When true, use AttachThreadInput to bypass Windows foreground-stealing protection.
+ *
+ *  SW_RESTORE goes only to a minimized window. On a maximized one it is not a no-op: it turns the
+ *  window to its normal size (internal #307, a maximized Chrome after focus_window). A window
+ *  minimized from maximized still comes back maximized. Without the IsIconic binding it restores
+ *  as before, so a minimized window is never left minimized. */
 export function restoreAndFocusWindow(
   hwnd: unknown,
   opts?: { force?: boolean }
 ): { x: number; y: number; width: number; height: number; forceFocusOk?: boolean } {
   const SW_RESTORE = 9;
   const w32 = requireNativeWin32();
-  if (typeof hwnd === "bigint") w32.win32ShowWindow!(hwnd, SW_RESTORE);
+  if (typeof hwnd === "bigint" && (w32.win32IsIconic ? w32.win32IsIconic(hwnd) : true)) {
+    w32.win32ShowWindow!(hwnd, SW_RESTORE);
+  }
   let forceFocusOk: boolean | undefined;
   if (opts?.force) {
     const fr = forceSetForegroundWindow(hwnd);
