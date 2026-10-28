@@ -244,6 +244,16 @@ Record every narrowing here so the exceptions stay visible:
     v2.3.1 refused the rename (EBUSY) and was kept; initialize answered at 110 s; the prune removed 48 releases in
     about 87 s after the spawn while the server answered; `dev-local`, v2.3.1, v2.3.2, v2.3.3 remained (0.72 GB);
     both legacy download-* folders were removed; no .trash-* left; the v2.3.1 servers kept running untouched.
+- **v2.3.4 (2026-10-28)** — an urgent patch for public #859, narrowed by the user's decision. Every runtime fix in it
+  (#854, #855, #856, #857, #858, #863) already ran on win2's machine on its own PR. Planned: one build of the release
+  head (native addon included), then:
+  - D0: version, HTTP 6/6 reporting 2.3.4, `publish --dry-run`, and npx from the packed tarball stopping at the
+    PENDING manifest.
+  - D1: #859, the reporter's `repro-stderr.cjs` 3 times (exits on its own, no uncaught loop), plus the in-flight
+    cell (a 3 s `wait_until` answers on stdout before the exit).
+  - D2: one cell each from #856 (2^32 + H refused), #857 (a hidden Settings frame by its handle answers
+    `window_frozen`) and #858 (`@active` types into the shown window with the same page minimised).
+  - D3: the usual regressions, 3/3.
 
 ### HTTP Transport Verification (Required)
 
