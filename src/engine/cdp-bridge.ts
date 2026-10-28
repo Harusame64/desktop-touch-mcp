@@ -259,6 +259,22 @@ export function portForTab(tabId: string | null | undefined): number {
   return (typeof tabId === "string" ? tabPorts.get(tabId) : undefined) ?? getCdpPort();
 }
 
+/**
+ * Browser-internal schemes. A page target on one of these is the browser's own UI, not a page the
+ * user opened: Edge listed `edge://sync-confirmation-dialog` (a sign-in modal) ahead of the page,
+ * and a call without tabId read it (internal #308). `about:` is not here: about:blank is a page.
+ */
+const INTERNAL_PAGE_SCHEME = /^(chrome|edge|devtools|chrome-untrusted|chrome-search|brave|opera|vivaldi):/i;
+
+/**
+ * The tab a call without tabId works on: the first page target that is not browser-internal, else
+ * the first page target (a browser showing only its New Tab page), else undefined.
+ */
+export function defaultPageTab<T extends Pick<CdpTab, "type" | "url">>(tabs: readonly T[]): T | undefined {
+  const pages = tabs.filter((t) => t.type === "page");
+  return pages.find((t) => !INTERNAL_PAGE_SCHEME.test(t.url ?? "")) ?? pages[0];
+}
+
 async function resolveTab(
   tabId: string | null,
   port: number
@@ -270,8 +286,7 @@ async function resolveTab(
     );
   }
   if (tabId === null) {
-    const pageTab = tabs.find((t) => t.type === "page") ?? tabs[0];
-    return pageTab;
+    return defaultPageTab(tabs) ?? tabs[0];
   }
   const tab = tabs.find((t) => t.id === tabId);
   if (!tab) {

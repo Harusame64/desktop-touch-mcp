@@ -25,6 +25,7 @@ import {
   getTabWindowBounds,
   getBrowserProcessId,
   bringTabToFront,
+  defaultPageTab,
   CMD_TIMEOUT_MS,
   type TabContext,
 } from "../engine/cdp-bridge.js";
@@ -504,7 +505,7 @@ async function ensureBrowserFocused(port: number, tabId: string | null = null, f
   let pageTabId: string | undefined;
   try {
     const tabs = await listTabs(port);
-    const pageTab = (tabId !== null ? tabs.find((t) => t.id === tabId) : undefined) ?? tabs.find((t) => t.type === "page");
+    const pageTab = (tabId !== null ? tabs.find((t) => t.id === tabId) : undefined) ?? defaultPageTab(tabs);
     tabTitle = pageTab?.title;
     pageTabId = pageTab?.id;
   } catch {
@@ -1364,7 +1365,7 @@ export const browserConnectHandler = async ({
             `${pageTabs.length} page tab(s) found:`,
             JSON.stringify({ port, active: activeTab, tabs: summary }, null, 2),
             "",
-            "Pass a tab's id to other browser_* tools to target it, or omit to use the first tab.",
+            "Pass a tab's id to other browser_* tools to target it, or omit to use the first page tab that is not the browser's own (edge://, chrome://).",
           ].join("\n"),
         },
       ],
