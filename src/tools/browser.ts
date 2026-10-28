@@ -25,6 +25,7 @@ import {
   getTabWindowBounds,
   getBrowserProcessId,
   bringTabToFront,
+  resolveTabId,
   CMD_TIMEOUT_MS,
   type TabContext,
 } from "../engine/cdp-bridge.js";
@@ -535,7 +536,16 @@ async function ensureBrowserFocused(port: number, tabId: string | null = null, f
       const hits = framesAtWindowBounds(windows, bounds, (w) => getWindowDpi(w.hwnd) / 96);
       if (hits.length === 1) {
         const frame = hits[0]!;
-        if (!frame.isActive) {
+        if (frame.isActive) {
+          // internal #318 — the window is in front, but the tab may not be: another tab of the same window
+          // can be the one showing, and a click at the point lands on it (win2: ok:true, the page got
+          // nothing). Page.bringToFront switches to the tab; it does nothing to a tab already showing.
+          try {
+            await bringTabToFront(pageTabId, port);
+          } catch {
+            // no answer — the hidden-tab check before the click decides
+          }
+        } else {
           // CDP first: win2 measured restoreAndFocusWindow losing the foreground to another browser's
           // window in front (the click was then refused as covered). Page.bringToFront raises it in more
           // cases (over a terminal, Chrome over Edge), though not Edge over Chrome; when it does not, the
@@ -786,7 +796,9 @@ type VerifyDeliveryHint = {
 /** internal #274 — what is on top of the click point instead of the browser window. */
 export type BrowserPointCover =
   | { covered: "other" | "owned"; hwnd: bigint; title: string }
-  | { covered: "excluded" };
+  | { covered: "excluded" }
+  // internal #318 — the tab is not the one showing in its window (or the display is off).
+  | { covered: "tab" };
 
 /** internal #274 — `undefined` when the browser window (or nothing known) is under the point. */
 export function browserPointCover(owner: PointOwner): BrowserPointCover | undefined {
@@ -812,6 +824,20 @@ export function browserPointCoveredFailure(
   ctx: Record<string, unknown>,
   forced = false,
 ): ToolResult {
+  if (cover.covered === "tab") {
+    return failCode(
+      "BrowserPointCovered",
+      `browser_click: the tab is not showing in its window (document.visibilityState is "hidden"), so a click at the element's point (${x}, ${y}) would land on whatever is showing there. Nothing was clicked.`,
+      {
+        suggest: [
+          "Another tab of the same window is usually in front: switch to this tab (or pass the tabId of the tab that is showing), then retry browser_click. browser_click already asked the browser to bring the tab forward.",
+          "Chromium also reports every page hidden while the display is off or the session is locked: wake the display, then retry.",
+          "To enter text, browser_fill sets the value through the page and does not use an OS click.",
+        ],
+        context: { ...ctx, at: { x, y }, coveredBy: cover.covered },
+      },
+    );
+  }
   const what =
     cover.covered === "excluded"
       ? "a window this server may not act through"
@@ -838,6 +864,19 @@ export function browserPointCoveredFailure(
 }
 
 const isCover = (r: VerifyDeliveryHint | BrowserPointCover): r is BrowserPointCover => "covered" in r;
+
+/** internal #318 — true only when the tab answers that it is hidden; any other answer or none is false. */
+export async function tabIsHidden(
+  tabId: string | null,
+  port: number,
+  evaluate: (expr: string, tabId: string | null, port: number) => Promise<unknown> = evaluateInTab,
+): Promise<boolean> {
+  try {
+    return (await evaluate("document.visibilityState", tabId, port)) === "hidden";
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Shared OS-click + CDP delivery verification (Issue #181 matrix doc §3.1), used
@@ -873,6 +912,19 @@ export async function osClickAndVerify(
   assertCoordinateReachable(x, y);
 
   const browserHwnd = await ensureBrowserFocused(port, tabId, force);
+
+  // internal #318 — a tab that is not showing cannot take the click: the press would land on the tab in
+  // front of it, and the reply said ok:true. Asked after the browser was brought forward, which switches
+  // to the tab when its window was found; when it was not, the tab is brought forward once here. With
+  // no answer, it clicks as before.
+  if (await tabIsHidden(tabId, port)) {
+    try {
+      await bringTabToFront(tabId ?? (await resolveTabId(null, port)), port);
+    } catch {
+      // no answer — still hidden below refuses
+    }
+    if (await tabIsHidden(tabId, port)) return { covered: "tab" };
+  }
 
   // internal #274 — after the browser is brought forward and before the cursor moves: who would take a
   // press at the point. win2 (2.3.0 dogfood) saw Edge's first-run panel, a window Edge owns, cover the

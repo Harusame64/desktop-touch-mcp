@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Changed — Windows
+- **`browser_click` on a tab behind another tab of the same window no longer clicks the tab in front.** When the
+  browser window was already in front, the tab was not brought forward, and the click landed on whichever tab was
+  showing, answering `ok: true`. The tab is now brought forward first; if it is still not showing (another tab in
+  front, or the display off, which Chromium reports the same way), the click is refused with `BrowserPointCovered`
+  and `context.coveredBy: "tab"`, and nothing is clicked (internal #318).
 - **A `browser_*` call without `tabId` skips the browser's sign-in and consent dialogs.** It used the first target
   of type page, which can be one of them: Edge listed its sync dialog (`edge://sync-confirmation-dialog`) ahead of
   the page, and `browser_click` looked for the selector there. Such a dialog is now skipped while a page exists, and
