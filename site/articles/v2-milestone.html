@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>desktop-touch-mcp v2 Milestone: A Sense of Touch</title>
+    <meta name="description" content="How the desktop-touch-mcp 2.x series gives an agent something like sensory nerves: it learns whether it can touch a target before it acts, says so when it cannot, and reports what it felt when it did." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@500;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="../assets/styles.css" />
+    <script defer src="../assets/site.js"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "base", securityLevel: "loose", themeVariables: { primaryColor: "#e8f1ff", primaryTextColor: "#1d2433", primaryBorderColor: "#3141b7", lineColor: "#58657d", secondaryColor: "#f8dfd4", tertiaryColor: "#d7f2ed", fontFamily: "Manrope" } });
+    </script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="site-shell">
+        <a class="brand" href="../index.html">
+          <span class="brand-kicker">Milestone</span>
+          <span class="brand-title">v2: A Sense of Touch</span>
+        </a>
+        <nav class="nav-links" aria-label="Main">
+          <a href="../index.html">Home</a>
+          <a href="./reactive-perception-graph.html">RPG</a>
+          <a href="./beyond-coordinate-roulette.html">B-C-R</a>
+          <a href="./planned-evaluation.html">Evaluation</a>
+          <a href="./client-setup.html">Setup</a>
+          <a href="../index.html#milestones">Milestones</a>
+          <a href="https://github.com/Harusame64/desktop-touch-mcp">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page">
+      <div class="site-shell">
+        <section class="hero-card">
+          <div class="article-hero">
+            <a class="breadcrumb" href="../index.html">← Back to project top</a>
+            <span class="eyebrow">Project Evolution</span>
+            <h1>The v2 Milestone</h1>
+            <p class="lead">v1.0 narrowed the surface, v1.4 made delivery trustworthy, v1.8 carried it through to completion, and v1.9–v1.10 brought targeting by meaning to the browser and visual confirmation into the act. The 2.x series turns to something more basic. In human terms, it is the work of growing <em>sensory nerves</em>: knowing whether a thing can be touched, knowing when it cannot, and knowing what touching it was like. The nerves are still growing.</p>
+          </div>
+          <div class="hero-visual" style="padding-top: 0;">
+            <div class="mermaid-wrap" style="width: 100%;">
+              <pre class="mermaid">graph LR
+    subgraph v1x["v1.x: Learning to aim"]
+        A[target by meaning]
+        B[delivery verified]
+    end
+
+    subgraph v2a["2.0–2.1: Can it be touched?"]
+        C[refuse with a named reason]
+        D[deeper UIA reads]
+    end
+
+    subgraph v2b["2.2: Cannot be touched"]
+        E[frozen / covered / capped]
+    end
+
+    subgraph v2c["2.3: What touching felt like"]
+        F[may have happened]
+        G[read back, hit-test]
+    end
+
+    v1x --&gt; v2a --&gt; v2b --&gt; v2c
+
+    classDef stable fill:#e8f1ff,stroke:#3b6db3,color:#183257;
+    classDef fresh fill:#d7f2ed,stroke:#1f8a70,color:#0e3b30;
+    class A,B stable;
+    class C,D,E,F,G fresh;</pre>
+            </div>
+          </div>
+        </section>
+
+        <div class="article-layout">
+          <div class="article-main">
+            <section class="article-card">
+              <span class="label warm">The shift</span>
+              <h2>Some failures still looked like success.</h2>
+              <p>By v1.16 an agent could discover a target by meaning, then act on its lease and receive confirmation in the same response. But when the screen no longer matched what <code>desktop_discover</code> had seen, <code>desktop_act</code> guessed. It pressed the remembered coordinates, typed into whatever held the focus, or treated <code>select</code> as a click, and answered <code>ok: true</code> whether or not the thing the agent asked for had happened. A button renamed since discover was pressed by position. Text meant for a check box went out as keystrokes to some other field.</p>
+              <p>In those cases, <code>ok: true</code> did not tell the agent whether the intended action had happened, so it could not tell the press that landed from the press that went somewhere else.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Can it be touched? (2.0, 2.1)</span>
+              <h2>Check first, and refuse under a named reason.</h2>
+              <p>2.0 changes what <code>desktop_act</code> does when the world has moved on: it checks first. If the window has changed, the control is gone, a dialog is in the way, or the target does not take that action, the act is <strong>refused under a named <code>reason</code></strong>, with next steps, and nothing is pressed or typed.</p>
+              <ul>
+                <li>A lease taken before another discover of the same window answers <code>entity_not_found</code>, not <code>unknown</code>.</li>
+                <li><code>type</code> or <code>setValue</code> on a button, check box, link or menu item answers <code>action_not_offered</code> instead of typing into whatever has the focus.</li>
+              </ul>
+              <p>Separately, <code>keyboard</code> with <code>method: "background"</code> rejects Ctrl, Shift or Alt combinations with <code>BackgroundModifierComboUnsupported</code> instead of sending the unmodified key; with <code>method: "auto"</code> they go through the foreground.</p>
+              <p>This is why 2.0 is a major version. Several replies changed shape, and agents that branch on <code>reason</code> had to learn new names. The trade is deliberate: a refusal you can act on, in place of a success that may not be true.</p>
+              <p>2.1 widens what the agent can feel at all. The shallow UI Automation read left browsers and Electron apps largely dependent on OCR, and missed deeper controls in Explorer, Settings and Word. In 2.1 the native UI Automation read reaches depth 64, capped at 500 elements (the PowerShell fallback keeps the old depth). On the Windows 11 machine used for the release measurements, a Chrome page went from 6 OCR elements to its 45 controls, and VS Code from 6 elements to 128. Word's body, Store Notepad's text and Calculator's digit buttons became things an act can reach.</p>
+              <p>The same release fixes the UI Automation focus handling that could leave mouse movement and window switching stuck after an acted-on window closed, though menu and fallback paths still have limitations. A sense of touch that numbs the hand is not much use.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Cannot be touched (2.2)</span>
+              <h2>Say so, instead of reporting it as seen.</h2>
+              <p>Knowing that something <em>cannot</em> be touched is as much a sense as knowing that it can. 2.2 stops answering as if it had seen what it did not.</p>
+              <ul>
+                <li><strong>A suspended app is not read from its last frame.</strong> Windows suspends a Store app a second or two after it is minimised or hidden. Before 2.2, discover OCRed that frozen frame, account name included, as if it were the window now. When suspension is detected, OCR and text screenshots now refuse the read with <code>WindowFrozen</code>, discover reports <code>entityZeroReason: "window_frozen"</code>, and <code>windows[]</code> marks such windows <code>isFrozen</code>.</li>
+                <li><strong>A covered window is not reported unchanged.</strong> After an act, <code>observation</code> counts only the part of the window that is on screen. If the visible part did not change and the rest was covered, the answer is <code>indeterminate</code>, with <code>visibleFraction</code>, not <code>no_change</code>.</li>
+                <li><strong>A truncated entity list says it is incomplete.</strong> When discover limits the response to <code>maxEntities</code>, it returns the <code>entities_capped</code> warning and an <code>entitiesCapped</code> field, instead of leaving entities out without a word.</li>
+              </ul>
+              <p>The macOS preview in 2.3 follows the same rule from its first release. An act is refused with <code>entity_not_found</code> when the window or element changed since discover, and with <code>modal_blocking</code> when a sheet is open over it.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label">What touching felt like (2.3)</span>
+              <h2>Carry the answer back, including "it may have happened".</h2>
+              <p>The last nerve carries the answer back. Once an action has been sent, the agent needs to know what happened, including "it may have happened; look before you try again".</p>
+              <ul>
+                <li><strong>A click on a list item selects it</strong> (2.3.1). A <code>desktop_act</code> click on a native list item used to go through UI Automation's Invoke, which acts as a double-click: Explorer opened the file, and a WinForms list view did nothing yet answered <code>ok: true</code>. The click now selects the item; use <code>action: "invoke"</code> to open or run it. Chromium-based content keeps its Invoke behavior, and <code>click_element</code> is unchanged.</li>
+                <li><strong>A press that failed after it was sent says so</strong> (2.3.1). When a <code>desktop_act</code> UI Automation press reports failure after dispatch, the call returns <code>aim_route_failed</code> and warns that the press may already have happened. It no longer falls back to a second mouse press at the same point.</li>
+                <li><strong>A failed value write is checked before typing again</strong> (2.3.2). On the native UI Automation path, the field is read back after the write reports failure. If it holds the requested value, the act reports success; if it changed to another value, it returns <code>value_not_applied</code> without typing again. If it is unchanged or cannot be read, the keyboard fallback remains.</li>
+                <li><strong><code>browser_click</code> lands where it aims</strong> (2.3.2). After bringing the browser forward, it checks which window would receive the click before moving the cursor. A covering window, including a panel, popup or dialog of the browser itself, causes <code>BrowserPointCovered</code>; if Windows cannot answer the hit test, the click proceeds as before. The same release corrects clicks that landed roughly 8–12 px too low, points that drifted at any page zoom other than 100 %, and clicks that could land in another window showing the same title.</li>
+              </ul>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">Still being built</span>
+              <h2>Numb spots and false alarms, written down.</h2>
+              <p>This is a nervous system under construction. A few of its gaps are written down in the release notes:</p>
+              <ul>
+                <li><code>desktop_discover</code> aimed at a Store app's frame window by its handle, rather than by its title, is not yet tested for suspension.</li>
+                <li>A control whose label changes between discover and act (a <code>Play</code> button that turned into <code>Pause</code>) is refused, though it is the same control.</li>
+                <li>With DevTools or a side panel docked beside a page, <code>browser_click</code> can still be off horizontally by half the panel's width and vertically by about 8 px.</li>
+              </ul>
+              <p>Each one is a place where the agent cannot yet tell what it is touching. The direction does not change: when in doubt, say so and do nothing, rather than act and report success.</p>
+              <div class="hero-actions">
+                <a class="button primary" href="https://github.com/Harusame64/desktop-touch-mcp/blob/main/CHANGELOG.md">View Full Changelog</a>
+                <a class="button secondary" href="./v1.10-milestone.html">Read the v1.10 Milestone</a>
+              </div>
+            </section>
+          </div>
+
+          <aside class="article-aside">
+            <div class="aside-card">
+              <h3>From aiming to feeling</h3>
+              <p>The 1.x series taught desktop-touch to aim. The 2.x series teaches it to <em>feel</em>: before an act it checks whether the target can be touched, when it cannot be it says so, and after an act it reports what happened, including when it is not sure. The agent on the other end has more evidence about whether a touch landed, and clearer signals when the system cannot tell. Those signals help it decide whether to continue, look again or stop.</p>
+              <h3>Release span</h3>
+              <p>2.0.0 (breaking changes, listed in a table in its release notes) through 2.3.3. The macOS preview, four tools, arrived in 2.3.0. The full sequence is in the changelog.</p>
+              <h3>Related pages</h3>
+              <ul>
+                <li><a href="../index.html">Project top</a></li>
+                <li><a href="./v1.10-milestone.html">v1.10 milestone</a></li>
+                <li><a href="./v1.8-milestone.html">v1.8 milestone</a></li>
+                <li><a href="./v1.4-milestone.html">v1.4 milestone</a></li>
+                <li><a href="./beyond-coordinate-roulette.html">Beyond Coordinate Roulette</a></li>
+              </ul>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="site-shell">
+        <span>v2 Milestone Article</span>
+        <span>&copy; <span data-year></span> desktop-touch-mcp &middot; MIT licensed</span>
+      </div>
+    </footer>
+  </body>
+</html>
