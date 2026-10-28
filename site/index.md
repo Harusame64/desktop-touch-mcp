@@ -95,6 +95,10 @@ Stable enough for daily work, and still moving.
 
 As the project evolves, we document major architectural shifts and milestones here.
 
+### v2: A Sense of Touch
+The 2.x series gives the agent something like sensory nerves. Before an act, `desktop_act` checks whether the target can still be touched and refuses under a named `reason` instead of guessing (2.0), and reads UI Automation deep enough to reach browsers, Electron apps and Word (2.1). When something cannot be touched, it says so: a suspended app's last frame, a covered window and a truncated list are no longer reported as seen (2.2). After an act, it reports what happened, including "the press may already have happened", and `browser_click` checks which window would take the click before moving the cursor (2.3).
+- [Read the v2 Milestone Article](./articles/v2-milestone.html) · [v2.0.0 release notes](https://github.com/Harusame64/desktop-touch-mcp/releases/tag/v2.0.0)
+
 ### v1.16: Scrolling That Reaches WebView Apps, and Means What It Says
 Apps built with Tauri, Electron, WebView2 and CEF host their page inside nested child windows, often in a separate process, so the wheel went to the outer window, which ignored it — `scroll` reported success and nothing moved. It now finds the window that actually receives the wheel, with no per-framework configuration, and never searches outside the window you targeted. One `amount` unit also finally means one wheel notch on every path: on windows that expose no scroll position it had been sending a fortieth of a notch, so the default `amount:3` moved about seven pixels and looked broken. Ten notches now move roughly one screenful — the exact distance is still the app's own decision, as it is for a real mouse. And on windows that draw their own scrollbar, `scroll` compares the window's pixels before and after, so a call can report `delivered` instead of always coming back `unverifiable`. The `amount` change is breaking: divide any value you had inflated to compensate by 40.
 - [v1.16.0 release notes](https://github.com/Harusame64/desktop-touch-mcp/releases/tag/v1.16.0)

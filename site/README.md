@@ -40,6 +40,8 @@ site/
     v1.8-milestone.md
     v1.10-milestone.html
     v1.10-milestone.md
+    v2-milestone.html
+    v2-milestone.md
   assets/
     styles.css
     site.js
@@ -93,6 +95,10 @@ site/
   - v1.10 milestone draft (covers the v1.9–v1.10 arc)
 - `articles/v1.10-milestone.html`
   - published v1.10 milestone page
+- `articles/v2-milestone.md`
+  - v2 milestone draft (covers the 2.0–2.3 arc)
+- `articles/v2-milestone.html`
+  - published v2 milestone page
 - `assets/styles.css`
   - the single stylesheet every published page loads
 - `assets/site.js`
