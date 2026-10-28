@@ -21,6 +21,7 @@ const frame = (hwnd: bigint, region: W["region"], isActive = false, zOrder = 0):
 const mocks = vi.hoisted(() => ({
   windows: [] as unknown[],
   focused: [] as bigint[],
+  forced: [] as boolean[],
   bounds: undefined as undefined | { left: number; top: number; width: number; height: number },
   dpi: new Map<bigint, number>(),
   pid: new Map<bigint, number>(),
@@ -71,7 +72,7 @@ vi.mock("../../src/engine/cdp-bridge.js", async (orig) => ({
 vi.mock("../../src/engine/win32.js", async (orig) => ({
   ...(await orig<typeof import("../../src/engine/win32.js")>()),
   enumWindowsInZOrder: () => mocks.windows,
-  restoreAndFocusWindow: (h: bigint) => { mocks.focused.push(h); },
+  restoreAndFocusWindow: (h: bigint, o?: { force?: boolean }) => { mocks.focused.push(h); mocks.forced.push(o?.force === true); },
   getWindowDpi: (h: bigint) => mocks.dpi.get(h) ?? 96,
   getWindowProcessId: (h: bigint) => mocks.pid.get(h) ?? 0,
 }));
@@ -80,6 +81,7 @@ const { osClickAndVerify, frameForWindowBounds, framesOfBrowserProcess } = await
 
 afterEach(() => {
   mocks.focused.length = 0;
+  mocks.forced.length = 0;
   mocks.boundsAskedFor.length = 0;
   mocks.bounds = undefined;
   mocks.dpi.clear();
@@ -228,6 +230,22 @@ describe("the CDP browser's own frames, and bringing the tab forward when its bo
     expect(asked).toEqual([chromeB.hwnd]);
   });
 
+  it("forceFocus (internal #305): when CDP raises nothing, the frame is focused by force, and still asked before the click", async () => {
+    // The user's decision 2026-10-28: forcing is opt-in. Same Edge-behind-Chrome shape as the next cell.
+    const chromeA = { ...frame(3869088n, RECT, true, 0), title: "K835-PAGE - Google Chrome" };
+    const edgeB = { ...frame(2231482n, { x: 200, y: 150, width: 900, height: 600 }, false, 1), title: "K835-PAGE - Microsoft Edge" };
+    mocks.windows = [chromeA, edgeB];
+    mocks.pid.set(chromeA.hwnd, 24284).set(edgeB.hwnd, 38836);
+    mocks.browserPid = 38836;
+    mocks.bounds = { left: 200, top: 150, width: 900, height: 600 };
+    mocks.onRaise = () => {};
+    const asked: bigint[] = [];
+    await osClickAndVerify(600, 450, null, "B7AE2D", 9346, (aim) => { asked.push(aim); return AIM; }, true);
+    expect(mocks.focused).toEqual([edgeB.hwnd]);
+    expect(mocks.forced).toEqual([true]);
+    expect(asked).toEqual([edgeB.hwnd]);
+  });
+
   it("when CDP raises nothing, the frame is focused as before and is the one asked (the click is refused if covered)", async () => {
     // Edge behind Chrome: bringToFront answers but the foreground stays on Chrome.
     const chromeA = { ...frame(3869088n, RECT, true, 0), title: "K835-PAGE - Google Chrome" };
@@ -242,6 +260,7 @@ describe("the CDP browser's own frames, and bringing the tab forward when its bo
     expect(mocks.raised).toEqual(["B7AE2D"]);
     expect(mocks.focused).toEqual([edgeB.hwnd]);
     expect(asked).toEqual([edgeB.hwnd]);
+    expect(mocks.forced).toEqual([false]); // forceFocus defaults off
   });
 
   it("without bounds the title search is narrowed to the browser's frames too", async () => {

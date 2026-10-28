@@ -160,6 +160,20 @@ describe("the refusal", () => {
     expect(blocked.error).not.toMatch(/hwnd/);
   });
 
+  it("says how to force the browser forward when another app's window covers it, unless forced already (internal #305)", () => {
+    // The user's decision 2026-10-28: forceFocus stays off by default, and the refusal shows how to use it.
+    const suggest = (k: keyof typeof owners, forced = false) => {
+      const r = browserPointCoveredFailure(browserPointCover(owners[k]!)!, 283, 125, { selector: "#buy" }, forced);
+      return (JSON.parse((r.content[0] as { text: string }).text) as { suggest: string[] }).suggest.join("\n");
+    };
+    expect(suggest("other")).toContain("forceFocus: true");
+    // Forcing does not dismiss the browser's own panel, nor make an excluded window actable.
+    expect(suggest("owned")).not.toContain("forceFocus");
+    expect(suggest("blocked")).not.toContain("forceFocus");
+    // Already forced: the same advice again would be a loop.
+    expect(suggest("other", true)).not.toContain("forceFocus");
+  });
+
   it("is not made for the browser window or for no answer", () => {
     expect(browserPointCover(owners.aim!)).toBeUndefined();
     expect(browserPointCover(owners.unknown!)).toBeUndefined();

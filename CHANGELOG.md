@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Changed — Windows
+- **`browser_click` takes `forceFocus`, and says so when another app's window keeps the browser behind it.**
+  When Windows keeps another app's window in front of the tab's browser window (an Edge window behind Chrome),
+  the click is still refused with `BrowserPointCovered` and nothing is clicked; the refusal now says that
+  `forceFocus: true` brings the browser window forward by force (AttachThreadInput), as `keyboard`,
+  `mouse_click` and `terminal` already allow. It is off by default (and follows `DESKTOP_TOUCH_FORCE_FOCUS`).
+  With it on, the point is still checked before clicking (internal #305).
 - **A keyboard or UI Automation write refused because two windows share a title now says when one of them is
   minimised.** A window with the same title that is only minimised (the same page minimised in another browser)
   still counts, and the write is still refused with `ambiguous_target` rather than sent to a window you may not
