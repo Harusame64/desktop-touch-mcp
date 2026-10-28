@@ -362,7 +362,7 @@ export async function listTabsLight(
  * Evaluate a JavaScript expression in a browser tab.
  *
  * @param expression  JS expression string (may use `await`)
- * @param tabId       Target tab ID (null = first page tab)
+ * @param tabId       Target tab ID (null = the tab defaultPageTab picks)
  * @param port        CDP port (default 9222)
  * @returns           The serializable return value of the expression
  */
@@ -573,7 +573,7 @@ export function viewportOriginJs(zoom: number): string {
 }
 
 /**
- * The id of the tab a null `tabId` stands for — the first page tab — so that two calls about "the
+ * The id of the tab a null `tabId` stands for — the one defaultPageTab picks — so that two calls about "the
  * tab" ask the same one. `/json/list` order is not stable between calls (win2, 2026-10-24), and the
  * zoom read for one tab with the coordinates read for another put the click off (codex on #839).
  */

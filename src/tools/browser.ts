@@ -1365,7 +1365,7 @@ export const browserConnectHandler = async ({
             `${pageTabs.length} page tab(s) found:`,
             JSON.stringify({ port, active: activeTab, tabs: summary }, null, 2),
             "",
-            "Pass a tab's id to other browser_* tools to target it, or omit to use the first page tab that is not the browser's own (edge://, chrome://).",
+            "Pass a tab's id to other browser_* tools to target it, or omit to use the most recently used page tab (a sign-in or sync dialog is skipped).",
           ].join("\n"),
         },
       ],

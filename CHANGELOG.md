@@ -3,11 +3,12 @@
 ## [Unreleased]
 
 ### Changed — Windows
-- **A `browser_*` call without `tabId` skips the browser's own pages.** It used the first page target, which can
-  be one of the browser's own screens: Edge listed its sign-in sync dialog (`edge://sync-confirmation-dialog`) ahead
-  of the page, and `browser_click` looked for the selector there. It now takes the first page that is not an
-  `edge://`, `chrome://` or `devtools://` page, and only falls back to one when there is nothing else, such as a
-  browser showing only its New Tab page (internal #308).
+- **A `browser_*` call without `tabId` no longer works on a sign-in dialog or a background target.** It used
+  the first target of type page, which can be one of the browser's sign-in or sync dialogs: Edge listed its sync
+  dialog (`edge://sync-confirmation-dialog`) ahead of the page, and `browser_click` looked for the selector there.
+  Those dialogs are now skipped, and the guard and the `scroll` wheel route, which took the first target of any
+  type (an extension's background page, a service worker), use the same tab as the call. A New Tab or settings tab
+  in front is still the one used (internal #308).
 - **Bringing a maximized window forward keeps it maximized.** `focus_window`, `browser_click`, `keyboard`,
   `mouse_click`, `terminal` and the scroll tools turned a maximized window to its normal size when they brought
   it forward. Only a minimized window is restored now, and one minimized from maximized comes back maximized.

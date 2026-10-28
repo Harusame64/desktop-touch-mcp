@@ -1,10 +1,12 @@
 /**
- * Internal #308 — a browser_* call without tabId works on the first page the user opened, not on
- * a page target that is the browser's own UI.
+ * Internal #308 — a browser_* call without tabId works on the most recently used tab, not on a
+ * sign-in or sync dialog listed as a page, and never on a target that is not a page.
  *
  * win2 (2026-10-24): Edge signed in with the Windows account listed
  * `edge://sync-confirmation-dialog` ahead of the page, and browser_click without tabId read it and
  * answered ElementNotFound for a selector that was on the page.
+ * win2 (2026-10-28): a New Tab or chrome://settings in front is listed first and is
+ * indistinguishable from the page behind it except by URL, so it stays the target.
  */
 import { describe, expect, it } from "vitest";
 import { defaultPageTab } from "../../src/engine/cdp-bridge.js";
@@ -12,56 +14,66 @@ import { resolveBrowserTabBindingFromTabs } from "../../src/engine/perception/le
 import type { LensSpec } from "../../src/engine/perception/types.js";
 
 const tab = (id: string, url: string, type = "page") => ({ id, url, type, title: id });
+const page = tab("pg", "https://example.com/");
 
 describe("internal #308: defaultPageTab", () => {
-  it("skips an edge:// page target listed ahead of the page", () => {
-    const tabs = [tab("dlg", "edge://sync-confirmation-dialog/"), tab("pg", "https://example.com/")];
-    expect(defaultPageTab(tabs)?.id).toBe("pg");
+  it("skips Edge's sync dialog listed ahead of the page", () => {
+    expect(defaultPageTab([tab("dlg", "edge://sync-confirmation-dialog/"), page])?.id).toBe("pg");
   });
 
   it.each([
-    "chrome://newtab/",
-    "edge://settings/",
-    "devtools://devtools/bundled/inspector.html",
-    "chrome-untrusted://print/",
-    "chrome-search://local-ntp/",
-    "CHROME://version/",
-  ])("skips %s when an ordinary page exists", (url) => {
-    expect(defaultPageTab([tab("in", url), tab("pg", "https://example.com/")])?.id).toBe("pg");
+    "chrome://sync-confirmation/",
+    "chrome://signin-email-confirmation/",
+    "chrome://signin-error/",
+    "chrome://signin-reauth/",
+    "chrome://profile-customization/",
+    "chrome://signin-dice-web-intercept/",
+    "chrome://managed-user-profile-notice/",
+    "EDGE://sync-confirmation-dialog/",
+  ])("skips the sign-in dialog %s when a page exists", (url) => {
+    expect(defaultPageTab([tab("dlg", url), page])?.id).toBe("pg");
   });
 
-  it("keeps about:blank and file: pages as pages", () => {
-    expect(defaultPageTab([tab("a", "about:blank"), tab("b", "https://example.com/")])?.id).toBe("a");
-    expect(defaultPageTab([tab("f", "file:///C:/x.html"), tab("b", "https://example.com/")])?.id).toBe("f");
-  });
+  it.each(["edge://newtab/", "chrome://newtab/", "chrome://settings/", "edge://history/", "about:blank", "file:///C:/x.html"])(
+    "keeps %s in front as the target (most recently used first)",
+    (url) => {
+      expect(defaultPageTab([tab("front", url), page])?.id).toBe("front");
+    },
+  );
 
-  it("falls back to the first page target when every page is the browser's own (a New Tab only)", () => {
-    expect(defaultPageTab([tab("ntp", "edge://newtab/"), tab("set", "edge://settings/")])?.id).toBe("ntp");
-  });
-
-  it("ignores targets that are not pages", () => {
-    const tabs = [tab("sw", "https://example.com/sw.js", "service_worker"), tab("pg", "https://example.com/")];
+  it("never picks a target that is not a page (win2's S1 list: background pages, browser UI)", () => {
+    const tabs = [
+      tab("omni", "chrome://omnibox-popup.top-chrome/", "browser_ui"),
+      tab("bg", "chrome-extension://abc/background.html", "background_page"),
+      tab("sw", "https://example.com/sw.js", "service_worker"),
+      tab("ifr", "chrome-untrusted://new-tab-page/one-google-bar", "iframe"),
+      page,
+    ];
     expect(defaultPageTab(tabs)?.id).toBe("pg");
     expect(defaultPageTab([tab("sw", "https://example.com/sw.js", "service_worker")])).toBeUndefined();
+  });
+
+  it("falls back to the dialog when it is the only page", () => {
+    expect(defaultPageTab([tab("dlg", "edge://sync-confirmation-dialog/")])?.id).toBe("dlg");
   });
 });
 
 // codex on #871: the perception guard of a browser_* call without tabId bound to the first listed
-// target, so it read the dialog while the call worked on the page.
+// target of any type, so it could check another target than the one the call worked on.
 describe("internal #308: the guard's browserTab lens picks the same tab", () => {
   const spec = (match: { urlIncludes?: string; titleIncludes?: string }) =>
     ({ name: "__auto__", target: { kind: "browserTab", match } }) as unknown as LensSpec;
   const tabs = [
     tab("sw", "https://example.com/sw.js", "service_worker"),
     tab("dlg", "edge://sync-confirmation-dialog/"),
-    tab("pg", "https://example.com/"),
+    page,
   ];
 
-  it("with nothing to match on, binds the first page that is not the browser's own", () => {
+  it("with nothing to match on, binds the tab defaultPageTab picks", () => {
     expect(resolveBrowserTabBindingFromTabs(spec({}), tabs)?.hwnd).toBe("pg");
   });
 
-  it("an explicit match still wins, even on a browser page", () => {
+  it("an explicit match still wins, even on the dialog", () => {
     expect(resolveBrowserTabBindingFromTabs(spec({ urlIncludes: "sync-confirmation" }), tabs)?.hwnd).toBe("dlg");
   });
 });
