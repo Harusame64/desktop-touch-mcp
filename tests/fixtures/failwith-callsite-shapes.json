@@ -622,14 +622,14 @@
     },
     {
       "file": "src/tools/window.ts",
-      "line": 192,
+      "line": 204,
       "tool": "focus_window",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/window.ts",
-      "line": 224,
+      "line": 237,
       "tool": "focus_window",
       "errKind": "string-literal",
       "contextShape": "object-plain"

@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Changed — Windows
+- **`focus_window` with `chromeTabUrlContains` finds the window by the title it had before the switch.** A browser
+  window's title is its showing tab's, so the window's title copied before the call stopped matching once the tab
+  was activated: the tab was switched and the reply was `WindowNotFound`. A window the title named before the
+  switch is now focused when it shows the activated tab; one that does not is not. When no window is found, the
+  reply's `context.activatedTab` names the tab that was activated (internal #320).
 - **`window_dock` says when the window did not take the size, and keeps it on screen.** A window with a minimum
   size of its own (Edge will not go below 516 px wide) was left at its own width with its edge past the screen, and
   the reply was `ok: true` with nothing flagged. It is now placed in the corner at the size it kept, and the reply
