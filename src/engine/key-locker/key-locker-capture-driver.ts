@@ -173,6 +173,11 @@ export interface CaptureDriverDeps {
    *  `confirmInjection` / `offerSave`, for a stop arming during the loop's own awaits — and L3 the
    *  injectPane wrapper (injection-instant backstop, for a stop arming while a dialog is open). */
   checkFailsafe(): Promise<void>;
+
+  /** internal #281: a pane's record is gone (closed, or re-anchored under the same id). The wiring drops the
+   *  pane's kept fill_once tags here. Called from `onPaneClosed` — both the classic `window_disappeared` path
+   *  and the wt shell-exit prune — and when `onLocalPaneLaunched` replaces an existing record. */
+  onPaneForgotten?(paneId: string): void;
 }
 
 /** Is this throw the failsafe's typed rejection? Structural check on `err.name` — the driver must not
@@ -273,6 +278,7 @@ export class KeyLockerCaptureDriver {
    * process), so no time param is plumbed here.
    */
   onLocalPaneLaunched(paneId: string, anchor: PaneAnchor, cwd?: string): void {
+    if (this.panes.has(paneId)) this.deps.onPaneForgotten?.(paneId); // a reused id: the old pane's tags go
     this.tracker.beginLocalSession(paneId, cwd);
     this.watch.watchPane(paneId, anchor.shellPid);
     this.panes.set(paneId, {
@@ -549,6 +555,7 @@ export class KeyLockerCaptureDriver {
     this.watch.unwatchPane(paneId);
     this.tracker.forget(paneId);
     this.panes.delete(paneId);
+    this.deps.onPaneForgotten?.(paneId);
   }
 
   /**

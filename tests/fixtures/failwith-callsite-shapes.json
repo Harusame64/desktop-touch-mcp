@@ -300,7 +300,7 @@
     },
     {
       "file": "src/tools/key-locker-tool.ts",
-      "line": 197,
+      "line": 224,
       "tool": "key_locker",
       "errKind": "identifier",
       "contextShape": "none"

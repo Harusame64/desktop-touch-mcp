@@ -38,7 +38,9 @@ internal static class KeyLocker
 {
     // "2" (PR #806): capture carries label/note/purpose. Bumped so a stale helper is refused at hello instead
     // of showing a fill_once dialog with an opaque id and a [Save] button.
-    private const string ProtocolVersion = "2";
+    // "3" (internal #281): capture carries `tag` (a fill_once secret kept for the pane's life) and `prompt`
+    // takes kind "fill_kept". A "2" helper would show "not saved" for a kept secret and refuse the confirm.
+    private const string ProtocolVersion = "3";
     private const int MaxClientRejects = 8;
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -319,11 +321,12 @@ internal static class KeyLocker
     /// Optional SECRET-FREE frame fields tell the user what the entry is for (internal #277): `label` (the
     /// target — a binding URI, or the locker console a fill_once writes into; falls back to the key),
     /// `note` (the assistant's stated reason, shown as the assistant's words) and `purpose` ("fill_once" =
-    /// a one-time entry that is not saved). A malformed field is ignored, never fatal.
+    /// a one-time entry that is not saved) and `tag` (internal #281: with "fill_once", the entry is kept in
+    /// memory under that tag until the pane closes — the dialog says so). A malformed field is ignored, never fatal.
     private static void HandleCapture(NamedPipeServerStream server, long id, string key, string line)
     {
         if (string.IsNullOrEmpty(key)) { WriteReply(server, id, false, "", "missing_key"); return; }
-        string label = key, note = "";
+        string label = key, note = "", tag = "";
         bool once = false;
         try
         {
@@ -332,10 +335,11 @@ internal static class KeyLocker
             if (root.TryGetProperty("label", out var l) && l.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(l.GetString())) label = l.GetString()!;
             if (root.TryGetProperty("note", out var n) && n.ValueKind == JsonValueKind.String) note = PlainLine(n.GetString() ?? "");
             once = root.TryGetProperty("purpose", out var p) && p.ValueKind == JsonValueKind.String && p.GetString() == "fill_once";
+            if (root.TryGetProperty("tag", out var t) && t.ValueKind == JsonValueKind.String) tag = PlainLine(t.GetString() ?? "");
         }
         catch { /* the frame already parsed once in RunControlLoop; keep the key-only defaults */ }
         string? secret = null;
-        try { secret = _app!.Dispatcher.Invoke(() => SecureDialog.Prompt(label, note, once)); }
+        try { secret = _app!.Dispatcher.Invoke(() => SecureDialog.Prompt(label, note, once, once ? tag : "")); }
         catch (Exception e) { Console.Error.WriteLine($"[key-locker] dialog failed: {e.Message}"); }
 
         if (_serverGone) return; // internal #282: nobody is left to use it, and an autofill capture must not reach store.json
@@ -364,27 +368,31 @@ internal static class KeyLocker
     /// W-3.5: the SECRET-FREE confirm/offer backstop dialog (ADR seed §4). Shows the binding LABEL only —
     /// never a secret, and it touches NO store entry — so the pipe carries only {kind,label} in and the
     /// user's {choice} out. `kind="confirm"` (MATCH backstop) → "autofill"/"type_it"; `kind="offer"`
-    /// (NO-MATCH save) → "save"/"not_now"/"never". A dialog failure normalizes to the FAIL-CLOSED choice
-    /// (the loop then declines/discards) — never a spuriously-permissive one.
+    /// (NO-MATCH save) → "save"/"not_now"/"never"; `kind="fill_kept"` (internal #281: before a kept fill_once
+    /// tag is filled, with the frame's `note` and `tag`) → "fill"/"cancel". A dialog failure normalizes to the
+    /// FAIL-CLOSED choice (the loop then declines/discards) — never a spuriously-permissive one.
     private static void HandlePrompt(NamedPipeServerStream server, long id, string line)
     {
-        string kind, label;
+        string kind, label, note, tag;
         try
         {
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement;
             kind = root.TryGetProperty("kind", out var k) && k.ValueKind == JsonValueKind.String ? k.GetString() ?? "" : "";
             label = root.TryGetProperty("label", out var l) && l.ValueKind == JsonValueKind.String ? l.GetString() ?? "" : "";
+            note = root.TryGetProperty("note", out var n) && n.ValueKind == JsonValueKind.String ? PlainLine(n.GetString() ?? "") : "";
+            tag = root.TryGetProperty("tag", out var t) && t.ValueKind == JsonValueKind.String ? PlainLine(t.GetString() ?? "") : "";
         }
         catch { WriteReply(server, id, false, "", "bad_prompt"); return; }
-        if (kind != "confirm" && kind != "offer") { WriteReply(server, id, false, "", "bad_prompt"); return; }
+        if (kind != "confirm" && kind != "offer" && kind != "fill_kept") { WriteReply(server, id, false, "", "bad_prompt"); return; }
+        if (kind == "fill_kept" && tag.Length == 0) { WriteReply(server, id, false, "", "bad_prompt"); return; }
 
         string choice;
-        try { choice = _app!.Dispatcher.Invoke(() => PromptDialog.Prompt(kind, label)); }
+        try { choice = _app!.Dispatcher.Invoke(() => PromptDialog.Prompt(kind, label, note, tag)); }
         catch (Exception e)
         {
             Console.Error.WriteLine($"[key-locker] prompt dialog failed: {e.Message}");
-            choice = kind == "confirm" ? "type_it" : "not_now"; // fail-closed
+            choice = PromptDialog.FailClosed(kind);
         }
         if (_serverGone) return; // internal #282: the pipe is gone with the server
         WriteReply(server, id, true, choice, null);
@@ -717,12 +725,15 @@ internal static class SecureDialog
 {
     /// `label` names the target (locker-derived, never a pane's live title or prompt text). `note` is the
     /// assistant's stated reason — shown, but marked as the assistant's words, since it may be wrong.
-    /// `once` = a fill_once entry: typed into one prompt, then deleted (the button says so).
-    public static string? Prompt(string label, string note = "", bool once = false)
+    /// `once` = a fill_once entry: typed into one prompt, then deleted (the button says so). `tag` (internal
+    /// #281, with `once`): the entry is instead kept in this helper's memory under that tag until the pane
+    /// closes, and each later fill asks first — the dialog says so.
+    public static string? Prompt(string label, string note = "", bool once = false, string tag = "")
     {
         string? result = null;
+        var keep = once && tag.Length > 0;
         var pwd = new PasswordBox { Margin = new Thickness(10, 4, 10, 12), FontSize = 18, Width = 360 };
-        var ok = new Button { Content = once ? "Fill once" : "Save", Width = 90, Margin = new Thickness(4), IsDefault = true };
+        var ok = new Button { Content = keep ? "Fill and keep" : once ? "Fill once" : "Save", Width = keep ? 110 : 90, Margin = new Thickness(4), IsDefault = true };
         var cancel = new Button { Content = "Cancel", Width = 90, Margin = new Thickness(4), IsCancel = true };
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
@@ -730,7 +741,12 @@ internal static class SecureDialog
         buttons.Children.Add(cancel);
 
         var panel = new StackPanel { Margin = new Thickness(14) };
-        panel.Children.Add(new Label { Content = once ? "desktop-touch key locker — one-time entry (not saved)" : "desktop-touch key locker — secret entry", FontWeight = FontWeights.Bold });
+        panel.Children.Add(new Label
+        {
+            Content = keep ? "desktop-touch key locker — entry kept for this window (not saved)"
+                : once ? "desktop-touch key locker — one-time entry (not saved)" : "desktop-touch key locker — secret entry",
+            FontWeight = FontWeights.Bold,
+        });
         panel.Children.Add(new TextBlock
         {
             Text = once ? $"The assistant asks you to type a password into:  {label}" : $"Enter the secret for:  {label}",
@@ -746,6 +762,17 @@ internal static class SecureDialog
                 Margin = new Thickness(10, 2, 10, 4),
                 TextWrapping = TextWrapping.Wrap,
                 FontStyle = FontStyles.Italic,
+                MaxWidth = 420,
+            });
+        }
+        if (keep)
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = $"It is kept as \"{tag}\" in the locker's memory until that window closes (never written to disk). " +
+                       "Each later use asks you to confirm first.",
+                Margin = new Thickness(10, 2, 10, 4),
+                TextWrapping = TextWrapping.Wrap,
                 MaxWidth = 420,
             });
         }
@@ -823,11 +850,16 @@ internal static class ConsentDialog
 /// One dialog serves both backstops:
 ///   * kind="confirm" (MATCH, seed §4 state 2): "Autofill saved secret for `label`?" [Autofill]/[Type it]
 ///   * kind="offer"   (NO-MATCH, seed §4 state 1): "Save `label` for next time?" [Save]/[Not now]/[Never]
-/// Closing the window (✕ / Esc / cancel) returns the FAIL-CLOSED choice ("type_it" / "not_now") so a
+///   * kind="fill_kept" (internal #281): "Fill the password kept as `tag` into `label`?" [Fill]/[Cancel], with
+///     the assistant's reason marked as its words. Focus starts on [Cancel] and nothing is IsDefault, so an
+///     Enter the user was typing into the terminal when the window appeared never fills.
+/// Closing the window (✕ / Esc / cancel) returns the FAIL-CLOSED choice ("type_it" / "not_now" / "cancel") so a
 /// dismissed dialog never fills or saves. Runs on the STA UI thread (marshalled by HandlePrompt).
 internal static class PromptDialog
 {
-    public static string Prompt(string kind, string label)
+    public static string FailClosed(string kind) => kind == "confirm" ? "type_it" : kind == "fill_kept" ? "cancel" : "not_now";
+
+    public static string Prompt(string kind, string label, string note = "", string tag = "")
     {
         // Headless CI seam (the e2e verb round-trip): when the `-PromptAutoAnswer` CLI arg is set to a
         // kind-valid choice, return it WITHOUT a window so the `prompt` verb round-trips with no GUI. This is a
@@ -839,7 +871,8 @@ internal static class PromptDialog
 
         _ = Application.Current ?? new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         var confirm = kind == "confirm";
-        var failClosed = confirm ? "type_it" : "not_now";
+        var fillKept = kind == "fill_kept";
+        var failClosed = FailClosed(kind);
         var choice = failClosed; // default if the window is dismissed (✕ / Esc / the IsCancel button)
 
         // Build the buttons WITHOUT handlers first (the affirmative handlers reference `win`, created below).
@@ -852,7 +885,16 @@ internal static class PromptDialog
             buttons.Children.Add(new Button { Content = content, Width = 110, Margin = new Thickness(4), IsDefault = isDefault, IsCancel = isCancel, Tag = value });
 
         var panel = new StackPanel { Margin = new Thickness(16), MaxWidth = 460 };
-        if (confirm)
+        if (fillKept)
+        {
+            panel.Children.Add(new Label { Content = "Fill a kept password?", FontWeight = FontWeights.Bold, FontSize = 15 });
+            panel.Children.Add(new TextBlock { Text = $"Fill the password kept as \"{tag}\" into:  {label}", Margin = new Thickness(4, 8, 4, 4), TextWrapping = TextWrapping.Wrap });
+            if (!string.IsNullOrWhiteSpace(note))
+                panel.Children.Add(new TextBlock { Text = $"The assistant's reason (its words, it may be wrong):  {note}", Margin = new Thickness(4, 2, 4, 12), TextWrapping = TextWrapping.Wrap, FontStyle = FontStyles.Italic });
+            Add("Fill", "fill");
+            Add("Cancel", "cancel", isCancel: true); // fail-closed; the tag stays kept
+        }
+        else if (confirm)
         {
             panel.Children.Add(new Label { Content = "Autofill a saved secret?", FontWeight = FontWeights.Bold, FontSize = 15 });
             panel.Children.Add(new TextBlock { Text = $"Fill the saved secret for:  {label}", Margin = new Thickness(4, 8, 4, 12), TextWrapping = TextWrapping.Wrap });
@@ -887,12 +929,19 @@ internal static class PromptDialog
                 var value = (string)b.Tag!;
                 b.Click += (_, _) => { choice = value; win.DialogResult = true; };
             }
-        win.Loaded += (_, _) => { win.Activate(); if (buttons.Children.Count > 0 && buttons.Children[0] is Button first) first.Focus(); };
+        win.Loaded += (_, _) =>
+        {
+            win.Activate();
+            // fill_kept: start on [Cancel] (the last button), so a stray Enter declines rather than fills.
+            var start = fillKept ? buttons.Children.Count - 1 : 0;
+            if (buttons.Children.Count > 0 && buttons.Children[start] is Button first) first.Focus();
+        };
         win.ShowDialog();
         return choice;
     }
 
     private static bool IsValidChoice(string kind, string v) =>
         kind == "confirm" ? (v == "autofill" || v == "type_it")
+        : kind == "fill_kept" ? (v == "fill" || v == "cancel")
                           : (v == "save" || v == "not_now" || v == "never");
 }

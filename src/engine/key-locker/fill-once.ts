@@ -24,13 +24,23 @@
 //   * the emergency stop is probed before the dialog opens and again as the last await before the write;
 //   * nothing persists — no binding, no [Never] tombstone, no consent change. The helper keeps a fill_once
 //     secret in its own memory only (never store.json), so a server that dies mid-dialog (the emergency
-//     stop exits it) leaves nothing behind; and the secret is still deleted on EVERY exit here, with a
-//     failed erase reported as `cleanupFailed`.
+//     stop exits it) leaves nothing behind; and an untagged secret is still deleted on EVERY exit here,
+//     with a failed erase reported as `cleanupFailed` (a tagged one: see below).
 // The session being UNKNOWN or nested is deliberately NOT a gate: nothing is derived from it or bound to it.
+//
+// Kept tags (internal #281, user decision 2026-10-13, re-confirmed 2026-10-30). A fill_once may name a `tag`.
+// A NEW tag: the user types as above, and after a successful fill the secret is KEPT (helper memory only,
+// `kept-tags.ts`) under (paneId, the pane's anchor, tag) instead of deleted. A KEPT tag: no typing — a
+// locker-owned, secret-free one-click confirm (Fill / Cancel) shows the tag, the pane's label and the
+// assistant's reason, and Fill writes the kept secret. `retype` types it again and replaces it. EVERY gate
+// above runs on every fill, kept or not: only the dialog differs. What a kept tag changes is the last
+// invariant — the secret outlives one fill — and only within the pane (window / tab) it was typed for: it is
+// erased when that pane closes, on forget_tag, and on server shutdown, and a reused paneId never sees it.
 
 import { stripAnsi } from "../ansi.js";
 import type { PaneAnchor } from "./inject-target.js";
 import type { PromptVerdict } from "./key-locker-capture-driver.js";
+import { MAX_KEPT_TAGS_PER_PANE } from "./kept-tags.js";
 
 /** What the locker's dialog shows. `label` is LOCKER-derived (which pane — never the pane's live title or
  *  prompt text, both of which a remote host can write); `note` is the assistant's stated reason, which the
@@ -38,6 +48,20 @@ import type { PromptVerdict } from "./key-locker-capture-driver.js";
 export interface FillOnceDialog {
   label: string;
   note: string;
+  /** internal #281: the tag the secret is kept under (shown in the dialog), when the call named one. */
+  tag?: string;
+}
+
+/** internal #281: the kept-tag map (`kept-tags.ts`) as `runFillOnce` sees it, plus the confirm dialog. */
+export interface FillOnceKeptDeps {
+  /** The opaque id kept under `tag` for this pane AND this anchor (a reused paneId never matches), or null. */
+  lookup(paneId: string, anchor: PaneAnchor, tag: string): string | null;
+  /** How many tags this pane (with this anchor) holds. */
+  count(paneId: string, anchor: PaneAnchor): number;
+  /** The locker's secret-free one-click confirm for a kept tag: true = Fill, false = Cancel / any failure. */
+  confirm(dialog: FillOnceDialog & { tag: string }): Promise<boolean>;
+  /** Keep the just-filled secret under `tag` (replacing and erasing an older one); false = not kept. */
+  keep(paneId: string, anchor: PaneAnchor, tag: string, opaqueId: string): boolean;
 }
 
 /** The result of taking a pane for a one-shot fill (the driver serializes it against its own poll/loop).
@@ -68,6 +92,8 @@ export interface FillOnceDeps {
   /** Write the secret under `opaqueId` into the anchored pane (the locker re-verifies the anchor). */
   injectAt(anchor: PaneAnchor, opaqueId: string, submit: boolean): Promise<FillOnceInjectResult>;
   deleteSecret(opaqueId: string): Promise<void>;
+  /** internal #281: kept tags. */
+  kept: FillOnceKeptDeps;
   /** Wait before re-trying a `busy` claim (the driver's poll holds the pane for a moment every tick). */
   sleep?(ms: number): Promise<void>;
 }
@@ -81,7 +107,8 @@ export type FillOnceDeclineReason =
   | "not_at_prompt"          // the pane is not showing a credential prompt
   | "no_credential_program"  // no ssh / sudo / su / doas runs under the pane's shell (a printed prompt)
   | "prompt_changed"         // the pane changed while the dialog was open (or its prompt went away)
-  | "target_gone";           // the pane closed while the dialog was open
+  | "target_gone"            // the pane closed while the dialog was open
+  | "tag_limit";             // a NEW tag, but the pane already keeps MAX_KEPT_TAGS_PER_PANE
 
 export type FillOnceOutcome = (
   | { kind: "filled"; verified: boolean }
@@ -89,6 +116,8 @@ export type FillOnceOutcome = (
   | { kind: "declined"; reason: FillOnceDeclineReason }
   | { kind: "fill_aborted"; code: string }
 ) & {
+  /** internal #281: set when the call named a tag and that tag is kept for the pane after this call. */
+  kept?: true;
   /** Set when the one-time secret could NOT be erased afterwards (two attempts failed): it stays encrypted
    *  in the locker store under an id nothing points to. Reported, never swallowed (PR #806 codex P2). */
   cleanupFailed?: true;
@@ -166,36 +195,79 @@ async function claimWithRetry(deps: FillOnceDeps, paneId: string): Promise<FillO
 
 export async function runFillOnce(
   deps: FillOnceDeps,
-  req: { paneId: string; dialog: FillOnceDialog; submit: boolean },
+  req: { paneId: string; dialog: FillOnceDialog; submit: boolean; tag?: string; retype?: boolean },
 ): Promise<FillOnceOutcome> {
-  const { paneId, dialog, submit } = req;
+  const { paneId, tag } = req;
   const claim = await claimWithRetry(deps, paneId);
   if (!claim.ok) return { kind: "declined", reason: claim.reason };
   try {
-    // Before the dialog: the stop, the prompt, and a real program asking. Never open a credential dialog
-    // for a pane that is not asking for one, or while the user is holding the emergency stop.
-    const stopped = await failsafeBlocks(deps);
-    if (stopped !== null) return { kind: "declined", reason: stopped };
-    const before = await deps.readPromptTail(paneId);
-    if (before === null) return { kind: "declined", reason: "prompt_unreadable" };
-    if (!before.isCredentialPrompt) return { kind: "declined", reason: "not_at_prompt" };
-    const procsBefore = deps.credentialProcesses(paneId);
-    if (procsBefore === null) return { kind: "declined", reason: "not_anchored" };
-    if (procsBefore.size === 0) return { kind: "declined", reason: "no_credential_program" };
-
-    // From here on a secret may exist under `opaqueId` (a capture that threw may or may not have stored it),
-    // so every exit erases it — the filled one included.
-    const opaqueId = deps.mintOpaqueId();
-    let outcome: FillOnceOutcome;
-    try {
-      outcome = await captureAndFill(deps, { paneId, dialog, submit, opaqueId, anchor: claim.anchor, before, procsBefore });
-    } catch (err) {
-      outcome = { kind: "fill_aborted", code: `fill_once_error:${err instanceof Error ? err.message : String(err)}` };
-    }
-    return (await erased(deps, opaqueId)) ? outcome : { ...outcome, cleanupFailed: true };
+    const outcome = await fillClaimed(deps, req, claim.anchor);
+    if (tag === undefined) return outcome;
+    // `kept` says what the map holds NOW for this pane and anchor, however the call ended — an early decline
+    // (no prompt yet) leaves a kept tag kept (codex on #883).
+    const { kept: _kept, ...rest } = outcome;
+    return deps.kept.lookup(paneId, claim.anchor, tag) !== null ? { ...rest, kept: true } : rest;
   } finally {
     deps.release(paneId, claim.token);
   }
+}
+
+/** {@link runFillOnce} once the pane is claimed: the gates, the dialog and the write. */
+async function fillClaimed(
+  deps: FillOnceDeps,
+  req: { paneId: string; dialog: FillOnceDialog; submit: boolean; tag?: string; retype?: boolean },
+  anchor: PaneAnchor,
+): Promise<FillOnceOutcome> {
+  const { paneId, dialog, submit, tag } = req;
+  // Before the dialog: the stop, the prompt, and a real program asking. Never open a credential dialog
+  // for a pane that is not asking for one, or while the user is holding the emergency stop. The same for a
+  // kept tag's confirm: it is still a credential dialog for this prompt.
+  const stopped = await failsafeBlocks(deps);
+  if (stopped !== null) return { kind: "declined", reason: stopped };
+  const before = await deps.readPromptTail(paneId);
+  if (before === null) return { kind: "declined", reason: "prompt_unreadable" };
+  if (!before.isCredentialPrompt) return { kind: "declined", reason: "not_at_prompt" };
+  const procsBefore = deps.credentialProcesses(paneId);
+  if (procsBefore === null) return { kind: "declined", reason: "not_anchored" };
+  if (procsBefore.size === 0) return { kind: "declined", reason: "no_credential_program" };
+  const gate = { paneId, submit, anchor: anchor, before, procsBefore };
+
+  // internal #281: a tag already kept for THIS pane and THIS anchor → confirm, not type. The kept secret is
+  // never erased here, whatever the outcome: it lives until the pane closes or forget_tag.
+  const keptId = tag !== undefined ? deps.kept.lookup(paneId, anchor, tag) : null;
+  if (tag !== undefined && keptId !== null && req.retype !== true) {
+    let outcome: FillOnceOutcome;
+    try {
+      outcome = (await deps.kept.confirm({ ...dialog, tag }))
+        ? await fillAfterDialog(deps, { ...gate, opaqueId: keptId })
+        : { kind: "cancelled" };
+    } catch (err) {
+      outcome = { kind: "fill_aborted", code: `fill_once_error:${err instanceof Error ? err.message : String(err)}` };
+    }
+    // `kept` says what the map holds NOW (a helper that died meanwhile took the tag with it).
+    return deps.kept.lookup(paneId, anchor, tag) !== null ? { ...outcome, kept: true } : outcome;
+  }
+  if (tag !== undefined && keptId === null && deps.kept.count(paneId, anchor) >= MAX_KEPT_TAGS_PER_PANE) {
+    return { kind: "declined", reason: "tag_limit" };
+  }
+
+  // From here on a secret may exist under `opaqueId` (a capture that threw may or may not have stored it),
+  // so every exit erases it — the filled one included, unless it is now kept under its tag.
+  const opaqueId = deps.mintOpaqueId();
+  let outcome: FillOnceOutcome;
+  try {
+    outcome = await captureAndFill(deps, { ...gate, dialog: tag !== undefined ? { ...dialog, tag } : dialog, opaqueId });
+  } catch (err) {
+    outcome = { kind: "fill_aborted", code: `fill_once_error:${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (tag !== undefined && outcome.kind === "filled" && deps.stillAnchored(paneId) &&
+      deps.kept.keep(paneId, anchor, tag, opaqueId)) {
+    return { ...outcome, kept: true };
+  }
+  // Not kept: erase it. A retype that did not fill leaves the earlier kept secret as it was.
+  const wasErased = await erased(deps, opaqueId);
+  const keptBefore = tag !== undefined && deps.kept.lookup(paneId, anchor, tag) !== null ? { kept: true as const } : {};
+  return wasErased ? { ...outcome, ...keptBefore } : { ...outcome, ...keptBefore, cleanupFailed: true };
 }
 
 /** Erase the one-time secret: two attempts (a pipe hiccup is the usual cause); false if both failed. */
@@ -206,17 +278,24 @@ async function erased(deps: FillOnceDeps, opaqueId: string): Promise<boolean> {
   return false;
 }
 
+interface AfterDialogGate {
+  paneId: string; submit: boolean; anchor: PaneAnchor; before: PromptVerdict; procsBefore: Map<number, number>;
+  opaqueId: string;
+}
+
 async function captureAndFill(
   deps: FillOnceDeps,
-  r: {
-    paneId: string; dialog: FillOnceDialog; submit: boolean; opaqueId: string; anchor: PaneAnchor;
-    before: PromptVerdict; procsBefore: Map<number, number>;
-  },
+  r: AfterDialogGate & { dialog: FillOnceDialog },
 ): Promise<FillOnceOutcome> {
-  const { paneId, dialog, submit, opaqueId, anchor, before, procsBefore } = r;
-  const cap = await deps.capture(opaqueId, dialog);
+  const cap = await deps.capture(r.opaqueId, r.dialog);
   if (!cap.captured) return { kind: "cancelled" };
+  return fillAfterDialog(deps, r);
+}
 
+/** Everything between a dialog (typed or confirmed) and the write. Shared by both, so a kept tag can never
+ *  skip a gate the typed path runs. */
+async function fillAfterDialog(deps: FillOnceDeps, r: AfterDialogGate): Promise<FillOnceOutcome> {
+  const { paneId, submit, opaqueId, anchor, before, procsBefore } = r;
   // After the dialog (arbitrary user time): the pane must be the SAME — the same prompt text and the
   // same credential processes — then the stop and the anchor, kept adjacent to the write (the stop
   // probe is the last await before `injectAt`, the same ordering as the loop's backstop).

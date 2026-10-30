@@ -148,6 +148,9 @@ export class KeyLockerManager {
   private inFlight = 0;        // secret ops currently running through withHost (idle-dispose never runs mid-op)
   private lastActivityMs = 0;  // clock stamp of the last withHost completion (idle-dispose dormancy timer)
   private closed = false;      // set by close() at shutdown: no host (or consent dialog) is ever started again
+  /** internal #281: true while the live helper holds secrets that must outlive the idle window (kept
+   *  fill_once tags). Set by the wiring; idle-dispose skips a LIVE host while it says so. */
+  private idleKeepAlive: (() => boolean) | null = null;
 
   // W-3 (§2.1): the single live session tracker + ssh session-end watch this manager owns. The watch is
   // built with a snapshot seam that adapts the real Win32 process-tree bindings (or a test fake) into the
@@ -528,8 +531,25 @@ export class KeyLockerManager {
     if (this.inFlight > 0 || this.starting !== null) return false;    // an op / start is running — not idle
     if (this.host === null) return false;                            // nothing live to dispose
     if (this.now() - this.lastActivityMs < idleMs) return false;      // used within the window
+    // internal #281: kept fill_once tags live in THIS helper's memory only; disposing it would erase them a
+    // minute after the user typed them. A dead helper has already lost them, so it is disposed as before.
+    if (this.host.alive && this.idleKeepAlive?.() === true) return false;
     await this.dispose();
     return true;
+  }
+
+  /** internal #281: register what keeps a live helper from idle-dispose (the wiring's kept-tag map). */
+  setIdleKeepAlive(keepAlive: (() => boolean) | null): void {
+    this.idleKeepAlive = keepAlive;
+  }
+
+  /**
+   * internal #281: the live helper session, or null when none is running (never started, disposed, or its
+   * pipe closed). Compared by IDENTITY: a kept tag remembers the helper that holds its secret, and a different
+   * (restarted) helper means the secret is gone and the tag must be forgotten. Never starts a helper.
+   */
+  liveHost(): KeyLockerHost | null {
+    return this.host !== null && this.host.alive ? this.host : null;
   }
 
   /**

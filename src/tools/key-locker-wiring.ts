@@ -36,6 +36,7 @@ import {
 import { getProcessIdentityByPid } from "../engine/win32.js";
 import { inject } from "../engine/key-locker/injector.js";
 import { runFillOnce, widenForFillOnce, type FillOnceOutcome } from "../engine/key-locker/fill-once.js";
+import { KeptTags } from "../engine/key-locker/kept-tags.js";
 import {
   KeyLockerCaptureDriver,
   type CaptureDriverDeps,
@@ -107,8 +108,21 @@ export class KeyLockerWiring {
   private readonly launchedPanes: Array<{ paneId: string; host: "classic" | "windows-terminal"; launchTitle: string; launchedAt: string }> = [];
   /** windowTitles already nudged toward launch_console (Phase 3 dedup — one advisory per pane, no spam). */
   private readonly nudgedTitles = new Set<string>();
+  /** internal #281: fill_once secrets kept per pane under a tag (ids only — the secrets are in the helper). */
+  private readonly keptTags: KeptTags;
 
   constructor(private readonly manager: KeyLockerManager) {
+    this.keptTags = new KeptTags({
+      liveHolder: () => manager.liveHost(),
+      // Best-effort, on the live helper only: never start a helper to erase what a dead one already lost.
+      erase: (ids) => {
+        const h = manager.liveHost();
+        if (h === null) return;
+        for (const id of ids) void h.delete(id).catch(() => {});
+      },
+    });
+    // The kept secrets live in the helper's memory: it must not be idle-disposed while any pane holds one.
+    manager.setIdleKeepAlive(() => this.keptTags.hasAny());
     this.driver = new KeyLockerCaptureDriver(this.buildDeps());
   }
 
@@ -166,6 +180,9 @@ export class KeyLockerWiring {
     if (this.eventSubId !== null) { unsubscribe(this.eventSubId); this.eventSubId = null; }
     setTerminalDispatchHook(null);
     setCredentialAdvisor(null);
+    // internal #281: the kept tags die with the helper below; forget the map and stop holding it alive.
+    this.keptTags.clear();
+    this.manager.setIdleKeepAlive(null);
     // close(), not dispose(): an op that fails because the host is going away must not start a new one (#282).
     return this.manager.close().catch(() => {});
   }
@@ -273,7 +290,9 @@ export class KeyLockerWiring {
    * is LOCKER-derived — the pane's LAUNCH title (a nonce the locker chose), never its live title, which a
    * remote host can rewrite after login; `reason` is the assistant's text, shown as such.
    */
-  async fillOnce(paneId: string, reason: string, submit: boolean): Promise<FillOnceOutcome> {
+  async fillOnce(
+    paneId: string, reason: string, submit: boolean, opts: { tag?: string; retype?: boolean } = {},
+  ): Promise<FillOnceOutcome> {
     // The LATEST launch under this id (a classic hwnd can be reused), with its launch time so the user can
     // tell which window it is even after an ssh login has rewritten the live title.
     const launched = [...this.launchedPanes].reverse().find((p) => p.paneId === paneId);
@@ -281,6 +300,8 @@ export class KeyLockerWiring {
       ? `the locker console opened at ${launched.launchedAt} ("${launched.launchTitle}")`
       : `the locker console (pane ${paneId})`;
     const m = this.manager;
+    // The helper that took THIS call's secret: a new tag is kept only if that helper is still the live one.
+    let capturedBy: object | null = null;
     return runFillOnce(
       {
         claim: (id) => this.driver.claimForFillOnce(id),
@@ -292,8 +313,13 @@ export class KeyLockerWiring {
         readPromptTail: (id) => this.readFillOncePromptTail(id),
         mintOpaqueId: () => randomUUID(),
         capture: (id, dialog) =>
-          m.withHost((h) => h.capture(id, { label: dialog.label, note: dialog.note, purpose: "fill_once" }))
-            .then((r) => ({ captured: r.captured })),
+          m.withHost((h) => {
+            capturedBy = h;
+            return h.capture(id, {
+              label: dialog.label, note: dialog.note, purpose: "fill_once",
+              ...(dialog.tag !== undefined ? { tag: dialog.tag } : {}),
+            });
+          }).then((r) => ({ captured: r.captured })),
         stillAnchored: (id) => this.driver.hasPane(id),
         injectAt: async (anchor, id, sub) => {
           const target = assembleInjectTarget(anchor, sub);
@@ -303,9 +329,25 @@ export class KeyLockerWiring {
           return m.withHost((h) => h.inject(id, { ...target, requireEchoOff: true }));
         },
         deleteSecret: (id) => m.withHost((h) => h.delete(id)).then(() => undefined),
+        kept: {
+          lookup: (id, anchor, tag) => this.keptTags.lookup(id, anchor, tag),
+          count: (id, anchor) => this.keptTags.count(id, anchor),
+          confirm: (dialog) => m.withHost((h) => h.confirmKeptFill(dialog)).then((c) => c === "fill"),
+          keep: (id, anchor, tag, opaqueId) => this.keptTags.keep(id, anchor, tag, opaqueId, capturedBy),
+        },
       },
-      { paneId, dialog: { label, note: reason }, submit },
+      { paneId, dialog: { label, note: reason }, submit, ...opts },
     );
+  }
+
+  /** `key_locker forget_tag` (internal #281): erase one kept tag. Returns whether it existed. */
+  forgetTag(paneId: string, tag: string): boolean {
+    return this.keptTags.forget(paneId, tag);
+  }
+
+  /** `key_locker list` (internal #281): kept tag NAMES per pane, never ids or secrets. */
+  keptTagNames(): Record<string, string[]> {
+    return this.keptTags.names();
   }
 
   /** A launched pane is REUSABLE only if it is alive (classic: live console window, hwnd-direct; wt: the
@@ -411,6 +453,9 @@ export class KeyLockerWiring {
       // (poll early-decline + injectPane backstop). "background" origin = diagnostic log per
       // refusal, no balloon (plan §3.2 — the dropped prompt stays visible in the pane).
       checkFailsafe: () => checkFailsafe("background"),
+
+      // internal #281: a closed (or re-anchored) pane takes its kept fill_once tags with it.
+      onPaneForgotten: (paneId) => this.keptTags.dropPane(paneId),
     };
   }
 

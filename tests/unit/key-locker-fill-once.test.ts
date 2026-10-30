@@ -16,6 +16,7 @@ import {
 } from "../../src/engine/key-locker/fill-once.js";
 import { KeyLockerCaptureDriver, type CaptureDriverDeps, type PromptVerdict } from "../../src/engine/key-locker/key-locker-capture-driver.js";
 import type { PaneAnchor } from "../../src/engine/key-locker/inject-target.js";
+import { KeptTags, MAX_KEPT_TAGS_PER_PANE } from "../../src/engine/key-locker/kept-tags.js";
 import { SessionTracker } from "../../src/engine/key-locker/session-tracker.js";
 import { SshSessionWatch, type ProcessSnapshot } from "../../src/engine/key-locker/ssh-session-watch.js";
 import { sanitizeFillOnceReason } from "../../src/tools/key-locker-tool.js";
@@ -49,6 +50,12 @@ function fake(o: {
   anchored?: boolean;
   inject?: { ok: true; verified: boolean } | { ok: false; code: string };
   deleteFails?: number;
+  /** internal #281: the kept-tag map (a real `KeptTags` by default) and the confirm dialog's answer. */
+  kept?: KeptTags;
+  confirm?: boolean;
+  confirmThrows?: boolean;
+  anchoredSeq?: boolean[];
+  opaqueId?: string;
 } = {}): Fake {
   const calls: string[] = [];
   const deleted: string[] = [];
@@ -57,28 +64,48 @@ function fake(o: {
   const prompts = [...(o.prompts ?? [PROMPT(true), PROMPT(true)])];
   const procs = [...(o.procs ?? [SSH(), SSH()])];
   const failsafe = [...(o.failsafe ?? [null, null])];
+  const anchoredSeq = [...(o.anchoredSeq ?? [])];
+  const kept = o.kept ?? keptTags().tags;
   const deps: FillOnceDeps = {
     claim: (id) => { calls.push(`claim:${id}`); return claims.length > 0 ? claims.shift()! : { ok: true, anchor: ANCHOR, token: TOKEN }; },
     release: (_id, token) => { calls.push("release"); released.push(token); },
     credentialProcesses: () => { calls.push("procs"); return procs.length > 0 ? procs.shift()! : SSH(); },
     checkFailsafe: async () => { calls.push("failsafe"); const e = failsafe.shift() ?? null; if (e !== null) throw e; },
     readPromptTail: async () => { calls.push("prompt"); return prompts.length > 0 ? prompts.shift()! : PROMPT(true); },
-    mintOpaqueId: () => "op-1",
+    mintOpaqueId: () => o.opaqueId ?? "op-1",
     capture: async (id, dialog) => {
-      calls.push(`capture:${id}:${dialog.label}:${dialog.note}`);
+      calls.push(`capture:${id}:${dialog.label}:${dialog.note}${dialog.tag !== undefined ? `:tag=${dialog.tag}` : ""}`);
       if (o.captureThrows) throw new Error("pipe drop");
       return { captured: o.captured ?? true };
     },
-    stillAnchored: () => { calls.push("anchored"); return o.anchored ?? true; },
+    stillAnchored: () => { calls.push("anchored"); return anchoredSeq.length > 0 ? anchoredSeq.shift()! : (o.anchored ?? true); },
     injectAt: async (anchor, id, submit) => { calls.push(`inject:${anchor.shellPid}:${id}:${submit}`); return o.inject ?? { ok: true, verified: true }; },
     deleteSecret: async (id) => {
       calls.push(`delete:${id}`);
       if ((o.deleteFails ?? 0) > deleted.filter((d) => d === "fail").length) { deleted.push("fail"); throw new Error("pipe closed"); }
       deleted.push(id);
     },
+    kept: {
+      lookup: (id, anchor, tag) => kept.lookup(id, anchor, tag),
+      count: (id, anchor) => kept.count(id, anchor),
+      confirm: async (dialog) => {
+        calls.push(`confirm:${dialog.tag}:${dialog.label}:${dialog.note}`);
+        if (o.confirmThrows) throw new Error("pipe drop");
+        return o.confirm ?? true;
+      },
+      keep: (id, anchor, tag, opaqueId) => { calls.push(`keep:${tag}:${opaqueId}`); return kept.keep(id, anchor, tag, opaqueId, HELPER); },
+    },
     sleep: async () => { calls.push("sleep"); },
   };
   return { deps, calls, deleted, released };
+}
+
+/** The live helper the fake kept-tag map treats as holding every kept secret. */
+const HELPER = { helper: 1 };
+/** A real kept-tag map whose erasures are recorded (`erased`), as the wiring erases on the live helper. */
+function keptTags(): { tags: KeptTags; erased: string[] } {
+  const erased: string[] = [];
+  return { tags: new KeptTags({ liveHolder: () => HELPER, erase: (ids) => erased.push(...ids) }), erased };
 }
 
 const REQ = { paneId: "1234", dialog: { label: "the locker console", note: "log in via the jump host" }, submit: true };
@@ -423,5 +450,232 @@ describe("fill_once accepts OpenSSH's key-unlock prompts (internal #280)", () =>
     const plain = fake({ prompts: [raw] });
     expect(await run(plain)).toEqual({ kind: "declined", reason: "not_at_prompt" });
     expect(opened(plain)).toBe(false);
+  });
+});
+
+// ── internal #281: kept tags ──────────────────────────────────────────────────────────────────────────
+
+const TAGGED = { ...REQ, tag: "jump" };
+const ANCHOR_REUSED: PaneAnchor = { ...ANCHOR, shellPid: 9999, shellStartTimeMs: 77 };
+const confirmed = (f: Fake): boolean => f.calls.some((c) => c.startsWith("confirm"));
+
+/** A map that already keeps `jump` → `kept-1` for pane 1234 under ANCHOR. */
+function withKept(): { tags: KeptTags; erased: string[] } {
+  const k = keptTags();
+  k.tags.keep("1234", ANCHOR, "jump", "kept-1", HELPER);
+  return k;
+}
+
+describe("runFillOnce — a NEW tag: typed once, then kept", () => {
+  it("the typing dialog shows the tag; after the fill the secret is KEPT, not deleted", async () => {
+    const k = keptTags();
+    const f = fake({ kept: k.tags });
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "filled", verified: true, kept: true });
+    expect(f.calls).toEqual([
+      "claim:1234", "failsafe", "prompt", "procs",
+      "capture:op-1:the locker console:log in via the jump host:tag=jump",
+      "prompt", "procs", "failsafe", "anchored",
+      "inject:4321:op-1:true", "anchored", "keep:jump:op-1", "release",
+    ]);
+    expect(f.deleted).toEqual([]);
+    expect(k.tags.lookup("1234", ANCHOR, "jump")).toBe("op-1");
+  });
+
+  it.each([
+    ["the user cancels", { captured: false }, { kind: "cancelled" }],
+    ["the prompt changed", { prompts: [PROMPT(true), PROMPT(false, "$ ")] }, { kind: "declined", reason: "prompt_changed" }],
+    ["the locker refused the write", { inject: { ok: false as const, code: "echo_on" } }, { kind: "fill_aborted", code: "echo_on" }],
+  ])("%s → nothing is kept and the typed secret is deleted", async (_name, opts, outcome) => {
+    const k = keptTags();
+    const f = fake({ kept: k.tags, ...opts });
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual(outcome);
+    expect(f.deleted).toEqual(["op-1"]);
+    expect(k.tags.hasAny()).toBe(false);
+  });
+
+  it("the pane closed during the write → filled, but NOT kept (no tag for a dead pane); deleted", async () => {
+    const k = keptTags();
+    const f = fake({ kept: k.tags, anchoredSeq: [true, false] });
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "filled", verified: true });
+    expect(f.deleted).toEqual(["op-1"]);
+    expect(k.tags.hasAny()).toBe(false);
+  });
+
+  it(`a new tag past ${MAX_KEPT_TAGS_PER_PANE} per pane declines tag_limit before any dialog`, async () => {
+    const k = keptTags();
+    for (let i = 0; i < MAX_KEPT_TAGS_PER_PANE; i++) k.tags.keep("1234", ANCHOR, `t${i}`, `id-${i}`, HELPER);
+    const f = fake({ kept: k.tags });
+    expect(await runFillOnce(f.deps, { ...REQ, tag: "ninth" })).toEqual({ kind: "declined", reason: "tag_limit" });
+    expect(opened(f) || confirmed(f) || wrote(f)).toBe(false);
+    expect(f.released).toEqual([TOKEN]);
+    // A tag already kept still fills through its confirm.
+    const g = fake({ kept: k.tags });
+    expect(await runFillOnce(g.deps, { ...REQ, tag: "t3" })).toEqual({ kind: "filled", verified: true, kept: true });
+    expect(g.calls).toContain("inject:4321:id-3:true");
+  });
+
+  it("no tag: unchanged — nothing is kept, the secret is deleted, the kept secret is never written", async () => {
+    const k = withKept();
+    const f = fake({ kept: k.tags });
+    expect(await run(f)).toEqual({ kind: "filled", verified: true });
+    expect(f.calls).not.toContain("inject:4321:kept-1:true");
+    expect(f.deleted).toEqual(["op-1"]);
+    expect(k.tags.lookup("1234", ANCHOR, "jump")).toBe("kept-1");
+  });
+});
+
+describe("runFillOnce — a KEPT tag: confirm, never type", () => {
+  it("no typing dialog: a confirm showing tag, label and reason, then EVERY after-dialog gate, then the kept secret", async () => {
+    const k = withKept();
+    const f = fake({ kept: k.tags });
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "filled", verified: true, kept: true });
+    expect(f.calls).toEqual([
+      "claim:1234", "failsafe", "prompt", "procs",
+      "confirm:jump:the locker console:log in via the jump host",
+      "prompt", "procs", "failsafe", "anchored",
+      "inject:4321:kept-1:true", "release",
+    ]);
+    expect(opened(f)).toBe(false);
+    expect(f.deleted).toEqual([]); // the kept secret stays
+    expect(k.tags.lookup("1234", ANCHOR, "jump")).toBe("kept-1");
+  });
+
+  it("Cancel → cancelled; nothing typed; the tag stays", async () => {
+    const k = withKept();
+    const f = fake({ kept: k.tags, confirm: false });
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "cancelled", kept: true });
+    expect(wrote(f)).toBe(false);
+    expect(f.deleted).toEqual([]);
+    expect(k.tags.lookup("1234", ANCHOR, "jump")).toBe("kept-1");
+    expect(f.released).toEqual([TOKEN]);
+  });
+
+  it("a confirm that throws → fill_aborted; nothing typed; released; the tag stays", async () => {
+    const k = withKept();
+    const f = fake({ kept: k.tags, confirmThrows: true });
+    expect((await runFillOnce(f.deps, TAGGED)).kind).toBe("fill_aborted");
+    expect(wrote(f)).toBe(false);
+    expect(f.released).toEqual([TOKEN]);
+  });
+
+  // Every gate the typed path runs, on the kept path. Each must decline with nothing written.
+  const gates: Array<[string, Parameters<typeof fake>[0], string, boolean]> = [
+    ["the stop armed before the confirm", { failsafe: [new FailsafeError()] }, "failsafe_engaged", false],
+    ["not at a credential prompt", { prompts: [PROMPT(false)] }, "not_at_prompt", false],
+    ["an unreadable pane", { prompts: [null] }, "prompt_unreadable", false],
+    ["a printed prompt (no ssh / sudo running)", { procs: [new Map()] }, "no_credential_program", false],
+    ["the prompt went away during the confirm", { prompts: [PROMPT(true), PROMPT(false, "$ ")] }, "prompt_changed", true],
+    ["a DIFFERENT prompt after the confirm", { prompts: [PROMPT(true), PROMPT(true, "x@other's password: ")] }, "prompt_changed", true],
+    ["a different ssh process after the confirm", { procs: [SSH(), new Map([[778, 6000]])] }, "prompt_changed", true],
+    ["the pane's processes unreadable after the confirm", { procs: [SSH(), null] }, "target_gone", true],
+    ["the stop armed during the confirm", { failsafe: [null, new FailsafeError()] }, "failsafe_engaged", true],
+    ["the pane closed during the confirm", { anchored: false }, "target_gone", true],
+  ];
+  it.each(gates)("%s → declined; nothing typed; the tag stays, and the reply says so", async (_n, opts, reason, didConfirm) => {
+    const k = withKept();
+    const f = fake({ kept: k.tags, ...opts });
+    // `kept` on every decline, the early ones too (codex on #883: a decline before the lookup said false).
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "declined", reason, kept: true });
+    expect(wrote(f)).toBe(false);
+    expect(opened(f)).toBe(false);
+    expect(confirmed(f)).toBe(didConfirm);
+    expect(f.deleted).toEqual([]);
+    expect(k.tags.lookup("1234", ANCHOR, "jump")).toBe("kept-1");
+  });
+
+  it("the stop probe is the LAST await before the kept write", async () => {
+    const f = fake({ kept: withKept().tags });
+    await runFillOnce(f.deps, TAGGED);
+    const i = f.calls.indexOf("inject:4321:kept-1:true");
+    expect(f.calls.slice(i - 2, i)).toEqual(["failsafe", "anchored"]);
+  });
+
+  it("a REUSED paneId (another anchor) never fills the old tag: the user types, and the old id is erased", async () => {
+    const k = withKept();
+    const f = fake({ kept: k.tags, claims: [{ ok: true, anchor: ANCHOR_REUSED, token: TOKEN }] });
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "filled", verified: true, kept: true });
+    expect(confirmed(f)).toBe(false);
+    expect(f.calls.some((c) => c.includes("kept-1"))).toBe(false);
+    expect(f.calls).toContain("inject:9999:op-1:true");
+    expect(k.erased).toEqual(["kept-1"]);
+    expect(k.tags.lookup("1234", ANCHOR_REUSED, "jump")).toBe("op-1");
+  });
+});
+
+describe("runFillOnce — retype replaces a kept tag", () => {
+  it("retype: the typing dialog opens; after the fill the new secret replaces the old, which is erased", async () => {
+    const k = withKept();
+    const f = fake({ kept: k.tags, opaqueId: "op-2" });
+    expect(await runFillOnce(f.deps, { ...TAGGED, retype: true })).toEqual({ kind: "filled", verified: true, kept: true });
+    expect(confirmed(f)).toBe(false);
+    expect(f.calls).toContain("capture:op-2:the locker console:log in via the jump host:tag=jump");
+    expect(f.calls).toContain("inject:4321:op-2:true");
+    expect(k.tags.lookup("1234", ANCHOR, "jump")).toBe("op-2");
+    expect(k.erased).toEqual(["kept-1"]);
+    expect(f.deleted).toEqual([]);
+  });
+
+  it("a retype that does not fill leaves the old kept secret as it was; the new one is deleted", async () => {
+    const k = withKept();
+    const f = fake({ kept: k.tags, opaqueId: "op-2", captured: false });
+    expect(await runFillOnce(f.deps, { ...TAGGED, retype: true })).toEqual({ kind: "cancelled", kept: true });
+    expect(f.deleted).toEqual(["op-2"]);
+    expect(k.tags.lookup("1234", ANCHOR, "jump")).toBe("kept-1");
+    expect(k.erased).toEqual([]);
+  });
+
+  it("a retype at the tag cap is allowed (it replaces, it does not add)", async () => {
+    const k = keptTags();
+    for (let i = 0; i < MAX_KEPT_TAGS_PER_PANE; i++) k.tags.keep("1234", ANCHOR, `t${i}`, `id-${i}`, HELPER);
+    const f = fake({ kept: k.tags });
+    expect(await runFillOnce(f.deps, { ...REQ, tag: "t0", retype: true })).toEqual({ kind: "filled", verified: true, kept: true });
+  });
+});
+
+describe("KeyLockerCaptureDriver — a closed or re-anchored pane forgets its kept tags (internal #281)", () => {
+  function driverWithForget(procs: Record<number, Proc> = SHELLS): { d: KeyLockerCaptureDriver; forgotten: string[] } {
+    const forgotten: string[] = [];
+    const snapshot = (): ProcessSnapshot => {
+      const parentMap = new Map<number, number>();
+      for (const [pid, p] of Object.entries(procs)) parentMap.set(Number(pid), p.parent);
+      return {
+        parentMap,
+        identify: (pid) => (procs[pid] !== undefined ? { name: procs[pid].name, startTimeMs: procs[pid].start } : { name: "", startTimeMs: 0 }),
+        commandLine: () => null,
+      };
+    };
+    const tracker = new SessionTracker();
+    const watch = new SshSessionWatch({ tracker, snapshot });
+    const d = new KeyLockerCaptureDriver({
+      tracker, watch, snapshot, readPromptTail: async () => PROMPT(false), checkFailsafe: async () => {}, nowMs: () => 0,
+      onPaneForgotten: (id: string) => forgotten.push(id),
+    } as unknown as CaptureDriverDeps);
+    return { d, forgotten };
+  }
+
+  it("onPaneClosed (window_disappeared) reports the pane", () => {
+    const { d, forgotten } = driverWithForget();
+    d.onLocalPaneLaunched("1234", ANCHOR);
+    d.onPaneClosed("1234");
+    expect(forgotten).toEqual(["1234"]);
+  });
+
+  it("the wt shell-exit prune reports the pane", () => {
+    const procs: Record<number, Proc> = { ...SHELLS, 6000: { parent: 1, name: "powershell", start: 20 } };
+    const { d, forgotten } = driverWithForget(procs);
+    d.onLocalPaneLaunched("wt:6000:20", { kind: "wt", shellPid: 6000, shellStartTimeMs: 20 });
+    d.tickWatch();
+    expect(forgotten).toEqual([]);
+    delete procs[6000]; // the tab's shell exited
+    d.tickWatch();
+    expect(forgotten).toEqual(["wt:6000:20"]);
+  });
+
+  it("a re-launch under the same id (a reused hwnd) reports the old pane before re-anchoring", () => {
+    const { d, forgotten } = driverWithForget();
+    d.onLocalPaneLaunched("1234", ANCHOR);
+    expect(forgotten).toEqual([]);
+    d.onLocalPaneLaunched("1234", { ...ANCHOR, shellPid: 5555 });
+    expect(forgotten).toEqual(["1234"]);
   });
 });

@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { KeyLockerHost } from "../../src/engine/key-locker-host.js";
 import { KeyLockerManager } from "../../src/engine/key-locker/key-locker-manager.js";
 import { BindingStore } from "../../src/engine/key-locker/binding-store.js";
-import { keyLockerHandler, __setKeyLockerManagerForTest, __setSshExecForTest } from "../../src/tools/key-locker-tool.js";
+import { keyLockerHandler, keptReply, __setKeyLockerManagerForTest, __setSshExecForTest } from "../../src/tools/key-locker-tool.js";
 import type { KeyLockerArgs } from "../../src/tools/key-locker-tool.js";
 import type { ExecFn } from "../../src/engine/key-locker/ssh-resolve.js";
 
@@ -322,5 +322,42 @@ describe("the shipped promise says what it covers", () => {
       state!.description,
       "the absence of a reason must not be sold as a verdict about the field",
     ).not.toContain("means the field itself had nothing");
+  });
+});
+
+describe("key_locker — kept fill_once tags (internal #281)", () => {
+  it("list reports paneTags (names only) beside the bindings — empty without a live wiring", async () => {
+    acceptConsent();
+    const r = await call({ action: "list" });
+    expect(r.paneTags).toEqual({});
+  });
+
+  it("forget_tag needs consent, then the live wiring", async () => {
+    const r = await call({ action: "forget_tag", paneId: "wt:1:2", tag: "jump" });
+    expect(r.code).toBe("KeyLockerConsentRequired");
+    acceptConsent();
+    const r2 = await call({ action: "forget_tag", paneId: "wt:1:2", tag: "jump" });
+    expect(r2.code).toBe("KeyLockerDisabled");
+  });
+
+  it.each(["", "a b", "x".repeat(33), "jump/2", "‮jump"])("a malformed tag %j is rejected by the schema", async (tag) => {
+    acceptConsent();
+    for (const args of [
+      { action: "fill_once", paneId: "wt:1:2", reason: "r", tag },
+      { action: "forget_tag", paneId: "wt:1:2", tag },
+    ]) {
+      const r = await call(args as KeyLockerArgs);
+      expect(r.ok).toBe(false);
+      expect(r.code).not.toBe("KeyLockerDisabled"); // refused before any handler ran
+    }
+  });
+
+  it("a tagged reply says whether the tag is still kept, and leaves it out when the pane was never taken (codex on #883)", () => {
+    expect(keptReply(undefined, { kind: "filled", verified: true })).toEqual({});
+    expect(keptReply("jump", { kind: "declined", reason: "not_at_prompt", kept: true })).toEqual({ tag: "jump", tagKept: true });
+    expect(keptReply("jump", { kind: "declined", reason: "not_at_prompt" })).toEqual({ tag: "jump", tagKept: false });
+    expect(keptReply("jump", { kind: "cancelled", kept: true })).toEqual({ tag: "jump", tagKept: true });
+    expect(keptReply("jump", { kind: "declined", reason: "busy" })).toEqual({ tag: "jump" });
+    expect(keptReply("jump", { kind: "declined", reason: "not_anchored" })).toEqual({ tag: "jump" });
   });
 });
