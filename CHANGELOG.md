@@ -1,6 +1,11 @@
 # Changelog
 
-## [Unreleased]
+## [2.4.0] - 2026-10-30 — Line breaks are typed as Enter, and typing, browser clicks and docking say when they did not do what was asked
+
+A minor version because some calls that answered `ok: true` now refuse: a keystroke space or line break with the
+focus on a button (`FocusedControlTakesNoText`), a `browser_click` on a tab its window is not showing
+(`BrowserPointCovered`), and a `window_dock` of a window that stays maximized. Replies also gain fields
+(`sizeDiffers`, `hints.focusTakesNoText`, `context.activatedTab`), and `browser_click` takes `forceFocus`.
 
 ### Changed — Windows
 - **`desktop_act` click on a text field puts the focus in it when the window was named by handle.** A web page's
