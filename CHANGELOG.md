@@ -1,6 +1,11 @@
 # Changelog
 
-## [Unreleased]
+## [2.4.0] - 2026-10-30 — Line breaks are typed as Enter, and typing, browser clicks and docking say when they did not do what was asked
+
+A minor version because some calls that answered `ok: true` now refuse: a `keyboard` `type` of a space or line break by
+keystroke with the focus on a button (`FocusedControlTakesNoText`), a `browser_click` on a tab its window is not showing
+(`BrowserPointCovered`), and a `window_dock` of a window that stays maximized. Replies also gain fields
+(`sizeDiffers`, `hints.focusTakesNoText`, `context.activatedTab`), and `browser_click` takes `forceFocus`.
 
 ### Changed — Windows
 - **`desktop_act` click on a text field puts the focus in it when the window was named by handle.** A web page's
@@ -15,13 +20,14 @@
   element below it in the tree `desktop_discover` read; a field outside it is still refused. Behind a real
   `<dialog>` opened with `showModal()` the page's fields leave the tree, so none is let through (internal #321).
 - **`focus_window` with `chromeTabUrlContains` finds the window by the title it had before the switch.** A browser
-  window's title is its showing tab's, so the window's title copied before the call stopped matching once the tab
-  was activated: the tab was switched and the reply was `WindowNotFound`. A window the title named before the
-  switch is now focused when it shows the activated tab; one that does not is not. When no window is found, the
+  window's title is the title of the tab it shows, so the window's title copied before the call stopped matching once the tab
+  was activated: the tab was switched and the reply was `WindowNotFound`. Windows the title names now are tried
+  first, as before; then a window the title named before the switch, if it now shows the activated tab. When no window is found, the
   reply's `context.activatedTab` names the tab that was activated (internal #320).
-- **`window_dock` says when the window did not take the size, and keeps it on screen.** A window with a minimum
+- **`window_dock` says when the window did not take the size, and places it in the corner at the size it kept.** A window with a minimum
   size of its own (Edge will not go below 516 px wide) was left at its own width with its edge past the screen, and
-  the reply was `ok: true` with nothing flagged. It is now placed in the corner at the size it kept, and the reply
+  the reply was `ok: true` with nothing flagged. It is now placed in the corner at the size it kept (a window larger than the work area keeps its top-left
+  corner inside it, so its title bar stays reachable), and the reply
   carries `sizeDiffers` (`"width"`, `"height"`) and says so in `hint`. A window that stays maximized is not docked:
   `ok: false` (internal #317).
 - **A line break typed by keystroke is a plain Enter.** `keyboard` `type` and `terminal` `send` by keystroke sent
@@ -32,16 +38,17 @@
 - **`keyboard` `type` no longer presses a button the focus is on, and says when the focus takes no text.**
   With the keyboard focus on a control that takes no text — a button, check box, radio button, link, menu item or
   tab — a space sent by keystroke pressed it, and a paste of 180 characters answered `typed: 180` with nothing
-  inserted. A keystroke text with a space or a line break is now refused with `FocusedControlTakesNoText` and
+  inserted. Text sent by keystroke with a space or a line break is now refused with `FocusedControlTakesNoText` and
   `context.focusedType` before anything is sent, `replaceAll`'s Ctrl+A included. Other text, and any paste, is sent
   as before, because some windows take the keys themselves with the focus on a button (Calculator takes `12+3=`
   after a digit was clicked); the reply then carries `hints.focusTakesNoText` and a warning that nothing was inserted
   unless the window handles the keys. Text boxes, documents, combo boxes (Chromium's web text inputs), list items,
-  a web link (Chromium gives it a value) and controls UI Automation cannot read type as before (internal #322).
+  a web link (Chromium gives it a value), and a focused control UI Automation cannot read, are typed into as before (internal #322).
 - **`browser_click` on a tab behind another tab no longer clicks the tab in front.** When the browser window was
   already in front, the click landed on whichever tab its window showed, pressing that page's own button, and
   answered `ok: true`. It now refuses with `BrowserPointCovered` and `context.coveredBy: "tab"` when another tab of
-  the same window is showing, and nothing is clicked or switched. The refusal names the tab (`context.target`) and
+  the same window is showing, and nothing is clicked. (When two browser windows sit at the same place, the tab is
+  brought forward to tell which window holds it, as before, so it then shows and is clicked.) The refusal names the tab (`context.target`) and
   the tab showing (`context.showing`) and says how to select it. When the window is brought forward, the tab still
   comes forward with it, as before. With the display off every page reads hidden; then it cannot tell which tab is
   showing and clicks as before (internal #318).

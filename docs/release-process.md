@@ -280,6 +280,45 @@ Record every narrowing here so the exceptions stay visible:
     stdin EOF exited with code 0. Three v2.3.3 servers kept their pids throughout.
   - MCP Registry: published 2.3.4 from mac (`mcp-publisher` 1.8.4, GitHub device login relayed to the user);
     latest = 2.3.4, active.
+- **v2.4.0 (2026-10-30)** — narrowed by the user's decision (the middle of three scopes offered). Each of the
+  eleven runtime PRs in it (#868–#878) ran on win2's machine before it merged, but #873 and #874 change how every
+  keystroke text is typed, so Step 3 is kept. Planned: one build of the release head (native addon included), then:
+  - D0: version, HTTP 6/6 reporting 2.4.0, `publish --dry-run`, and npx from the packed tarball stopping at the
+    PENDING manifest.
+  - D1: one cell from each PR — #868 an `ambiguous_target` refusal naming the minimised window; #869 `browser_click`
+    behind another app's window names `forceFocus`, and `forceFocus: true` clicks; #870 a maximized window stays
+    maximized after `focus_window`; #871 a `browser_*` call without `tabId` uses the page, not the browser's own
+    pages (if a sign-in or consent dialog can be brought up; otherwise say it was not run); #872 `browser_click` on
+    a tab its window is not showing → `BrowserPointCovered`, `coveredBy: "tab"`; #873 a keystroke `"a b"` with the
+    focus on a button → `FocusedControlTakesNoText`, and Calculator still takes `12+3=`; #874 two lines into a
+    text editor and into PowerShell, each one break, run in order; #875 `window_dock` of a window with a minimum
+    width → `sizeDiffers`, on screen; #876 `focus_window` with `chromeTabUrlContains` and the title from before the
+    switch; #877 a field inside an `aria-modal` panel is written, one outside it refused; #878 a handle-aimed click
+    on a web text area → `FocusedTextField`.
+  - D2: Step 3 — the keyboard, mouse, terminal, clipboard and scroll scenarios in internal
+    `docs/llm-audit/dogfood-scenarios/`. Steps 2 and 4 are not run.
+  - D3: the usual regressions, 3/3.
+  Results (win2, 15b328e6, a clean worktree, `npm ci` + `build:rs` (GNU release, sha256 cb1d5765…469c6b) + `build`):
+  - D0: HTTP 6/6 on 23848, `version: 2.4.0`, 32 tools. `publish --dry-run`: 5 files. npx from the packed tarball
+    stopped at the PENDING manifest, exit 1.
+  - D1: #868 refused (`AutoGuardBlocked`; the text names the minimised window's handle, the one on screen and
+    `@active`), nothing typed. #869 a TopMost window over the button → `BrowserPointCovered` naming `forceFocus`;
+    with it, the click went through from behind Notepad. #870 the maximized window stayed zoomed. #871 not run (no
+    sign-in or consent dialog could be brought up). #872 `coveredBy: "tab"` naming both tabs; nothing pressed, no
+    switch. #873 `"a b"` on a button → `FocusedControlTakesNoText` (Button), no click or key reached the page;
+    Calculator took `12+3=` (15). #874 Notepad one break; a web text area saw a, Enter, b with no Control;
+    PowerShell (conhost, foreground) ran both lines in order. #875 a 700×500 minimum → placed on screen,
+    `sizeDiffers: ["width","height"]`. #876 the old title found the window, `activatedTab` S308. #877 the field in
+    the panel written, the one outside refused with `modal_blocking` and left empty. #878 the handle-aimed click put
+    the focus in the text area, 2/2 (the code `FocusedTextField` is internal and not in the reply); with the browser
+    behind another window it is `aim_route_failed`, as the CHANGELOG says.
+  - D2: keyboard and terminal cells side by side with 2.3.4: every answer the same, so #873/#874 changed no
+    existing cell. Not run: k2.5, the Windows Terminal cell of k2.2, t1.3 and mouse 3.2 (administrator windows),
+    clipboard 5.2/5.3 (no clipboard manager or DLP). Found, the same on 2.3.4 (not regressions, filed separately):
+    a keystroke `\n` sent by the default route to a conhost window goes as `wm_char` and arrives as "m" with
+    `ok: true`; `scroll` capture of a 40-section page answered `ok: true` with one frame although the page scrolled.
+  - D3: WinForms TextBox and DropDownList setValue, Notepad type, Calculator invoke, 3/3 each, all through UIA.
+  - No P1, no regression.
 
 ### HTTP Transport Verification (Required)
 
