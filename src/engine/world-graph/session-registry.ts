@@ -127,6 +127,15 @@ export function classifyModal(
 ): boolean {
   if (context === "pre-touch" && options?.excludeSelf?.entityId === entity.entityId) return false;
   if (!isUiaWindow(entity)) return false;
+  // Internal #321 — a modal does not block what is inside it. MEASURED win2 (2026-10-30, Chrome): a
+  // page's side panel with role="dialog" aria-modal="true" reads as a UIA `Window` with IsModal true,
+  // and an act on the panel's own textarea was refused naming the panel. Inside means below it in the
+  // tree the read walked (`locator.uia.path`), not within its rect: an owned dialog is listed in its
+  // owner's tree over the owner's controls, and those it does block. A path either side did not record
+  // decides nothing.
+  const target = context === "pre-touch" ? options?.excludeSelf : undefined;
+  const windowPath = entity.locator?.uia?.path;
+  if (windowPath && target?.locator?.uia?.path?.startsWith(windowPath + "/")) return false;
   // internal #211 (C) — a window that says it is NOT modal is not one. win2 measured
   // `WindowPattern.IsModal` on real windows (S6, 2026-09-29): `true` on a Win32 save dialog, a
   // MessageBox and WinForms / WPF `ShowDialog`; `false` on a modeless Find/Replace (its owner stays
