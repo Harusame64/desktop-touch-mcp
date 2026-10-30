@@ -136,8 +136,8 @@ terminal({ action:'send', paneId:'12345678', input:'ssh user@host' })
   login you do not want saved): send the command, then call
   `key_locker({ action:'fill_once', paneId, reason })`. You type the password into the
   locker's dialog; it is typed once into that pane's prompt and not saved. It types only
-  into a real password prompt (an `ssh` / `sudo` running in that pane, with the console not
-  showing what is typed), and only English `password` prompts and ssh's
+  into a real password prompt (an `ssh` / `sudo` running in front in that pane, not in the
+  background, with the console not showing what is typed), and only English `password` prompts and ssh's
   `Enter passphrase for key …:` for now.
 - **To type a password only once per pane** (a jump host you re-enter), add a `tag`:
   `key_locker({ action:'fill_once', paneId, reason, tag:'jump' })`. The first time you

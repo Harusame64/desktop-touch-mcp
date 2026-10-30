@@ -31,6 +31,7 @@ function makeFakeLocker(
     firstFrame?: string;
     protocol?: string;
     consoleEchoes?: boolean;
+    otherReader?: boolean;
     seed?: string[];
     captureReply?: { captured: boolean; rt: boolean };
     state?: FakeState;
@@ -76,6 +77,8 @@ function makeFakeLocker(
             // Mirrors Injection.cs's fill_once gate: `requireEchoOff` and an echoing console → echo_on.
             const t = (req as unknown as { t?: { requireEchoOff?: boolean } }).t;
             if (t?.requireEchoOff === true && opts.consoleEchoes === true) write({ id: req.id, ok: false, r: "", e: "echo_on" });
+            // internal #333: another process on the console is waiting in a read.
+            else if (t?.requireEchoOff === true && opts.otherReader === true) write({ id: req.id, ok: false, r: "", e: "other_reader" });
             else write({ id: req.id, ok: true, r: "", verified: true });
             break;
           }
@@ -176,6 +179,16 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     expect(await host.inject("op-1", { ...target, requireEchoOff: true })).toEqual({ ok: false, code: "echo_on" });
     const frame = JSON.parse(state.lastFrames.filter((f) => f.includes('"inject"')).at(-1)!) as { t: Record<string, unknown> };
     expect(frame.t.requireEchoOff).toBe(true);
+  });
+
+  it("other_reader comes back as itself, not executor_failed (internal #333)", async () => {
+    const path = pipePath();
+    const state: FakeState = { store: new Set(), captureReply: { captured: true, rt: true }, lastFrames: [] };
+    await listen(makeFakeLocker(path, { state, otherReader: true }), path);
+    const host = await KeyLockerHost.connectForTest(path);
+    hosts.push(host);
+    const target = { shellPid: 4321, shellStartMs: 10, submit: true, requireEchoOff: true };
+    expect(await host.inject("op-1", target)).toEqual({ ok: false, code: "other_reader" });
   });
 
   it("capture() reports a cancelled dialog as {captured:false}", async () => {

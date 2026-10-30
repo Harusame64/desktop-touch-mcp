@@ -136,7 +136,9 @@ export interface InjectTarget {
   submit?: boolean;
   /** fill_once (PR #806): write only while the console has echo OFF (a real password read); else the
    *  locker aborts `echo_on`. A staged `Read-Host` / `set /p` prompt echoes, and the secret would be
-   *  readable back from the pane. */
+   *  readable back from the pane. It also requires a process on the console to be waiting on the
+   *  ssh / sudo / su / doas there, else `other_reader` (internal #333: a background ssh leaves echo off
+   *  while the shell's own `Read-Host` reads). */
   requireEchoOff?: boolean;
 }
 
@@ -155,7 +157,10 @@ export type InjectAbortCode =
   | "no_secret" | "bad_target" | "executor_failed"
   // PR #806: a fill_once write (`requireEchoOff`) found the console ECHOING input — a staged prompt, not a
   // real password read. Nothing was written.
-  | "echo_on";
+  | "echo_on"
+  // internal #333: a fill_once write found nothing on the console waiting on an ssh / sudo / su / doas there
+  // — e.g. the shell's Read-Host behind a background ssh. Nothing was written.
+  | "other_reader";
 
 /** `inject` result: verified+injected, or a typed abort code. */
 export type InjectClientResult =
@@ -182,7 +187,7 @@ export type PromptChoice = ConfirmChoice | OfferChoice;
 
 const INJECT_ABORT_CODES: readonly InjectAbortCode[] = [
   "target_mismatch", "target_gone", "not_foreground", "target_multiplexed",
-  "no_secret", "bad_target", "executor_failed", "echo_on",
+  "no_secret", "bad_target", "executor_failed", "echo_on", "other_reader",
 ];
 
 /** Map a wire `e` string onto a known abort code so `InjectClientResult.code` never lies. */
