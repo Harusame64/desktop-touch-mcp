@@ -209,7 +209,9 @@ export interface PostCharsResult {
 /**
  * Send `text` to `hwnd` via WM_CHAR messages, one UTF-16 code unit at a time.
  * Surrogate pairs are sent as two consecutive WM_CHAR messages (standard Win32).
- * '\n' is normalised to '\r' (0x0D) for terminal compatibility.
+ * '\n' is normalised to '\r' (0x0D) for terminal compatibility. To a console window (conhost), each
+ * line break (`\r\n`, `\r` or `\n`) is one Enter key event instead, as {@link postEnterToHwnd} sends
+ * it: PSReadLine shows a WM_CHAR 0x0D as a literal 'm' and never runs the line (internal #325).
  *
  * Does NOT change the foreground window.
  */
@@ -224,9 +226,20 @@ export function postCharsToHwnd(hwnd: unknown, text: string): PostCharsResult {
 export function postCharsToResolvedTarget(target: unknown, text: string): PostCharsResult {
   let sent = 0;
   const total = text.length; // UTF-16 code unit count
+  // Only a console gets the key event: in a dialog's edit box a posted Enter key would press the
+  // default button, where WM_CHAR 0x0D breaks the line.
+  const toConsole = (() => { try { return getWindowClassName(target) === "ConsoleWindowClass"; } catch { return false; } })();
 
   for (let i = 0; i < text.length; i++) {
     const ch = text.charCodeAt(i);
+
+    if (toConsole && (ch === 0x0D || ch === 0x0A)) {
+      const units = ch === 0x0D && text.charCodeAt(i + 1) === 0x0A ? 2 : 1;
+      if (!postKeyToTarget(target, VK_RETURN)) return { sent, full: false, target };
+      sent += units;
+      i += units - 1;
+      continue;
+    }
 
     // Normalise LF → CR for terminals
     const wParam = ch === 0x0A ? 0x0D : ch;
@@ -249,7 +262,11 @@ export function postCharsToResolvedTarget(target: unknown, text: string): PostCh
  * Uses WM_KEYDOWN/WM_KEYUP — no foreground required.
  */
 export function postKeyToHwnd(hwnd: unknown, vk: number): boolean {
-  const target = resolveTarget(hwnd);
+  return postKeyToTarget(resolveTarget(hwnd), vk);
+}
+
+/** {@link postKeyToHwnd} to `target` itself, the focus not asked again. */
+function postKeyToTarget(target: unknown, vk: number): boolean {
   const scan = vkToScanCode(vk);
   const lParamDown = (scan & 0xFF) << 16;
   const lParamUp   = lParamDown | (1 << 30) | (1 << 31); // prev-down + transition bits

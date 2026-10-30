@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed — Windows
+- **A line break sent to a console window in the background is an Enter.** `keyboard` `type` (which goes to a
+  console window in the background by default) and `terminal` `send` in the background (all but the console paste
+  that `method: "auto"` uses for a line it runs) posted each line break as the character 0x0D, which PowerShell shows as a literal `m`: the line was never run, and the reply was
+  `ok: true`. In a console window `\n`, `\r` and `\r\n` are now each one Enter key event, as a single Enter
+  already was, so each line runs in order. Other windows still get the character, because an Enter key in a
+  dialog's text box would press its default button (internal #325).
+
 ## [2.4.0] - 2026-10-30 — Line breaks are typed as Enter, and typing, browser clicks and docking say when they did not do what was asked
 
 A minor version because some calls that answered `ok: true` now refuse: a `keyboard` `type` of a space or line break by
