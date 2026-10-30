@@ -123,7 +123,13 @@ export const focusWindowHandler = async ({
     // If chromeTabUrlContains is set, activate the matching Chrome tab first via CDP
     let activatedTab: string | undefined;
     let cdpUnavailable: boolean | undefined;
+    const query = title.toLowerCase();
+    // Internal #320 — the windows the title names BEFORE a tab is activated. A browser window's title
+    // is its showing tab's, so a title copied from it stops matching once another tab is activated:
+    // the tab was switched and the reply was WindowNotFound (win2, Edge, #872's round).
+    let namedBefore: ReadonlySet<unknown> = new Set();
     if (chromeTabUrlContains) {
+      namedBefore = new Set(titleMatchesShownFirst(enumWindowsInZOrder(), query).map((w) => w.hwnd));
       try {
         const tabs = await listTabs(cdpPort);
         const target = tabs.find(
@@ -144,11 +150,17 @@ export const focusWindowHandler = async ({
     // Use enumWindowsInZOrder (Win32-based) so minimized windows are also included.
     const windows = enumWindowsInZOrder();
     updateWindowCache(windows);
-    const query = title.toLowerCase();
 
     // A shown window before a hidden one with the same title: a minimised packaged app's frozen
     // content is listed above its frame, and bringing it forward fails (`_title-pick.ts`).
-    for (const win of titleMatchesShownFirst(windows, query)) {
+    // Internal #320 — then a window the title named before the activation, now showing the activated
+    // tab. Only one showing it: with two browser windows, the other one is not where the tab is.
+    const matched = titleMatchesShownFirst(windows, query);
+    // An untitled tab names no window, so it follows none.
+    const followed = !activatedTab ? [] : windows.filter(
+      (w) => namedBefore.has(w.hwnd) && !matched.includes(w) && w.title.includes(activatedTab!),
+    );
+    for (const win of [...matched, ...followed]) {
 
       // ── Issue #197: foreground-transfer auto-escalation ─────────────────
       // Pre-fix behaviour was: call SetForegroundWindow once and return
@@ -221,7 +233,8 @@ export const focusWindowHandler = async ({
       };
     }
 
-    return failWith(`Window not found: "${title}"`, "focus_window", { title });
+    // The tab may have been switched all the same; say which, so a retry by its title can follow.
+    return failWith(`Window not found: "${title}"`, "focus_window", { title, ...(activatedTab !== undefined && { activatedTab }) });
   } catch (err) {
     return failWith(err, "focus_window", { title });
   }
