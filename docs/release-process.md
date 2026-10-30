@@ -319,6 +319,18 @@ Record every narrowing here so the exceptions stay visible:
     `ok: true`; `scroll` capture of a 40-section page answered `ok: true` with one frame although the page scrolled.
   - D3: WinForms TextBox and DropDownList setValue, Notepad type, Calculator invoke, 3/3 each, all through UIA.
   - No P1, no regression.
+  Before the tag, a codex fact check of the notes found four statements the code contradicts (the refused typing is
+  `keyboard` `type` only; `focus_window` tries the windows the title names first; an oversized docked window keeps
+  only its top-left corner in the work area; two same-place browser windows still bring the tab forward); they were
+  corrected and a second check found none.
+  Post-publish (tag v2.4.0 = d7ac170d; npm latest 2.4.0; every release job green, Verify included; the published
+  launcher's sha256 entries matched both zips):
+  - macOS (mac, real cache): `npx -y …@2.4.0 --help` installed v2.4.0 and printed the macOS-preview usage; the
+    prune removed v2.3.3 and kept v2.3.4.
+  - Windows (win2, real cache, cwd %TEMP%): `--help` installed v2.4.0 in 117 s (sha256 ae967eb9…, not pending).
+    initialize over npx stdio answered in 3.0 s with `desktop-touch 2.4.0` and 32 tools; stdin EOF exited 0. Three
+    v2.3.4 servers and two launchers kept their pids. v2.3.3 was not pruned: a stale `running/` mark of it names
+    a pid Windows has since given to another program, and the mark is tested by pid alone (internal #327).
 
 ### HTTP Transport Verification (Required)
 
