@@ -138,7 +138,8 @@ export interface ExecutorDeps {
    * (or a test double) that ignores it still satisfies the interface.
    */
   /** Resolves with how the focus was moved to the element before the press, when the backend says (internal #216). */
-  uiaClick(windowTitle: string, name?: string, automationId?: string, hwnd?: bigint): Promise<{ focusedBy?: string } | void>;
+  /** `focusedTextField`: internal #324 — a text field with no Invoke had the focus moved into it instead. */
+  uiaClick(windowTitle: string, name?: string, automationId?: string, hwnd?: bigint): Promise<{ focusedBy?: string; focusedTextField?: true } | void>;
   /**
    * internal #233 — UIA SelectionItemPattern: select a collection item (ListItem, DataItem, TreeItem)
    * where a click lands on one, instead of `uiaClick`'s Invoke, which acts as a double-click on these
@@ -3320,7 +3321,9 @@ export function createDesktopExecutor(
       }
       if (singleClick === undefined) try {
         const pressed = await d.uiaClick(winTitle, name, automationId, aimHwnd);
-        probeRoute("uia", aimHwnd, entity, { why: "uia_invoke", focusedBy: pressed?.focusedBy ?? null, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
+        // internal #324 — `focusedTextField`: a text field with no Invoke had the focus moved into it, and
+        // was not pressed. A field beside `why`, not a new `why`: the road is still UI Automation's click.
+        probeRoute("uia", aimHwnd, entity, { why: "uia_invoke", focusedBy: pressed?.focusedBy ?? null, focusedTextField: pressed?.focusedTextField === true, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
         return "uia";
       } catch (uiaErr) {
         // R3 tool-exclusion — a refusal is not a failure to route around. Every other throw
@@ -3774,7 +3777,11 @@ function getSharedRealDeps(): ExecutorDeps {
       // Which client answered, carried on the error: item 16 believes a "not found" only from the
       // native client, about an entity the native client read.
       if (!r.ok) throw Object.assign(new Error(r.error ?? "UIA click failed"), { uiaVia: r.via });
-      return r.focusedBy !== undefined ? { focusedBy: r.focusedBy } : undefined;
+      // internal #324 — the engine moved the focus into a text field with no Invoke (`actions.rs`).
+      const focusedTextField = r.code === "FocusedTextField";
+      return r.focusedBy !== undefined || focusedTextField
+        ? { ...(r.focusedBy !== undefined && { focusedBy: r.focusedBy }), ...(focusedTextField && { focusedTextField: true as const }) }
+        : undefined;
     },
 
     async uiaSelect(windowTitle, name, automationId, controlType, hwnd) {
