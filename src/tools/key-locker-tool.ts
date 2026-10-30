@@ -141,7 +141,8 @@ const fillOnceSchema = z.object({
   tag: z.string().regex(KEPT_TAG_PATTERN).optional().describe(
     "A short name for this secret in THIS pane (letters, digits, '.', '_', '-'; up to 32), e.g. 'jump' or " +
       "'db1'. New tag: the user types the secret, it is filled and KEPT for this pane until the pane closes. Kept " +
-      `tag: the user only confirms (Fill / Cancel); nothing is typed. At most ${MAX_KEPT_TAGS_PER_PANE} tags per pane. ` +
+      "tag: the user only confirms (Fill / Cancel); nothing is typed. If the user ticks 'always' there, later fills " +
+      `of that tag in this pane go in without asking (tagAlways:true). At most ${MAX_KEPT_TAGS_PER_PANE} tags per pane. ` +
       "Omit for a one-time fill that is forgotten at once.",
   ),
   retype: z.boolean().optional().describe(
@@ -429,13 +430,19 @@ async function handleLaunchConsole(
 }
 
 /**
- * internal #281: with a tag, whether it is kept for this pane after the call (names only). Left out when the
- * pane could not be taken at all (not a locker pane, or busy): then it is not known (codex on #883).
+ * internal #281: with a tag, whether it is kept for this pane after the call (names only), and whether it
+ * fills without the confirm (`tagAlways`, only when true). Left out when the pane could not be taken at all
+ * (not a locker pane, or busy): then it is not known (codex on #883).
  */
-export function keptReply(tag: string | undefined, outcome: FillOnceOutcome): { tag?: string; tagKept?: boolean } {
+export function keptReply(
+  tag: string | undefined, outcome: FillOnceOutcome,
+): { tag?: string; tagKept?: boolean; tagAlways?: true } {
   if (tag === undefined) return {};
   const unclaimed = outcome.kind === "declined" && (outcome.reason === "not_anchored" || outcome.reason === "busy");
-  return unclaimed ? { tag } : { tag, tagKept: outcome.kept === true };
+  if (unclaimed) return { tag };
+  return outcome.kept === true && outcome.always === true
+    ? { tag, tagKept: true, tagAlways: true }
+    : { tag, tagKept: outcome.kept === true };
 }
 
 /** What the assistant should do next after a declined fill_once (no secret, no pane text). */

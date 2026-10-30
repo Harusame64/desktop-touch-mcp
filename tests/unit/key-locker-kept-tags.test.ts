@@ -152,3 +152,52 @@ describe("KeptTags — forget / dropPane / clear / names", () => {
     expect(JSON.stringify(f.tags.names())).not.toContain("id-");
   });
 });
+
+describe("KeptTags — always fill in this terminal (that tag only)", () => {
+  it("allowAlways marks one kept tag; another tag of the pane is not marked", () => {
+    const k = make();
+    k.tags.keep("p1", A, "jump", "id-1", k.host);
+    k.tags.keep("p1", A, "db1", "id-2", k.host);
+    expect(k.tags.isAlways("p1", A, "jump")).toBe(false);
+    expect(k.tags.allowAlways("p1", A, "jump")).toBe(true);
+    expect(k.tags.isAlways("p1", A, "jump")).toBe(true);
+    expect(k.tags.isAlways("p1", A, "db1")).toBe(false);
+  });
+
+  it("a tag that is not kept cannot be marked", () => {
+    const k = make();
+    expect(k.tags.allowAlways("p1", A, "jump")).toBe(false);
+    expect(k.tags.isAlways("p1", A, "jump")).toBe(false);
+  });
+
+  it("the mark goes with the tag: forget, dropPane, a reused paneId, a restarted helper", () => {
+    const cases: ((k: ReturnType<typeof make>) => void)[] = [
+      (k) => { k.tags.forget("p1", "jump"); },
+      (k) => { k.tags.dropPane("p1"); },
+      (k) => { k.tags.lookup("p1", A_REUSED_PID, "jump"); },
+      (k) => { k.setLive({ name: "helper-2" }); },
+    ];
+    for (const drop of cases) {
+      const k = make();
+      k.tags.keep("p1", A, "jump", "id-1", k.host);
+      k.tags.allowAlways("p1", A, "jump");
+      drop(k);
+      expect(k.tags.isAlways("p1", A, "jump")).toBe(false);
+    }
+  });
+
+  it("a replacement (retype) starts without the mark", () => {
+    const k = make();
+    k.tags.keep("p1", A, "jump", "id-1", k.host);
+    k.tags.allowAlways("p1", A, "jump");
+    k.tags.keep("p1", A, "jump", "id-2", k.host);
+    expect(k.tags.isAlways("p1", A, "jump")).toBe(false);
+  });
+
+  it("another anchor never sees the mark", () => {
+    const k = make();
+    k.tags.keep("p1", A, "jump", "id-1", k.host);
+    k.tags.allowAlways("p1", A, "jump");
+    expect(k.tags.isAlways("p1", A_REUSED_PID, "jump")).toBe(false);
+  });
+});

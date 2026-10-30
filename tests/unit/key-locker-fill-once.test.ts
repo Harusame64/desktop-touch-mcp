@@ -52,7 +52,7 @@ function fake(o: {
   deleteFails?: number;
   /** internal #281: the kept-tag map (a real `KeptTags` by default) and the confirm dialog's answer. */
   kept?: KeptTags;
-  confirm?: boolean;
+  confirm?: boolean | "fill_always";
   confirmThrows?: boolean;
   anchoredSeq?: boolean[];
   opaqueId?: string;
@@ -91,8 +91,11 @@ function fake(o: {
       confirm: async (dialog) => {
         calls.push(`confirm:${dialog.tag}:${dialog.label}:${dialog.note}`);
         if (o.confirmThrows) throw new Error("pipe drop");
-        return o.confirm ?? true;
+        const c = o.confirm ?? true;
+        return c === true ? "fill" : c === false ? "cancel" : c;
       },
+      isAlways: (id, anchor, tag) => kept.isAlways(id, anchor, tag),
+      allowAlways: (id, anchor, tag) => { calls.push(`always:${tag}`); kept.allowAlways(id, anchor, tag); },
       keep: (id, anchor, tag, opaqueId) => { calls.push(`keep:${tag}:${opaqueId}`); return kept.keep(id, anchor, tag, opaqueId, HELPER); },
     },
     sleep: async () => { calls.push("sleep"); },
@@ -677,5 +680,66 @@ describe("KeyLockerCaptureDriver — a closed or re-anchored pane forgets its ke
     expect(forgotten).toEqual([]);
     d.onLocalPaneLaunched("1234", { ...ANCHOR, shellPid: 5555 });
     expect(forgotten).toEqual(["1234"]);
+  });
+});
+
+// ── "always fill in this terminal" (user request 2026-10-30; scope 2026-10-31: that tag only) ─────────────
+
+describe("runFillOnce — a kept tag the user allowed always", () => {
+  it("Fill with the box ticked records it; the next fill of that tag skips the confirm and runs every gate", async () => {
+    const k = withKept();
+    const f = fake({ kept: k.tags, confirm: "fill_always" });
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "filled", verified: true, kept: true, always: true });
+    expect(f.calls).toContain("always:jump");
+    const g = fake({ kept: k.tags });
+    expect(await runFillOnce(g.deps, TAGGED)).toEqual({ kind: "filled", verified: true, kept: true, always: true });
+    expect(g.calls).toEqual([
+      "claim:1234", "failsafe", "prompt", "procs",
+      "prompt", "procs", "failsafe", "anchored",
+      "inject:4321:kept-1:true", "release",
+    ]);
+    expect(confirmed(g)).toBe(false);
+  });
+
+  it("an allowed tag still declines at a gate: nothing typed, no dialog", async () => {
+    const k = withKept();
+    k.tags.allowAlways("1234", ANCHOR, "jump");
+    const f = fake({ kept: k.tags, prompts: [PROMPT(false, "$ ")] });
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "declined", reason: "not_at_prompt", kept: true, always: true });
+    expect(confirmed(f) || wrote(f)).toBe(false);
+  });
+
+  it("the tick is recorded when chosen, even if the write is then refused", async () => {
+    const k = withKept();
+    const f = fake({ kept: k.tags, confirm: "fill_always", inject: { ok: false, code: "other_reader" } });
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "fill_aborted", code: "other_reader", kept: true, always: true });
+    expect(k.tags.isAlways("1234", ANCHOR, "jump")).toBe(true);
+  });
+
+  it("only that tag: another kept tag in the same pane still asks", async () => {
+    const k = withKept();
+    k.tags.keep("1234", ANCHOR, "db1", "kept-2", HELPER);
+    k.tags.allowAlways("1234", ANCHOR, "jump");
+    const f = fake({ kept: k.tags });
+    expect(await runFillOnce(f.deps, { ...REQ, tag: "db1" })).toEqual({ kind: "filled", verified: true, kept: true });
+    expect(confirmed(f)).toBe(true);
+  });
+
+  it("Fill without the tick does not allow always", async () => {
+    const k = withKept();
+    const f = fake({ kept: k.tags });
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "filled", verified: true, kept: true });
+    expect(k.tags.isAlways("1234", ANCHOR, "jump")).toBe(false);
+  });
+
+  it("a retype that fills replaces the secret and clears always: the next fill asks again", async () => {
+    const k = withKept();
+    k.tags.allowAlways("1234", ANCHOR, "jump");
+    const f = fake({ kept: k.tags, opaqueId: "op-2" });
+    expect(await runFillOnce(f.deps, { ...TAGGED, retype: true })).toEqual({ kind: "filled", verified: true, kept: true });
+    expect(opened(f)).toBe(true);
+    const g = fake({ kept: k.tags });
+    await runFillOnce(g.deps, TAGGED);
+    expect(confirmed(g)).toBe(true);
   });
 });

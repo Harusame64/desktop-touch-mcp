@@ -175,8 +175,9 @@ export type MintTicketResult =
 /** W-3.5 `prompt` verb — which secret-free backstop dialog to show. `fill_kept` (internal #281, protocol
  *  "3"): the one-click confirm before a kept fill_once tag is filled. */
 export type PromptKind = "confirm" | "offer" | "fill_kept";
-/** The kept-tag confirm's choice: fill the kept secret, or cancel (fail-closed). */
-export type FillKeptChoice = "fill" | "cancel";
+/** The kept-tag confirm's choice: fill the kept secret, fill it and stop asking for this tag in this terminal
+ *  (the dialog's "always" checkbox, user request 2026-10-30), or cancel (fail-closed). */
+export type FillKeptChoice = "fill" | "fill_always" | "cancel";
 /** The MATCH-backstop choice: fill the stored secret, or decline and type it by hand (fail-closed). */
 export type ConfirmChoice = "autofill" | "type_it";
 /** The NO-MATCH save choice (structurally the capture-loop `SaveChoice`). */
@@ -499,13 +500,14 @@ export class KeyLockerHost {
   /**
    * internal #281: the SECRET-FREE one-click confirm before a kept fill_once tag is filled (the `prompt` verb,
    * kind `fill_kept`). Shows the tag, the pane's locker-derived `label` and the assistant's `note` (marked as
-   * its words); carries no key and touches no store entry. FAIL-CLOSED: anything but an explicit "fill" —
-   * Cancel, a dismissed window, a dialog failure, a pipe error, an older helper's `bad_prompt` — is "cancel".
+   * its words); carries no key and touches no store entry. FAIL-CLOSED: anything but an explicit "fill" or
+   * "fill_always" — Cancel, a dismissed window, a dialog failure, a pipe error, an older helper's `bad_prompt` —
+   * is "cancel". (A helper that predates the checkbox never sends "fill_always"; no protocol bump.)
    */
   async confirmKeptFill(dialog: { label: string; note: string; tag: string }): Promise<FillKeptChoice> {
     try {
       const reply = await this.request("prompt", undefined, CAPTURE_TIMEOUT_MS, { kind: "fill_kept", ...dialog });
-      return reply.ok && reply.r === "fill" ? "fill" : "cancel";
+      return reply.ok && (reply.r === "fill" || reply.r === "fill_always") ? reply.r : "cancel";
     } catch {
       return "cancel";
     }

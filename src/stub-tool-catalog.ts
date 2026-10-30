@@ -914,7 +914,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "type": "boolean"
         },
         "tag": {
-          "description": "'fill_once': A short name for this secret in THIS pane (letters, digits, '.', '_', '-'; up to 32), e.g. 'jump' or 'db1'. New tag: the user types the secret, it is filled and KEPT for this pane until the pane closes. Kept tag: the user only confirms (Fill / Cancel); nothing is typed. At most 8 tags per pane. Omit for a one-time fill that is forgotten at once.\n'forget_tag': The tag to forget.",
+          "description": "'fill_once': A short name for this secret in THIS pane (letters, digits, '.', '_', '-'; up to 32), e.g. 'jump' or 'db1'. New tag: the user types the secret, it is filled and KEPT for this pane until the pane closes. Kept tag: the user only confirms (Fill / Cancel); nothing is typed. If the user ticks 'always' there, later fills of that tag in this pane go in without asking (tagAlways:true). At most 8 tags per pane. Omit for a one-time fill that is forgotten at once.\n'forget_tag': The tag to forget.",
           "type": "string",
           "pattern": "^[A-Za-z0-9._-]{1,32}$"
         },

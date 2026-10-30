@@ -17,6 +17,10 @@
 //     and the secret went with the old process;
 //   * `dropPane` runs on every pane close (the driver's `onPaneClosed`, both the window_disappeared path and
 //     the wt shell-exit prune), `forget` on `forget_tag`, `clear` on server shutdown.
+// "Always fill in this terminal" (user request 2026-10-30, scope decided 2026-10-31: that tag only): the
+// confirm dialog has a checkbox, and a Fill with it ticked marks THAT tag of THAT pane so later fills of it
+// skip the dialog. The mark lives on the entry, so it goes with the tag — on pane close, forget_tag, a
+// re-anchor, a helper change — and a retype (a new secret) clears it: the user agreed to the secret they saw.
 // While any tag is held the helper must not be idle-disposed (that would kill the secrets after a minute) —
 // the wiring hands `hasAny` to `KeyLockerManager.setIdleKeepAlive`.
 
@@ -35,6 +39,8 @@ interface KeptEntry {
   opaqueId: string;
   /** The helper (host object) that holds the secret. Compared by identity with the live one. */
   holder: object;
+  /** The user ticked "always fill in this terminal" for this tag: later fills skip the confirm. */
+  always?: true;
 }
 
 interface PaneTags {
@@ -83,6 +89,19 @@ export class KeptTags {
     return this.paneFor(paneId, anchor)?.tags.get(tag)?.opaqueId ?? null;
   }
 
+  /** Did the user allow this pane's tag to fill without the confirm? False when it is not kept. */
+  isAlways(paneId: string, anchor: PaneAnchor, tag: string): boolean {
+    return this.paneFor(paneId, anchor)?.tags.get(tag)?.always === true;
+  }
+
+  /** Mark a kept tag "always fill in this terminal". False (nothing marked) when the tag is not kept. */
+  allowAlways(paneId: string, anchor: PaneAnchor, tag: string): boolean {
+    const e = this.paneFor(paneId, anchor)?.tags.get(tag);
+    if (e === undefined) return false;
+    e.always = true;
+    return true;
+  }
+
   /** How many tags this pane (with this anchor) holds. */
   count(paneId: string, anchor: PaneAnchor): number {
     return this.paneFor(paneId, anchor)?.tags.size ?? 0;
@@ -91,7 +110,7 @@ export class KeptTags {
   /**
    * Keep `opaqueId` under `tag` for this pane. Refused (false) when the tag is malformed, when `holder` is not
    * the live helper (the secret would not be where the id says), or when a NEW tag would pass the per-pane cap.
-   * A tag already kept is replaced, and its old id erased.
+   * A tag already kept is replaced, and its old id erased; the replacement starts without "always".
    */
   keep(paneId: string, anchor: PaneAnchor, tag: string, opaqueId: string, holder: object | null): boolean {
     if (!isValidKeptTag(tag)) return false;

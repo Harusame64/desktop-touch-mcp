@@ -676,7 +676,9 @@ pre-existing terminal is never autofilled.
   With `tag` (letters, digits, `.` `_` `-`, up to 32; at most 8 per pane) the typed secret is
   instead kept in the locker's memory for that pane until the pane closes; a later `fill_once`
   with the same tag shows the user a one-click **Fill / Cancel** (with the tag and the `reason`)
-  instead of the typing dialog, and every check above still runs. `retype:true` types it again;
+  instead of the typing dialog, and every check above still runs. Its **Don't ask again** box (off by default)
+  makes later fills of that tag in that pane skip the confirm (`tagAlways:true` in the reply); other tags still
+  ask, and a retype or `forget_tag` ends it. `retype:true` types it again;
   `action='forget_tag'` (`paneId`, `tag`) erases it. A kept secret is never written to disk.
 - `action='list'` shows saved bindings (metadata only) and `paneTags`, the kept tag names per pane. `action='forget'` deletes a
   binding and its secret. `action='set_policy'` toggles per-binding autofill

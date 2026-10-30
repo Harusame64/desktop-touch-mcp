@@ -36,6 +36,8 @@
 // above runs on every fill, kept or not: only the dialog differs. What a kept tag changes is the last
 // invariant — the secret outlives one fill — and only within the pane (window / tab) it was typed for: it is
 // erased when that pane closes, on forget_tag, and on server shutdown, and a reused paneId never sees it.
+// The confirm also offers "always fill in this terminal" (user request 2026-10-30; scope 2026-10-31: that
+// tag only). Ticked, later fills of the tag skip the dialog — and nothing else: every gate still runs.
 
 import { stripAnsi } from "../ansi.js";
 import type { PaneAnchor } from "./inject-target.js";
@@ -58,8 +60,13 @@ export interface FillOnceKeptDeps {
   lookup(paneId: string, anchor: PaneAnchor, tag: string): string | null;
   /** How many tags this pane (with this anchor) holds. */
   count(paneId: string, anchor: PaneAnchor): number;
-  /** The locker's secret-free one-click confirm for a kept tag: true = Fill, false = Cancel / any failure. */
-  confirm(dialog: FillOnceDialog & { tag: string }): Promise<boolean>;
+  /** The locker's secret-free one-click confirm for a kept tag: "fill", "fill_always" (Fill with "always fill
+   *  in this terminal" ticked), or "cancel" (also any failure). */
+  confirm(dialog: FillOnceDialog & { tag: string }): Promise<"fill" | "fill_always" | "cancel">;
+  /** Did the user tick "always fill in this terminal" for this kept tag? */
+  isAlways(paneId: string, anchor: PaneAnchor, tag: string): boolean;
+  /** Record that tick for this kept tag (it goes with the tag). */
+  allowAlways(paneId: string, anchor: PaneAnchor, tag: string): void;
   /** Keep the just-filled secret under `tag` (replacing and erasing an older one); false = not kept. */
   keep(paneId: string, anchor: PaneAnchor, tag: string, opaqueId: string): boolean;
 }
@@ -118,6 +125,8 @@ export type FillOnceOutcome = (
 ) & {
   /** internal #281: set when the call named a tag and that tag is kept for the pane after this call. */
   kept?: true;
+  /** Set with `kept` when that tag fills without the confirm ("always fill in this terminal"). */
+  always?: true;
   /** Set when the one-time secret could NOT be erased afterwards (two attempts failed): it stays encrypted
    *  in the locker store under an id nothing points to. Reported, never swallowed (PR #806 codex P2). */
   cleanupFailed?: true;
@@ -203,10 +212,11 @@ export async function runFillOnce(
   try {
     const outcome = await fillClaimed(deps, req, claim.anchor);
     if (tag === undefined) return outcome;
-    // `kept` says what the map holds NOW for this pane and anchor, however the call ended — an early decline
-    // (no prompt yet) leaves a kept tag kept (codex on #883).
-    const { kept: _kept, ...rest } = outcome;
-    return deps.kept.lookup(paneId, claim.anchor, tag) !== null ? { ...rest, kept: true } : rest;
+    // `kept` / `always` say what the map holds NOW for this pane and anchor, however the call ended — an early
+    // decline (no prompt yet) leaves a kept tag kept (codex on #883).
+    const { kept: _kept, always: _always, ...rest } = outcome;
+    if (deps.kept.lookup(paneId, claim.anchor, tag) === null) return rest;
+    return deps.kept.isAlways(paneId, claim.anchor, tag) ? { ...rest, kept: true, always: true } : { ...rest, kept: true };
   } finally {
     deps.release(paneId, claim.token);
   }
@@ -233,19 +243,18 @@ async function fillClaimed(
   const gate = { paneId, submit, anchor: anchor, before, procsBefore };
 
   // internal #281: a tag already kept for THIS pane and THIS anchor → confirm, not type. The kept secret is
-  // never erased here, whatever the outcome: it lives until the pane closes or forget_tag.
+  // never erased here, whatever the outcome: it lives until the pane closes or forget_tag. A tag the user
+  // allowed "always" skips the confirm; the tick is recorded when the user chose it, whatever the fill did.
   const keptId = tag !== undefined ? deps.kept.lookup(paneId, anchor, tag) : null;
   if (tag !== undefined && keptId !== null && req.retype !== true) {
-    let outcome: FillOnceOutcome;
     try {
-      outcome = (await deps.kept.confirm({ ...dialog, tag }))
-        ? await fillAfterDialog(deps, { ...gate, opaqueId: keptId })
-        : { kind: "cancelled" };
+      const choice = deps.kept.isAlways(paneId, anchor, tag) ? "fill" : await deps.kept.confirm({ ...dialog, tag });
+      if (choice === "cancel") return { kind: "cancelled" };
+      if (choice === "fill_always") deps.kept.allowAlways(paneId, anchor, tag);
+      return await fillAfterDialog(deps, { ...gate, opaqueId: keptId });
     } catch (err) {
-      outcome = { kind: "fill_aborted", code: `fill_once_error:${err instanceof Error ? err.message : String(err)}` };
+      return { kind: "fill_aborted", code: `fill_once_error:${err instanceof Error ? err.message : String(err)}` };
     }
-    // `kept` says what the map holds NOW (a helper that died meanwhile took the tag with it).
-    return deps.kept.lookup(paneId, anchor, tag) !== null ? { ...outcome, kept: true } : outcome;
   }
   if (tag !== undefined && keptId === null && deps.kept.count(paneId, anchor) >= MAX_KEPT_TAGS_PER_PANE) {
     return { kind: "declined", reason: "tag_limit" };

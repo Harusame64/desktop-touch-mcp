@@ -333,7 +333,9 @@ export class KeyLockerWiring {
         kept: {
           lookup: (id, anchor, tag) => this.keptTags.lookup(id, anchor, tag),
           count: (id, anchor) => this.keptTags.count(id, anchor),
-          confirm: (dialog) => m.withHost((h) => h.confirmKeptFill(dialog)).then((c) => c === "fill"),
+          confirm: (dialog) => m.withHost((h) => h.confirmKeptFill(dialog)),
+          isAlways: (id, anchor, tag) => this.keptTags.isAlways(id, anchor, tag),
+          allowAlways: (id, anchor, tag) => { this.keptTags.allowAlways(id, anchor, tag); },
           keep: (id, anchor, tag, opaqueId) => this.keptTags.keep(id, anchor, tag, opaqueId, capturedBy),
         },
       },

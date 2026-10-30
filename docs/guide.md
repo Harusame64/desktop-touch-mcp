@@ -142,7 +142,9 @@ terminal({ action:'send', paneId:'12345678', input:'ssh user@host' })
 - **To type a password only once per pane** (a jump host you re-enter), add a `tag`:
   `key_locker({ action:'fill_once', paneId, reason, tag:'jump' })`. The first time you
   type it; it is then kept in memory for that pane until the pane closes, and each later
-  `fill_once` with the same tag shows you only **Fill / Cancel**. It is never written to
+  `fill_once` with the same tag shows you only **Fill / Cancel**. Tick **Don't ask again**
+  there and later fills of that tag in that pane go in without asking (other tags still
+  ask), until the pane closes or the tag is forgotten or retyped. It is never written to
   disk. `retype:true` asks you to type it again; `forget_tag` erases it.
 - **Every autofill asks you to confirm by default**; opt a binding out with
   `set_policy`. `list` / `status` / `forget` manage saved credentials.
