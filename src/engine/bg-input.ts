@@ -212,10 +212,11 @@ export interface PostCharsResult {
  * '\n' is normalised to '\r' (0x0D) for terminal compatibility. To a console window (conhost), each
  * line break (`\r\n`, `\r` or `\n`) is one Enter key event instead, as {@link postEnterToHwnd} sends
  * it: PSReadLine shows a WM_CHAR 0x0D as a literal 'm' and never runs the line (internal #325). After
- * that Enter the post waits {@link CONSOLE_ENTER_SETTLE_MS} before the next character: conhost makes the
- * Enter's character only when it takes the key down, and pairs the key with whatever character is next in
- * its queue, so a character posted at once is eaten (PowerShell runs `cho SECOND`) or glued to the line
- * (cmd). Measured on win2 (PR #882 spike): 0 ms fails, 1 to 100 ms all run each line once.
+ * each such Enter the post waits {@link CONSOLE_ENTER_SETTLE_MS}, before the next character or the
+ * caller's next post: conhost makes the Enter's character only when it takes the key down, and pairs the
+ * key with whatever character is next in its queue, so a character posted at once is eaten (PowerShell
+ * runs `cho SECOND`) or glued to the line (cmd). Measured on win2 (PR #882 spike): 0 ms fails, 1 to
+ * 100 ms all run each line once.
  *
  * Does NOT change the foreground window.
  */
@@ -246,7 +247,8 @@ export function postCharsToResolvedTarget(target: unknown, text: string): PostCh
       if (!postKeyToTarget(target, VK_RETURN)) return { sent, full: false, target };
       sent += units;
       i += units - 1;
-      if (i + 1 < text.length) settle(CONSOLE_ENTER_SETTLE_MS);
+      // Also after the last one: the next post can be the caller's next chunk (codex on #882).
+      settle(CONSOLE_ENTER_SETTLE_MS);
       continue;
     }
 

@@ -74,7 +74,7 @@ vi.mock("../../src/tools/_focus.js", () => ({
   detectFocusLoss: vi.fn(() => Promise.resolve(undefined)),
 }));
 
-import { terminalSendHandler, shouldUseConsolePasteForSend } from "../../src/tools/terminal.js";
+import { terminalSendHandler, shouldUseConsolePasteForSend, chunkWholeLineBreaks } from "../../src/tools/terminal.js";
 import * as win32 from "../../src/engine/win32.js";
 import * as bgInput from "../../src/engine/bg-input.js";
 import * as uia from "../../src/engine/uia-bridge.js";
@@ -123,6 +123,19 @@ beforeEach(() => {
   mockPaste.mockResolvedValue({ ok: true });
   mockChars.mockImplementation((_hwnd: unknown, chunk: string) => ({ sent: chunk.length, full: true }));
   mockBaseline.mockResolvedValue("user@host:~$ "); // non-secret prompt
+});
+
+// internal #325 — to a console each line break is one Enter key event, so the two halves of a CRLF split
+// across chunks would be two Enters.
+describe("chunkWholeLineBreaks", () => {
+  it("cuts at the size, but carries a CRLF whole into the chunk where its CR falls", () => {
+    expect(chunkWholeLineBreaks("ab\r\ncd", 3)).toEqual(["ab\r\n", "cd"]);
+    expect(chunkWholeLineBreaks("abcdef", 3)).toEqual(["abc", "def"]);
+    expect(chunkWholeLineBreaks("ab\n\ncd", 3)).toEqual(["ab\n", "\ncd"]);
+    expect(chunkWholeLineBreaks("a\r\r\nb", 2)).toEqual(["a\r", "\r\n", "b"]);
+    expect(chunkWholeLineBreaks("", 3)).toEqual([]);
+    expect(chunkWholeLineBreaks("x\r\n".repeat(50), 100).join("")).toBe("x\r\n".repeat(50));
+  });
 });
 
 describe("shouldUseConsolePasteForSend (pure §3.1 matrix)", () => {

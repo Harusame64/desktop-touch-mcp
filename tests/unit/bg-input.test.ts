@@ -120,7 +120,7 @@ describe("postCharsToHwnd", () => {
       expect(postMessageToHwnd).not.toHaveBeenCalledWith(expect.anything(), 0x0102, 0x0D, expect.anything());
     });
 
-    it("waits after an Enter that has more text behind it, and only then (PR #882 spike)", () => {
+    it("waits after every Enter, the last one too, and nowhere else (PR #882 spike)", () => {
       vi.mocked(getWindowClassName).mockReturnValue("ConsoleWindowClass");
       vi.mocked(postMessageToHwnd).mockReturnValue(true);
       const order: string[] = [];
@@ -131,7 +131,9 @@ describe("postCharsToHwnd", () => {
       const wait = vi.spyOn(Atomics, "wait").mockImplementation((_a, _i, _v, ms) => { order.push(`<wait ${ms}>`); return "timed-out"; });
       try {
         postCharsToHwnd(HWND, "a\r\nb\n");
-        expect(order).toEqual(["a", "<down>", "<up>", `<wait ${CONSOLE_ENTER_SETTLE_MS}>`, "b", "<down>", "<up>"]);
+        expect(order).toEqual([
+          "a", "<down>", "<up>", `<wait ${CONSOLE_ENTER_SETTLE_MS}>`, "b", "<down>", "<up>", `<wait ${CONSOLE_ENTER_SETTLE_MS}>`,
+        ]);
       } finally {
         wait.mockRestore();
         vi.mocked(postMessageToHwnd).mockReset();
