@@ -359,6 +359,22 @@ export function isSecretInputPrompt(baselineRaw: string | null): boolean {
 }
 
 /**
+ * `input` in pieces of `size` UTF-16 units for the chunked WM_CHAR send, a CRLF never split across two:
+ * to a console each half would be its own Enter (internal #325).
+ */
+export function chunkWholeLineBreaks(input: string, size: number): string[] {
+  const out: string[] = [];
+  let i = 0;
+  while (i < input.length) {
+    let next = Math.min(i + size, input.length);
+    if (input[next - 1] === "\r" && input[next] === "\n") next++;
+    out.push(input.slice(i, next));
+    i = next;
+  }
+  return out;
+}
+
+/**
  * Static gate for routing a conhost `action=send` through the atomic native
  * console-paste (`pasteIntoConsoleNoFocus`, WM_COMMAND 0xFFF1) instead of the
  * chunked WM_CHAR loop.
@@ -1510,14 +1526,15 @@ export const terminalSendHandler = async ({
 
       // Send in chunks to avoid saturating the terminal input queue.
       let totalSent = 0;
-      for (let i = 0; i < input.length; i += chunkSize) {
-        const chunk = input.slice(i, i + chunkSize);
+      const chunks = chunkWholeLineBreaks(input, chunkSize);
+      for (let c = 0; c < chunks.length; c++) {
+        const chunk = chunks[c]!;
         // ADR-035 Phase 1: one event for the whole chunked send — every chunk
         // goes to the same handle, so per-chunk events would only repeat it.
         // Inside the loop, though, not before it: `input` has no minimum length,
         // so an empty send would otherwise record a WM_CHAR that never went out
         // (Opus Round 2 P1).
-        if (i === 0) {
+        if (c === 0) {
           logDispatchSink({ sink: "wm_char", tool: "terminal:send", targetHwnd: win.hwnd });
         }
         const result = postCharsToHwnd(win.hwnd, chunk);

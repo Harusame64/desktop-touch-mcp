@@ -209,7 +209,14 @@ export interface PostCharsResult {
 /**
  * Send `text` to `hwnd` via WM_CHAR messages, one UTF-16 code unit at a time.
  * Surrogate pairs are sent as two consecutive WM_CHAR messages (standard Win32).
- * '\n' is normalised to '\r' (0x0D) for terminal compatibility.
+ * '\n' is normalised to '\r' (0x0D) for terminal compatibility. To a console window (conhost), each
+ * line break (`\r\n`, `\r` or `\n`) is one Enter key event instead, as {@link postEnterToHwnd} sends
+ * it: PSReadLine shows a WM_CHAR 0x0D as a literal 'm' and never runs the line (internal #325). After
+ * each such Enter the post waits {@link CONSOLE_ENTER_SETTLE_MS}, before the next character or the
+ * caller's next post: conhost makes the Enter's character only when it takes the key down, and pairs the
+ * key with whatever character is next in its queue, so a character posted at once is eaten (PowerShell
+ * runs `cho SECOND`) or glued to the line (cmd). Measured on win2 (PR #882 spike): 0 ms fails, 1 to
+ * 100 ms all run each line once.
  *
  * Does NOT change the foreground window.
  */
@@ -221,12 +228,29 @@ export function postCharsToHwnd(hwnd: unknown, text: string): PostCharsResult {
  * Send `text` to `target` as {@link postCharsToHwnd} does, to that handle and no other: the focus is
  * not asked again. ADR-036 family 2 — the keyboard rung posts here after judging `target`.
  */
+/** The pause after an Enter posted to a console, before the next character (see {@link postCharsToHwnd}).
+ *  1 ms was enough on win2's machine; this leaves room for a slower or busier one. */
+export const CONSOLE_ENTER_SETTLE_MS = 20;
+
 export function postCharsToResolvedTarget(target: unknown, text: string): PostCharsResult {
   let sent = 0;
   const total = text.length; // UTF-16 code unit count
+  // Only a console gets the key event: in a dialog's edit box a posted Enter key would press the
+  // default button, where WM_CHAR 0x0D breaks the line.
+  const toConsole = (() => { try { return getWindowClassName(target) === "ConsoleWindowClass"; } catch { return false; } })();
 
   for (let i = 0; i < text.length; i++) {
     const ch = text.charCodeAt(i);
+
+    if (toConsole && (ch === 0x0D || ch === 0x0A)) {
+      const units = ch === 0x0D && text.charCodeAt(i + 1) === 0x0A ? 2 : 1;
+      if (!postKeyToTarget(target, VK_RETURN)) return { sent, full: false, target };
+      sent += units;
+      i += units - 1;
+      // Also after the last one: the next post can be the caller's next chunk (codex on #882).
+      settle(CONSOLE_ENTER_SETTLE_MS);
+      continue;
+    }
 
     // Normalise LF → CR for terminals
     const wParam = ch === 0x0A ? 0x0D : ch;
@@ -249,7 +273,16 @@ export function postCharsToResolvedTarget(target: unknown, text: string): PostCh
  * Uses WM_KEYDOWN/WM_KEYUP — no foreground required.
  */
 export function postKeyToHwnd(hwnd: unknown, vk: number): boolean {
-  const target = resolveTarget(hwnd);
+  return postKeyToTarget(resolveTarget(hwnd), vk);
+}
+
+/** Block this thread for `ms` (the post loop is synchronous, and its callers take its result at once). */
+function settle(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** {@link postKeyToHwnd} to `target` itself, the focus not asked again. */
+function postKeyToTarget(target: unknown, vk: number): boolean {
   const scan = vkToScanCode(vk);
   const lParamDown = (scan & 0xFF) << 16;
   const lParamUp   = lParamDown | (1 << 30) | (1 << 31); // prev-down + transition bits

@@ -45,6 +45,7 @@ import {
   comboHasModifier,
   isBgAutoEnabled,
   pasteIntoConsoleNoFocus,
+  CONSOLE_ENTER_SETTLE_MS,
 } from "../../src/engine/bg-input.js";
 import { postMessageToHwnd, getWindowClassName, getProcessIdentityByPid, getFocusedChildHwnd } from "../../src/engine/win32.js";
 import { nativeWin32 } from "../../src/engine/native-engine.js";
@@ -96,9 +97,70 @@ describe("postCharsToHwnd", () => {
   });
 
   it("normalises LF to CR (0x0D) for terminal compatibility", () => {
+    vi.mocked(getWindowClassName).mockReturnValue("Notepad");
     vi.mocked(postMessageToHwnd).mockReturnValue(true);
     postCharsToHwnd(HWND, "\n");
     expect(postMessageToHwnd).toHaveBeenCalledWith(expect.anything(), 0x0102, 0x0D, 0);
+  });
+
+  // internal #325 — PSReadLine shows a WM_CHAR 0x0D as a literal 'm' and never runs the line, so a
+  // console gets each line break as one Enter key event, the form postEnterToHwnd sends.
+  describe("to a console window (internal #325)", () => {
+    const sentAs = () => vi.mocked(postMessageToHwnd).mock.calls.map(([, msg, w]) =>
+      msg === 0x0102 ? String.fromCharCode(Number(w)) : msg === 0x0100 ? `<down ${w}>` : msg === 0x0101 ? `<up ${w}>` : `<${msg}>`);
+
+    it("sends LF, CR and CRLF each as one Enter key event, never as WM_CHAR 0x0D", () => {
+      vi.mocked(getWindowClassName).mockReturnValue("ConsoleWindowClass");
+      vi.mocked(postMessageToHwnd).mockReturnValue(true);
+      const result = postCharsToHwnd(HWND, "a\nb\rc\r\nd");
+      expect(sentAs()).toEqual([
+        "a", "<down 13>", "<up 13>", "b", "<down 13>", "<up 13>", "c", "<down 13>", "<up 13>", "d",
+      ]);
+      expect(result).toEqual({ sent: 8, full: true, target: HWND });
+      expect(postMessageToHwnd).not.toHaveBeenCalledWith(expect.anything(), 0x0102, 0x0D, expect.anything());
+    });
+
+    it("waits after every Enter, the last one too, and nowhere else (PR #882 spike)", () => {
+      vi.mocked(getWindowClassName).mockReturnValue("ConsoleWindowClass");
+      vi.mocked(postMessageToHwnd).mockReturnValue(true);
+      const order: string[] = [];
+      vi.mocked(postMessageToHwnd).mockImplementation((_t, msg, w) => {
+        order.push(msg === 0x0102 ? String.fromCharCode(Number(w)) : msg === 0x0100 ? "<down>" : "<up>");
+        return true;
+      });
+      const wait = vi.spyOn(Atomics, "wait").mockImplementation((_a, _i, _v, ms) => { order.push(`<wait ${ms}>`); return "timed-out"; });
+      try {
+        postCharsToHwnd(HWND, "a\r\nb\n");
+        expect(order).toEqual([
+          "a", "<down>", "<up>", `<wait ${CONSOLE_ENTER_SETTLE_MS}>`, "b", "<down>", "<up>", `<wait ${CONSOLE_ENTER_SETTLE_MS}>`,
+        ]);
+      } finally {
+        wait.mockRestore();
+        vi.mocked(postMessageToHwnd).mockReset();
+      }
+    });
+
+    it("sends two line breaks in a row as two Enters (an empty line stays)", () => {
+      vi.mocked(getWindowClassName).mockReturnValue("ConsoleWindowClass");
+      vi.mocked(postMessageToHwnd).mockReturnValue(true);
+      postCharsToHwnd(HWND, "\n\n");
+      expect(sentAs()).toEqual(["<down 13>", "<up 13>", "<down 13>", "<up 13>"]);
+    });
+
+    it("stops short at an Enter whose post fails, counting what went before", () => {
+      vi.mocked(getWindowClassName).mockReturnValue("ConsoleWindowClass");
+      vi.mocked(postMessageToHwnd)
+        .mockReturnValueOnce(true)   // 'a'
+        .mockReturnValueOnce(false); // Enter's key down
+      expect(postCharsToHwnd(HWND, "a\r\nb")).toEqual({ sent: 1, full: false, target: HWND });
+    });
+
+    it("leaves a window that is not a console on WM_CHAR 0x0D (a posted Enter would press a dialog's default button)", () => {
+      vi.mocked(getWindowClassName).mockReturnValue("Edit");
+      vi.mocked(postMessageToHwnd).mockReturnValue(true);
+      postCharsToHwnd(HWND, "a\r\nb");
+      expect(sentAs()).toEqual(["a", "\r", "\r", "b"]);
+    });
   });
 
   it("sends surrogate pair as two consecutive WM_CHAR messages", () => {
