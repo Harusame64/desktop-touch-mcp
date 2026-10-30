@@ -199,7 +199,11 @@ function dockKnownWindow(
   const differs = (a: number, b: number) => Math.abs(a - b) > DOCK_TOLERANCE_PX;
   if (actual && (differs(actual.width, finalW) || differs(actual.height, finalH))) {
     const kept = computeCornerPosition(wa, corner, actual.width, actual.height, margin);
-    setWindowBounds(win.hwnd, kept.x, kept.y, actual.width, actual.height);
+    // A size larger than the work area keeps its top-left inside it, so the title bar stays reachable;
+    // the overflow goes past the bottom or right edge instead (codex on #875).
+    const keptX = Math.max(kept.x, wa.x + margin);
+    const keptY = Math.max(kept.y, wa.y + margin);
+    setWindowBounds(win.hwnd, keptX, keptY, actual.width, actual.height);
     actual = getWindowRectByHwnd(win.hwnd) ?? actual;
   }
   const sizeDiffers = actual

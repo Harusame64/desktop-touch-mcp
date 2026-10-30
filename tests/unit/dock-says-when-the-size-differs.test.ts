@@ -60,6 +60,17 @@ describe("internal #317 — window_dock and a window that does not take the boun
     expect(r.hint).toMatch(/kept a size of its own \(516x360, not 480x360\)/);
   });
 
+  it("keeps the top-left inside the work area when the kept size is larger than it (codex on #875)", async () => {
+    minWidth.value = 0;
+    m.setWindowBounds.mockImplementation((_h: unknown, x: number, y: number, w: number) => {
+      m.rect = { x, y, width: w, height: 1100 };
+      return true;
+    });
+    const r = body(await dockWindowHandler(args));
+    expect(r.sizeDiffers).toEqual(["height"]);
+    expect(r.actual.y).toBe(8);
+  });
+
   it("says nothing when the window took the bounds (the control)", async () => {
     minWidth.value = 0;
     const r = body(await dockWindowHandler(args));

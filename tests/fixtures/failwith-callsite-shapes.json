@@ -251,7 +251,7 @@
     },
     {
       "file": "src/tools/dock.ts",
-      "line": 270,
+      "line": 274,
       "tool": "window_dock",
       "errKind": "string-literal",
       "contextShape": "object-plain"
