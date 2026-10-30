@@ -210,6 +210,10 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
         let pat = match elem.GetCurrentPattern(UIA_InvokePatternId) {
             Ok(p) => p,
             Err(_) => {
+                // internal #324 — a text field has no Invoke, and a click on one is for the focus.
+                if opts.hwnd.is_some() && is_text_field(&elem) {
+                    return Ok(focus_text_field(ctx, &elem));
+                }
                 return Ok(ActionResult {
                     ok: false,
                     element: None,
@@ -286,6 +290,45 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
                 })
             }
         }
+    }
+}
+
+/// `ActionResult::code` on a click that moved the focus into a text field instead of pressing it.
+pub(crate) const FOCUSED_TEXT_FIELD: &str = "FocusedTextField";
+
+/// An `Edit`. Not a `Document`: the element is found by the first name that contains the one asked for,
+/// depth first, and a page's own `Document` comes before its fields — a field named "Search" on a page
+/// titled "Search results" would find the page, and focusing it would answer the click (codex on #878).
+/// MEASURED win2: the web fields and Notepad's body this road is for are `Edit`s.
+fn is_text_field(elem: &IUIAutomationElement) -> bool {
+    unsafe { elem.CurrentControlType() }
+        .map(|t| t.0 == UIA_EditControlTypeId.0)
+        .unwrap_or(false)
+}
+
+/// internal #324 — a click on a text field (`Edit`) with no Invoke, on the handle road: the focus is moved into
+/// it (`focus_first.rs`), and that is the click. MEASURED win2 (2026-10-30, Chrome): a web page's
+/// `<textarea>` and `<input>` are `Edit`s with no Invoke, and `desktop_act` click on one aimed by handle
+/// answered `aim_route_failed` on every build — the handle road does not finish as a coordinate click.
+/// The title road keeps its coordinate click, which also puts the caret where it lands. When the focus
+/// was not moved (Chromium behind another window is left where it is, by measurement), the click is
+/// refused as before, with the reason.
+fn focus_text_field(ctx: &UiaContext, elem: &IUIAutomationElement) -> ActionResult {
+    use super::focus_first::{ALREADY, BY_LEGACY_TAKEFOCUS, BY_UIA, BY_WIN32};
+    let name = unsafe { elem.CurrentName() }.map(|b| b.to_string()).unwrap_or_default();
+    let by = super::focus_first::move_focus_first(ctx, elem);
+    let moved = [BY_WIN32, BY_UIA, BY_LEGACY_TAKEFOCUS, ALREADY].contains(&by);
+    ActionResult {
+        ok: moved,
+        element: moved.then_some(name),
+        // The words of the refusal before this road, which the server's classifier knows
+        // (`uia-route-failure.ts`); `focused_by` says why the focus did not move (win2 on #878).
+        error: (!moved).then(|| "InvokePattern not supported by this element".into()),
+        code: Some(if moved { FOCUSED_TEXT_FIELD } else { "PatternNotSupported" }.into()),
+        focused_by: Some(by.into()),
+        selected: None,
+        notified: None,
+        focus_inside: None,
     }
 }
 

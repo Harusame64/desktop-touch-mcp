@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Changed — Windows
+- **`desktop_act` click on a text field puts the focus in it when the window was named by handle.** A web page's
+  text area or input has no Invoke in UI Automation, and a click aimed by handle, which does not finish as a
+  coordinate click, answered `aim_route_failed` on every build. A text field (`Edit`) with no Invoke
+  now has the keyboard focus moved into it, which is what the click was for. When the focus is not moved (a browser
+  window behind another one is left where it is), the click is refused as before. A click aimed by title still
+  finishes as a coordinate click (internal #324).
 - **`desktop_act` no longer refuses a field inside a page's modal panel because of that panel.** A web page's side
   panel marked `role="dialog" aria-modal="true"` reads through UI Automation as a modal window, and an act on its
   own text area was refused with `modal_blocking` naming the panel. A modal window is no longer counted against an
