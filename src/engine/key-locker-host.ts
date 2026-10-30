@@ -156,8 +156,8 @@ export type InjectAbortCode =
   // PR #806: a fill_once write (`requireEchoOff`) found the console ECHOING input — a staged prompt, not a
   // real password read. Nothing was written.
   | "echo_on"
-  // internal #333: a fill_once write found another process on the console (not ssh / sudo / su / doas)
-  // waiting in a read — e.g. the shell's Read-Host behind a background ssh. Nothing was written.
+  // internal #333: a fill_once write found nothing on the console waiting on an ssh / sudo / su / doas there
+  // — e.g. the shell's Read-Host behind a background ssh. Nothing was written.
   | "other_reader";
 
 /** `inject` result: verified+injected, or a typed abort code. */

@@ -47,8 +47,8 @@ internal static class InjectAbort
     public const string Mismatch = "target_mismatch";
     public const string NoSecret = "no_secret";
     public const string EchoOn = "echo_on"; // RequireEchoOff and the console echoes input (PR #806)
-    // RequireEchoOff and a process on the console other than a credential program is waiting in a read
-    // (internal #333): the echo-off mode may be a background ssh's, and the reader the shell's Read-Host.
+    // RequireEchoOff and no process on the console is seen waiting on a credential program there (internal
+    // #333): the echo-off mode may be a background ssh's, and the reader the shell's Read-Host.
     public const string OtherReader = "other_reader";
 }
 
@@ -123,6 +123,12 @@ internal static class Win32Input
     // result — seed §4c).
     private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
     [DllImport("kernel32.dll", SetLastError = true)] private static extern nint OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+    // internal #333: reading which process holds a handle to which (CredentialProgramInFront).
+    private const uint PROCESS_DUP_HANDLE = 0x0040;
+    [DllImport("ntdll.dll")] private static extern int NtQuerySystemInformation(int SystemInformationClass, nint SystemInformation, int SystemInformationLength, out int ReturnLength);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool DuplicateHandle(nint hSourceProcessHandle, nint hSourceHandle, nint hTargetProcessHandle, out nint lpTargetHandle, uint dwDesiredAccess, bool bInheritHandle, uint dwOptions);
+    [DllImport("kernel32.dll")] private static extern nint GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern uint GetProcessId(nint Process);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetProcessTimes(nint hProcess, out FILETIME lpCreationTime, out FILETIME lpExitTime, out FILETIME lpKernelTime, out FILETIME lpUserTime);
     // LOCAL FILETIME with UNSIGNED fields (S-pid gate §4, Opus P1-2): the BCL
     // System.Runtime.InteropServices.ComTypes.FILETIME declares both dwords as SIGNED int — a
@@ -298,7 +304,7 @@ internal static class Win32Input
             {
                 if (!GetConsoleMode(conin, out var mode)) return (false, "executor_failed");
                 if ((mode & ENABLE_ECHO_INPUT) != 0) return (false, InjectAbort.EchoOn);
-                if (AnotherReaderWaits()) return (false, InjectAbort.OtherReader);
+                if (!CredentialProgramInFront()) return (false, InjectAbort.OtherReader);
             }
 
             var ok = WriteConsoleInputW(conin, arr, (uint)arr.Length, out var written);
@@ -317,34 +323,105 @@ internal static class Win32Input
     }
 
     /// internal #333: echo off is not proof that a credential program is the one reading. A background ssh
-    /// (`Start-Process ssh -NoNewWindow`) leaves the console raw while the shell's `Read-Host` reads it, and the
-    /// secret went to that read. Measured on win2 (PR #883 spike, 3 of 3 each): with ssh asking in front, no
-    /// thread of the shell waits as Executive; with `Read-Host` or `[Console]::ReadLine()` waiting behind a
-    /// background ssh, one does (a console read: NtDeviceIoControlFile / NtReadFile). So: any process on this
-    /// console, other than a credential program and this helper, with a thread in an Executive wait → a reader
-    /// that is not the credential program; decline. A child the shell runs to read (`cmd /c set /p`) is on the
-    /// console too, so it is caught as well. Fail-closed: a list or thread read that fails counts as a reader.
-    /// Called inside the attach bracket: nothing here writes to a std stream.
-    private static bool AnotherReaderWaits()
+    /// (`Start-Process ssh -NoNewWindow`) leaves the console raw while the shell's own `Read-Host` or
+    /// `[Console]::ReadLine()` reads it, and the secret went to that read. So the write needs positive evidence
+    /// that the credential program is in front: some process on this console other than a credential program
+    /// (the shell, or git running ssh) holds a process handle to a credential program on this console — the
+    /// handle a shell keeps while it waits for the command it runs in front. Measured on win2 (PR #884 spike,
+    /// in a launch_console window and in a plain conhost window alike): ssh run in front from PowerShell 5.1,
+    /// pwsh 7, cmd, a jump host or for a key passphrase is held; ssh started with `Start-Process -NoNewWindow`
+    /// (with or without `-PassThru`) and `cmd /c start /b` is not. Not covered: a script that itself opens the
+    /// background ssh's handle (`$p.Handle`, and likely `$p.HasExited` / `$p.WaitForExit()`) passes. The
+    /// earlier signal (a shell thread in an Executive wait) came and went with how the window was started.
+    /// Fail-closed: a list, name or handle-table read that fails, or a handle that cannot be duplicated to
+    /// read, counts as not held. Called inside the attach bracket: nothing here writes to a std stream.
+    private static bool CredentialProgramInFront()
     {
         var pids = new uint[64];
         var n = GetConsoleProcessList(pids, (uint)pids.Length);
-        if (n == 0 || n > pids.Length) return true;
+        if (n == 0 || n > pids.Length) return false;
         var self = (uint)Environment.ProcessId;
+        var credential = new HashSet<uint>();
+        var others = new HashSet<uint>();
         for (var i = 0; i < n; i++)
         {
             if (pids[i] == self) continue;
             try
             {
                 using var p = System.Diagnostics.Process.GetProcessById((int)pids[i]);
-                if (CredentialPrograms.Contains(p.ProcessName)) continue;
-                foreach (System.Diagnostics.ProcessThread th in p.Threads)
-                    if (th.ThreadState == System.Diagnostics.ThreadState.Wait &&
-                        th.WaitReason == System.Diagnostics.ThreadWaitReason.Executive) return true;
+                (CredentialPrograms.Contains(p.ProcessName) ? credential : others).Add(pids[i]);
             }
-            catch { return true; }
+            catch { return false; }
         }
-        return false;
+        if (credential.Count == 0 || others.Count == 0) return false;
+
+        // The handle table carries no target pid, and the kernel object address is hidden from an unprivileged
+        // caller, so: learn the Process type index from a handle this process opens itself, then duplicate each
+        // Process-typed handle the others hold and ask it which pid it names.
+        var probe = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, credential.First());
+        if (probe == 0) return false;
+        var holders = new Dictionary<uint, nint>();
+        nint table = 0;
+        try
+        {
+            table = QueryHandleTable();
+            if (table == 0) return false;
+            var count = (long)Marshal.ReadIntPtr(table);
+            int? processType = null;
+            for (long i = 0; i < count && processType == null; i++)
+            {
+                var e = table + HandleTableHeader + (nint)(i * HandleEntrySize);
+                if ((uint)Marshal.ReadIntPtr(e, 8) == self && Marshal.ReadIntPtr(e, 16) == probe)
+                    processType = (ushort)Marshal.ReadInt16(e, 30);
+            }
+            if (processType == null) return false;
+            for (long i = 0; i < count; i++)
+            {
+                var e = table + HandleTableHeader + (nint)(i * HandleEntrySize);
+                var owner = (uint)Marshal.ReadIntPtr(e, 8);
+                if (!others.Contains(owner) || (ushort)Marshal.ReadInt16(e, 30) != processType) continue;
+                if (!holders.TryGetValue(owner, out var ownerHandle))
+                    holders[owner] = ownerHandle = OpenProcess(PROCESS_DUP_HANDLE, false, owner);
+                if (ownerHandle == 0) continue;
+                if (!DuplicateHandle(ownerHandle, Marshal.ReadIntPtr(e, 16), GetCurrentProcess(), out var dup,
+                        PROCESS_QUERY_LIMITED_INFORMATION, false, 0)) continue;
+                var target = GetProcessId(dup);
+                CloseHandle(dup);
+                if (credential.Contains(target)) return true;
+            }
+            return false;
+        }
+        finally
+        {
+            if (table != 0) Marshal.FreeHGlobal(table);
+            foreach (var h in holders.Values) if (h != 0) CloseHandle(h);
+            CloseHandle(probe);
+        }
+    }
+
+    // SYSTEM_HANDLE_INFORMATION_EX (x64): NumberOfHandles, Reserved, then 40-byte entries of
+    // { Object, UniqueProcessId @8, HandleValue @16, GrantedAccess @24, CreatorBackTraceIndex @28,
+    //   ObjectTypeIndex @30, HandleAttributes @32, Reserved @36 }.
+    private const int SystemExtendedHandleInformation = 64;
+    private const int HandleTableHeader = 16;
+    private const int HandleEntrySize = 40;
+    private const uint STATUS_INFO_LENGTH_MISMATCH = 0xC0000004;
+
+    /// The system handle table in a buffer the caller frees, or 0 when it cannot be read.
+    private static nint QueryHandleTable()
+    {
+        // The table grows between calls, so retry a few times with room to spare; 512 MB is far past any real one.
+        var size = 8 << 20;
+        for (var attempt = 0; attempt < 6 && size <= 512 << 20; attempt++)
+        {
+            var buf = Marshal.AllocHGlobal(size);
+            var status = (uint)NtQuerySystemInformation(SystemExtendedHandleInformation, buf, size, out var needed);
+            if (status == 0) return buf;
+            Marshal.FreeHGlobal(buf);
+            if (status != STATUS_INFO_LENGTH_MISMATCH) return 0;
+            size = Math.Max(size * 2, needed + (4 << 20));
+        }
+        return 0;
     }
 
     private static INPUT_RECORD KeyRecord(char ch, ushort vk, bool down) => new()

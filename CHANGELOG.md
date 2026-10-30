@@ -17,9 +17,10 @@
 - **`key_locker` `fill_once` no longer types into a prompt that a background ssh made look like a password
   prompt.** It types only when the console is not echoing, and an ssh started in the background
   (`Start-Process ssh -NoNewWindow`) leaves the console that way while the shell's own `Read-Host` reads: the
-  secret went to that read. It now also declines, with `fill_aborted` code `other_reader`, when any process on the
-  pane's console other than `ssh`, `sudo`, `su` or `doas` is waiting in a read (the shell, or a child it runs to
-  read). A kept tag's fill goes through the same check (internal #333).
+  secret went to that read. It now also declines, with `fill_aborted` code `other_reader`, unless the `ssh`, `sudo`,
+  `su` or `doas` on the pane's console is running in front (the shell, or a program like git, is waiting for it).
+  A kept tag's fill goes through the same check. Not covered: a script that starts ssh in the background and then
+  itself opens that process's handle (for example `$p.Handle`) passes the check (internal #333).
 - **A line break sent to a console window in the background is an Enter.** `keyboard` `type` (which goes to a
   console window in the background by default) and `terminal` `send` in the background (all but the console paste
   that `method: "auto"` uses for a line it runs) posted each line break as the character 0x0D, which PowerShell

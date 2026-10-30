@@ -505,8 +505,9 @@ async function handleFillOnce(
           hint: outcome.code === "echo_on"
             ? "The pane's console is showing what is typed, so this is not a real password prompt. Nothing was typed."
             : outcome.code === "other_reader"
-              ? "Something other than ssh / sudo / su / doas is reading the pane's input (a shell's Read-Host behind a " +
-                "background ssh, for example), so the prompt is not the credential program's. Nothing was typed."
+              ? "No ssh / sudo / su / doas is running in front in the pane (a shell's Read-Host behind a background ssh, " +
+                "for example), so the prompt may not be the credential program's. Run the command in front, then retry. " +
+                "Nothing was typed."
               : "The locker refused the write (the pane changed or could not be verified). Nothing was typed or saved.",
           ...kept,
           ...cleanup,
