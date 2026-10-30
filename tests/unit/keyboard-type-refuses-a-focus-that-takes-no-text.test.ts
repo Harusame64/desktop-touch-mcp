@@ -1,9 +1,10 @@
 /**
- * internal #322 — keyboard(action:'type') refuses when the keyboard focus is on a control that takes
- * no text.
+ * internal #322 — keyboard(action:'type') and a keyboard focus on a control that takes no text.
  *
  * win2 (2026-10-28, Chrome): with the focus on a page's "Close panel" button, a paste answered
- * ok:true, typed:180 and nothing landed. By keystroke, a space or Enter would have pressed the button.
+ * ok:true, typed:180 and nothing landed; by keystroke a space pressed the button (2026-10-30). Calculator
+ * takes "12+3=" with the focus on the digit it last clicked (win2, #873). So a keystroke text with a
+ * space or a line break is refused, and anything else goes with the reply saying where the focus was.
  * Harness from `a-keyboard-does-not-switch-the-desktop.test.ts` (same foreground ladder).
  */
 
@@ -74,7 +75,7 @@ function parseResult(r: { content: { type: string; text: string }[] }) {
   return JSON.parse(r.content[0]!.text);
 }
 
-const args = { text: "a b\n", windowTitle: "Q322", method: "foreground" as const, trackFocus: false, settleMs: 0 };
+const args = { text: "a b", windowTitle: "Q322", method: "foreground" as const, trackFocus: false, settleMs: 0 };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -88,9 +89,9 @@ beforeEach(() => {
 });
 
 describe("internal #322 — keyboard type and a focus that takes no text", () => {
-  it("refuses with the focus on a button, before Ctrl+A or any character", async () => {
+  it("refuses a keystroke text with a space, before Ctrl+A or any character", async () => {
     focused.info = { controlType: "Button", name: "Close panel", value: null };
-    const r = parseResult(await keyboardTypeHandler({ ...args, replaceAll: true }));
+    const r = parseResult(await keyboardTypeHandler({ ...args, text: "a b", replaceAll: true }));
     expect(r.ok).toBe(false);
     expect(r.code).toBe("FocusedControlTakesNoText");
     expect(r.context.focusedType).toBe("Button");
@@ -101,18 +102,35 @@ describe("internal #322 — keyboard type and a focus that takes no text", () =>
     expect(keyboard.pressKey).not.toHaveBeenCalled();
   });
 
-  it("refuses on the clipboard road too", async () => {
-    focused.info = { controlType: "Button", name: "Close panel", value: null };
-    const r = parseResult(await keyboardTypeHandler({ ...args, use_clipboard: true }));
+  it.each(["x\n", "x\r"])("refuses a keystroke text with a line break (%j)", async (text) => {
+    focused.info = { controlType: "Button", name: "b", value: null };
+    const r = parseResult(await keyboardTypeHandler({ ...args, text }));
     expect(r.code).toBe("FocusedControlTakesNoText");
-    expect(keyboard.pressKey).not.toHaveBeenCalled();
+    expect(keyboard.type).not.toHaveBeenCalled();
   });
 
-  it("types into a focused Edit (the control)", async () => {
-    focused.info = { controlType: "Edit", name: "", value: "" };
-    const r = parseResult(await keyboardTypeHandler(args));
+  it("types a text with no space or break, and says the focus takes no text (Calculator)", async () => {
+    focused.info = { controlType: "Button", name: "7", value: null };
+    const r = parseResult(await keyboardTypeHandler({ ...args, text: "12+3=" }));
     expect(r.ok).toBe(true);
     expect(keyboard.type).toHaveBeenCalled();
+    expect(r.hints.focusTakesNoText).toBe("Button");
+    expect(r.hints.warnings.join(" ")).toMatch(/takes no text/);
+  });
+
+  // The paste itself and its reply are in `type-via-clipboard-envelope.test.ts`, which mocks the clipboard.
+  it("does not refuse a paste with a space (a paste presses nothing)", async () => {
+    focused.info = { controlType: "Button", name: "Close panel", value: null };
+    const r = parseResult(await keyboardTypeHandler({ ...args, text: "a b", use_clipboard: true }));
+    expect(r.code).not.toBe("FocusedControlTakesNoText");
+  });
+
+  it("types into a focused Edit and says nothing about it (the control)", async () => {
+    focused.info = { controlType: "Edit", name: "", value: "" };
+    const r = parseResult(await keyboardTypeHandler({ ...args, text: "a b" }));
+    expect(r.ok).toBe(true);
+    expect(keyboard.type).toHaveBeenCalled();
+    expect(r.hints?.focusTakesNoText).toBeUndefined();
   });
 
   it.each([
@@ -121,18 +139,19 @@ describe("internal #322 — keyboard type and a focus that takes no text", () =>
     ["a ComboBox (Chromium's web text input)", { controlType: "ComboBox", name: "Search", value: null }],
     ["a ListItem (type-ahead)", { controlType: "ListItem", name: "row", value: null }],
     ["a Button that exposes a value", { controlType: "Button", name: "b", value: "" }],
-  ])("types on %s", async (_label, info) => {
+  ])("types a text with a space on %s", async (_label, info) => {
     focused.info = info;
-    const r = parseResult(await keyboardTypeHandler(args));
+    const r = parseResult(await keyboardTypeHandler({ ...args, text: "a b" }));
     expect(r.ok).toBe(true);
     expect(keyboard.type).toHaveBeenCalled();
+    expect(r.hints?.focusTakesNoText).toBeUndefined();
   });
 
   it.each(["SplitButton", "CheckBox", "RadioButton", "Hyperlink", "MenuItem", "TabItem"])(
-    "refuses on a focused %s",
+    "refuses a text with a space on a focused %s",
     async (controlType) => {
       focused.info = { controlType, name: "x", value: null };
-      const r = parseResult(await keyboardTypeHandler(args));
+      const r = parseResult(await keyboardTypeHandler({ ...args, text: "a b" }));
       expect(r.code).toBe("FocusedControlTakesNoText");
       expect(r.context.focusedType).toBe(controlType);
       expect(keyboard.type).not.toHaveBeenCalled();

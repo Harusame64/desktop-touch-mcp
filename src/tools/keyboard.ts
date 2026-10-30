@@ -2533,26 +2533,6 @@ export const keyboardTypeHandler = async ({
       perceptionEnv = ag.summary;
     }
 
-    // Internal #322 — the focus is on a control that takes no text. win2 (2026-10-28, Chrome): with the
-    // focus on a page's "Close panel" button, a paste answered ok:true, typed:180 and nothing landed; a
-    // space or Enter sent there by keystroke presses the button instead. Asked once the window is in
-    // front and the guard has passed, before Ctrl+A or any character. A read that fails or finds no
-    // focus decides nothing.
-    const focusedType = await focusedControlThatTakesNoText();
-    if (focusedType !== null) {
-      return failWith(new Error("FocusedControlTakesNoText"), "keyboard:type", {
-        focusedType,
-        ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
-        ...(warnings.length > 0 && { hints: { warnings } }),
-      });
-    }
-
-    // Ctrl+A to replace existing content before typing
-    if (replaceAll) {
-      const selectAll = parseKeys("ctrl+a");
-      await keyboard.pressKey(...selectAll);
-      await keyboard.releaseKey(...selectAll);
-    }
 
     // Auto-clipboard: upgrade to clipboard mode when non-ASCII content is present
     // (unless the caller opted out via forceKeystrokes). Two detectors cover two
@@ -2580,6 +2560,36 @@ export const keyboardTypeHandler = async ({
         effectiveClipboard = true;
         autoClipboardReason = "non-ASCII character detected (CJK / emoji / diacritic)";
       }
+    }
+
+    // Internal #322 — the focus is on a control that takes no text. win2 (2026-10-28, Chrome): with the
+    // focus on a page's "Close panel" button, a paste answered ok:true, typed:180 and nothing landed; a
+    // space sent there by keystroke pressed the button (win2, 2026-10-30). Calculator takes "12+3=" with
+    // the focus on the digit it last clicked (win2, #873), so the type alone cannot refuse: a keystroke
+    // text with a space or a line break is refused, as one of them would press the control; anything
+    // else goes, and the reply says the focus takes no text. A paste pressed nothing. Asked once the
+    // window is in front and the guard has passed, before Ctrl+A or any character. A read that fails or
+    // finds no focus decides nothing.
+    const focusedType = await focusedControlThatTakesNoText();
+    if (focusedType !== null && !effectiveClipboard && /[ \r\n]/.test(effectiveText)) {
+      return failWith(new Error("FocusedControlTakesNoText"), "keyboard:type", {
+        focusedType,
+        ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
+        ...(warnings.length > 0 && { hints: { warnings } }),
+      });
+    }
+    if (focusedType !== null) {
+      warnings.push(
+        `The keyboard focus was on a ${focusedType}, which takes no text: unless the window handles the keys itself ` +
+        "(a calculator, a page's own shortcuts), nothing was inserted. If the text belongs in a field, click it and type again.",
+      );
+    }
+
+    // Ctrl+A to replace existing content before typing
+    if (replaceAll) {
+      const selectAll = parseKeys("ctrl+a");
+      await keyboard.pressKey(...selectAll);
+      await keyboard.releaseKey(...selectAll);
     }
 
     // ADR-035 Phase 1 — the foreground path has no destination handle: the keys
@@ -2720,6 +2730,7 @@ export const keyboardTypeHandler = async ({
     const hints = {
       ...(warnings.length > 0 ? { warnings } : {}),
       ...(clipboardOutcome ? { clipboard: clipboardPasteHints(clipboardOutcome) } : {}),
+      ...(focusedType !== null ? { focusTakesNoText: focusedType } : {}),
     };
 
     return ok({

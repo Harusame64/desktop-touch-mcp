@@ -122,6 +122,7 @@ const { terminalSendHandler } = await import("../../src/tools/terminal.js");
 const win32 = await import("../../src/engine/win32.js");
 const nutjs = await import("../../src/engine/nutjs.js");
 const focus = await import("../../src/tools/_focus.js");
+const typeFocus = await import("../../src/tools/_type-focus.js");
 
 function body(r: { content: Array<{ type: string; text?: string }> }) {
   return JSON.parse(r.content[0]!.text!) as Record<string, unknown>;
@@ -219,6 +220,19 @@ describe("ADR-033 — the clipboard side effect reaches the keyboard envelope", 
     nativeState.composite.mockResolvedValue(nativeResult());
     const r = body(await keyboardTypeHandler(keyboardArgs));
     expect(r.ok).toBe(true);
+    expect(clipboardHints(r)).toEqual({ backend: "native", restored: true });
+  });
+
+  // Internal #322 — a paste presses nothing, so it is not refused on a button; the reply says where the
+  // focus was. (The suite-wide stub answers null; this cell answers for it once.)
+  it("pastes onto a focused button and says the focus takes no text", async () => {
+    nativeState.composite.mockResolvedValue(nativeResult());
+    vi.mocked(typeFocus.focusedControlThatTakesNoText).mockResolvedValueOnce("Button");
+    const r = body(await keyboardTypeHandler({ ...keyboardArgs, text: "a b" }));
+    expect(r.ok).toBe(true);
+    const hints = r.hints as Record<string, unknown>;
+    expect(hints.focusTakesNoText).toBe("Button");
+    expect((hints.warnings as string[]).join(" ")).toMatch(/Button, which takes no text/);
     expect(clipboardHints(r)).toEqual({ backend: "native", restored: true });
   });
 

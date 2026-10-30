@@ -786,10 +786,11 @@ const SUGGESTS: Record<string, string[]> = {
     "Drop forceKeystrokes (default false) so auto-clipboard promotion handles non-ASCII / IME-active windows transparently.",
     "Diagnose live state via desktop_state — hints.imeOpen reports the focused window's IME composition mode.",
   ],
-  // Internal #322: keyboard({action:'type'}) found the keyboard focus on a control that takes no text
-  // (context.focusedType). Pre-injection refusal — nothing was sent, not even Ctrl+A.
+  // Internal #322: keyboard({action:'type'}) by keystroke, with a space or a line break in the text, found
+  // the keyboard focus on a control that takes no text (context.focusedType). Pre-injection refusal —
+  // nothing was sent, not even Ctrl+A.
   FocusedControlTakesNoText: [
-    "Nothing was typed: the keyboard focus is on a control that takes no text (context.focusedType, e.g. a Button) — the characters would be dropped there, and a space or Enter would press it.",
+    "Nothing was typed: the keyboard focus is on a control that takes no text (context.focusedType, e.g. a Button), and the text has a space or a line break, which would press it.",
     "Put the focus on the text field first — click it (click_element / desktop_act click, or browser_click on a web page) — then type again.",
     "To press the focused control or send its access key on purpose, use keyboard(action='press') instead.",
   ],
