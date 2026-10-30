@@ -328,28 +328,28 @@
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3133,
+      "line": 3137,
       "tool": "keyboard:press",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3207,
+      "line": 3211,
       "tool": "keyboard:press",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3261,
+      "line": 3265,
       "tool": "keyboard:sequence",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3548,
+      "line": 3552,
       "tool": "keyboard:sequence",
       "errKind": "identifier",
       "contextShape": "none"

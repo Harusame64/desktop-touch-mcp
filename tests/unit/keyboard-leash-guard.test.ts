@@ -244,6 +244,18 @@ describe("keyboardTypeHandler — Phase B leash-enabled foreground send", () => 
     expect(checkForegroundOnce).toHaveBeenCalledTimes(2);
   });
 
+  // Internal #323 — CR and LF are each typed as an Enter of their own, so a CRLF split across two
+  // chunks would be two line breaks. The chunk that ends on CR takes the LF with it.
+  it("does not end a chunk between CR and LF", async () => {
+    await keyboardTypeHandler({ ...baseArgs, text: "abc\r\nde\r\nf" });
+    expect(mockTypeFn.mock.calls.map((c) => c[0])).toEqual(["abc\r\n", "de\r\n", "f"]);
+  });
+
+  it("chunks a lone CR or LF at the boundary as before", async () => {
+    await keyboardTypeHandler({ ...baseArgs, text: "abc\rdef\nghi" });
+    expect(mockTypeFn.mock.calls.map((c) => c[0])).toEqual(["abc\r", "def\n", "ghi"]);
+  });
+
   it("abortOnFocusLoss=false → single-shot send, no per-chunk checks", async () => {
     await keyboardTypeHandler({ ...baseArgs, abortOnFocusLoss: false });
     expect(mockTypeFn).toHaveBeenCalledTimes(1);
