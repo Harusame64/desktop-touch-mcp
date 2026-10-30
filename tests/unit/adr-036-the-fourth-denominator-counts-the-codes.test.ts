@@ -496,7 +496,7 @@ return fail("KeyLockerDisabled", "KeyLockerDisabled: not active");
   it("1b. the real tree still has exactly that one unenumerable call site", () => {
     const sources = srcSources();
     const { unreadable } = readFailCodeSites(sources);
-    expect(unreadable).toEqual(["src/tools/key-locker-tool.ts:195: fail(code)"]);
+    expect(unreadable).toEqual(["src/tools/key-locker-tool.ts:221: fail(code)"]);
   });
 
   it("2. reads the dictionary guard's POLARITY, not its presence", () => {

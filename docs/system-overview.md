@@ -671,7 +671,12 @@ pre-existing terminal is never autofilled.
   and only if the pane shows the same prompt after the dialog closes. The prompt check reads the English
   `password` prompt forms and ssh's key-unlock prompt (`Enter passphrase for key …:`); a
   Japanese prompt is declined for now.
-- `action='list'` shows saved bindings (metadata only). `action='forget'` deletes a
+  With `tag` (letters, digits, `.` `_` `-`, up to 32; at most 8 per pane) the typed secret is
+  instead kept in the locker's memory for that pane until the pane closes; a later `fill_once`
+  with the same tag shows the user a one-click **Fill / Cancel** (with the tag and the `reason`)
+  instead of the typing dialog, and every check above still runs. `retype:true` types it again;
+  `action='forget_tag'` (`paneId`, `tag`) erases it. A kept secret is never written to disk.
+- `action='list'` shows saved bindings (metadata only) and `paneTags`, the kept tag names per pane. `action='forget'` deletes a
   binding and its secret. `action='set_policy'` toggles per-binding autofill
   confirmation (every autofill asks by default). `action='status'` reports whether the
   locker is enabled and the binding count.

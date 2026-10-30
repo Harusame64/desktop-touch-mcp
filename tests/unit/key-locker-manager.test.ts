@@ -380,3 +380,61 @@ describe("KeyLockerManager — W-3 tracker/watch ownership + Win32 snapshot adap
     expect(mgr.tracker.get("pane-1")).toEqual({ execHost: "localhost", isRemote: false });
   });
 });
+
+describe("KeyLockerManager.disposeIfIdle — kept fill_once tags hold the helper (internal #281)", () => {
+  /** A manager whose host reports `alive` (the pipe still open) as the test says. */
+  class AliveHostManager extends KeyLockerManager {
+    alive = true;
+    disposed = 0;
+    readonly fakeHost = {
+      get alive(): boolean { return mgrAlive(); },
+      dispose: async () => { this.disposed++; },
+    } as unknown as KeyLockerHost;
+    protected override startHost(): Promise<KeyLockerHost> { return Promise.resolve(this.fakeHost); }
+  }
+  let current: AliveHostManager | null = null;
+  const mgrAlive = (): boolean => current?.alive ?? false;
+
+  async function started(clock: { t: number }): Promise<AliveHostManager> {
+    const d = freshDir();
+    writeConsent(d, { version: 1, acceptedAt: "2026-07-06T00:00:00.000Z" });
+    const mgr = new AliveHostManager({ storeDir: d, now: () => clock.t });
+    current = mgr;
+    await mgr.withHost(async () => "x");
+    return mgr;
+  }
+
+  it("never idle-disposes a LIVE helper while kept tags exist; disposes once they are gone", async () => {
+    const clock = { t: 1_000 };
+    const mgr = await started(clock);
+    let tags = true;
+    mgr.setIdleKeepAlive(() => tags);
+    clock.t += 1_000_000;
+    expect(await mgr.disposeIfIdle(5_000)).toBe(false);
+    expect(mgr.disposed).toBe(0);
+    expect(mgr.liveHost()).toBe(mgr.fakeHost);
+    tags = false;
+    expect(await mgr.disposeIfIdle(5_000)).toBe(true);
+    expect(mgr.disposed).toBe(1);
+    expect(mgr.liveHost()).toBeNull();
+  });
+
+  it("a DEAD helper is disposed as before even if the map still says tags exist (its memory is gone)", async () => {
+    const clock = { t: 1_000 };
+    const mgr = await started(clock);
+    mgr.setIdleKeepAlive(() => true);
+    mgr.alive = false; // the pipe closed underneath
+    expect(mgr.liveHost()).toBeNull();
+    clock.t += 1_000_000;
+    expect(await mgr.disposeIfIdle(5_000)).toBe(true);
+  });
+
+  it("the keep-alive can be removed (server shutdown)", async () => {
+    const clock = { t: 1_000 };
+    const mgr = await started(clock);
+    mgr.setIdleKeepAlive(() => true);
+    mgr.setIdleKeepAlive(null);
+    clock.t += 1_000_000;
+    expect(await mgr.disposeIfIdle(5_000)).toBe(true);
+  });
+});

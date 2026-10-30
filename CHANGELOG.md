@@ -2,12 +2,23 @@
 
 ## [Unreleased]
 
+### Added — Windows
+- **`key_locker` `fill_once` can keep a password for one pane, so you type it only once.** Pass a `tag`
+  (for example `tag:'jump'` for a jump host you re-enter). The first time, you type the password as before; it is
+  typed into the prompt and then kept in the locker's memory for that `launch_console` pane until the pane
+  closes. Each later `fill_once` with the same tag shows a Fill / Cancel window with the tag, the pane and the
+  assistant's reason, and nothing is typed until you press Fill. It is never written to disk, and every check
+  `fill_once` makes before typing still runs on each fill. `retype:true` asks you to type it again,
+  `action:'forget_tag'` erases it, and `list` shows the kept tag names per pane (`paneTags`). At most 8 tags per
+  pane. The locker helper's protocol version is now 3, so `bin/key-locker.exe` must come from this release
+  (internal #281).
+
 ### Changed — Windows
 - **A line break sent to a console window in the background is an Enter.** `keyboard` `type` (which goes to a
   console window in the background by default) and `terminal` `send` in the background (all but the console paste
-  that `method: "auto"` uses for a line it runs) posted each line break as the character 0x0D, which PowerShell shows as a literal `m`: the line was never run, and the reply was
-  `ok: true`. In a console window `\n`, `\r` and `\r\n` are now each one Enter key event, as a single Enter
-  already was, so each line runs in order. Other windows still get the character, because an Enter key in a
+  that `method: "auto"` uses for a line it runs) posted each line break as the character 0x0D, which PowerShell
+  shows as a literal `m`: the line was never run, and the reply was `ok: true`. In a console window `\n`, `\r`
+  and `\r\n` are now each one Enter key event, as a single Enter already was, so each line runs in order. Other windows still get the character, because an Enter key in a
   dialog's text box would press its default button (internal #325).
 
 ## [2.4.0] - 2026-10-30 — Line breaks are typed as Enter, and typing, browser clicks and docking say when they did not do what was asked

@@ -9,7 +9,11 @@
 // injection", and it is bounded so that exception cannot reach a stored secret: the USER types the secret
 // into the locker's dialog for THIS request, it goes into ONE anchored pane's current credential prompt,
 // and it is deleted — nothing is derived, bound or saved (`engine/key-locker/fill-once.ts`). It exists
-// for prompts the loop cannot serve (a nested hop, where the inner login is unobservable). The tool NEVER
+// for prompts the loop cannot serve (a nested hop, where the inner login is unobservable). With a `tag`
+// (internal #281, user decision 2026-10-13) the typed secret is instead KEPT in the helper's memory for as
+// long as that pane exists, and each later fill of the tag asks the user's one-click confirm — the one place
+// the assistant can cause a held secret to be filled, scoped to one pane, never saved, never without the
+// user's per-fill Fill (ADR-014 L4 OQ-R3-1, amended). The tool NEVER
 // sees a secret — `save` / `fill_once` open the LOCKER's secure dialog, everything else is metadata /
 // control.
 //
@@ -43,6 +47,7 @@ import {
 } from "../engine/key-locker/binding.js";
 import { resolveCanonicalForSshCommand, type ExecFn } from "../engine/key-locker/ssh-resolve.js";
 import { keyLockerWiring } from "./key-locker-wiring.js";
+import { KEPT_TAG_PATTERN, MAX_KEPT_TAGS_PER_PANE } from "../engine/key-locker/kept-tags.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schema — a discriminated union over `action` (Opus R1 P2-6: the FULL 3-layer chain, mirroring excel).
@@ -53,7 +58,10 @@ const URI_DESC =
   "`https-cred://github.com:443`, `sshkey:SHA256:…` (no `//`). Parsed per the L1 grammar; malformed input is rejected.";
 
 const listSchema = z.object({
-  action: z.literal("list").describe("Enumerate saved bindings (non-secret metadata only)."),
+  action: z.literal("list").describe(
+    "Enumerate saved bindings (non-secret metadata only), plus the fill_once tags each launch_console pane " +
+      "keeps (paneTags: {paneId: [tag…]}, names only).",
+  ),
 });
 
 const saveSchema = z.object({
@@ -119,7 +127,9 @@ const fillOnceSchema = z.object({
       "waiting at a password prompt that autofill does not handle — e.g. an ssh run INSIDE another ssh session " +
       "(a jump host), or a login you do not want saved. The pane must be AT a real password prompt — an ssh / sudo " +
       "running in it, with the console not echoing input (send the command first, then call this). English " +
-      "'password' prompts and ssh's 'Enter passphrase for key ...:' are recognised. The secret is never shown to you.",
+      "'password' prompts and ssh's 'Enter passphrase for key ...:' are recognised. The secret is never shown to you. " +
+      "Pass `tag` to have the user type it only once for this pane: the secret is then kept (in memory, until the " +
+      "pane closes) and a later fill_once with the same tag shows the user a one-click Fill / Cancel instead.",
   ),
   paneId: z.string().min(1).describe("The paneId returned by launch_console (only those panes can be filled)."),
   reason: z.string().min(1).max(200).describe(
@@ -127,6 +137,21 @@ const fillOnceSchema = z.object({
       "host'). Shown as the assistant's words; never put a secret here.",
   ),
   submit: z.boolean().optional().describe("true (default) = press Enter after typing the secret; false = type only."),
+  tag: z.string().regex(KEPT_TAG_PATTERN).optional().describe(
+    "A short name for this secret in THIS pane (letters, digits, '.', '_', '-'; up to 32), e.g. 'jump' or " +
+      "'db1'. New tag: the user types the secret, it is filled and KEPT for this pane until the pane closes. Kept " +
+      `tag: the user only confirms (Fill / Cancel); nothing is typed. At most ${MAX_KEPT_TAGS_PER_PANE} tags per pane. ` +
+      "Omit for a one-time fill that is forgotten at once.",
+  ),
+  retype: z.boolean().optional().describe(
+    "true = with a kept tag, ask the user to type the secret again and replace the kept one (e.g. it was wrong).",
+  ),
+});
+
+const forgetTagSchema = z.object({
+  action: z.literal("forget_tag").describe("Erase one fill_once tag kept for a pane (the secret is deleted from the locker's memory)."),
+  paneId: z.string().min(1).describe("The paneId the tag was kept for."),
+  tag: z.string().regex(KEPT_TAG_PATTERN).describe("The tag to forget."),
 });
 
 export const keyLockerSchema = z.discriminatedUnion("action", [
@@ -137,6 +162,7 @@ export const keyLockerSchema = z.discriminatedUnion("action", [
   statusSchema,
   launchConsoleSchema,
   fillOnceSchema,
+  forgetTagSchema,
 ]);
 
 export type KeyLockerArgs = z.infer<typeof keyLockerSchema>;
@@ -217,7 +243,9 @@ function handleList(): ToolResult {
     // while the loop actually asks (#500 vs #502 drift — the confirm default is ON unless opted out).
     confirmEveryInjection: row.confirmEveryInjection ?? true,
   }));
-  return ok({ bindings });
+  // internal #281: the fill_once tags each pane keeps — names only (never an id or a secret).
+  const paneTags = keyLockerWiring()?.keptTagNames() ?? {};
+  return ok({ bindings, paneTags });
 }
 
 function handleStatus(): ToolResult {
@@ -410,6 +438,7 @@ const FILL_ONCE_HINTS: Record<string, string> = {
   no_credential_program: "No ssh / sudo / su / doas is running in that pane, so this is not a real password prompt. Nothing was typed.",
   prompt_changed: "The pane changed while the dialog was open (the prompt timed out, or a different command is asking now). Nothing was typed. Re-run the command and retry.",
   target_gone: "The pane closed while the dialog was open. Nothing was typed.",
+  tag_limit: `This pane already keeps ${MAX_KEPT_TAGS_PER_PANE} tags. Forget one with key_locker({action:'forget_tag', paneId, tag}) or reuse a kept tag. Nothing was typed.`,
 };
 
 /**
@@ -421,7 +450,9 @@ export function sanitizeFillOnceReason(reason: string): string {
   return reason.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s{2,}/g, " ").trim();
 }
 
-async function handleFillOnce(paneId: string, reason: string, submit: boolean | undefined): Promise<ToolResult> {
+async function handleFillOnce(
+  paneId: string, reason: string, submit: boolean | undefined, tag: string | undefined, retype: boolean | undefined,
+): Promise<ToolResult> {
   // Not an ACQUIRE path: a fillable pane exists only after launch_console, which already took consent.
   if (!manager().isConsentAccepted()) {
     return fail("KeyLockerConsentRequired", "KeyLockerConsentRequired: enable the key locker (launch_console) before fill_once");
@@ -432,19 +463,30 @@ async function handleFillOnce(paneId: string, reason: string, submit: boolean | 
   }
   const note = sanitizeFillOnceReason(reason);
   try {
-    const outcome = await wiring.fillOnce(paneId, note, submit ?? true);
+    const outcome = await wiring.fillOnce(paneId, note, submit ?? true, {
+      ...(tag !== undefined ? { tag } : {}),
+      ...(retype === true ? { retype: true } : {}),
+    });
     // A one-time secret that could not be erased is REPORTED (it stays encrypted in the helper's memory
     // until the helper exits — PR #806 codex P2), never swallowed.
     const cleanup = outcome.cleanupFailed === true
       ? { cleanupFailed: true, cleanupHint: "The one-time secret could not be erased from the locker; it is discarded when the locker helper exits." }
       : {};
+    // internal #281: with a tag, say whether it is kept for this pane after the call (names only).
+    const kept = tag !== undefined ? { tag, tagKept: outcome.kept === true } : {};
     switch (outcome.kind) {
       case "filled":
-        return ok({ filled: true, verified: outcome.verified, ...cleanup });
+        return ok({ filled: true, verified: outcome.verified, ...kept, ...cleanup });
       case "cancelled":
-        return ok({ filled: false, cancelled: true, hint: "The user cancelled the dialog. Nothing was typed.", ...cleanup });
+        return ok({
+          filled: false, cancelled: true,
+          hint: outcome.kept === true
+            ? "The user cancelled. Nothing was typed; the tag is still kept for this pane."
+            : "The user cancelled the dialog. Nothing was typed.",
+          ...kept, ...cleanup,
+        });
       case "declined":
-        return ok({ filled: false, reason: outcome.reason, hint: FILL_ONCE_HINTS[outcome.reason] ?? "", ...cleanup });
+        return ok({ filled: false, reason: outcome.reason, hint: FILL_ONCE_HINTS[outcome.reason] ?? "", ...kept, ...cleanup });
       case "fill_aborted":
         return ok({
           filled: false,
@@ -453,12 +495,25 @@ async function handleFillOnce(paneId: string, reason: string, submit: boolean | 
           hint: outcome.code === "echo_on"
             ? "The pane's console is showing what is typed, so this is not a real password prompt. Nothing was typed."
             : "The locker refused the write (the pane changed or could not be verified). Nothing was typed or saved.",
+          ...kept,
           ...cleanup,
         });
     }
   } catch (err) {
     return keyLockerFailure(err);
   }
+}
+
+/** `forget_tag` (internal #281): erase one kept fill_once tag. Not an ACQUIRE path, like fill_once. */
+function handleForgetTag(paneId: string, tag: string): ToolResult {
+  if (!manager().isConsentAccepted()) {
+    return fail("KeyLockerConsentRequired", "KeyLockerConsentRequired: enable the key locker (launch_console) before forget_tag");
+  }
+  const wiring = keyLockerWiring();
+  if (wiring === null) {
+    return fail("KeyLockerDisabled", "KeyLockerDisabled: the key locker live wiring is not active");
+  }
+  return ok({ removed: wiring.forgetTag(paneId, tag) });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -486,7 +541,9 @@ export const keyLockerHandler = async (args: KeyLockerArgs): Promise<ToolResult>
     case "launch_console":
       return handleLaunchConsole(a.fresh, a.host);
     case "fill_once":
-      return handleFillOnce(a.paneId, a.reason, a.submit);
+      return handleFillOnce(a.paneId, a.reason, a.submit, a.tag, a.retype);
+    case "forget_tag":
+      return handleForgetTag(a.paneId, a.tag);
   }
 };
 
@@ -533,7 +590,9 @@ export function registerKeyLockerTools(server: McpServer): void {
           "tab in the user's current Windows Terminal window (host:'classic' opens a dedicated classic console " +
           "window instead). action='fill_once' asks the user to type a secret into the locker's dialog and " +
           "types it once into the password prompt (or ssh's 'Enter passphrase for key' prompt) currently shown in a " +
-          "launch_console pane, then forgets it.",
+          "launch_console pane, then forgets it; with tag:'<name>' it is kept for that pane until the pane closes, and " +
+          "a later fill_once with the same tag asks the user only for a one-click Fill / Cancel (retype:true types it " +
+          "again). action='forget_tag' erases one kept tag; list shows the kept tag names as paneTags.",
         prefer:
           "Autofill is AUTOMATIC when a bound command triggers a credential prompt in the terminal — you " +
           "never fill a SAVED secret by hand. For a prompt autofill does not handle (an ssh inside another ssh " +
@@ -559,6 +618,7 @@ export function registerKeyLockerTools(server: McpServer): void {
           "key_locker({action:'list'}) → {bindings:[{displayUri:'sudo://buildbox/root', scheme:'sudo', …}]}",
           "key_locker({action:'launch_console'}) → {paneId:'wt:31264:13322426700123', windowTitle:'dtm-locker-console-…'} → then terminal({action:'send', paneId:'wt:31264:13322426700123', input:'ssh user@host'})",
           "key_locker({action:'launch_console', host:'classic'}) → {paneId:'12345678', windowTitle:'dtm-locker-console-…'} (dedicated classic console window)",
+          "key_locker({action:'fill_once', paneId:'wt:31264:13322426700123', reason:'log in to the jump host', tag:'jump'}) → the user types once → {filled:true, verified:true, tag:'jump', tagKept:true}; the next fill_once with tag:'jump' shows only Fill / Cancel",
         ],
       }),
       inputSchema: keyLockerRegistrationSchema,

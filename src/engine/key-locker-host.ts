@@ -44,7 +44,7 @@ import { registerExcludedPid, unregisterExcludedPid } from "./tool-exclusion.js"
 export const HELPER_EXE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "key-locker.exe");
 
 /** Wire protocol version the MCP understands; must match the helper's `hello.v`. */
-export const KEY_LOCKER_PROTOCOL_VERSION = "2";
+export const KEY_LOCKER_PROTOCOL_VERSION = "3";
 
 export type KeyLockerErrorCode =
   | "KeyLockerSpawnFailed"
@@ -167,8 +167,11 @@ export type MintTicketResult =
   | { ok: true; ticket: string; pipe: string }
   | { ok: false; code: "no_secret" };
 
-/** W-3.5 `prompt` verb — which secret-free backstop dialog to show. */
-export type PromptKind = "confirm" | "offer";
+/** W-3.5 `prompt` verb — which secret-free backstop dialog to show. `fill_kept` (internal #281, protocol
+ *  "3"): the one-click confirm before a kept fill_once tag is filled. */
+export type PromptKind = "confirm" | "offer" | "fill_kept";
+/** The kept-tag confirm's choice: fill the kept secret, or cancel (fail-closed). */
+export type FillKeptChoice = "fill" | "cancel";
 /** The MATCH-backstop choice: fill the stored secret, or decline and type it by hand (fail-closed). */
 export type ConfirmChoice = "autofill" | "type_it";
 /** The NO-MATCH save choice (structurally the capture-loop `SaveChoice`). */
@@ -236,6 +239,11 @@ export class KeyLockerHost {
     this.disposed = true;
     this.releaseExclusion();
     this.failAllPending(new KeyLockerError("KeyLockerPipeUnavailable", "pipe closed"));
+  }
+
+  /** False once the pipe has closed or `dispose()` began: this helper process (and its memory) is gone. */
+  get alive(): boolean {
+    return !this.disposed && !this.disposing;
   }
 
   /** Un-exclude the locker PID exactly once (idempotent across close + dispose). */
@@ -446,12 +454,14 @@ export class KeyLockerHost {
    */
   async capture(
     key: string,
-    dialog?: { label?: string; note?: string; purpose?: "save" | "fill_once" },
+    dialog?: { label?: string; note?: string; purpose?: "save" | "fill_once"; tag?: string },
   ): Promise<{ captured: boolean; rt: boolean }> {
     const extra: Record<string, unknown> = {};
     if (dialog?.label !== undefined) extra.label = dialog.label;
     if (dialog?.note !== undefined) extra.note = dialog.note;
     if (dialog?.purpose !== undefined) extra.purpose = dialog.purpose;
+    // internal #281: a fill_once whose secret is kept under a tag for the pane's life — the dialog says so.
+    if (dialog?.tag !== undefined) extra.tag = dialog.tag;
     const reply = await this.request("capture", key, CAPTURE_TIMEOUT_MS, extra);
     return { captured: reply.captured === true, rt: reply.rt === true };
   }
@@ -469,7 +479,7 @@ export class KeyLockerHost {
    */
   async prompt(kind: "confirm", label: string): Promise<ConfirmChoice>;
   async prompt(kind: "offer", label: string): Promise<OfferChoice>;
-  async prompt(kind: PromptKind, label: string): Promise<PromptChoice> {
+  async prompt(kind: Exclude<PromptKind, "fill_kept">, label: string): Promise<PromptChoice> {
     const failClosed: PromptChoice = kind === "confirm" ? "type_it" : "not_now";
     const valid: readonly PromptChoice[] = kind === "confirm" ? ["autofill", "type_it"] : ["save", "not_now", "never"];
     try {
@@ -478,6 +488,21 @@ export class KeyLockerHost {
       return (valid as readonly string[]).includes(reply.r) ? (reply.r as PromptChoice) : failClosed;
     } catch {
       return failClosed; // pipe timeout / disposed / write failure — decline, never fill/save
+    }
+  }
+
+  /**
+   * internal #281: the SECRET-FREE one-click confirm before a kept fill_once tag is filled (the `prompt` verb,
+   * kind `fill_kept`). Shows the tag, the pane's locker-derived `label` and the assistant's `note` (marked as
+   * its words); carries no key and touches no store entry. FAIL-CLOSED: anything but an explicit "fill" —
+   * Cancel, a dismissed window, a dialog failure, a pipe error, an older helper's `bad_prompt` — is "cancel".
+   */
+  async confirmKeptFill(dialog: { label: string; note: string; tag: string }): Promise<FillKeptChoice> {
+    try {
+      const reply = await this.request("prompt", undefined, CAPTURE_TIMEOUT_MS, { kind: "fill_kept", ...dialog });
+      return reply.ok && reply.r === "fill" ? "fill" : "cancel";
+    } catch {
+      return "cancel";
     }
   }
 

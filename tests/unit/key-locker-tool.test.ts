@@ -324,3 +324,31 @@ describe("the shipped promise says what it covers", () => {
     ).not.toContain("means the field itself had nothing");
   });
 });
+
+describe("key_locker — kept fill_once tags (internal #281)", () => {
+  it("list reports paneTags (names only) beside the bindings — empty without a live wiring", async () => {
+    acceptConsent();
+    const r = await call({ action: "list" });
+    expect(r.paneTags).toEqual({});
+  });
+
+  it("forget_tag needs consent, then the live wiring", async () => {
+    const r = await call({ action: "forget_tag", paneId: "wt:1:2", tag: "jump" });
+    expect(r.code).toBe("KeyLockerConsentRequired");
+    acceptConsent();
+    const r2 = await call({ action: "forget_tag", paneId: "wt:1:2", tag: "jump" });
+    expect(r2.code).toBe("KeyLockerDisabled");
+  });
+
+  it.each(["", "a b", "x".repeat(33), "jump/2", "‮jump"])("a malformed tag %j is rejected by the schema", async (tag) => {
+    acceptConsent();
+    for (const args of [
+      { action: "fill_once", paneId: "wt:1:2", reason: "r", tag },
+      { action: "forget_tag", paneId: "wt:1:2", tag },
+    ]) {
+      const r = await call(args as KeyLockerArgs);
+      expect(r.ok).toBe(false);
+      expect(r.code).not.toBe("KeyLockerDisabled"); // refused before any handler ran
+    }
+  });
+});

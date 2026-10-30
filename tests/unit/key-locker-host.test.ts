@@ -114,9 +114,9 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     hosts.push(host);
 
     expect(host.helperPid).toBe(515_151);
-    expect(host.protocolVersion).toBe("2");
+    expect(host.protocolVersion).toBe("3");
     expect(await host.ping()).toBe(true);
-    expect(await host.version()).toBe("2");
+    expect(await host.version()).toBe("3");
   });
 
   it("exists() reflects the store; delete() removes", async () => {
@@ -204,6 +204,48 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     expect(parsed.k).toBeUndefined();
   });
 
+  it("capture() carries a kept fill_once's tag beside label / note / purpose (internal #281)", async () => {
+    const path = pipePath();
+    const state: FakeState = { store: new Set(), captureReply: { captured: true, rt: true }, lastFrames: [] };
+    await listen(makeFakeLocker(path, { state }), path);
+    const host = await KeyLockerHost.connectForTest(path);
+    hosts.push(host);
+    await host.capture("opaque-2", { label: "locker console", note: "jump host", purpose: "fill_once", tag: "jump" });
+    const parsed = JSON.parse(state.lastFrames.find((f) => f.includes('"capture"'))!) as Record<string, unknown>;
+    expect(Object.keys(parsed).sort()).toEqual(["id", "k", "label", "m", "note", "purpose", "tag"]);
+    expect(parsed.tag).toBe("jump");
+  });
+
+  it("confirmKeptFill() sends kind fill_kept with label / note / tag only (no key) and returns fill (internal #281)", async () => {
+    const path = pipePath();
+    const state: FakeState = { store: new Set(), captureReply: { captured: true, rt: true }, lastFrames: [] };
+    await listen(makeFakeLocker(path, { state, promptReply: "fill" }), path);
+    const host = await KeyLockerHost.connectForTest(path);
+    hosts.push(host);
+    expect(await host.confirmKeptFill({ label: "locker console", note: "jump host", tag: "jump" })).toBe("fill");
+    const parsed = JSON.parse(state.lastFrames.find((f) => f.includes('"prompt"'))!) as Record<string, unknown>;
+    expect(Object.keys(parsed).sort()).toEqual(["id", "kind", "label", "m", "note", "tag"]);
+    expect(parsed).toMatchObject({ kind: "fill_kept", tag: "jump" });
+  });
+
+  it.each(["cancel", "__err__", "autofill", "save", ""])("confirmKeptFill() FAILS CLOSED to cancel on reply %j", async (reply) => {
+    const path = pipePath();
+    await listen(makeFakeLocker(path, { promptReply: reply }), path);
+    const host = await KeyLockerHost.connectForTest(path);
+    hosts.push(host);
+    expect(await host.confirmKeptFill({ label: "l", note: "n", tag: "t" })).toBe("cancel");
+  });
+
+  it("confirmKeptFill() on a disposed host is cancel, and alive turns false", async () => {
+    const path = pipePath();
+    await listen(makeFakeLocker(path, {}), path);
+    const host = await KeyLockerHost.connectForTest(path);
+    expect(host.alive).toBe(true);
+    await host.dispose();
+    expect(host.alive).toBe(false);
+    expect(await host.confirmKeptFill({ label: "l", note: "n", tag: "t" })).toBe("cancel");
+  });
+
   it("prompt('offer') returns a 3-way SaveChoice", async () => {
     const path = pipePath();
     await listen(makeFakeLocker(path, { promptReply: "never" }), path);
@@ -237,7 +279,7 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
 
     const [p, v, e] = await Promise.all([host.ping(), host.version(), host.exists("a")]);
     expect(p).toBe(true);
-    expect(v).toBe("2");
+    expect(v).toBe("3");
     expect(e).toBe(true);
   });
 
@@ -255,15 +297,23 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
 
   it("rejects a locker whose protocol version does not match", async () => {
     const path = pipePath();
-    await listen(makeFakeLocker(path, { protocol: "3" }), path);
-    await expect(KeyLockerHost.connectForTest(path)).rejects.toThrow(/protocol '3' != expected '2'/);
+    await listen(makeFakeLocker(path, { protocol: "4" }), path);
+    await expect(KeyLockerHost.connectForTest(path)).rejects.toThrow(/protocol '4' != expected '3'/);
+  });
+
+  it("rejects a v2 locker — the helper from before kept tags (internal #281)", async () => {
+    // A v2 helper ignores `tag` (its dialog says "one-time entry (not saved)" for a secret that IS kept) and
+    // answers the fill_kept confirm `bad_prompt`.
+    const path = pipePath();
+    await listen(makeFakeLocker(path, { protocol: "2" }), path);
+    await expect(KeyLockerHost.connectForTest(path)).rejects.toThrow(/protocol '2' != expected '3'/);
   });
 
   it("rejects a v1 locker — the helper from before capture carried label/note/purpose (PR #806)", async () => {
     // A stale bin/key-locker.exe would show a fill_once dialog with an opaque id and a [Save] button.
     const path = pipePath();
     await listen(makeFakeLocker(path, { protocol: "1" }), path);
-    await expect(KeyLockerHost.connectForTest(path)).rejects.toThrow(/protocol '1' != expected '2'/);
+    await expect(KeyLockerHost.connectForTest(path)).rejects.toThrow(/protocol '1' != expected '3'/);
   });
 
   it("fails pending requests after dispose", async () => {
