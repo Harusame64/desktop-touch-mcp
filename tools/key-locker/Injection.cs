@@ -47,6 +47,9 @@ internal static class InjectAbort
     public const string Mismatch = "target_mismatch";
     public const string NoSecret = "no_secret";
     public const string EchoOn = "echo_on"; // RequireEchoOff and the console echoes input (PR #806)
+    // RequireEchoOff and a process on the console other than a credential program is waiting in a read
+    // (internal #333): the echo-off mode may be a background ssh's, and the reader the shell's Read-Host.
+    public const string OtherReader = "other_reader";
 }
 
 /// Win32 CONSOLE-BUFFER injector (DF-5 fix) + the injection-instant re-verify.
@@ -104,6 +107,10 @@ internal static class Win32Input
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetStdHandle(int nStdHandle, nint hHandle);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetConsoleMode(nint hConsoleHandle, out uint lpMode);
     private const uint ENABLE_ECHO_INPUT = 0x0004;
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern uint GetConsoleProcessList([Out] uint[] lpdwProcessList, uint dwProcessCount);
+
+    /// The programs that ask for a credential themselves (the Node side's CREDENTIAL_PROGRAMS).
+    private static readonly HashSet<string> CredentialPrograms = new(StringComparer.OrdinalIgnoreCase) { "ssh", "sudo", "doas", "su" };
 
     [DllImport("user32.dll")] private static extern bool IsWindow(nint hWnd);
     [DllImport("user32.dll", SetLastError = true)] private static extern uint GetWindowThreadProcessId(nint hWnd, out uint lpdwProcessId);
@@ -291,6 +298,7 @@ internal static class Win32Input
             {
                 if (!GetConsoleMode(conin, out var mode)) return (false, "executor_failed");
                 if ((mode & ENABLE_ECHO_INPUT) != 0) return (false, InjectAbort.EchoOn);
+                if (AnotherReaderWaits()) return (false, InjectAbort.OtherReader);
             }
 
             var ok = WriteConsoleInputW(conin, arr, (uint)arr.Length, out var written);
@@ -306,6 +314,37 @@ internal static class Win32Input
             SetStdHandle(STD_OUTPUT_HANDLE, savedOut);
             SetStdHandle(STD_ERROR_HANDLE, savedErr);
         }
+    }
+
+    /// internal #333: echo off is not proof that a credential program is the one reading. A background ssh
+    /// (`Start-Process ssh -NoNewWindow`) leaves the console raw while the shell's `Read-Host` reads it, and the
+    /// secret went to that read. Measured on win2 (PR #883 spike, 3 of 3 each): with ssh asking in front, no
+    /// thread of the shell waits as Executive; with `Read-Host` or `[Console]::ReadLine()` waiting behind a
+    /// background ssh, one does (a console read: NtDeviceIoControlFile / NtReadFile). So: any process on this
+    /// console, other than a credential program and this helper, with a thread in an Executive wait → a reader
+    /// that is not the credential program; decline. A child the shell runs to read (`cmd /c set /p`) is on the
+    /// console too, so it is caught as well. Fail-closed: a list or thread read that fails counts as a reader.
+    /// Called inside the attach bracket: nothing here writes to a std stream.
+    private static bool AnotherReaderWaits()
+    {
+        var pids = new uint[64];
+        var n = GetConsoleProcessList(pids, (uint)pids.Length);
+        if (n == 0 || n > pids.Length) return true;
+        var self = (uint)Environment.ProcessId;
+        for (var i = 0; i < n; i++)
+        {
+            if (pids[i] == self) continue;
+            try
+            {
+                using var p = System.Diagnostics.Process.GetProcessById((int)pids[i]);
+                if (CredentialPrograms.Contains(p.ProcessName)) continue;
+                foreach (System.Diagnostics.ProcessThread th in p.Threads)
+                    if (th.ThreadState == System.Diagnostics.ThreadState.Wait &&
+                        th.WaitReason == System.Diagnostics.ThreadWaitReason.Executive) return true;
+            }
+            catch { return true; }
+        }
+        return false;
     }
 
     private static INPUT_RECORD KeyRecord(char ch, ushort vk, bool down) => new()

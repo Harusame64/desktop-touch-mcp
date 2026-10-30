@@ -155,7 +155,10 @@ export type InjectAbortCode =
   | "no_secret" | "bad_target" | "executor_failed"
   // PR #806: a fill_once write (`requireEchoOff`) found the console ECHOING input — a staged prompt, not a
   // real password read. Nothing was written.
-  | "echo_on";
+  | "echo_on"
+  // internal #333: a fill_once write found another process on the console (not ssh / sudo / su / doas)
+  // waiting in a read — e.g. the shell's Read-Host behind a background ssh. Nothing was written.
+  | "other_reader";
 
 /** `inject` result: verified+injected, or a typed abort code. */
 export type InjectClientResult =
@@ -182,7 +185,7 @@ export type PromptChoice = ConfirmChoice | OfferChoice;
 
 const INJECT_ABORT_CODES: readonly InjectAbortCode[] = [
   "target_mismatch", "target_gone", "not_foreground", "target_multiplexed",
-  "no_secret", "bad_target", "executor_failed", "echo_on",
+  "no_secret", "bad_target", "executor_failed", "echo_on", "other_reader",
 ];
 
 /** Map a wire `e` string onto a known abort code so `InjectClientResult.code` never lies. */
