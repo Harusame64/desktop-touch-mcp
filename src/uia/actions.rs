@@ -296,14 +296,17 @@ fn click_element_impl(ctx: &UiaContext, opts: &ClickElementOptions) -> napi::Res
 /// `ActionResult::code` on a click that moved the focus into a text field instead of pressing it.
 pub(crate) const FOCUSED_TEXT_FIELD: &str = "FocusedTextField";
 
-/// An `Edit` or a `Document`: what `write_is_checked` below calls a text field.
+/// An `Edit`. Not a `Document`: the element is found by the first name that contains the one asked for,
+/// depth first, and a page's own `Document` comes before its fields — a field named "Search" on a page
+/// titled "Search results" would find the page, and focusing it would answer the click (codex on #878).
+/// MEASURED win2: the web fields and Notepad's body this road is for are `Edit`s.
 fn is_text_field(elem: &IUIAutomationElement) -> bool {
     unsafe { elem.CurrentControlType() }
-        .map(|t| t.0 == UIA_EditControlTypeId.0 || t.0 == UIA_DocumentControlTypeId.0)
+        .map(|t| t.0 == UIA_EditControlTypeId.0)
         .unwrap_or(false)
 }
 
-/// internal #324 — a click on a text field with no Invoke, on the handle road: the focus is moved into
+/// internal #324 — a click on a text field (`Edit`) with no Invoke, on the handle road: the focus is moved into
 /// it (`focus_first.rs`), and that is the click. MEASURED win2 (2026-10-30, Chrome): a web page's
 /// `<textarea>` and `<input>` are `Edit`s with no Invoke, and `desktop_act` click on one aimed by handle
 /// answered `aim_route_failed` on every build — the handle road does not finish as a coordinate click.

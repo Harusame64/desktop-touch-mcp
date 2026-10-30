@@ -5,7 +5,7 @@
 ### Changed — Windows
 - **`desktop_act` click on a text field puts the focus in it when the window was named by handle.** A web page's
   text area or input has no Invoke in UI Automation, and a click aimed by handle, which does not finish as a
-  coordinate click, answered `aim_route_failed` on every build. A text field (`Edit` or `Document`) with no Invoke
+  coordinate click, answered `aim_route_failed` on every build. A text field (`Edit`) with no Invoke
   now has the keyboard focus moved into it, which is what the click was for. When the focus is not moved (a browser
   window behind another one is left where it is), the click is refused as before. A click aimed by title still
   finishes as a coordinate click (internal #324).
