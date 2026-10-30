@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Changed — Windows
+- **`keyboard` `type` no longer presses a button the focus is on, and says when the focus takes no text.**
+  With the keyboard focus on a control that takes no text — a button, check box, radio button, link, menu item or
+  tab — a space sent by keystroke pressed it, and a paste of 180 characters answered `typed: 180` with nothing
+  inserted. A keystroke text with a space or a line break is now refused with `FocusedControlTakesNoText` and
+  `context.focusedType` before anything is sent, `replaceAll`'s Ctrl+A included. Other text, and any paste, is sent
+  as before, because some windows take the keys themselves with the focus on a button (Calculator takes `12+3=`
+  after a digit was clicked); the reply then carries `hints.focusTakesNoText` and a warning that nothing was inserted
+  unless the window handles the keys. Text boxes, documents, combo boxes (Chromium's web text inputs), list items,
+  a web link (Chromium gives it a value) and controls UI Automation cannot read type as before (internal #322).
 - **`browser_click` on a tab behind another tab no longer clicks the tab in front.** When the browser window was
   already in front, the click landed on whichever tab its window showed, pressing that page's own button, and
   answered `ok: true`. It now refuses with `BrowserPointCovered` and `context.coveredBy: "tab"` when another tab of

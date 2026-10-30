@@ -16,3 +16,12 @@
  * `resolve-log.test.ts` and `resolve-log-keyboard-sink.test.ts`.
  */
 process.env.DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE = "1";
+
+// Internal #322 — `keyboard(action:'type')` asks UI Automation for the focused element before it sends.
+// In a unit test that read would ask the real desktop, so its answer would depend on whatever window
+// holds the focus on the machine running the suite. Here it says nothing (null, as a failed read
+// does); `keyboard-type-refuses-a-focus-that-takes-no-text.test.ts` sets the answer and tests the read.
+import { vi } from "vitest";
+vi.mock("../../src/tools/_type-focus.js", () => ({
+  focusedControlThatTakesNoText: vi.fn(async () => null),
+}));

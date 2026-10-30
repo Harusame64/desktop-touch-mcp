@@ -23,6 +23,7 @@
     "ExitModeShellUnsupported",
     "ExitModeUnsafeInput",
     "FocusLostDuringType",
+    "FocusedControlTakesNoText",
     "ForegroundFlashFailed",
     "ForegroundFlashNotApplicableToKeyPress",
     "ForegroundFlashNotApplicableToSequence",
