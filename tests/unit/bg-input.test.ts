@@ -45,6 +45,7 @@ import {
   comboHasModifier,
   isBgAutoEnabled,
   pasteIntoConsoleNoFocus,
+  CONSOLE_ENTER_SETTLE_MS,
 } from "../../src/engine/bg-input.js";
 import { postMessageToHwnd, getWindowClassName, getProcessIdentityByPid, getFocusedChildHwnd } from "../../src/engine/win32.js";
 import { nativeWin32 } from "../../src/engine/native-engine.js";
@@ -117,6 +118,24 @@ describe("postCharsToHwnd", () => {
       ]);
       expect(result).toEqual({ sent: 8, full: true, target: HWND });
       expect(postMessageToHwnd).not.toHaveBeenCalledWith(expect.anything(), 0x0102, 0x0D, expect.anything());
+    });
+
+    it("waits after an Enter that has more text behind it, and only then (PR #882 spike)", () => {
+      vi.mocked(getWindowClassName).mockReturnValue("ConsoleWindowClass");
+      vi.mocked(postMessageToHwnd).mockReturnValue(true);
+      const order: string[] = [];
+      vi.mocked(postMessageToHwnd).mockImplementation((_t, msg, w) => {
+        order.push(msg === 0x0102 ? String.fromCharCode(Number(w)) : msg === 0x0100 ? "<down>" : "<up>");
+        return true;
+      });
+      const wait = vi.spyOn(Atomics, "wait").mockImplementation((_a, _i, _v, ms) => { order.push(`<wait ${ms}>`); return "timed-out"; });
+      try {
+        postCharsToHwnd(HWND, "a\r\nb\n");
+        expect(order).toEqual(["a", "<down>", "<up>", `<wait ${CONSOLE_ENTER_SETTLE_MS}>`, "b", "<down>", "<up>"]);
+      } finally {
+        wait.mockRestore();
+        vi.mocked(postMessageToHwnd).mockReset();
+      }
     });
 
     it("sends two line breaks in a row as two Enters (an empty line stays)", () => {
