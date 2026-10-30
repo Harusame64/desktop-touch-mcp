@@ -331,6 +331,8 @@ Record every narrowing here so the exceptions stay visible:
     initialize over npx stdio answered in 3.0 s with `desktop-touch 2.4.0` and 32 tools; stdin EOF exited 0. Three
     v2.3.4 servers and two launchers kept their pids. v2.3.3 was not pruned: a stale `running/` mark of it names
     a pid Windows has since given to another program, and the mark is tested by pid alone (internal #327).
+  - MCP Registry: published 2.4.0 from mac (`mcp-publisher` 1.8.4, GitHub device login relayed to the user);
+    latest = 2.4.0, active.
 
 ### HTTP Transport Verification (Required)
 
