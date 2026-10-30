@@ -13,12 +13,22 @@ import { join } from "node:path";
 
 import type { Aim } from "../../src/engine/aim.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
+import { classifyUiaRouteFailure } from "../../src/engine/uia-route-failure.js";
 
 /** The engine's code, read from the Rust source so the two sides cannot drift apart unnoticed. */
 function rustCode(): string {
   const src = readFileSync(join(process.cwd(), "src", "uia", "actions.rs"), "utf8");
   const m = /pub\(crate\) const FOCUSED_TEXT_FIELD: &str = "([^"]+)";/.exec(src);
   if (m === null) throw new Error("FOCUSED_TEXT_FIELD not found in src/uia/actions.rs");
+  return m[1]!;
+}
+
+/** The refusal `focus_text_field` answers when the focus was not moved. */
+function rustRefusal(): string {
+  const src = readFileSync(join(process.cwd(), "src", "uia", "actions.rs"), "utf8");
+  const body = src.slice(src.indexOf("fn focus_text_field("));
+  const m = /error: \(!moved\)\.then\(\|\| "([^"]+)"/.exec(body);
+  if (m === null) throw new Error("focus_text_field's refusal not found in src/uia/actions.rs");
   return m[1]!;
 }
 
@@ -79,8 +89,10 @@ describe("internal #324 — a click on a text field aimed by handle", () => {
   });
 
   it("is still refused, not pressed by coordinates, when the focus was not moved", async () => {
-    clickElement.mockResolvedValue({ ok: false, code: "PatternNotSupported", error: "InvokePattern not supported by this element, and the focus was not moved into it", focusedBy: "kept_behind", via: "native" });
+    clickElement.mockResolvedValue({ ok: false, code: "PatternNotSupported", error: rustRefusal(), focusedBy: "kept_behind", via: "native" });
     const thrown = await click();
     expect((thrown as Error).name).toBe("AimedRouteFailedError");
+    // The reason the caller is told survives (win2 on #878: a changed sentence dropped it).
+    expect(classifyUiaRouteFailure(new Error(rustRefusal()))).toBeDefined();
   });
 });

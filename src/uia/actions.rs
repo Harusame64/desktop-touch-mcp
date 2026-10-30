@@ -318,7 +318,9 @@ fn focus_text_field(ctx: &UiaContext, elem: &IUIAutomationElement) -> ActionResu
     ActionResult {
         ok: moved,
         element: moved.then_some(name),
-        error: (!moved).then(|| "InvokePattern not supported by this element, and the focus was not moved into it".into()),
+        // The words of the refusal before this road, which the server's classifier knows
+        // (`uia-route-failure.ts`); `focused_by` says why the focus did not move (win2 on #878).
+        error: (!moved).then(|| "InvokePattern not supported by this element".into()),
         code: Some(if moved { FOCUSED_TEXT_FIELD } else { "PatternNotSupported" }.into()),
         focused_by: Some(by.into()),
         selected: None,
