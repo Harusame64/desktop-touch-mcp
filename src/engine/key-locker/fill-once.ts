@@ -197,62 +197,77 @@ export async function runFillOnce(
   deps: FillOnceDeps,
   req: { paneId: string; dialog: FillOnceDialog; submit: boolean; tag?: string; retype?: boolean },
 ): Promise<FillOnceOutcome> {
-  const { paneId, dialog, submit, tag } = req;
+  const { paneId, tag } = req;
   const claim = await claimWithRetry(deps, paneId);
   if (!claim.ok) return { kind: "declined", reason: claim.reason };
   try {
-    // Before the dialog: the stop, the prompt, and a real program asking. Never open a credential dialog
-    // for a pane that is not asking for one, or while the user is holding the emergency stop. The same for a
-    // kept tag's confirm: it is still a credential dialog for this prompt.
-    const stopped = await failsafeBlocks(deps);
-    if (stopped !== null) return { kind: "declined", reason: stopped };
-    const before = await deps.readPromptTail(paneId);
-    if (before === null) return { kind: "declined", reason: "prompt_unreadable" };
-    if (!before.isCredentialPrompt) return { kind: "declined", reason: "not_at_prompt" };
-    const procsBefore = deps.credentialProcesses(paneId);
-    if (procsBefore === null) return { kind: "declined", reason: "not_anchored" };
-    if (procsBefore.size === 0) return { kind: "declined", reason: "no_credential_program" };
-    const gate = { paneId, submit, anchor: claim.anchor, before, procsBefore };
-
-    // internal #281: a tag already kept for THIS pane and THIS anchor → confirm, not type. The kept secret is
-    // never erased here, whatever the outcome: it lives until the pane closes or forget_tag.
-    const keptId = tag !== undefined ? deps.kept.lookup(paneId, claim.anchor, tag) : null;
-    if (tag !== undefined && keptId !== null && req.retype !== true) {
-      let outcome: FillOnceOutcome;
-      try {
-        outcome = (await deps.kept.confirm({ ...dialog, tag }))
-          ? await fillAfterDialog(deps, { ...gate, opaqueId: keptId })
-          : { kind: "cancelled" };
-      } catch (err) {
-        outcome = { kind: "fill_aborted", code: `fill_once_error:${err instanceof Error ? err.message : String(err)}` };
-      }
-      // `kept` says what the map holds NOW (a helper that died meanwhile took the tag with it).
-      return deps.kept.lookup(paneId, claim.anchor, tag) !== null ? { ...outcome, kept: true } : outcome;
-    }
-    if (tag !== undefined && keptId === null && deps.kept.count(paneId, claim.anchor) >= MAX_KEPT_TAGS_PER_PANE) {
-      return { kind: "declined", reason: "tag_limit" };
-    }
-
-    // From here on a secret may exist under `opaqueId` (a capture that threw may or may not have stored it),
-    // so every exit erases it — the filled one included, unless it is now kept under its tag.
-    const opaqueId = deps.mintOpaqueId();
-    let outcome: FillOnceOutcome;
-    try {
-      outcome = await captureAndFill(deps, { ...gate, dialog: tag !== undefined ? { ...dialog, tag } : dialog, opaqueId });
-    } catch (err) {
-      outcome = { kind: "fill_aborted", code: `fill_once_error:${err instanceof Error ? err.message : String(err)}` };
-    }
-    if (tag !== undefined && outcome.kind === "filled" && deps.stillAnchored(paneId) &&
-        deps.kept.keep(paneId, claim.anchor, tag, opaqueId)) {
-      return { ...outcome, kept: true };
-    }
-    // Not kept: erase it. A retype that did not fill leaves the earlier kept secret as it was.
-    const wasErased = await erased(deps, opaqueId);
-    const keptBefore = tag !== undefined && deps.kept.lookup(paneId, claim.anchor, tag) !== null ? { kept: true as const } : {};
-    return wasErased ? { ...outcome, ...keptBefore } : { ...outcome, ...keptBefore, cleanupFailed: true };
+    const outcome = await fillClaimed(deps, req, claim.anchor);
+    if (tag === undefined) return outcome;
+    // `kept` says what the map holds NOW for this pane and anchor, however the call ended — an early decline
+    // (no prompt yet) leaves a kept tag kept (codex on #883).
+    const { kept: _kept, ...rest } = outcome;
+    return deps.kept.lookup(paneId, claim.anchor, tag) !== null ? { ...rest, kept: true } : rest;
   } finally {
     deps.release(paneId, claim.token);
   }
+}
+
+/** {@link runFillOnce} once the pane is claimed: the gates, the dialog and the write. */
+async function fillClaimed(
+  deps: FillOnceDeps,
+  req: { paneId: string; dialog: FillOnceDialog; submit: boolean; tag?: string; retype?: boolean },
+  anchor: PaneAnchor,
+): Promise<FillOnceOutcome> {
+  const { paneId, dialog, submit, tag } = req;
+  // Before the dialog: the stop, the prompt, and a real program asking. Never open a credential dialog
+  // for a pane that is not asking for one, or while the user is holding the emergency stop. The same for a
+  // kept tag's confirm: it is still a credential dialog for this prompt.
+  const stopped = await failsafeBlocks(deps);
+  if (stopped !== null) return { kind: "declined", reason: stopped };
+  const before = await deps.readPromptTail(paneId);
+  if (before === null) return { kind: "declined", reason: "prompt_unreadable" };
+  if (!before.isCredentialPrompt) return { kind: "declined", reason: "not_at_prompt" };
+  const procsBefore = deps.credentialProcesses(paneId);
+  if (procsBefore === null) return { kind: "declined", reason: "not_anchored" };
+  if (procsBefore.size === 0) return { kind: "declined", reason: "no_credential_program" };
+  const gate = { paneId, submit, anchor: anchor, before, procsBefore };
+
+  // internal #281: a tag already kept for THIS pane and THIS anchor → confirm, not type. The kept secret is
+  // never erased here, whatever the outcome: it lives until the pane closes or forget_tag.
+  const keptId = tag !== undefined ? deps.kept.lookup(paneId, anchor, tag) : null;
+  if (tag !== undefined && keptId !== null && req.retype !== true) {
+    let outcome: FillOnceOutcome;
+    try {
+      outcome = (await deps.kept.confirm({ ...dialog, tag }))
+        ? await fillAfterDialog(deps, { ...gate, opaqueId: keptId })
+        : { kind: "cancelled" };
+    } catch (err) {
+      outcome = { kind: "fill_aborted", code: `fill_once_error:${err instanceof Error ? err.message : String(err)}` };
+    }
+    // `kept` says what the map holds NOW (a helper that died meanwhile took the tag with it).
+    return deps.kept.lookup(paneId, anchor, tag) !== null ? { ...outcome, kept: true } : outcome;
+  }
+  if (tag !== undefined && keptId === null && deps.kept.count(paneId, anchor) >= MAX_KEPT_TAGS_PER_PANE) {
+    return { kind: "declined", reason: "tag_limit" };
+  }
+
+  // From here on a secret may exist under `opaqueId` (a capture that threw may or may not have stored it),
+  // so every exit erases it — the filled one included, unless it is now kept under its tag.
+  const opaqueId = deps.mintOpaqueId();
+  let outcome: FillOnceOutcome;
+  try {
+    outcome = await captureAndFill(deps, { ...gate, dialog: tag !== undefined ? { ...dialog, tag } : dialog, opaqueId });
+  } catch (err) {
+    outcome = { kind: "fill_aborted", code: `fill_once_error:${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (tag !== undefined && outcome.kind === "filled" && deps.stillAnchored(paneId) &&
+      deps.kept.keep(paneId, anchor, tag, opaqueId)) {
+    return { ...outcome, kept: true };
+  }
+  // Not kept: erase it. A retype that did not fill leaves the earlier kept secret as it was.
+  const wasErased = await erased(deps, opaqueId);
+  const keptBefore = tag !== undefined && deps.kept.lookup(paneId, anchor, tag) !== null ? { kept: true as const } : {};
+  return wasErased ? { ...outcome, ...keptBefore } : { ...outcome, ...keptBefore, cleanupFailed: true };
 }
 
 /** Erase the one-time secret: two attempts (a pipe hiccup is the usual cause); false if both failed. */

@@ -571,10 +571,11 @@ describe("runFillOnce — a KEPT tag: confirm, never type", () => {
     ["the stop armed during the confirm", { failsafe: [null, new FailsafeError()] }, "failsafe_engaged", true],
     ["the pane closed during the confirm", { anchored: false }, "target_gone", true],
   ];
-  it.each(gates)("%s → declined; nothing typed; the tag stays", async (_n, opts, reason, didConfirm) => {
+  it.each(gates)("%s → declined; nothing typed; the tag stays, and the reply says so", async (_n, opts, reason, didConfirm) => {
     const k = withKept();
     const f = fake({ kept: k.tags, ...opts });
-    expect(await runFillOnce(f.deps, TAGGED)).toMatchObject({ kind: "declined", reason });
+    // `kept` on every decline, the early ones too (codex on #883: a decline before the lookup said false).
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "declined", reason, kept: true });
     expect(wrote(f)).toBe(false);
     expect(opened(f)).toBe(false);
     expect(confirmed(f)).toBe(didConfirm);

@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { KeyLockerHost } from "../../src/engine/key-locker-host.js";
 import { KeyLockerManager } from "../../src/engine/key-locker/key-locker-manager.js";
 import { BindingStore } from "../../src/engine/key-locker/binding-store.js";
-import { keyLockerHandler, __setKeyLockerManagerForTest, __setSshExecForTest } from "../../src/tools/key-locker-tool.js";
+import { keyLockerHandler, keptReply, __setKeyLockerManagerForTest, __setSshExecForTest } from "../../src/tools/key-locker-tool.js";
 import type { KeyLockerArgs } from "../../src/tools/key-locker-tool.js";
 import type { ExecFn } from "../../src/engine/key-locker/ssh-resolve.js";
 
@@ -350,5 +350,14 @@ describe("key_locker — kept fill_once tags (internal #281)", () => {
       expect(r.ok).toBe(false);
       expect(r.code).not.toBe("KeyLockerDisabled"); // refused before any handler ran
     }
+  });
+
+  it("a tagged reply says whether the tag is still kept, and leaves it out when the pane was never taken (codex on #883)", () => {
+    expect(keptReply(undefined, { kind: "filled", verified: true })).toEqual({});
+    expect(keptReply("jump", { kind: "declined", reason: "not_at_prompt", kept: true })).toEqual({ tag: "jump", tagKept: true });
+    expect(keptReply("jump", { kind: "declined", reason: "not_at_prompt" })).toEqual({ tag: "jump", tagKept: false });
+    expect(keptReply("jump", { kind: "cancelled", kept: true })).toEqual({ tag: "jump", tagKept: true });
+    expect(keptReply("jump", { kind: "declined", reason: "busy" })).toEqual({ tag: "jump" });
+    expect(keptReply("jump", { kind: "declined", reason: "not_anchored" })).toEqual({ tag: "jump" });
   });
 });

@@ -48,6 +48,7 @@ import {
 import { resolveCanonicalForSshCommand, type ExecFn } from "../engine/key-locker/ssh-resolve.js";
 import { keyLockerWiring } from "./key-locker-wiring.js";
 import { KEPT_TAG_PATTERN, MAX_KEPT_TAGS_PER_PANE } from "../engine/key-locker/kept-tags.js";
+import type { FillOnceOutcome } from "../engine/key-locker/fill-once.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schema — a discriminated union over `action` (Opus R1 P2-6: the FULL 3-layer chain, mirroring excel).
@@ -427,6 +428,16 @@ async function handleLaunchConsole(
   }
 }
 
+/**
+ * internal #281: with a tag, whether it is kept for this pane after the call (names only). Left out when the
+ * pane could not be taken at all (not a locker pane, or busy): then it is not known (codex on #883).
+ */
+export function keptReply(tag: string | undefined, outcome: FillOnceOutcome): { tag?: string; tagKept?: boolean } {
+  if (tag === undefined) return {};
+  const unclaimed = outcome.kind === "declined" && (outcome.reason === "not_anchored" || outcome.reason === "busy");
+  return unclaimed ? { tag } : { tag, tagKept: outcome.kept === true };
+}
+
 /** What the assistant should do next after a declined fill_once (no secret, no pane text). */
 const FILL_ONCE_HINTS: Record<string, string> = {
   not_anchored: "Only a pane opened by key_locker launch_console can be filled. Launch one, run the command in it, then call fill_once.",
@@ -472,8 +483,7 @@ async function handleFillOnce(
     const cleanup = outcome.cleanupFailed === true
       ? { cleanupFailed: true, cleanupHint: "The one-time secret could not be erased from the locker; it is discarded when the locker helper exits." }
       : {};
-    // internal #281: with a tag, say whether it is kept for this pane after the call (names only).
-    const kept = tag !== undefined ? { tag, tagKept: outcome.kept === true } : {};
+    const kept = keptReply(tag, outcome);
     switch (outcome.kind) {
       case "filled":
         return ok({ filled: true, verified: outcome.verified, ...kept, ...cleanup });
