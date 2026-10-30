@@ -136,7 +136,9 @@ export interface InjectTarget {
   submit?: boolean;
   /** fill_once (PR #806): write only while the console has echo OFF (a real password read); else the
    *  locker aborts `echo_on`. A staged `Read-Host` / `set /p` prompt echoes, and the secret would be
-   *  readable back from the pane. */
+   *  readable back from the pane. It also requires a process on the console to be waiting on the
+   *  ssh / sudo / su / doas there, else `other_reader` (internal #333: a background ssh leaves echo off
+   *  while the shell's own `Read-Host` reads). */
   requireEchoOff?: boolean;
 }
 

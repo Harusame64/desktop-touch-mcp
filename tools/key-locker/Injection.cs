@@ -108,6 +108,10 @@ internal static class Win32Input
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetConsoleMode(nint hConsoleHandle, out uint lpMode);
     private const uint ENABLE_ECHO_INPUT = 0x0004;
     [DllImport("kernel32.dll", SetLastError = true)] private static extern uint GetConsoleProcessList([Out] uint[] lpdwProcessList, uint dwProcessCount);
+    private delegate bool ConsoleCtrlHandler(uint ctrlType);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetConsoleCtrlHandler(ConsoleCtrlHandler? handler, bool add);
+    // Held in a static so the delegate outlives every registration.
+    private static readonly ConsoleCtrlHandler IgnoreConsoleCtrl = _ => true;
 
     /// The programs that ask for a credential themselves (the Node side's CREDENTIAL_PROGRAMS).
     private static readonly HashSet<string> CredentialPrograms = new(StringComparer.OrdinalIgnoreCase) { "ssh", "sudo", "doas", "su" };
@@ -288,6 +292,10 @@ internal static class Win32Input
             // spike-proven to deliver into the ConPTY'd console input buffer end-to-end.
             if (!AttachConsole(t.Hwnd != 0 ? t.ConsolePid : t.ShellPid)) return (false, InjectAbort.Gone);
             attached = true;
+            // While attached, the helper is one of the console's clients, and Ctrl+C / Ctrl+Break there would
+            // run the default handler (ExitProcess) here too, losing every kept secret. The fill_once check
+            // below keeps the bracket open for tens of ms (internal #333). Closing the window still ends us.
+            SetConsoleCtrlHandler(IgnoreConsoleCtrl, true);
 
             conin = CreateFileW("CONIN$", GENERIC_READ | GENERIC_WRITE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
@@ -304,7 +312,8 @@ internal static class Win32Input
             {
                 if (!GetConsoleMode(conin, out var mode)) return (false, "executor_failed");
                 if ((mode & ENABLE_ECHO_INPUT) != 0) return (false, InjectAbort.EchoOn);
-                if (!CredentialProgramInFront()) return (false, InjectAbort.OtherReader);
+                var front = CredentialProgramInFront();
+                if (front != null) return (false, front);
             }
 
             var ok = WriteConsoleInputW(conin, arr, (uint)arr.Length, out var written);
@@ -313,7 +322,7 @@ internal static class Win32Input
         finally
         {
             if (conin != INVALID_HANDLE) CloseHandle(conin);
-            if (attached) FreeConsole();
+            if (attached) { FreeConsole(); SetConsoleCtrlHandler(IgnoreConsoleCtrl, false); }
             // Restore the std handles AttachConsole/FreeConsole rebound, so later verbs' diagnostics go
             // back to the helper's original streams, not the user's console (Opus R1 P2-1).
             SetStdHandle(STD_INPUT_HANDLE, savedIn);
@@ -333,13 +342,16 @@ internal static class Win32Input
     /// (with or without `-PassThru`) and `cmd /c start /b` is not. Not covered: a script that itself opens the
     /// background ssh's handle (`$p.Handle`, and likely `$p.HasExited` / `$p.WaitForExit()`) passes. The
     /// earlier signal (a shell thread in an Executive wait) came and went with how the window was started.
-    /// Fail-closed: a list, name or handle-table read that fails, or a handle that cannot be duplicated to
-    /// read, counts as not held. Called inside the attach bracket: nothing here writes to a std stream.
-    private static bool CredentialProgramInFront()
+    /// Returns null when held, `other_reader` when not, and `executor_failed` when the console's process list,
+    /// a name or the handle table cannot be read (both decline; only the reason differs). Called inside the
+    /// attach bracket: nothing here writes to a std stream.
+    private static string? CredentialProgramInFront()
     {
+        // Sized from the count the call reports when the console has more clients than the first guess.
         var pids = new uint[64];
         var n = GetConsoleProcessList(pids, (uint)pids.Length);
-        if (n == 0 || n > pids.Length) return false;
+        if (n > pids.Length) { pids = new uint[n + 16]; n = GetConsoleProcessList(pids, (uint)pids.Length); }
+        if (n == 0 || n > pids.Length) return "executor_failed";
         var self = (uint)Environment.ProcessId;
         var credential = new HashSet<uint>();
         var others = new HashSet<uint>();
@@ -351,21 +363,25 @@ internal static class Win32Input
                 using var p = System.Diagnostics.Process.GetProcessById((int)pids[i]);
                 (CredentialPrograms.Contains(p.ProcessName) ? credential : others).Add(pids[i]);
             }
-            catch { return false; }
+            // Exited since the list was read: it can neither be the credential program nor hold its handle.
+            catch (ArgumentException) { }
+            catch (InvalidOperationException) { }
+            catch { return "executor_failed"; }
         }
-        if (credential.Count == 0 || others.Count == 0) return false;
+        if (credential.Count == 0 || others.Count == 0) return InjectAbort.OtherReader;
 
         // The handle table carries no target pid, and the kernel object address is hidden from an unprivileged
-        // caller, so: learn the Process type index from a handle this process opens itself, then duplicate each
-        // Process-typed handle the others hold and ask it which pid it names.
-        var probe = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, credential.First());
-        if (probe == 0) return false;
+        // caller, so: learn the Process type index from a handle this process opens on itself, then duplicate
+        // each Process-typed handle the others hold and ask it which pid it names. A holder that cannot be
+        // opened, or a handle that cannot be duplicated, is skipped (not held).
+        var probe = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, self);
+        if (probe == 0) return "executor_failed";
         var holders = new Dictionary<uint, nint>();
         nint table = 0;
         try
         {
             table = QueryHandleTable();
-            if (table == 0) return false;
+            if (table == 0) return "executor_failed";
             var count = (long)Marshal.ReadIntPtr(table);
             int? processType = null;
             for (long i = 0; i < count && processType == null; i++)
@@ -374,7 +390,7 @@ internal static class Win32Input
                 if ((uint)Marshal.ReadIntPtr(e, 8) == self && Marshal.ReadIntPtr(e, 16) == probe)
                     processType = (ushort)Marshal.ReadInt16(e, 30);
             }
-            if (processType == null) return false;
+            if (processType == null) return "executor_failed";
             for (long i = 0; i < count; i++)
             {
                 var e = table + HandleTableHeader + (nint)(i * HandleEntrySize);
@@ -387,9 +403,9 @@ internal static class Win32Input
                         PROCESS_QUERY_LIMITED_INFORMATION, false, 0)) continue;
                 var target = GetProcessId(dup);
                 CloseHandle(dup);
-                if (credential.Contains(target)) return true;
+                if (credential.Contains(target)) return null;
             }
-            return false;
+            return InjectAbort.OtherReader;
         }
         finally
         {
