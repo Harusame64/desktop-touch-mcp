@@ -786,6 +786,13 @@ const SUGGESTS: Record<string, string[]> = {
     "Drop forceKeystrokes (default false) so auto-clipboard promotion handles non-ASCII / IME-active windows transparently.",
     "Diagnose live state via desktop_state — hints.imeOpen reports the focused window's IME composition mode.",
   ],
+  // Internal #322: keyboard({action:'type'}) found the keyboard focus on a control that takes no text
+  // (context.focusedType). Pre-injection refusal — nothing was sent, not even Ctrl+A.
+  FocusedControlTakesNoText: [
+    "Nothing was typed: the keyboard focus is on a control that takes no text (context.focusedType, e.g. a Button) — the characters would be dropped there, and a space or Enter would press it.",
+    "Put the focus on the text field first — click it (click_element / desktop_act click, or browser_click on a web page) — then type again.",
+    "To press the focused control or send its access key on purpose, use keyboard(action='press') instead.",
+  ],
   // Issue #180 (matrix doc §3.1 / §5.2): clipboard(action:'write') post-write
   // read-back returned bytes that disagree with the requested UTF-16LE payload.
   ClipboardWriteNotDelivered: [
@@ -1668,6 +1675,10 @@ function classify(message: string): { code: string; suggest: string[] } {
   // toggling the safe paths (forceImeOff / use_clipboard / drop forceKeystrokes).
   if (m.includes("imeonduringtype") || m.includes("ime on during type")) {
     return { code: "ImeOnDuringType", suggest: SUGGESTS.ImeOnDuringType };
+  }
+  // Internal #322: keyboard({action:'type'}) refused before sending — the focus takes no text.
+  if (m.includes("focusedcontroltakesnotext")) {
+    return { code: "FocusedControlTakesNoText", suggest: SUGGESTS.FocusedControlTakesNoText };
   }
   // Phase 5 I1 (Phase 2a F4): keyboard({action:'type'}) Focus Leash mid-stream
   // focus theft typed code. SUGGESTS dictionary entry above provides the SSOT

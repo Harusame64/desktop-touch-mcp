@@ -33,6 +33,7 @@ import {
 } from "../engine/bg-input.js";
 import { resolveBackgroundInputChannel } from "../engine/background-channel-resolver.js";
 import { getTextViaTextPattern, getTextViaValuePattern } from "../engine/uia-bridge.js";
+import { focusedControlThatTakesNoText } from "./_type-focus.js";
 import { stripAnsi } from "../engine/ansi.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
@@ -2530,6 +2531,20 @@ export const keyboardTypeHandler = async ({
         );
       }
       perceptionEnv = ag.summary;
+    }
+
+    // Internal #322 — the focus is on a control that takes no text. win2 (2026-10-28, Chrome): with the
+    // focus on a page's "Close panel" button, a paste answered ok:true, typed:180 and nothing landed; a
+    // space or Enter sent there by keystroke presses the button instead. Asked once the window is in
+    // front and the guard has passed, before Ctrl+A or any character. A read that fails or finds no
+    // focus decides nothing.
+    const focusedType = await focusedControlThatTakesNoText();
+    if (focusedType !== null) {
+      return failWith(new Error("FocusedControlTakesNoText"), "keyboard:type", {
+        focusedType,
+        ...(perceptionEnv && { _perceptionForPost: perceptionEnv }),
+        ...(warnings.length > 0 && { hints: { warnings } }),
+      });
     }
 
     // Ctrl+A to replace existing content before typing

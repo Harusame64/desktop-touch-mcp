@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Changed — Windows
+- **`keyboard` `type` no longer answers `ok: true` when the focus is on a button.** With the keyboard focus on a
+  control that takes no text — a button, check box, radio button, link, menu item or tab — the characters were
+  dropped (a paste of 180 characters answered `typed: 180` with nothing inserted), and by keystroke a space or Enter
+  pressed the control. It now refuses with `FocusedControlTakesNoText` and `context.focusedType` before anything is
+  sent, `replaceAll`'s Ctrl+A included. Click the field first; to press the control itself, use `action: 'press'`.
+  Text boxes, documents, combo boxes (Chromium's web text inputs), list items and controls UI Automation cannot read
+  type as before (internal #322).
 - **`browser_click` on a tab behind another tab no longer clicks the tab in front.** When the browser window was
   already in front, the click landed on whichever tab its window showed, pressing that page's own button, and
   answered `ok: true`. It now refuses with `BrowserPointCovered` and `context.coveredBy: "tab"` when another tab of
