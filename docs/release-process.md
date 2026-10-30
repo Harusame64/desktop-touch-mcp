@@ -280,6 +280,24 @@ Record every narrowing here so the exceptions stay visible:
     stdin EOF exited with code 0. Three v2.3.3 servers kept their pids throughout.
   - MCP Registry: published 2.3.4 from mac (`mcp-publisher` 1.8.4, GitHub device login relayed to the user);
     latest = 2.3.4, active.
+- **v2.4.0 (2026-10-30)** — narrowed by the user's decision (the middle of three scopes offered). Each of the
+  eleven runtime PRs in it (#868–#878) ran on win2's machine before it merged, but #873 and #874 change how every
+  keystroke text is typed, so Step 3 is kept. Planned: one build of the release head (native addon included), then:
+  - D0: version, HTTP 6/6 reporting 2.4.0, `publish --dry-run`, and npx from the packed tarball stopping at the
+    PENDING manifest.
+  - D1: one cell from each PR — #868 an `ambiguous_target` refusal naming the minimised window; #869 `browser_click`
+    behind another app's window names `forceFocus`, and `forceFocus: true` clicks; #870 a maximized window stays
+    maximized after `focus_window`; #871 a `browser_*` call without `tabId` uses the page, not the browser's own
+    pages (if a sign-in or consent dialog can be brought up; otherwise say it was not run); #872 `browser_click` on
+    a tab its window is not showing → `BrowserPointCovered`, `coveredBy: "tab"`; #873 a keystroke `"a b"` with the
+    focus on a button → `FocusedControlTakesNoText`, and Calculator still takes `12+3=`; #874 two lines into a
+    text editor and into PowerShell, each one break, run in order; #875 `window_dock` of a window with a minimum
+    width → `sizeDiffers`, on screen; #876 `focus_window` with `chromeTabUrlContains` and the title from before the
+    switch; #877 a field inside an `aria-modal` panel is written, one outside it refused; #878 a handle-aimed click
+    on a web text area → `FocusedTextField`.
+  - D2: Step 3 — the keyboard, mouse, terminal, clipboard and scroll scenarios in internal
+    `docs/llm-audit/dogfood-scenarios/`. Steps 2 and 4 are not run.
+  - D3: the usual regressions, 3/3.
 
 ### HTTP Transport Verification (Required)
 
