@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Changed — Windows
+- **`desktop_act` no longer refuses a field inside a page's modal panel because of that panel.** A web page's side
+  panel marked `role="dialog" aria-modal="true"` reads through UI Automation as a modal window, and an act on its
+  own text area was refused with `modal_blocking` naming the panel. A modal window is no longer counted against an
+  element below it in the tree `desktop_discover` read; a field outside it is still refused. Behind a real
+  `<dialog>` opened with `showModal()` the page's fields leave the tree, so none is let through (internal #321).
 - **`focus_window` with `chromeTabUrlContains` finds the window by the title it had before the switch.** A browser
   window's title is its showing tab's, so the window's title copied before the call stopped matching once the tab
   was activated: the tab was switched and the reply was `WindowNotFound`. A window the title named before the

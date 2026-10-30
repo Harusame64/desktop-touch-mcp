@@ -79,6 +79,12 @@ export interface EntityLocator {
      * addon): absence is "not said", never "not modal".
      */
     isModal?: boolean;
+    /**
+     * internal #321 — where the element sits in the tree the read walked: `/<ControlType>[<index among
+     * siblings>]` per level from the read's root. Compared only within one read, to tell whether an
+     * element is below a `Window`. Absent when the read did not record it.
+     */
+    path?: string;
   };
   /** CDP: element identified by CSS selector, optionally scoped to a tab. */
   cdp?: { selector?: string; tabId?: string };
