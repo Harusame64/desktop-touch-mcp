@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Changed — Windows
+- **A line break typed by keystroke is a plain Enter.** `keyboard` `type` and `terminal` `send` by keystroke sent
+  `\n` as Ctrl+Enter (the key Windows names for LF): a browser text area got no line break, and in chat and mail
+  apps Ctrl+Enter sends. `\r\n` was Enter then Ctrl+Enter, two line breaks in Notepad. Now `\n`, `\r` and `\r\n`
+  are each one Enter, and the focus leash never splits `\r\n` across two chunks. A paste is unchanged
+  (internal #323).
 - **`keyboard` `type` no longer presses a button the focus is on, and says when the focus takes no text.**
   With the keyboard focus on a control that takes no text — a button, check box, radio button, link, menu item or
   tab — a space sent by keystroke pressed it, and a paste of 180 characters answered `typed: 180` with nothing

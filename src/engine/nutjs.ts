@@ -69,8 +69,29 @@ const keyboard: RawKeyboard = Object.assign(Object.create(Object.getPrototypeOf(
   releaseKey: ((...keys: Parameters<RawKeyboard["releaseKey"]>) =>
     withInputLock(() => _rawKeyboard.releaseKey(...keys))) as RawKeyboard["releaseKey"],
   type: ((...args: Parameters<RawKeyboard["type"]>) =>
-    withInputLock(() => _rawKeyboard.type(...args))) as RawKeyboard["type"],
+    withInputLock(() => typeWithPlainEnter(args))) as RawKeyboard["type"],
 });
+
+/**
+ * Internal #323 — a line break is typed as a plain Enter. libnut types each character with the key
+ * `VkKeyScan` names, and for LF that is Ctrl+Enter (win2, 2026-10-30: `VkKeyScanA('\n')` = 0x0A0D);
+ * only CR is a plain Enter. In Chrome a "\n" inserted nothing, and in chat and mail apps Ctrl+Enter
+ * sends; "\r\n" was Enter then Ctrl+Enter, two line breaks in Notepad. So CRLF, CR and LF are each one
+ * Enter, pressed here between the runs of text. Only a single string is split: nut.js joins several
+ * with spaces, and a Key list is not text.
+ */
+async function typeWithPlainEnter(args: Parameters<RawKeyboard["type"]>): Promise<RawKeyboard> {
+  if (args.length !== 1 || typeof args[0] !== "string") return _rawKeyboard.type(...args);
+  const lines = args[0].split(/\r\n|\r|\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0) {
+      await _rawKeyboard.pressKey(Key.Enter);
+      await _rawKeyboard.releaseKey(Key.Enter);
+    }
+    if (lines[i] !== "") await _rawKeyboard.type(lines[i]!);
+  }
+  return _rawKeyboard;
+}
 
 // Test-only hook so unit tests can deterministically reset the queue between
 // cases. Not part of the public engine API — guarded by underscore prefix.

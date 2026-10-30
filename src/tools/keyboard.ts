@@ -2625,7 +2625,11 @@ export const keyboardTypeHandler = async ({
         const codePoints = Array.from(effectiveText);
         let typed = 0;
         try {
-          for (let i = 0; i < codePoints.length; i += chunkSize) {
+          // Internal #323 — a chunk never ends between CR and LF: each is typed as an Enter of its own
+          // (`nutjs.ts` typeWithPlainEnter), so a CRLF split across two chunks would be two line breaks.
+          for (let i = 0, end = 0; i < codePoints.length; i = end) {
+            end = Math.min(i + chunkSize, codePoints.length);
+            if (codePoints[end - 1] === "\r" && codePoints[end] === "\n") end++;
             // ADR-036 — the leash decides whether to keep sending, so it has to
             // ask about the window the keys are aimed at. By title it answered
             // "still focused" when a same-titled SIBLING had taken the
@@ -2665,7 +2669,7 @@ export const keyboardTypeHandler = async ({
                 }
               );
             }
-            const chunk = codePoints.slice(i, i + chunkSize).join("");
+            const chunk = codePoints.slice(i, end).join("");
             // First chunk only, and only once the focus check above has let it
             // through: an abort at i=0 sends nothing at all.
             if (i === 0) {
