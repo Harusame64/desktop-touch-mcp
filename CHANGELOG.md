@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Changed — Windows
+- **`window_dock` says when the window did not take the size, and keeps it on screen.** A window with a minimum
+  size of its own (Edge will not go below 516 px wide) was left at its own width with its edge past the screen, and
+  the reply was `ok: true` with nothing flagged. It is now placed in the corner at the size it kept, and the reply
+  carries `sizeDiffers` (`"width"`, `"height"`) and says so in `hint`. A window that stays maximized is not docked:
+  `ok: false` (internal #317).
 - **A line break typed by keystroke is a plain Enter.** `keyboard` `type` and `terminal` `send` by keystroke sent
   `\n` as Ctrl+Enter (the key Windows names for LF): a browser text area got no line break, and in chat and mail
   apps Ctrl+Enter sends. `\r\n` was Enter then Ctrl+Enter, two line breaks in Notepad. Now `\n`, `\r` and `\r\n`

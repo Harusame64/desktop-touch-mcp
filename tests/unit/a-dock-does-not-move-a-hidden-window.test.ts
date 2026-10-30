@@ -19,6 +19,7 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
     restoreAndFocusWindow: mocks.restore,
     clearWindowTopmost: mocks.unpin,
     getWindowRectByHwnd: () => ({ x: 8, y: 8, width: 400, height: 600 }),
+    isWindowMaximized: () => false,
   };
 });
 
