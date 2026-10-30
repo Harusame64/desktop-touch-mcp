@@ -235,6 +235,15 @@ export function getWindowTitleW(hwnd: unknown): string {
  * Get the current bounding rectangle of a window by its HWND.
  * Returns null if the window no longer exists or the call fails.
  */
+/** Whether the window is maximized (`IsZoomed`). Null when it cannot be asked. */
+export function isWindowMaximized(hwnd: unknown): boolean | null {
+  try {
+    return requireNativeWin32().win32IsZoomed!(hwnd as bigint);
+  } catch {
+    return null;
+  }
+}
+
 export function getWindowRectByHwnd(hwnd: unknown): { x: number; y: number; width: number; height: number } | null {
   try {
     const rect = requireNativeWin32().win32GetWindowRect!(hwnd as bigint);

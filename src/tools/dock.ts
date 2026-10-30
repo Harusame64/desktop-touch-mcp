@@ -8,6 +8,7 @@ import {
   clearWindowTopmost,
   restoreAndFocusWindow,
   getWindowRectByHwnd,
+  isWindowMaximized,
   findAncestorWindow,
 } from "../engine/win32.js";
 import type { WindowZInfo, MonitorInfo } from "../engine/win32.js";
@@ -136,6 +137,8 @@ interface DockResult {
   monitorId?: number;
   requested?: { x: number; y: number; width: number; height: number };
   actual?: { x: number; y: number; width: number; height: number };
+  /** Internal #317 — which of `actual`'s width and height are not the ones requested. Absent when both are. */
+  sizeDiffers?: Array<"width" | "height">;
   pinned?: boolean;
   hint?: string;
 }
@@ -177,26 +180,67 @@ function dockKnownWindow(
     };
   }
 
+  const requested = { x, y, width: finalW, height: finalH };
+
+  // Internal #317 — the window may not take the bounds, and the reply said ok either way (win2,
+  // 2026-10-28). Still maximized: nothing was docked. A size of its own (Edge will not go below 516 px
+  // wide): that size is placed in the corner again, so it does not run past the screen's edge, and the
+  // reply names what differs. A rect that cannot be read decides nothing.
+  if (isWindowMaximized(win.hwnd) === true) {
+    return {
+      ok: false,
+      title: win.title,
+      requested,
+      ...(getWindowRectByHwnd(win.hwnd) && { actual: getWindowRectByHwnd(win.hwnd)! }),
+      error: "The window stayed maximized, so it was not docked. Restore it to its normal size (or ask the user to), then dock again.",
+    };
+  }
+  let actual = getWindowRectByHwnd(win.hwnd);
+  const differs = (a: number, b: number) => Math.abs(a - b) > DOCK_TOLERANCE_PX;
+  if (actual && (differs(actual.width, finalW) || differs(actual.height, finalH))) {
+    const kept = computeCornerPosition(wa, corner, actual.width, actual.height, margin);
+    // A size larger than the work area keeps its top-left inside it, so the title bar stays reachable;
+    // the overflow goes past the bottom or right edge instead (codex on #875).
+    const keptX = Math.max(kept.x, wa.x + margin);
+    const keptY = Math.max(kept.y, wa.y + margin);
+    setWindowBounds(win.hwnd, keptX, keptY, actual.width, actual.height);
+    actual = getWindowRectByHwnd(win.hwnd) ?? actual;
+  }
+  const sizeDiffers = actual
+    ? (["width", "height"] as const).filter((k) => differs(actual![k], requested[k]))
+    : [];
+
   let pinned = false;
   if (pin) pinned = setWindowTopmost(win.hwnd);
   else clearWindowTopmost(win.hwnd);
 
-  const actual = getWindowRectByHwnd(win.hwnd) ?? { x, y, width: finalW, height: finalH };
   const pinNote = pin && !pinned ? " (pin requested but failed)" : "";
+  const sizeNote = sizeDiffers.length > 0
+    ? ` The window kept a size of its own (${actual!.width}x${actual!.height}, not ${finalW}x${finalH}) — the app sets a ` +
+      "minimum or maximum — and was placed in the corner at that size."
+    : "";
 
   return {
     ok: true,
     title: win.title,
     corner,
     monitorId: mon.id,
-    requested: { x, y, width: finalW, height: finalH },
-    actual,
+    requested,
+    actual: actual ?? requested,
+    ...(sizeDiffers.length > 0 && { sizeDiffers: [...sizeDiffers] }),
     pinned,
-    hint: pinned
+    hint: (pinned
       ? "Window pinned always-on-top. Call window_dock(action='unpin') to release."
-      : `Window positioned (not pinned)${pinNote}.`,
+      : `Window positioned (not pinned)${pinNote}.`) + sizeNote,
   };
 }
+
+/**
+ * Internal #317 — how far `GetWindowRect` may be from the requested size and still count as taken. Both
+ * sides use the same rect (the invisible resize borders included), so a window that took the bounds
+ * reads them exactly; the slack is for rounding when the window's DPI scale changes on the move.
+ */
+const DOCK_TOLERANCE_PX = 2;
 
 export const dockWindowHandler = async ({
   title,
