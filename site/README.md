@@ -24,6 +24,7 @@ site/
   articles/
     client-setup.html
     client-setup.md
+    privacy.html
     beyond-coordinate-roulette.html
     beyond-coordinate-roulette.md
     planned-evaluation.html

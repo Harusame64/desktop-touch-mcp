@@ -308,3 +308,5 @@ mouse_click(x, y, origin?, scale?)    → 最終手段。dotByDot screenshot の
 ## ライセンス
 
 MIT
+
+無保証です。テレメトリーは送りません。送るもの・手元に残すものは[プライバシーポリシー](https://harusame64.github.io/desktop-touch-mcp/articles/privacy.html)（英語）に、脆弱性の報告先は[セキュリティポリシー](https://github.com/Harusame64/desktop-touch-mcp/blob/main/SECURITY.md)にあります。
