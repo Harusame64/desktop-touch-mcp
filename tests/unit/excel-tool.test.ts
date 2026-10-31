@@ -257,9 +257,10 @@ describe("excelHandler — run_vba", () => {
     expect(nativeExcel!.excelSessionSpawn).toHaveBeenCalledTimes(1);
     expect(nativeExcel!.excelSetVisible).toHaveBeenCalledWith(42, false);
     expect(nativeExcel!.excelWorkbookAddNew).toHaveBeenCalledWith(42);
+    // The module is never named after the macro (Application.Run would name the module: win2, #895).
     expect(nativeExcel!.excelVbaModuleAdd).toHaveBeenCalledWith(
       42,
-      "DesktopTouchAdHoc",
+      "DesktopTouchModule",
       SAMPLE_MACRO
     );
     expect(nativeExcel!.excelWorkbookSaveAs).toHaveBeenCalledWith(
@@ -377,5 +378,14 @@ describe("run_vba workbook cleanup (internal #336)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("vbaModuleNameFor (#895)", () => {
+  it("is never the macro's own name", async () => {
+    const { vbaModuleNameFor } = await import("../../src/tools/excel.js");
+    expect(vbaModuleNameFor("DesktopTouchAdHoc")).toBe("DesktopTouchModule");
+    expect(vbaModuleNameFor("DesktopTouchModule")).toBe("DesktopTouchModule2");
+    expect(vbaModuleNameFor("desktoptouchmodule")).toBe("DesktopTouchModule2");
   });
 });

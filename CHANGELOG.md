@@ -34,6 +34,9 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **`excel` `run_vba` runs the macro.** The module the code went into was named after the macro, and Excel then
+  refused every run with "cannot run the macro" (0x800a03ec), whatever the code. The module now has its own
+  name (#895).
 - **`excel` `run_vba` no longer leaves a workbook with your macro behind.** Each run saved a `.xlsm` with the
   macro's code into `%LOCALAPPDATA%\desktop-touch-mcp\trusted-vba` and never removed it. The workbook is now
   removed once the macro has run, and any left from earlier runs is removed at the start of the next one

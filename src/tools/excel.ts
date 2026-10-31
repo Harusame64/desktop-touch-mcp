@@ -57,6 +57,11 @@ import type { NativeExcelAccessVbomStatus } from "../engine/native-types.js";
  * close (the crate's doc, excel.rs:72) — and, at the start of each run, sweep any left from earlier runs.
  */
 const WORKBOOK_NAME = /^dt_vba_\d+\.xlsm$/;
+/** The standard module run_vba adds the code to. Never the macro's own name (see the excelVbaModuleAdd call). */
+export const VBA_MODULE_NAME = "DesktopTouchModule";
+export function vbaModuleNameFor(macroName: string): string {
+  return macroName.toLowerCase() === VBA_MODULE_NAME.toLowerCase() ? `${VBA_MODULE_NAME}2` : VBA_MODULE_NAME;
+}
 /** Older than this, a workbook in the folder is a leftover (a run takes seconds). */
 const LEFTOVER_AGE_MS = 10 * 60_000;
 const REMOVE_RETRY_MS = [0, 500, 2_000, 5_000];
@@ -236,7 +241,9 @@ async function handleRunVba(args: z.infer<typeof runVbaSchema>): Promise<ToolRes
 
     nativeExcel.excelSetVisible?.(sessionId, args.visible);
     nativeExcel.excelWorkbookAddNew?.(sessionId);
-    nativeExcel.excelVbaModuleAdd?.(sessionId, args.macroName, args.code);
+    // The module must not share the Sub's name: Application.Run "Name" then names the module, and Excel answers
+    // "cannot run the macro" (0x800a03ec) for every run — win2 measured it against this very call (#895 V1).
+    nativeExcel.excelVbaModuleAdd?.(sessionId, vbaModuleNameFor(args.macroName), args.code);
 
     // 52 = xlOpenXMLWorkbookMacroEnabled (.xlsm). The napi shim rejects any
     // other value with `VbaUnsupportedFileFormat` per Phase 3 contract.
