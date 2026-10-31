@@ -282,10 +282,6 @@ internal static class Win32Input
         }
     }
 
-    /// The attach bracket: save std handles → FreeConsole → AttachConsole(consolePid) → open CONIN$ →
-    /// STAGE-2 re-verify (after the handle exists, so the console can't be swapped underneath) → write.
-    /// Everything is torn down in the finally (close CONIN$, FreeConsole, restore std handles). NO
-    /// std-stream write may occur inside this bracket (see ReVerifyAndType doc).
     /// internal #335 (win2's round): run every check `ReVerifyAndType` makes — identity, selection mode, and for
     /// fill_once echo-off and the credential program in front — and write nothing. fill_once asks this before
     /// its dialog, so the user is not asked to type a password the write would then refuse. Null = it would pass.
@@ -297,7 +293,11 @@ internal static class Win32Input
         return passed ? null : why ?? "executor_failed";
     }
 
-    /// `arr` null = a probe: every check, no write (see Probe).
+    /// The attach bracket: save std handles → FreeConsole → AttachConsole(consolePid) → open CONIN$ →
+    /// STAGE-2 re-verify (after the handle exists, so the console can't be swapped underneath) → write.
+    /// Everything is torn down in the finally (close CONIN$, FreeConsole, restore std handles). NO
+    /// std-stream write may occur inside this bracket (see ReVerifyAndType doc). `arr` null = a probe: every
+    /// check, no write (see Probe).
     private static (bool injected, string? abort) AttachAndWrite(in InjectTarget t, INPUT_RECORD[]? arr)
     {
         nint savedIn = GetStdHandle(STD_INPUT_HANDLE);
@@ -327,11 +327,6 @@ internal static class Win32Input
             var abort = ReVerify(in t);
             if (abort != null) return (false, abort);
 
-            // internal #335: never write into a console that is holding its input for a selection. Read on the
-            // console we just attached to; a read that fails declines (fail-closed).
-            if (!GetConsoleSelectionInfo(out var sel)) return (false, "executor_failed");
-            if ((sel.dwFlags & CONSOLE_SELECTION_IN_PROGRESS) != 0) return (false, InjectAbort.Selecting);
-
             // fill_once: the reader must have echo OFF, read from the same CONIN$ we are about to write to
             // (fail-closed when the mode cannot be read).
             if (t.RequireEchoOff)
@@ -341,6 +336,12 @@ internal static class Win32Input
                 var front = CredentialProgramInFront();
                 if (front != null) return (false, front);
             }
+
+            // internal #335: never write into a console that is holding its input for a selection. Read on the
+            // console we just attached to, last before the write (the checks above take tens of ms); a read that
+            // fails declines (fail-closed).
+            if (!GetConsoleSelectionInfo(out var sel)) return (false, "executor_failed");
+            if ((sel.dwFlags & CONSOLE_SELECTION_IN_PROGRESS) != 0) return (false, InjectAbort.Selecting);
 
             if (arr == null) return (true, null);
             var ok = WriteConsoleInputW(conin, arr, (uint)arr.Length, out var written);

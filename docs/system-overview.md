@@ -667,7 +667,8 @@ pre-existing terminal is never autofilled.
   `ssh` run inside another `ssh` session, or a login you do not want saved. The user types
   the secret into the locker's dialog (which shows the assistant's `reason`), it is typed
   once into that `launch_console` pane's current password prompt, and it is forgotten.
-  It types only while an `ssh` / `sudo` runs in front in that pane (a process there is waiting for it; one
+  It types only while the pane's console is not selecting text (Mark, or a mouse selection: `console_selecting`),
+  and while an `ssh` / `sudo` runs in front in that pane (a process there is waiting for it; one
   started in the background is declined as `other_reader`, unless a script opened its process handle itself)
   with the console not echoing input,
   and only if the pane shows the same prompt after the dialog closes. The prompt check reads the English

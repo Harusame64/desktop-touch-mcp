@@ -250,10 +250,6 @@ async function fillClaimed(
   if (procsBefore === null) return { kind: "declined", reason: "not_anchored" };
   if (procsBefore.size === 0) return { kind: "declined", reason: "no_credential_program" };
   const gate = { paneId, submit, anchor: anchor, before, procsBefore };
-  // internal #335 (win2): the locker's own checks (selection mode, echo, the program in front) before any
-  // dialog, so the user is not asked to type a password that the write then refuses. The write checks again.
-  const probe = await deps.probeAt(anchor);
-  if (!probe.ok) return { kind: "fill_aborted", code: probe.code };
 
   // internal #281: a tag already kept for THIS pane and THIS anchor → confirm, not type. The kept secret is
   // never erased here, whatever the outcome: it lives until the pane closes or forget_tag. A tag the user
@@ -264,9 +260,13 @@ async function fillClaimed(
   if (tag !== undefined && keptId !== null && req.retype !== true) {
     try {
       const line = promptLineOf(before.tail);
-      const choice = line !== null && deps.kept.alwaysAt(paneId, anchor, tag) === line
-        ? "fill"
-        : await deps.kept.confirm({ ...dialog, tag });
+      const skipConfirm = line !== null && deps.kept.alwaysAt(paneId, anchor, tag) === line;
+      // With no dialog in between, the write's own checks are the probe.
+      if (!skipConfirm) {
+        const refused = await probeRefuses(deps, anchor);
+        if (refused !== null) return refused;
+      }
+      const choice = skipConfirm ? "fill" : await deps.kept.confirm({ ...dialog, tag });
       if (choice === "cancel") return { kind: "cancelled" };
       const outcome = await fillAfterDialog(deps, { ...gate, opaqueId: keptId });
       if (choice === "fill_always" && outcome.kind === "filled" && line !== null) {
@@ -280,6 +280,8 @@ async function fillClaimed(
   if (tag !== undefined && keptId === null && deps.kept.count(paneId, anchor) >= MAX_KEPT_TAGS_PER_PANE) {
     return { kind: "declined", reason: "tag_limit" };
   }
+  const refused = await probeRefuses(deps, anchor);
+  if (refused !== null) return refused;
 
   // From here on a secret may exist under `opaqueId` (a capture that threw may or may not have stored it),
   // so every exit erases it — the filled one included, unless it is now kept under its tag.
@@ -311,6 +313,22 @@ function promptLineOf(tail: string): string | null {
   if (lines.length === 0) return null;
   const take = (keyUnlockRows(tail) ?? 1) + 1;
   return lines.slice(-take).join("\n");
+}
+
+/**
+ * internal #335 (win2): the locker's own checks (selection mode, echo, the program in front) before a dialog,
+ * so the user is not asked to type or confirm a password that the write then refuses. The write checks again.
+ * Null = go on. A pane gone by now declines target_gone as the other pre-dialog checks do; a probe that throws
+ * (the locker cannot start) is a fill_aborted like any other locker failure here.
+ */
+async function probeRefuses(deps: FillOnceDeps, anchor: PaneAnchor): Promise<FillOnceOutcome | null> {
+  try {
+    const probe = await deps.probeAt(anchor);
+    if (probe.ok) return null;
+    return probe.code === "target_gone" ? { kind: "declined", reason: "target_gone" } : { kind: "fill_aborted", code: probe.code };
+  } catch (err) {
+    return { kind: "fill_aborted", code: `fill_once_error:${err instanceof Error ? err.message : String(err)}` };
+  }
 }
 
 /** Erase the one-time secret: two attempts (a pipe hiccup is the usual cause); false if both failed. */
