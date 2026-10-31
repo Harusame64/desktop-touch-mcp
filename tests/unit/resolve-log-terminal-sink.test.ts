@@ -29,6 +29,8 @@ vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
 vi.mock("../../src/engine/bg-input.js", () => ({
   canInjectViaPostMessage: vi.fn(() => ({ supported: true })),
   postCharsToHwnd: vi.fn((_hwnd: unknown, chunk: string) => ({ sent: chunk.length, full: true })),
+  // internal #334: the console-input helper cannot start here, so a send goes out as chunked WM_CHAR.
+  writeConsoleInputViaHelper: vi.fn(() => null),
   postEnterToHwnd: vi.fn(),
   isBgAutoEnabled: vi.fn(() => false),
   injectViaForegroundFlash: vi.fn(),

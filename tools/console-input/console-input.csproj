@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    internal #334: types text into a classic console window's input as key-down / key-up pairs
+    (AttachConsole + WriteConsoleInputW), so conhost never merges a run of the same character.
+    Secret-free and one-shot: the server runs it per send with the text on stdin.
+    Build: cd tools/console-input && dotnet publish -c Release -o ../../bin/
+    The TFM carries no Windows SDK version on purpose: P/Invoke only, and the SDK projection would
+    make the exe 23 MB instead of 0.16 MB (win2, 2026-10-31).
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Optimize>true</Optimize>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>console-input</AssemblyName>
+    <RootNamespace>ConsoleInput</RootNamespace>
+  </PropertyGroup>
+</Project>

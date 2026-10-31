@@ -1229,6 +1229,8 @@ export type DispatchSink =
   | "sendinput"
   | "wm_char"
   | "console_paste"
+  /** internal #334: key presses written into a classic console's input by bin/console-input.exe. */
+  | "console_input"
   | "clipboard_paste"
   /**
    * The native foreground-flash inject: steal the foreground, paste, restore.

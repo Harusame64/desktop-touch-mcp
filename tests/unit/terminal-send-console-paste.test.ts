@@ -33,6 +33,8 @@ vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
 vi.mock("../../src/engine/bg-input.js", () => ({
   canInjectViaPostMessage: vi.fn(() => ({ supported: true })),
   postCharsToHwnd: vi.fn((_hwnd: unknown, chunk: string) => ({ sent: chunk.length, full: true })),
+  // internal #334: by default the console-input helper cannot start, so a send goes out as WM_CHAR.
+  writeConsoleInputViaHelper: vi.fn(() => null),
   postEnterToHwnd: vi.fn(),
   isBgAutoEnabled: vi.fn(() => false),
   injectViaForegroundFlash: vi.fn(),
@@ -250,5 +252,47 @@ describe("terminalSendHandler — conhost console-paste routing", () => {
         expect.stringContaining("clipboard restore skipped"),
       ]),
     );
+  });
+});
+
+// internal #334: a classic console takes background text as key presses from bin/console-input.exe.
+describe("method:'background' through the console-input helper (internal #334)", () => {
+  const mockHelper = vi.mocked(bgInput.writeConsoleInputViaHelper);
+  beforeEach(() => { mockHelper.mockReset(); mockHelper.mockReturnValue(null); });
+
+  it("one helper run for the whole send with its Enter; no WM_CHAR, no screen read-back, channel console_input", async () => {
+    mockHelper.mockImplementation((_h: unknown, text: string) => ({ sent: text.length, full: true }));
+    // A screen that never shows the input (a reader that is busy) would fail the read-back.
+    mockBaseline.mockResolvedValue("PS C:\\> ");
+    const input = "a".repeat(250);
+    const r = parseResult(await terminalSendHandler({ ...baseArgs, method: "background", input }));
+    expect(r.ok).toBe(true);
+    expect(r.pressedEnter).toBe(true);
+    expect(r.channel).toBe("console_input");
+    expect(mockHelper.mock.calls.map(([, t]) => t)).toEqual([`${input}\r`]);
+    expect(mockChars).not.toHaveBeenCalled();
+    expect(vi.mocked(bgInput.postEnterToHwnd)).not.toHaveBeenCalled();
+    expect(mockBaseline).toHaveBeenCalledTimes(1); // the baseline only, no read-back
+  });
+
+  it("a run not fully confirmed fails BackgroundInputIncomplete and sends nothing more", async () => {
+    mockHelper.mockReturnValue({ sent: 0, full: false });
+    const r = parseResult(await terminalSendHandler({ ...baseArgs, method: "background", input: "rm -rf build" }));
+    expect(r.ok).toBe(false);
+    expect(r.code ?? r.error).toMatch(/BackgroundInputIncomplete/);
+    expect(mockChars).not.toHaveBeenCalled();
+    expect(vi.mocked(bgInput.postEnterToHwnd)).not.toHaveBeenCalled();
+  });
+
+  it("a helper that cannot start: chunked WM_CHAR that never tries the helper again, and the Enter key post", async () => {
+    mockHelper.mockReturnValue(null);
+    mockBaseline.mockResolvedValue(null);
+    const r = parseResult(await terminalSendHandler({ ...baseArgs, method: "background", input: "c".repeat(250) }));
+    expect(r.channel).toBe("wm_char");
+    expect(mockHelper).toHaveBeenCalledTimes(1);
+    expect(mockChars.mock.calls.map(([, t, o]) => [(t as string).length, o])).toEqual([
+      [100, { wmCharOnly: true }], [100, { wmCharOnly: true }], [50, { wmCharOnly: true }],
+    ]);
+    expect(vi.mocked(bgInput.postEnterToHwnd)).toHaveBeenCalledTimes(1);
   });
 });
