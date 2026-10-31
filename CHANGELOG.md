@@ -15,7 +15,7 @@
   password without asking. It is never written to disk, and every check
   `fill_once` makes before typing still runs on each fill. `retype:true` asks you to type it again,
   `action:'forget_tag'` erases it, and `list` shows the kept tag names per pane (`paneTags`). At most 8 tags per
-  pane. The locker helper's protocol version is now 3, so `bin/key-locker.exe` must come from this release
+  pane. The locker helper's protocol version is now 4 (3 for the kept tags, 4 for internal #342), so `bin/key-locker.exe` must come from this release
   (internal #281).
 
 ### Changed — Windows
@@ -37,7 +37,8 @@
 - **A password the key locker captured is written to disk only when you press Save.** When autofill captures a new
   password, it was stored (encrypted) at once and erased if you chose Not now or Never; if the server went away
   while the "Save this secret for next time?" window was open, it stayed on disk under an id nothing pointed to.
-  It is now held in the locker's memory until you press Save (internal #342).
+  It is now held in the locker's memory until you press Save. If the locker cannot write it then, it is erased
+  and asked for again next time (internal #342).
 - **`terminal` `read` and the key locker read a `launch_console` window by its handle, whatever its title.** Two
   classic locker windows ssh'd to the same host both get the title `user@host: ~`; reading either by `paneId`
   answered `TerminalWindowNotFound`, and `fill_once` declined `prompt_unreadable`, until one of the titles was

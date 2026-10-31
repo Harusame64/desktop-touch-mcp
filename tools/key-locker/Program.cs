@@ -40,7 +40,9 @@ internal static class KeyLocker
     // of showing a fill_once dialog with an opaque id and a [Save] button.
     // "3" (internal #281): capture carries `tag` (a fill_once secret kept for the pane's life) and `prompt`
     // takes kind "fill_kept". A "2" helper would show "not saved" for a kept secret and refuse the confirm.
-    private const string ProtocolVersion = "3";
+    // "4" (internal #342): capture takes purpose "pending" (held in memory) and the `persist` verb writes it to disk
+    // on [Save]. A "3" helper would write every autofill capture to disk at once, the orphan #342 closes.
+    private const string ProtocolVersion = "4";
     private const int MaxClientRejects = 8;
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -323,7 +325,8 @@ internal static class KeyLocker
     /// Optional SECRET-FREE frame fields tell the user what the entry is for (internal #277): `label` (the
     /// target — a binding URI, or the locker console a fill_once writes into; falls back to the key),
     /// `note` (the assistant's stated reason, shown as the assistant's words) and `purpose` ("fill_once" =
-    /// a one-time entry that is not saved) and `tag` (internal #281: with "fill_once", the entry is kept in
+    /// a one-time entry that is not saved; "pending" = the capture loop's entry, held in memory until `persist`,
+    /// internal #342; anything else = written to store.json at once) and `tag` (internal #281: with "fill_once", the entry is kept in
     /// memory under that tag until the pane closes — the dialog says so). A malformed field is ignored, never fatal.
     private static void HandleCapture(NamedPipeServerStream server, long id, string key, string line)
     {
@@ -338,10 +341,11 @@ internal static class KeyLocker
             closeAt = DialogDeadline.FromFrame(root);
             if (root.TryGetProperty("label", out var l) && l.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(l.GetString())) label = l.GetString()!;
             if (root.TryGetProperty("note", out var n) && n.ValueKind == JsonValueKind.String) note = PlainLine(n.GetString() ?? "");
-            // internal #342: the capture loop's "pending" capture is held in memory until `persist` ([Save]), like
-            // a fill_once, so a server that goes away during the save offer leaves nothing on disk.
-            once = root.TryGetProperty("purpose", out var p) && p.ValueKind == JsonValueKind.String && p.GetString() == "fill_once";
-            pending = root.TryGetProperty("purpose", out var pp) && pp.ValueKind == JsonValueKind.String && pp.GetString() == "pending";
+            var purpose = root.TryGetProperty("purpose", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+            once = purpose == "fill_once";
+            // internal #342: the capture loop's "pending" capture is held in memory until `persist` ([Save]), so a
+            // server that goes away during the save offer leaves nothing on disk.
+            pending = purpose == "pending";
             if (root.TryGetProperty("tag", out var t) && t.ValueKind == JsonValueKind.String) tag = PlainLine(t.GetString() ?? "");
         }
         catch { /* the frame already parsed once in RunControlLoop; keep the key-only defaults */ }
@@ -352,7 +356,8 @@ internal static class KeyLocker
 
         if (_serverGone) return; // internal #282: nobody is left to use it, and an autofill capture must not reach store.json
         if (secret == null) { WriteFrameReplyCaptured(server, id, false, false, timedOut); return; }
-        if (once || pending) _store.CaptureEphemeral(key, secret); // fill_once / pending: memory only, never store.json
+        if (once) _store.CaptureEphemeral(key, secret); // fill_once: memory only, never store.json
+        else if (pending) _store.CapturePending(key, secret); // memory until `persist` (internal #342)
         else _store.Capture(key, secret);
         var rt = _store.RoundTripOk(key, secret); // in-process verify; secret stays local
         WriteFrameReplyCaptured(server, id, true, rt);
@@ -636,6 +641,9 @@ internal sealed class LockerStore
     // to store.json — so if the MCP server dies mid-dialog (e.g. the emergency stop exits it), the secret dies
     // with this helper instead of persisting under an id nothing points to (win2 F6).
     private readonly Dictionary<string, string> _ephemeral = new(StringComparer.Ordinal);
+    // internal #342: the capture loop's secret before the user's [Save] — memory only, and the ONLY kind `Persist`
+    // may move to store.json (a fill_once / kept-tag secret was promised never to reach disk).
+    private readonly Dictionary<string, string> _pending = new(StringComparer.Ordinal);
 
     public LockerStore(string dir)
     {
@@ -671,19 +679,34 @@ internal sealed class LockerStore
         Save();
     }
 
-    /// A fill_once entry, or the capture loop's secret before the user's [Save]: in memory only (see `_ephemeral`).
+    /// A fill_once entry: in memory only (see `_ephemeral`).
     public void CaptureEphemeral(string id, string secret)
     {
         var blob = ProtectedData.Protect(Encoding.UTF8.GetBytes(secret), Entropy, DataProtectionScope.CurrentUser);
         _ephemeral[id] = Convert.ToBase64String(blob);
     }
 
-    /// internal #342: write an in-memory entry to store.json (the user pressed [Save]). False when there is none.
+    /// internal #342: the capture loop's secret before [Save]: in memory only (see `_pending`).
+    public void CapturePending(string id, string secret)
+    {
+        var blob = ProtectedData.Protect(Encoding.UTF8.GetBytes(secret), Entropy, DataProtectionScope.CurrentUser);
+        _pending[id] = Convert.ToBase64String(blob);
+    }
+
+    /// internal #342: write a pending entry to store.json (the user pressed [Save]). False when there is none, or
+    /// when the file cannot be written — then the entry stays pending (memory) and store.json is as it was.
     public bool Persist(string id)
     {
-        if (!_ephemeral.Remove(id, out var b64)) return false;
+        if (!_pending.TryGetValue(id, out var b64)) return false;
         _entries[id] = b64;
-        Save();
+        try { Save(); }
+        catch (Exception e)
+        {
+            _entries.Remove(id);
+            Console.Error.WriteLine($"[key-locker] persist failed: {e.GetType().Name}");
+            return false;
+        }
+        _pending.Remove(id);
         return true;
     }
 
@@ -691,15 +714,16 @@ internal sealed class LockerStore
     {
         if (_entries.TryGetValue(id, out var persisted)) { b64 = persisted; return true; }
         if (_ephemeral.TryGetValue(id, out var once)) { b64 = once; return true; }
+        if (_pending.TryGetValue(id, out var held)) { b64 = held; return true; }
         b64 = "";
         return false;
     }
 
-    public bool Exists(string id) => _entries.ContainsKey(id) || _ephemeral.ContainsKey(id);
+    public bool Exists(string id) => _entries.ContainsKey(id) || _ephemeral.ContainsKey(id) || _pending.ContainsKey(id);
 
     public bool Delete(string id)
     {
-        if (_ephemeral.Remove(id)) return true;
+        if (_ephemeral.Remove(id) || _pending.Remove(id)) return true;
         var r = _entries.Remove(id); if (r) Save(); return r;
     }
 

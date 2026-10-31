@@ -322,7 +322,7 @@ describe("runCaptureLoop — metaFor per scheme + submit", () => {
 
 // internal #342: the captured secret stays in the locker's memory until [Save], then goes to disk.
 describe("runCaptureLoop — the secret reaches disk only on [Save] (internal #342)", () => {
-  it("[Save] persists before it binds", async () => {
+  it("[Save] binds, then persists (a server gone between them leaves a binding to nothing, never an orphan secret)", async () => {
     const order: string[] = [];
     const deps = makeDeps({
       offerSave: vi.fn(async () => "save" as const),
@@ -330,14 +330,13 @@ describe("runCaptureLoop — the secret reaches disk only on [Save] (internal #3
       bindBinding: vi.fn(() => { order.push("bind"); }),
     });
     expect((await runCaptureLoop(deps, EVENT)).kind).toBe("saved");
-    expect(order).toEqual(["persist", "bind"]);
+    expect(order).toEqual(["bind", "persist"]);
     expect(deps.deleteSecret).not.toHaveBeenCalled();
   });
 
-  it("a persist that fails binds nothing and erases the held secret", async () => {
+  it("a persist that fails answers save_failed and erases the held secret", async () => {
     const deps = makeDeps({ offerSave: vi.fn(async () => "save" as const), persistSecret: vi.fn(async () => false) });
-    expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "fill_aborted", matched: false, code: "persist_failed" });
-    expect(deps.bindBinding).not.toHaveBeenCalled();
+    expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "save_failed" });
     expect(deps.deleteSecret).toHaveBeenCalledTimes(1);
   });
 

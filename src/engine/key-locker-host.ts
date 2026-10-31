@@ -44,7 +44,7 @@ import { registerExcludedPid, unregisterExcludedPid } from "./tool-exclusion.js"
 export const HELPER_EXE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "key-locker.exe");
 
 /** Wire protocol version the MCP understands; must match the helper's `hello.v`. */
-export const KEY_LOCKER_PROTOCOL_VERSION = "3";
+export const KEY_LOCKER_PROTOCOL_VERSION = "4";
 
 export type KeyLockerErrorCode =
   | "KeyLockerSpawnFailed"
@@ -466,7 +466,9 @@ export class KeyLockerHost {
    * `dialog` (optional, secret-free) tells the user what the entry is for: `label` names the target
    * (a binding's display URI, or the locker console a `fill_once` writes into); `note` is the assistant's
    * stated reason, which the dialog marks as the assistant's words; `purpose: "fill_once"` makes it a
-   * one-time entry, held in the helper's memory only (never written to store.json). Without `label` the dialog falls back to the opaque key, as before; an
+   * one-time entry, held in the helper's memory only (never written to store.json); `purpose: "pending"`
+   * (internal #342) holds it in memory until {@link persist} writes it on [Save]. Any other purpose writes
+   * store.json at once. Without `label` the dialog falls back to the opaque key, as before; an
    * older locker ignores the extra fields.
    */
   async capture(
@@ -540,12 +542,10 @@ export class KeyLockerHost {
 
   /**
    * internal #342: write a `purpose:"pending"` capture (held in the helper's memory) to store.json — the user
-   * pressed [Save]. True when it is on disk now. An older helper has no `persist` verb and wrote every
-   * capture to disk already, so `unknown_method` answers true.
+   * pressed [Save]. True when it is on disk now. (Protocol "4": an older helper is refused at hello.)
    */
   async persist(key: string): Promise<boolean> {
     const reply = await this.request("persist", key);
-    if (!reply.ok && (reply.e ?? "").startsWith("unknown_method")) return true;
     return reply.ok && reply.r === "1";
   }
 

@@ -33,7 +33,6 @@ function makeFakeLocker(
     consoleEchoes?: boolean;
     otherReader?: boolean;
     selecting?: boolean;
-    noPersist?: boolean;
     noProbe?: boolean;
     seed?: string[];
     captureReply?: { captured: boolean; rt: boolean; timedOut?: boolean };
@@ -45,6 +44,7 @@ function makeFakeLocker(
   const proto = opts.protocol ?? KEY_LOCKER_PROTOCOL_VERSION;
   const reportPid = opts.reportPid ?? 4343;
   const state = opts.state ?? { store: new Set(opts.seed ?? []), captureReply: opts.captureReply ?? { captured: true, rt: true }, lastFrames: [] };
+  const pendingKeys = new Set<string>(); // internal #342: captures held until `persist`
   return net.createServer((sock) => {
     let buf = "";
     const write = (o: unknown) => sock.write(JSON.stringify(o) + "\n");
@@ -64,14 +64,18 @@ function makeFakeLocker(
           case "exists": write({ id: req.id, ok: true, r: state.store.has(req.k ?? "") ? "1" : "0" }); break;
           case "delete": { const had = state.store.delete(req.k ?? ""); write({ id: req.id, ok: true, r: had ? "1" : "0" }); break; }
           case "persist": {
-            // internal #342: an older helper has no `persist` verb.
-            if (opts.noPersist === true) write({ id: req.id, ok: false, r: "", e: "unknown_method:persist" });
-            else write({ id: req.id, ok: true, r: state.store.has(req.k ?? "") ? "1" : "0" });
+            // internal #342: only a pending capture moves to the store.
+            const k = req.k ?? "";
+            const had = pendingKeys.delete(k);
+            if (had) state.store.add(k);
+            write({ id: req.id, ok: true, r: had ? "1" : "0" });
             break;
           }
           case "capture": {
             const { captured, rt, timedOut } = state.captureReply;
-            if (captured) state.store.add(req.k ?? "");
+            // internal #342: a "pending" capture is held apart until `persist`, as the C# helper's _pending.
+            const purpose = (req as unknown as { purpose?: string }).purpose;
+            if (captured) (purpose === "pending" ? pendingKeys : state.store).add(req.k ?? "");
             // The fake mirrors the C# reply shape: r is EMPTY, secret NEVER appears on the wire.
             write({ id: req.id, ok: true, r: "", captured, rt, ...(timedOut === true ? { timedOut } : {}) });
             break;
@@ -135,9 +139,9 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     hosts.push(host);
 
     expect(host.helperPid).toBe(515_151);
-    expect(host.protocolVersion).toBe("3");
+    expect(host.protocolVersion).toBe(KEY_LOCKER_PROTOCOL_VERSION);
     expect(await host.ping()).toBe(true);
-    expect(await host.version()).toBe("3");
+    expect(await host.version()).toBe(KEY_LOCKER_PROTOCOL_VERSION);
   });
 
   it("exists() reflects the store; delete() removes", async () => {
@@ -227,14 +231,19 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     }
   });
 
-  it("persist() writes a held capture to disk; an older helper without the verb counts as done (internal #342)", async () => {
-    for (const [opts, seed, want] of [[{}, ["op-1"], true], [{}, [], false], [{ noPersist: true }, [], true]] as const) {
-      const path = pipePath();
-      await listen(makeFakeLocker(path, { ...opts, seed: [...seed] }), path);
-      const host = await KeyLockerHost.connectForTest(path);
-      hosts.push(host);
-      expect(await host.persist("op-1")).toBe(want);
-    }
+  it("a pending capture is held apart and only persist() moves it into the store (internal #342)", async () => {
+    const path = pipePath();
+    const state: FakeState = { store: new Set(), captureReply: { captured: true, rt: true }, lastFrames: [] };
+    await listen(makeFakeLocker(path, { state }), path);
+    const host = await KeyLockerHost.connectForTest(path);
+    hosts.push(host);
+    await host.capture("op-1", { purpose: "pending" });
+    expect(state.store.has("op-1")).toBe(false);
+    expect(await host.persist("op-1")).toBe(true);
+    expect(state.store.has("op-1")).toBe(true);
+    expect(await host.persist("op-2")).toBe(false); // nothing pending under that key
+    await host.capture("op-3", { purpose: "fill_once" });
+    expect(await host.persist("op-3")).toBe(false); // never a fill_once entry
   });
 
   it("console_selecting comes back as itself, for a fill_once and an autofill write alike (internal #335)", async () => {
@@ -388,7 +397,7 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
 
     const [p, v, e] = await Promise.all([host.ping(), host.version(), host.exists("a")]);
     expect(p).toBe(true);
-    expect(v).toBe("3");
+    expect(v).toBe(KEY_LOCKER_PROTOCOL_VERSION);
     expect(e).toBe(true);
   });
 
@@ -406,8 +415,14 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
 
   it("rejects a locker whose protocol version does not match", async () => {
     const path = pipePath();
-    await listen(makeFakeLocker(path, { protocol: "4" }), path);
-    await expect(KeyLockerHost.connectForTest(path)).rejects.toThrow(/protocol '4' != expected '3'/);
+    await listen(makeFakeLocker(path, { protocol: "5" }), path);
+    await expect(KeyLockerHost.connectForTest(path)).rejects.toThrow(/protocol '5' != expected '4'/);
+  });
+
+  it("rejects a v3 locker — the helper that wrote every autofill capture to disk at once (internal #342)", async () => {
+    const path = pipePath();
+    await listen(makeFakeLocker(path, { protocol: "3" }), path);
+    await expect(KeyLockerHost.connectForTest(path)).rejects.toThrow(/protocol '3' != expected '4'/);
   });
 
   it("rejects a v2 locker — the helper from before kept tags (internal #281)", async () => {
@@ -415,14 +430,14 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     // answers the fill_kept confirm `bad_prompt`.
     const path = pipePath();
     await listen(makeFakeLocker(path, { protocol: "2" }), path);
-    await expect(KeyLockerHost.connectForTest(path)).rejects.toThrow(/protocol '2' != expected '3'/);
+    await expect(KeyLockerHost.connectForTest(path)).rejects.toThrow(/protocol '2' != expected '4'/);
   });
 
   it("rejects a v1 locker — the helper from before capture carried label/note/purpose (PR #806)", async () => {
     // A stale bin/key-locker.exe would show a fill_once dialog with an opaque id and a [Save] button.
     const path = pipePath();
     await listen(makeFakeLocker(path, { protocol: "1" }), path);
-    await expect(KeyLockerHost.connectForTest(path)).rejects.toThrow(/protocol '1' != expected '3'/);
+    await expect(KeyLockerHost.connectForTest(path)).rejects.toThrow(/protocol '1' != expected '4'/);
   });
 
   it("fails pending requests after dispose", async () => {
