@@ -34,6 +34,10 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **A password the key locker captured is written to disk only when you press Save.** When autofill captures a new
+  password, it was stored (encrypted) at once and erased if you chose Not now or Never; if the server went away
+  while the "Save this secret for next time?" window was open, it stayed on disk under an id nothing pointed to.
+  It is now held in the locker's memory until you press Save (internal #342).
 - **`terminal` `read` and the key locker read a `launch_console` window by its handle, whatever its title.** Two
   classic locker windows ssh'd to the same host both get the title `user@host: ~`; reading either by `paneId`
   answered `TerminalWindowNotFound`, and `fill_once` declined `prompt_unreadable`, until one of the titles was

@@ -137,6 +137,8 @@ export interface CaptureDriverDeps {
   capture(opaqueId: string, binding: BindingUri): Promise<{ captured: boolean }>;
   /** Delete the locker entry for `opaqueId` (the reverse-orphan closure). */
   deleteSecret(opaqueId: string): Promise<void>;
+  /** internal #342: write the held capture to disk on [Save]. */
+  persistSecret(opaqueId: string): Promise<boolean>;
   /** Assemble the pane InjectTarget from the SPAWN-captured anchor (`assembleInjectTarget`) + console-buffer
    *  inject (`inject`, "pane"). Takes the `PaneAnchor` (S-pid gate E4, Opus P2-2) — the driver holds it on the
    *  `PaneRecord` and passes it, so the wiring never re-derives identity from the paneId string. */
@@ -706,6 +708,7 @@ export class KeyLockerCaptureDriver {
       // path (`capture_cancelled`): no secret is ever requested, stored, or touched.
       capture: async (id, b) => ((await this.failsafeDeclines()) ? { captured: false } : this.deps.capture(id, b)),
       deleteSecret: (id) => this.deps.deleteSecret(id),
+      persistSecret: (id) => this.deps.persistSecret(id),
       // INJECTION-INSTANT re-check (Codex R4 line 524 — the AUTHORITATIVE disclosure guard). The poll's
       // early-decline ran BEFORE the loop; but `confirmPolicyFor`/`confirmInjection`/`capture` (a secure UI
       // dialog the user interacts with) await for ARBITRARY time before we get here, and an async `tickWatch`

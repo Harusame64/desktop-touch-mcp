@@ -105,6 +105,7 @@ function makeHarness(o: Partial<CaptureDriverDeps> = {}, initialTree: Record<num
     confirmPolicyFor: vi.fn(() => false),
     capture: vi.fn(async () => ({ captured: true })),
     deleteSecret: vi.fn(async () => {}),
+    persistSecret: vi.fn(async () => true),
     injectPane: vi.fn(async () => CONSOLE_INJECT_OK()),
     confirmInjection: vi.fn(async () => true),
     offerSave: vi.fn(async () => "save"),

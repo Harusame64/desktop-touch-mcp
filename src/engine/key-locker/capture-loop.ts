@@ -103,6 +103,8 @@ export interface CaptureLoopDeps {
   capture(opaqueId: string, binding: BindingUri): Promise<{ captured: boolean }>;
   /** Delete the locker entry for `opaqueId` (the reverse-orphan closure; a no-op on an absent key). */
   deleteSecret(opaqueId: string): Promise<void>;
+  /** internal #342: the capture is held in the locker's memory until [Save]; write it to disk now. False = not. */
+  persistSecret(opaqueId: string): Promise<boolean>;
   /** Assemble the pane InjectTarget (§4) and console-buffer inject the secret under `opaqueId` (L2, "pane" channel). */
   injectPane(binding: BindingUri, opaqueId: string, submit: boolean): Promise<InjectResult>;
   /** The §2 two-mode landed gate for the dispatched command (Mode A exit-0 / Mode B auth-accepted). */
@@ -212,9 +214,15 @@ export async function runCaptureLoop(deps: CaptureLoopDeps, event: CredentialEve
           // Chrome model (P1-2): OFFER first, persist ONLY on [Save]. A declined save never binds.
           const choice = await deps.offerSave(binding);
           if (choice === "save") {
-            deps.bindBinding(canonical, opaqueId, metaFor(binding, deps.now()));
-            committed = true; // retain the locker secret; skip the reverse-orphan delete below
-            outcome = { kind: "saved", verified: injectVerified(r) };
+            // internal #342: only now does the secret reach the locker's disk store; a server gone during the
+            // offer leaves it only in the helper's memory, which ends with the helper.
+            if (await deps.persistSecret(opaqueId)) {
+              deps.bindBinding(canonical, opaqueId, metaFor(binding, deps.now()));
+              committed = true; // retain the locker secret; skip the reverse-orphan delete below
+              outcome = { kind: "saved", verified: injectVerified(r) };
+            } else {
+              outcome = { kind: "fill_aborted", matched: false, code: "persist_failed" };
+            }
           } else {
             // "not_now" / "never" → discard (deleted in `finally`). A [Never] additionally records a
             // tombstone so the save is not re-offered (plan §1 `setNever`); the persistence is deferred

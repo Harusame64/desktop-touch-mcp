@@ -445,8 +445,10 @@ export class KeyLockerWiring {
       onNever: (k) => this.nevers().add(k),
 
       // The dialog names the binding (its display URI — dispatched-command-derived, never prompt text).
-      capture: (id, b) => m.withHost((h) => h.capture(id, { label: formatBindingUri(b) })).then((r) => ({ captured: r.captured })),
+      // internal #342: "pending" — held in the helper's memory until [Save] (persistSecret).
+      capture: (id, b) => m.withHost((h) => h.capture(id, { label: formatBindingUri(b), purpose: "pending" })).then((r) => ({ captured: r.captured })),
       deleteSecret: (id) => m.withHost((h) => h.delete(id)).then(() => undefined),
+      persistSecret: (id) => m.withHost((h) => h.persist(id)),
       injectPane: (anchor, binding, opaqueId, submit) => this.injectPane(anchor, binding, opaqueId, submit),
       // gap4 confirm/offer: the W-3.5 secret-free `prompt` verb (label-only). `confirm` → fill vs decline.
       confirmInjection: (b) => m.withHost((h) => h.prompt("confirm", formatBindingUri(b))).then((c) => c === "autofill"),

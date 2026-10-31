@@ -36,6 +36,7 @@ function makeDeps(o: Partial<CaptureLoopDeps> = {}): CaptureLoopDeps {
     confirmPolicyFor: vi.fn(() => true),
     capture: vi.fn(async () => ({ captured: true })),
     deleteSecret: vi.fn(async () => {}),
+    persistSecret: vi.fn(async () => true),
     injectPane: vi.fn(async () => CONSOLE_INJECT_OK()),
     awaitLanded: vi.fn(async () => LANDED(true)),
     confirmInjection: vi.fn(async () => true),
@@ -316,5 +317,33 @@ describe("runCaptureLoop — metaFor per scheme + submit", () => {
     const deps2 = makeDeps({ resolveBinding: vi.fn(async () => ({ opaqueId: "s" })) });
     await runCaptureLoop(deps2, EVENT);
     expect(deps2.injectPane).toHaveBeenCalledWith(SUDO, "s", true);
+  });
+});
+
+// internal #342: the captured secret stays in the locker's memory until [Save], then goes to disk.
+describe("runCaptureLoop — the secret reaches disk only on [Save] (internal #342)", () => {
+  it("[Save] persists before it binds", async () => {
+    const order: string[] = [];
+    const deps = makeDeps({
+      offerSave: vi.fn(async () => "save" as const),
+      persistSecret: vi.fn(async () => { order.push("persist"); return true; }),
+      bindBinding: vi.fn(() => { order.push("bind"); }),
+    });
+    expect((await runCaptureLoop(deps, EVENT)).kind).toBe("saved");
+    expect(order).toEqual(["persist", "bind"]);
+    expect(deps.deleteSecret).not.toHaveBeenCalled();
+  });
+
+  it("a persist that fails binds nothing and erases the held secret", async () => {
+    const deps = makeDeps({ offerSave: vi.fn(async () => "save" as const), persistSecret: vi.fn(async () => false) });
+    expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "fill_aborted", matched: false, code: "persist_failed" });
+    expect(deps.bindBinding).not.toHaveBeenCalled();
+    expect(deps.deleteSecret).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["not_now", "never"] as const)("[%s] never persists", async (choice) => {
+    const deps = makeDeps({ offerSave: vi.fn(async () => choice) });
+    await runCaptureLoop(deps, EVENT);
+    expect(deps.persistSecret).not.toHaveBeenCalled();
   });
 });

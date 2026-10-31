@@ -471,7 +471,7 @@ export class KeyLockerHost {
    */
   async capture(
     key: string,
-    dialog?: { label?: string; note?: string; purpose?: "save" | "fill_once"; tag?: string },
+    dialog?: { label?: string; note?: string; purpose?: "save" | "fill_once" | "pending"; tag?: string },
   ): Promise<{ captured: boolean; rt: boolean; timedOut?: true }> {
     const extra: Record<string, unknown> = {};
     if (dialog?.label !== undefined) extra.label = dialog.label;
@@ -535,6 +535,17 @@ export class KeyLockerHost {
   /** Delete the secret stored under `key`. Returns whether an entry was removed. */
   async delete(key: string): Promise<boolean> {
     const reply = await this.request("delete", key);
+    return reply.ok && reply.r === "1";
+  }
+
+  /**
+   * internal #342: write a `purpose:"pending"` capture (held in the helper's memory) to store.json — the user
+   * pressed [Save]. True when it is on disk now. An older helper has no `persist` verb and wrote every
+   * capture to disk already, so `unknown_method` answers true.
+   */
+  async persist(key: string): Promise<boolean> {
+    const reply = await this.request("persist", key);
+    if (!reply.ok && (reply.e ?? "").startsWith("unknown_method")) return true;
     return reply.ok && reply.r === "1";
   }
 

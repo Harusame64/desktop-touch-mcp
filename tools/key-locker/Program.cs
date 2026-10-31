@@ -306,6 +306,7 @@ internal static class KeyLocker
                 case "capture": HandleCapture(server, id, key, line); break;
                 case "exists": WriteReply(server, id, true, _store.Exists(key) ? "1" : "0", null); break;
                 case "delete": WriteReply(server, id, true, _store.Delete(key) ? "1" : "0", null); break;
+                case "persist": WriteReply(server, id, true, _store.Persist(key) ? "1" : "0", null); break;
                 case "inject": HandleInject(server, id, key, line); break;
                 case "probe": HandleProbe(server, id, line); break;
                 case "mint_ticket": HandleMintTicket(server, id, key, line); break;
@@ -328,7 +329,7 @@ internal static class KeyLocker
     {
         if (string.IsNullOrEmpty(key)) { WriteReply(server, id, false, "", "missing_key"); return; }
         string label = key, note = "", tag = "";
-        bool once = false;
+        bool once = false, pending = false;
         var closeAt = DialogDeadline.Default();
         try
         {
@@ -337,7 +338,10 @@ internal static class KeyLocker
             closeAt = DialogDeadline.FromFrame(root);
             if (root.TryGetProperty("label", out var l) && l.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(l.GetString())) label = l.GetString()!;
             if (root.TryGetProperty("note", out var n) && n.ValueKind == JsonValueKind.String) note = PlainLine(n.GetString() ?? "");
+            // internal #342: the capture loop's "pending" capture is held in memory until `persist` ([Save]), like
+            // a fill_once, so a server that goes away during the save offer leaves nothing on disk.
             once = root.TryGetProperty("purpose", out var p) && p.ValueKind == JsonValueKind.String && p.GetString() == "fill_once";
+            pending = root.TryGetProperty("purpose", out var pp) && pp.ValueKind == JsonValueKind.String && pp.GetString() == "pending";
             if (root.TryGetProperty("tag", out var t) && t.ValueKind == JsonValueKind.String) tag = PlainLine(t.GetString() ?? "");
         }
         catch { /* the frame already parsed once in RunControlLoop; keep the key-only defaults */ }
@@ -348,7 +352,7 @@ internal static class KeyLocker
 
         if (_serverGone) return; // internal #282: nobody is left to use it, and an autofill capture must not reach store.json
         if (secret == null) { WriteFrameReplyCaptured(server, id, false, false, timedOut); return; }
-        if (once) _store.CaptureEphemeral(key, secret); // fill_once: memory only, never store.json
+        if (once || pending) _store.CaptureEphemeral(key, secret); // fill_once / pending: memory only, never store.json
         else _store.Capture(key, secret);
         var rt = _store.RoundTripOk(key, secret); // in-process verify; secret stays local
         WriteFrameReplyCaptured(server, id, true, rt);
@@ -667,11 +671,20 @@ internal sealed class LockerStore
         Save();
     }
 
-    /// A fill_once entry: in memory only (see `_ephemeral`).
+    /// A fill_once entry, or the capture loop's secret before the user's [Save]: in memory only (see `_ephemeral`).
     public void CaptureEphemeral(string id, string secret)
     {
         var blob = ProtectedData.Protect(Encoding.UTF8.GetBytes(secret), Entropy, DataProtectionScope.CurrentUser);
         _ephemeral[id] = Convert.ToBase64String(blob);
+    }
+
+    /// internal #342: write an in-memory entry to store.json (the user pressed [Save]). False when there is none.
+    public bool Persist(string id)
+    {
+        if (!_ephemeral.Remove(id, out var b64)) return false;
+        _entries[id] = b64;
+        Save();
+        return true;
     }
 
     private bool TryBlob(string id, out string b64)

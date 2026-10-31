@@ -33,6 +33,7 @@ function makeFakeLocker(
     consoleEchoes?: boolean;
     otherReader?: boolean;
     selecting?: boolean;
+    noPersist?: boolean;
     noProbe?: boolean;
     seed?: string[];
     captureReply?: { captured: boolean; rt: boolean; timedOut?: boolean };
@@ -62,6 +63,12 @@ function makeFakeLocker(
           case "version": write({ id: req.id, ok: true, r: proto }); break;
           case "exists": write({ id: req.id, ok: true, r: state.store.has(req.k ?? "") ? "1" : "0" }); break;
           case "delete": { const had = state.store.delete(req.k ?? ""); write({ id: req.id, ok: true, r: had ? "1" : "0" }); break; }
+          case "persist": {
+            // internal #342: an older helper has no `persist` verb.
+            if (opts.noPersist === true) write({ id: req.id, ok: false, r: "", e: "unknown_method:persist" });
+            else write({ id: req.id, ok: true, r: state.store.has(req.k ?? "") ? "1" : "0" });
+            break;
+          }
           case "capture": {
             const { captured, rt, timedOut } = state.captureReply;
             if (captured) state.store.add(req.k ?? "");
@@ -217,6 +224,16 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
       expect(await host.probe(target)).toEqual(want);
       const frame = JSON.parse(state.lastFrames.find((f) => f.includes('"probe"'))!) as Record<string, unknown>;
       expect(frame.k).toBeUndefined();
+    }
+  });
+
+  it("persist() writes a held capture to disk; an older helper without the verb counts as done (internal #342)", async () => {
+    for (const [opts, seed, want] of [[{}, ["op-1"], true], [{}, [], false], [{ noPersist: true }, [], true]] as const) {
+      const path = pipePath();
+      await listen(makeFakeLocker(path, { ...opts, seed: [...seed] }), path);
+      const host = await KeyLockerHost.connectForTest(path);
+      hosts.push(host);
+      expect(await host.persist("op-1")).toBe(want);
     }
   });
 
