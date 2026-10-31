@@ -197,15 +197,16 @@ pub fn vba_module_add(
         let module_disp = variant_to_dispatch(&module)
             .ok_or_else(|| make_unexpected("VBComponents.Add did not return IDispatch"))?;
 
-        // Set Name = module_name. This rename is **decorative** for
-        // our caller pattern: `Application.Run(macro_name)` resolves
-        // by the Sub name declared in the VBA source, not by the
-        // module name. If rename fails (some VBA project states
-        // reject it), `Application.Run` still works because it walks
-        // all modules looking for a Sub with the given name. The
-        // rename is attempted so the module appears under a
-        // discoverable name in the VBA Editor UI when the user opens
-        // it; failure is logged for diagnostics but not propagated.
+        // Set Name = module_name. The name must NOT be the name of a Sub
+        // the caller will Run: an unqualified `Application.Run(name)`
+        // then names the MODULE, and Excel refuses with 0x800a03ec
+        // ("cannot run the macro") — win2 measured it over COM (PR #895:
+        // module "M895" ran, module named after the Sub did not), and
+        // the server passed the macro name here until then. With a
+        // distinct name the rename is decorative: Run resolves by the
+        // Sub name. If rename fails (some VBA project states reject
+        // it), the module keeps its default name (Module1), which Run
+        // does not mistake for a Sub; failure is logged, not propagated.
         //
         // Opus Round 1 P1-5 justification: this is documented silent
         // swallow, not a hidden regression. The `Application.Run`
@@ -549,7 +550,8 @@ mod tests {
         let code = format!(
             "Sub {macro_name}()\r\n    Range(\"A1\").Value = \"Hello from Claude via VBA\"\r\nEnd Sub"
         );
-        vba_module_add(&session, macro_name.clone(), code)
+        // Never the Sub's own name (see vba_module_add): the server uses this one.
+        vba_module_add(&session, "DesktopTouchModule".to_string(), code)
             .expect("vba_module_add must succeed (AccessVBOM trusted?)");
 
         // Anchor the workbook to disk under the Trusted Location so

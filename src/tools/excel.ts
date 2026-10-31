@@ -37,34 +37,24 @@ import type { NativeExcelAccessVbomStatus } from "../engine/native-types.js";
 // convention (see `src/vba_bridge.rs` module doc-block). The handler parses
 // the prefix to populate `_errors.ts` SUGGESTS via `failWith`.
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Trusted Location resolution (mirrors scripts/enable-access-vbom.mjs)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Compute the desktop-touch-managed Trusted Location path the CLI registers.
- * Mirrors the constant in `scripts/enable-access-vbom.mjs::TRUSTED_LOCATION_LEAF`
- * — if you change this, change it there (CLAUDE.md §3.1 fact整合).
- *
- * The bridge writes `.xlsm` workbooks into this directory before invoking
- * `Application.Run`, so Excel's Trust Center allows macro execution
- * (otherwise HRESULT 0x800a03ec, see Phase 2e ADR-015 §3.6 / §7).
- */
 /**
  * internal #336: each run saves a workbook with the macro's code into the trusted folder, and nothing removed it,
  * so every macro ever run stayed on disk (the privacy policy says so). The workbook is needed only while the
  * macro runs: remove it once the session is closed — retried, since Excel can hold the file a moment after the
  * close (the crate's doc, excel.rs:72) — and, at the start of each run, sweep any left from earlier runs.
  */
-const WORKBOOK_NAME = /^dt_vba_\d+\.xlsm$/;
+/** A run's workbook, and the owner (lock) file Excel keeps beside it while it is open. */
+const WORKBOOK_NAME = /^(?:~\$)?dt_vba_\d+\.xlsm$/;
 /** The standard module run_vba adds the code to. Never the macro's own name (see the excelVbaModuleAdd call). */
 export const VBA_MODULE_NAME = "DesktopTouchModule";
 export function vbaModuleNameFor(macroName: string): string {
   return macroName.toLowerCase() === VBA_MODULE_NAME.toLowerCase() ? `${VBA_MODULE_NAME}2` : VBA_MODULE_NAME;
 }
-/** Older than this, a workbook in the folder is a leftover (a run takes seconds). */
-const LEFTOVER_AGE_MS = 10 * 60_000;
-const REMOVE_RETRY_MS = [0, 500, 2_000, 5_000];
+/** Older than this, a workbook in the folder is a leftover. A run takes seconds; the margin is for a long macro in
+ *  another server process sharing the folder. */
+const LEFTOVER_AGE_MS = 6 * 60 * 60_000;
+/** Excel or a virus scan can hold the file for a while after the close. */
+const REMOVE_RETRY_MS = [0, 500, 2_000, 5_000, 15_000, 60_000];
 
 export function sweepLeftoverWorkbooks(dir: string, now = Date.now()): void {
   let names: string[];
@@ -88,6 +78,19 @@ export function removeWorkbookSoon(path: string, retries: readonly number[] = RE
   attempt(0);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Trusted Location resolution (mirrors scripts/enable-access-vbom.mjs)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Compute the desktop-touch-managed Trusted Location path the CLI registers.
+ * Mirrors the constant in `scripts/enable-access-vbom.mjs::TRUSTED_LOCATION_LEAF`
+ * — if you change this, change it there (CLAUDE.md §3.1 fact整合).
+ *
+ * The bridge writes `.xlsm` workbooks into this directory before invoking
+ * `Application.Run`, so Excel's Trust Center allows macro execution
+ * (otherwise HRESULT 0x800a03ec, see Phase 2e ADR-015 §3.6 / §7).
+ */
 function getTrustedDir(): string {
   const localAppData = process.env.LOCALAPPDATA;
   if (localAppData) return join(localAppData, "desktop-touch-mcp", "trusted-vba");
@@ -381,7 +384,8 @@ export function registerExcelTools(server: McpServer): void {
         details:
           "action='run_vba' authors a Sub in a fresh workbook, saves into the managed " +
           "Trusted Location (%LOCALAPPDATA%\\desktop-touch-mcp\\trusted-vba), and " +
-          "Application.Run the macro; the workbook is removed once the macro has run (workbookPath names where it ran from). Requires HKCU AccessVBOM=1 + VBAWarnings=1 + a " +
+          "Application.Run the macro; the workbook is removed once the macro has run (workbookPath names where it ran from), " +
+          "so a macro that must keep results writes them to its own file, not ThisWorkbook. Requires HKCU AccessVBOM=1 + VBAWarnings=1 + a " +
           "registered Trusted Location (all configured by `node scripts/enable-access-vbom.mjs`). " +
           "Trust setup: Excel must restart after the CLI runs (values cached at process start). " +
           "action='check_access_vbom' is a read-only preflight returning " +

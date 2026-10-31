@@ -16,7 +16,7 @@
  * - `codeDeclaresMacro` handles whitespace, modifiers, and special-char names
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // Mock the native-engine surface BEFORE importing the handler so the
 // in-memory binding picks up the stub. Use `importOriginal` to preserve
@@ -183,6 +183,22 @@ describe("excelHandler — check_access_vbom", () => {
 });
 
 describe("excelHandler — run_vba", () => {
+  // run_vba now sweeps and removes workbooks in %LOCALAPPDATA%\desktop-touch-mcp\trusted-vba (internal #336):
+  // never the developer's real folder.
+  let appData = "";
+  beforeEach(async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    appData = mkdtempSync(join(tmpdir(), "dt-lad-run-"));
+    vi.stubEnv("LOCALAPPDATA", appData);
+  });
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    const { rmSync } = await import("node:fs");
+    rmSync(appData, { recursive: true, force: true });
+  });
+
   it("fails fast with VbaMacroNotFound when code lacks the Sub", async () => {
     const result = await excelHandler({
       action: "run_vba",
@@ -313,7 +329,7 @@ describe("excelHandler — run_vba", () => {
 
 // internal #336: run_vba's workbooks do not stay in the trusted folder.
 describe("run_vba workbook cleanup (internal #336)", () => {
-  it("sweeps only dt_vba_*.xlsm files older than ten minutes", async () => {
+  it("sweeps only dt_vba_*.xlsm files (and their ~$ owner files) older than six hours", async () => {
     const { mkdtempSync, writeFileSync, utimesSync, existsSync, rmSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
@@ -322,13 +338,16 @@ describe("run_vba workbook cleanup (internal #336)", () => {
     try {
       const now = Date.now();
       const old = join(dir, "dt_vba_1.xlsm");
+      const lock = join(dir, "~$dt_vba_1.xlsm");
       const fresh = join(dir, "dt_vba_2.xlsm");
       const other = join(dir, "mine.xlsm");
-      for (const p of [old, fresh, other]) writeFileSync(p, "");
-      utimesSync(old, new Date(now - 11 * 60_000), new Date(now - 11 * 60_000));
-      utimesSync(other, new Date(now - 60 * 60_000), new Date(now - 60 * 60_000));
+      for (const p of [old, lock, fresh, other]) writeFileSync(p, "");
+      const sevenHours = new Date(now - 7 * 60 * 60_000);
+      for (const p of [old, lock, other]) utimesSync(p, sevenHours, sevenHours);
+      utimesSync(fresh, new Date(now - 60 * 60_000), new Date(now - 60 * 60_000)); // an hour: a long run elsewhere
       sweepLeftoverWorkbooks(dir, now);
       expect(existsSync(old)).toBe(false);
+      expect(existsSync(lock)).toBe(false);
       expect(existsSync(fresh)).toBe(true); // a run in progress
       expect(existsSync(other)).toBe(true); // not ours
     } finally {
