@@ -191,11 +191,13 @@ describe("terminal read paneId (Phase 1 — safe-declines on a non-unique title)
     expect(r.ok).not.toBe(false);
     expect(String(r.text)).toContain("ready");
   });
-  it("declines (never wrong-reads) when the pane's title is no longer unique", async () => {
-    // Same-title sibling ⇒ resolveTitleByHwnd cannot hand a unique title to the UIA read ⇒ decline.
+  it("reads a classic pane by its hwnd even when a sibling has the same title (internal #331 / #337)", async () => {
+    // Two locker consoles ssh'd to the same host share `user@host: ~`; the read is scoped to the pane's hwnd,
+    // so it is neither declined nor a read of the sibling.
     mockEnum.mockReturnValue([fakeWindow("dtmdogfood@host: ~", 111n), fakeWindow("dtmdogfood@host: ~", 222n)]);
     const r = parseResult(await terminalReadHandler(readArgs({ paneId: "222" })));
-    expect(r.code).toBe("TerminalWindowNotFound");
+    expect(r.ok).not.toBe(false);
+    expect(vi.mocked(uia.getTextViaTextPattern)).toHaveBeenLastCalledWith("dtmdogfood@host: ~", undefined, { pinnedHwnd: 222n });
   });
   it("declines a malformed paneId", async () => {
     mockEnum.mockReturnValue([fakeWindow("x", 1n)]);

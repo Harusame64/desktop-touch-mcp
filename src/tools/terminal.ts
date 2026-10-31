@@ -1043,7 +1043,21 @@ export const terminalReadHandler = async ({
     // via the registered nonce tab title (which also gates on the tab being ACTIVE) — else decline
     // rather than risk reading a same-title sibling / another tab (never a wrong-pane read). paneId
     // overrides windowTitle.
-    if (paneId !== undefined) {
+    // internal #331 / #337: a classic pane is read by its window handle, whatever its title (see
+    // readTerminalRawByPaneId); OCR, which finds its window by title, is used for it only while the title is
+    // unique.
+    let pinned: WindowZInfo | null = null;
+    const parsedPane = paneId !== undefined ? parsePaneId(paneId) : null;
+    if (paneId !== undefined && parsedPane?.kind === "classic") {
+      pinned = findTerminalWindowByHwnd(parsedPane.hwnd);
+      if (pinned === null) {
+        return failCode("TerminalWindowNotFound", "Terminal window not found: paneId " + paneId, {
+          suggest: paneIdMissSuggest(paneId),
+          context: { paneId },
+        });
+      }
+      windowTitle = pinned.title;
+    } else if (paneId !== undefined) {
       const resolved = resolvePaneTitle(paneId);
       if (resolved === null) {
         // Shape-aware suggest (windowTitle-in-paneId-slot mixup / malformed / gone) — code stays
@@ -1059,7 +1073,7 @@ export const terminalReadHandler = async ({
     if (windowTitle === undefined || windowTitle === "") {
       return failWith("terminal(action='read') requires windowTitle or paneId", "terminal:read", {});
     }
-    const win = findTerminalWindow(windowTitle, "read");
+    const win = pinned ?? findTerminalWindow(windowTitle, "read");
     if (!win) {
       return failWith("Terminal window not found: " + windowTitle, "terminal:read", { windowTitle });
     }
@@ -1071,9 +1085,10 @@ export const terminalReadHandler = async ({
     let usedSource: "uia" | "ocr" = "uia";
 
     if (source === "uia" || source === "auto") {
-      raw = await getTextViaTextPattern(win.title);
+      raw = await getTextViaTextPattern(win.title, undefined, pinned !== null ? { pinnedHwnd: pinned.hwnd } : undefined);
     }
-    if ((raw === null || raw === "") && source !== "uia") {
+    const ocrUsable = pinned === null || (paneId !== undefined && resolveTitleByHwnd(paneId) !== null);
+    if ((raw === null || raw === "") && source !== "uia" && ocrUsable) {
       try {
         const { words } = await recognizeWindow(win.title, ocrLanguage);
         // Preserve 2D layout: cluster by y, sort by x, join with \n.
@@ -2215,6 +2230,26 @@ export async function readTerminalRaw(windowTitle: string): Promise<{ text: stri
   const raw = (await getTextViaTextPattern(win.title)) ?? "";
   const cleaned = stripAnsi(raw);
   return { text: cleaned, marker: makeMarker(cleaned) };
+}
+
+/**
+ * internal #331 / #337: read a pane by its paneId. A classic pane is read by its window handle (the UIA read
+ * scoped to that hwnd, ADR-036), so its title does not matter: two locker consoles ssh'd to the same host both
+ * get `user@host: ~` as their title, and the title changes at login — the title-keyed read declined both
+ * (TerminalWindowNotFound / prompt_unreadable, win2 2026-10-31). A wt pane has no per-pane window, so it still
+ * resolves through its pinned nonce tab title (resolvePaneTitle). Null = the pane is gone (or its tab inactive).
+ */
+export async function readTerminalRawByPaneId(paneId: string): Promise<{ text: string; marker: string } | null> {
+  const parsed = parsePaneId(paneId);
+  if (parsed === null) return null;
+  if (parsed.kind === "classic") {
+    const win = findTerminalWindowByHwnd(parsed.hwnd);
+    if (win === null) return null;
+    const cleaned = stripAnsi((await getTextViaTextPattern(win.title, undefined, { pinnedHwnd: win.hwnd })) ?? "");
+    return { text: cleaned, marker: makeMarker(cleaned) };
+  }
+  const title = resolvePaneTitle(paneId);
+  return title === null ? null : readTerminalRaw(title);
 }
 
 /** Check if a window with the given hwnd still exists in the z-order list. */

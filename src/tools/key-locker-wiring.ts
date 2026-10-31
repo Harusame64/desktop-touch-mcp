@@ -54,7 +54,7 @@ import {
   isSecretInputPrompt,
   lastNonEmptyPromptLine,
   parseExitSentinel,
-  readTerminalRaw,
+  readTerminalRawByPaneId,
   resolvePaneTitle,
   setTerminalDispatchHook,
   terminalSendHandler,
@@ -488,9 +488,9 @@ export class KeyLockerWiring {
    *  into the running process (Codex W-4b disclosure). A colon-less real prompt is rare ⇒ it declines and the
    *  human types it (never a wrong-inject). A proper echo-off detector is the robust follow-up (OQ-W-17-bis). */
   private async readPromptTail(paneId: string): Promise<PromptVerdict | null> {
-    const title = resolvePaneTitle(paneId);
-    if (title === null) return null; // ambiguous / vanished title ⇒ decline (never read a same-title sibling)
-    const raw = await readTerminalRaw(title);
+    // internal #331 / #337: a classic pane is read by its hwnd (never a same-title sibling, whatever its title);
+    // a wt pane by its pinned nonce tab title. Null ⇒ gone / inactive tab ⇒ decline.
+    const raw = await readTerminalRawByPaneId(paneId);
     if (raw === null) return null;
     const line = lastNonEmptyPromptLine(raw.text);
     const isCredentialPrompt = line !== null && /:\s*$/.test(line) && isSecretInputPrompt(raw.text);
@@ -514,9 +514,8 @@ export class KeyLockerWiring {
       // AFTER auth, so a title cached before the loop would stop resolving mid-poll → the correct secret would
       // false-reject as auth_rejected. Re-resolving keeps the read bound to the pane across the change (a wt
       // pane's nonce title is PINNED, so it re-resolves iff the tab is still active — E6).
-      const title = resolvePaneTitle(paneId);
-      if (title !== null) {
-        const raw = await readTerminalRaw(title);
+      {
+        const raw = await readTerminalRawByPaneId(paneId);
         if (raw !== null) {
           const stillHiddenPrompt = isSecretInputPrompt(raw.text);
           last = { tail: raw.text, stillHiddenPrompt };
@@ -568,9 +567,8 @@ export class KeyLockerWiring {
     for (;;) {
       // RE-RESOLVE the title each read (Codex W-4b): the ran command may have changed the console title; the
       // probe was already sent to the send-time window, but the READ must track the pane's current title.
-      const rtitle = resolvePaneTitle(paneId);
-      if (rtitle !== null) {
-        const raw = await readTerminalRaw(rtitle);
+      {
+        const raw = await readTerminalRawByPaneId(paneId);
         if (raw !== null) {
           const m = parseExitSentinel(raw.text, nonce, shell);
           if (m.matched) return { reason: "exited", exitCode: m.exitCode };
