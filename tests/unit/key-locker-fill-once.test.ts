@@ -688,7 +688,8 @@ describe("KeyLockerCaptureDriver — a closed or re-anchored pane forgets its ke
 
 // ── "Don't ask again" (user request 2026-10-30; scope 2026-10-31: that tag only, at the same prompt) ──────
 
-const LINE = "harus@192.168.1.20's password:";
+/** The mark for TAIL: the prompt row and the row above it. */
+const LINE = "harus@hop:~$ ssh harus@192.168.1.20\nharus@192.168.1.20's password:";
 const ELSEWHERE = "PS C:\\> ssh hop\nharus@hop:~$ sudo -i\n[sudo] password for harus: ";
 
 describe("runFillOnce — a kept tag marked \"Don't ask again\"", () => {
@@ -716,14 +717,38 @@ describe("runFillOnce — a kept tag marked \"Don't ask again\"", () => {
     }
   });
 
-  it("the same prompt line after other output still skips (a failed try, then the prompt again)", async () => {
+  it("the same login run again later skips (other output above it does not matter)", async () => {
     const k = withKept();
     k.tags.allowAlways("1234", ANCHOR, "jump", "kept-1", LINE);
-    const again = `${TAIL}\nPermission denied, please try again.\n${LINE} `;
+    const again = `${TAIL}\nharus@192.168.1.20:~$ exit\nlogout\n${LINE} `;
     const f = fake({ kept: k.tags, prompts: [PROMPT(true, again), PROMPT(true, again)] });
     await runFillOnce(f.deps, TAGGED);
     expect(confirmed(f)).toBe(false);
     expect(wrote(f)).toBe(true);
+  });
+
+  it("the same prompt row under a different row above asks again (a failed try; a wrapped `password:`)", async () => {
+    for (const above of ["Permission denied, please try again.", "alice@another-very-long-host-name.example's"]) {
+      const k = withKept();
+      k.tags.allowAlways("1234", ANCHOR, "jump", "kept-1", LINE);
+      const tail = `${TAIL}\n${above}\nharus@192.168.1.20's password: `;
+      const f = fake({ kept: k.tags, prompts: [PROMPT(true, tail), PROMPT(true, tail)] });
+      await runFillOnce(f.deps, TAGGED);
+      expect(confirmed(f)).toBe(true);
+    }
+  });
+
+  it("a wrapped key-unlock prompt is bound to all its rows: another user's key asks again (codex on #885)", async () => {
+    const wrapped = (user: string): string => `PS C:\\> ssh hop\nEnter passphrase for key '/home/${user}/.ssh/\r\nid_ed25519': `;
+    const k = withKept();
+    const f = fake({ kept: k.tags, confirm: "fill_always", prompts: [PROMPT(true, wrapped("alice")), PROMPT(true, wrapped("alice"))] });
+    expect((await runFillOnce(f.deps, TAGGED)).always).toBe(true);
+    const same = fake({ kept: k.tags, prompts: [PROMPT(true, wrapped("alice")), PROMPT(true, wrapped("alice"))] });
+    await runFillOnce(same.deps, TAGGED);
+    expect(confirmed(same)).toBe(false);
+    const other = fake({ kept: k.tags, prompts: [PROMPT(true, wrapped("bobby")), PROMPT(true, wrapped("bobby"))] });
+    await runFillOnce(other.deps, TAGGED);
+    expect(confirmed(other)).toBe(true);
   });
 
   it("a marked tag still declines at a gate: nothing typed, no dialog", async () => {

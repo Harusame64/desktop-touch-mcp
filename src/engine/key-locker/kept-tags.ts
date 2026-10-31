@@ -19,7 +19,8 @@
 //     the wt shell-exit prune), `forget` on `forget_tag`, `clear` on server shutdown.
 // "Don't ask again" (user request 2026-10-30; scope decided 2026-10-31: that tag only, and only at the same
 // prompt): the confirm dialog has a checkbox, and a Fill with it ticked that FILLS marks THAT tag of THAT pane
-// with the prompt line the user saw, so later fills of it at a prompt with the same text skip the dialog. Past
+// with the prompt the user saw (its rows and the row above, `fill-once.ts promptLineOf`), so later fills of it
+// at a prompt with the same text skip the dialog. Past
 // the first hop a prompt is text the remote side writes, so a prompt with other text (sudo, another host, a
 // bare `Password:`) asks again; one that copies the text exactly is not caught. The mark lives on the entry,
 // so it goes with the tag — on pane close, forget_tag, a re-anchor, a helper change — and a retype (a new

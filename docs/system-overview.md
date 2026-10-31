@@ -677,7 +677,7 @@ pre-existing terminal is never autofilled.
   instead kept in the locker's memory for that pane until the pane closes; a later `fill_once`
   with the same tag shows the user a one-click **Fill / Cancel** (with the tag and the `reason`)
   instead of the typing dialog, and every check above still runs. Its **Don't ask again** box (off by default)
-  makes later fills of that tag in that pane skip the confirm at a prompt whose last line is the same text
+  makes later fills of that tag in that pane skip the confirm at a prompt with the same text (the prompt's rows and the row above them)
   (`tagAlways:true` in the reply, `paneTagsNoConfirm` in `list`); it is recorded only when that fill goes in.
   Other tags and other prompt text still ask, and a retype or `forget_tag` ends it. A remote prompt that copies
   the text exactly is not caught. `retype:true` types it again;

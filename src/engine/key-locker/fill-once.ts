@@ -37,8 +37,8 @@
 // invariant — the secret outlives one fill — and only within the pane (window / tab) it was typed for: it is
 // erased when that pane closes, on forget_tag, and on server shutdown, and a reused paneId never sees it.
 // The confirm also offers "Don't ask again" (user request 2026-10-30; scope 2026-10-31: that tag only, at the
-// same prompt). Ticked on a Fill that fills, later fills of the tag at a prompt whose last line is the same text
-// skip the dialog — and nothing else: every gate still runs. It weakens the dialog invariant above for that
+// same prompt). Ticked on a Fill that fills, later fills of the tag at a prompt with the same text (its rows and
+// the row above them) skip the dialog — and nothing else: every gate still runs. It weakens the dialog invariant above for that
 // prompt text: a remote side that prints exactly that text gets the secret without the user judging it.
 
 import { stripAnsi } from "../ansi.js";
@@ -158,14 +158,19 @@ const KEY_UNLOCK_WRAPPED = /^Enterpassphraseforkey'[^']+':$/i;
 const KEY_UNLOCK_MAX_ROWS = 6;
 
 export function isKeyUnlockPrompt(tail: string | null): boolean {
-  if (!tail) return false;
+  return keyUnlockRows(tail) !== null;
+}
+
+/** How many trailing rows a key-unlock prompt spans (1 unless it wrapped), or null when the tail is not one. */
+function keyUnlockRows(tail: string | null): number | null {
+  if (!tail) return null;
   const rows = stripAnsi(tail).replace(/\r\n/g, "\n").split("\n");
   while (rows.length > 0 && rows[rows.length - 1]!.trim() === "") rows.pop();
   for (let k = 1; k <= KEY_UNLOCK_MAX_ROWS && k <= rows.length; k++) {
     const joined = rows.slice(rows.length - k).join("").replace(/\s+/g, "");
-    if ((k === 1 ? KEY_UNLOCK_ROW : KEY_UNLOCK_WRAPPED).test(joined)) return true;
+    if ((k === 1 ? KEY_UNLOCK_ROW : KEY_UNLOCK_WRAPPED).test(joined)) return k;
   }
-  return false;
+  return null;
 }
 
 /** fill_once's verdict: the loop's, widened to the key-unlock prompts read from its own `tail`. */
@@ -246,7 +251,7 @@ async function fillClaimed(
 
   // internal #281: a tag already kept for THIS pane and THIS anchor → confirm, not type. The kept secret is
   // never erased here, whatever the outcome: it lives until the pane closes or forget_tag. A tag the user
-  // marked "Don't ask again" skips the confirm only at a prompt whose last line is the text it was marked at.
+  // marked "Don't ask again" skips the confirm only at a prompt with the text it was marked at (promptLineOf).
   // The tick is recorded only when that fill goes in: a fill declined after the dialog (the prompt changed,
   // the pane closed) was for a prompt that is gone, and the user agreed to what they saw.
   const keptId = tag !== undefined ? deps.kept.lookup(paneId, anchor, tag) : null;
@@ -289,10 +294,17 @@ async function fillClaimed(
   return wasErased ? { ...outcome, ...keptBefore } : { ...outcome, ...keptBefore, cleanupFailed: true };
 }
 
-/** The prompt's last non-empty line, trimmed (what "Don't ask again" is bound to), or null when there is none. */
+/**
+ * What "Don't ask again" is bound to: the prompt's rows — all of them when a key-unlock prompt wrapped (codex
+ * on #885: its last row alone, `id_ed25519':`, is the same for another user's key) — plus the non-empty row
+ * above them, each trimmed, joined by newlines. The row above catches a wrapped password prompt too (a last
+ * row of just `password:`), and is the command line when the same login is run again. Null when empty.
+ */
 function promptLineOf(tail: string): string | null {
   const lines = stripAnsi(tail).split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
-  return lines.length > 0 ? lines[lines.length - 1] : null;
+  if (lines.length === 0) return null;
+  const take = (keyUnlockRows(tail) ?? 1) + 1;
+  return lines.slice(-take).join("\n");
 }
 
 /** Erase the one-time secret: two attempts (a pipe hiccup is the usual cause); false if both failed. */
