@@ -7,6 +7,11 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// internal #334: the console-input helper. By default it cannot run (as on a machine without the exe), so a
+// console falls back to WM_CHAR and the WM_CHAR tests below see that path; a test that wants the helper sets it.
+const spawnSyncMock = vi.fn((..._args: unknown[]): unknown => ({ error: Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }) }));
+vi.mock("node:child_process", () => ({ spawnSync: (...args: unknown[]) => spawnSyncMock(...args) }));
+
 // Mock win32 helpers before importing bg-input
 vi.mock("../../src/engine/win32.js", async () => {
   const actual = await vi.importActual<typeof import("../../src/engine/win32.js")>("../../src/engine/win32.js");
@@ -116,7 +121,7 @@ describe("postCharsToHwnd", () => {
       expect(sentAs()).toEqual([
         "a", "<down 13>", "<up 13>", "b", "<down 13>", "<up 13>", "c", "<down 13>", "<up 13>", "d",
       ]);
-      expect(result).toEqual({ sent: 8, full: true, target: HWND });
+      expect(result).toEqual({ sent: 8, full: true, target: HWND, via: "wm_char" });
       expect(postMessageToHwnd).not.toHaveBeenCalledWith(expect.anything(), 0x0102, 0x0D, expect.anything());
     });
 
@@ -152,7 +157,7 @@ describe("postCharsToHwnd", () => {
       vi.mocked(postMessageToHwnd)
         .mockReturnValueOnce(true)   // 'a'
         .mockReturnValueOnce(false); // Enter's key down
-      expect(postCharsToHwnd(HWND, "a\r\nb")).toEqual({ sent: 1, full: false, target: HWND });
+      expect(postCharsToHwnd(HWND, "a\r\nb")).toEqual({ sent: 1, full: false, target: HWND, via: "wm_char" });
     });
 
     it("leaves a window that is not a console on WM_CHAR 0x0D (a posted Enter would press a dialog's default button)", () => {
@@ -206,6 +211,54 @@ describe("postCharsToHwnd", () => {
     vi.mocked(getFocusedChildHwnd).mockReturnValueOnce(null);
     vi.mocked(postMessageToHwnd).mockReturnValueOnce(false);
     expect(postCharsToHwnd(HWND, "ab")).toEqual({ sent: 0, full: false, target: HWND });
+  });
+});
+
+// internal #334: a console gets the text as key-down / key-up pairs from bin/console-input.exe, which conhost
+// never merges (WM_CHAR with repeat count 0 lost runs: `-p 2222` became `-p 2`).
+describe("postCharsToHwnd — a console through the console-input helper (internal #334)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getWindowClassName).mockReturnValue("ConsoleWindowClass");
+  });
+
+  it("runs the helper once with the console's pid and the text on stdin, and posts nothing", () => {
+    spawnSyncMock.mockReturnValueOnce({ status: 0, stdout: Buffer.from("13") });
+    const r = postCharsToHwnd(HWND, "ssh -p 2222\r\n");
+    expect(r).toEqual({ sent: 13, full: true, target: HWND, via: "console_input" });
+    expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+    const [exe, args, opts] = spawnSyncMock.mock.calls[0] as [string, string[], { input: Buffer; windowsHide: boolean }];
+    expect(exe).toMatch(/[\\/]bin[\\/]console-input\.exe$/);
+    expect(args).toEqual(["1234"]);
+    expect(opts.input.toString("utf8")).toBe("ssh -p 2222\r\n");
+    expect(opts.windowsHide).toBe(true);
+    expect(postMessageToHwnd).not.toHaveBeenCalled();
+  });
+
+  it("a write that stopped part way reports what went in, and does not post the rest again", () => {
+    spawnSyncMock.mockReturnValueOnce({ status: 5, stdout: Buffer.from("4") });
+    expect(postCharsToHwnd(HWND, "abcdef")).toEqual({ sent: 4, full: false, target: HWND, via: "console_input" });
+    expect(postMessageToHwnd).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the exe is missing", { error: Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }) }],
+    ["it could not attach", { status: 3, stdout: Buffer.from("") }],
+    ["it timed out", { error: new Error("spawnSync ETIMEDOUT"), status: null }],
+  ])("falls back to WM_CHAR when %s, and says so", (_name, reply) => {
+    spawnSyncMock.mockReturnValueOnce(reply);
+    vi.mocked(postMessageToHwnd).mockReturnValue(true);
+    expect(postCharsToHwnd(HWND, "ab")).toEqual({ sent: 2, full: true, target: HWND, via: "wm_char" });
+    expect(postMessageToHwnd).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not run the helper for a window that is not a console, or for no text", () => {
+    vi.mocked(getWindowClassName).mockReturnValue("Edit");
+    vi.mocked(postMessageToHwnd).mockReturnValue(true);
+    expect(postCharsToHwnd(HWND, "aa")).toEqual({ sent: 2, full: true, target: HWND });
+    vi.mocked(getWindowClassName).mockReturnValue("ConsoleWindowClass");
+    postCharsToHwnd(HWND, "");
+    expect(spawnSyncMock).not.toHaveBeenCalled();
   });
 });
 

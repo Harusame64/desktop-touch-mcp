@@ -25,6 +25,9 @@ import {
   vkToScanCode,
   WM_CHAR, WM_KEYDOWN, WM_KEYUP, VK_RETURN, VK_CONTROL, VK_SHIFT, VK_MENU,
 } from "./win32.js";
+import { spawnSync } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { nativeWin32, nativeUiaState } from "./native-engine.js";
 import { logDispatchSink } from "../tools/_resolve-log.js";
 import type {
@@ -204,6 +207,37 @@ export interface PostCharsResult {
    * reads it here, rather than resolving the focus a second time and perhaps getting a different answer.
    */
   target: unknown;
+  /**
+   * internal #334: how a console got the text — `console_input` (key-down / key-up pairs written by
+   * `bin/console-input.exe`) or `wm_char` (posted WM_CHAR, the only way for any other window, and the fallback
+   * when the helper cannot run). Left out for a window that is not a console.
+   */
+  via?: "console_input" | "wm_char";
+}
+
+// dist/engine/ -> ../../bin/console-input.exe (the same resolution as ocr-bridge.ts).
+const CONSOLE_INPUT_EXE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "console-input.exe");
+/** Generous for a one-shot exe that measured ~64 ms warm, ~100 ms on a fresh copy (win2, 2026-10-31). */
+const CONSOLE_INPUT_TIMEOUT_MS = 10_000;
+
+/**
+ * internal #334: write `text` into the console that `target` (a ConsoleWindowClass window) belongs to, as
+ * key-down / key-up pairs, through `bin/console-input.exe` (it attaches to that console; this process never
+ * leaves its own). Returns the UTF-16 units written, or null when the helper did not run or could not attach
+ * (the caller then posts WM_CHAR as before). A write that stopped part way returns what went in.
+ */
+export function writeConsoleInputViaHelper(target: unknown, text: string): { sent: number; full: boolean } | null {
+  const pid = getWindowProcessId(target);
+  if (pid === 0) return null;
+  const r = spawnSync(CONSOLE_INPUT_EXE, [String(pid)], {
+    input: Buffer.from(text, "utf8"),
+    windowsHide: true,
+    timeout: CONSOLE_INPUT_TIMEOUT_MS,
+  });
+  if (r.error !== undefined || (r.status !== 0 && r.status !== 5)) return null;
+  const sent = Number.parseInt(String(r.stdout ?? ""), 10);
+  if (!Number.isInteger(sent) || sent < 0 || sent > text.length) return r.status === 0 ? { sent: text.length, full: true } : null;
+  return { sent, full: r.status === 0 && sent === text.length };
 }
 
 /**
@@ -238,13 +272,19 @@ export function postCharsToResolvedTarget(target: unknown, text: string): PostCh
   // Only a console gets the key event: in a dialog's edit box a posted Enter key would press the
   // default button, where WM_CHAR 0x0D breaks the line.
   const toConsole = (() => { try { return getWindowClassName(target) === "ConsoleWindowClass"; } catch { return false; } })();
+  if (toConsole && text.length > 0) {
+    const w = writeConsoleInputViaHelper(target, text);
+    if (w !== null) return { ...w, target, via: "console_input" };
+  }
+  const result = (n: number, full: boolean): PostCharsResult =>
+    toConsole ? { sent: n, full, target, via: "wm_char" } : { sent: n, full, target };
 
   for (let i = 0; i < text.length; i++) {
     const ch = text.charCodeAt(i);
 
     if (toConsole && (ch === 0x0D || ch === 0x0A)) {
       const units = ch === 0x0D && text.charCodeAt(i + 1) === 0x0A ? 2 : 1;
-      if (!postKeyToTarget(target, VK_RETURN)) return { sent, full: false, target };
+      if (!postKeyToTarget(target, VK_RETURN)) return result(sent, false);
       sent += units;
       i += units - 1;
       // Also after the last one: the next post can be the caller's next chunk (codex on #882).
@@ -256,12 +296,12 @@ export function postCharsToResolvedTarget(target: unknown, text: string): PostCh
     const wParam = ch === 0x0A ? 0x0D : ch;
 
     if (!postMessageToHwnd(target, WM_CHAR, wParam, 0)) {
-      return { sent, full: false, target };
+      return result(sent, false);
     }
     sent++;
   }
 
-  return { sent, full: sent === total, target };
+  return result(sent, sent === total);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
