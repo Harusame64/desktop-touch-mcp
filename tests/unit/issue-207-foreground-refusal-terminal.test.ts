@@ -73,6 +73,7 @@ vi.mock("../../src/engine/ocr-bridge.js", () => ({
 }));
 
 vi.mock("../../src/engine/identity-tracker.js", () => ({
+  handleObservationKey: (hwnd: bigint) => `hwnd:${hwnd}`,
   observeTarget: vi.fn(() => ({ identity: {}, invalidatedBy: null, previousTarget: null })),
   buildCacheStateHints: vi.fn(() => ({})),
   toTargetHints: vi.fn(() => ({})),

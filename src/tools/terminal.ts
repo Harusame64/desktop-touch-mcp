@@ -39,6 +39,7 @@ import { recognizeWindow, ocrWordsToLines, detectOcrLanguage } from "../engine/o
 import { stripAnsi, tailLines } from "../engine/ansi.js";
 import {
   observeTarget,
+  handleObservationKey,
   buildCacheStateHints,
   toTargetHints,
   type InvalidationReason,
@@ -1048,16 +1049,12 @@ export const terminalReadHandler = async ({
     // unique.
     let pinned: WindowZInfo | null = null;
     const parsedPane = paneId !== undefined ? parsePaneId(paneId) : null;
-    if (paneId !== undefined && parsedPane?.kind === "classic") {
-      pinned = findTerminalWindowByHwnd(parsedPane.hwnd);
-      if (pinned === null) {
-        return failCode("TerminalWindowNotFound", "Terminal window not found: paneId " + paneId, {
-          suggest: paneIdMissSuggest(paneId),
-          context: { paneId },
-        });
-      }
+    if (paneId !== undefined && parsedPane?.kind === "classic") pinned = findTerminalWindowByHwnd(parsedPane.hwnd);
+    if (pinned !== null) {
       windowTitle = pinned.title;
     } else if (paneId !== undefined) {
+      // Not a live console by that handle (a wt pane, or a handle of another terminal window): by title, which
+      // must be unique, as before.
       const resolved = resolvePaneTitle(paneId);
       if (resolved === null) {
         // Shape-aware suggest (windowTitle-in-paneId-slot mixup / malformed / gone) — code stays
@@ -1078,7 +1075,8 @@ export const terminalReadHandler = async ({
       return failWith("Terminal window not found: " + windowTitle, "terminal:read", { windowTitle });
     }
 
-    const obs = observeTarget(windowTitle, win.hwnd, win.title);
+    // A pinned read is keyed by its handle: two same-titled panes must not share one observation slot.
+    const obs = observeTarget(pinned !== null ? handleObservationKey(pinned.hwnd) : windowTitle, win.hwnd, win.title);
     const identityHints = toTargetHints(obs.identity);
 
     let raw: string | null = null;
@@ -1087,8 +1085,14 @@ export const terminalReadHandler = async ({
     if (source === "uia" || source === "auto") {
       raw = await getTextViaTextPattern(win.title, undefined, pinned !== null ? { pinnedHwnd: pinned.hwnd } : undefined);
     }
-    const ocrUsable = pinned === null || (paneId !== undefined && resolveTitleByHwnd(paneId) !== null);
-    if ((raw === null || raw === "") && source !== "uia" && ocrUsable) {
+    // OCR finds its window by title: for a pinned pane only while that title is unique.
+    let ocrRefusedSharedTitle = false;
+    const ocrUsable = (): boolean => {
+      const ok = pinned === null || (paneId !== undefined && resolveTitleByHwnd(paneId) !== null);
+      ocrRefusedSharedTitle = !ok;
+      return ok;
+    };
+    if ((raw === null || raw === "") && source !== "uia" && ocrUsable()) {
       try {
         const { words } = await recognizeWindow(win.title, ocrLanguage);
         // Preserve 2D layout: cluster by y, sort by x, join with \n.
@@ -1107,11 +1111,16 @@ export const terminalReadHandler = async ({
         "TerminalTextPatternUnavailable",
         "TextPattern not available and no OCR fallback usable",
         {
-          suggest: [
-            "Retry with source:'ocr' to force OCR",
-            "Verify the window is actually a terminal (Windows Terminal, conhost, PowerShell)",
-          ],
-          context: { windowTitle: win.title },
+          suggest: ocrRefusedSharedTitle
+            ? [
+              "OCR was not used: another window has this pane's title, and OCR finds its window by title. " +
+                "Give the pane a unique title (or close the other window), then retry",
+            ]
+            : [
+              "Retry with source:'ocr' to force OCR",
+              "Verify the window is actually a terminal (Windows Terminal, conhost, PowerShell)",
+            ],
+          context: { windowTitle: win.title, ...(ocrRefusedSharedTitle ? { ocr: "refused_shared_title" } : {}) },
         },
       );
     }
