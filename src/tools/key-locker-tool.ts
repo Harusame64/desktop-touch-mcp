@@ -337,13 +337,20 @@ async function handleSave(uri: string): Promise<ToolResult> {
   //    dialog reports {captured:false} and writes no binding.
   const opaqueId = randomBytes(16).toString("hex");
   let captured: boolean;
+  let timedOut: boolean;
   try {
     const r = await manager().withHost((h) => h.capture(opaqueId, { label: meta.displayUri }));
     captured = r.captured;
+    timedOut = r.timedOut === true;
   } catch (err) {
     return keyLockerFailure(err);
   }
-  if (!captured) return ok({ captured: false });
+  // internal #338: a window that closed itself is not the user saying no.
+  if (!captured) {
+    return ok(timedOut
+      ? { captured: false, timedOut: true, hint: "The locker's window closed itself after about 3 minutes with no answer. Nothing was saved. Call save again when the user is ready." }
+      : { captured: false });
+  }
 
   store().bind(canonical, opaqueId, meta);
   return ok({ captured: true });

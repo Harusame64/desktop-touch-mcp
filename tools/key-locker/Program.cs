@@ -328,10 +328,12 @@ internal static class KeyLocker
         if (string.IsNullOrEmpty(key)) { WriteReply(server, id, false, "", "missing_key"); return; }
         string label = key, note = "", tag = "";
         bool once = false;
+        var closeAt = DialogDeadline.Default();
         try
         {
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement;
+            closeAt = DialogDeadline.FromFrame(root);
             if (root.TryGetProperty("label", out var l) && l.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(l.GetString())) label = l.GetString()!;
             if (root.TryGetProperty("note", out var n) && n.ValueKind == JsonValueKind.String) note = PlainLine(n.GetString() ?? "");
             once = root.TryGetProperty("purpose", out var p) && p.ValueKind == JsonValueKind.String && p.GetString() == "fill_once";
@@ -340,7 +342,7 @@ internal static class KeyLocker
         catch { /* the frame already parsed once in RunControlLoop; keep the key-only defaults */ }
         string? secret = null;
         var timedOut = false;
-        try { (secret, timedOut) = _app!.Dispatcher.Invoke(() => SecureDialog.Prompt(label, note, once, once ? tag : "")); }
+        try { (secret, timedOut) = _app!.Dispatcher.Invoke(() => SecureDialog.Prompt(label, note, once, once ? tag : "", closeAt)); }
         catch (Exception e) { Console.Error.WriteLine($"[key-locker] dialog failed: {e.Message}"); }
 
         if (_serverGone) return; // internal #282: nobody is left to use it, and an autofill capture must not reach store.json
@@ -375,10 +377,12 @@ internal static class KeyLocker
     private static void HandlePrompt(NamedPipeServerStream server, long id, string line)
     {
         string kind, label, note, tag;
+        DateTimeOffset closeAt;
         try
         {
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement;
+            closeAt = DialogDeadline.FromFrame(root);
             kind = root.TryGetProperty("kind", out var k) && k.ValueKind == JsonValueKind.String ? k.GetString() ?? "" : "";
             label = root.TryGetProperty("label", out var l) && l.ValueKind == JsonValueKind.String ? l.GetString() ?? "" : "";
             note = root.TryGetProperty("note", out var n) && n.ValueKind == JsonValueKind.String ? PlainLine(n.GetString() ?? "") : "";
@@ -389,7 +393,7 @@ internal static class KeyLocker
         if (kind == "fill_kept" && tag.Length == 0) { WriteReply(server, id, false, "", "bad_prompt"); return; }
 
         string choice;
-        try { choice = _app!.Dispatcher.Invoke(() => PromptDialog.Prompt(kind, label, note, tag)); }
+        try { choice = _app!.Dispatcher.Invoke(() => PromptDialog.Prompt(kind, label, note, tag, closeAt)); }
         catch (Exception e)
         {
             Console.Error.WriteLine($"[key-locker] prompt dialog failed: {e.Message}");
@@ -730,8 +734,11 @@ internal static class SecureDialog
     /// #281, with `once`): the entry is instead kept in this helper's memory under that tag until the pane
     /// closes, and each later fill asks first — the dialog says so.
     /// `timedOut`: the window closed itself at `DialogDeadline.After` with nothing entered (internal #338).
-    public static (string? secret, bool timedOut) Prompt(string label, string note = "", bool once = false, string tag = "")
+    public static (string? secret, bool timedOut) Prompt(string label, string note = "", bool once = false, string tag = "",
+        DateTimeOffset? closeAt = null)
     {
+        var deadline = closeAt ?? DialogDeadline.Default();
+        if (DialogDeadline.Passed(deadline)) return (null, true); // queued past the server's wait: never show it
         string? result = null;
         var keep = once && tag.Length > 0;
         var pwd = new PasswordBox { Margin = new Thickness(10, 4, 10, 12), FontSize = 18, Width = 360 };
@@ -779,7 +786,7 @@ internal static class SecureDialog
             });
         }
         panel.Children.Add(pwd);
-        panel.Children.Add(DialogDeadline.NoticeBlock());
+        panel.Children.Add(DialogDeadline.NoticeBlock(deadline, saves: !once));
         panel.Children.Add(buttons);
 
         var win = new Window
@@ -794,7 +801,7 @@ internal static class SecureDialog
         };
         ok.Click += (_, _) => { result = pwd.Password; win.DialogResult = true; };
         win.Loaded += (_, _) => { win.Activate(); pwd.Focus(); };
-        var fired = DialogDeadline.Arm(win);
+        var fired = DialogDeadline.Arm(win, deadline);
         var dr = win.ShowDialog();
         return dr == true ? (result, false) : (null, fired());
     }
@@ -803,26 +810,46 @@ internal static class SecureDialog
 /// internal #338: the secret and confirm dialogs close themselves before the server stops waiting for them
 /// (`CAPTURE_TIMEOUT_MS`, 180 s, in key-locker-host.ts). Before, a dialog left open stayed on screen after the
 /// server had given up: the reply said the request timed out and that the secret "could not be erased" (the
-/// erase was queued behind the dialog), and a password typed later went nowhere. Now the window closes at
-/// `After` as a cancel, says so up front, and the reply carries `timedOut`.
+/// erase was queued behind the dialog), and a password typed later went nowhere. The server sends the time to
+/// close by (`deadline`, ms since the Unix epoch, `DIALOG_CLOSE_MS` after it sent the request), because this
+/// helper serves one request at a time: a request queued behind another open window has already used part of
+/// the server's wait (review of #890). The window closes then as a cancel, says so up front, and the reply
+/// carries `timedOut`; one whose deadline passed while it was queued is never shown.
 internal static class DialogDeadline
 {
+    /// For a frame without `deadline` (an older server): the server's budget less a margin.
     public static readonly TimeSpan After = TimeSpan.FromSeconds(170);
 
-    public static TextBlock NoticeBlock() => new()
-    {
-        Text = "This window closes by itself after about 3 minutes if you do nothing. Nothing is typed then.",
-        Margin = new Thickness(10, 0, 10, 8),
-        TextWrapping = TextWrapping.Wrap,
-        MaxWidth = 420,
-        Foreground = SystemColors.GrayTextBrush,
-    };
+    public static DateTimeOffset Default() => DateTimeOffset.UtcNow + After;
 
-    /// Close `win` when `After` passes while it is open; the returned function says whether that happened.
-    public static Func<bool> Arm(Window win)
+    public static DateTimeOffset FromFrame(JsonElement root) =>
+        root.TryGetProperty("deadline", out var d) && d.ValueKind == JsonValueKind.Number && d.TryGetInt64(out var ms)
+            ? DateTimeOffset.FromUnixTimeMilliseconds(ms)
+            : Default();
+
+    public static bool Passed(DateTimeOffset closeAt) => closeAt <= DateTimeOffset.UtcNow;
+
+    /// `saves`: the window saves a secret (key_locker save, the save offer) rather than typing one.
+    public static TextBlock NoticeBlock(DateTimeOffset closeAt, bool saves)
+    {
+        var minutes = Math.Max(1, (int)Math.Ceiling((closeAt - DateTimeOffset.UtcNow).TotalMinutes));
+        return new TextBlock
+        {
+            Text = $"This window closes by itself within {minutes} minute{(minutes == 1 ? "" : "s")}. " +
+                   (saves ? "Nothing is saved then." : "Nothing is typed then."),
+            Margin = new Thickness(10, 0, 10, 8),
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 420,
+            Foreground = SystemColors.GrayTextBrush,
+        };
+    }
+
+    /// Close `win` at `closeAt` while it is open; the returned function says whether that happened.
+    public static Func<bool> Arm(Window win, DateTimeOffset closeAt)
     {
         var fired = false;
-        var timer = new System.Windows.Threading.DispatcherTimer { Interval = After };
+        var wait = closeAt - DateTimeOffset.UtcNow;
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = wait > TimeSpan.Zero ? wait : TimeSpan.FromMilliseconds(1) };
         timer.Tick += (_, _) => { timer.Stop(); fired = true; win.Close(); };
         win.Loaded += (_, _) => timer.Start();
         win.Closed += (_, _) => timer.Stop();
@@ -894,7 +921,7 @@ internal static class PromptDialog
 {
     public static string FailClosed(string kind) => kind == "confirm" ? "type_it" : kind == "fill_kept" ? "cancel" : "not_now";
 
-    public static string Prompt(string kind, string label, string note = "", string tag = "")
+    public static string Prompt(string kind, string label, string note = "", string tag = "", DateTimeOffset? closeAt = null)
     {
         // Headless CI seam (the e2e verb round-trip): when the `-PromptAutoAnswer` CLI arg is set to a
         // kind-valid choice, return it WITHOUT a window so the `prompt` verb round-trips with no GUI. This is a
@@ -903,6 +930,10 @@ internal static class PromptDialog
         // anything else falls through to the real dialog (fail-safe: an unexpected value never auto-fills).
         var auto = KeyLocker.PromptAutoAnswer;
         if (auto != null && IsValidChoice(kind, auto)) return auto;
+
+        var deadline = closeAt ?? DialogDeadline.Default();
+        // Queued past the server's wait (another locker window was open): never show it.
+        if (DialogDeadline.Passed(deadline)) return kind == "fill_kept" ? "timed_out" : FailClosed(kind);
 
         _ = Application.Current ?? new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         var confirm = kind == "confirm";
@@ -954,7 +985,7 @@ internal static class PromptDialog
             Add("Not now", "not_now", isCancel: true); // fail-closed
             Add("Never", "never");
         }
-        panel.Children.Add(DialogDeadline.NoticeBlock());
+        panel.Children.Add(DialogDeadline.NoticeBlock(deadline, saves: kind == "offer"));
         panel.Children.Add(buttons);
 
         var win = new Window
@@ -982,7 +1013,7 @@ internal static class PromptDialog
             var start = fillKept ? buttons.Children.Count - 1 : 0;
             if (buttons.Children.Count > 0 && buttons.Children[start] is Button first) first.Focus();
         };
-        var fired = DialogDeadline.Arm(win);
+        var fired = DialogDeadline.Arm(win, deadline);
         win.ShowDialog();
         // internal #338: a kept-tag confirm that closed itself says so ("timed_out"); an older server reads it
         // as cancel. The other kinds keep their fail-closed choice.

@@ -12,7 +12,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import net from "node:net";
 import { randomBytes } from "node:crypto";
-import { KeyLockerHost, KEY_LOCKER_PROTOCOL_VERSION } from "../../src/engine/key-locker-host.js";
+import { CAPTURE_TIMEOUT_MS, DIALOG_CLOSE_MS, KeyLockerHost, KEY_LOCKER_PROTOCOL_VERSION } from "../../src/engine/key-locker-host.js";
 
 function pipePath(): string {
   return `\\\\.\\pipe\\dtm-locker-test-${randomBytes(8).toString("hex")}`;
@@ -150,7 +150,7 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     const captureFrame = state.lastFrames.find((f) => f.includes('"capture"'));
     expect(captureFrame).toBeDefined();
     const parsed = JSON.parse(captureFrame!) as Record<string, unknown>;
-    expect(Object.keys(parsed).sort()).toEqual(["id", "k", "m"]);
+    expect(Object.keys(parsed).sort()).toEqual(["deadline", "id", "k", "m"]);
     expect(parsed.k).toBe("ssh:example.com");
   });
 
@@ -163,7 +163,7 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
 
     await host.capture("opaque-1", { label: "locker console 1234", note: "log in to the build box", purpose: "fill_once" });
     const parsed = JSON.parse(state.lastFrames.find((f) => f.includes('"capture"'))!) as Record<string, unknown>;
-    expect(Object.keys(parsed).sort()).toEqual(["id", "k", "label", "m", "note", "purpose"]);
+    expect(Object.keys(parsed).sort()).toEqual(["deadline", "id", "k", "label", "m", "note", "purpose"]);
     expect(parsed).toMatchObject({ k: "opaque-1", label: "locker console 1234", note: "log in to the build box", purpose: "fill_once" });
   });
 
@@ -212,7 +212,7 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     const frame = state.lastFrames.find((f) => f.includes('"prompt"'));
     const parsed = JSON.parse(frame!) as Record<string, unknown>;
     // The wire carries {id, m, kind, label} — the LABEL (a display URI), never a key or secret.
-    expect(Object.keys(parsed).sort()).toEqual(["id", "kind", "label", "m"]);
+    expect(Object.keys(parsed).sort()).toEqual(["deadline", "id", "kind", "label", "m"]);
     expect(parsed).toMatchObject({ m: "prompt", kind: "confirm", label: "sudo://host-a" });
     expect(parsed.k).toBeUndefined();
   });
@@ -225,7 +225,7 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     hosts.push(host);
     await host.capture("opaque-2", { label: "locker console", note: "jump host", purpose: "fill_once", tag: "jump" });
     const parsed = JSON.parse(state.lastFrames.find((f) => f.includes('"capture"'))!) as Record<string, unknown>;
-    expect(Object.keys(parsed).sort()).toEqual(["id", "k", "label", "m", "note", "purpose", "tag"]);
+    expect(Object.keys(parsed).sort()).toEqual(["deadline", "id", "k", "label", "m", "note", "purpose", "tag"]);
     expect(parsed.tag).toBe("jump");
   });
 
@@ -237,7 +237,7 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     hosts.push(host);
     expect(await host.confirmKeptFill({ label: "locker console", note: "jump host", tag: "jump" })).toBe("fill");
     const parsed = JSON.parse(state.lastFrames.find((f) => f.includes('"prompt"'))!) as Record<string, unknown>;
-    expect(Object.keys(parsed).sort()).toEqual(["id", "kind", "label", "m", "note", "tag"]);
+    expect(Object.keys(parsed).sort()).toEqual(["deadline", "id", "kind", "label", "m", "note", "tag"]);
     expect(parsed).toMatchObject({ kind: "fill_kept", tag: "jump" });
   });
 
@@ -247,6 +247,28 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     const host = await KeyLockerHost.connectForTest(path);
     hosts.push(host);
     expect(await host.confirmKeptFill({ label: "l", note: "n", tag: "t" })).toBe("fill_always");
+  });
+
+  it("every dialog frame carries a deadline the window closes by, inside the server's wait (review of #890)", async () => {
+    expect(DIALOG_CLOSE_MS).toBeLessThan(CAPTURE_TIMEOUT_MS);
+    const path = pipePath();
+    const state: FakeState = { store: new Set(), captureReply: { captured: true, rt: true }, lastFrames: [] };
+    await listen(makeFakeLocker(path, { state, promptReply: "fill" }), path);
+    const host = await KeyLockerHost.connectForTest(path);
+    hosts.push(host);
+    const before = Date.now();
+    await host.capture("op-1", { purpose: "fill_once" });
+    await host.confirmKeptFill({ label: "l", note: "n", tag: "t" });
+    await host.prompt("offer", "ssh://h");
+    const after = Date.now();
+    const deadlines = state.lastFrames
+      .filter((f) => f.includes('"capture"') || f.includes('"prompt"'))
+      .map((f) => (JSON.parse(f) as { deadline?: number }).deadline);
+    expect(deadlines).toHaveLength(3);
+    for (const d of deadlines) {
+      expect(d).toBeGreaterThanOrEqual(before + DIALOG_CLOSE_MS);
+      expect(d).toBeLessThanOrEqual(after + DIALOG_CLOSE_MS);
+    }
   });
 
   it("capture() and confirmKeptFill() say when the dialog closed itself at its deadline (internal #338)", async () => {

@@ -204,9 +204,13 @@ const DEFAULT_STARTUP_TIMEOUT_MS = 15_000;
 const DEFAULT_CONNECT_BACKOFF_MS = 100;
 const HELLO_TIMEOUT_MS = 5_000;
 const REQUEST_TIMEOUT_MS = 10_000;
-// `capture` blocks on human dialog input, so it gets a far longer budget than control verbs. The helper's
-// dialogs close themselves at 170 s (Program.cs DialogDeadline, internal #338), inside this budget.
-const CAPTURE_TIMEOUT_MS = 180_000;
+// `capture` blocks on human dialog input, so it gets a far longer budget than control verbs.
+export const CAPTURE_TIMEOUT_MS = 180_000;
+/** internal #338: every dialog frame carries `deadline` = the send time + this, and the helper closes the window
+ *  by then (Program.cs DialogDeadline) — counted from the SEND, so a request queued behind another open locker
+ *  window still closes inside CAPTURE_TIMEOUT_MS (review of #890). */
+export const DIALOG_CLOSE_MS = 170_000;
+const dialogDeadline = (): number => Date.now() + DIALOG_CLOSE_MS;
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -471,11 +475,9 @@ export class KeyLockerHost {
     if (dialog?.purpose !== undefined) extra.purpose = dialog.purpose;
     // internal #281: a fill_once whose secret is kept under a tag for the pane's life — the dialog says so.
     if (dialog?.tag !== undefined) extra.tag = dialog.tag;
-    const reply = await this.request("capture", key, CAPTURE_TIMEOUT_MS, extra);
+    const reply = await this.request("capture", key, CAPTURE_TIMEOUT_MS, { ...extra, deadline: dialogDeadline() });
     // internal #338: the dialog closed itself at its deadline with nothing entered (before this budget ends).
-    return reply.timedOut === true
-      ? { captured: false, rt: false, timedOut: true }
-      : { captured: reply.captured === true, rt: reply.rt === true };
+    return { captured: reply.captured === true, rt: reply.rt === true, ...(reply.timedOut === true && { timedOut: true as const }) };
   }
 
   /**
@@ -495,7 +497,7 @@ export class KeyLockerHost {
     const failClosed: PromptChoice = kind === "confirm" ? "type_it" : "not_now";
     const valid: readonly PromptChoice[] = kind === "confirm" ? ["autofill", "type_it"] : ["save", "not_now", "never"];
     try {
-      const reply = await this.request("prompt", undefined, CAPTURE_TIMEOUT_MS, { kind, label });
+      const reply = await this.request("prompt", undefined, CAPTURE_TIMEOUT_MS, { kind, label, deadline: dialogDeadline() });
       if (!reply.ok) return failClosed;
       return (valid as readonly string[]).includes(reply.r) ? (reply.r as PromptChoice) : failClosed;
     } catch {
@@ -512,7 +514,7 @@ export class KeyLockerHost {
    */
   async confirmKeptFill(dialog: { label: string; note: string; tag: string }): Promise<FillKeptChoice> {
     try {
-      const reply = await this.request("prompt", undefined, CAPTURE_TIMEOUT_MS, { kind: "fill_kept", ...dialog });
+      const reply = await this.request("prompt", undefined, CAPTURE_TIMEOUT_MS, { kind: "fill_kept", ...dialog, deadline: dialogDeadline() });
       // internal #338: "timed_out" = the confirm closed itself with no answer (a cancel that says why).
       return reply.ok && (reply.r === "fill" || reply.r === "fill_always" || reply.r === "timed_out") ? reply.r : "cancel";
     } catch {

@@ -20,7 +20,7 @@ import type { ExecFn } from "../../src/engine/key-locker/ssh-resolve.js";
 class FakeManager extends KeyLockerManager {
   captureCalls: string[] = [];
   deleteCalls: string[] = [];
-  captureReturn = { captured: true, rt: true };
+  captureReturn: { captured: boolean; rt: boolean; timedOut?: true } = { captured: true, rt: true };
   acceptOnConsent = false;
   constructor(private readonly dir: string) {
     super({ storeDir: dir });
@@ -134,6 +134,14 @@ describe("key_locker — save (non-ssh, faked capture)", () => {
     mgr.captureReturn = { captured: false, rt: false };
     const r = await call({ action: "save", uri: "sudo://host/root" });
     expect(r).toMatchObject({ captured: false });
+    expect(BindingStore.load(dir).list()).toHaveLength(0);
+  });
+  it("a window that closed itself says so, and writes no binding (internal #338)", async () => {
+    mgr.acceptOnConsent = true;
+    mgr.captureReturn = { captured: false, rt: false, timedOut: true };
+    const r = await call({ action: "save", uri: "sudo://host/root" });
+    expect(r).toMatchObject({ captured: false, timedOut: true });
+    expect(String(r.hint)).toMatch(/closed itself/);
     expect(BindingStore.load(dir).list()).toHaveLength(0);
   });
   it("a malformed URI is a typed reject", async () => {

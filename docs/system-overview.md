@@ -682,6 +682,8 @@ pre-existing terminal is never autofilled.
   Other tags and other prompt text still ask, and a retype or `forget_tag` ends it. A remote prompt that copies
   the text exactly is not caught. `retype:true` types it again;
   `action='forget_tag'` (`paneId`, `tag`) erases it. A kept secret is never written to disk.
+  The locker's password and confirm windows close by themselves within about 3 minutes (inside the server's
+  wait); `fill_once` then answers `dialog_timeout`, and `save` answers `captured:false` with `timedOut:true`.
 - `action='list'` shows saved bindings (metadata only) and `paneTags`, the kept tag names per pane. `action='forget'` deletes a
   binding and its secret. `action='set_policy'` toggles per-binding autofill
   confirmation (every autofill asks by default). `action='status'` reports whether the
