@@ -1,23 +1,30 @@
 # Security Policy
 
+desktop-touch-mcp is a personal project, maintained in spare time and provided as is under the MIT license, without
+warranty. There is no service-level agreement. What it sends off your PC and what it keeps on it is in the
+[privacy policy](https://harusame64.github.io/desktop-touch-mcp/articles/privacy.html).
+
 ## Supported Versions
 
 | Version | Supported |
 |---|---|
-| 0.11.x | ✅ |
+| Latest 2.x release | ✅ Fixes ship as a new 2.x release |
+| 1.x and older | ❌ |
 
 ## Reporting a Vulnerability
 
 Please **do not** open a public GitHub issue for security vulnerabilities.
 
-Report security issues privately via [GitHub Security Advisories](https://github.com/Harusame64/desktop-touch-mcp/security/advisories/new).
+Report privately through [GitHub Security Advisories](https://github.com/Harusame64/desktop-touch-mcp/security/advisories/new).
+If you cannot use GitHub, use the contact address on the [author's page](https://harusame64.github.io).
 
 Include:
 - Description of the vulnerability
 - Steps to reproduce
 - Potential impact
 
-You can expect a response within 72 hours.
+There is no guaranteed response time. Reports are read and handled as time allows, and a confirmed problem is fixed
+in a new release, with credit if you want it.
 
 ## Security Design
 

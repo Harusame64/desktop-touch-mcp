@@ -324,3 +324,5 @@ Thank you for building with me!
 ## License
 
 MIT
+
+Provided as is, without warranty. No telemetry: see the [privacy policy](https://harusame64.github.io/desktop-touch-mcp/articles/privacy.html) for what it sends and keeps, and the [security policy](https://github.com/Harusame64/desktop-touch-mcp/blob/main/SECURITY.md) to report a vulnerability.

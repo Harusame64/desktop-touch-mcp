@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>desktop-touch-mcp Privacy Policy | Windows MCP server</title>
+    <meta name="description" content="What desktop-touch-mcp sends off your PC, what it keeps on it, and how to remove it. No account, no telemetry, nothing sent to the author." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@500;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="../assets/styles.css" />
+    <script defer src="../assets/site.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="site-shell">
+        <a class="brand" href="../index.html">
+          <span class="brand-kicker">Your data</span>
+          <span class="brand-title">Privacy Policy</span>
+        </a>
+        <nav class="nav-links" aria-label="Main">
+          <a href="../index.html">Home</a>
+          <a href="./reactive-perception-graph.html">RPG</a>
+          <a href="./beyond-coordinate-roulette.html">B-C-R</a>
+          <a href="./planned-evaluation.html">Evaluation</a>
+          <a href="./client-setup.html">Setup</a>
+          <a href="../index.html#milestones">Milestones</a>
+          <a href="https://github.com/Harusame64/desktop-touch-mcp">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page">
+      <div class="site-shell">
+        <section class="hero-card">
+          <div class="article-hero">
+            <a class="breadcrumb" href="../index.html">← Back to project top</a>
+            <span class="eyebrow">Last updated 2026-10-31</span>
+            <h1>Privacy Policy</h1>
+            <p class="lead"><code>desktop-touch-mcp</code> runs on your own PC. There is no account and no telemetry, and nothing it sees is sent to the author.</p>
+            <p>It is free software under the MIT license, provided as is, without warranty. You use it at your own risk. This page says what it sends, what it keeps, and how to remove it, so you can decide for yourself.</p>
+          </div>
+        </section>
+
+        <div class="article-layout">
+          <div class="article-main">
+            <section class="article-card">
+              <span class="label">In short</span>
+              <h2>What it does not do</h2>
+              <ul>
+                <li>It sends no usage statistics, crash reports or analytics anywhere.</li>
+                <li>It does not send your screen, text, files or passwords to the author or to any server of its own. There is none.</li>
+                <li>It does not check for updates. A release is downloaded only when the version you run is not already on your PC.</li>
+              </ul>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Leaves your PC</span>
+              <h2>What goes over the network</h2>
+              <h3>1. The release download from GitHub</h3>
+              <p>The <code>npx</code> launcher downloads the release for its own version from GitHub the first time that version runs, and checks its SHA-256. After that it starts from the copy on your PC without going online. GitHub sees your IP address, as with any download. If <code>GITHUB_TOKEN</code> or <code>GH_TOKEN</code> is set in your environment, the launcher sends it to GitHub with the request, to avoid GitHub's rate limits. Fetching the package itself through <code>npx</code> is between you and npm.</p>
+              <h3>2. Tool results go to your AI client</h3>
+              <p>Screenshots, text read from windows, window titles, clipboard text, terminal output and web page content are returned to the MCP client you connected (Claude, Copilot, Codex and so on). The client sends them to the AI service it uses. What happens to them there is set by that service's own privacy policy, not this one.</p>
+              <h3>3. Your browser, when the browser tools are used</h3>
+              <p>The browser tools connect to your own Chrome, Edge or Brave on <code>127.0.0.1</code>. When the assistant opens a page, it is your browser that loads it, as if you had.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Stays on your PC</span>
+              <h2>What it keeps, and how to remove it</h2>
+              <p>Most files are under <code>~/.desktop-touch-mcp</code> (or <code>DESKTOP_TOUCH_MCP_HOME</code> if you set it). Deleting that folder removes them.</p>
+              <ul>
+                <li><strong>Program files</strong> (<code>releases/</code>): the downloaded releases. The newest two are kept.</li>
+                <li><strong>Screenshot cache</strong> (<code>screenshots/</code>, Windows): screenshots the assistant took, as image files, with the window's process name. They are not encrypted. By default at most 200 files or 256 MB are kept, oldest removed first. The <code>screenshot_gc</code> tool deletes them on demand.</li>
+                <li><strong>Diagnostic log</strong> (<code>logs/diagnostic.log</code>): errors, slow calls, emergency stops and which window an action went to. Window titles are recorded as a short hash, not as text, unless you turn raw titles on. It rotates at 64 MB, keeping two old files. <code>DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE=1</code> turns it off.</li>
+                <li><strong>Key locker</strong> (<code>%LOCALAPPDATA%\desktop-touch-mcp\locker\</code>, Windows): saved passwords are encrypted with Windows DPAPI for your user account. Passwords typed for a one-time fill are kept in memory only. Secrets in the locker are never returned to the assistant. <code>key_locker</code> <code>forget</code> deletes a saved one.</li>
+                <li><strong>Excel macros</strong> (<code>%LOCALAPPDATA%\desktop-touch-mcp\trusted-vba\</code>): each <code>excel</code> macro run saves a workbook with the macro code there. They stay until you delete them.</li>
+                <li><strong>Memory of what worked</strong> (<code>memory/</code>): only when <code>DESKTOP_TOUCH_MEMORY_PERSIST=1</code> is set. It holds window titles and tool names, not screen contents.</li>
+              </ul>
+            </section>
+
+            <section class="article-card">
+              <span class="label warm">HTTP mode</span>
+              <h2>If you start it with <code>--http</code></h2>
+              <p>The server listens on <code>127.0.0.1</code> only, so other machines cannot reach it. It has no password, so any program running on your PC can use it while it runs. Use stdio (the default) if that matters to you.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label">This website</span>
+              <h2>This site</h2>
+              <p>This site is hosted on GitHub Pages (see the <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub Privacy Statement</a>). It sets no cookies and runs no analytics of its own. Pages load fonts from Google Fonts, and some load a diagram library from jsDelivr, so those services see your IP address.</p>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Contact</span>
+              <h2>Questions and changes</h2>
+              <p>Ask through <a href="https://github.com/Harusame64/desktop-touch-mcp/issues">GitHub Issues</a> or the contact address on the <a href="https://harusame64.github.io">author's page</a>. To report a security problem, see the <a href="https://github.com/Harusame64/desktop-touch-mcp/blob/main/SECURITY.md">security policy</a>. If what the software does changes, this page is updated and its date changes.</p>
+            </section>
+          </div>
+
+          <aside class="article-aside">
+            <div class="aside-card">
+              <h3>Quick links</h3>
+              <ul>
+                <li><a href="../index.html">Project top</a></li>
+                <li><a href="./client-setup.html">Client setup</a></li>
+                <li><a href="https://github.com/Harusame64/desktop-touch-mcp/blob/main/SECURITY.md">Security policy</a></li>
+                <li><a href="https://github.com/Harusame64/desktop-touch-mcp/blob/main/LICENSE">License (MIT)</a></li>
+              </ul>
+              <h3>Remove everything</h3>
+              <pre>~/.desktop-touch-mcp
+%LOCALAPPDATA%\desktop-touch-mcp</pre>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="site-shell">
+        <span>Privacy policy</span>
+        <span>&copy; <span data-year></span> desktop-touch-mcp &middot; MIT licensed &middot; <a href="./privacy.html">Privacy</a></span>
+      </div>
+    </footer>
+  </body>
+</html>
