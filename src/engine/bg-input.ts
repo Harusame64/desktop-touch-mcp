@@ -217,6 +217,13 @@ export interface PostCharsResult {
  * key with whatever character is next in its queue, so a character posted at once is eaten (PowerShell
  * runs `cho SECOND`) or glued to the line (cmd). Measured on win2 (PR #882 spike): 0 ms fails, 1 to
  * 100 ms all run each line once.
+ * To a console, each character also carries a repeat count of 1 (lParam bits 0-15), and the same character
+ * twice in a row waits {@link CONSOLE_REPEAT_SETTLE_MS} before the second: conhost merges an unread key
+ * event into the next identical one and adds their repeat counts, and with the count 0 a run of the same
+ * character reached PowerShell 7 (PSReadLine) and .NET `ReadKey` as one (`-p 2222` ran as `-p 2`,
+ * internal #334). Measured on win2 (PR #889 spike): count 1 keeps the merged count right, and the pause keeps
+ * a reader that is keeping up from seeing a merged event at all; .NET's `ReadKey` returns a merged event of
+ * count n as n + 1 characters, so a reader too slow for the pause still gets one too many.
  *
  * Does NOT change the foreground window.
  */
@@ -231,6 +238,9 @@ export function postCharsToHwnd(hwnd: unknown, text: string): PostCharsResult {
 /** The pause after an Enter posted to a console, before the next character (see {@link postCharsToHwnd}).
  *  1 ms was enough on win2's machine; this leaves room for a slower or busier one. */
 export const CONSOLE_ENTER_SETTLE_MS = 20;
+/** The pause before the second of two identical characters posted to a console (see {@link postCharsToHwnd}).
+ *  1 ms and 5 ms were enough on win2's machine with PSReadLine and a cooked read. */
+export const CONSOLE_REPEAT_SETTLE_MS = 1;
 
 export function postCharsToResolvedTarget(target: unknown, text: string): PostCharsResult {
   let sent = 0;
@@ -255,7 +265,9 @@ export function postCharsToResolvedTarget(target: unknown, text: string): PostCh
     // Normalise LF → CR for terminals
     const wParam = ch === 0x0A ? 0x0D : ch;
 
-    if (!postMessageToHwnd(target, WM_CHAR, wParam, 0)) {
+    // internal #334: to a console, a repeat count of 1, and a pause before the same character again.
+    if (toConsole && i > 0 && text.charCodeAt(i - 1) === ch) settle(CONSOLE_REPEAT_SETTLE_MS);
+    if (!postMessageToHwnd(target, WM_CHAR, wParam, toConsole ? 1 : 0)) {
       return { sent, full: false, target };
     }
     sent++;

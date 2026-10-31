@@ -46,6 +46,7 @@ import {
   isBgAutoEnabled,
   pasteIntoConsoleNoFocus,
   CONSOLE_ENTER_SETTLE_MS,
+  CONSOLE_REPEAT_SETTLE_MS,
 } from "../../src/engine/bg-input.js";
 import { postMessageToHwnd, getWindowClassName, getProcessIdentityByPid, getFocusedChildHwnd } from "../../src/engine/win32.js";
 import { nativeWin32 } from "../../src/engine/native-engine.js";
@@ -153,6 +154,42 @@ describe("postCharsToHwnd", () => {
         .mockReturnValueOnce(true)   // 'a'
         .mockReturnValueOnce(false); // Enter's key down
       expect(postCharsToHwnd(HWND, "a\r\nb")).toEqual({ sent: 1, full: false, target: HWND });
+    });
+
+    // internal #334: conhost merges an unread key event into the next identical one and adds their repeat
+    // counts; with the count 0, `-p 2222` reached PSReadLine as `-p 2`.
+    it("gives each character a repeat count of 1, and waits before the same character again (internal #334)", () => {
+      vi.mocked(getWindowClassName).mockReturnValue("ConsoleWindowClass");
+      const order: string[] = [];
+      vi.mocked(postMessageToHwnd).mockImplementation((_t, msg, w, l) => {
+        order.push(msg === 0x0102 ? `${String.fromCharCode(Number(w))}:${l}` : msg === 0x0100 ? "<down>" : "<up>");
+        return true;
+      });
+      const wait = vi.spyOn(Atomics, "wait").mockImplementation((_a, _i, _v, ms) => { order.push(`<wait ${ms}>`); return "timed-out"; });
+      try {
+        postCharsToHwnd(HWND, "-p 2222\nxx");
+        const w = `<wait ${CONSOLE_REPEAT_SETTLE_MS}>`;
+        expect(order).toEqual([
+          "-:1", "p:1", " :1", "2:1", w, "2:1", w, "2:1", w, "2:1",
+          "<down>", "<up>", `<wait ${CONSOLE_ENTER_SETTLE_MS}>`, "x:1", w, "x:1",
+        ]);
+      } finally {
+        wait.mockRestore();
+        vi.mocked(postMessageToHwnd).mockReset();
+      }
+    });
+
+    it("leaves a window that is not a console at repeat count 0 with no pause", () => {
+      vi.mocked(getWindowClassName).mockReturnValue("Edit");
+      vi.mocked(postMessageToHwnd).mockReturnValue(true);
+      const wait = vi.spyOn(Atomics, "wait");
+      try {
+        postCharsToHwnd(HWND, "22");
+        expect(vi.mocked(postMessageToHwnd).mock.calls.map(([, , , l]) => l)).toEqual([0, 0]);
+        expect(wait).not.toHaveBeenCalled();
+      } finally {
+        wait.mockRestore();
+      }
     });
 
     it("leaves a window that is not a console on WM_CHAR 0x0D (a posted Enter would press a dialog's default button)", () => {

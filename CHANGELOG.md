@@ -34,6 +34,11 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **Text sent to a console window in the background keeps runs of the same character.** `terminal` `send` with
+  `method:"background"` (and `keyboard` `type` to a console in the background, which goes the same way) into
+  PowerShell 7 lost repeated characters: `ssh -p 2222` ran as `ssh -p 2`, `--git` as `-git`, and the reply still
+  said `ok:true`. The console merged each run into one key event and lost its count. Each character now carries a
+  count of 1, and the same character twice in a row waits 1 ms before the second (internal #334).
 - **`key_locker` `launch_console` opens a Windows Terminal tab where Node said `wt.exe` was missing.** Its default
   (a tab in Windows Terminal) answered `KeyLockerWtUnavailable: Windows Terminal (wt.exe) was not found` on a
   machine that has it (found with Node v24.20.0): `wt.exe` is an app-execution alias, and that Node reports such a
