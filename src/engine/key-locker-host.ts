@@ -101,6 +101,8 @@ export interface LockerReply {
   captured?: boolean;
   /** `capture` only: whether the locker's in-process DPAPI round-trip verified. */
   rt?: boolean;
+  /** `capture` only (internal #338): the dialog closed itself at its deadline with nothing entered. */
+  timedOut?: boolean;
   /** `inject` only: whether the secret was typed (after a passing re-verify). */
   injected?: boolean;
   /** `inject` only: whether the injection-instant re-verify passed. */
@@ -177,7 +179,7 @@ export type MintTicketResult =
 export type PromptKind = "confirm" | "offer" | "fill_kept";
 /** The kept-tag confirm's choice: fill the kept secret, fill it and stop asking for this tag in this terminal
  *  (the dialog's "always" checkbox, user request 2026-10-30), or cancel (fail-closed). */
-export type FillKeptChoice = "fill" | "fill_always" | "cancel";
+export type FillKeptChoice = "fill" | "fill_always" | "cancel" | "timed_out";
 /** The MATCH-backstop choice: fill the stored secret, or decline and type it by hand (fail-closed). */
 export type ConfirmChoice = "autofill" | "type_it";
 /** The NO-MATCH save choice (structurally the capture-loop `SaveChoice`). */
@@ -202,7 +204,8 @@ const DEFAULT_STARTUP_TIMEOUT_MS = 15_000;
 const DEFAULT_CONNECT_BACKOFF_MS = 100;
 const HELLO_TIMEOUT_MS = 5_000;
 const REQUEST_TIMEOUT_MS = 10_000;
-// `capture` blocks on human dialog input, so it gets a far longer budget than control verbs.
+// `capture` blocks on human dialog input, so it gets a far longer budget than control verbs. The helper's
+// dialogs close themselves at 170 s (Program.cs DialogDeadline, internal #338), inside this budget.
 const CAPTURE_TIMEOUT_MS = 180_000;
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -461,7 +464,7 @@ export class KeyLockerHost {
   async capture(
     key: string,
     dialog?: { label?: string; note?: string; purpose?: "save" | "fill_once"; tag?: string },
-  ): Promise<{ captured: boolean; rt: boolean }> {
+  ): Promise<{ captured: boolean; rt: boolean; timedOut?: true }> {
     const extra: Record<string, unknown> = {};
     if (dialog?.label !== undefined) extra.label = dialog.label;
     if (dialog?.note !== undefined) extra.note = dialog.note;
@@ -469,7 +472,10 @@ export class KeyLockerHost {
     // internal #281: a fill_once whose secret is kept under a tag for the pane's life — the dialog says so.
     if (dialog?.tag !== undefined) extra.tag = dialog.tag;
     const reply = await this.request("capture", key, CAPTURE_TIMEOUT_MS, extra);
-    return { captured: reply.captured === true, rt: reply.rt === true };
+    // internal #338: the dialog closed itself at its deadline with nothing entered (before this budget ends).
+    return reply.timedOut === true
+      ? { captured: false, rt: false, timedOut: true }
+      : { captured: reply.captured === true, rt: reply.rt === true };
   }
 
   /**
@@ -507,7 +513,8 @@ export class KeyLockerHost {
   async confirmKeptFill(dialog: { label: string; note: string; tag: string }): Promise<FillKeptChoice> {
     try {
       const reply = await this.request("prompt", undefined, CAPTURE_TIMEOUT_MS, { kind: "fill_kept", ...dialog });
-      return reply.ok && (reply.r === "fill" || reply.r === "fill_always") ? reply.r : "cancel";
+      // internal #338: "timed_out" = the confirm closed itself with no answer (a cancel that says why).
+      return reply.ok && (reply.r === "fill" || reply.r === "fill_always" || reply.r === "timed_out") ? reply.r : "cancel";
     } catch {
       return "cancel";
     }

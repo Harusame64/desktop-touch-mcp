@@ -64,7 +64,7 @@ export interface FillOnceKeptDeps {
   count(paneId: string, anchor: PaneAnchor): number;
   /** The locker's secret-free one-click confirm for a kept tag: "fill", "fill_always" (Fill with "always fill
    *  in this terminal" ticked), or "cancel" (also any failure). */
-  confirm(dialog: FillOnceDialog & { tag: string }): Promise<"fill" | "fill_always" | "cancel">;
+  confirm(dialog: FillOnceDialog & { tag: string }): Promise<"fill" | "fill_always" | "cancel" | "timed_out">;
   /** The prompt line the user ticked "Don't ask again" at for this kept tag, or null. */
   alwaysAt(paneId: string, anchor: PaneAnchor, tag: string): string | null;
   /** Record that tick for this kept tag at `promptLine`, if the tag still holds `opaqueId` (it goes with the tag). */
@@ -95,7 +95,7 @@ export interface FillOnceDeps {
   readPromptTail(paneId: string): Promise<PromptVerdict | null>;
   mintOpaqueId(): string;
   /** The locker's secure dialog: the user types (or cancels); the secret is stored under `opaqueId`. */
-  capture(opaqueId: string, dialog: FillOnceDialog): Promise<{ captured: boolean }>;
+  capture(opaqueId: string, dialog: FillOnceDialog): Promise<{ captured: boolean; timedOut?: true }>;
   /** Is the pane still anchored (its record not torn down by a close while the dialog was open)? */
   stillAnchored(paneId: string): boolean;
   /** Write the secret under `opaqueId` into the anchored pane (the locker re-verifies the anchor). */
@@ -117,7 +117,8 @@ export type FillOnceDeclineReason =
   | "no_credential_program"  // no ssh / sudo / su / doas runs under the pane's shell (a printed prompt)
   | "prompt_changed"         // the pane changed while the dialog was open (or its prompt went away)
   | "target_gone"            // the pane closed while the dialog was open
-  | "tag_limit";             // a NEW tag, but the pane already keeps MAX_KEPT_TAGS_PER_PANE
+  | "tag_limit"              // a NEW tag, but the pane already keeps MAX_KEPT_TAGS_PER_PANE
+  | "dialog_timeout";        // the locker's dialog closed itself after ~3 minutes with no answer (internal #338)
 
 export type FillOnceOutcome = (
   | { kind: "filled"; verified: boolean }
@@ -262,6 +263,7 @@ async function fillClaimed(
         ? "fill"
         : await deps.kept.confirm({ ...dialog, tag });
       if (choice === "cancel") return { kind: "cancelled" };
+      if (choice === "timed_out") return { kind: "declined", reason: "dialog_timeout" };
       const outcome = await fillAfterDialog(deps, { ...gate, opaqueId: keptId });
       if (choice === "fill_always" && outcome.kind === "filled" && line !== null) {
         deps.kept.allowAlways(paneId, anchor, tag, keptId, line);
@@ -325,7 +327,7 @@ async function captureAndFill(
   r: AfterDialogGate & { dialog: FillOnceDialog },
 ): Promise<FillOnceOutcome> {
   const cap = await deps.capture(r.opaqueId, r.dialog);
-  if (!cap.captured) return { kind: "cancelled" };
+  if (!cap.captured) return cap.timedOut === true ? { kind: "declined", reason: "dialog_timeout" } : { kind: "cancelled" };
   return fillAfterDialog(deps, r);
 }
 

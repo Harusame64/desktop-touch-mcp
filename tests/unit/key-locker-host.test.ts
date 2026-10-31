@@ -18,7 +18,7 @@ function pipePath(): string {
   return `\\\\.\\pipe\\dtm-locker-test-${randomBytes(8).toString("hex")}`;
 }
 
-interface FakeState { store: Set<string>; captureReply: { captured: boolean; rt: boolean }; lastFrames: string[]; }
+interface FakeState { store: Set<string>; captureReply: { captured: boolean; rt: boolean; timedOut?: boolean }; lastFrames: string[]; }
 
 /**
  * A Node stand-in for the C# locker: writes a `hello` frame on connect, then answers the L0
@@ -33,7 +33,7 @@ function makeFakeLocker(
     consoleEchoes?: boolean;
     otherReader?: boolean;
     seed?: string[];
-    captureReply?: { captured: boolean; rt: boolean };
+    captureReply?: { captured: boolean; rt: boolean; timedOut?: boolean };
     state?: FakeState;
     /** The `r` value the fake replies to a `prompt` verb (a raw choice string, or `__err__` for ok:false). */
     promptReply?: string;
@@ -61,10 +61,10 @@ function makeFakeLocker(
           case "exists": write({ id: req.id, ok: true, r: state.store.has(req.k ?? "") ? "1" : "0" }); break;
           case "delete": { const had = state.store.delete(req.k ?? ""); write({ id: req.id, ok: true, r: had ? "1" : "0" }); break; }
           case "capture": {
-            const { captured, rt } = state.captureReply;
+            const { captured, rt, timedOut } = state.captureReply;
             if (captured) state.store.add(req.k ?? "");
             // The fake mirrors the C# reply shape: r is EMPTY, secret NEVER appears on the wire.
-            write({ id: req.id, ok: true, r: "", captured, rt });
+            write({ id: req.id, ok: true, r: "", captured, rt, ...(timedOut === true ? { timedOut } : {}) });
             break;
           }
           case "prompt": {
@@ -247,6 +247,15 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     const host = await KeyLockerHost.connectForTest(path);
     hosts.push(host);
     expect(await host.confirmKeptFill({ label: "l", note: "n", tag: "t" })).toBe("fill_always");
+  });
+
+  it("capture() and confirmKeptFill() say when the dialog closed itself at its deadline (internal #338)", async () => {
+    const path = pipePath();
+    await listen(makeFakeLocker(path, { captureReply: { captured: false, rt: false, timedOut: true }, promptReply: "timed_out" }), path);
+    const host = await KeyLockerHost.connectForTest(path);
+    hosts.push(host);
+    expect(await host.capture("op-1", { purpose: "fill_once" })).toEqual({ captured: false, rt: false, timedOut: true });
+    expect(await host.confirmKeptFill({ label: "l", note: "n", tag: "t" })).toBe("timed_out");
   });
 
   it.each(["cancel", "__err__", "autofill", "save", "", "FILL_ALWAYS", "fill always"])("confirmKeptFill() FAILS CLOSED to cancel on reply %j", async (reply) => {

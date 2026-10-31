@@ -34,6 +34,11 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **The key locker's windows close themselves after about 3 minutes, and say so.** A password or confirm window
+  left open stayed on screen after the server had stopped waiting: `fill_once` answered that the request timed out,
+  with `cleanupFailed` and "the locker refused the write" although nothing was typed, and a password typed later
+  went nowhere. The window now closes at about 3 minutes as a cancel, says so when it opens, and `fill_once`
+  answers `reason:"dialog_timeout"` (internal #338).
 - **`key_locker` `launch_console` opens a Windows Terminal tab where Node said `wt.exe` was missing.** Its default
   (a tab in Windows Terminal) answered `KeyLockerWtUnavailable: Windows Terminal (wt.exe) was not found` on a
   machine that has it (found with Node v24.20.0): `wt.exe` is an app-execution alias, and that Node reports such a

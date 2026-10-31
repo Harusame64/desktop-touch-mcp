@@ -339,11 +339,12 @@ internal static class KeyLocker
         }
         catch { /* the frame already parsed once in RunControlLoop; keep the key-only defaults */ }
         string? secret = null;
-        try { secret = _app!.Dispatcher.Invoke(() => SecureDialog.Prompt(label, note, once, once ? tag : "")); }
+        var timedOut = false;
+        try { (secret, timedOut) = _app!.Dispatcher.Invoke(() => SecureDialog.Prompt(label, note, once, once ? tag : "")); }
         catch (Exception e) { Console.Error.WriteLine($"[key-locker] dialog failed: {e.Message}"); }
 
         if (_serverGone) return; // internal #282: nobody is left to use it, and an autofill capture must not reach store.json
-        if (secret == null) { WriteFrameReplyCaptured(server, id, false, false); return; }
+        if (secret == null) { WriteFrameReplyCaptured(server, id, false, false, timedOut); return; }
         if (once) _store.CaptureEphemeral(key, secret); // fill_once: memory only, never store.json
         else _store.Capture(key, secret);
         var rt = _store.RoundTripOk(key, secret); // in-process verify; secret stays local
@@ -549,8 +550,8 @@ internal static class KeyLocker
         public string acceptedAt { get; set; } = "";
     }
 
-    private static void WriteFrameReplyCaptured(Stream s, long id, bool captured, bool rt)
-        => WriteFrame(s, $"{{\"id\":{id},\"ok\":true,\"r\":\"\",\"captured\":{(captured ? "true" : "false")},\"rt\":{(rt ? "true" : "false")}}}");
+    private static void WriteFrameReplyCaptured(Stream s, long id, bool captured, bool rt, bool timedOut = false)
+        => WriteFrame(s, $"{{\"id\":{id},\"ok\":true,\"r\":\"\",\"captured\":{(captured ? "true" : "false")},\"rt\":{(rt ? "true" : "false")}{(timedOut ? ",\"timedOut\":true" : "")}}}");
 
     private static void WriteReply(Stream s, long id, bool ok, string result, string? err)
     {
@@ -728,7 +729,8 @@ internal static class SecureDialog
     /// `once` = a fill_once entry: typed into one prompt, then deleted (the button says so). `tag` (internal
     /// #281, with `once`): the entry is instead kept in this helper's memory under that tag until the pane
     /// closes, and each later fill asks first — the dialog says so.
-    public static string? Prompt(string label, string note = "", bool once = false, string tag = "")
+    /// `timedOut`: the window closed itself at `DialogDeadline.After` with nothing entered (internal #338).
+    public static (string? secret, bool timedOut) Prompt(string label, string note = "", bool once = false, string tag = "")
     {
         string? result = null;
         var keep = once && tag.Length > 0;
@@ -777,6 +779,7 @@ internal static class SecureDialog
             });
         }
         panel.Children.Add(pwd);
+        panel.Children.Add(DialogDeadline.NoticeBlock());
         panel.Children.Add(buttons);
 
         var win = new Window
@@ -791,8 +794,39 @@ internal static class SecureDialog
         };
         ok.Click += (_, _) => { result = pwd.Password; win.DialogResult = true; };
         win.Loaded += (_, _) => { win.Activate(); pwd.Focus(); };
+        var fired = DialogDeadline.Arm(win);
         var dr = win.ShowDialog();
-        return dr == true ? result : null;
+        return dr == true ? (result, false) : (null, fired());
+    }
+}
+
+/// internal #338: the secret and confirm dialogs close themselves before the server stops waiting for them
+/// (`CAPTURE_TIMEOUT_MS`, 180 s, in key-locker-host.ts). Before, a dialog left open stayed on screen after the
+/// server had given up: the reply said the request timed out and that the secret "could not be erased" (the
+/// erase was queued behind the dialog), and a password typed later went nowhere. Now the window closes at
+/// `After` as a cancel, says so up front, and the reply carries `timedOut`.
+internal static class DialogDeadline
+{
+    public static readonly TimeSpan After = TimeSpan.FromSeconds(170);
+
+    public static TextBlock NoticeBlock() => new()
+    {
+        Text = "This window closes by itself after about 3 minutes if you do nothing. Nothing is typed then.",
+        Margin = new Thickness(10, 0, 10, 8),
+        TextWrapping = TextWrapping.Wrap,
+        MaxWidth = 420,
+        Foreground = SystemColors.GrayTextBrush,
+    };
+
+    /// Close `win` when `After` passes while it is open; the returned function says whether that happened.
+    public static Func<bool> Arm(Window win)
+    {
+        var fired = false;
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = After };
+        timer.Tick += (_, _) => { timer.Stop(); fired = true; win.Close(); };
+        win.Loaded += (_, _) => timer.Start();
+        win.Closed += (_, _) => timer.Stop();
+        return () => fired;
     }
 }
 
@@ -920,6 +954,7 @@ internal static class PromptDialog
             Add("Not now", "not_now", isCancel: true); // fail-closed
             Add("Never", "never");
         }
+        panel.Children.Add(DialogDeadline.NoticeBlock());
         panel.Children.Add(buttons);
 
         var win = new Window
@@ -947,8 +982,11 @@ internal static class PromptDialog
             var start = fillKept ? buttons.Children.Count - 1 : 0;
             if (buttons.Children.Count > 0 && buttons.Children[start] is Button first) first.Focus();
         };
+        var fired = DialogDeadline.Arm(win);
         win.ShowDialog();
-        return choice;
+        // internal #338: a kept-tag confirm that closed itself says so ("timed_out"); an older server reads it
+        // as cancel. The other kinds keep their fail-closed choice.
+        return fired() && fillKept ? "timed_out" : choice;
     }
 
     private static bool IsValidChoice(string kind, string v) =>

@@ -458,6 +458,8 @@ const FILL_ONCE_HINTS: Record<string, string> = {
   failsafe_engaged: "The emergency stop is armed (pointer in the screen corner). Nothing was typed. Retry after it is released.",
   failsafe_unknown: "The emergency-stop check failed, so nothing was typed. Retry.",
   prompt_unreadable: "The pane could not be read unambiguously. Bring it to the front (or close a same-titled window), then retry.",
+  dialog_timeout: "The locker's window closed itself after about 3 minutes with no answer. Nothing was typed. Call " +
+    "fill_once again when the user is ready.",
   not_at_prompt: "The pane is not showing a password prompt. Send the command first and call fill_once once the prompt appears.",
   no_credential_program: "No ssh / sudo / su / doas is running in that pane, so this is not a real password prompt. Nothing was typed.",
   prompt_changed: "The pane changed while the dialog was open (the prompt timed out, or a different command is asking now). Nothing was typed. Re-run the command and retry.",
