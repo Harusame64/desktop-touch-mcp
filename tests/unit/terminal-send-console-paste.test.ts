@@ -252,3 +252,39 @@ describe("terminalSendHandler — conhost console-paste routing", () => {
     );
   });
 });
+
+// internal #334: a classic console takes background text as key presses from bin/console-input.exe.
+describe("method:'background' through the console-input helper (internal #334)", () => {
+  const helper = (_hwnd: unknown, chunk: string) => ({ sent: chunk.length, full: true, via: "console_input" as const });
+
+  it("sends the rest in one more run, skips the screen read-back, and sends Enter the same way", async () => {
+    mockChars.mockImplementation(helper);
+    // A screen that never shows the input (a reader that is busy) would fail the read-back.
+    mockBaseline.mockResolvedValue("PS C:\\> ");
+    const input = "a".repeat(250);
+    const r = parseResult(await terminalSendHandler({ ...baseArgs, method: "background", input }));
+    expect(r.ok).toBe(true);
+    expect(r.pressedEnter).toBe(true);
+    expect(mockChars.mock.calls.map(([, t]) => t)).toEqual(["a".repeat(100), "a".repeat(150), "\r"]);
+    expect(vi.mocked(bgInput.postEnterToHwnd)).not.toHaveBeenCalled();
+    expect(mockBaseline).toHaveBeenCalledTimes(1); // the baseline only, no read-back
+  });
+
+  it("a helper that fails on the joined rest still never sends chunks 2… again", async () => {
+    mockChars
+      .mockImplementationOnce(helper)
+      .mockImplementationOnce((_h: unknown, chunk: string) => ({ sent: chunk.length, full: true, via: "wm_char" as const }));
+    mockBaseline.mockResolvedValue(null);
+    const input = "b".repeat(250);
+    const r = parseResult(await terminalSendHandler({ ...baseArgs, method: "background", input, pressEnter: false }));
+    expect(r.ok).toBe(true);
+    expect(mockChars.mock.calls.map(([, t]) => (t as string).length)).toEqual([100, 150]);
+  });
+
+  it("WM_CHAR (no helper) keeps the chunks and the Enter key post", async () => {
+    mockBaseline.mockResolvedValue(null);
+    await terminalSendHandler({ ...baseArgs, method: "background", input: "c".repeat(250) });
+    expect(mockChars.mock.calls.map(([, t]) => (t as string).length)).toEqual([100, 100, 50]);
+    expect(vi.mocked(bgInput.postEnterToHwnd)).toHaveBeenCalledTimes(1);
+  });
+});

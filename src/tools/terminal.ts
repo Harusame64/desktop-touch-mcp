@@ -1524,11 +1524,15 @@ export const terminalSendHandler = async ({
       const baselineMarker =
         baselineRaw !== null ? makeMarker(stripAnsi(baselineRaw)) : null;
 
-      // Send in chunks to avoid saturating the terminal input queue.
+      // Send in chunks to avoid saturating the terminal input queue. internal #334: a classic console takes
+      // the text as key presses from bin/console-input.exe, which writes any length in one run and reports
+      // the count it wrote — once the first chunk went that way, the rest goes in one more run.
       let totalSent = 0;
+      let viaHelper = true;
       const chunks = chunkWholeLineBreaks(input, chunkSize);
       for (let c = 0; c < chunks.length; c++) {
-        const chunk = chunks[c]!;
+        const joined = c === 1 && viaHelper;
+        const chunk = joined ? chunks.slice(1).join("") : chunks[c]!;
         // ADR-035 Phase 1: one event for the whole chunked send — every chunk
         // goes to the same handle, so per-chunk events would only repeat it.
         // Inside the loop, though, not before it: `input` has no minimum length,
@@ -1539,6 +1543,9 @@ export const terminalSendHandler = async ({
         }
         const result = postCharsToHwnd(win.hwnd, chunk);
         totalSent += result.sent;
+        if (result.via !== "console_input") viaHelper = false;
+        // The joined rest is all of it, whichever way it went (never send chunks 2… again).
+        if (joined && result.full) break;
         if (!result.full) {
           // Partial WM_CHAR delivery — fail regardless of method (PR #64 Codex P1):
           //   - sent > 0: a foreground fallback would re-deliver chars and double-input.
@@ -1572,7 +1579,11 @@ export const terminalSendHandler = async ({
       //     the WT regression that motivated this change.
       const checkText = input.replace(/[\r\n]+$/, "");
       const hasEmbeddedNewline = /[\r\n]/.test(checkText);
+      // internal #334: text the console-input helper wrote is in the console's input — it counted it. A read
+      // of the screen cannot confirm that while the reader is busy (a slow prompt, a running command), and
+      // answered BackgroundInputNotDelivered for text that then ran (win2, PR #891).
       let verifiable =
+        !(viaHelper && chunks.length > 0) &&
         verificationNeeded &&
         baselineMarker !== null &&
         checkText.length > 0 &&
@@ -1648,7 +1659,12 @@ export const terminalSendHandler = async ({
         );
       }
 
-      if (effectivePressEnter) postEnterToHwnd(win.hwnd);
+      // The Enter goes the same way as the text: as a key press from the helper when it wrote the text.
+      if (effectivePressEnter) {
+        // (postCharsToHwnd falls back to posting the Enter key itself if the helper cannot run.)
+        if (viaHelper && chunks.length > 0) postCharsToHwnd(win.hwnd, "\r");
+        else postEnterToHwnd(win.hwnd);
+      }
 
       // Issue #183: surface hidden-input detection via the §4.2 verifyDelivery
       // hint shape so callers can react (skip retry, switch to foreground).
