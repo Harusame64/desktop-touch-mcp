@@ -64,7 +64,7 @@ export interface FillOnceKeptDeps {
   count(paneId: string, anchor: PaneAnchor): number;
   /** The locker's secret-free one-click confirm for a kept tag: "fill", "fill_always" (Fill with "always fill
    *  in this terminal" ticked), or "cancel" (also any failure). */
-  confirm(dialog: FillOnceDialog & { tag: string }): Promise<"fill" | "fill_always" | "cancel">;
+  confirm(dialog: FillOnceDialog & { tag: string }): Promise<"fill" | "fill_always" | "cancel" | "timed_out">;
   /** The prompt line the user ticked "Don't ask again" at for this kept tag, or null. */
   alwaysAt(paneId: string, anchor: PaneAnchor, tag: string): string | null;
   /** Record that tick for this kept tag at `promptLine`, if the tag still holds `opaqueId` (it goes with the tag). */
@@ -95,7 +95,7 @@ export interface FillOnceDeps {
   readPromptTail(paneId: string): Promise<PromptVerdict | null>;
   mintOpaqueId(): string;
   /** The locker's secure dialog: the user types (or cancels); the secret is stored under `opaqueId`. */
-  capture(opaqueId: string, dialog: FillOnceDialog): Promise<{ captured: boolean }>;
+  capture(opaqueId: string, dialog: FillOnceDialog): Promise<{ captured: boolean; timedOut?: true }>;
   /** Is the pane still anchored (its record not torn down by a close while the dialog was open)? */
   stillAnchored(paneId: string): boolean;
   /** internal #335: the write's checks, with no secret and no write, before a dialog opens. ok = would pass. */
@@ -119,7 +119,8 @@ export type FillOnceDeclineReason =
   | "no_credential_program"  // no ssh / sudo / su / doas runs under the pane's shell (a printed prompt)
   | "prompt_changed"         // the pane changed while the dialog was open (or its prompt went away)
   | "target_gone"            // the pane closed while the dialog was open
-  | "tag_limit";             // a NEW tag, but the pane already keeps MAX_KEPT_TAGS_PER_PANE
+  | "tag_limit"              // a NEW tag, but the pane already keeps MAX_KEPT_TAGS_PER_PANE
+  | "dialog_timeout";        // the locker's dialog closed itself after ~3 minutes with no answer (internal #338)
 
 export type FillOnceOutcome = (
   | { kind: "filled"; verified: boolean }
@@ -268,6 +269,7 @@ async function fillClaimed(
       }
       const choice = skipConfirm ? "fill" : await deps.kept.confirm({ ...dialog, tag });
       if (choice === "cancel") return { kind: "cancelled" };
+      if (choice === "timed_out") return { kind: "declined", reason: "dialog_timeout" };
       const outcome = await fillAfterDialog(deps, { ...gate, opaqueId: keptId });
       if (choice === "fill_always" && outcome.kind === "filled" && line !== null) {
         deps.kept.allowAlways(paneId, anchor, tag, keptId, line);
@@ -287,8 +289,9 @@ async function fillClaimed(
   // so every exit erases it — the filled one included, unless it is now kept under its tag.
   const opaqueId = deps.mintOpaqueId();
   let outcome: FillOnceOutcome;
+  const held = { maybe: true };
   try {
-    outcome = await captureAndFill(deps, { ...gate, dialog: tag !== undefined ? { ...dialog, tag } : dialog, opaqueId });
+    outcome = await captureAndFill(deps, { ...gate, dialog: tag !== undefined ? { ...dialog, tag } : dialog, opaqueId }, held);
   } catch (err) {
     outcome = { kind: "fill_aborted", code: `fill_once_error:${err instanceof Error ? err.message : String(err)}` };
   }
@@ -297,8 +300,11 @@ async function fillClaimed(
     return { ...outcome, kept: true };
   }
   // Not kept: erase it. A retype that did not fill leaves the earlier kept secret as it was.
-  const wasErased = await erased(deps, opaqueId);
   const keptBefore = tag !== undefined && deps.kept.lookup(paneId, anchor, tag) !== null ? { kept: true as const } : {};
+  // Nothing to erase when the locker said its dialog stored nothing (win2, #890 H2): the erase would wait
+  // behind another pane's open dialog, time out, and report a cleanupFailed for a secret that never existed.
+  if (!held.maybe) return { ...outcome, ...keptBefore };
+  const wasErased = await erased(deps, opaqueId);
   return wasErased ? { ...outcome, ...keptBefore } : { ...outcome, ...keptBefore, cleanupFailed: true };
 }
 
@@ -344,12 +350,17 @@ interface AfterDialogGate {
   opaqueId: string;
 }
 
+/** `held.maybe` turns false when the locker answered that its dialog stored nothing (a cancel, a timeout). */
 async function captureAndFill(
   deps: FillOnceDeps,
   r: AfterDialogGate & { dialog: FillOnceDialog },
+  held: { maybe: boolean },
 ): Promise<FillOnceOutcome> {
   const cap = await deps.capture(r.opaqueId, r.dialog);
-  if (!cap.captured) return { kind: "cancelled" };
+  if (!cap.captured) {
+    held.maybe = false;
+    return cap.timedOut === true ? { kind: "declined", reason: "dialog_timeout" } : { kind: "cancelled" };
+  }
   return fillAfterDialog(deps, r);
 }
 

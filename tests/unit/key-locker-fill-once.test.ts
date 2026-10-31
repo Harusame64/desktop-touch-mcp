@@ -46,6 +46,7 @@ function fake(o: {
   procs?: (Map<number, number> | null)[];
   failsafe?: (null | Error)[];
   captured?: boolean;
+  captureTimedOut?: boolean;
   captureThrows?: boolean;
   anchored?: boolean;
   inject?: { ok: true; verified: boolean } | { ok: false; code: string };
@@ -54,7 +55,7 @@ function fake(o: {
   deleteFails?: number;
   /** internal #281: the kept-tag map (a real `KeptTags` by default) and the confirm dialog's answer. */
   kept?: KeptTags;
-  confirm?: boolean | "fill_always";
+  confirm?: boolean | "fill_always" | "timed_out";
   confirmThrows?: boolean;
   anchoredSeq?: boolean[];
   opaqueId?: string;
@@ -78,6 +79,7 @@ function fake(o: {
     capture: async (id, dialog) => {
       calls.push(`capture:${id}:${dialog.label}:${dialog.note}${dialog.tag !== undefined ? `:tag=${dialog.tag}` : ""}`);
       if (o.captureThrows) throw new Error("pipe drop");
+      if (o.captureTimedOut === true) return { captured: false, timedOut: true };
       return { captured: o.captured ?? true };
     },
     stillAnchored: () => { calls.push("anchored"); return anchoredSeq.length > 0 ? anchoredSeq.shift()! : (o.anchored ?? true); },
@@ -490,8 +492,21 @@ describe("runFillOnce — a NEW tag: typed once, then kept", () => {
     expect(k.tags.lookup("1234", ANCHOR, "jump")).toBe("op-1");
   });
 
+  it("the user cancels → nothing is kept, and no erase is asked for (the locker stored nothing; win2, #890 H2)", async () => {
+    const k = keptTags();
+    const f = fake({ kept: k.tags, captured: false });
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "cancelled" });
+    expect(f.calls.some((c) => c.startsWith("delete"))).toBe(false);
+    expect(k.tags.hasAny()).toBe(false);
+  });
+
+  it("a capture that throws (may or may not have stored it) is still erased", async () => {
+    const f = fake({ captureThrows: true });
+    expect((await run(f)).kind).toBe("fill_aborted");
+    expect(f.deleted).toEqual(["op-1"]);
+  });
+
   it.each([
-    ["the user cancels", { captured: false }, { kind: "cancelled" }],
     ["the prompt changed", { prompts: [PROMPT(true), PROMPT(false, "$ ")] }, { kind: "declined", reason: "prompt_changed" }],
     ["the locker refused the write", { inject: { ok: false as const, code: "echo_on" } }, { kind: "fill_aborted", code: "echo_on" }],
   ])("%s → nothing is kept and the typed secret is deleted", async (_name, opts, outcome) => {
@@ -624,11 +639,14 @@ describe("runFillOnce — retype replaces a kept tag", () => {
     expect(f.deleted).toEqual([]);
   });
 
-  it("a retype that does not fill leaves the old kept secret as it was; the new one is deleted", async () => {
+  it("a retype that does not fill leaves the old kept secret as it was; a new one that was typed is deleted", async () => {
     const k = withKept();
     const f = fake({ kept: k.tags, opaqueId: "op-2", captured: false });
     expect(await runFillOnce(f.deps, { ...TAGGED, retype: true })).toEqual({ kind: "cancelled", kept: true });
-    expect(f.deleted).toEqual(["op-2"]);
+    expect(f.deleted).toEqual([]); // cancelled: the locker stored nothing under op-2
+    const g = fake({ kept: k.tags, opaqueId: "op-3", prompts: [PROMPT(true), PROMPT(false, "$ ")] });
+    expect((await runFillOnce(g.deps, { ...TAGGED, retype: true })).kind).toBe("declined");
+    expect(g.deleted).toEqual(["op-3"]);
     expect(k.tags.lookup("1234", ANCHOR, "jump")).toBe("kept-1");
     expect(k.erased).toEqual([]);
   });
@@ -798,6 +816,25 @@ describe("runFillOnce — a kept tag marked \"Don't ask again\"", () => {
     const g = fake({ kept: k.tags });
     await runFillOnce(g.deps, TAGGED);
     expect(confirmed(g)).toBe(true);
+  });
+});
+
+// ── internal #338: the locker's dialog closes itself at its deadline ─────────────────────────────────────
+
+describe("runFillOnce — a dialog that closed itself", () => {
+  it("the typing dialog → declined dialog_timeout, nothing typed, no erase asked for (nothing was stored)", async () => {
+    const f = fake({ captureTimedOut: true });
+    expect(await run(f)).toEqual({ kind: "declined", reason: "dialog_timeout" });
+    expect(wrote(f)).toBe(false);
+    expect(f.calls.some((c) => c.startsWith("delete"))).toBe(false);
+  });
+
+  it("a kept tag's confirm → declined dialog_timeout, nothing typed, the tag stays", async () => {
+    const k = withKept();
+    const f = fake({ kept: k.tags, confirm: "timed_out" });
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "declined", reason: "dialog_timeout", kept: true });
+    expect(wrote(f)).toBe(false);
+    expect(k.tags.lookup("1234", ANCHOR, "jump")).toBe("kept-1");
   });
 });
 

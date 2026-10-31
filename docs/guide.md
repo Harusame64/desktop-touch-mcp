@@ -149,6 +149,8 @@ terminal({ action:'send', paneId:'12345678', input:'ssh user@host' })
   remote side that copies the text exactly is not caught, so tick it only for a host
   you trust. It is never written to
   disk. `retype:true` asks you to type it again; `forget_tag` erases it.
+- **The locker's windows close by themselves** within about 3 minutes if left alone;
+  nothing is typed or saved then, and `fill_once` answers `dialog_timeout`.
 - **Every autofill asks you to confirm by default**; opt a binding out with
   `set_policy`. `list` / `status` / `forget` manage saved credentials.
 - `terminal` `read` / `send` accept `paneId` as an alternative to `windowTitle` —

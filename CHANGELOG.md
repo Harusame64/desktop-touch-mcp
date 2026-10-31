@@ -34,6 +34,13 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **The key locker's windows close themselves after about 3 minutes, and say so.** A password or confirm window
+  left open stayed on screen after the server had stopped waiting: `fill_once` answered that the request timed out,
+  with `cleanupFailed` and "the locker refused the write" although nothing was typed, and a password typed later
+  went nowhere. The window now closes within about 3 minutes of the request as a cancel (counted from when the
+  server asked, so a window that waited behind another one still closes in time), says so when it opens, and
+  `fill_once` answers `reason:"dialog_timeout"`; `save` answers `captured:false` with `timedOut:true`
+  (internal #338).
 - **`key_locker` no longer reports a password as typed while the console is selecting text.** In a console window in
   selection mode (Mark, or text selected with the mouse), the console holds input until the selection ends:
   `fill_once` answered `filled:true` / `verified`, but the password sat unread, and the prompt kept waiting. The

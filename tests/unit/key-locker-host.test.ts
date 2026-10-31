@@ -12,13 +12,13 @@
 import { describe, it, expect, afterEach } from "vitest";
 import net from "node:net";
 import { randomBytes } from "node:crypto";
-import { KeyLockerHost, KEY_LOCKER_PROTOCOL_VERSION } from "../../src/engine/key-locker-host.js";
+import { CAPTURE_TIMEOUT_MS, DIALOG_CLOSE_MS, KeyLockerHost, KEY_LOCKER_PROTOCOL_VERSION } from "../../src/engine/key-locker-host.js";
 
 function pipePath(): string {
   return `\\\\.\\pipe\\dtm-locker-test-${randomBytes(8).toString("hex")}`;
 }
 
-interface FakeState { store: Set<string>; captureReply: { captured: boolean; rt: boolean }; lastFrames: string[]; }
+interface FakeState { store: Set<string>; captureReply: { captured: boolean; rt: boolean; timedOut?: boolean }; lastFrames: string[]; }
 
 /**
  * A Node stand-in for the C# locker: writes a `hello` frame on connect, then answers the L0
@@ -35,7 +35,7 @@ function makeFakeLocker(
     selecting?: boolean;
     noProbe?: boolean;
     seed?: string[];
-    captureReply?: { captured: boolean; rt: boolean };
+    captureReply?: { captured: boolean; rt: boolean; timedOut?: boolean };
     state?: FakeState;
     /** The `r` value the fake replies to a `prompt` verb (a raw choice string, or `__err__` for ok:false). */
     promptReply?: string;
@@ -63,10 +63,10 @@ function makeFakeLocker(
           case "exists": write({ id: req.id, ok: true, r: state.store.has(req.k ?? "") ? "1" : "0" }); break;
           case "delete": { const had = state.store.delete(req.k ?? ""); write({ id: req.id, ok: true, r: had ? "1" : "0" }); break; }
           case "capture": {
-            const { captured, rt } = state.captureReply;
+            const { captured, rt, timedOut } = state.captureReply;
             if (captured) state.store.add(req.k ?? "");
             // The fake mirrors the C# reply shape: r is EMPTY, secret NEVER appears on the wire.
-            write({ id: req.id, ok: true, r: "", captured, rt });
+            write({ id: req.id, ok: true, r: "", captured, rt, ...(timedOut === true ? { timedOut } : {}) });
             break;
           }
           case "prompt": {
@@ -161,7 +161,7 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     const captureFrame = state.lastFrames.find((f) => f.includes('"capture"'));
     expect(captureFrame).toBeDefined();
     const parsed = JSON.parse(captureFrame!) as Record<string, unknown>;
-    expect(Object.keys(parsed).sort()).toEqual(["id", "k", "m"]);
+    expect(Object.keys(parsed).sort()).toEqual(["deadline", "id", "k", "m"]);
     expect(parsed.k).toBe("ssh:example.com");
   });
 
@@ -174,7 +174,7 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
 
     await host.capture("opaque-1", { label: "locker console 1234", note: "log in to the build box", purpose: "fill_once" });
     const parsed = JSON.parse(state.lastFrames.find((f) => f.includes('"capture"'))!) as Record<string, unknown>;
-    expect(Object.keys(parsed).sort()).toEqual(["id", "k", "label", "m", "note", "purpose"]);
+    expect(Object.keys(parsed).sort()).toEqual(["deadline", "id", "k", "label", "m", "note", "purpose"]);
     expect(parsed).toMatchObject({ k: "opaque-1", label: "locker console 1234", note: "log in to the build box", purpose: "fill_once" });
   });
 
@@ -252,7 +252,7 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     const frame = state.lastFrames.find((f) => f.includes('"prompt"'));
     const parsed = JSON.parse(frame!) as Record<string, unknown>;
     // The wire carries {id, m, kind, label} — the LABEL (a display URI), never a key or secret.
-    expect(Object.keys(parsed).sort()).toEqual(["id", "kind", "label", "m"]);
+    expect(Object.keys(parsed).sort()).toEqual(["deadline", "id", "kind", "label", "m"]);
     expect(parsed).toMatchObject({ m: "prompt", kind: "confirm", label: "sudo://host-a" });
     expect(parsed.k).toBeUndefined();
   });
@@ -265,7 +265,7 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     hosts.push(host);
     await host.capture("opaque-2", { label: "locker console", note: "jump host", purpose: "fill_once", tag: "jump" });
     const parsed = JSON.parse(state.lastFrames.find((f) => f.includes('"capture"'))!) as Record<string, unknown>;
-    expect(Object.keys(parsed).sort()).toEqual(["id", "k", "label", "m", "note", "purpose", "tag"]);
+    expect(Object.keys(parsed).sort()).toEqual(["deadline", "id", "k", "label", "m", "note", "purpose", "tag"]);
     expect(parsed.tag).toBe("jump");
   });
 
@@ -277,7 +277,7 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     hosts.push(host);
     expect(await host.confirmKeptFill({ label: "locker console", note: "jump host", tag: "jump" })).toBe("fill");
     const parsed = JSON.parse(state.lastFrames.find((f) => f.includes('"prompt"'))!) as Record<string, unknown>;
-    expect(Object.keys(parsed).sort()).toEqual(["id", "kind", "label", "m", "note", "tag"]);
+    expect(Object.keys(parsed).sort()).toEqual(["deadline", "id", "kind", "label", "m", "note", "tag"]);
     expect(parsed).toMatchObject({ kind: "fill_kept", tag: "jump" });
   });
 
@@ -287,6 +287,37 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     const host = await KeyLockerHost.connectForTest(path);
     hosts.push(host);
     expect(await host.confirmKeptFill({ label: "l", note: "n", tag: "t" })).toBe("fill_always");
+  });
+
+  it("every dialog frame carries a deadline the window closes by, inside the server's wait (review of #890)", async () => {
+    expect(DIALOG_CLOSE_MS).toBeLessThan(CAPTURE_TIMEOUT_MS);
+    const path = pipePath();
+    const state: FakeState = { store: new Set(), captureReply: { captured: true, rt: true }, lastFrames: [] };
+    await listen(makeFakeLocker(path, { state, promptReply: "fill" }), path);
+    const host = await KeyLockerHost.connectForTest(path);
+    hosts.push(host);
+    const before = Date.now();
+    await host.capture("op-1", { purpose: "fill_once" });
+    await host.confirmKeptFill({ label: "l", note: "n", tag: "t" });
+    await host.prompt("offer", "ssh://h");
+    const after = Date.now();
+    const deadlines = state.lastFrames
+      .filter((f) => f.includes('"capture"') || f.includes('"prompt"'))
+      .map((f) => (JSON.parse(f) as { deadline?: number }).deadline);
+    expect(deadlines).toHaveLength(3);
+    for (const d of deadlines) {
+      expect(d).toBeGreaterThanOrEqual(before + DIALOG_CLOSE_MS);
+      expect(d).toBeLessThanOrEqual(after + DIALOG_CLOSE_MS);
+    }
+  });
+
+  it("capture() and confirmKeptFill() say when the dialog closed itself at its deadline (internal #338)", async () => {
+    const path = pipePath();
+    await listen(makeFakeLocker(path, { captureReply: { captured: false, rt: false, timedOut: true }, promptReply: "timed_out" }), path);
+    const host = await KeyLockerHost.connectForTest(path);
+    hosts.push(host);
+    expect(await host.capture("op-1", { purpose: "fill_once" })).toEqual({ captured: false, rt: false, timedOut: true });
+    expect(await host.confirmKeptFill({ label: "l", note: "n", tag: "t" })).toBe("timed_out");
   });
 
   it.each(["cancel", "__err__", "autofill", "save", "", "FILL_ALWAYS", "fill always"])("confirmKeptFill() FAILS CLOSED to cancel on reply %j", async (reply) => {

@@ -319,7 +319,7 @@ export class KeyLockerWiring {
               label: dialog.label, note: dialog.note, purpose: "fill_once",
               ...(dialog.tag !== undefined ? { tag: dialog.tag } : {}),
             });
-          }).then((r) => ({ captured: r.captured })),
+          }).then((r) => ({ captured: r.captured, ...(r.timedOut === true && { timedOut: true as const }) })),
         stillAnchored: (id) => this.driver.hasPane(id),
         probeAt: async (anchor) => {
           const target = assembleInjectTarget(anchor, false);
