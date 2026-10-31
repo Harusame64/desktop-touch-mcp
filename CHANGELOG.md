@@ -34,6 +34,11 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **`terminal` `read` and the key locker read a `launch_console` window by its handle, whatever its title.** Two
+  classic locker windows ssh'd to the same host both get the title `user@host: ~`; reading either by `paneId`
+  answered `TerminalWindowNotFound`, and `fill_once` declined `prompt_unreadable`, until one of the titles was
+  changed. The same could happen for a moment while ssh changed the title at login. A classic pane is now read
+  from its own window; a Windows Terminal pane still goes by its tab title (internal #331, #337).
 - **The key locker's windows close themselves after about 3 minutes, and say so.** A password or confirm window
   left open stayed on screen after the server had stopped waiting: `fill_once` answered that the request timed out,
   with `cleanupFailed` and "the locker refused the write" although nothing was typed, and a password typed later

@@ -4,7 +4,8 @@
  * The optional `paneId` (decimal hwnd) target on terminal read/send:
  *   - findTerminalWindowByHwnd: exact-hwnd, ConsoleWindowClass-only, live-or-null.
  *   - send resolves the window DIRECTLY by hwnd (survives a title change); malformed / gone → typed decline.
- *   - read resolves via resolveTitleByHwnd (title-keyed downstream), safe-declines on a non-unique title.
+ *   - read of a classic pane goes by its hwnd (pinned UIA read), whatever its title (internal #331 / #337);
+ *     OCR, which is title-keyed, only while the title is unique.
  *
  * Mock surface mirrors terminal-send-console-paste.test.ts.
  */
@@ -45,6 +46,7 @@ vi.mock("../../src/engine/ocr-bridge.js", () => ({
 }));
 
 vi.mock("../../src/engine/identity-tracker.js", () => ({
+  handleObservationKey: (hwnd: bigint) => `hwnd:${hwnd}`,
   observeTarget: vi.fn(() => ({ identity: {}, invalidatedBy: null, previousTarget: null })),
   buildCacheStateHints: vi.fn(() => ({})),
   toTargetHints: vi.fn(() => ({})),
@@ -75,7 +77,9 @@ import {
   terminalDispatchHandler,
   paneIdMissSuggest,
   isPaneShellAlive,
+  readTerminalRawByPaneId,
 } from "../../src/tools/terminal.js";
+import * as ocr from "../../src/engine/ocr-bridge.js";
 import * as win32 from "../../src/engine/win32.js";
 import * as bgInput from "../../src/engine/bg-input.js";
 import * as uia from "../../src/engine/uia-bridge.js";
@@ -183,7 +187,7 @@ describe("terminal DISPATCHER paneId-only (Phase 1 — schema gate, the real cal
   });
 });
 
-describe("terminal read paneId (Phase 1 — safe-declines on a non-unique title)", () => {
+describe("terminal read paneId (a classic pane by its hwnd — internal #331 / #337)", () => {
   it("reads the pane when its title is still unique (happy path)", async () => {
     mockEnum.mockReturnValue([fakeWindow("dtm-locker-console-abc", 222n), fakeWindow("PowerShell", 111n)]);
     mockUia.mockResolvedValue("dtmdogfood@host:~$ ready");
@@ -191,11 +195,40 @@ describe("terminal read paneId (Phase 1 — safe-declines on a non-unique title)
     expect(r.ok).not.toBe(false);
     expect(String(r.text)).toContain("ready");
   });
-  it("declines (never wrong-reads) when the pane's title is no longer unique", async () => {
-    // Same-title sibling ⇒ resolveTitleByHwnd cannot hand a unique title to the UIA read ⇒ decline.
+  it("reads a classic pane by its hwnd even when a sibling has the same title (internal #331 / #337)", async () => {
+    // Two locker consoles ssh'd to the same host share `user@host: ~`; the read is scoped to the pane's hwnd,
+    // so it is neither declined nor a read of the sibling.
     mockEnum.mockReturnValue([fakeWindow("dtmdogfood@host: ~", 111n), fakeWindow("dtmdogfood@host: ~", 222n)]);
     const r = parseResult(await terminalReadHandler(readArgs({ paneId: "222" })));
-    expect(r.code).toBe("TerminalWindowNotFound");
+    expect(r.ok).not.toBe(false);
+    expect(vi.mocked(uia.getTextViaTextPattern)).toHaveBeenLastCalledWith("dtmdogfood@host: ~", undefined, { pinnedHwnd: 222n });
+  });
+  it("OCR is not used for a pinned pane whose title is shared, and the reply says why", async () => {
+    mockEnum.mockReturnValue([fakeWindow("dtmdogfood@host: ~", 111n), fakeWindow("dtmdogfood@host: ~", 222n)]);
+    mockUia.mockResolvedValue(null);
+    const r = parseResult(await terminalReadHandler(readArgs({ paneId: "222", source: "auto" })));
+    expect(vi.mocked(ocr.recognizeWindow)).not.toHaveBeenCalled();
+    expect(r.code).toBe("TerminalTextPatternUnavailable");
+    expect(r.context?.ocr).toBe("refused_shared_title");
+  });
+  it("OCR uses the title read after the UIA attempt, not the one before it (codex on #892)", async () => {
+    mockEnum.mockReturnValue([fakeWindow("u@h: ~", 111n), fakeWindow("u@h: ~", 222n)]);
+    mockUia.mockImplementation(async () => {
+      // While the UIA read runs, pane 222 gets its own title; the old one now names only the sibling.
+      mockEnum.mockReturnValue([fakeWindow("u@h: ~", 111n), fakeWindow("pane-222-now", 222n)]);
+      return null;
+    });
+    vi.mocked(ocr.recognizeWindow).mockResolvedValue({ words: [], origin: { x: 0, y: 0 } } as never);
+    vi.mocked(ocr.ocrWordsToLines).mockReturnValue("ocr text");
+    await terminalReadHandler(readArgs({ paneId: "222", source: "auto" }));
+    expect(vi.mocked(ocr.recognizeWindow)).toHaveBeenCalledWith("pane-222-now", expect.anything());
+  });
+  it("a handle that is not a console falls back to the unique-title path, as before", async () => {
+    mockEnum.mockReturnValue([fakeWindow("My Terminal", 333n, "CASCADIA_HOSTING_WINDOW_CLASS")]);
+    mockUia.mockResolvedValue("hello");
+    const r = parseResult(await terminalReadHandler(readArgs({ paneId: "333" })));
+    expect(r.ok).not.toBe(false);
+    expect(vi.mocked(uia.getTextViaTextPattern)).toHaveBeenLastCalledWith("My Terminal", undefined, undefined);
   });
   it("declines a malformed paneId", async () => {
     mockEnum.mockReturnValue([fakeWindow("x", 1n)]);
@@ -271,5 +304,20 @@ describe("terminal run paneId (F-4 — parity with read/send)", () => {
     const r = parseResult(await terminalDispatchHandler({ action: "run", input: "whoami" } as never));
     expect(r.ok).toBe(false);
     expect(String(r.error)).toMatch(/windowTitle or paneId/);
+  });
+});
+
+describe("readTerminalRawByPaneId (the key locker's read — internal #331 / #337)", () => {
+  it("reads a classic pane through its own hwnd, beside a same-titled sibling", async () => {
+    mockEnum.mockReturnValue([fakeWindow("u@h: ~", 111n), fakeWindow("u@h: ~", 222n)]);
+    mockUia.mockResolvedValue("\u001b[32mPassword:\u001b[0m ");
+    const r = await readTerminalRawByPaneId("222");
+    expect(r?.text).toBe("Password: ");
+    expect(vi.mocked(uia.getTextViaTextPattern)).toHaveBeenLastCalledWith("u@h: ~", undefined, { pinnedHwnd: 222n });
+  });
+  it("is null for a pane that is gone, or a malformed paneId", async () => {
+    mockEnum.mockReturnValue([fakeWindow("u@h: ~", 111n)]);
+    expect(await readTerminalRawByPaneId("222")).toBeNull();
+    expect(await readTerminalRawByPaneId("bad")).toBeNull();
   });
 });

@@ -39,6 +39,7 @@ import { recognizeWindow, ocrWordsToLines, detectOcrLanguage } from "../engine/o
 import { stripAnsi, tailLines } from "../engine/ansi.js";
 import {
   observeTarget,
+  handleObservationKey,
   buildCacheStateHints,
   toTargetHints,
   type InvalidationReason,
@@ -1043,7 +1044,17 @@ export const terminalReadHandler = async ({
     // via the registered nonce tab title (which also gates on the tab being ACTIVE) — else decline
     // rather than risk reading a same-title sibling / another tab (never a wrong-pane read). paneId
     // overrides windowTitle.
-    if (paneId !== undefined) {
+    // internal #331 / #337: a classic pane is read by its window handle, whatever its title (see
+    // readTerminalRawByPaneId); OCR, which finds its window by title, is used for it only while the title is
+    // unique.
+    let pinned: WindowZInfo | null = null;
+    const parsedPane = paneId !== undefined ? parsePaneId(paneId) : null;
+    if (paneId !== undefined && parsedPane?.kind === "classic") pinned = findTerminalWindowByHwnd(parsedPane.hwnd);
+    if (pinned !== null) {
+      windowTitle = pinned.title;
+    } else if (paneId !== undefined) {
+      // Not a live console by that handle (a wt pane, or a handle of another terminal window): by title, which
+      // must be unique, as before.
       const resolved = resolvePaneTitle(paneId);
       if (resolved === null) {
         // Shape-aware suggest (windowTitle-in-paneId-slot mixup / malformed / gone) — code stays
@@ -1059,23 +1070,33 @@ export const terminalReadHandler = async ({
     if (windowTitle === undefined || windowTitle === "") {
       return failWith("terminal(action='read') requires windowTitle or paneId", "terminal:read", {});
     }
-    const win = findTerminalWindow(windowTitle, "read");
+    const win = pinned ?? findTerminalWindow(windowTitle, "read");
     if (!win) {
       return failWith("Terminal window not found: " + windowTitle, "terminal:read", { windowTitle });
     }
 
-    const obs = observeTarget(windowTitle, win.hwnd, win.title);
+    // A pinned read is keyed by its handle: two same-titled panes must not share one observation slot.
+    const obs = observeTarget(pinned !== null ? handleObservationKey(pinned.hwnd) : windowTitle, win.hwnd, win.title);
     const identityHints = toTargetHints(obs.identity);
 
     let raw: string | null = null;
     let usedSource: "uia" | "ocr" = "uia";
 
     if (source === "uia" || source === "auto") {
-      raw = await getTextViaTextPattern(win.title);
+      raw = await getTextViaTextPattern(win.title, undefined, pinned !== null ? { pinnedHwnd: pinned.hwnd } : undefined);
     }
-    if ((raw === null || raw === "") && source !== "uia") {
+    // OCR finds its window by title: for a pinned pane only while that title is unique, and then with the title
+    // read NOW — the one read before the UIA await may have moved to a sibling since (codex on #892).
+    let ocrRefusedSharedTitle = false;
+    const ocrTitle = (): string | null => {
+      const t = pinned === null ? win.title : paneId !== undefined ? resolveTitleByHwnd(paneId) : null;
+      ocrRefusedSharedTitle = t === null;
+      return t;
+    };
+    const ocrWindowTitle = (raw === null || raw === "") && source !== "uia" ? ocrTitle() : null;
+    if (ocrWindowTitle !== null) {
       try {
-        const { words } = await recognizeWindow(win.title, ocrLanguage);
+        const { words } = await recognizeWindow(ocrWindowTitle, ocrLanguage);
         // Preserve 2D layout: cluster by y, sort by x, join with \n.
         // Critical for sinceMarker compatibility with the UIA path.
         raw = ocrWordsToLines(words);
@@ -1092,11 +1113,16 @@ export const terminalReadHandler = async ({
         "TerminalTextPatternUnavailable",
         "TextPattern not available and no OCR fallback usable",
         {
-          suggest: [
-            "Retry with source:'ocr' to force OCR",
-            "Verify the window is actually a terminal (Windows Terminal, conhost, PowerShell)",
-          ],
-          context: { windowTitle: win.title },
+          suggest: ocrRefusedSharedTitle
+            ? [
+              "OCR was not used: another window has this pane's title, and OCR finds its window by title. " +
+                "Give the pane a unique title (or close the other window), then retry",
+            ]
+            : [
+              "Retry with source:'ocr' to force OCR",
+              "Verify the window is actually a terminal (Windows Terminal, conhost, PowerShell)",
+            ],
+          context: { windowTitle: win.title, ...(ocrRefusedSharedTitle ? { ocr: "refused_shared_title" } : {}) },
         },
       );
     }
@@ -2215,6 +2241,26 @@ export async function readTerminalRaw(windowTitle: string): Promise<{ text: stri
   const raw = (await getTextViaTextPattern(win.title)) ?? "";
   const cleaned = stripAnsi(raw);
   return { text: cleaned, marker: makeMarker(cleaned) };
+}
+
+/**
+ * internal #331 / #337: read a pane by its paneId. A classic pane is read by its window handle (the UIA read
+ * scoped to that hwnd, ADR-036), so its title does not matter: two locker consoles ssh'd to the same host both
+ * get `user@host: ~` as their title, and the title changes at login — the title-keyed read declined both
+ * (TerminalWindowNotFound / prompt_unreadable, win2 2026-10-31). A wt pane has no per-pane window, so it still
+ * resolves through its pinned nonce tab title (resolvePaneTitle). Null = the pane is gone (or its tab inactive).
+ */
+export async function readTerminalRawByPaneId(paneId: string): Promise<{ text: string; marker: string } | null> {
+  const parsed = parsePaneId(paneId);
+  if (parsed === null) return null;
+  if (parsed.kind === "classic") {
+    const win = findTerminalWindowByHwnd(parsed.hwnd);
+    if (win === null) return null;
+    const cleaned = stripAnsi((await getTextViaTextPattern(win.title, undefined, { pinnedHwnd: win.hwnd })) ?? "");
+    return { text: cleaned, marker: makeMarker(cleaned) };
+  }
+  const title = resolvePaneTitle(paneId);
+  return title === null ? null : readTerminalRaw(title);
 }
 
 /** Check if a window with the given hwnd still exists in the z-order list. */

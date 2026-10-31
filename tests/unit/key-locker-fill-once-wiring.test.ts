@@ -16,6 +16,8 @@ vi.mock(import("../../src/tools/terminal.js"), async (importOriginal) => {
     ...actual,
     resolvePaneTitle: vi.fn(() => "dtm-locker-console-1"),
     readTerminalRaw: vi.fn(async () => ({ text: TAIL }) as never),
+    // internal #331 / #337: the key locker reads a pane by its paneId (a classic one by its hwnd).
+    readTerminalRawByPaneId: vi.fn(async () => ({ text: TAIL }) as never),
   };
 });
 

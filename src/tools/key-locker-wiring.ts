@@ -11,8 +11,8 @@
 //
 // The six gaps the plan enumerated (Fable review) are resolved in the seams here + the W-4a hot-path helpers:
 //   gap1 anchor  — `manager.launchAnchoredConsole()` (a classic injectable conhost) → `onLocalPaneLaunched`.
-//   gap2 read    — every title-keyed read/inject goes through `resolveTitleByHwnd(paneId)` (substring-unique or
-//                  decline), so a same-title sibling can never redirect it.
+//   gap2 read    — every read goes by paneId (`readTerminalRawByPaneId`: a classic pane by its handle, a wt pane
+//                  by its pinned nonce title — internal #331 / #337), so a same-title sibling can never redirect it.
 //   gap3 close   — the tick timer polls the event-bus `window_disappeared` → `onPaneClosed`.
 //   gap5 auth    — `readPaneAfterAuth` is a BOUNDED POLL (not a single read) so an in-progress prompt does not
 //                  false-reject and discard the correct secret.
@@ -54,8 +54,7 @@ import {
   isSecretInputPrompt,
   lastNonEmptyPromptLine,
   parseExitSentinel,
-  readTerminalRaw,
-  resolvePaneTitle,
+  readTerminalRawByPaneId,
   setTerminalDispatchHook,
   terminalSendHandler,
   type ExitShell,
@@ -480,7 +479,8 @@ export class KeyLockerWiring {
     return this.manager.withHost((h) => inject(h, binding, opaqueId, "pane", target));
   }
 
-  /** S-B readPromptTail: resolve the pane's title (substring-unique or null → decline) → read → classify.
+  /** S-B readPromptTail: read the pane by paneId (a classic pane by its handle, a wt pane by its pinned nonce
+   *  title; gone ⇒ null ⇒ decline — internal #331 / #337) → classify.
    *  Stricter than a bare `isSecretInputPrompt` for the INJECT trigger: also require the cursor row to END IN A
    *  COLON. A real hidden-input prompt (`[sudo] password for alice:`, `Enter passphrase:`, `Password:`) ends in
    *  `:`; a COMMAND ECHO / OUTPUT that merely ends in a credential word (`sudo tail -f /tmp/password`, cached
@@ -488,9 +488,9 @@ export class KeyLockerWiring {
    *  into the running process (Codex W-4b disclosure). A colon-less real prompt is rare ⇒ it declines and the
    *  human types it (never a wrong-inject). A proper echo-off detector is the robust follow-up (OQ-W-17-bis). */
   private async readPromptTail(paneId: string): Promise<PromptVerdict | null> {
-    const title = resolvePaneTitle(paneId);
-    if (title === null) return null; // ambiguous / vanished title ⇒ decline (never read a same-title sibling)
-    const raw = await readTerminalRaw(title);
+    // internal #331 / #337: a classic pane is read by its hwnd (never a same-title sibling, whatever its title);
+    // a wt pane by its pinned nonce tab title. Null ⇒ gone / inactive tab ⇒ decline.
+    const raw = await readTerminalRawByPaneId(paneId);
     if (raw === null) return null;
     const line = lastNonEmptyPromptLine(raw.text);
     const isCredentialPrompt = line !== null && /:\s*$/.test(line) && isSecretInputPrompt(raw.text);
@@ -510,18 +510,14 @@ export class KeyLockerWiring {
     const deadline = Date.now() + AUTH_SETTLE_MS;
     let last = { tail: "", stillHiddenPrompt: true };
     for (;;) {
-      // RE-RESOLVE the title EACH iteration (Codex W-4b): an interactive login (ssh) updates the console title
-      // AFTER auth, so a title cached before the loop would stop resolving mid-poll → the correct secret would
-      // false-reject as auth_rejected. Re-resolving keeps the read bound to the pane across the change (a wt
-      // pane's nonce title is PINNED, so it re-resolves iff the tab is still active — E6).
-      const title = resolvePaneTitle(paneId);
-      if (title !== null) {
-        const raw = await readTerminalRaw(title);
-        if (raw !== null) {
-          const stillHiddenPrompt = isSecretInputPrompt(raw.text);
-          last = { tail: raw.text, stillHiddenPrompt };
-          if (!stillHiddenPrompt) return last; // prompt cleared → settled (accepted iff no denial line)
-        }
+      // Read by paneId each iteration (Codex W-4b, internal #331 / #337): an interactive login (ssh) changes the
+      // console title AFTER auth; a classic pane is read by its handle, so the change does not matter, and a wt
+      // pane's nonce title is PINNED (it reads iff the tab is still active — E6).
+      const raw = await readTerminalRawByPaneId(paneId);
+      if (raw !== null) {
+        const stillHiddenPrompt = isSecretInputPrompt(raw.text);
+        last = { tail: raw.text, stillHiddenPrompt };
+        if (!stillHiddenPrompt) return last; // prompt cleared → settled (accepted iff no denial line)
       }
       if (Date.now() >= deadline) return last; // still prompting at timeout → stillHiddenPrompt:true → reject
       await sleep(AUTH_POLL_MS);
@@ -531,8 +527,8 @@ export class KeyLockerWiring {
   /** Mode-A runToExit (gap6): OBSERVE the already-run command's exit — send an EPILOGUE-ONLY probe (never the
    *  command) with `notifyDispatch:false`, poll for its echo-immune sentinel, return the exit code. */
   private async runToExit(paneId: string, isRemote: boolean): Promise<ExitCompletion> {
-    const title = resolvePaneTitle(paneId);
-    if (title === null) return { reason: "probe_error:no_title" };
+    // internal #331 / #337: the probe goes by paneId — a classic pane to its own window by handle
+    // (findTerminalWindowByPaneId), so a same-titled sibling neither blocks it nor receives it.
     const shell: ExitShell = isRemote ? "bash" : "powershell";
     const nonce = generateExitNonce();
     const probe = buildExitProbe(shell, nonce);
@@ -552,7 +548,7 @@ export class KeyLockerWiring {
     let sendResult: ToolResult;
     try {
       sendResult = await terminalSendHandler({
-        windowTitle: title, input: probe, method, pressEnter: true,
+        paneId, input: probe, method, pressEnter: true,
         focusFirst: false, restoreFocus: false, preferClipboard: false, pasteKey: "auto",
         trackFocus: false, settleMs: 0, notifyDispatch: false,
       });
@@ -566,15 +562,12 @@ export class KeyLockerWiring {
     if (!sendSucceeded(sendResult)) return { reason: "probe_error:send_rejected" };
     const deadline = Date.now() + EXIT_PROBE_MS;
     for (;;) {
-      // RE-RESOLVE the title each read (Codex W-4b): the ran command may have changed the console title; the
-      // probe was already sent to the send-time window, but the READ must track the pane's current title.
-      const rtitle = resolvePaneTitle(paneId);
-      if (rtitle !== null) {
-        const raw = await readTerminalRaw(rtitle);
-        if (raw !== null) {
-          const m = parseExitSentinel(raw.text, nonce, shell);
-          if (m.matched) return { reason: "exited", exitCode: m.exitCode };
-        }
+      // Read by paneId each time (Codex W-4b, internal #331 / #337): the ran command may have changed the console
+      // title; a classic pane is read by its handle, a wt pane by its pinned nonce title.
+      const raw = await readTerminalRawByPaneId(paneId);
+      if (raw !== null) {
+        const m = parseExitSentinel(raw.text, nonce, shell);
+        if (m.matched) return { reason: "exited", exitCode: m.exitCode };
       }
       if (Date.now() >= deadline) return { reason: "timeout" };
       await sleep(EXIT_POLL_MS);
