@@ -17,7 +17,7 @@
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { lstatSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { keyLockerDisabled } from "./key-locker-switch.js";
@@ -33,23 +33,9 @@ import {
 import type { PaneAnchor } from "./inject-target.js";
 import { SessionTracker } from "./session-tracker.js";
 import { SshSessionWatch, type ProcessSnapshot } from "./ssh-session-watch.js";
+import { aliasExists } from "../../utils/path-exists.js";
 
 /** Typed reject when a secret op is attempted before first-run consent is accepted (L4 §2). */
-/**
- * Whether a path exists, WITHOUT following it. `wt.exe` under WindowsApps is an MSIX app-execution alias (an
- * AppExecLink reparse point): Node 24 (v24.20.0, win2 2026-10-31) answers `existsSync` false and `statSync`
- * EACCES for it, while `lstatSync` reads it and spawning it works — so `existsSync` made launch_console's
- * default (a Windows Terminal tab) fail with KeyLockerWtUnavailable on a machine that has Windows Terminal.
- */
-export function aliasExists(path: string): boolean {
-  try {
-    lstatSync(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export class KeyLockerConsentRequiredError extends Error {
   readonly code = "KeyLockerConsentRequired";
   constructor() {
