@@ -35,10 +35,11 @@
 
 ### Fixed — Windows
 - **`key_locker` no longer reports a password as typed while the console is selecting text.** In a console window in
-  selection mode (its title starts with "Select"), the console holds input until the selection ends: `fill_once`
-  answered `filled:true` / `verified`, but the password sat unread, and the prompt kept waiting. The locker now
-  declines any write while a selection is in progress, with `fill_aborted` code `console_selecting` and a hint to
-  press Esc in that window (internal #335).
+  selection mode (Mark, or text selected with the mouse), the console holds input until the selection ends:
+  `fill_once` answered `filled:true` / `verified`, but the password sat unread, and the prompt kept waiting. The
+  locker now declines any write while a selection is in progress, with `fill_aborted` code `console_selecting` and
+  a hint to press Esc in that window. `fill_once` also runs the locker's checks before it opens the password
+  window, so you are not asked to type a password that would then be refused (internal #335).
 - **`key_locker` `launch_console` opens a Windows Terminal tab where Node said `wt.exe` was missing.** Its default
   (a tab in Windows Terminal) answered `KeyLockerWtUnavailable: Windows Terminal (wt.exe) was not found` on a
   machine that has it (found with Node v24.20.0): `wt.exe` is an app-execution alias, and that Node reports such a

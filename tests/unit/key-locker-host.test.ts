@@ -33,6 +33,7 @@ function makeFakeLocker(
     consoleEchoes?: boolean;
     otherReader?: boolean;
     selecting?: boolean;
+    noProbe?: boolean;
     seed?: string[];
     captureReply?: { captured: boolean; rt: boolean };
     state?: FakeState;
@@ -72,6 +73,13 @@ function makeFakeLocker(
             const reply = opts.promptReply ?? "autofill";
             if (reply === "__err__") write({ id: req.id, ok: false, r: "", e: "bad_prompt" });
             else write({ id: req.id, ok: true, r: reply }); // r = the choice; NO secret ever on the wire
+            break;
+          }
+          case "probe": {
+            // internal #335: the inject checks with no write; an older helper answers unknown_method.
+            if (opts.noProbe === true) write({ id: req.id, ok: false, r: "", e: "unknown_method:probe" });
+            else if (opts.selecting === true) write({ id: req.id, ok: false, r: "", e: "console_selecting" });
+            else write({ id: req.id, ok: true, r: "" });
             break;
           }
           case "inject": {
@@ -192,6 +200,24 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     hosts.push(host);
     const target = { shellPid: 4321, shellStartMs: 10, submit: true, requireEchoOff: true };
     expect(await host.inject("op-1", target)).toEqual({ ok: false, code: "other_reader" });
+  });
+
+  it("probe() answers the inject checks with no key; an older helper without the verb passes (internal #335)", async () => {
+    const target = { shellPid: 4321, shellStartMs: 10, submit: false, requireEchoOff: true };
+    for (const [opts, want] of [
+      [{ selecting: true }, { ok: false, code: "console_selecting" }],
+      [{}, { ok: true }],
+      [{ noProbe: true }, { ok: true }],
+    ] as const) {
+      const path = pipePath();
+      const state: FakeState = { store: new Set(), captureReply: { captured: true, rt: true }, lastFrames: [] };
+      await listen(makeFakeLocker(path, { state, ...opts }), path);
+      const host = await KeyLockerHost.connectForTest(path);
+      hosts.push(host);
+      expect(await host.probe(target)).toEqual(want);
+      const frame = JSON.parse(state.lastFrames.find((f) => f.includes('"probe"'))!) as Record<string, unknown>;
+      expect(frame.k).toBeUndefined();
+    }
   });
 
   it("console_selecting comes back as itself, for a fill_once and an autofill write alike (internal #335)", async () => {

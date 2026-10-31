@@ -543,6 +543,21 @@ export class KeyLockerHost {
   }
 
   /**
+   * internal #335: every check `inject` makes, with no key and no write — fill_once asks it before its dialog,
+   * so the user does not type a password the write would refuse. Advisory: an older helper (no `probe` verb)
+   * or a pipe error answers ok, and the write checks again anyway.
+   */
+  async probe(target: InjectTarget): Promise<{ ok: true } | { ok: false; code: InjectAbortCode }> {
+    try {
+      const reply = await this.request("probe", undefined, REQUEST_TIMEOUT_MS, { t: target });
+      if (reply.ok || (reply.e ?? "").startsWith("unknown_method")) return { ok: true };
+      return { ok: false, code: normalizeAbort(reply.e) };
+    } catch {
+      return { ok: true };
+    }
+  }
+
+  /**
    * Mint a single-use, TTL-bounded ticket + create a per-injection serving pipe for the askpass
    * helper to fetch the secret under `key` (the secret flows locker→helper on that pipe, never here).
    * `ctx` binds git credential fields into the ticket for serve-time `context_mismatch` (§3.1);

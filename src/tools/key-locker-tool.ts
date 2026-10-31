@@ -522,8 +522,8 @@ async function handleFillOnce(
                 "for example), so the prompt may not be the credential program's. Run the command in front, then retry. " +
                 "Nothing was typed."
               : outcome.code === "console_selecting"
-                ? "The pane's console is selecting text (its title starts with 'Select'), and it holds input until the " +
-                  "selection ends. Ask the user to press Esc in that window, then retry. Nothing was typed."
+                ? "The pane's console is in selection mode (Mark, or text selected with the mouse), and it holds input " +
+                  "until the selection ends. Ask the user to press Esc in that window, then retry. Nothing was typed."
                 : "The locker refused the write (the pane changed or could not be verified). Nothing was typed or saved.",
           ...kept,
           ...cleanup,

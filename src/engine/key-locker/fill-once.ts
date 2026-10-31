@@ -98,6 +98,8 @@ export interface FillOnceDeps {
   capture(opaqueId: string, dialog: FillOnceDialog): Promise<{ captured: boolean }>;
   /** Is the pane still anchored (its record not torn down by a close while the dialog was open)? */
   stillAnchored(paneId: string): boolean;
+  /** internal #335: the write's checks, with no secret and no write, before a dialog opens. ok = would pass. */
+  probeAt(anchor: PaneAnchor): Promise<{ ok: true } | { ok: false; code: string }>;
   /** Write the secret under `opaqueId` into the anchored pane (the locker re-verifies the anchor). */
   injectAt(anchor: PaneAnchor, opaqueId: string, submit: boolean): Promise<FillOnceInjectResult>;
   deleteSecret(opaqueId: string): Promise<void>;
@@ -248,6 +250,10 @@ async function fillClaimed(
   if (procsBefore === null) return { kind: "declined", reason: "not_anchored" };
   if (procsBefore.size === 0) return { kind: "declined", reason: "no_credential_program" };
   const gate = { paneId, submit, anchor: anchor, before, procsBefore };
+  // internal #335 (win2): the locker's own checks (selection mode, echo, the program in front) before any
+  // dialog, so the user is not asked to type a password that the write then refuses. The write checks again.
+  const probe = await deps.probeAt(anchor);
+  if (!probe.ok) return { kind: "fill_aborted", code: probe.code };
 
   // internal #281: a tag already kept for THIS pane and THIS anchor → confirm, not type. The kept secret is
   // never erased here, whatever the outcome: it lives until the pane closes or forget_tag. A tag the user
