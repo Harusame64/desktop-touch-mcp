@@ -334,8 +334,8 @@ export class KeyLockerWiring {
           lookup: (id, anchor, tag) => this.keptTags.lookup(id, anchor, tag),
           count: (id, anchor) => this.keptTags.count(id, anchor),
           confirm: (dialog) => m.withHost((h) => h.confirmKeptFill(dialog)),
-          isAlways: (id, anchor, tag) => this.keptTags.isAlways(id, anchor, tag),
-          allowAlways: (id, anchor, tag) => { this.keptTags.allowAlways(id, anchor, tag); },
+          alwaysAt: (id, anchor, tag) => this.keptTags.alwaysAt(id, anchor, tag),
+          allowAlways: (id, anchor, tag, opaqueId, line) => { this.keptTags.allowAlways(id, anchor, tag, opaqueId, line); },
           keep: (id, anchor, tag, opaqueId) => this.keptTags.keep(id, anchor, tag, opaqueId, capturedBy),
         },
       },
@@ -351,6 +351,11 @@ export class KeyLockerWiring {
   /** `key_locker list` (internal #281): kept tag NAMES per pane, never ids or secrets. */
   keptTagNames(): Record<string, string[]> {
     return this.keptTags.names();
+  }
+
+  /** `key_locker list`: the kept tags marked "Don't ask again", per pane (names only). */
+  noConfirmTagNames(): Record<string, string[]> {
+    return this.keptTags.noConfirmNames();
   }
 
   /** A launched pane is REUSABLE only if it is alive (classic: live console window, hwnd-direct; wt: the

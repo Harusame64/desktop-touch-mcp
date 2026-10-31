@@ -107,7 +107,7 @@ terminal({ action:'send', paneId:'12345678', input:'ssh user@host' })
 
 - **自動入力は `launch_console` で開いたコンソールでのみ発火** — 既存のターミナルには決して入力しません。開くのは通常の可視な Windows コンソールなので、目視でき、任意のプロンプトで人間が引き継いで直接入力もできます。
 - **自動入力が扱わないプロンプト**（`ssh` の中でさらに `ssh` した先や、保存したくないログイン）は、コマンドを流したあとで `key_locker({ action:'fill_once', paneId, reason })` を呼びます。ロッカーのダイアログに利用者がパスワードを入力し、その pane のプロンプトに一度だけ入力されます。保存はされません。入力するのは本物のパスワード入力（その pane で `ssh` / `sudo` が裏ではなく前で動いていて、打った文字が画面に出ない状態）のときだけで、今は英語の `password` のプロンプトと、ssh の鍵のパスフレーズ（`Enter passphrase for key …:`）に対応します。
-- **同じ pane で何度も入る踏み台**には `tag` を付けます：`key_locker({ action:'fill_once', paneId, reason, tag:'jump' })`。最初の1回だけパスワードを入力すると、その pane が閉じるまでメモリに保持され、同じタグでの次回以降は 確認ダイアログの **Fill / Cancel** を押すだけになります。そこで **Don't ask again** にチェックを入れると、その pane のそのタグは、以後は確認なしで入力されます（ほかのタグは今までどおり確認します）。pane を閉じるか、タグを消すか入力し直すまで続きます。ディスクには書き込みません。`retype:true` で入力し直し、`forget_tag` で消去できます。
+- **同じ pane で何度も入る踏み台**には `tag` を付けます：`key_locker({ action:'fill_once', paneId, reason, tag:'jump' })`。最初の1回だけパスワードを入力すると、その pane が閉じるまでメモリに保持され、同じタグでの次回以降は 確認ダイアログの **Fill / Cancel** を押すだけになります。そこで **Don't ask again** にチェックを入れると、その pane のそのタグは、同じ文字のプロンプトでは以後、確認なしで入力されます。pane を閉じるか、タグを消すか入力し直すまで続きます。ほかのタグや、文字の違うプロンプト（sudo や別のホスト）では、今までどおり確認します。接続先が同じ文字をまねた偽のプロンプトを出すと見分けられないので、信頼できるホストでだけチェックしてください。ディスクには書き込みません。`retype:true` で入力し直し、`forget_tag` で消去できます。
 - **既定では自動入力の度に確認ダイアログ**が出ます。binding 単位で `set_policy` により確認を省略可。保存済み認証情報の管理は `list` / `status` / `forget`。
 - `terminal` の `read` / `send` は `windowTitle` の代わりに `paneId` を受け取れます — `ssh` ログインでウィンドウタイトルが変わっても同じ窓を正確に狙えます。
 - 対応 binding URI: `ssh://user@host:22`、`sudo://host/user`、`https-cred://host`、SSH 鍵パスフレーズ（`sshkey:SHA256:…`）。`ssh` の登録はホスト鍵が `known_hosts` にあることが前提です（先に一度手動で接続してください）。

@@ -143,8 +143,11 @@ terminal({ action:'send', paneId:'12345678', input:'ssh user@host' })
   `key_locker({ action:'fill_once', paneId, reason, tag:'jump' })`. The first time you
   type it; it is then kept in memory for that pane until the pane closes, and each later
   `fill_once` with the same tag shows you only **Fill / Cancel**. Tick **Don't ask again**
-  there and later fills of that tag in that pane go in without asking (other tags still
-  ask), until the pane closes or the tag is forgotten or retyped. It is never written to
+  there and later fills of that tag in that pane, at a prompt with the same text, go in
+  without asking, until the pane closes or the tag is forgotten or retyped. Other tags,
+  and a prompt with other text (sudo, another host), still ask. A fake prompt on the
+  remote side that copies the text exactly is not caught, so tick it only for a host
+  you trust. It is never written to
   disk. `retype:true` asks you to type it again; `forget_tag` erases it.
 - **Every autofill asks you to confirm by default**; opt a binding out with
   `set_policy`. `list` / `status` / `forget` manage saved credentials.

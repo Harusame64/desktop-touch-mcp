@@ -851,8 +851,8 @@ internal static class ConsentDialog
 ///   * kind="confirm" (MATCH, seed §4 state 2): "Autofill saved secret for `label`?" [Autofill]/[Type it]
 ///   * kind="offer"   (NO-MATCH, seed §4 state 1): "Save `label` for next time?" [Save]/[Not now]/[Never]
 ///   * kind="fill_kept" (internal #281): "Fill the password kept as `tag` into `label`?" [Fill]/[Cancel], with
-///     the assistant's reason marked as its words, and an unticked "Don't ask again for `tag` in this
-///     terminal" box: Fill with it ticked answers "fill_always". Focus starts on [Cancel] and nothing is IsDefault, so an
+///     the assistant's reason marked as its words, and an unticked "Don't ask again for `tag` at this same
+///     prompt" box: Fill with it ticked answers "fill_always". Focus starts on [Cancel] and nothing is IsDefault, so an
 ///     Enter the user was typing into the terminal when the window appeared never fills.
 /// Closing the window (✕ / Esc / cancel) returns the FAIL-CLOSED choice ("type_it" / "not_now" / "cancel") so a
 /// dismissed dialog never fills or saves. Runs on the STA UI thread (marshalled by HandlePrompt).
@@ -893,12 +893,12 @@ internal static class PromptDialog
             panel.Children.Add(new TextBlock { Text = $"Fill the password kept as \"{tag}\" into:  {label}", Margin = new Thickness(4, 8, 4, 4), TextWrapping = TextWrapping.Wrap });
             if (!string.IsNullOrWhiteSpace(note))
                 panel.Children.Add(new TextBlock { Text = $"The assistant's reason (its words, it may be wrong):  {note}", Margin = new Thickness(4, 2, 4, 12), TextWrapping = TextWrapping.Wrap, FontStyle = FontStyles.Italic });
-            // "Always fill in this terminal" (user request 2026-10-30; scope 2026-10-31: this tag only). Off by
-            // default; it only changes what Fill answers. Cancel ignores it.
+            // "Don't ask again" (user request 2026-10-30; scope 2026-10-31: this tag only, at the same prompt). Off
+            // by default; it only changes what Fill answers. Cancel ignores it.
             // A TextBlock, not a string: a string Content would read a '_' in the tag as an access key and hide it.
             always = new CheckBox
             {
-                Content = new TextBlock { Text = $"Don't ask again for \"{tag}\" in this terminal (until it closes)", TextWrapping = TextWrapping.Wrap },
+                Content = new TextBlock { Text = $"Don't ask again for \"{tag}\" at this same prompt in this terminal. A prompt with other text asks again; a fake one that copies this text is not caught.", TextWrapping = TextWrapping.Wrap },
                 Margin = new Thickness(4, 0, 4, 12),
             };
             panel.Children.Add(always);

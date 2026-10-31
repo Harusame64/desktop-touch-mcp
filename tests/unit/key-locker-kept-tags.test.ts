@@ -153,21 +153,25 @@ describe("KeptTags — forget / dropPane / clear / names", () => {
   });
 });
 
-describe("KeptTags — always fill in this terminal (that tag only)", () => {
-  it("allowAlways marks one kept tag; another tag of the pane is not marked", () => {
+describe("KeptTags — \"Don't ask again\" (that tag only, at one prompt line)", () => {
+  it("allowAlways marks one kept tag at a prompt line; another tag of the pane is not marked", () => {
     const k = make();
     k.tags.keep("p1", A, "jump", "id-1", k.host);
     k.tags.keep("p1", A, "db1", "id-2", k.host);
-    expect(k.tags.isAlways("p1", A, "jump")).toBe(false);
-    expect(k.tags.allowAlways("p1", A, "jump")).toBe(true);
-    expect(k.tags.isAlways("p1", A, "jump")).toBe(true);
-    expect(k.tags.isAlways("p1", A, "db1")).toBe(false);
+    expect(k.tags.alwaysAt("p1", A, "jump")).toBeNull();
+    expect(k.tags.allowAlways("p1", A, "jump", "id-1", "u@h's password:")).toBe(true);
+    expect(k.tags.alwaysAt("p1", A, "jump")).toBe("u@h's password:");
+    expect(k.tags.alwaysAt("p1", A, "db1")).toBeNull();
+    expect(k.tags.noConfirmNames()).toEqual({ p1: ["jump"] });
   });
 
-  it("a tag that is not kept cannot be marked", () => {
+  it("a tag that is not kept, or no longer holds the confirmed secret, is not marked", () => {
     const k = make();
-    expect(k.tags.allowAlways("p1", A, "jump")).toBe(false);
-    expect(k.tags.isAlways("p1", A, "jump")).toBe(false);
+    expect(k.tags.allowAlways("p1", A, "jump", "id-1", "x:")).toBe(false);
+    k.tags.keep("p1", A, "jump", "id-2", k.host);
+    expect(k.tags.allowAlways("p1", A, "jump", "id-1", "x:")).toBe(false);
+    expect(k.tags.alwaysAt("p1", A, "jump")).toBeNull();
+    expect(k.tags.noConfirmNames()).toEqual({});
   });
 
   it("the mark goes with the tag: forget, dropPane, a reused paneId, a restarted helper", () => {
@@ -180,24 +184,25 @@ describe("KeptTags — always fill in this terminal (that tag only)", () => {
     for (const drop of cases) {
       const k = make();
       k.tags.keep("p1", A, "jump", "id-1", k.host);
-      k.tags.allowAlways("p1", A, "jump");
+      k.tags.allowAlways("p1", A, "jump", "id-1", "x:");
       drop(k);
-      expect(k.tags.isAlways("p1", A, "jump")).toBe(false);
+      expect(k.tags.alwaysAt("p1", A, "jump")).toBeNull();
+      expect(k.tags.noConfirmNames()).toEqual({});
     }
   });
 
   it("a replacement (retype) starts without the mark", () => {
     const k = make();
     k.tags.keep("p1", A, "jump", "id-1", k.host);
-    k.tags.allowAlways("p1", A, "jump");
+    k.tags.allowAlways("p1", A, "jump", "id-1", "x:");
     k.tags.keep("p1", A, "jump", "id-2", k.host);
-    expect(k.tags.isAlways("p1", A, "jump")).toBe(false);
+    expect(k.tags.alwaysAt("p1", A, "jump")).toBeNull();
   });
 
   it("another anchor never sees the mark", () => {
     const k = make();
     k.tags.keep("p1", A, "jump", "id-1", k.host);
-    k.tags.allowAlways("p1", A, "jump");
-    expect(k.tags.isAlways("p1", A_REUSED_PID, "jump")).toBe(false);
+    k.tags.allowAlways("p1", A, "jump", "id-1", "x:");
+    expect(k.tags.alwaysAt("p1", A_REUSED_PID, "jump")).toBeNull();
   });
 });

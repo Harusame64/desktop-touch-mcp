@@ -17,10 +17,13 @@
 //     and the secret went with the old process;
 //   * `dropPane` runs on every pane close (the driver's `onPaneClosed`, both the window_disappeared path and
 //     the wt shell-exit prune), `forget` on `forget_tag`, `clear` on server shutdown.
-// "Always fill in this terminal" (user request 2026-10-30, scope decided 2026-10-31: that tag only): the
-// confirm dialog has a checkbox, and a Fill with it ticked marks THAT tag of THAT pane so later fills of it
-// skip the dialog. The mark lives on the entry, so it goes with the tag — on pane close, forget_tag, a
-// re-anchor, a helper change — and a retype (a new secret) clears it: the user agreed to the secret they saw.
+// "Don't ask again" (user request 2026-10-30; scope decided 2026-10-31: that tag only, and only at the same
+// prompt): the confirm dialog has a checkbox, and a Fill with it ticked that FILLS marks THAT tag of THAT pane
+// with the prompt line the user saw, so later fills of it at a prompt with the same text skip the dialog. Past
+// the first hop a prompt is text the remote side writes, so a prompt with other text (sudo, another host, a
+// bare `Password:`) asks again; one that copies the text exactly is not caught. The mark lives on the entry,
+// so it goes with the tag — on pane close, forget_tag, a re-anchor, a helper change — and a retype (a new
+// secret) clears it: the user agreed to the secret they saw.
 // While any tag is held the helper must not be idle-disposed (that would kill the secrets after a minute) —
 // the wiring hands `hasAny` to `KeyLockerManager.setIdleKeepAlive`.
 
@@ -39,8 +42,8 @@ interface KeptEntry {
   opaqueId: string;
   /** The helper (host object) that holds the secret. Compared by identity with the live one. */
   holder: object;
-  /** The user ticked "always fill in this terminal" for this tag: later fills skip the confirm. */
-  always?: true;
+  /** The user ticked "Don't ask again" for this tag at this prompt line: later fills there skip the confirm. */
+  alwaysAt?: string;
 }
 
 interface PaneTags {
@@ -89,16 +92,17 @@ export class KeptTags {
     return this.paneFor(paneId, anchor)?.tags.get(tag)?.opaqueId ?? null;
   }
 
-  /** Did the user allow this pane's tag to fill without the confirm? False when it is not kept. */
-  isAlways(paneId: string, anchor: PaneAnchor, tag: string): boolean {
-    return this.paneFor(paneId, anchor)?.tags.get(tag)?.always === true;
+  /** The prompt line this pane's tag fills at without the confirm, or null (not marked, or not kept). */
+  alwaysAt(paneId: string, anchor: PaneAnchor, tag: string): string | null {
+    return this.paneFor(paneId, anchor)?.tags.get(tag)?.alwaysAt ?? null;
   }
 
-  /** Mark a kept tag "always fill in this terminal". False (nothing marked) when the tag is not kept. */
-  allowAlways(paneId: string, anchor: PaneAnchor, tag: string): boolean {
+  /** Mark a kept tag "Don't ask again" at `promptLine` (replacing an earlier mark). False (nothing marked) when
+   *  the tag is not kept, or no longer holds `opaqueId` — the secret the user confirmed. */
+  allowAlways(paneId: string, anchor: PaneAnchor, tag: string, opaqueId: string, promptLine: string): boolean {
     const e = this.paneFor(paneId, anchor)?.tags.get(tag);
-    if (e === undefined) return false;
-    e.always = true;
+    if (e === undefined || e.opaqueId !== opaqueId) return false;
+    e.alwaysAt = promptLine;
     return true;
   }
 
@@ -158,6 +162,18 @@ export class KeptTags {
   hasAny(): boolean {
     this.prune();
     return this.panes.size > 0;
+  }
+
+  /** The NAMES of the tags marked "Don't ask again", per pane (never the prompt, ids or secrets) — `list`'s
+   *  `paneTagsNoConfirm`. Panes with none are left out. */
+  noConfirmNames(): Record<string, string[]> {
+    this.prune();
+    const out: Record<string, string[]> = {};
+    for (const [paneId, p] of this.panes) {
+      const names = [...p.tags].filter(([, e]) => e.alwaysAt !== undefined).map(([t]) => t).sort();
+      if (names.length > 0) out[paneId] = names;
+    }
+    return out;
   }
 
   /** Tag NAMES per pane (never ids or secrets) — `list`'s `paneTags`. */

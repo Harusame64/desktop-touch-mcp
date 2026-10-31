@@ -330,6 +330,7 @@ describe("key_locker — kept fill_once tags (internal #281)", () => {
     acceptConsent();
     const r = await call({ action: "list" });
     expect(r.paneTags).toEqual({});
+    expect(r.paneTagsNoConfirm).toEqual({});
   });
 
   it("forget_tag needs consent, then the live wiring", async () => {

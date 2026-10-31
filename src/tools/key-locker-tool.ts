@@ -13,7 +13,8 @@
 // (internal #281, user decision 2026-10-13) the typed secret is instead KEPT in the helper's memory for as
 // long as that pane exists, and each later fill of the tag asks the user's one-click confirm — the one place
 // the assistant can cause a held secret to be filled, scoped to one pane, never saved, never without the
-// user's per-fill Fill (ADR-014 L4 OQ-R3-1, amended). The tool NEVER
+// user's per-fill Fill (ADR-014 L4 OQ-R3-1, amended) — except where the user ticked "Don't ask again" on that
+// confirm (user request 2026-10-30, scope 2026-10-31): that tag, in that pane, at a prompt with the same text. The tool NEVER
 // sees a secret — `save` / `fill_once` open the LOCKER's secure dialog, everything else is metadata /
 // control.
 //
@@ -61,7 +62,8 @@ const URI_DESC =
 const listSchema = z.object({
   action: z.literal("list").describe(
     "Enumerate saved bindings (non-secret metadata only), plus the fill_once tags each launch_console pane " +
-      "keeps (paneTags: {paneId: [tag…]}, names only).",
+      "keeps (paneTags: {paneId: [tag…]}, names only) and those of them the user marked 'Don't ask again' " +
+      "(paneTagsNoConfirm, same shape).",
   ),
 });
 
@@ -130,7 +132,8 @@ const fillOnceSchema = z.object({
       "running in it, with the console not echoing input (send the command first, then call this). English " +
       "'password' prompts and ssh's 'Enter passphrase for key ...:' are recognised. The secret is never shown to you. " +
       "Pass `tag` to have the user type it only once for this pane: the secret is then kept (in memory, until the " +
-      "pane closes) and a later fill_once with the same tag shows the user a one-click Fill / Cancel instead.",
+      "pane closes) and a later fill_once with the same tag shows the user a one-click Fill / Cancel instead (or " +
+      "nothing, if the user ticked 'Don't ask again' there and the prompt shows the same text).",
   ),
   paneId: z.string().min(1).describe("The paneId returned by launch_console (only those panes can be filled)."),
   reason: z.string().min(1).max(200).describe(
@@ -141,8 +144,9 @@ const fillOnceSchema = z.object({
   tag: z.string().regex(KEPT_TAG_PATTERN).optional().describe(
     "A short name for this secret in THIS pane (letters, digits, '.', '_', '-'; up to 32), e.g. 'jump' or " +
       "'db1'. New tag: the user types the secret, it is filled and KEPT for this pane until the pane closes. Kept " +
-      "tag: the user only confirms (Fill / Cancel); nothing is typed. If the user ticks 'always' there, later fills " +
-      `of that tag in this pane go in without asking (tagAlways:true). At most ${MAX_KEPT_TAGS_PER_PANE} tags per pane. ` +
+      "tag: the user only confirms (Fill / Cancel); nothing is typed. If the user ticks 'Don't ask again' there, " +
+      "later fills of that tag in this pane, at a prompt with the same text, go in without asking (tagAlways:true; " +
+      `list shows these as paneTagsNoConfirm). At most ${MAX_KEPT_TAGS_PER_PANE} tags per pane. ` +
       "Omit for a one-time fill that is forgotten at once.",
   ),
   retype: z.boolean().optional().describe(
@@ -247,7 +251,9 @@ function handleList(): ToolResult {
   }));
   // internal #281: the fill_once tags each pane keeps — names only (never an id or a secret).
   const paneTags = keyLockerWiring()?.keptTagNames() ?? {};
-  return ok({ bindings, paneTags });
+  // The kept tags marked "Don't ask again" (fill without the confirm at the same prompt) — names only.
+  const paneTagsNoConfirm = keyLockerWiring()?.noConfirmTagNames() ?? {};
+  return ok({ bindings, paneTags, paneTagsNoConfirm });
 }
 
 function handleStatus(): ToolResult {
@@ -612,8 +618,9 @@ export function registerKeyLockerTools(server: McpServer): void {
           "window instead). action='fill_once' asks the user to type a secret into the locker's dialog and " +
           "types it once into the password prompt (or ssh's 'Enter passphrase for key' prompt) currently shown in a " +
           "launch_console pane, then forgets it; with tag:'<name>' it is kept for that pane until the pane closes, and " +
-          "a later fill_once with the same tag asks the user only for a one-click Fill / Cancel (retype:true types it " +
-          "again). action='forget_tag' erases one kept tag; list shows the kept tag names as paneTags.",
+          "a later fill_once with the same tag asks the user only for a one-click Fill / Cancel (or nothing, at the same " +
+          "prompt, once the user ticked 'Don't ask again'; retype:true types it again). action='forget_tag' erases " +
+          "one kept tag; list shows the kept tag names as paneTags.",
         prefer:
           "Autofill is AUTOMATIC when a bound command triggers a credential prompt in the terminal — you " +
           "never fill a SAVED secret by hand. For a prompt autofill does not handle (an ssh inside another ssh " +
