@@ -216,6 +216,23 @@ export interface PostCharsResult {
   via?: "console_input" | "wm_char";
 }
 
+/**
+ * internal #340: true when `text` carries a U+0003 with anything else. To a console, U+0003 is a Ctrl+C — the
+ * signal while a command runs — and it must be a send of its own: PowerShell (5.1 and 7) throws away input that
+ * arrives with it (the text after it was lost 4 of 4, win2 #896 P2), and text before it is still queued when the
+ * helper reads the console's mode for it, so a command and its Ctrl+C in one send never stops the command (win2).
+ * Callers refuse such a send.
+ */
+export function ctrlCNotAlone(text: string): boolean {
+  return text.includes("\u0003") && text !== "\u0003";
+}
+
+/** The answer for a send refused by {@link ctrlCNotAlone}. */
+export const CTRL_C_ALONE_HINT =
+  "Send U+0003 (Ctrl+C) as a send of its own: the command first, then \"\\u0003\" alone, then the next text. " +
+  "PowerShell drops input that arrives together with a Ctrl+C, and a Ctrl+C sent with the command it should " +
+  "stop is read before that command runs.";
+
 // dist/engine/ -> ../../bin/console-input.exe (the same resolution as ocr-bridge.ts).
 const CONSOLE_INPUT_EXE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "console-input.exe");
 /** Generous for a one-shot exe that measured ~64 ms warm, ~100 ms on a fresh copy (win2, 2026-10-31). */
@@ -285,10 +302,14 @@ export function postCharsToResolvedTarget(target: unknown, text: string, opts?: 
   // Only a console gets the key event: in a dialog's edit box a posted Enter key would press the
   // default button, where WM_CHAR 0x0D breaks the line.
   const toConsole = (() => { try { return getWindowClassName(target) === "ConsoleWindowClass"; } catch { return false; } })();
+  // internal #340: every caller's console write gets the Ctrl+C rule here, whatever its own checks; nothing
+  // is sent. A posted WM_CHAR 0x03 is the letter c to PowerShell, so without the helper a Ctrl+C cannot go.
+  if (toConsole && ctrlCNotAlone(text)) return { sent: 0, full: false, target, via: "console_input" };
   if (toConsole && text.length > 0 && opts?.wmCharOnly !== true) {
     const w = writeConsoleInputViaHelper(target, text);
     if (w !== null) return { ...w, target, via: "console_input" };
   }
+  if (toConsole && text.includes("\u0003")) return { sent: 0, full: false, target, via: "wm_char" };
   const result = (n: number, full: boolean): PostCharsResult =>
     toConsole ? { sent: n, full, target, via: "wm_char" } : { sent: n, full, target };
 

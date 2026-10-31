@@ -34,6 +34,16 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **A control character sent to a console window in the background acts as its Ctrl key.** `terminal` `send` and
+  `keyboard` `type` in the background typed U+0003 as the letter `c` (and dropped the Ctrl of the others), so a
+  "Ctrl+C" never stopped anything and left a stray `c` on the next line. U+0001 to U+001A (other than Tab,
+  Backspace, and the line breaks, which stay Enter) are now sent as Ctrl + their letter; U+0003 interrupts a
+  running command or `cmd` as the real Ctrl+C does, cancels a PowerShell line at its prompt, and is passed to the
+  remote side inside `ssh`. Like the real key, it also stops other programs running in that console. It must be a
+  send of its own (the command first, then `"\u0003"` alone): PowerShell drops input that arrives with it, so a
+  U+0003 with other text in the same call is refused (`InvalidArgs`), and `pressEnter` adds no Enter after it.
+  It needs `bin/console-input.exe`; without it a Ctrl+C is not sent. A `launch_console` window ignores Ctrl+C
+  for now (internal #340).
 - **A password the key locker captured is written to disk only when you press Save.** When autofill captures a new
   password, it was stored (encrypted) at once and erased if you chose Not now or Never; if the server went away
   while the "Save this secret for next time?" window was open, it stayed on disk under an id nothing pointed to.

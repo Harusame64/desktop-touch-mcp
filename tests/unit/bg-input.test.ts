@@ -51,6 +51,7 @@ import {
   isBgAutoEnabled,
   pasteIntoConsoleNoFocus,
   CONSOLE_ENTER_SETTLE_MS,
+  ctrlCNotAlone,
 } from "../../src/engine/bg-input.js";
 import { postMessageToHwnd, getWindowClassName, getProcessIdentityByPid, getFocusedChildHwnd } from "../../src/engine/win32.js";
 import { nativeWin32 } from "../../src/engine/native-engine.js";
@@ -442,5 +443,40 @@ describe("isBgAutoEnabled", () => {
     process.env["DTM_BG_AUTO"] = "1";
     expect(isBgAutoEnabled()).toBe(true);
     delete process.env["DTM_BG_AUTO"];
+  });
+});
+
+describe("ctrlCNotAlone (internal #340)", () => {
+  it("is true when a U+0003 comes with anything else, before it or after it", () => {
+    expect(ctrlCNotAlone("\u0003")).toBe(false);
+    expect(ctrlCNotAlone("abc")).toBe(false);
+    expect(ctrlCNotAlone("abc\u0003")).toBe(true); // the command and its Ctrl+C in one send
+    expect(ctrlCNotAlone("\u0003\r")).toBe(true);
+    expect(ctrlCNotAlone("sleep 5\r\u0003echo x")).toBe(true);
+  });
+});
+
+describe("postCharsToHwnd and U+0003 to a console (internal #340, the shared write layer)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getWindowClassName).mockReturnValue("ConsoleWindowClass");
+    vi.mocked(postMessageToHwnd).mockReturnValue(true);
+  });
+
+  it("sends nothing for a U+0003 with other text, whoever the caller", () => {
+    expect(postCharsToHwnd(HWND, "\u0003dir")).toEqual({ sent: 0, full: false, target: HWND, via: "console_input" });
+    expect(spawnSyncMock).not.toHaveBeenCalled();
+    expect(postMessageToHwnd).not.toHaveBeenCalled();
+  });
+
+  it("without the helper a lone U+0003 is not posted (WM_CHAR 0x03 is the letter c to PowerShell)", () => {
+    // default mock: the helper cannot start
+    expect(postCharsToHwnd(HWND, "\u0003")).toEqual({ sent: 0, full: false, target: HWND, via: "wm_char" });
+    expect(postMessageToHwnd).not.toHaveBeenCalled();
+  });
+
+  it("a window that is not a console keeps WM_CHAR 0x03", () => {
+    vi.mocked(getWindowClassName).mockReturnValue("Edit");
+    expect(postCharsToHwnd(HWND, "a\u0003")).toEqual({ sent: 2, full: true, target: HWND });
   });
 });
