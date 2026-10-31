@@ -49,6 +49,8 @@ function fake(o: {
   captureThrows?: boolean;
   anchored?: boolean;
   inject?: { ok: true; verified: boolean } | { ok: false; code: string };
+  /** internal #335: the locker's checks before the dialog (default: would pass). */
+  probe?: { ok: false; code: string };
   deleteFails?: number;
   /** internal #281: the kept-tag map (a real `KeptTags` by default) and the confirm dialog's answer. */
   kept?: KeptTags;
@@ -79,6 +81,7 @@ function fake(o: {
       return { captured: o.captured ?? true };
     },
     stillAnchored: () => { calls.push("anchored"); return anchoredSeq.length > 0 ? anchoredSeq.shift()! : (o.anchored ?? true); },
+    probeAt: async () => { calls.push("probe"); return o.probe ?? { ok: true }; },
     injectAt: async (anchor, id, submit) => { calls.push(`inject:${anchor.shellPid}:${id}:${submit}`); return o.inject ?? { ok: true, verified: true }; },
     deleteSecret: async (id) => {
       calls.push(`delete:${id}`);
@@ -124,7 +127,7 @@ describe("runFillOnce — the happy path", () => {
     const f = fake();
     expect(await run(f)).toEqual({ kind: "filled", verified: true });
     expect(f.calls).toEqual([
-      "claim:1234", "failsafe", "prompt", "procs",
+      "claim:1234", "failsafe", "prompt", "procs", "probe",
       "capture:op-1:the locker console:log in via the jump host",
       "prompt", "procs", "failsafe", "anchored",
       "inject:4321:op-1:true", "delete:op-1", "release",
@@ -478,7 +481,7 @@ describe("runFillOnce — a NEW tag: typed once, then kept", () => {
     const f = fake({ kept: k.tags });
     expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "filled", verified: true, kept: true });
     expect(f.calls).toEqual([
-      "claim:1234", "failsafe", "prompt", "procs",
+      "claim:1234", "failsafe", "prompt", "procs", "probe",
       "capture:op-1:the locker console:log in via the jump host:tag=jump",
       "prompt", "procs", "failsafe", "anchored",
       "inject:4321:op-1:true", "anchored", "keep:jump:op-1", "release",
@@ -536,7 +539,7 @@ describe("runFillOnce — a KEPT tag: confirm, never type", () => {
     const f = fake({ kept: k.tags });
     expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "filled", verified: true, kept: true });
     expect(f.calls).toEqual([
-      "claim:1234", "failsafe", "prompt", "procs",
+      "claim:1234", "failsafe", "prompt", "procs", "probe",
       "confirm:jump:the locker console:log in via the jump host",
       "prompt", "procs", "failsafe", "anchored",
       "inject:4321:kept-1:true", "release",
@@ -701,7 +704,7 @@ describe("runFillOnce — a kept tag marked \"Don't ask again\"", () => {
     const g = fake({ kept: k.tags });
     expect(await runFillOnce(g.deps, TAGGED)).toEqual({ kind: "filled", verified: true, kept: true, always: true });
     expect(g.calls).toEqual([
-      "claim:1234", "failsafe", "prompt", "procs",
+      "claim:1234", "failsafe", "prompt", "procs", // no dialog, so no probe: the write checks
       "prompt", "procs", "failsafe", "anchored",
       "inject:4321:kept-1:true", "release",
     ]);
@@ -795,5 +798,47 @@ describe("runFillOnce — a kept tag marked \"Don't ask again\"", () => {
     const g = fake({ kept: k.tags });
     await runFillOnce(g.deps, TAGGED);
     expect(confirmed(g)).toBe(true);
+  });
+});
+
+// ── internal #335: the locker's checks run before any dialog ─────────────────────────────────────────────
+
+describe("runFillOnce — the locker's checks before the dialog (internal #335)", () => {
+  it.each(["console_selecting", "echo_on", "other_reader"])("%s before the dialog → fill_aborted, no dialog opens, nothing typed", async (code) => {
+    const f = fake({ probe: { ok: false, code } });
+    expect(await run(f)).toEqual({ kind: "fill_aborted", code });
+    expect(opened(f) || wrote(f)).toBe(false);
+    expect(f.calls).toEqual(["claim:1234", "failsafe", "prompt", "procs", "probe", "release"]);
+  });
+
+  it("a kept tag's confirm is not shown either", async () => {
+    const k = withKept();
+    const f = fake({ kept: k.tags, probe: { ok: false, code: "console_selecting" } });
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "fill_aborted", code: "console_selecting", kept: true });
+    expect(confirmed(f) || wrote(f)).toBe(false);
+  });
+});
+
+describe("runFillOnce — the probe's edges (review of #888)", () => {
+  it("a pane gone by the probe declines target_gone, like the other pre-dialog checks", async () => {
+    const f = fake({ probe: { ok: false, code: "target_gone" } });
+    expect(await run(f)).toEqual({ kind: "declined", reason: "target_gone" });
+    expect(opened(f)).toBe(false);
+  });
+
+  it("a probe that throws (the locker cannot start) is fill_aborted, the claim released", async () => {
+    const f = fake();
+    f.deps.probeAt = async () => { throw new Error("KeyLockerPipeUnavailable"); };
+    expect(await run(f)).toEqual({ kind: "fill_aborted", code: "fill_once_error:KeyLockerPipeUnavailable" });
+    expect(opened(f)).toBe(false);
+    expect(f.released).toEqual([TOKEN]);
+  });
+
+  it("tag_limit declines before the probe (no attach for a call that cannot go on)", async () => {
+    const k = keptTags();
+    for (let i = 0; i < MAX_KEPT_TAGS_PER_PANE; i++) k.tags.keep("1234", ANCHOR, `t${i}`, `id-${i}`, HELPER);
+    const f = fake({ kept: k.tags });
+    expect(await runFillOnce(f.deps, { ...REQ, tag: "ninth" })).toEqual({ kind: "declined", reason: "tag_limit" });
+    expect(f.calls).not.toContain("probe");
   });
 });

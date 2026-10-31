@@ -160,7 +160,10 @@ export type InjectAbortCode =
   | "echo_on"
   // internal #333: a fill_once write found nothing on the console waiting on an ssh / sudo / su / doas there
   // — e.g. the shell's Read-Host behind a background ssh. Nothing was written.
-  | "other_reader";
+  | "other_reader"
+  // internal #335: the console was in selection mode (it holds input while a selection lasts). Nothing was
+  // written. Applies to every inject, not only fill_once.
+  | "console_selecting";
 
 /** `inject` result: verified+injected, or a typed abort code. */
 export type InjectClientResult =
@@ -189,6 +192,7 @@ export type PromptChoice = ConfirmChoice | OfferChoice;
 const INJECT_ABORT_CODES: readonly InjectAbortCode[] = [
   "target_mismatch", "target_gone", "not_foreground", "target_multiplexed",
   "no_secret", "bad_target", "executor_failed", "echo_on", "other_reader",
+  "console_selecting",
 ];
 
 /** Map a wire `e` string onto a known abort code so `InjectClientResult.code` never lies. */
@@ -536,6 +540,21 @@ export class KeyLockerHost {
     const reply = await this.request("inject", key, REQUEST_TIMEOUT_MS, { t: target });
     if (reply.ok) return { ok: true, verified: reply.verified === true };
     return { ok: false, code: normalizeAbort(reply.e) };
+  }
+
+  /**
+   * internal #335: every check `inject` makes, with no key and no write — fill_once asks it before its dialog,
+   * so the user does not type a password the write would refuse. Advisory: an older helper (no `probe` verb)
+   * or a pipe error answers ok, and the write checks again anyway.
+   */
+  async probe(target: InjectTarget): Promise<{ ok: true } | { ok: false; code: InjectAbortCode }> {
+    try {
+      const reply = await this.request("probe", undefined, REQUEST_TIMEOUT_MS, { t: target });
+      if (reply.ok || (reply.e ?? "").startsWith("unknown_method")) return { ok: true };
+      return { ok: false, code: normalizeAbort(reply.e) };
+    } catch {
+      return { ok: true };
+    }
   }
 
   /**

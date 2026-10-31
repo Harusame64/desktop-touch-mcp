@@ -307,6 +307,7 @@ internal static class KeyLocker
                 case "exists": WriteReply(server, id, true, _store.Exists(key) ? "1" : "0", null); break;
                 case "delete": WriteReply(server, id, true, _store.Delete(key) ? "1" : "0", null); break;
                 case "inject": HandleInject(server, id, key, line); break;
+                case "probe": HandleProbe(server, id, line); break;
                 case "mint_ticket": HandleMintTicket(server, id, key, line); break;
                 case "prompt": HandlePrompt(server, id, line); break;
                 case "shutdown": WriteReply(server, id, true, "bye", null); return;
@@ -406,15 +407,7 @@ internal static class KeyLocker
     private static void HandleInject(NamedPipeServerStream server, long id, string key, string line)
     {
         if (string.IsNullOrEmpty(key)) { WriteReply(server, id, false, "", InjectAbort.NoSecret); return; }
-        InjectTarget target;
-        try
-        {
-            using var doc = JsonDocument.Parse(line);
-            if (!doc.RootElement.TryGetProperty("t", out var t) || t.ValueKind != JsonValueKind.Object)
-            { WriteReply(server, id, false, "", "bad_target"); return; }
-            target = ParseInjectTarget(t);
-        }
-        catch { WriteReply(server, id, false, "", "bad_target"); return; }
+        if (!TryParseFrameTarget(line, out var target)) { WriteReply(server, id, false, "", "bad_target"); return; }
 
         string? abort = InjectAbort.NoSecret;
         var injected = false;
@@ -425,6 +418,30 @@ internal static class KeyLocker
         if (!found) { WriteReply(server, id, false, "", InjectAbort.NoSecret); return; }
         if (!injected) { WriteReply(server, id, false, "", abort ?? "executor_failed"); return; }
         WriteFrame(server, $"{{\"id\":{id},\"ok\":true,\"r\":\"\",\"injected\":true,\"verified\":true}}");
+    }
+
+    /// The frame's `t` target, as `inject` and `probe` both read it (one parser, so they cannot disagree).
+    private static bool TryParseFrameTarget(string line, out InjectTarget target)
+    {
+        target = default;
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            if (!doc.RootElement.TryGetProperty("t", out var t) || t.ValueKind != JsonValueKind.Object) return false;
+            target = ParseInjectTarget(t);
+            return true;
+        }
+        catch { return false; }
+    }
+
+    /// internal #335: the `inject` checks without a secret or a write (Win32Input.Probe). Replies ok, or the
+    /// abort code the write would get. Secret-free: the frame carries only the target.
+    private static void HandleProbe(NamedPipeServerStream server, long id, string line)
+    {
+        if (!TryParseFrameTarget(line, out var target)) { WriteReply(server, id, false, "", "bad_target"); return; }
+        var abort = Win32Input.Probe(in target);
+        if (abort != null) { WriteReply(server, id, false, "", abort); return; }
+        WriteReply(server, id, true, "", null);
     }
 
     /// Mint a single-use ticket + per-injection serving pipe for the askpass helper to fetch the

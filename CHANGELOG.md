@@ -34,6 +34,12 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **`key_locker` no longer reports a password as typed while the console is selecting text.** In a console window in
+  selection mode (Mark, or text selected with the mouse), the console holds input until the selection ends:
+  `fill_once` answered `filled:true` / `verified`, but the password sat unread, and the prompt kept waiting. The
+  locker now declines any write while a selection is in progress, with `fill_aborted` code `console_selecting` and
+  a hint to press Esc in that window. `fill_once` also runs the locker's checks before it opens the password
+  window, so you are not asked to type a password that would then be refused (internal #335).
 - **Text sent to a console window in the background keeps runs of the same character.** `terminal` `send` with
   `method:"background"` (and `keyboard` `type` to a console in the background, which goes the same way) into
   PowerShell 7 lost repeated characters: `ssh -p 2222` ran as `ssh -p 2`, `--git` as `-git`, and the reply still
