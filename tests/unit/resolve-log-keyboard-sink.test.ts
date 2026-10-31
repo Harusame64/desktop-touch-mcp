@@ -179,6 +179,15 @@ describe("ADR-035 Phase 1 — keyboard dispatch sinks (real handler, real branch
     });
   });
 
+  // internal #334: text bin/console-input.exe wrote into a console was counted — the reply says so.
+  it("background text the console-input helper wrote answers channel:'console_input', delivered", async () => {
+    mockPostChars.mockReturnValueOnce({ full: true, sent: 8, via: "console_input" } as never);
+    const r = await keyboardTypeHandler({ ...BASE, method: "background" } as never);
+    const body = JSON.parse((r as { content: { text: string }[] }).content[0]!.text);
+    expect(body.ok).toBe(true);
+    expect(body.channel).toBe("console_input");
+  });
+
   it("foreground clipboard paste records sink:'clipboard_paste' with NO handle", async () => {
     await keyboardTypeHandler({ ...BASE, method: "foreground", use_clipboard: true } as never);
     // Proves the stub is load-bearing: the branch really ran, and it ran

@@ -321,6 +321,11 @@ export class KeyLockerWiring {
             });
           }).then((r) => ({ captured: r.captured, ...(r.timedOut === true && { timedOut: true as const }) })),
         stillAnchored: (id) => this.driver.hasPane(id),
+        probeAt: async (anchor) => {
+          const target = assembleInjectTarget(anchor, false);
+          if (target === null) return { ok: false, code: "target_gone" };
+          return m.withHost((h) => h.probe({ ...target, requireEchoOff: true }));
+        },
         injectAt: async (anchor, id, sub) => {
           const target = assembleInjectTarget(anchor, sub);
           if (target === null) return { ok: false, code: "target_gone" };

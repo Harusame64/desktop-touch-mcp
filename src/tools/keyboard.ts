@@ -983,7 +983,7 @@ interface VerifyDeliveryHint {
    */
   reason?: string;
   /** Send channel (matrix doc §4.2). `sendinput` is the FG sequence channel. */
-  channel?: "wm_char" | "wm_keydown" | "sendinput";
+  channel?: "wm_char" | "wm_keydown" | "sendinput" | "console_input";
   /** Suggested next path the caller can try. */
   fallback?: string;
   /**
@@ -2157,7 +2157,10 @@ export const keyboardTypeHandler = async ({
           //     substring includes() would false-fail.
           let verifiedDelivery: boolean | "unverifiable" = "unverifiable";
           let verifyReason: string | undefined;
+          // internal #334: text bin/console-input.exe wrote is in the console's input — it counted it; a busy
+          // reader shows no echo, and the read-back answered "not delivered" for text that then ran (#891).
           const verifiable =
+            result.via !== "console_input" &&
             verificationNeeded &&
             baselineMarker !== null &&
             checkText.length > 0 &&
@@ -2343,8 +2346,12 @@ export const keyboardTypeHandler = async ({
           // "delivered (passed Strict check)" from "ok:true (no observation
           // path)" — the latter is the silent-success category we're hardening
           // against in issue #173.
+          // internal #334: text bin/console-input.exe wrote was counted into the console's input.
+          const viaHelper = result.via === "console_input";
           const verifyDelivery: VerifyDeliveryHint | null = verificationNeeded
-            ? verifiedDelivery === true
+            ? viaHelper
+              ? { status: "delivered", channel: "console_input" }
+              : verifiedDelivery === true
               ? {
                   status: "delivered",
                   channel: "wm_char",
@@ -2363,7 +2370,7 @@ export const keyboardTypeHandler = async ({
             ok: true,
             typed: result.sent,
             method: "background",
-            channel: "wm_char",
+            channel: viaHelper ? "console_input" : "wm_char",
             foregroundChanged: false,
             ...((bgWarnings.length > 0 || verifyDelivery) && {
               hints: {

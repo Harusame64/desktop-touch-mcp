@@ -129,7 +129,8 @@ const fillOnceSchema = z.object({
       "prompt currently shown in a launch_console pane, and forget it (nothing is saved). Use it when a pane is " +
       "waiting at a password prompt that autofill does not handle — e.g. an ssh run INSIDE another ssh session " +
       "(a jump host), or a login you do not want saved. The pane must be AT a real password prompt — an ssh / sudo " +
-      "running in it, with the console not echoing input (send the command first, then call this). English " +
+      "running in it, with the console not echoing input and not selecting text (send the command first, then call this; " +
+      "these are checked before the user is asked). English " +
       "'password' prompts and ssh's 'Enter passphrase for key ...:' are recognised. The secret is never shown to you. " +
       "Pass `tag` to have the user type it only once for this pane: the secret is then kept (in memory, until the " +
       "pane closes) and a later fill_once with the same tag shows the user a one-click Fill / Cancel instead (or " +
@@ -530,7 +531,10 @@ async function handleFillOnce(
               ? "No ssh / sudo / su / doas is running in front in the pane (a shell's Read-Host behind a background ssh, " +
                 "for example), so the prompt may not be the credential program's. Run the command in front, then retry. " +
                 "Nothing was typed."
-              : "The locker refused the write (the pane changed or could not be verified). Nothing was typed or saved.",
+              : outcome.code === "console_selecting"
+                ? "The pane's console is in selection mode (Mark, or text selected with the mouse), and it holds input " +
+                  "until the selection ends. Ask the user to press Esc in that window, then retry. Nothing was typed."
+                : "The locker refused the write (the pane changed or could not be verified). Nothing was typed or saved.",
           ...kept,
           ...cleanup,
         });
