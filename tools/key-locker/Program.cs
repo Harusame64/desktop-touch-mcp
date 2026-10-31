@@ -703,6 +703,9 @@ internal sealed class LockerStore
         catch (Exception e)
         {
             _entries.Remove(id);
+            // Save() may have written store.json.tmp (with this secret in it) before the replace failed: remove
+            // it, or the orphan #342 removes would sit beside store.json (codex on #894).
+            try { File.Delete(_path + ".tmp"); } catch { /* best-effort; nothing else writes .tmp */ }
             Console.Error.WriteLine($"[key-locker] persist failed: {e.GetType().Name}");
             return false;
         }
