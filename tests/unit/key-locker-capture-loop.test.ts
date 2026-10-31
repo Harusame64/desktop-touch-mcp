@@ -33,9 +33,11 @@ function makeDeps(o: Partial<CaptureLoopDeps> = {}): CaptureLoopDeps {
     deriveBinding: vi.fn(async () => SUDO),
     resolveBinding: vi.fn(async () => undefined), // NO MATCH by default
     bindBinding: vi.fn(),
+    unbindBinding: vi.fn(),
     confirmPolicyFor: vi.fn(() => true),
     capture: vi.fn(async () => ({ captured: true })),
     deleteSecret: vi.fn(async () => {}),
+    persistSecret: vi.fn(async () => true),
     injectPane: vi.fn(async () => CONSOLE_INJECT_OK()),
     awaitLanded: vi.fn(async () => LANDED(true)),
     confirmInjection: vi.fn(async () => true),
@@ -316,5 +318,33 @@ describe("runCaptureLoop — metaFor per scheme + submit", () => {
     const deps2 = makeDeps({ resolveBinding: vi.fn(async () => ({ opaqueId: "s" })) });
     await runCaptureLoop(deps2, EVENT);
     expect(deps2.injectPane).toHaveBeenCalledWith(SUDO, "s", true);
+  });
+});
+
+// internal #342: the captured secret stays in the locker's memory until [Save], then goes to disk.
+describe("runCaptureLoop — the secret reaches disk only on [Save] (internal #342)", () => {
+  it("[Save] binds, then persists (a server gone between them leaves a binding to nothing, never an orphan secret)", async () => {
+    const order: string[] = [];
+    const deps = makeDeps({
+      offerSave: vi.fn(async () => "save" as const),
+      persistSecret: vi.fn(async () => { order.push("persist"); return true; }),
+      bindBinding: vi.fn(() => { order.push("bind"); }),
+    });
+    expect((await runCaptureLoop(deps, EVENT)).kind).toBe("saved");
+    expect(order).toEqual(["bind", "persist"]);
+    expect(deps.deleteSecret).not.toHaveBeenCalled();
+  });
+
+  it("a persist that fails answers save_failed and erases the held secret", async () => {
+    const deps = makeDeps({ offerSave: vi.fn(async () => "save" as const), persistSecret: vi.fn(async () => false) });
+    expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "save_failed" });
+    expect(deps.deleteSecret).toHaveBeenCalledTimes(1);
+    expect(deps.unbindBinding).toHaveBeenCalledWith("sudo://localhost/root"); // list must not call it saved
+  });
+
+  it.each(["not_now", "never"] as const)("[%s] never persists", async (choice) => {
+    const deps = makeDeps({ offerSave: vi.fn(async () => choice) });
+    await runCaptureLoop(deps, EVENT);
+    expect(deps.persistSecret).not.toHaveBeenCalled();
   });
 });

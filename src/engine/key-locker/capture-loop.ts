@@ -80,6 +80,9 @@ export type CaptureLoopOutcome =
   | { kind: "capture_cancelled" }
   /** NO-MATCH path: captured → filled → LANDED → [Save] → the mapping was persisted, the secret retained. */
   | { kind: "saved"; verified: boolean }
+  /** internal #342: [Save] was pressed and the login landed, but the locker could not write the secret to disk;
+   *  it is erased and its binding taken back (the next prompt captures again). */
+  | { kind: "save_failed" }
   /** NO-MATCH path: captured then DISCARDED (locker entry deleted, no bind). `not_landed` = the credential
    *  did not land (exit≠0 / auth-rejected / probe error; `detail` = the landed reason); `not_now`/`never` =
    *  the user declined the save offer. */
@@ -95,6 +98,8 @@ export interface CaptureLoopDeps {
   resolveBinding(canonicalKey: string): Promise<{ opaqueId: string } | undefined>;
   /** Persist the canonical→opaqueId mapping. Called ONLY on [Save] (P1-2). */
   bindBinding(canonicalKey: string, opaqueId: string, meta: BindingMeta): void;
+  /** internal #342: drop the binding a failed [Save] left (so `list` does not call it saved). */
+  unbindBinding(canonicalKey: string): void;
   /** The binding's `confirmEveryInjection` policy (default TRUE — confirm is the safe backstop, D2). */
   confirmPolicyFor(canonicalKey: string): boolean;
   /** Open the locker's secure dialog for `opaqueId`; the secret stays in the locker (`captured=false` =
@@ -103,6 +108,8 @@ export interface CaptureLoopDeps {
   capture(opaqueId: string, binding: BindingUri): Promise<{ captured: boolean }>;
   /** Delete the locker entry for `opaqueId` (the reverse-orphan closure; a no-op on an absent key). */
   deleteSecret(opaqueId: string): Promise<void>;
+  /** internal #342: the capture is held in the locker's memory until [Save]; write it to disk now. False = not. */
+  persistSecret(opaqueId: string): Promise<boolean>;
   /** Assemble the pane InjectTarget (§4) and console-buffer inject the secret under `opaqueId` (L2, "pane" channel). */
   injectPane(binding: BindingUri, opaqueId: string, submit: boolean): Promise<InjectResult>;
   /** The §2 two-mode landed gate for the dispatched command (Mode A exit-0 / Mode B auth-accepted). */
@@ -212,9 +219,20 @@ export async function runCaptureLoop(deps: CaptureLoopDeps, event: CredentialEve
           // Chrome model (P1-2): OFFER first, persist ONLY on [Save]. A declined save never binds.
           const choice = await deps.offerSave(binding);
           if (choice === "save") {
+            // internal #342: only now does the secret reach the locker's disk store; a server gone during the
+            // offer leaves it only in the helper's memory, which ends with the helper. Bind FIRST: a server
+            // gone between the two then leaves a binding with no locker entry, which resolveBinding reads as no
+            // match (the next prompt captures again), rather than an encrypted entry nothing points to.
             deps.bindBinding(canonical, opaqueId, metaFor(binding, deps.now()));
-            committed = true; // retain the locker secret; skip the reverse-orphan delete below
-            outcome = { kind: "saved", verified: injectVerified(r) };
+            if (await deps.persistSecret(opaqueId)) {
+              committed = true; // retain the locker secret; skip the reverse-orphan delete below
+              outcome = { kind: "saved", verified: injectVerified(r) };
+            } else {
+              // Take the binding back, so `list` does not call it saved (win2, #894 M1b). If this server dies
+              // first, the binding is left pointing at nothing — read as no match, captured again next time.
+              deps.unbindBinding(canonical);
+              outcome = { kind: "save_failed" };
+            }
           } else {
             // "not_now" / "never" → discard (deleted in `finally`). A [Never] additionally records a
             // tombstone so the save is not re-offered (plan §1 `setNever`); the persistence is deferred
