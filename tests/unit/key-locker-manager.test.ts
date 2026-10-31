@@ -1,11 +1,12 @@
 // ADR-014 v2 R3 L3 §6 / L4 §2 — KeyLockerManager + the first-run consent gate.
 // Plan: desktop-touch-mcp-internal:docs/adr-014-v2-r3-l4-tool-surface-plan.md §2
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { KeyLockerHost } from "../../src/engine/key-locker-host.js";
 import {
+  aliasExists,
   KeyLockerClosedError,
   KeyLockerConsentRequiredError,
   KeyLockerDisabledError,
@@ -436,5 +437,29 @@ describe("KeyLockerManager.disposeIfIdle — kept fill_once tags hold the helper
     mgr.setIdleKeepAlive(null);
     clock.t += 1_000_000;
     expect(await mgr.disposeIfIdle(5_000)).toBe(true);
+  });
+});
+
+describe("aliasExists (the wt.exe app-execution alias check)", () => {
+  it("is true for a link whose target cannot be followed, where existsSync is false", (ctx) => {
+    // An AppExecLink under WindowsApps behaves this way on Node 24: lstat reads it, existsSync says false.
+    const dir = mkdtempSync(join(tmpdir(), "dt-alias-"));
+    try {
+      const link = join(dir, "wt.exe");
+      try {
+        symlinkSync(join(dir, "no-such-target.exe"), link);
+      } catch (err) {
+        // Windows without Developer Mode cannot make a symlink (EPERM); the macOS / Linux CI legs run it.
+        if ((err as NodeJS.ErrnoException).code === "EPERM") return ctx.skip();
+        throw err;
+      }
+      expect(existsSync(link)).toBe(false);
+      expect(aliasExists(link)).toBe(true);
+      writeFileSync(join(dir, "plain.exe"), "");
+      expect(aliasExists(join(dir, "plain.exe"))).toBe(true);
+      expect(aliasExists(join(dir, "missing.exe"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

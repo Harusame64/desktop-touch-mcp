@@ -28,6 +28,12 @@
   and `\r\n` are now each one Enter key event, as a single Enter already was, so each line runs in order. Other windows still get the character, because an Enter key in a
   dialog's text box would press its default button (internal #325).
 
+### Fixed — Windows
+- **`key_locker` `launch_console` opens a Windows Terminal tab again on Node 24.** Its default (a tab in Windows
+  Terminal) answered `KeyLockerWtUnavailable: Windows Terminal (wt.exe) was not found` on a machine that has it:
+  `wt.exe` is an app-execution alias, and Node 24 reports such a file as missing when asked whether it exists. The
+  check now reads the alias itself. `host:'classic'` was not affected.
+
 ## [2.4.0] - 2026-10-30 — Line breaks are typed as Enter, and typing, browser clicks and docking say when they did not do what was asked
 
 A minor version because some calls that answered `ok: true` now refuse: a `keyboard` `type` of a space or line break by
