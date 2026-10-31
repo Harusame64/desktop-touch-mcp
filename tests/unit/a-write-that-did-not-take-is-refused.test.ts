@@ -138,7 +138,14 @@ describe("#182 — the value road wrote, the control said yes, and nothing chang
         rung: "uia_set_value", refused: "value_not_applied",
         addressedBy: { automationId: true, name: true }, addressedElementBy: "automation_id", addressedWindowBy: "title",
       });
-      expect(JSON.stringify(rows)).not.toContain("4242");
+      // The typed text is 4242. Leave out what the machine writes on its own — the clock, the pid, the
+      // sequence, and probe.start's addon hashes and mtimes — which can contain those digits by chance and
+      // made this fail on some runs (internal #341).
+      const written = rows
+        .filter((r) => r.seam !== "probe.start")
+        .map(({ seq: _seq, tsMs: _tsMs, pid: _pid, ...r }) => r);
+      expect(written.length).toBeGreaterThan(0);
+      expect(JSON.stringify(written)).not.toContain("4242");
       expect(rows.some((r) => r.route === "keyboard")).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
