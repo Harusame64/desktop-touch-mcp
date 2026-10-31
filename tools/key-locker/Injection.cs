@@ -50,8 +50,8 @@ internal static class InjectAbort
     // RequireEchoOff and no process on the console is seen waiting on a credential program there (internal
     // #333): the echo-off mode may be a background ssh's, and the reader the shell's Read-Host.
     public const string OtherReader = "other_reader";
-    // internal #335: the console is in selection mode (Mark, or a mouse selection; the title then starts with "Select", or "マーク" / "選択" in Japanese,
-    // title). conhost holds input while it lasts: the write lands in the buffer, nobody reads it, and the
+    // internal #335: the console is in selection mode (Mark, or a mouse selection; a classic window's title then
+    // starts with "Select", or "マーク" / "選択" on Japanese Windows). conhost holds input while it lasts: the write lands in the buffer, nobody reads it, and the
     // secret would be read later by whatever reads next. Nothing was written.
     public const string Selecting = "console_selecting";
 }
