@@ -1085,16 +1085,18 @@ export const terminalReadHandler = async ({
     if (source === "uia" || source === "auto") {
       raw = await getTextViaTextPattern(win.title, undefined, pinned !== null ? { pinnedHwnd: pinned.hwnd } : undefined);
     }
-    // OCR finds its window by title: for a pinned pane only while that title is unique.
+    // OCR finds its window by title: for a pinned pane only while that title is unique, and then with the title
+    // read NOW — the one read before the UIA await may have moved to a sibling since (codex on #892).
     let ocrRefusedSharedTitle = false;
-    const ocrUsable = (): boolean => {
-      const ok = pinned === null || (paneId !== undefined && resolveTitleByHwnd(paneId) !== null);
-      ocrRefusedSharedTitle = !ok;
-      return ok;
+    const ocrTitle = (): string | null => {
+      const t = pinned === null ? win.title : paneId !== undefined ? resolveTitleByHwnd(paneId) : null;
+      ocrRefusedSharedTitle = t === null;
+      return t;
     };
-    if ((raw === null || raw === "") && source !== "uia" && ocrUsable()) {
+    const ocrWindowTitle = (raw === null || raw === "") && source !== "uia" ? ocrTitle() : null;
+    if (ocrWindowTitle !== null) {
       try {
-        const { words } = await recognizeWindow(win.title, ocrLanguage);
+        const { words } = await recognizeWindow(ocrWindowTitle, ocrLanguage);
         // Preserve 2D layout: cluster by y, sort by x, join with \n.
         // Critical for sinceMarker compatibility with the UIA path.
         raw = ocrWordsToLines(words);

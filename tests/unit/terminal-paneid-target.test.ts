@@ -211,6 +211,18 @@ describe("terminal read paneId (a classic pane by its hwnd — internal #331 / #
     expect(r.code).toBe("TerminalTextPatternUnavailable");
     expect(r.context?.ocr).toBe("refused_shared_title");
   });
+  it("OCR uses the title read after the UIA attempt, not the one before it (codex on #892)", async () => {
+    mockEnum.mockReturnValue([fakeWindow("u@h: ~", 111n), fakeWindow("u@h: ~", 222n)]);
+    mockUia.mockImplementation(async () => {
+      // While the UIA read runs, pane 222 gets its own title; the old one now names only the sibling.
+      mockEnum.mockReturnValue([fakeWindow("u@h: ~", 111n), fakeWindow("pane-222-now", 222n)]);
+      return null;
+    });
+    vi.mocked(ocr.recognizeWindow).mockResolvedValue({ words: [], origin: { x: 0, y: 0 } } as never);
+    vi.mocked(ocr.ocrWordsToLines).mockReturnValue("ocr text");
+    await terminalReadHandler(readArgs({ paneId: "222", source: "auto" }));
+    expect(vi.mocked(ocr.recognizeWindow)).toHaveBeenCalledWith("pane-222-now", expect.anything());
+  });
   it("a handle that is not a console falls back to the unique-title path, as before", async () => {
     mockEnum.mockReturnValue([fakeWindow("My Terminal", 333n, "CASCADIA_HOSTING_WINDOW_CLASS")]);
     mockUia.mockResolvedValue("hello");
