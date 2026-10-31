@@ -30,6 +30,8 @@ import {
   isBgAutoEnabled,
   injectViaForegroundFlash,
   TERMINAL_WINDOW_CLASSES,
+  ctrlCNotAlone,
+  CTRL_C_ALONE_HINT,
 } from "../engine/bg-input.js";
 import { resolveBackgroundInputChannel } from "../engine/background-channel-resolver.js";
 import { getTextViaTextPattern, getTextViaValuePattern } from "../engine/uia-bridge.js";
@@ -37,7 +39,7 @@ import { focusedControlThatTakesNoText } from "./_type-focus.js";
 import { stripAnsi } from "../engine/ansi.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { failWith } from "./_errors.js";
+import { failWith, failCode } from "./_errors.js";
 import { coercedBoolean, coercedBooleanWithDefault } from "./_coerce.js";
 import { withRichNarration, narrateParam, UIA_WRITE_NARRATION } from "./_narration.js";
 import { detectFocusLoss, checkForegroundOnce } from "./_focus.js";
@@ -1544,6 +1546,17 @@ export function resolveEffectiveInputMethod(
   return inputMethod;
 }
 
+/** internal #340: a console gets a U+0003 only as a send of its own (see bg-input `ctrlCNotAlone`). */
+function ctrlCRefusal(hwnd: bigint, text: string): ToolResult | null {
+  let cls = "";
+  try { cls = getWindowClassName(hwnd); } catch { /* gone: the post below fails on its own */ }
+  if (cls !== "ConsoleWindowClass" || !ctrlCNotAlone(text)) return null;
+  return failCode("InvalidArgs", "keyboard(action='type'): U+0003 (Ctrl+C) with other text in the same call", {
+    suggest: [CTRL_C_ALONE_HINT],
+    context: { at: text.indexOf("\u0003") },
+  });
+}
+
 export const keyboardTypeHandler = async ({
   text,
   method: inputMethod = "auto",
@@ -1768,6 +1781,8 @@ export const keyboardTypeHandler = async ({
         ...(explicitHwnd !== undefined && { explicitHwnd }),
       });
       if (!ffGuard.ok) return ffGuard.errorResult;
+      const ffCtrlC = ctrlCRefusal(target.hwnd, effectiveText);
+      if (ffCtrlC !== null) return ffCtrlC;
       const ffPerception = ffGuard.perceptionEnv;
 
       const channel = resolveBackgroundInputChannel(target.hwnd, {
@@ -1981,6 +1996,8 @@ export const keyboardTypeHandler = async ({
       // above raised one. Non-blocking observation — see `_resolve-log.ts`.
       appendTopologyWarnings(warnings);
       if (target) {
+        const bgCtrlC = ctrlCRefusal(target.hwnd, effectiveText);
+        if (bgCtrlC !== null) return bgCtrlC;
         const check = canInjectViaPostMessage(target.hwnd);
         // A thread with no focused window drops the characters (see `threadHasNoFocus`); the road
         // is not taken — refused below when it was asked for, the foreground road otherwise.

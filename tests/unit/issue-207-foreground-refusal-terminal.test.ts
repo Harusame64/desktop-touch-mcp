@@ -51,6 +51,9 @@ vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
 });
 
 vi.mock("../../src/engine/bg-input.js", () => ({
+  // internal #340
+  ctrlCNotAlone: (t: string) => t.includes("\u0003") && t !== "\u0003",
+  CTRL_C_ALONE_HINT: "send U+0003 alone",
   canInjectViaPostMessage: vi.fn(() => ({ supported: false, reason: "class_unknown" })),
   postCharsToHwnd: vi.fn(),
   postEnterToHwnd: vi.fn(),

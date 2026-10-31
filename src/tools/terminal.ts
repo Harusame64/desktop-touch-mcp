@@ -24,6 +24,8 @@ import {
   canInjectViaPostMessage,
   postCharsToHwnd,
   writeConsoleInputViaHelper,
+  ctrlCNotAlone,
+  CTRL_C_ALONE_HINT,
   postEnterToHwnd,
   isBgAutoEnabled,
   injectViaForegroundFlash,
@@ -129,7 +131,8 @@ export const terminalSendSchema = {
     "(Windows Terminal / cmd / PowerShell / conhost) so user-side focus changes mid-stream " +
     "cannot divert keystrokes. DTM_BG_AUTO=1 enables BG globally; 'auto' falls back to " +
     "foreground for non-terminal targets. " +
-    "'background' forces WM_CHAR injection (no focus change). " +
+    "'background' forces WM_CHAR injection (no focus change); to a classic console the text goes in as key " +
+    "presses, where U+0003 is Ctrl+C (a send of its own: the command first, then U+0003 alone) and U+0001-U+001A are Ctrl+letter. " +
     "'foreground' forces the current behavior (SetForegroundWindow + clipboard paste). " +
     "'foreground_flash' (ADR-013 Option E) is an explicit opt-in 妥協 BG path for Windows " +
     "Terminal: temporarily steals foreground (~50-80ms), pastes via clipboard, sends Ctrl+V " +
@@ -1262,6 +1265,16 @@ export const terminalSendHandler = async ({
       if (notifyDispatch) fireTerminalDispatch(paneId ?? String(win.hwnd), input);
     };
 
+    // internal #340: to a classic console, a U+0003 must be a send of its own (see ctrlCNotAlone), on every
+    // method, and before any work is done for a send that will not go.
+    const isConsole = (() => { try { return getWindowClassName(win.hwnd) === "ConsoleWindowClass"; } catch { return false; } })();
+    if (isConsole && ctrlCNotAlone(input)) {
+      return failCode("InvalidArgs", "terminal(action='send'): U+0003 (Ctrl+C) with other text in the same send", {
+        suggest: [CTRL_C_ALONE_HINT],
+        context: { at: input.indexOf("\u0003") },
+      });
+    }
+
     // ── ADR-013 Option E: foreground_flash 明示 opt-in path ─────────────────
     // method:'foreground_flash' は WT 等 WM_CHAR 不対応 terminal 用、Clipboard
     // + foreground steal + paste + restore の 50-80ms 妥協 BG path。caller が
@@ -1298,7 +1311,7 @@ export const terminalSendHandler = async ({
         // Codex Round 1 P2-B 反映: input が CR/LF 終端なら Enter 重複送信を回避
         // (= 既存 BG path の newline guard と同 contract、conhost で blank command
         //  実行を防ぐ)。
-        if (pressEnter && !/[\r\n]$/.test(input)) {
+        if (pressEnter && !/[\r\n]$/.test(input) && input !== "\u0003") {
           postEnterToHwnd(win.hwnd);
         }
         markDispatched(); // delivered via wm_char
@@ -1407,7 +1420,8 @@ export const terminalSendHandler = async ({
       // atomically, works in raw mode, and steals no foreground — the same
       // primitive action=run exit-mode uses. Scope = method:'auto' only (see
       // shouldUseConsolePasteForSend); 'background' keeps WM_CHAR for #183.
-      if (shouldUseConsolePasteForSend(inputMethod, targetClass, pressEnter)) {
+      // internal #340: a Ctrl+C is a key press, never pasted text (the paste would also add its Enter).
+      if (input !== "\u0003" && shouldUseConsolePasteForSend(inputMethod, targetClass, pressEnter)) {
         // Secret carve-out: console-paste puts text on the system clipboard for
         // ~260ms (restored after), so a credential prompt must NOT use it. Read
         // the pre-send baseline; skip to WM_CHAR for a secret prompt. Use
@@ -1527,7 +1541,8 @@ export const terminalSendHandler = async ({
 
       // Avoid duplicate Enter if input already ends with CR/LF
       const inputEndsWithNewline = /[\r\n]$/.test(input);
-      const effectivePressEnter = pressEnter && !inputEndsWithNewline;
+      // internal #340: an Enter after a Ctrl+C would be text after it (lost in PowerShell, see below).
+      const effectivePressEnter = pressEnter && !inputEndsWithNewline && !input.endsWith("\u0003");
 
       // Verification scope (issue #173 P2-4 review feedback):
       // The post-send UIA read-back is meant to catch silent BG failures on
