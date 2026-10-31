@@ -102,6 +102,7 @@ function makeHarness(o: Partial<CaptureDriverDeps> = {}, initialTree: Record<num
     deriveBinding,
     resolveBinding: vi.fn(async () => undefined), // NO MATCH by default (capture path)
     bindBinding: vi.fn(),
+    unbindBinding: vi.fn(),
     confirmPolicyFor: vi.fn(() => false),
     capture: vi.fn(async () => ({ captured: true })),
     deleteSecret: vi.fn(async () => {}),

@@ -440,6 +440,7 @@ export class KeyLockerWiring {
       // user `key_locker` write (Codex W-4b). Fresh-loaded per op, so a stale row is just reported no-match.
       resolveBinding: (k) => this.bindings().resolve(k, { prune: false }),
       bindBinding: (k, id, meta) => this.bindings().bind(k, id, meta),
+      unbindBinding: (k) => { this.bindings().unbind(k); },
       confirmPolicyFor: (k) => this.bindings().getPolicy(k),
       isNever: (k) => this.nevers().has(k),
       onNever: (k) => this.nevers().add(k),

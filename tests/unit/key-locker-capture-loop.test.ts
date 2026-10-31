@@ -33,6 +33,7 @@ function makeDeps(o: Partial<CaptureLoopDeps> = {}): CaptureLoopDeps {
     deriveBinding: vi.fn(async () => SUDO),
     resolveBinding: vi.fn(async () => undefined), // NO MATCH by default
     bindBinding: vi.fn(),
+    unbindBinding: vi.fn(),
     confirmPolicyFor: vi.fn(() => true),
     capture: vi.fn(async () => ({ captured: true })),
     deleteSecret: vi.fn(async () => {}),
@@ -338,6 +339,7 @@ describe("runCaptureLoop — the secret reaches disk only on [Save] (internal #3
     const deps = makeDeps({ offerSave: vi.fn(async () => "save" as const), persistSecret: vi.fn(async () => false) });
     expect(await runCaptureLoop(deps, EVENT)).toEqual({ kind: "save_failed" });
     expect(deps.deleteSecret).toHaveBeenCalledTimes(1);
+    expect(deps.unbindBinding).toHaveBeenCalledWith("sudo://localhost/root"); // list must not call it saved
   });
 
   it.each(["not_now", "never"] as const)("[%s] never persists", async (choice) => {

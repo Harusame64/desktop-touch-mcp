@@ -81,7 +81,7 @@ export type CaptureLoopOutcome =
   /** NO-MATCH path: captured → filled → LANDED → [Save] → the mapping was persisted, the secret retained. */
   | { kind: "saved"; verified: boolean }
   /** internal #342: [Save] was pressed and the login landed, but the locker could not write the secret to disk;
-   *  it is erased, and the binding left behind points at nothing (the next prompt captures again). */
+   *  it is erased and its binding taken back (the next prompt captures again). */
   | { kind: "save_failed" }
   /** NO-MATCH path: captured then DISCARDED (locker entry deleted, no bind). `not_landed` = the credential
    *  did not land (exit≠0 / auth-rejected / probe error; `detail` = the landed reason); `not_now`/`never` =
@@ -98,6 +98,8 @@ export interface CaptureLoopDeps {
   resolveBinding(canonicalKey: string): Promise<{ opaqueId: string } | undefined>;
   /** Persist the canonical→opaqueId mapping. Called ONLY on [Save] (P1-2). */
   bindBinding(canonicalKey: string, opaqueId: string, meta: BindingMeta): void;
+  /** internal #342: drop the binding a failed [Save] left (so `list` does not call it saved). */
+  unbindBinding(canonicalKey: string): void;
   /** The binding's `confirmEveryInjection` policy (default TRUE — confirm is the safe backstop, D2). */
   confirmPolicyFor(canonicalKey: string): boolean;
   /** Open the locker's secure dialog for `opaqueId`; the secret stays in the locker (`captured=false` =
@@ -226,7 +228,9 @@ export async function runCaptureLoop(deps: CaptureLoopDeps, event: CredentialEve
               committed = true; // retain the locker secret; skip the reverse-orphan delete below
               outcome = { kind: "saved", verified: injectVerified(r) };
             } else {
-              // The binding stays, pointing at nothing: the next prompt for it is a no-match capture again.
+              // Take the binding back, so `list` does not call it saved (win2, #894 M1b). If this server dies
+              // first, the binding is left pointing at nothing — read as no match, captured again next time.
+              deps.unbindBinding(canonical);
               outcome = { kind: "save_failed" };
             }
           } else {
