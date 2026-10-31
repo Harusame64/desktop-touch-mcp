@@ -216,6 +216,23 @@ export interface PostCharsResult {
   via?: "console_input" | "wm_char";
 }
 
+/**
+ * internal #340: true when `text` has anything after a U+0003. To a console, U+0003 is a Ctrl+C — the signal
+ * while a command runs — and PowerShell (5.1 and 7) throws away input that arrives with it: in one write, the
+ * text after it was lost 4 of 4 (win2, #896 P2), while the same text in a separate send after it went in every
+ * time. Callers refuse such a send and ask for U+0003 on its own.
+ */
+export function hasTextAfterCtrlC(text: string): boolean {
+  const i = text.indexOf("\u0003");
+  return i >= 0 && i < text.length - 1;
+}
+
+/** The answer for a send refused by {@link hasTextAfterCtrlC}. */
+export const CTRL_C_ALONE_HINT =
+  "Send U+0003 (Ctrl+C) by itself, as the last character of a send, then the next text in a separate send: " +
+  "PowerShell drops input that arrives together with a Ctrl+C. A Ctrl+C in the same send as the command it is " +
+  "meant to stop arrives before that command starts, so send the command first.";
+
 // dist/engine/ -> ../../bin/console-input.exe (the same resolution as ocr-bridge.ts).
 const CONSOLE_INPUT_EXE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "console-input.exe");
 /** Generous for a one-shot exe that measured ~64 ms warm, ~100 ms on a fresh copy (win2, 2026-10-31). */

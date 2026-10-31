@@ -31,6 +31,9 @@ vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
 });
 
 vi.mock("../../src/engine/bg-input.js", () => ({
+  // internal #340
+  hasTextAfterCtrlC: (t: string) => { const i = t.indexOf("\u0003"); return i >= 0 && i < t.length - 1; },
+  CTRL_C_ALONE_HINT: "send U+0003 alone",
   canInjectViaPostMessage: vi.fn(() => ({ supported: true })),
   postCharsToHwnd: vi.fn((_hwnd: unknown, chunk: string) => ({ sent: chunk.length, full: true })),
   // internal #334: by default the console-input helper cannot start, so a send goes out as WM_CHAR.
@@ -295,5 +298,30 @@ describe("method:'background' through the console-input helper (internal #334)",
       [100, { wmCharOnly: true }], [100, { wmCharOnly: true }], [50, { wmCharOnly: true }],
     ]);
     expect(vi.mocked(bgInput.postEnterToHwnd)).toHaveBeenCalledTimes(1);
+  });
+});
+
+// internal #340: PowerShell drops input that arrives together with a Ctrl+C.
+describe("method:'background' and U+0003 (internal #340)", () => {
+  const mockHelper = vi.mocked(bgInput.writeConsoleInputViaHelper);
+  beforeEach(() => {
+    mockHelper.mockReset();
+    mockHelper.mockImplementation((_h: unknown, text: string) => ({ sent: text.length, full: true }));
+    mockBaseline.mockResolvedValue(null);
+  });
+
+  it("refuses text after U+0003 in the same send, and sends nothing", async () => {
+    const r = parseResult(await terminalSendHandler({ ...baseArgs, method: "background", input: "\u0003echo AFTER" }));
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("InvalidArgs");
+    expect(mockHelper).not.toHaveBeenCalled();
+    expect(mockChars).not.toHaveBeenCalled();
+  });
+
+  it("a U+0003 on its own goes without the Enter pressEnter would add", async () => {
+    const r = parseResult(await terminalSendHandler({ ...baseArgs, method: "background", input: "\u0003" }));
+    expect(r.ok).toBe(true);
+    expect(r.pressedEnter).toBe(false);
+    expect(mockHelper.mock.calls.map(([, t]) => t)).toEqual(["\u0003"]);
   });
 });

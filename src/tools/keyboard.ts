@@ -30,6 +30,8 @@ import {
   isBgAutoEnabled,
   injectViaForegroundFlash,
   TERMINAL_WINDOW_CLASSES,
+  hasTextAfterCtrlC,
+  CTRL_C_ALONE_HINT,
 } from "../engine/bg-input.js";
 import { resolveBackgroundInputChannel } from "../engine/background-channel-resolver.js";
 import { getTextViaTextPattern, getTextViaValuePattern } from "../engine/uia-bridge.js";
@@ -37,7 +39,7 @@ import { focusedControlThatTakesNoText } from "./_type-focus.js";
 import { stripAnsi } from "../engine/ansi.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { failWith } from "./_errors.js";
+import { failWith, failCode } from "./_errors.js";
 import { coercedBoolean, coercedBooleanWithDefault } from "./_coerce.js";
 import { withRichNarration, narrateParam, UIA_WRITE_NARRATION } from "./_narration.js";
 import { detectFocusLoss, checkForegroundOnce } from "./_focus.js";
@@ -2111,6 +2113,13 @@ export const keyboardTypeHandler = async ({
               ? await captureFrame(target.hwnd, stage4WindowRect)
               : null;
 
+          // internal #340: to a console, text after a U+0003 in one write is lost in PowerShell.
+          if (getWindowClassName(target.hwnd) === "ConsoleWindowClass" && hasTextAfterCtrlC(effectiveText)) {
+            return failCode("InvalidArgs", "keyboard(action='type'): text after U+0003 (Ctrl+C) in the same call", {
+              suggest: [CTRL_C_ALONE_HINT],
+              context: { at: effectiveText.indexOf("\u0003") },
+            });
+          }
           logDispatchSink({ sink: "wm_char", tool: "keyboard:type", targetHwnd: target.hwnd, payloadChars: effectiveText.length });
           const result = postCharsToHwnd(target.hwnd, effectiveText);
           // ADR-036 arm A — see the flash rung above: the sink row says where this aimed, this one

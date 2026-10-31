@@ -51,6 +51,7 @@ import {
   isBgAutoEnabled,
   pasteIntoConsoleNoFocus,
   CONSOLE_ENTER_SETTLE_MS,
+  hasTextAfterCtrlC,
 } from "../../src/engine/bg-input.js";
 import { postMessageToHwnd, getWindowClassName, getProcessIdentityByPid, getFocusedChildHwnd } from "../../src/engine/win32.js";
 import { nativeWin32 } from "../../src/engine/native-engine.js";
@@ -442,5 +443,15 @@ describe("isBgAutoEnabled", () => {
     process.env["DTM_BG_AUTO"] = "1";
     expect(isBgAutoEnabled()).toBe(true);
     delete process.env["DTM_BG_AUTO"];
+  });
+});
+
+describe("hasTextAfterCtrlC (internal #340)", () => {
+  it("is true only when something follows a U+0003", () => {
+    expect(hasTextAfterCtrlC("\u0003")).toBe(false);
+    expect(hasTextAfterCtrlC("abc\u0003")).toBe(false);
+    expect(hasTextAfterCtrlC("abc")).toBe(false);
+    expect(hasTextAfterCtrlC("\u0003\r")).toBe(true);
+    expect(hasTextAfterCtrlC("sleep 5\r\u0003echo x")).toBe(true);
   });
 });

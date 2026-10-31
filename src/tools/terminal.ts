@@ -24,6 +24,8 @@ import {
   canInjectViaPostMessage,
   postCharsToHwnd,
   writeConsoleInputViaHelper,
+  hasTextAfterCtrlC,
+  CTRL_C_ALONE_HINT,
   postEnterToHwnd,
   isBgAutoEnabled,
   injectViaForegroundFlash,
@@ -129,7 +131,8 @@ export const terminalSendSchema = {
     "(Windows Terminal / cmd / PowerShell / conhost) so user-side focus changes mid-stream " +
     "cannot divert keystrokes. DTM_BG_AUTO=1 enables BG globally; 'auto' falls back to " +
     "foreground for non-terminal targets. " +
-    "'background' forces WM_CHAR injection (no focus change). " +
+    "'background' forces WM_CHAR injection (no focus change); to a classic console the text goes in as key " +
+    "presses, where U+0003 is Ctrl+C (send it alone, as the last character) and U+0001-U+001A are Ctrl+letter. " +
     "'foreground' forces the current behavior (SetForegroundWindow + clipboard paste). " +
     "'foreground_flash' (ADR-013 Option E) is an explicit opt-in 妥協 BG path for Windows " +
     "Terminal: temporarily steals foreground (~50-80ms), pastes via clipboard, sends Ctrl+V " +
@@ -1527,7 +1530,8 @@ export const terminalSendHandler = async ({
 
       // Avoid duplicate Enter if input already ends with CR/LF
       const inputEndsWithNewline = /[\r\n]$/.test(input);
-      const effectivePressEnter = pressEnter && !inputEndsWithNewline;
+      // internal #340: an Enter after a Ctrl+C would be text after it (lost in PowerShell, see below).
+      const effectivePressEnter = pressEnter && !inputEndsWithNewline && !input.endsWith("\u0003");
 
       // Verification scope (issue #173 P2-4 review feedback):
       // The post-send UIA read-back is meant to catch silent BG failures on
@@ -1557,6 +1561,12 @@ export const terminalSendHandler = async ({
       // and then the helper is not tried again for this send.
       let totalSent = 0;
       let viaHelper = false;
+      if (targetClass === "ConsoleWindowClass" && hasTextAfterCtrlC(input)) {
+        return failCode("InvalidArgs", "terminal(action='send'): text after U+0003 (Ctrl+C) in the same send", {
+          suggest: [CTRL_C_ALONE_HINT],
+          context: { at: input.indexOf("\u0003") },
+        });
+      }
       if (targetClass === "ConsoleWindowClass" && input.length > 0) {
         const w = writeConsoleInputViaHelper(win.hwnd, effectivePressEnter ? `${input}\r` : input);
         if (w !== null) {

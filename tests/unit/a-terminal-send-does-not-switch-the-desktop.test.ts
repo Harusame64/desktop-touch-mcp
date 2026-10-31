@@ -27,6 +27,9 @@ vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
 });
 
 vi.mock("../../src/engine/bg-input.js", () => ({
+  // internal #340
+  hasTextAfterCtrlC: (t: string) => { const i = t.indexOf("\u0003"); return i >= 0 && i < t.length - 1; },
+  CTRL_C_ALONE_HINT: "send U+0003 alone",
   canInjectViaPostMessage: vi.fn(() => ({ supported: false, reason: "class_unknown" })),
   postCharsToHwnd: vi.fn(),
   postEnterToHwnd: vi.fn(),
