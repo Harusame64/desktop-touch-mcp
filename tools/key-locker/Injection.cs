@@ -50,6 +50,10 @@ internal static class InjectAbort
     // RequireEchoOff and no process on the console is seen waiting on a credential program there (internal
     // #333): the echo-off mode may be a background ssh's, and the reader the shell's Read-Host.
     public const string OtherReader = "other_reader";
+    // internal #335: the console is in selection mode (Mark / a mouse selection, "Select" in a classic window's
+    // title). conhost holds input while it lasts: the write lands in the buffer, nobody reads it, and the
+    // secret would be read later by whatever reads next. Nothing was written.
+    public const string Selecting = "console_selecting";
 }
 
 /// Win32 CONSOLE-BUFFER injector (DF-5 fix) + the injection-instant re-verify.
@@ -107,6 +111,11 @@ internal static class Win32Input
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetStdHandle(int nStdHandle, nint hHandle);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetConsoleMode(nint hConsoleHandle, out uint lpMode);
     private const uint ENABLE_ECHO_INPUT = 0x0004;
+    // internal #335: CONSOLE_SELECTION_INFO (dwFlags, COORD dwSelectionAnchor, SMALL_RECT srSelection).
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CONSOLE_SELECTION_INFO { public uint dwFlags; public short AnchorX, AnchorY; public short Left, Top, Right, Bottom; }
+    private const uint CONSOLE_SELECTION_IN_PROGRESS = 0x0001;
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetConsoleSelectionInfo(out CONSOLE_SELECTION_INFO lpConsoleSelectionInfo);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern uint GetConsoleProcessList([Out] uint[] lpdwProcessList, uint dwProcessCount);
     private delegate bool ConsoleCtrlHandler(uint ctrlType);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetConsoleCtrlHandler(ConsoleCtrlHandler? handler, bool add);
@@ -305,6 +314,11 @@ internal static class Win32Input
             // STILL name the same console — closes the attach→write TOCTOU window (Opus R1 P2-3).
             var abort = ReVerify(in t);
             if (abort != null) return (false, abort);
+
+            // internal #335: never write into a console that is holding its input for a selection. Read on the
+            // console we just attached to; a read that fails declines (fail-closed).
+            if (!GetConsoleSelectionInfo(out var sel)) return (false, "executor_failed");
+            if ((sel.dwFlags & CONSOLE_SELECTION_IN_PROGRESS) != 0) return (false, InjectAbort.Selecting);
 
             // fill_once: the reader must have echo OFF, read from the same CONIN$ we are about to write to
             // (fail-closed when the mode cannot be read).

@@ -32,6 +32,7 @@ function makeFakeLocker(
     protocol?: string;
     consoleEchoes?: boolean;
     otherReader?: boolean;
+    selecting?: boolean;
     seed?: string[];
     captureReply?: { captured: boolean; rt: boolean };
     state?: FakeState;
@@ -76,7 +77,9 @@ function makeFakeLocker(
           case "inject": {
             // Mirrors Injection.cs's fill_once gate: `requireEchoOff` and an echoing console → echo_on.
             const t = (req as unknown as { t?: { requireEchoOff?: boolean } }).t;
-            if (t?.requireEchoOff === true && opts.consoleEchoes === true) write({ id: req.id, ok: false, r: "", e: "echo_on" });
+            // internal #335: selection mode is checked first, for every write.
+            if (opts.selecting === true) write({ id: req.id, ok: false, r: "", e: "console_selecting" });
+            else if (t?.requireEchoOff === true && opts.consoleEchoes === true) write({ id: req.id, ok: false, r: "", e: "echo_on" });
             // internal #333: another process on the console is waiting in a read.
             else if (t?.requireEchoOff === true && opts.otherReader === true) write({ id: req.id, ok: false, r: "", e: "other_reader" });
             else write({ id: req.id, ok: true, r: "", verified: true });
@@ -189,6 +192,17 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     hosts.push(host);
     const target = { shellPid: 4321, shellStartMs: 10, submit: true, requireEchoOff: true };
     expect(await host.inject("op-1", target)).toEqual({ ok: false, code: "other_reader" });
+  });
+
+  it("console_selecting comes back as itself, for a fill_once and an autofill write alike (internal #335)", async () => {
+    const path = pipePath();
+    await listen(makeFakeLocker(path, { selecting: true }), path);
+    const host = await KeyLockerHost.connectForTest(path);
+    hosts.push(host);
+    for (const requireEchoOff of [true, false]) {
+      const target = { shellPid: 4321, shellStartMs: 10, submit: true, requireEchoOff };
+      expect(await host.inject("op-1", target)).toEqual({ ok: false, code: "console_selecting" });
+    }
   });
 
   it("capture() reports a cancelled dialog as {captured:false}", async () => {

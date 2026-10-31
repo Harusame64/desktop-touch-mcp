@@ -160,7 +160,10 @@ export type InjectAbortCode =
   | "echo_on"
   // internal #333: a fill_once write found nothing on the console waiting on an ssh / sudo / su / doas there
   // — e.g. the shell's Read-Host behind a background ssh. Nothing was written.
-  | "other_reader";
+  | "other_reader"
+  // internal #335: the console was in selection mode (it holds input while a selection lasts). Nothing was
+  // written. Applies to every inject, not only fill_once.
+  | "console_selecting";
 
 /** `inject` result: verified+injected, or a typed abort code. */
 export type InjectClientResult =
@@ -189,6 +192,7 @@ export type PromptChoice = ConfirmChoice | OfferChoice;
 const INJECT_ABORT_CODES: readonly InjectAbortCode[] = [
   "target_mismatch", "target_gone", "not_foreground", "target_multiplexed",
   "no_secret", "bad_target", "executor_failed", "echo_on", "other_reader",
+  "console_selecting",
 ];
 
 /** Map a wire `e` string onto a known abort code so `InjectClientResult.code` never lies. */
