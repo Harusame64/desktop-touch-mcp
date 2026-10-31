@@ -281,8 +281,9 @@ async function fillClaimed(
   // so every exit erases it — the filled one included, unless it is now kept under its tag.
   const opaqueId = deps.mintOpaqueId();
   let outcome: FillOnceOutcome;
+  const held = { maybe: true };
   try {
-    outcome = await captureAndFill(deps, { ...gate, dialog: tag !== undefined ? { ...dialog, tag } : dialog, opaqueId });
+    outcome = await captureAndFill(deps, { ...gate, dialog: tag !== undefined ? { ...dialog, tag } : dialog, opaqueId }, held);
   } catch (err) {
     outcome = { kind: "fill_aborted", code: `fill_once_error:${err instanceof Error ? err.message : String(err)}` };
   }
@@ -291,8 +292,11 @@ async function fillClaimed(
     return { ...outcome, kept: true };
   }
   // Not kept: erase it. A retype that did not fill leaves the earlier kept secret as it was.
-  const wasErased = await erased(deps, opaqueId);
   const keptBefore = tag !== undefined && deps.kept.lookup(paneId, anchor, tag) !== null ? { kept: true as const } : {};
+  // Nothing to erase when the locker said its dialog stored nothing (win2, #890 H2): the erase would wait
+  // behind another pane's open dialog, time out, and report a cleanupFailed for a secret that never existed.
+  if (!held.maybe) return { ...outcome, ...keptBefore };
+  const wasErased = await erased(deps, opaqueId);
   return wasErased ? { ...outcome, ...keptBefore } : { ...outcome, ...keptBefore, cleanupFailed: true };
 }
 
@@ -322,12 +326,17 @@ interface AfterDialogGate {
   opaqueId: string;
 }
 
+/** `held.maybe` turns false when the locker answered that its dialog stored nothing (a cancel, a timeout). */
 async function captureAndFill(
   deps: FillOnceDeps,
   r: AfterDialogGate & { dialog: FillOnceDialog },
+  held: { maybe: boolean },
 ): Promise<FillOnceOutcome> {
   const cap = await deps.capture(r.opaqueId, r.dialog);
-  if (!cap.captured) return cap.timedOut === true ? { kind: "declined", reason: "dialog_timeout" } : { kind: "cancelled" };
+  if (!cap.captured) {
+    held.maybe = false;
+    return cap.timedOut === true ? { kind: "declined", reason: "dialog_timeout" } : { kind: "cancelled" };
+  }
   return fillAfterDialog(deps, r);
 }
 
