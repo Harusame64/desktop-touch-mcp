@@ -6,7 +6,8 @@
  * Does NOT work for Chromium-based apps (Chrome, Edge, Electron) or UWP sandboxed
  * apps — use `canInjectViaPostMessage` to check before calling.
  *
- * All functions are synchronous (PostMessageW is non-blocking by design).
+ * All functions are synchronous. PostMessageW is non-blocking, but a classic console's text goes through
+ * bin/console-input.exe (internal #334), which blocks for the run (~64 ms warm, up to its 10 s timeout).
  *
  * **ADR-013 Option E (`foreground_flash` channel)**: WT を含む WM_CHAR 不対応
  * window に対する妥協 BG path として `injectViaForegroundFlash` を提供。
@@ -25,6 +26,9 @@ import {
   vkToScanCode,
   WM_CHAR, WM_KEYDOWN, WM_KEYUP, VK_RETURN, VK_CONTROL, VK_SHIFT, VK_MENU,
 } from "./win32.js";
+import { spawnSync } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { nativeWin32, nativeUiaState } from "./native-engine.js";
 import { logDispatchSink } from "../tools/_resolve-log.js";
 import type {
@@ -204,10 +208,52 @@ export interface PostCharsResult {
    * reads it here, rather than resolving the focus a second time and perhaps getting a different answer.
    */
   target: unknown;
+  /**
+   * internal #334: how a console got the text — `console_input` (key-down / key-up pairs written by
+   * `bin/console-input.exe`) or `wm_char` (posted WM_CHAR, the only way for any other window, and the fallback
+   * when the helper cannot run). Left out for a window that is not a console.
+   */
+  via?: "console_input" | "wm_char";
+}
+
+// dist/engine/ -> ../../bin/console-input.exe (the same resolution as ocr-bridge.ts).
+const CONSOLE_INPUT_EXE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "console-input.exe");
+/** Generous for a one-shot exe that measured ~64 ms warm, ~100 ms on a fresh copy (win2, 2026-10-31). */
+const CONSOLE_INPUT_TIMEOUT_MS = 10_000;
+
+/**
+ * internal #334: write `text` into the console that `target` (a ConsoleWindowClass window) belongs to, as
+ * key-down / key-up pairs, through `bin/console-input.exe` (it attaches to that console; this process never
+ * leaves its own). Blocks this thread for the run (~64 ms warm, win2), so callers make one run per send.
+ * Returns the UTF-16 units written; null ONLY when nothing can have been written — the helper did not start
+ * (no exe, no .NET runtime), or it exited before writing (bad arguments, no attach, no CONIN$) — and the
+ * caller may then post WM_CHAR instead. Any other ending (a timeout, a crash, output that does not parse)
+ * may have written some or all of it: that is reported as nothing confirmed, never sent again
+ * (/code-review on #891: a fallback there would type a command twice).
+ */
+export function writeConsoleInputViaHelper(target: unknown, text: string): { sent: number; full: boolean } | null {
+  const pid = getWindowProcessId(target);
+  if (pid === 0) return null;
+  const r = spawnSync(CONSOLE_INPUT_EXE, [String(pid)], {
+    input: Buffer.from(text, "utf8"),
+    windowsHide: true,
+    timeout: CONSOLE_INPUT_TIMEOUT_MS,
+  });
+  const notStarted = r.error !== undefined && !r.pid; // spawn failed (ENOENT, EACCES): pid 0
+  if (notStarted || r.status === 2 || r.status === 3 || r.status === 4) return null;
+  // Exit codes of a .NET apphost that could not load the runtime (it never reached Main).
+  if (r.status !== null && (r.status >>> 0) >= 0x80008080 && (r.status >>> 0) <= 0x800080ff) return null;
+  const sent = Number.parseInt(String(r.stdout ?? ""), 10);
+  const known = Number.isInteger(sent) && sent >= 0 && sent <= text.length;
+  if (r.status === 0 && known) return { sent, full: sent === text.length };
+  if (r.status === 5 && known) return { sent, full: false };
+  return { sent: 0, full: false };
 }
 
 /**
- * Send `text` to `hwnd` via WM_CHAR messages, one UTF-16 code unit at a time.
+ * Send `text` to `hwnd`. A classic console (ConsoleWindowClass) gets it as key presses from
+ * bin/console-input.exe ({@link writeConsoleInputViaHelper}); any other window, or a console when the helper
+ * cannot start, gets WM_CHAR messages, one UTF-16 code unit at a time.
  * Surrogate pairs are sent as two consecutive WM_CHAR messages (standard Win32).
  * '\n' is normalised to '\r' (0x0D) for terminal compatibility. To a console window (conhost), each
  * line break (`\r\n`, `\r` or `\n`) is one Enter key event instead, as {@link postEnterToHwnd} sends
@@ -220,8 +266,8 @@ export interface PostCharsResult {
  *
  * Does NOT change the foreground window.
  */
-export function postCharsToHwnd(hwnd: unknown, text: string): PostCharsResult {
-  return postCharsToResolvedTarget(resolveTarget(hwnd), text);
+export function postCharsToHwnd(hwnd: unknown, text: string, opts?: { wmCharOnly?: boolean }): PostCharsResult {
+  return postCharsToResolvedTarget(resolveTarget(hwnd), text, opts);
 }
 
 /**
@@ -232,19 +278,26 @@ export function postCharsToHwnd(hwnd: unknown, text: string): PostCharsResult {
  *  1 ms was enough on win2's machine; this leaves room for a slower or busier one. */
 export const CONSOLE_ENTER_SETTLE_MS = 20;
 
-export function postCharsToResolvedTarget(target: unknown, text: string): PostCharsResult {
+/** `opts.wmCharOnly`: post WM_CHAR even to a console (the caller already tried the helper for this send). */
+export function postCharsToResolvedTarget(target: unknown, text: string, opts?: { wmCharOnly?: boolean }): PostCharsResult {
   let sent = 0;
   const total = text.length; // UTF-16 code unit count
   // Only a console gets the key event: in a dialog's edit box a posted Enter key would press the
   // default button, where WM_CHAR 0x0D breaks the line.
   const toConsole = (() => { try { return getWindowClassName(target) === "ConsoleWindowClass"; } catch { return false; } })();
+  if (toConsole && text.length > 0 && opts?.wmCharOnly !== true) {
+    const w = writeConsoleInputViaHelper(target, text);
+    if (w !== null) return { ...w, target, via: "console_input" };
+  }
+  const result = (n: number, full: boolean): PostCharsResult =>
+    toConsole ? { sent: n, full, target, via: "wm_char" } : { sent: n, full, target };
 
   for (let i = 0; i < text.length; i++) {
     const ch = text.charCodeAt(i);
 
     if (toConsole && (ch === 0x0D || ch === 0x0A)) {
       const units = ch === 0x0D && text.charCodeAt(i + 1) === 0x0A ? 2 : 1;
-      if (!postKeyToTarget(target, VK_RETURN)) return { sent, full: false, target };
+      if (!postKeyToTarget(target, VK_RETURN)) return result(sent, false);
       sent += units;
       i += units - 1;
       // Also after the last one: the next post can be the caller's next chunk (codex on #882).
@@ -256,12 +309,12 @@ export function postCharsToResolvedTarget(target: unknown, text: string): PostCh
     const wParam = ch === 0x0A ? 0x0D : ch;
 
     if (!postMessageToHwnd(target, WM_CHAR, wParam, 0)) {
-      return { sent, full: false, target };
+      return result(sent, false);
     }
     sent++;
   }
 
-  return { sent, full: sent === total, target };
+  return result(sent, sent === total);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

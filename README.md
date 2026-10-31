@@ -47,6 +47,7 @@ npx -y @harusame64/desktop-touch-mcp
 | OS | Windows 10 / 11 (64-bit). **macOS 14+ on Apple Silicon: limited preview, 4 tools only** — see [macOS (preview)](#macos-preview) |
 | Node.js | v20+ recommended (tested on v22+) — **to develop or run the test suite, `^22.12 || ^24 || >=26`** — the test runner's own range since #658, which excludes odd majors such as 23 and 25 |
 | PowerShell | 5.1+ (bundled with Windows) — used only as fallback when the Rust native engine is unavailable |
+| .NET | .NET 10 Desktop Runtime (x64), for the bundled helpers: OCR, the Key Locker, and typing into a console window in the background. Without it OCR and the Key Locker do not run, and background typing into a console falls back to posted characters, which can lose a run of the same character |
 | Claude CLI | `claude` command must be available |
 
 > **Note:** nut-js native bindings require the Visual C++ Redistributable.
