@@ -16,7 +16,7 @@
  * - `codeDeclaresMacro` handles whitespace, modifiers, and special-char names
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // Mock the native-engine surface BEFORE importing the handler so the
 // in-memory binding picks up the stub. Use `importOriginal` to preserve
@@ -183,6 +183,22 @@ describe("excelHandler — check_access_vbom", () => {
 });
 
 describe("excelHandler — run_vba", () => {
+  // run_vba now sweeps and removes workbooks in %LOCALAPPDATA%\desktop-touch-mcp\trusted-vba (internal #336):
+  // never the developer's real folder.
+  let appData = "";
+  beforeEach(async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    appData = mkdtempSync(join(tmpdir(), "dt-lad-run-"));
+    vi.stubEnv("LOCALAPPDATA", appData);
+  });
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    const { rmSync } = await import("node:fs");
+    rmSync(appData, { recursive: true, force: true });
+  });
+
   it("fails fast with VbaMacroNotFound when code lacks the Sub", async () => {
     const result = await excelHandler({
       action: "run_vba",
@@ -257,9 +273,10 @@ describe("excelHandler — run_vba", () => {
     expect(nativeExcel!.excelSessionSpawn).toHaveBeenCalledTimes(1);
     expect(nativeExcel!.excelSetVisible).toHaveBeenCalledWith(42, false);
     expect(nativeExcel!.excelWorkbookAddNew).toHaveBeenCalledWith(42);
+    // The module is never named after the macro (Application.Run would name the module: win2, #895).
     expect(nativeExcel!.excelVbaModuleAdd).toHaveBeenCalledWith(
       42,
-      "DesktopTouchAdHoc",
+      "DesktopTouchModule",
       SAMPLE_MACRO
     );
     expect(nativeExcel!.excelWorkbookSaveAs).toHaveBeenCalledWith(
@@ -307,5 +324,87 @@ describe("excelHandler — run_vba", () => {
     expect(body.ok).toBe(false);
     expect(body.code).toBe("VbaModuleAuthoringFailed");
     expect(nativeExcel!.excelSessionClose).toHaveBeenCalledWith(42);
+  });
+});
+
+// internal #336: run_vba's workbooks do not stay in the trusted folder.
+describe("run_vba workbook cleanup (internal #336)", () => {
+  it("sweeps only dt_vba_*.xlsm files (and their ~$ owner files) older than six hours", async () => {
+    const { mkdtempSync, writeFileSync, utimesSync, existsSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { sweepLeftoverWorkbooks } = await import("../../src/tools/excel.js");
+    const dir = mkdtempSync(join(tmpdir(), "dt-vba-"));
+    try {
+      const now = Date.now();
+      const old = join(dir, "dt_vba_1.xlsm");
+      const lock = join(dir, "~$dt_vba_1.xlsm");
+      const fresh = join(dir, "dt_vba_2.xlsm");
+      const other = join(dir, "mine.xlsm");
+      for (const p of [old, lock, fresh, other]) writeFileSync(p, "");
+      const sevenHours = new Date(now - 7 * 60 * 60_000);
+      for (const p of [old, lock, other]) utimesSync(p, sevenHours, sevenHours);
+      utimesSync(fresh, new Date(now - 60 * 60_000), new Date(now - 60 * 60_000)); // an hour: a long run elsewhere
+      sweepLeftoverWorkbooks(dir, now);
+      expect(existsSync(old)).toBe(false);
+      expect(existsSync(lock)).toBe(false);
+      expect(existsSync(fresh)).toBe(true); // a run in progress
+      expect(existsSync(other)).toBe(true); // not ours
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a run_vba leaves no workbook in the trusted folder", async () => {
+    const { mkdtempSync, writeFileSync, readdirSync, rmSync, mkdirSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const appData = mkdtempSync(join(tmpdir(), "dt-lad-"));
+    vi.stubEnv("LOCALAPPDATA", appData);
+    const trusted = join(appData, "desktop-touch-mcp", "trusted-vba");
+    mkdirSync(trusted, { recursive: true });
+    // Earlier cases that return before the native calls (no LOCALAPPDATA off Windows) leave their
+    // mock*Once implementations queued: start this one clean.
+    vi.mocked(nativeExcel!.excelWorkbookSaveAs!).mockReset();
+    vi.mocked(nativeExcel!.excelMacroRun!).mockReset();
+    // The native SaveAs writes the file; the mock does the same.
+    vi.mocked(nativeExcel!.excelWorkbookSaveAs!).mockImplementationOnce((_s: unknown, path: unknown) => {
+      writeFileSync(path as string, "");
+      return undefined as never;
+    });
+    try {
+      const body = parseResult(await excelHandler({ action: "run_vba", code: SAMPLE_MACRO, macroName: "DesktopTouchAdHoc", visible: false }));
+      expect(body.ok).toBe(true);
+      expect(readdirSync(trusted)).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(appData, { recursive: true, force: true });
+    }
+  });
+
+  it("removes the run's workbook, and a missing one is fine", async () => {
+    const { mkdtempSync, writeFileSync, existsSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { removeWorkbookSoon } = await import("../../src/tools/excel.js");
+    const dir = mkdtempSync(join(tmpdir(), "dt-vba-"));
+    try {
+      const p = join(dir, "dt_vba_3.xlsm");
+      writeFileSync(p, "");
+      removeWorkbookSoon(p, [0]);
+      expect(existsSync(p)).toBe(false);
+      expect(() => removeWorkbookSoon(p, [0])).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("vbaModuleNameFor (#895)", () => {
+  it("is never the macro's own name", async () => {
+    const { vbaModuleNameFor } = await import("../../src/tools/excel.js");
+    expect(vbaModuleNameFor("DesktopTouchAdHoc")).toBe("DesktopTouchModule");
+    expect(vbaModuleNameFor("DesktopTouchModule")).toBe("DesktopTouchModule2");
+    expect(vbaModuleNameFor("desktoptouchmodule")).toBe("DesktopTouchModule2");
   });
 });
