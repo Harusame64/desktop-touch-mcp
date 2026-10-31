@@ -17,7 +17,7 @@
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { keyLockerDisabled } from "./key-locker-switch.js";
@@ -33,6 +33,7 @@ import {
 import type { PaneAnchor } from "./inject-target.js";
 import { SessionTracker } from "./session-tracker.js";
 import { SshSessionWatch, type ProcessSnapshot } from "./ssh-session-watch.js";
+import { aliasExists } from "../../utils/path-exists.js";
 
 /** Typed reject when a secret op is attempted before first-run consent is accepted (L4 §2). */
 export class KeyLockerConsentRequiredError extends Error {
@@ -403,7 +404,7 @@ export class KeyLockerManager {
   ): Promise<{ anchor: PaneAnchor; title: string }> {
     const localAppData = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local");
     const wtExe = join(localAppData, "Microsoft", "WindowsApps", "wt.exe");
-    if (!existsSync(wtExe)) {
+    if (!aliasExists(wtExe)) {
       throw new KeyLockerError(
         "KeyLockerWtUnavailable",
         `KeyLockerWtUnavailable: Windows Terminal (wt.exe) was not found at ${wtExe}`,
