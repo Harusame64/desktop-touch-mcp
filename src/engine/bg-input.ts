@@ -217,21 +217,21 @@ export interface PostCharsResult {
 }
 
 /**
- * internal #340: true when `text` has anything after a U+0003. To a console, U+0003 is a Ctrl+C — the signal
- * while a command runs — and PowerShell (5.1 and 7) throws away input that arrives with it: in one write, the
- * text after it was lost 4 of 4 (win2, #896 P2), while the same text in a separate send after it went in every
- * time. Callers refuse such a send and ask for U+0003 on its own.
+ * internal #340: true when `text` carries a U+0003 with anything else. To a console, U+0003 is a Ctrl+C — the
+ * signal while a command runs — and it must be a send of its own: PowerShell (5.1 and 7) throws away input that
+ * arrives with it (the text after it was lost 4 of 4, win2 #896 P2), and text before it is still queued when the
+ * helper reads the console's mode for it, so a command and its Ctrl+C in one send never stops the command (win2).
+ * Callers refuse such a send.
  */
-export function hasTextAfterCtrlC(text: string): boolean {
-  const i = text.indexOf("\u0003");
-  return i >= 0 && i < text.length - 1;
+export function ctrlCNotAlone(text: string): boolean {
+  return text.includes("\u0003") && text !== "\u0003";
 }
 
-/** The answer for a send refused by {@link hasTextAfterCtrlC}. */
+/** The answer for a send refused by {@link ctrlCNotAlone}. */
 export const CTRL_C_ALONE_HINT =
-  "Send U+0003 (Ctrl+C) by itself, as the last character of a send, then the next text in a separate send: " +
-  "PowerShell drops input that arrives together with a Ctrl+C. A Ctrl+C in the same send as the command it is " +
-  "meant to stop arrives before that command starts, so send the command first.";
+  "Send U+0003 (Ctrl+C) as a send of its own: the command first, then \"\\u0003\" alone, then the next text. " +
+  "PowerShell drops input that arrives together with a Ctrl+C, and a Ctrl+C sent with the command it should " +
+  "stop is read before that command runs.";
 
 // dist/engine/ -> ../../bin/console-input.exe (the same resolution as ocr-bridge.ts).
 const CONSOLE_INPUT_EXE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "console-input.exe");
@@ -302,10 +302,14 @@ export function postCharsToResolvedTarget(target: unknown, text: string, opts?: 
   // Only a console gets the key event: in a dialog's edit box a posted Enter key would press the
   // default button, where WM_CHAR 0x0D breaks the line.
   const toConsole = (() => { try { return getWindowClassName(target) === "ConsoleWindowClass"; } catch { return false; } })();
+  // internal #340: every caller's console write gets the Ctrl+C rule here, whatever its own checks; nothing
+  // is sent. A posted WM_CHAR 0x03 is the letter c to PowerShell, so without the helper a Ctrl+C cannot go.
+  if (toConsole && ctrlCNotAlone(text)) return { sent: 0, full: false, target, via: "console_input" };
   if (toConsole && text.length > 0 && opts?.wmCharOnly !== true) {
     const w = writeConsoleInputViaHelper(target, text);
     if (w !== null) return { ...w, target, via: "console_input" };
   }
+  if (toConsole && text.includes("\u0003")) return { sent: 0, full: false, target, via: "wm_char" };
   const result = (n: number, full: boolean): PostCharsResult =>
     toConsole ? { sent: n, full, target, via: "wm_char" } : { sent: n, full, target };
 

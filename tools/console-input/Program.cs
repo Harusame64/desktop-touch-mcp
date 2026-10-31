@@ -107,8 +107,8 @@ internal static class Program
                         continue;
                     }
                 }
+                // On the key path the Ctrl+C pair is simply the start of this slice.
                 var end = stops.Count > 0 ? stops.Peek() : records.Length;
-                if (end == written) end = written + 2; // the Ctrl+C pair itself, written as keys
                 var n = Math.Min(slice, end - written);
                 var part = new INPUT_RECORD[n];
                 Array.Copy(records, written, part, 0, n);
