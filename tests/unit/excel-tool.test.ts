@@ -309,3 +309,73 @@ describe("excelHandler — run_vba", () => {
     expect(nativeExcel!.excelSessionClose).toHaveBeenCalledWith(42);
   });
 });
+
+// internal #336: run_vba's workbooks do not stay in the trusted folder.
+describe("run_vba workbook cleanup (internal #336)", () => {
+  it("sweeps only dt_vba_*.xlsm files older than ten minutes", async () => {
+    const { mkdtempSync, writeFileSync, utimesSync, existsSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { sweepLeftoverWorkbooks } = await import("../../src/tools/excel.js");
+    const dir = mkdtempSync(join(tmpdir(), "dt-vba-"));
+    try {
+      const now = Date.now();
+      const old = join(dir, "dt_vba_1.xlsm");
+      const fresh = join(dir, "dt_vba_2.xlsm");
+      const other = join(dir, "mine.xlsm");
+      for (const p of [old, fresh, other]) writeFileSync(p, "");
+      utimesSync(old, new Date(now - 11 * 60_000), new Date(now - 11 * 60_000));
+      utimesSync(other, new Date(now - 60 * 60_000), new Date(now - 60 * 60_000));
+      sweepLeftoverWorkbooks(dir, now);
+      expect(existsSync(old)).toBe(false);
+      expect(existsSync(fresh)).toBe(true); // a run in progress
+      expect(existsSync(other)).toBe(true); // not ours
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a run_vba leaves no workbook in the trusted folder", async () => {
+    const { mkdtempSync, writeFileSync, readdirSync, rmSync, mkdirSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const appData = mkdtempSync(join(tmpdir(), "dt-lad-"));
+    vi.stubEnv("LOCALAPPDATA", appData);
+    const trusted = join(appData, "desktop-touch-mcp", "trusted-vba");
+    mkdirSync(trusted, { recursive: true });
+    // Earlier cases that return before the native calls (no LOCALAPPDATA off Windows) leave their
+    // mock*Once implementations queued: start this one clean.
+    vi.mocked(nativeExcel!.excelWorkbookSaveAs!).mockReset();
+    vi.mocked(nativeExcel!.excelMacroRun!).mockReset();
+    // The native SaveAs writes the file; the mock does the same.
+    vi.mocked(nativeExcel!.excelWorkbookSaveAs!).mockImplementationOnce((_s: unknown, path: unknown) => {
+      writeFileSync(path as string, "");
+      return undefined as never;
+    });
+    try {
+      const body = parseResult(await excelHandler({ action: "run_vba", code: SAMPLE_MACRO, macroName: "DesktopTouchAdHoc", visible: false }));
+      expect(body.ok).toBe(true);
+      expect(readdirSync(trusted)).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(appData, { recursive: true, force: true });
+    }
+  });
+
+  it("removes the run's workbook, and a missing one is fine", async () => {
+    const { mkdtempSync, writeFileSync, existsSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { removeWorkbookSoon } = await import("../../src/tools/excel.js");
+    const dir = mkdtempSync(join(tmpdir(), "dt-vba-"));
+    try {
+      const p = join(dir, "dt_vba_3.xlsm");
+      writeFileSync(p, "");
+      removeWorkbookSoon(p, [0]);
+      expect(existsSync(p)).toBe(false);
+      expect(() => removeWorkbookSoon(p, [0])).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

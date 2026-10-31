@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { join } from "node:path";
+import { readdirSync, statSync, unlinkSync } from "node:fs";
 
 import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
@@ -49,6 +50,39 @@ import type { NativeExcelAccessVbomStatus } from "../engine/native-types.js";
  * `Application.Run`, so Excel's Trust Center allows macro execution
  * (otherwise HRESULT 0x800a03ec, see Phase 2e ADR-015 §3.6 / §7).
  */
+/**
+ * internal #336: each run saves a workbook with the macro's code into the trusted folder, and nothing removed it,
+ * so every macro ever run stayed on disk (the privacy policy says so). The workbook is needed only while the
+ * macro runs: remove it once the session is closed — retried, since Excel can hold the file a moment after the
+ * close (the crate's doc, excel.rs:72) — and, at the start of each run, sweep any left from earlier runs.
+ */
+const WORKBOOK_NAME = /^dt_vba_\d+\.xlsm$/;
+/** Older than this, a workbook in the folder is a leftover (a run takes seconds). */
+const LEFTOVER_AGE_MS = 10 * 60_000;
+const REMOVE_RETRY_MS = [0, 500, 2_000, 5_000];
+
+export function sweepLeftoverWorkbooks(dir: string, now = Date.now()): void {
+  let names: string[];
+  try { names = readdirSync(dir); } catch { return; }
+  for (const name of names) {
+    if (!WORKBOOK_NAME.test(name)) continue;
+    const path = join(dir, name);
+    try {
+      if (now - statSync(path).mtimeMs > LEFTOVER_AGE_MS) unlinkSync(path);
+    } catch { /* in use or gone: the next sweep tries again */ }
+  }
+}
+
+export function removeWorkbookSoon(path: string, retries: readonly number[] = REMOVE_RETRY_MS): void {
+  const attempt = (i: number): void => {
+    try { unlinkSync(path); return; } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    }
+    if (i + 1 < retries.length) setTimeout(() => attempt(i + 1), retries[i + 1]! - retries[i]!).unref();
+  };
+  attempt(0);
+}
+
 function getTrustedDir(): string {
   const localAppData = process.env.LOCALAPPDATA;
   if (localAppData) return join(localAppData, "desktop-touch-mcp", "trusted-vba");
@@ -185,6 +219,7 @@ async function handleRunVba(args: z.infer<typeof runVbaSchema>): Promise<ToolRes
     return failWith(err, "excel");
   }
 
+  sweepLeftoverWorkbooks(trustedDir);
   // Unique filename per call so concurrent invocations + stale files don't collide.
   const stampNs = process.hrtime.bigint().toString();
   const workbookPath = join(trustedDir, `dt_vba_${stampNs}.xlsm`);
@@ -239,6 +274,7 @@ async function handleRunVba(args: z.infer<typeof runVbaSchema>): Promise<ToolRes
         // Best-effort cleanup.
       }
     }
+    removeWorkbookSoon(workbookPath);
   }
 }
 
@@ -338,7 +374,7 @@ export function registerExcelTools(server: McpServer): void {
         details:
           "action='run_vba' authors a Sub in a fresh workbook, saves into the managed " +
           "Trusted Location (%LOCALAPPDATA%\\desktop-touch-mcp\\trusted-vba), and " +
-          "Application.Run the macro. Requires HKCU AccessVBOM=1 + VBAWarnings=1 + a " +
+          "Application.Run the macro; the workbook is removed once the macro has run (workbookPath names where it ran from). Requires HKCU AccessVBOM=1 + VBAWarnings=1 + a " +
           "registered Trusted Location (all configured by `node scripts/enable-access-vbom.mjs`). " +
           "Trust setup: Excel must restart after the CLI runs (values cached at process start). " +
           "action='check_access_vbom' is a read-only preflight returning " +
