@@ -23,6 +23,7 @@ import { TERMINAL_PROCESS_RE } from "../utils/terminal-process.js";
 import {
   canInjectViaPostMessage,
   postCharsToHwnd,
+  writeConsoleInputViaHelper,
   postEnterToHwnd,
   isBgAutoEnabled,
   injectViaForegroundFlash,
@@ -1524,15 +1525,33 @@ export const terminalSendHandler = async ({
       const baselineMarker =
         baselineRaw !== null ? makeMarker(stripAnsi(baselineRaw)) : null;
 
-      // Send in chunks to avoid saturating the terminal input queue. internal #334: a classic console takes
-      // the text as key presses from bin/console-input.exe, which writes any length in one run and reports
-      // the count it wrote — once the first chunk went that way, the rest goes in one more run.
+      // internal #334: a classic console takes the whole send as key presses in one run of
+      // bin/console-input.exe — the Enter too, when pressEnter — and the helper counts what it wrote. Only when
+      // it cannot start (no exe, no .NET runtime, no attach) does the send go out as chunked WM_CHAR, as before,
+      // and then the helper is not tried again for this send.
       let totalSent = 0;
-      let viaHelper = true;
-      const chunks = chunkWholeLineBreaks(input, chunkSize);
+      let viaHelper = false;
+      if (targetClass === "ConsoleWindowClass" && input.length > 0) {
+        const w = writeConsoleInputViaHelper(win.hwnd, effectivePressEnter ? `${input}\r` : input);
+        if (w !== null) {
+          viaHelper = true;
+          logDispatchSink({ sink: "console_input", tool: "terminal:send", targetHwnd: win.hwnd });
+          totalSent = Math.min(w.sent, input.length);
+          if (!w.full) {
+            // Not all of it confirmed (a short write, a timeout): never send it again (it may be there).
+            return failWith(
+              new Error("BackgroundInputIncomplete"),
+              "terminal:send",
+              { sent: totalSent, total: input.length }
+            );
+          }
+        }
+      }
+
+      // Send in chunks to avoid saturating the terminal input queue.
+      const chunks = viaHelper ? [] : chunkWholeLineBreaks(input, chunkSize);
       for (let c = 0; c < chunks.length; c++) {
-        const joined = c === 1 && viaHelper;
-        const chunk = joined ? chunks.slice(1).join("") : chunks[c]!;
+        const chunk = chunks[c]!;
         // ADR-035 Phase 1: one event for the whole chunked send — every chunk
         // goes to the same handle, so per-chunk events would only repeat it.
         // Inside the loop, though, not before it: `input` has no minimum length,
@@ -1541,11 +1560,8 @@ export const terminalSendHandler = async ({
         if (c === 0) {
           logDispatchSink({ sink: "wm_char", tool: "terminal:send", targetHwnd: win.hwnd });
         }
-        const result = postCharsToHwnd(win.hwnd, chunk);
+        const result = postCharsToHwnd(win.hwnd, chunk, { wmCharOnly: true });
         totalSent += result.sent;
-        if (result.via !== "console_input") viaHelper = false;
-        // The joined rest is all of it, whichever way it went (never send chunks 2… again).
-        if (joined && result.full) break;
         if (!result.full) {
           // Partial WM_CHAR delivery — fail regardless of method (PR #64 Codex P1):
           //   - sent > 0: a foreground fallback would re-deliver chars and double-input.
@@ -1583,7 +1599,7 @@ export const terminalSendHandler = async ({
       // of the screen cannot confirm that while the reader is busy (a slow prompt, a running command), and
       // answered BackgroundInputNotDelivered for text that then ran (win2, PR #891).
       let verifiable =
-        !(viaHelper && chunks.length > 0) &&
+        !viaHelper &&
         verificationNeeded &&
         baselineMarker !== null &&
         checkText.length > 0 &&
@@ -1659,12 +1675,8 @@ export const terminalSendHandler = async ({
         );
       }
 
-      // The Enter goes the same way as the text: as a key press from the helper when it wrote the text.
-      if (effectivePressEnter) {
-        // (postCharsToHwnd falls back to posting the Enter key itself if the helper cannot run.)
-        if (viaHelper && chunks.length > 0) postCharsToHwnd(win.hwnd, "\r");
-        else postEnterToHwnd(win.hwnd);
-      }
+      // The helper wrote the Enter with the text; WM_CHAR posts it as a key.
+      if (effectivePressEnter && !viaHelper) postEnterToHwnd(win.hwnd);
 
       // Issue #183: surface hidden-input detection via the §4.2 verifyDelivery
       // hint shape so callers can react (skip retry, switch to foreground).
@@ -1682,14 +1694,14 @@ export const terminalSendHandler = async ({
           : null;
 
       appendTopologyWarnings(bgWarnings);
-      markDispatched(); // delivered via chunked wm_char
+      markDispatched(); // delivered via the console-input helper or chunked wm_char
       return ok({
         ok: true,
         sent: input.slice(0, totalSent),
         pressedEnter: effectivePressEnter,
         focusRestored: false,
         method: "background",
-        channel: "wm_char",
+        channel: viaHelper ? "console_input" : "wm_char",
         foregroundChanged: false,
         post: {
           focusedWindow: null,

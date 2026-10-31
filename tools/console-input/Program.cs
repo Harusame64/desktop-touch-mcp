@@ -88,14 +88,15 @@ internal static class Program
                 Array.Copy(records, written, part, 0, n);
                 if (!WriteConsoleInputW(conin, part, (uint)n, out var w) || w != n)
                 {
-                    written += (int)w - (int)w % 2;
+                    written += (int)w;
                     break;
                 }
                 written += n;
             }
         }
         finally { CloseHandle(conin); }
-        var count = Encoding.ASCII.GetBytes(unitsAt[written / 2].ToString());
+        // A key whose down went in counts (conhost types on the down), even if its up did not.
+        var count = Encoding.ASCII.GetBytes(unitsAt[(written + 1) / 2].ToString());
         result.Write(count, 0, count.Length);
         return written == records.Length ? 0 : 5;
     }

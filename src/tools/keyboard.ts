@@ -2157,7 +2157,10 @@ export const keyboardTypeHandler = async ({
           //     substring includes() would false-fail.
           let verifiedDelivery: boolean | "unverifiable" = "unverifiable";
           let verifyReason: string | undefined;
+          // internal #334: text bin/console-input.exe wrote is in the console's input — it counted it; a busy
+          // reader shows no echo, and the read-back answered "not delivered" for text that then ran (#891).
           const verifiable =
+            result.via !== "console_input" &&
             verificationNeeded &&
             baselineMarker !== null &&
             checkText.length > 0 &&

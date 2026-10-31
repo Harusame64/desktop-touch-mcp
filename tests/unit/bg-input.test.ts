@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // internal #334: the console-input helper. By default it cannot run (as on a machine without the exe), so a
 // console falls back to WM_CHAR and the WM_CHAR tests below see that path; a test that wants the helper sets it.
-const spawnSyncMock = vi.fn((..._args: unknown[]): unknown => ({ error: Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }) }));
+const spawnSyncMock = vi.fn((..._args: unknown[]): unknown => ({ error: Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }), pid: 0 }));
 vi.mock("node:child_process", () => ({ spawnSync: (...args: unknown[]) => spawnSyncMock(...args) }));
 
 // Mock win32 helpers before importing bg-input
@@ -242,14 +242,30 @@ describe("postCharsToHwnd — a console through the console-input helper (intern
   });
 
   it.each([
-    ["the exe is missing", { error: Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }) }],
-    ["it could not attach", { status: 3, stdout: Buffer.from("") }],
-    ["it timed out", { error: new Error("spawnSync ETIMEDOUT"), status: null }],
+    ["the exe is missing", { error: Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }), pid: 0 }],
+    ["it could not attach", { status: 3, stdout: Buffer.from(""), pid: 77 }],
+    ["the .NET runtime is missing", { status: 0x80008096 >>> 0, stdout: Buffer.from(""), pid: 77 }],
   ])("falls back to WM_CHAR when %s, and says so", (_name, reply) => {
     spawnSyncMock.mockReturnValueOnce(reply);
     vi.mocked(postMessageToHwnd).mockReturnValue(true);
     expect(postCharsToHwnd(HWND, "ab")).toEqual({ sent: 2, full: true, target: HWND, via: "wm_char" });
     expect(postMessageToHwnd).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["it timed out", { error: new Error("spawnSync ETIMEDOUT"), status: null, pid: 77 }],
+    ["it exited 0 with no count", { status: 0, stdout: Buffer.from(""), pid: 77 }],
+    ["it crashed", { status: 0xC0000005 >>> 0, stdout: Buffer.from(""), pid: 77 }],
+  ])("never sends again when %s (it may have written): nothing confirmed, no WM_CHAR", (_name, reply) => {
+    spawnSyncMock.mockReturnValueOnce(reply);
+    expect(postCharsToHwnd(HWND, "rm -rf build\r")).toEqual({ sent: 0, full: false, target: HWND, via: "console_input" });
+    expect(postMessageToHwnd).not.toHaveBeenCalled();
+  });
+
+  it("wmCharOnly posts WM_CHAR to a console without running the helper", () => {
+    vi.mocked(postMessageToHwnd).mockReturnValue(true);
+    expect(postCharsToHwnd(HWND, "ab", { wmCharOnly: true })).toEqual({ sent: 2, full: true, target: HWND, via: "wm_char" });
+    expect(spawnSyncMock).not.toHaveBeenCalled();
   });
 
   it("does not run the helper for a window that is not a console, or for no text", () => {
