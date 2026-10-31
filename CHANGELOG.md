@@ -7,7 +7,12 @@
   (for example `tag:'jump'` for a jump host you re-enter). The first time, you type the password as before; it is
   typed into the prompt and then kept in the locker's memory for that `launch_console` pane until the pane
   closes. Each later `fill_once` with the same tag shows a Fill / Cancel window with the tag, the pane and the
-  assistant's reason, and nothing is typed until you press Fill. It is never written to disk, and every check
+  assistant's reason, and nothing is typed until you press Fill. Tick "Don't ask again" in that window and later
+  fills of that tag in that pane, at a prompt with the same text, go in without it (the reply says
+  `tagAlways:true`, and `list` names these tags in `paneTagsNoConfirm`), until the pane closes or the tag is
+  forgotten or retyped. Other tags, and a prompt with other text (sudo, another host), still ask. Past the first
+  ssh hop the prompt is text the remote side prints, so a fake prompt that copies that text exactly gets the
+  password without asking. It is never written to disk, and every check
   `fill_once` makes before typing still runs on each fill. `retype:true` asks you to type it again,
   `action:'forget_tag'` erases it, and `list` shows the kept tag names per pane (`paneTags`). At most 8 tags per
   pane. The locker helper's protocol version is now 3, so `bin/key-locker.exe` must come from this release

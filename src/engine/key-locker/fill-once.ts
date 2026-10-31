@@ -36,6 +36,10 @@
 // above runs on every fill, kept or not: only the dialog differs. What a kept tag changes is the last
 // invariant — the secret outlives one fill — and only within the pane (window / tab) it was typed for: it is
 // erased when that pane closes, on forget_tag, and on server shutdown, and a reused paneId never sees it.
+// The confirm also offers "Don't ask again" (user request 2026-10-30; scope 2026-10-31: that tag only, at the
+// same prompt). Ticked on a Fill that fills, later fills of the tag at a prompt with the same text (its rows and
+// the row above them) skip the dialog — and nothing else: every gate still runs. It weakens the dialog invariant above for that
+// prompt text: a remote side that prints exactly that text gets the secret without the user judging it.
 
 import { stripAnsi } from "../ansi.js";
 import type { PaneAnchor } from "./inject-target.js";
@@ -58,8 +62,13 @@ export interface FillOnceKeptDeps {
   lookup(paneId: string, anchor: PaneAnchor, tag: string): string | null;
   /** How many tags this pane (with this anchor) holds. */
   count(paneId: string, anchor: PaneAnchor): number;
-  /** The locker's secret-free one-click confirm for a kept tag: true = Fill, false = Cancel / any failure. */
-  confirm(dialog: FillOnceDialog & { tag: string }): Promise<boolean>;
+  /** The locker's secret-free one-click confirm for a kept tag: "fill", "fill_always" (Fill with "always fill
+   *  in this terminal" ticked), or "cancel" (also any failure). */
+  confirm(dialog: FillOnceDialog & { tag: string }): Promise<"fill" | "fill_always" | "cancel">;
+  /** The prompt line the user ticked "Don't ask again" at for this kept tag, or null. */
+  alwaysAt(paneId: string, anchor: PaneAnchor, tag: string): string | null;
+  /** Record that tick for this kept tag at `promptLine`, if the tag still holds `opaqueId` (it goes with the tag). */
+  allowAlways(paneId: string, anchor: PaneAnchor, tag: string, opaqueId: string, promptLine: string): void;
   /** Keep the just-filled secret under `tag` (replacing and erasing an older one); false = not kept. */
   keep(paneId: string, anchor: PaneAnchor, tag: string, opaqueId: string): boolean;
 }
@@ -118,6 +127,8 @@ export type FillOnceOutcome = (
 ) & {
   /** internal #281: set when the call named a tag and that tag is kept for the pane after this call. */
   kept?: true;
+  /** Set with `kept` when the tag is marked "Don't ask again" (at some prompt line) after this call. */
+  always?: true;
   /** Set when the one-time secret could NOT be erased afterwards (two attempts failed): it stays encrypted
    *  in the locker store under an id nothing points to. Reported, never swallowed (PR #806 codex P2). */
   cleanupFailed?: true;
@@ -147,14 +158,19 @@ const KEY_UNLOCK_WRAPPED = /^Enterpassphraseforkey'[^']+':$/i;
 const KEY_UNLOCK_MAX_ROWS = 6;
 
 export function isKeyUnlockPrompt(tail: string | null): boolean {
-  if (!tail) return false;
+  return keyUnlockRows(tail) !== null;
+}
+
+/** How many trailing rows a key-unlock prompt spans (1 unless it wrapped), or null when the tail is not one. */
+function keyUnlockRows(tail: string | null): number | null {
+  if (!tail) return null;
   const rows = stripAnsi(tail).replace(/\r\n/g, "\n").split("\n");
   while (rows.length > 0 && rows[rows.length - 1]!.trim() === "") rows.pop();
   for (let k = 1; k <= KEY_UNLOCK_MAX_ROWS && k <= rows.length; k++) {
     const joined = rows.slice(rows.length - k).join("").replace(/\s+/g, "");
-    if ((k === 1 ? KEY_UNLOCK_ROW : KEY_UNLOCK_WRAPPED).test(joined)) return true;
+    if ((k === 1 ? KEY_UNLOCK_ROW : KEY_UNLOCK_WRAPPED).test(joined)) return k;
   }
-  return false;
+  return null;
 }
 
 /** fill_once's verdict: the loop's, widened to the key-unlock prompts read from its own `tail`. */
@@ -203,10 +219,11 @@ export async function runFillOnce(
   try {
     const outcome = await fillClaimed(deps, req, claim.anchor);
     if (tag === undefined) return outcome;
-    // `kept` says what the map holds NOW for this pane and anchor, however the call ended — an early decline
-    // (no prompt yet) leaves a kept tag kept (codex on #883).
-    const { kept: _kept, ...rest } = outcome;
-    return deps.kept.lookup(paneId, claim.anchor, tag) !== null ? { ...rest, kept: true } : rest;
+    // `kept` / `always` say what the map holds NOW for this pane and anchor, however the call ended — an early
+    // decline (no prompt yet) leaves a kept tag kept (codex on #883).
+    const { kept: _kept, always: _always, ...rest } = outcome;
+    if (deps.kept.lookup(paneId, claim.anchor, tag) === null) return rest;
+    return deps.kept.alwaysAt(paneId, claim.anchor, tag) !== null ? { ...rest, kept: true, always: true } : { ...rest, kept: true };
   } finally {
     deps.release(paneId, claim.token);
   }
@@ -233,19 +250,26 @@ async function fillClaimed(
   const gate = { paneId, submit, anchor: anchor, before, procsBefore };
 
   // internal #281: a tag already kept for THIS pane and THIS anchor → confirm, not type. The kept secret is
-  // never erased here, whatever the outcome: it lives until the pane closes or forget_tag.
+  // never erased here, whatever the outcome: it lives until the pane closes or forget_tag. A tag the user
+  // marked "Don't ask again" skips the confirm only at a prompt with the text it was marked at (promptLineOf).
+  // The tick is recorded only when that fill goes in: a fill declined after the dialog (the prompt changed,
+  // the pane closed) was for a prompt that is gone, and the user agreed to what they saw.
   const keptId = tag !== undefined ? deps.kept.lookup(paneId, anchor, tag) : null;
   if (tag !== undefined && keptId !== null && req.retype !== true) {
-    let outcome: FillOnceOutcome;
     try {
-      outcome = (await deps.kept.confirm({ ...dialog, tag }))
-        ? await fillAfterDialog(deps, { ...gate, opaqueId: keptId })
-        : { kind: "cancelled" };
+      const line = promptLineOf(before.tail);
+      const choice = line !== null && deps.kept.alwaysAt(paneId, anchor, tag) === line
+        ? "fill"
+        : await deps.kept.confirm({ ...dialog, tag });
+      if (choice === "cancel") return { kind: "cancelled" };
+      const outcome = await fillAfterDialog(deps, { ...gate, opaqueId: keptId });
+      if (choice === "fill_always" && outcome.kind === "filled" && line !== null) {
+        deps.kept.allowAlways(paneId, anchor, tag, keptId, line);
+      }
+      return outcome;
     } catch (err) {
-      outcome = { kind: "fill_aborted", code: `fill_once_error:${err instanceof Error ? err.message : String(err)}` };
+      return { kind: "fill_aborted", code: `fill_once_error:${err instanceof Error ? err.message : String(err)}` };
     }
-    // `kept` says what the map holds NOW (a helper that died meanwhile took the tag with it).
-    return deps.kept.lookup(paneId, anchor, tag) !== null ? { ...outcome, kept: true } : outcome;
   }
   if (tag !== undefined && keptId === null && deps.kept.count(paneId, anchor) >= MAX_KEPT_TAGS_PER_PANE) {
     return { kind: "declined", reason: "tag_limit" };
@@ -268,6 +292,19 @@ async function fillClaimed(
   const wasErased = await erased(deps, opaqueId);
   const keptBefore = tag !== undefined && deps.kept.lookup(paneId, anchor, tag) !== null ? { kept: true as const } : {};
   return wasErased ? { ...outcome, ...keptBefore } : { ...outcome, ...keptBefore, cleanupFailed: true };
+}
+
+/**
+ * What "Don't ask again" is bound to: the prompt's rows — all of them when a key-unlock prompt wrapped (codex
+ * on #885: its last row alone, `id_ed25519':`, is the same for another user's key) — plus the non-empty row
+ * above them, each trimmed, joined by newlines. The row above catches a wrapped password prompt too (a last
+ * row of just `password:`), and is the command line when the same login is run again. Null when empty.
+ */
+function promptLineOf(tail: string): string | null {
+  const lines = stripAnsi(tail).split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  if (lines.length === 0) return null;
+  const take = (keyUnlockRows(tail) ?? 1) + 1;
+  return lines.slice(-take).join("\n");
 }
 
 /** Erase the one-time secret: two attempts (a pipe hiccup is the usual cause); false if both failed. */

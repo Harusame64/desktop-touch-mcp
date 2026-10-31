@@ -241,7 +241,15 @@ describe("KeyLockerHost client protocol (fake peer)", () => {
     expect(parsed).toMatchObject({ kind: "fill_kept", tag: "jump" });
   });
 
-  it.each(["cancel", "__err__", "autofill", "save", ""])("confirmKeptFill() FAILS CLOSED to cancel on reply %j", async (reply) => {
+  it("confirmKeptFill() returns fill_always when the user ticked 'always' (the dialog's checkbox)", async () => {
+    const path = pipePath();
+    await listen(makeFakeLocker(path, { promptReply: "fill_always" }), path);
+    const host = await KeyLockerHost.connectForTest(path);
+    hosts.push(host);
+    expect(await host.confirmKeptFill({ label: "l", note: "n", tag: "t" })).toBe("fill_always");
+  });
+
+  it.each(["cancel", "__err__", "autofill", "save", "", "FILL_ALWAYS", "fill always"])("confirmKeptFill() FAILS CLOSED to cancel on reply %j", async (reply) => {
     const path = pipePath();
     await listen(makeFakeLocker(path, { promptReply: reply }), path);
     const host = await KeyLockerHost.connectForTest(path);

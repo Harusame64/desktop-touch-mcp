@@ -52,7 +52,7 @@ function fake(o: {
   deleteFails?: number;
   /** internal #281: the kept-tag map (a real `KeptTags` by default) and the confirm dialog's answer. */
   kept?: KeptTags;
-  confirm?: boolean;
+  confirm?: boolean | "fill_always";
   confirmThrows?: boolean;
   anchoredSeq?: boolean[];
   opaqueId?: string;
@@ -91,7 +91,13 @@ function fake(o: {
       confirm: async (dialog) => {
         calls.push(`confirm:${dialog.tag}:${dialog.label}:${dialog.note}`);
         if (o.confirmThrows) throw new Error("pipe drop");
-        return o.confirm ?? true;
+        const c = o.confirm ?? true;
+        return c === true ? "fill" : c === false ? "cancel" : c;
+      },
+      alwaysAt: (id, anchor, tag) => kept.alwaysAt(id, anchor, tag),
+      allowAlways: (id, anchor, tag, opaqueId, line) => {
+        calls.push(`always:${tag}:${opaqueId}:${line}`);
+        kept.allowAlways(id, anchor, tag, opaqueId, line);
       },
       keep: (id, anchor, tag, opaqueId) => { calls.push(`keep:${tag}:${opaqueId}`); return kept.keep(id, anchor, tag, opaqueId, HELPER); },
     },
@@ -677,5 +683,117 @@ describe("KeyLockerCaptureDriver — a closed or re-anchored pane forgets its ke
     expect(forgotten).toEqual([]);
     d.onLocalPaneLaunched("1234", { ...ANCHOR, shellPid: 5555 });
     expect(forgotten).toEqual(["1234"]);
+  });
+});
+
+// ── "Don't ask again" (user request 2026-10-30; scope 2026-10-31: that tag only, at the same prompt) ──────
+
+/** The mark for TAIL: the prompt row and the row above it. */
+const LINE = "harus@hop:~$ ssh harus@192.168.1.20\nharus@192.168.1.20's password:";
+const ELSEWHERE = "PS C:\\> ssh hop\nharus@hop:~$ sudo -i\n[sudo] password for harus: ";
+
+describe("runFillOnce — a kept tag marked \"Don't ask again\"", () => {
+  it("Fill with the box ticked marks the prompt line; the next fill there skips the confirm and runs every gate", async () => {
+    const k = withKept();
+    const f = fake({ kept: k.tags, confirm: "fill_always" });
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "filled", verified: true, kept: true, always: true });
+    expect(f.calls).toContain(`always:jump:kept-1:${LINE}`);
+    const g = fake({ kept: k.tags });
+    expect(await runFillOnce(g.deps, TAGGED)).toEqual({ kind: "filled", verified: true, kept: true, always: true });
+    expect(g.calls).toEqual([
+      "claim:1234", "failsafe", "prompt", "procs",
+      "prompt", "procs", "failsafe", "anchored",
+      "inject:4321:kept-1:true", "release",
+    ]);
+  });
+
+  it("a prompt with other text asks again (sudo, another host, a bare Password:)", async () => {
+    for (const tail of [ELSEWHERE, "harus@hop:~$ ssh x@10.0.0.9\nx@10.0.0.9's password: ", "Password: "]) {
+      const k = withKept();
+      k.tags.allowAlways("1234", ANCHOR, "jump", "kept-1", LINE);
+      const f = fake({ kept: k.tags, prompts: [PROMPT(true, tail), PROMPT(true, tail)] });
+      expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "filled", verified: true, kept: true, always: true });
+      expect(confirmed(f)).toBe(true);
+    }
+  });
+
+  it("the same login run again later skips (other output above it does not matter)", async () => {
+    const k = withKept();
+    k.tags.allowAlways("1234", ANCHOR, "jump", "kept-1", LINE);
+    const again = `${TAIL}\nharus@192.168.1.20:~$ exit\nlogout\n${LINE} `;
+    const f = fake({ kept: k.tags, prompts: [PROMPT(true, again), PROMPT(true, again)] });
+    await runFillOnce(f.deps, TAGGED);
+    expect(confirmed(f)).toBe(false);
+    expect(wrote(f)).toBe(true);
+  });
+
+  it("the same prompt row under a different row above asks again (a failed try; a wrapped `password:`)", async () => {
+    for (const above of ["Permission denied, please try again.", "alice@another-very-long-host-name.example's"]) {
+      const k = withKept();
+      k.tags.allowAlways("1234", ANCHOR, "jump", "kept-1", LINE);
+      const tail = `${TAIL}\n${above}\nharus@192.168.1.20's password: `;
+      const f = fake({ kept: k.tags, prompts: [PROMPT(true, tail), PROMPT(true, tail)] });
+      await runFillOnce(f.deps, TAGGED);
+      expect(confirmed(f)).toBe(true);
+    }
+  });
+
+  it("a wrapped key-unlock prompt is bound to all its rows: another user's key asks again (codex on #885)", async () => {
+    const wrapped = (user: string): string => `PS C:\\> ssh hop\nEnter passphrase for key '/home/${user}/.ssh/\r\nid_ed25519': `;
+    const k = withKept();
+    const f = fake({ kept: k.tags, confirm: "fill_always", prompts: [PROMPT(true, wrapped("alice")), PROMPT(true, wrapped("alice"))] });
+    expect((await runFillOnce(f.deps, TAGGED)).always).toBe(true);
+    const same = fake({ kept: k.tags, prompts: [PROMPT(true, wrapped("alice")), PROMPT(true, wrapped("alice"))] });
+    await runFillOnce(same.deps, TAGGED);
+    expect(confirmed(same)).toBe(false);
+    const other = fake({ kept: k.tags, prompts: [PROMPT(true, wrapped("bobby")), PROMPT(true, wrapped("bobby"))] });
+    await runFillOnce(other.deps, TAGGED);
+    expect(confirmed(other)).toBe(true);
+  });
+
+  it("a marked tag still declines at a gate: nothing typed, no dialog", async () => {
+    const k = withKept();
+    k.tags.allowAlways("1234", ANCHOR, "jump", "kept-1", LINE);
+    const f = fake({ kept: k.tags, prompts: [PROMPT(false, "$ ")] });
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "declined", reason: "not_at_prompt", kept: true, always: true });
+    expect(confirmed(f) || wrote(f)).toBe(false);
+  });
+
+  it.each([
+    ["the prompt changed during the dialog", { prompts: [PROMPT(true), PROMPT(true, ELSEWHERE)] }],
+    ["the write was refused", { inject: { ok: false as const, code: "other_reader" } }],
+    ["the pane closed during the dialog", { anchored: false }],
+  ])("ticked, but %s → not marked: the next fill asks again", async (_name, opts) => {
+    const k = withKept();
+    const f = fake({ kept: k.tags, confirm: "fill_always", ...opts });
+    expect((await runFillOnce(f.deps, TAGGED)).kind).not.toBe("filled");
+    expect(k.tags.alwaysAt("1234", ANCHOR, "jump")).toBeNull();
+  });
+
+  it("only that tag: another kept tag in the same pane still asks", async () => {
+    const k = withKept();
+    k.tags.keep("1234", ANCHOR, "db1", "kept-2", HELPER);
+    k.tags.allowAlways("1234", ANCHOR, "jump", "kept-1", LINE);
+    const f = fake({ kept: k.tags });
+    expect(await runFillOnce(f.deps, { ...REQ, tag: "db1" })).toEqual({ kind: "filled", verified: true, kept: true });
+    expect(confirmed(f)).toBe(true);
+  });
+
+  it("Fill without the tick does not mark", async () => {
+    const k = withKept();
+    const f = fake({ kept: k.tags });
+    expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "filled", verified: true, kept: true });
+    expect(k.tags.alwaysAt("1234", ANCHOR, "jump")).toBeNull();
+  });
+
+  it("a retype that fills replaces the secret and clears the mark: the next fill asks again", async () => {
+    const k = withKept();
+    k.tags.allowAlways("1234", ANCHOR, "jump", "kept-1", LINE);
+    const f = fake({ kept: k.tags, opaqueId: "op-2" });
+    expect(await runFillOnce(f.deps, { ...TAGGED, retype: true })).toEqual({ kind: "filled", verified: true, kept: true });
+    expect(opened(f)).toBe(true);
+    const g = fake({ kept: k.tags });
+    await runFillOnce(g.deps, TAGGED);
+    expect(confirmed(g)).toBe(true);
   });
 });

@@ -330,6 +330,7 @@ describe("key_locker — kept fill_once tags (internal #281)", () => {
     acceptConsent();
     const r = await call({ action: "list" });
     expect(r.paneTags).toEqual({});
+    expect(r.paneTagsNoConfirm).toEqual({});
   });
 
   it("forget_tag needs consent, then the live wiring", async () => {
@@ -355,6 +356,10 @@ describe("key_locker — kept fill_once tags (internal #281)", () => {
   it("a tagged reply says whether the tag is still kept, and leaves it out when the pane was never taken (codex on #883)", () => {
     expect(keptReply(undefined, { kind: "filled", verified: true })).toEqual({});
     expect(keptReply("jump", { kind: "declined", reason: "not_at_prompt", kept: true })).toEqual({ tag: "jump", tagKept: true });
+    expect(keptReply("jump", { kind: "filled", verified: true, kept: true, always: true }))
+      .toEqual({ tag: "jump", tagKept: true, tagAlways: true });
+    // `always` without `kept` (the tag went away) is never reported.
+    expect(keptReply("jump", { kind: "filled", verified: true, always: true })).toEqual({ tag: "jump", tagKept: false });
     expect(keptReply("jump", { kind: "declined", reason: "not_at_prompt" })).toEqual({ tag: "jump", tagKept: false });
     expect(keptReply("jump", { kind: "cancelled", kept: true })).toEqual({ tag: "jump", tagKept: true });
     expect(keptReply("jump", { kind: "declined", reason: "busy" })).toEqual({ tag: "jump" });

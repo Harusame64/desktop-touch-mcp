@@ -85,7 +85,7 @@ describe("the wiring keeps a tag only under the helper that captured it (interna
   it("the confirm seam goes to the helper's fill_kept confirm with the dialog's tag, label and reason", async () => {
     const { wiring, mgr } = setup();
     const s = await seamsFor(wiring);
-    expect(await s.kept.confirm({ label: "l", note: "n", tag: "jump" })).toBe(true);
+    expect(await s.kept.confirm({ label: "l", note: "n", tag: "jump" })).toBe("fill");
     expect(mgr.confirms).toEqual([{ label: "l", note: "n", tag: "jump" }]);
   });
 });

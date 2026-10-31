@@ -17,6 +17,14 @@
 //     and the secret went with the old process;
 //   * `dropPane` runs on every pane close (the driver's `onPaneClosed`, both the window_disappeared path and
 //     the wt shell-exit prune), `forget` on `forget_tag`, `clear` on server shutdown.
+// "Don't ask again" (user request 2026-10-30; scope decided 2026-10-31: that tag only, and only at the same
+// prompt): the confirm dialog has a checkbox, and a Fill with it ticked that FILLS marks THAT tag of THAT pane
+// with the prompt the user saw (its rows and the row above, `fill-once.ts promptLineOf`), so later fills of it
+// at a prompt with the same text skip the dialog. Past
+// the first hop a prompt is text the remote side writes, so a prompt with other text (sudo, another host, a
+// bare `Password:`) asks again; one that copies the text exactly is not caught. The mark lives on the entry,
+// so it goes with the tag — on pane close, forget_tag, a re-anchor, a helper change — and a retype (a new
+// secret) clears it: the user agreed to the secret they saw.
 // While any tag is held the helper must not be idle-disposed (that would kill the secrets after a minute) —
 // the wiring hands `hasAny` to `KeyLockerManager.setIdleKeepAlive`.
 
@@ -35,6 +43,8 @@ interface KeptEntry {
   opaqueId: string;
   /** The helper (host object) that holds the secret. Compared by identity with the live one. */
   holder: object;
+  /** The user ticked "Don't ask again" for this tag at this prompt line: later fills there skip the confirm. */
+  alwaysAt?: string;
 }
 
 interface PaneTags {
@@ -83,6 +93,20 @@ export class KeptTags {
     return this.paneFor(paneId, anchor)?.tags.get(tag)?.opaqueId ?? null;
   }
 
+  /** The prompt line this pane's tag fills at without the confirm, or null (not marked, or not kept). */
+  alwaysAt(paneId: string, anchor: PaneAnchor, tag: string): string | null {
+    return this.paneFor(paneId, anchor)?.tags.get(tag)?.alwaysAt ?? null;
+  }
+
+  /** Mark a kept tag "Don't ask again" at `promptLine` (replacing an earlier mark). False (nothing marked) when
+   *  the tag is not kept, or no longer holds `opaqueId` — the secret the user confirmed. */
+  allowAlways(paneId: string, anchor: PaneAnchor, tag: string, opaqueId: string, promptLine: string): boolean {
+    const e = this.paneFor(paneId, anchor)?.tags.get(tag);
+    if (e === undefined || e.opaqueId !== opaqueId) return false;
+    e.alwaysAt = promptLine;
+    return true;
+  }
+
   /** How many tags this pane (with this anchor) holds. */
   count(paneId: string, anchor: PaneAnchor): number {
     return this.paneFor(paneId, anchor)?.tags.size ?? 0;
@@ -91,7 +115,7 @@ export class KeptTags {
   /**
    * Keep `opaqueId` under `tag` for this pane. Refused (false) when the tag is malformed, when `holder` is not
    * the live helper (the secret would not be where the id says), or when a NEW tag would pass the per-pane cap.
-   * A tag already kept is replaced, and its old id erased.
+   * A tag already kept is replaced, and its old id erased; the replacement starts without "always".
    */
   keep(paneId: string, anchor: PaneAnchor, tag: string, opaqueId: string, holder: object | null): boolean {
     if (!isValidKeptTag(tag)) return false;
@@ -139,6 +163,18 @@ export class KeptTags {
   hasAny(): boolean {
     this.prune();
     return this.panes.size > 0;
+  }
+
+  /** The NAMES of the tags marked "Don't ask again", per pane (never the prompt, ids or secrets) — `list`'s
+   *  `paneTagsNoConfirm`. Panes with none are left out. */
+  noConfirmNames(): Record<string, string[]> {
+    this.prune();
+    const out: Record<string, string[]> = {};
+    for (const [paneId, p] of this.panes) {
+      const names = [...p.tags].filter(([, e]) => e.alwaysAt !== undefined).map(([t]) => t).sort();
+      if (names.length > 0) out[paneId] = names;
+    }
+    return out;
   }
 
   /** Tag NAMES per pane (never ids or secrets) — `list`'s `paneTags`. */

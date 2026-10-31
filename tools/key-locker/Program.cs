@@ -369,7 +369,7 @@ internal static class KeyLocker
     /// never a secret, and it touches NO store entry — so the pipe carries only {kind,label} in and the
     /// user's {choice} out. `kind="confirm"` (MATCH backstop) → "autofill"/"type_it"; `kind="offer"`
     /// (NO-MATCH save) → "save"/"not_now"/"never"; `kind="fill_kept"` (internal #281: before a kept fill_once
-    /// tag is filled, with the frame's `note` and `tag`) → "fill"/"cancel". A dialog failure normalizes to the
+    /// tag is filled, with the frame's `note` and `tag`) → "fill"/"fill_always"/"cancel". A dialog failure normalizes to the
     /// FAIL-CLOSED choice (the loop then declines/discards) — never a spuriously-permissive one.
     private static void HandlePrompt(NamedPipeServerStream server, long id, string line)
     {
@@ -851,7 +851,8 @@ internal static class ConsentDialog
 ///   * kind="confirm" (MATCH, seed §4 state 2): "Autofill saved secret for `label`?" [Autofill]/[Type it]
 ///   * kind="offer"   (NO-MATCH, seed §4 state 1): "Save `label` for next time?" [Save]/[Not now]/[Never]
 ///   * kind="fill_kept" (internal #281): "Fill the password kept as `tag` into `label`?" [Fill]/[Cancel], with
-///     the assistant's reason marked as its words. Focus starts on [Cancel] and nothing is IsDefault, so an
+///     the assistant's reason marked as its words, and an unticked "Don't ask again for `tag` at this same
+///     prompt" box: Fill with it ticked answers "fill_always". Focus starts on [Cancel] and nothing is IsDefault, so an
 ///     Enter the user was typing into the terminal when the window appeared never fills.
 /// Closing the window (✕ / Esc / cancel) returns the FAIL-CLOSED choice ("type_it" / "not_now" / "cancel") so a
 /// dismissed dialog never fills or saves. Runs on the STA UI thread (marshalled by HandlePrompt).
@@ -885,12 +886,22 @@ internal static class PromptDialog
             buttons.Children.Add(new Button { Content = content, Width = 110, Margin = new Thickness(4), IsDefault = isDefault, IsCancel = isCancel, Tag = value });
 
         var panel = new StackPanel { Margin = new Thickness(16), MaxWidth = 460 };
+        CheckBox? always = null;
         if (fillKept)
         {
             panel.Children.Add(new Label { Content = "Fill a kept password?", FontWeight = FontWeights.Bold, FontSize = 15 });
             panel.Children.Add(new TextBlock { Text = $"Fill the password kept as \"{tag}\" into:  {label}", Margin = new Thickness(4, 8, 4, 4), TextWrapping = TextWrapping.Wrap });
             if (!string.IsNullOrWhiteSpace(note))
                 panel.Children.Add(new TextBlock { Text = $"The assistant's reason (its words, it may be wrong):  {note}", Margin = new Thickness(4, 2, 4, 12), TextWrapping = TextWrapping.Wrap, FontStyle = FontStyles.Italic });
+            // "Don't ask again" (user request 2026-10-30; scope 2026-10-31: this tag only, at the same prompt). Off
+            // by default; it only changes what Fill answers. Cancel ignores it.
+            // A TextBlock, not a string: a string Content would read a '_' in the tag as an access key and hide it.
+            always = new CheckBox
+            {
+                Content = new TextBlock { Text = $"Don't ask again for \"{tag}\" at this same prompt in this terminal. A prompt with other text asks again; a fake one that copies this text is not caught.", TextWrapping = TextWrapping.Wrap },
+                Margin = new Thickness(4, 0, 4, 12),
+            };
+            panel.Children.Add(always);
             Add("Fill", "fill");
             Add("Cancel", "cancel", isCancel: true); // fail-closed; the tag stays kept
         }
@@ -927,7 +938,7 @@ internal static class PromptDialog
             if (child is Button b && !b.IsCancel)
             {
                 var value = (string)b.Tag!;
-                b.Click += (_, _) => { choice = value; win.DialogResult = true; };
+                b.Click += (_, _) => { choice = value == "fill" && always?.IsChecked == true ? "fill_always" : value; win.DialogResult = true; };
             }
         win.Loaded += (_, _) =>
         {
@@ -942,6 +953,6 @@ internal static class PromptDialog
 
     private static bool IsValidChoice(string kind, string v) =>
         kind == "confirm" ? (v == "autofill" || v == "type_it")
-        : kind == "fill_kept" ? (v == "fill" || v == "cancel")
+        : kind == "fill_kept" ? (v == "fill" || v == "fill_always" || v == "cancel")
                           : (v == "save" || v == "not_now" || v == "never");
 }
