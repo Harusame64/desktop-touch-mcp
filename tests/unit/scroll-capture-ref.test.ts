@@ -73,7 +73,7 @@ vi.mock("../../src/tools/_off-desktop.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_off-desktop.js")>();
   return { ...actual, offDesktopTarget: mockOffDesktop };
 });
-const { scrollCaptureHandler, framesIdentical, changedPixelCount } = await import("../../src/tools/scroll-capture.js");
+const { scrollCaptureHandler, scrollPositionReader } = await import("../../src/tools/scroll-capture.js");
 
 /** A uniform-gray RGBA frame; identical reads trigger the page-end break. */
 function uniformFrame(w: number, h: number) {
@@ -196,59 +196,77 @@ describe("scroll(action='capture') checks the front before every key and frame (
   });
 });
 
-// internal #326 (B), measured by win2 2026-11-10: on 165 px sections a PageDown changed only heading
-// digits, outside both strips, and the capture stopped after one frame.
+// internal #326 (B), measured by win2 2026-11-10: on 165 px sections a PageDown changed only the
+// section numbers, the strips matched, and the capture stopped after one frame. The pixels cannot tell
+// that from a page end, so the UIA scroll position decides where the window has one.
 describe("scroll(action='capture') page end on periodic content (internal #326 (B))", () => {
-  const W = 1100, H = 850;
-  const frame = (paint?: (data: Buffer) => void) => {
-    const data = Buffer.alloc(W * H * 4, 200);
-    paint?.(data);
-    return { data, width: W, height: H, channels: 4 as const };
-  };
-  // Paint `count` pixels black from row 100 (outside the 40% and 70% strips).
-  const digits = (count: number) => (data: Buffer) => {
-    for (let i = 0; i < count; i++) {
-      const p = (100 * W + i) * 4;
-      data[p] = 0; data[p + 1] = 0; data[p + 2] = 0;
-    }
+  const run = async (maxScrolls: number) => {
+    const r = await scrollCaptureHandler({ windowTitle: "W", direction: "down", maxScrolls, scrollDelayMs: 0, maxWidth: 800 } as never);
+    return JSON.parse((r.content as { type: string; text?: string }[]).find((b) => b.type === "text")!.text!);
   };
 
-  it("does not call frames identical when only a heading digit's worth of pixels changed outside the strips", () => {
-    // win2: 1,085-2,381 changed pixels per step part way down; the strips read MAE 0-1.
-    expect(changedPixelCount(frame(), frame(digits(1085)))).toBe(1085);
-    expect(framesIdentical(frame(), frame(digits(1085)), "down")).toBe(false);
-    expect(framesIdentical(frame(), frame(digits(1085)), "right")).toBe(false);
-  });
-
-  it("still calls frames identical past the end with a spinner or a blinking caret", () => {
-    // win2: about 270 pixels with a 32 px spinner, 0-14 with a caret.
-    expect(framesIdentical(frame(), frame(digits(272)), "down")).toBe(true);
-    expect(framesIdentical(frame(), frame(digits(14)), "down")).toBe(true);
-    expect(framesIdentical(frame(), frame(), "down")).toBe(true);
-  });
-
-  it("ignores a change below the colour delta (rendering noise)", () => {
-    const faint = (data: Buffer) => { for (let i = 0; i < 5000; i++) data[(100 * W + i) * 4] = 230; };
-    expect(changedPixelCount(frame(), frame(faint))).toBe(0);
-  });
-
-  it("goes on while the UIA scroll position moves, though the frames look identical", async () => {
-    // The fake frames are all the same; the position says the page is still scrolling.
+  it("goes on while the scroll position moves, though the frames look identical", async () => {
     let pct = 0;
     mockReadPercent.mockImplementation(async () => (pct += 10));
-    const r = await scrollCaptureHandler({ windowTitle: "W", direction: "down", maxScrolls: 3, scrollDelayMs: 0, maxWidth: 800 } as never);
-    const body = JSON.parse((r.content as { type: string; text?: string }[]).find((b) => b.type === "text")!.text!);
+    const body = await run(3);
     expect(body.ok).toBe(true);
     expect(mockCapture).toHaveBeenCalledTimes(4);
     expect(body.warning).toContain("maxScrolls reached");
   });
 
-  it("ends on identical frames when the UIA scroll position stopped moving", async () => {
+  it("ends on identical frames once the scroll position stops moving", async () => {
     mockReadPercent.mockResolvedValue(100);
-    const r = await scrollCaptureHandler({ windowTitle: "W", direction: "down", maxScrolls: 5, scrollDelayMs: 0, maxWidth: 800 } as never);
-    const body = JSON.parse((r.content as { type: string; text?: string }[]).find((b) => b.type === "text")!.text!);
+    const body = await run(5);
     expect(body.ok).toBe(true);
     expect(mockCapture).toHaveBeenCalledTimes(3);
     expect(body.warning).toBeUndefined();
+  });
+
+  it("ends on identical frames as before when the window has no scroll position, and stops asking", async () => {
+    mockReadPercent.mockResolvedValue(null);
+    const body = await run(5);
+    expect(body.ok).toBe(true);
+    expect(mockCapture).toHaveBeenCalledTimes(3);
+    // The warm-up and the first frame's read come back empty; no more reads after that.
+    expect(mockReadPercent).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the last position across a failed read, so the next good read still shows movement", async () => {
+    // warm-up, then frames 0..3: 10, (failed), 30, 40 — the page is still moving throughout.
+    mockReadPercent
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(10)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(30)
+      .mockResolvedValueOnce(40);
+    const body = await run(3);
+    // frame 1 (failed read) is the first identical hit; frame 2's position moved (10 -> 30), so the
+    // run does not end there and reaches maxScrolls.
+    expect(mockCapture).toHaveBeenCalledTimes(4);
+    expect(body.warning).toContain("maxScrolls reached");
+  });
+});
+
+describe("scrollPositionReader (internal #326 (B), gate 2 on #916)", () => {
+  it("does not queue a read behind one still running", async () => {
+    vi.useFakeTimers();
+    try {
+      mockReadPercent.mockImplementation(() => new Promise(() => {})); // never answers
+      const read = scrollPositionReader(1n, "vertical");
+      const first = read();
+      await vi.advanceTimersByTimeAsync(250);
+      expect(await first).toBeNull();
+      expect(await read()).toBeNull();
+      expect(mockReadPercent).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("returns the position and passes the axis", async () => {
+    mockReadPercent.mockResolvedValue(42.5);
+    const read = scrollPositionReader(7n, "horizontal");
+    expect(await read()).toBe(42.5);
+    expect(mockReadPercent).toHaveBeenCalledWith({ hwnd: "7", axis: "horizontal" });
   });
 });
