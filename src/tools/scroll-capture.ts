@@ -2,7 +2,11 @@ import { z } from "zod";
 import { logDispatchSink } from "./_resolve-log.js";
 import sharp from "sharp";
 import { keyboard, mouse } from "../engine/nutjs.js";
-import { restoreAndFocusWindow } from "../engine/win32.js";
+import {
+  bringForward, stillInFront, inFrontTitle, NOT_IN_FRONT_HINT, LOST_FRONT_NOTE,
+  LOST_FRONT_BEFORE_ANY_KEY_HINT, LOST_FRONT_BEFORE_FIRST_FRAME_HINT,
+} from "./_bring-forward.js";
+import { offDesktopFailure } from "./_off-desktop.js";
 import { grabScreenRegionValidated } from "../engine/image.js";
 import { failWith, failCode } from "./_errors.js";
 import { parseKeys } from "../utils/key-map.js";
@@ -400,7 +404,15 @@ export const scrollCaptureHandler = async ({
 
     let targetRegion: { x: number; y: number; width: number; height: number } | null = null;
     if (targetHwnd !== null) {
-      const focusResult = restoreAndFocusWindow(targetHwnd);
+      // internal #326: keys and frames are only the target's while it is in front.
+      const brought = await bringForward(targetHwnd, { force: true, named: windowTitle });
+      if (brought.offDesktop) return offDesktopFailure("scroll", brought.offDesktop);
+      if (!brought.ok) {
+        return failWith(new Error("ForegroundRestricted"), "scroll", {
+          windowTitle, hint: NOT_IN_FRONT_HINT, attemptedForce: brought.forced, inFront: brought.inFrontTitle,
+        });
+      }
+      const focusResult = brought.rect;
       if (focusResult.width >= 100 && focusResult.height >= 100) {
         targetRegion = {
           x: focusResult.x,
@@ -415,8 +427,22 @@ export const scrollCaptureHandler = async ({
       return failWith(new Error(`No window found matching: "${windowTitle}"`), "scroll");
     }
 
+    // internal #326 (gate 2 on #915): checked again before every key and every frame. The window can
+    // lose the front part way through (the user clicks elsewhere, a popup); then the run stops rather
+    // than send keys to another window or capture it, and is not pulled back to the front.
+    // Before Ctrl+Home nothing was sent; after it, the target (only) got Ctrl+Home (gate 2 on #915).
+    const lostFront = (homeSent: boolean) =>
+      failWith(new Error("ForegroundRestricted"), "scroll", {
+        windowTitle,
+        hint: homeSent ? LOST_FRONT_BEFORE_FIRST_FRAME_HINT : LOST_FRONT_BEFORE_ANY_KEY_HINT,
+        inFront: inFrontTitle(),
+        lostPartWay: true,
+      });
+    let lostPartWay = false;
+
     // Scroll to start position (Ctrl+Home → top-left in most apps)
     await sleep(300);
+    if (!stillInFront(targetHwnd!)) return lostFront(false);
     await pressAndRelease("ctrl+home");
     await sleep(scrollDelayMs);
 
@@ -426,6 +452,11 @@ export const scrollCaptureHandler = async ({
     let identicalStreak = 0; // consecutive identical-frame count; break only at 2
 
     for (let i = 0; i <= maxScrolls; i++) {
+      if (!stillInFront(targetHwnd!)) {
+        if (frames.length === 0) return lostFront(true);
+        lostPartWay = true;
+        break;
+      }
       const frame = await captureRawRegion(targetRegion);
 
       // Page-end detection: require 2 consecutive identical frames to avoid
@@ -447,6 +478,10 @@ export const scrollCaptureHandler = async ({
       }
 
       if (i < maxScrolls) {
+        if (!stillInFront(targetHwnd!)) {
+          lostPartWay = true;
+          break;
+        }
         if (direction === "down") {
           await pressAndRelease("pagedown");
         } else {
@@ -638,6 +673,7 @@ export const scrollCaptureHandler = async ({
         total: stitchTotal,
       },
       ...(truncated ? { warning: "maxScrolls reached, image may be truncated" } : {}),
+      ...(lostPartWay ? { stoppedReason: "foreground_lost", note: LOST_FRONT_NOTE } : {}),
       ...(failedCount > 0 ? { overlapWarnings: warnings.filter(w => w.includes("failed")) } : {}),
       ...(sizeReduced ? { sizeReduced, tip: "Reduce maxScrolls or add grayscale=true for smaller output." } : {}),
     };

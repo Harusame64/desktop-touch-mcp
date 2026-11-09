@@ -15,7 +15,10 @@ export { detectOcrLanguage };
 import { failWith, failCode } from "./_errors.js";
 import { WindowFrozenError } from "../engine/window-frozen.js";
 import { keyboard } from "../engine/nutjs.js";
-import { restoreAndFocusWindow } from "../engine/win32.js";
+import {
+  bringForward, stillInFront, LOST_FRONT_NOTE, NEVER_IN_FRONT_READ_NOTE, OTHER_DESKTOP_READ_NOTE,
+} from "./_bring-forward.js";
+import { getWindowRectByHwnd } from "../engine/win32.js";
 import { canInjectAtTarget, postKeyComboToHwnd } from "../engine/bg-input.js";
 import { parseKeys } from "../utils/key-map.js";
 import {
@@ -93,6 +96,8 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
   // routing. With observation-only semantics here, the dialog/owner filter is
   // OFF (the OCR target can legitimately be a dialog).
   let focusedHwnd: bigint | null = null;
+  let everInFront = false;
+  let onOtherDesktop = false;
   let focusedRegion: { x: number; y: number; width: number; height: number } | null = null;
 
   {
@@ -111,7 +116,19 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
       // restoreAndFocusWindow restores from minimized + sets foreground + returns
       // the post-focus rect, replacing the previous `Window.focus()` + `Window.region`
       // pair from the nutjs flat enumeration.
-      const focusResult = restoreAndFocusWindow(focusedHwnd);
+      // OCR reads the window with PrintWindow, and the page keys go by PostMessage where the window
+      // takes them; such a window is read to the end without the front (gate 2 on #915). A window that
+      // takes page keys only in front (Chrome, measured by win2 2026-11-10) is asked with force here,
+      // as capture does; the per-page SendInput fallback below only checks, and stops when it is not
+      // in front (internal #326). A window on another virtual desktop is not brought forward: that
+      // would switch the user's desktop.
+      const brought = await bringForward(focusedHwnd, {
+        force: !canInjectAtTarget(focusedHwnd).supported,
+        named: args.windowTitle,
+      });
+      everInFront = brought.ok;
+      onOtherDesktop = brought.offDesktop !== undefined;
+      const focusResult = brought.offDesktop ? (getWindowRectByHwnd(focusedHwnd) ?? brought.rect) : brought.rect;
       if (focusResult.width >= 10 && focusResult.height >= 10) {
         focusedRegion = {
           x: focusResult.x,
@@ -131,7 +148,7 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
 
   const allLines: string[] = [];
   const perPage: Array<{ page: number; addedLines: number; duplicateLines: number }> = [];
-  let stoppedReason: "no_change" | "max_pages" | "ocr_empty" | "ocr_failed" = "max_pages";
+  let stoppedReason: "no_change" | "max_pages" | "ocr_empty" | "ocr_failed" | "foreground_refused" = "max_pages";
   let noChangeStreak = 0;
   let ocrError: string | null = null;
 
@@ -209,8 +226,14 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
         // SetForegroundWindow) instead of the legacy `Window.focus()` nutjs
         // method that came with the flat-window enumeration. Same observable
         // outcome (target window becomes foreground before nutjs keystroke).
-        restoreAndFocusWindow(focusedHwnd);
-        await new Promise<void>((r) => setTimeout(r, 100));
+        // internal #326: SendInput goes to whatever is in front, so the window must be in front.
+        // Checked, not asked: a user who moved to another window is not pulled back (gate 2 on #915),
+        // as capture stops on foreground_lost.
+        if (!stillInFront(focusedHwnd)) {
+          stoppedReason = "foreground_refused";
+          break;
+        }
+        everInFront = true;
         const arr = parseKeys(combo);
         logDispatchSink({ sink: "sendinput", tool: "scroll:read", targetHwnd: null });
         await keyboard.pressKey(...arr);
@@ -247,6 +270,9 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
         dedupedLines: perPage.reduce((s, p) => s + p.duplicateLines, 0),
         perPage,
         ...(ocrError !== null ? { error: ocrError } : {}),
+        ...(stoppedReason === "foreground_refused"
+          ? { note: onOtherDesktop ? OTHER_DESKTOP_READ_NOTE : everInFront ? LOST_FRONT_NOTE : NEVER_IN_FRONT_READ_NOTE }
+          : {}),
       }, null, 2),
     }],
   };
