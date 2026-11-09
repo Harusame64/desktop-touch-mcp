@@ -163,6 +163,13 @@ fn attr_opt(e: &AXUIElement, name: &'static str) -> Result<Option<CFRetained<CFT
     }
 }
 
+/// Whether a text field stands for a file: it carries `AXFilename` (a Finder name cell). A write
+/// to such a field changes only what the window shows, never the file's name (internal #256).
+/// Fails when the read failed rather than when the attribute is absent.
+fn names_a_file(e: &AXUIElement) -> Result<bool, AXError> {
+    Ok(attr_opt(e, "AXFilename")?.is_some())
+}
+
 /// `attr_string`, failing when the read failed rather than when the attribute is absent.
 fn attr_string_strict(e: &AXUIElement, name: &'static str) -> Result<Option<String>, AXError> {
     Ok(attr_opt(e, name)?.and_then(|v| v.downcast_ref::<CFString>().map(|s| s.to_string())))
@@ -453,7 +460,8 @@ pub struct MacAxElement {
     pub value_settable: bool,
     /// A text field that stands for a file (it carries `AXFilename`), such as a Finder name cell.
     /// Writing its value changes only what the window shows, never the file's name (internal #256).
-    /// Read on text fields only; `None` elsewhere and when the field names no file.
+    /// Asked only of elements whose value is settable: `Some(true)` when it names a file, `None`
+    /// otherwise (and when the read failed, which marks the tree `read_incomplete`).
     pub names_file: Option<bool>,
     pub child_count: u32,
 }
@@ -597,9 +605,18 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         let focused = read!(attr_bool(&e, "AXFocused"));
         let actions = read!(action_names(&e));
         let value_settable = read!(is_settable(&e, "AXValue"));
-        // Asked of text fields only, so the walk spends no message on the rest.
-        let names_file = if matches!(role.as_str(), "AXTextField" | "AXTextArea" | "AXComboBox" | "AXSearchField") {
-            read!(attr(&e, "AXFilename")).is_ok().then_some(true)
+        // Asked only of elements whose value can be written: the rest could never offer `type`,
+        // so the walk spends no message on them. A failed read marks the tree incomplete; the
+        // write itself asks again and refuses (`set_value`, `insert_text`).
+        let names_file = if value_settable {
+            match read!(names_a_file(&e)) {
+                Ok(true) => Some(true),
+                Ok(false) => None,
+                Err(_) => {
+                    read_incomplete = true;
+                    None
+                }
+            }
         } else {
             None
         };
@@ -688,7 +705,8 @@ pub struct MacActResult {
     pub ok: bool,
     /// Why the act was refused or failed: `element_not_found`,
     /// `element_changed`, `modal_blocking`, `action_not_advertised`, `value_not_settable`,
-    /// `selection_not_settable`, `length_unknown`, or the AX error name.
+    /// `selection_not_settable`, `length_unknown`, `names_file` (a write to a field that stands for
+    /// a file, internal #256), or the AX error name.
     pub reason: Option<String>,
     /// The element's value read back after a write (capped).
     pub value_after: Option<String>,
@@ -900,6 +918,16 @@ pub(crate) fn perform(t: &MacAxTarget, action: &str) -> MacActResult {
     MacActResult { ok: true, value_after: value_text(&e), ..Default::default() }
 }
 
+/// Refuse a write to a field that stands for a file, or whose `AXFilename` could not be read:
+/// the write would change only what the window shows (internal #256).
+fn refuse_file_name_write(e: &AXUIElement) -> Option<MacActResult> {
+    match names_a_file(e) {
+        Ok(false) => None,
+        Ok(true) => Some(refused("names_file")),
+        Err(err) => Some(refused(&ax_error_name(err))),
+    }
+}
+
 pub(crate) fn set_value(t: &MacAxTarget, value: &str) -> MacActResult {
     let e = match locate(t) {
         Ok(e) => e,
@@ -907,6 +935,9 @@ pub(crate) fn set_value(t: &MacAxTarget, value: &str) -> MacActResult {
     };
     if !is_settable(&e, "AXValue") {
         return refused("value_not_settable");
+    }
+    if let Some(r) = refuse_file_name_write(&e) {
+        return r;
     }
     let v = CFString::from_str(value);
     let err = unsafe { e.set_attribute_value(&cfstr("AXValue"), &v) };
@@ -928,6 +959,9 @@ pub(crate) fn insert_text(t: &MacAxTarget, text: &str, at: Option<i64>) -> MacAc
     // selection as it was.
     if !is_settable(&e, "AXSelectedText") {
         return refused("selection_not_settable");
+    }
+    if let Some(r) = refuse_file_name_write(&e) {
+        return r;
     }
     if let Some(at) = at {
         if !is_settable(&e, "AXSelectedTextRange") {

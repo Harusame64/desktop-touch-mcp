@@ -92,7 +92,8 @@
   as a text field you could `type` into. The write changed only what the window showed: the file kept its name (until
   the window was reopened), and the reply was `ok: true`. A name that stands for a file is now a `label` you can read,
   and `type` on it answers `action_not_offered` with nothing written. Finder's own rename box, opened with Return,
-  is still a text field (internal #256).
+  is still a text field, but the file is renamed only when Return is pressed there, which these tools cannot do yet
+  (internal #256).
 
 ## [2.4.0] - 2026-10-30 — Line breaks are typed as Enter, and typing, browser clicks and docking say when they did not do what was asked
 
