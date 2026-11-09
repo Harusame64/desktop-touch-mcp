@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { readdirSync, statSync, unlinkSync } from "node:fs";
 
 import { ok, buildDesc } from "./_types.js";
@@ -75,17 +75,39 @@ export function withRunGuard(code: string, macroName: string): string {
   );
 }
 
-/** Whether `code` declares a procedure named like the guard, which run_vba adds itself. */
+/**
+ * Whether `code` uses the guard's name at all. Any declaration of it — a Sub, Function, Static or
+ * Friend procedure, Property, variable, Const, Declare, Enum or Type — collides with the appended
+ * guard as a compile error, which stops Run on a dialog until the watchdog (gate 2 on #910).
+ */
 export function codeDeclaresRunGuard(code: string): boolean {
-  return new RegExp(`^\\s*(?:Public\\s+|Private\\s+)?(?:Sub|Function)\\s+${RUN_GUARD_NAME}\\b`, "im").test(code);
+  return new RegExp(`\\b${RUN_GUARD_NAME}\\b`, "i").test(code);
 }
 
 /**
- * How long Application.Run may take before run_vba ends this run's Excel. The guard does not cover
- * a compile error (a modal dialog), `End` (Excel crashes), or a hang after Err.Raise with no dialog
- * that win saw in 13 of 46 runs; the watchdog covers them all (internal #350).
+ * The parameters `macroName`'s declaration takes that a call without arguments cannot leave out.
+ * The guard calls it with none; a required one is a compile error there, which stops Run on a dialog
+ * (gate 2 on #910). Optional and ParamArray parameters may be left out.
  */
-const DEFAULT_RUN_TIMEOUT_SECONDS = 60;
+export function requiredParamsOf(code: string, macroName: string): string[] {
+  const escaped = macroName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = new RegExp(`^\\s*(?:Public\\s+|Private\\s+)?Sub\\s+${escaped}\\s*\\(([^)]*)\\)`, "im").exec(code);
+  if (!m) return [];
+  return m[1]!
+    .split(",")
+    .map((p) => p.trim())
+    .filter((p) => p !== "" && !/^(?:Optional|ParamArray)\b/i.test(p));
+}
+
+/**
+ * How long a hidden Application.Run may take before run_vba ends this run's Excel. The guard does not
+ * cover a compile error (a modal dialog), `End` (Excel crashes), or a hang after Err.Raise with no
+ * dialog that win saw in 13 of 46 runs; the watchdog covers them all (internal #350). Well under the
+ * MCP SDK's 60 s request timeout, which the call must beat for its error to reach the caller: the
+ * native run blocks the event loop until then. A visible run is not timed unless asked: the person
+ * watching it may be answering its MsgBox, or working in that Excel.
+ */
+const DEFAULT_RUN_TIMEOUT_SECONDS = 30;
 
 /** Older than this, a workbook in the folder is a leftover. A run takes seconds; the margin is for a long macro in
  *  another server process sharing the folder. */
@@ -181,11 +203,12 @@ const runVbaSchema = z.object({
     .int()
     .min(1)
     .max(3600)
-    .default(DEFAULT_RUN_TIMEOUT_SECONDS)
+    .optional()
     .describe(
-      "How long the macro may run. Past it, this run's Excel is ended and the call fails with " +
-        "VbaMacroExecutionFailed: a VBA dialog (a compile error, MsgBox, InputBox), `End`, or an endless " +
-        "loop would otherwise keep the call from returning. Default 60."
+      "How long the macro may run. Past it, this run's Excel is ended (unsaved work in it is lost) and the " +
+        "call fails with VbaMacroExecutionFailed: a VBA dialog (a compile error, MsgBox, InputBox), `End`, " +
+        "or an endless loop would otherwise keep the call from returning. Default 30 for a hidden run; a " +
+        "visible run is not timed unless this is given."
     ),
 });
 
@@ -233,6 +256,15 @@ async function handleRunVba(args: z.infer<typeof runVbaSchema>): Promise<ToolRes
   if (!codeDeclaresMacro(args.code, args.macroName)) {
     return failWith(
       `VbaMacroNotFound: code does not declare Sub ${args.macroName}(...)`,
+      "excel",
+      { macroName: args.macroName }
+    );
+  }
+
+  const required = requiredParamsOf(args.code, args.macroName);
+  if (required.length > 0) {
+    return failWith(
+      `VbaModuleAuthoringFailed: Sub ${args.macroName} takes arguments (${required.join(", ")}); run_vba calls it with none, so give it no parameters or make them Optional`,
       "excel",
       { macroName: args.macroName }
     );
@@ -309,7 +341,12 @@ async function handleRunVba(args: z.infer<typeof runVbaSchema>): Promise<ToolRes
     // other value with `VbaUnsupportedFileFormat` per Phase 3 contract.
     nativeExcel.excelWorkbookSaveAs?.(sessionId, workbookPath, 52);
 
-    const outcome = nativeExcel.excelMacroRun?.(sessionId, RUN_GUARD_NAME, args.timeoutSeconds * 1000);
+    const timeoutSeconds = args.timeoutSeconds ?? (args.visible ? undefined : DEFAULT_RUN_TIMEOUT_SECONDS);
+    const outcome = nativeExcel.excelMacroRun?.(
+      sessionId,
+      RUN_GUARD_NAME,
+      timeoutSeconds === undefined ? undefined : timeoutSeconds * 1000
+    );
     const raised = typeof outcome === "string" ? RUN_GUARD_ERR.exec(outcome) : null;
     if (raised) {
       return failWith(
@@ -318,7 +355,9 @@ async function handleRunVba(args: z.infer<typeof runVbaSchema>): Promise<ToolRes
         { macroName: args.macroName, vbaErrorNumber: Number(raised[1]), vbaErrorDescription: raised[2] }
       );
     }
-    if (outcome !== RUN_GUARD_OK) {
+    // `undefined`: a native build from before the guard returned nothing (void); the run went
+    // through as it always did. `null`: Run returned no string.
+    if (outcome !== RUN_GUARD_OK && outcome !== undefined) {
       // Run came back without the guard's word: the macro did not finish through it (`End` resets the
       // project). Not counted as done.
       return failWith(
@@ -362,6 +401,9 @@ async function handleRunVba(args: z.infer<typeof runVbaSchema>): Promise<ToolRes
       }
     }
     removeWorkbookSoon(workbookPath);
+    // Excel's owner file ("~$" + the name, holding the user's name). Excel removes it on a close; an
+    // Excel the watchdog ended leaves it (gate 2 on #910).
+    removeWorkbookSoon(join(dirname(workbookPath), "~$" + basename(workbookPath)));
   }
 }
 
@@ -476,7 +518,8 @@ export function registerExcelTools(server: McpServer): void {
           "Excel COM is STA: each call serialises through the bridge's worker thread, " +
           "so long-running macros block subsequent excel() calls on the same MCP server. " +
           "A runtime error in the macro fails the call with its VBA error number and text. " +
-          "A macro still running after timeoutSeconds (default 60) has its Excel ended and fails the call: " +
+          "A macro still running after timeoutSeconds (default 30 for a hidden run; a visible run only when given) " +
+          "has its Excel ended and fails the call: " +
           "a compile error, MsgBox / InputBox, `End` or an endless loop would otherwise never return.",
         examples: [
           "excel({action:'check_access_vbom'}) → {trusted:true, scope:'hkcu'}",

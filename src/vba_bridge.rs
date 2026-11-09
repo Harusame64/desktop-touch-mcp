@@ -374,13 +374,13 @@ pub fn excel_vba_module_add(
 /// before invoking `macro_run`.
 ///
 /// **TODO (Phase 4 reconsideration)**: this function is synchronous —
-/// the libuv main thread blocks for the full macro duration. User-
-/// authored VBA macros can run arbitrarily long; a long macro freezes
-/// the Node event loop including MCP stdin reads. If Phase 4 caller
-/// patterns expose this hazard, migrate to `AsyncTask` (matches the
-/// UIA-side pattern in `lib.rs`). The migration is non-breaking
-/// because the napi return type changes from `Result<()>` to
-/// `Promise<void>` which the TS layer already awaits anyway.
+/// the libuv main thread blocks for the full macro duration (up to the
+/// timeout). User-authored VBA macros can run arbitrarily long; a long
+/// macro freezes the Node event loop including MCP stdin reads. If Phase 4
+/// caller patterns expose this hazard, migrate to `AsyncTask` (matches the
+/// UIA-side pattern in `lib.rs`). The return type would change from
+/// `Result<Option<String>>` to `Promise<string | null>`: keep the string,
+/// which run_vba reads as the guard's answer.
 #[napi]
 pub fn excel_macro_run(session_id: u32, macro_name: String, timeout_ms: Option<u32>) -> Result<Option<String>> {
     napi_safe_call("excel_macro_run", || {

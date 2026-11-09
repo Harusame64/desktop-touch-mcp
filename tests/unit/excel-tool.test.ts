@@ -19,6 +19,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { basename, dirname } from "node:path";
 import { join } from "node:path";
 
 // Mock the native-engine surface BEFORE importing the handler so the
@@ -48,7 +49,7 @@ vi.mock("../../src/engine/native-engine.js", async (importOriginal) => {
   return { ...actual, nativeExcel: stub };
 });
 
-import { excelHandler, excelSchema, codeDeclaresMacro, withRunGuard } from "../../src/tools/excel.js";
+import { excelHandler, excelSchema, codeDeclaresMacro, withRunGuard, requiredParamsOf } from "../../src/tools/excel.js";
 import { nativeExcel } from "../../src/engine/native-engine.js";
 
 function parseResult(r: { content: { type: string; text: string }[] }) {
@@ -287,7 +288,7 @@ describe("excelHandler — run_vba", () => {
       expect.stringContaining(".xlsm"),
       52
     );
-    expect(nativeExcel!.excelMacroRun).toHaveBeenCalledWith(42, "DesktopTouchRunGuard", 60_000);
+    expect(nativeExcel!.excelMacroRun).toHaveBeenCalledWith(42, "DesktopTouchRunGuard", 30_000);
     expect(nativeExcel!.excelWorkbookClose).toHaveBeenCalledWith(42, false);
     expect(nativeExcel!.excelSessionClose).toHaveBeenCalledWith(42);
   });
@@ -537,5 +538,79 @@ describe("run_vba guard and timeout (internal #350)", () => {
     } as never).then(parseResult);
     expect(declared.code).toBe("VbaModuleAuthoringFailed");
     expect(nativeExcel!.excelSessionSpawn).not.toHaveBeenCalled();
+  });
+});
+
+// Gate 2 on #910.
+describe("run_vba guard and timeout: gate 2 on #910", () => {
+  const run = (extra: Record<string, unknown> = {}) =>
+    excelHandler({ action: "run_vba", code: SAMPLE_MACRO, ...extra } as never).then(parseResult);
+  beforeEach(() => {
+    const appData = mkdtempSync(join(tmpdir(), "dt-910-"));
+    vi.stubEnv("LOCALAPPDATA", appData);
+    mkdirSync(join(appData, "desktop-touch-mcp", "trusted-vba"), { recursive: true });
+    vi.mocked(nativeExcel!.excelMacroRun!).mockReset();
+    vi.mocked(nativeExcel!.excelMacroRun!).mockImplementation(() => "OK");
+  });
+
+  it("a hidden run is timed at 30 s by default, under the MCP SDK's 60 s request timeout", async () => {
+    await run();
+    expect(nativeExcel!.excelMacroRun).toHaveBeenCalledWith(42, "DesktopTouchRunGuard", 30_000);
+  });
+
+  it("a visible run is not timed unless timeoutSeconds is given", async () => {
+    await run({ visible: true });
+    expect(nativeExcel!.excelMacroRun).toHaveBeenLastCalledWith(42, "DesktopTouchRunGuard", undefined);
+    await run({ visible: true, timeoutSeconds: 90 });
+    expect(nativeExcel!.excelMacroRun).toHaveBeenLastCalledWith(42, "DesktopTouchRunGuard", 90_000);
+  });
+
+  it("a native build that returns nothing (before the guard) still counts a run as done", async () => {
+    vi.mocked(nativeExcel!.excelMacroRun!).mockImplementation(() => undefined as never);
+    const r = await run();
+    expect(r.ok).toBe(true);
+  });
+
+  it("refuses a Sub with required parameters before Excel starts; Optional and ParamArray pass", async () => {
+    expect(requiredParamsOf("Sub Foo(ByVal n As Long, Optional s As String)", "Foo")).toEqual(["ByVal n As Long"]);
+    expect(requiredParamsOf("Private Sub Foo(Optional s As String, ParamArray rest())", "Foo")).toEqual([]);
+    expect(requiredParamsOf("Sub Foo()", "Foo")).toEqual([]);
+    const r = await excelHandler({
+      action: "run_vba",
+      code: "Sub Foo(ByVal n As Long)\r\nEnd Sub",
+      macroName: "Foo",
+    } as never).then(parseResult);
+    expect(r.code).toBe("VbaModuleAuthoringFailed");
+    expect(r.error).toContain("takes arguments (ByVal n As Long)");
+    expect(nativeExcel!.excelSessionSpawn).not.toHaveBeenCalled();
+  });
+
+  it("refuses the guard's name in any declaration", async () => {
+    for (const decl of [
+      "Private Static Function DesktopTouchRunGuard()\r\nEnd Function",
+      "Public DesktopTouchRunGuard As Long",
+      "Property Get desktoptouchrunguard()\r\nEnd Property",
+    ]) {
+      const r = await run({ code: `${SAMPLE_MACRO}\r\n${decl}` });
+      expect(r.code, decl).toBe("VbaModuleAuthoringFailed");
+    }
+    expect(nativeExcel!.excelSessionSpawn).not.toHaveBeenCalled();
+  });
+
+  it("removes Excel's owner file beside the workbook, which an ended Excel leaves", async () => {
+    const { writeFileSync, existsSync } = await import("node:fs");
+    let owner = "";
+    vi.mocked(nativeExcel!.excelWorkbookSaveAs!).mockImplementationOnce((_s: unknown, path: unknown) => {
+      writeFileSync(path as string, "");
+      owner = join(dirname(path as string), "~$" + basename(path as string));
+      writeFileSync(owner, "");
+      return undefined as never;
+    });
+    vi.mocked(nativeExcel!.excelMacroRun!).mockImplementation(() => {
+      throw new Error("VbaMacroExecutionFailed: the macro did not return within 30 s, so this run's Excel (pid 9) was ended.");
+    });
+    await run();
+    expect(owner).not.toBe("");
+    expect(existsSync(owner)).toBe(false);
   });
 });

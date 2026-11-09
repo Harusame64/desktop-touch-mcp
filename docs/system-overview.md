@@ -626,9 +626,9 @@ against formula-only assistants that cannot execute VBA.
   (`%LOCALAPPDATA%\desktop-touch-mcp\trusted-vba`), opens it, and `Application.Run`s
   the macro. `macroName` must appear as `Sub <name>(…)` in `code` (else
   `VbaMacroNotFound`). A runtime error in the macro fails the call with its VBA error
-  number and text. A macro still running after `timeoutSeconds` (default 60) has its
+  number and text. A hidden run still running after `timeoutSeconds` (default 30) has its
   Excel ended and fails the call: a compile error, a MsgBox, `End` or an endless loop
-  would otherwise never return.
+  would otherwise never return. A visible run is timed only when `timeoutSeconds` is given.
 - `action='check_access_vbom'` is a read-only preflight returning
   `{ trusted, lockedByPolicy, scope }` — run it first so the remediation hint
   pre-empts an opaque COM failure inside `run_vba`.

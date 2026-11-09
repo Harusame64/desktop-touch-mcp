@@ -355,8 +355,13 @@ pub fn workbook_save_as(
 ///
 /// Calls `Application.Run(macro_name)`. The macro must already exist
 /// in the active workbook (typically added via [`vba_module_add`]).
-/// Returns `Ok(())` on successful invocation, or
+/// Returns what Run returned when it is a string (`None` otherwise), or
 /// [`VbaBridgeError::VbaMacroExecutionFailed`] if Excel rejects the call.
+///
+/// With `timeout`, a watchdog ends this session's Excel process when Run
+/// has not returned by then, and the call fails saying so (internal #350).
+/// When no Excel pid can be read for the watchdog, the call fails before
+/// Run rather than run without the timeout it was asked for.
 ///
 /// ## Trust Center gating (the reason Phase 2e exists)
 ///
@@ -400,8 +405,11 @@ pub fn macro_run(
                 }))
             }
             (Some(_), None) => {
-                eprintln!("[engine-vba-bridge] macro_run: no Excel pid from Application.Hwnd; running without a timeout");
-                None
+                // Run without the watchdog could block for ever, the very thing the timeout was
+                // asked to prevent: refuse before Run (gate 2 on #910).
+                return Err(VbaBridgeError::VbaMacroExecutionFailed(
+                    "no Excel process id could be read from Application.Hwnd, so the timeout cannot be applied; the macro was not run".to_string(),
+                ));
             }
             _ => None,
         };
@@ -410,6 +418,11 @@ pub fn macro_run(
         let _ = done_tx.send(());
         if let Some(w) = watchdog {
             let _ = w.join();
+        }
+        // Run answered: its answer stands, even when the watchdog ended Excel at the same moment
+        // (gate 2 on #910).
+        if let Ok(v) = &result {
+            return Ok(dispatch::variant_to_string(v));
         }
         if ended.load(std::sync::atomic::Ordering::SeqCst) {
             let secs = timeout.map(|t| t.as_secs()).unwrap_or_default();
