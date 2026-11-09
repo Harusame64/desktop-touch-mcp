@@ -451,7 +451,7 @@ pub fn workbook_close(session: &ExcelSession, save_changes: bool) -> VbaBridgeRe
 /// closure returns, satisfying this constraint by inspection. If
 /// future code violates this, COM ref-count management will go wrong
 /// in subtle ways — add a regression test before such a change.
-fn variant_to_dispatch(v: &VARIANT) -> Option<IDispatch> {
+pub(crate) fn variant_to_dispatch(v: &VARIANT) -> Option<IDispatch> {
     unsafe {
         let inner = &v.Anonymous.Anonymous;
         if inner.vt == windows::Win32::System::Variant::VT_DISPATCH {

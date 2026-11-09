@@ -254,12 +254,6 @@ async function handleRunVba(args: z.infer<typeof runVbaSchema>): Promise<ToolRes
 
     nativeExcel.excelMacroRun?.(sessionId, args.macroName);
 
-    try {
-      nativeExcel.excelWorkbookClose?.(sessionId, false);
-    } catch {
-      // Non-fatal: session drop releases everything.
-    }
-
     return ok({
       ok: true,
       action: "run_vba",
@@ -277,6 +271,15 @@ async function handleRunVba(args: z.infer<typeof runVbaSchema>): Promise<ToolRes
   } catch (err) {
     return failWith(mapNapiError(err), "excel", { macroName: args.macroName });
   } finally {
+    if (sessionId !== undefined) {
+      // Close the workbook on every path, failures included: the session close quits Excel only when no workbook
+      // is open, and a workbook left open kept one windowless EXCEL.EXE per failed run, holding the file (#345).
+      try {
+        nativeExcel.excelWorkbookClose?.(sessionId, false);
+      } catch {
+        // Nothing open (the run failed before Workbooks.Add) or Excel is gone.
+      }
+    }
     if (sessionId !== undefined && nativeExcel.excelSessionClose) {
       try {
         nativeExcel.excelSessionClose(sessionId);

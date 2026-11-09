@@ -38,6 +38,7 @@ use windows::Win32::System::Com::{
 };
 use windows::core::PCWSTR;
 
+use crate::dispatch;
 use crate::errors::{VbaBridgeError, VbaBridgeResult};
 
 /// Boxed closure that runs on the STA worker with the
@@ -292,10 +293,30 @@ fn worker_loop(
     // Drop the IDispatch on the apartment thread (release the COM
     // reference), then CoUninitialize. Order matters: CoUninitialize
     // invalidates interface pointers on this thread.
+    //
+    // Releasing the IDispatch alone does not end Excel: an instance that still
+    // holds a workbook stays running with no window, and holds the workbook's
+    // file open (#345: one EXCEL.EXE left per failed run_vba). Quit only when
+    // no workbook is open, so nothing unsaved can be thrown away here.
+    quit_if_no_workbook_open(&app);
     drop(app);
 
     unsafe {
         CoUninitialize();
+    }
+}
+
+/// Calls `Application.Quit` when `Workbooks.Count` reads 0. Any failure
+/// (Excel already gone, busy, a count that does not read) leaves Excel as it
+/// is: the caller only releases its reference, as before.
+fn quit_if_no_workbook_open(app: &IDispatch) {
+    let open = dispatch::invoke_get(app, "Workbooks", &[])
+        .ok()
+        .and_then(|v| crate::excel::variant_to_dispatch(&v))
+        .and_then(|books| dispatch::invoke_get(&books, "Count", &[]).ok())
+        .and_then(|v| i32::try_from(&v).ok());
+    if open == Some(0) {
+        let _ = dispatch::invoke_call(app, "Quit", &[]);
     }
 }
 

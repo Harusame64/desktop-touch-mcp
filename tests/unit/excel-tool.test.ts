@@ -304,7 +304,30 @@ describe("excelHandler — run_vba", () => {
     const body = parseResult(result);
     expect(body.ok).toBe(false);
     expect(body.code).toBe("VbaMacroExecutionFailed");
-    // The cleanup must still run.
+    // The cleanup must still run: the workbook is closed first, so the session close can quit Excel (#345).
+    expect(nativeExcel!.excelWorkbookClose).toHaveBeenCalledWith(42, false);
+    expect(nativeExcel!.excelSessionClose).toHaveBeenCalledWith(42);
+    expect(vi.mocked(nativeExcel!.excelWorkbookClose!).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(nativeExcel!.excelSessionClose!).mock.invocationCallOrder[0]
+    );
+  });
+
+  it("a workbook close that throws after a failed run keeps the run's error and still closes the session (#345)", async () => {
+    vi.mocked(nativeExcel!.excelMacroRun!).mockImplementationOnce(() => {
+      throw new Error("VbaMacroExecutionFailed: Application.Run failed (HRESULT=0x800a03ec): ...");
+    });
+    vi.mocked(nativeExcel!.excelWorkbookClose!).mockImplementationOnce(() => {
+      throw new Error("ComCallFailed: ActiveWorkbook did not return IDispatch");
+    });
+    const result = await excelHandler({
+      action: "run_vba",
+      code: SAMPLE_MACRO,
+      macroName: "DesktopTouchAdHoc",
+      visible: false,
+    });
+    const body = parseResult(result);
+    expect(body.ok).toBe(false);
+    expect(body.code).toBe("VbaMacroExecutionFailed");
     expect(nativeExcel!.excelSessionClose).toHaveBeenCalledWith(42);
   });
 
@@ -323,6 +346,7 @@ describe("excelHandler — run_vba", () => {
     const body = parseResult(result);
     expect(body.ok).toBe(false);
     expect(body.code).toBe("VbaModuleAuthoringFailed");
+    expect(nativeExcel!.excelWorkbookClose).toHaveBeenCalledWith(42, false);
     expect(nativeExcel!.excelSessionClose).toHaveBeenCalledWith(42);
   });
 });
