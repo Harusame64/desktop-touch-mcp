@@ -76,6 +76,12 @@ export const NOT_IN_FRONT_HINT =
   "Windows did not bring the window to the front, so no keys were sent: keys sent now would go to the window in front " +
   "(inFront). Close or answer that window, or click the target window, then try again.";
 
+/** Said when read stopped because the window, which takes page keys only in front, never came to the front. */
+export const NEVER_IN_FRONT_READ_NOTE =
+  "Windows did not bring the window to the front, and this window takes page keys only while it is in front, so " +
+  "reading stopped there instead of sending keys to another window. What was read is complete; click " +
+  "the target window (or close the window in front), then call again for the rest.";
+
 /** Said when the window stopped being in front part way through: what was read stands, the rest was not sent. */
 export const LOST_FRONT_NOTE =
   "The window stopped being in front part way through, so the run stopped there rather than send keys to another " +

@@ -40,8 +40,9 @@
   with the forced request and refuses with `ForegroundRestricted` if the window still is not in front, before
   sending anything. It checks again before every key and every frame, and when the window loses the front part way
   it stops with the frames taken so far (`stoppedReason: "foreground_lost"`) rather than pull it back. `read` needs
-  the front only where it falls back to sending keys; there it stops with `stoppedReason: "foreground_refused"` and
-  keeps the pages it read. Neither brings forward a window on another virtual desktop (internal #326).
+  the front only where it falls back to sending keys. For a window that takes page keys only in front, such as
+  Chrome, it asks with the forced request at the start, and when the window is not in front before a page key it
+  stops with `stoppedReason: "foreground_refused"` and keeps the pages it read. Neither brings forward a window on another virtual desktop (internal #326).
 - **Ctrl+C stops a command in a `key_locker` `launch_console` pane again.** In a classic console pane, Ctrl+C was
   ignored, so a running command could not be interrupted. The pane inherited "ignore Ctrl+C" from the way it was
   started. Its shell now turns normal Ctrl+C handling back on as it opens, whatever it inherited, and prints one line

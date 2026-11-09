@@ -727,6 +727,88 @@ describe("scrollReadHandler (mocked)", () => {
     expect(restoreMock).not.toHaveBeenCalledWith(0xCAFEn, { force: true });
   });
 
+  // win2 2026-11-10: Chrome takes page keys only in front. With another window holding the front from
+  // the start, read asks with force once, reads what it can without keys, and says it never got there.
+  it("asks with force at the start for a window that takes keys only in front, and says it never came forward", async () => {
+    const pressKeyMock = vi.fn().mockResolvedValue(undefined);
+    vi.doMock("../../src/engine/ocr-bridge.js", () => ({
+      recognizeWindowByHwnd: vi.fn().mockResolvedValue({ words: makeWords(["A"]), origin: { x: 0, y: 0 } }),
+      ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
+      detectOcrLanguage: () => "en",
+    }));
+    vi.doMock("../../src/engine/nutjs.js", () => ({ keyboard: { pressKey: pressKeyMock, releaseKey: vi.fn() } }));
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({ title: "TestWindow", hwnd: 0xCAFEn, warnings: [] }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
+    }));
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: vi.fn().mockReturnValue(false),
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: false, reason: "chromium" }),
+    }));
+    const restoreMock = vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
+    vi.doMock("../../src/engine/win32.js", () => ({
+      getForegroundHwnd: vi.fn().mockReturnValue(2n),
+      enumWindowsInZOrder: vi.fn().mockReturnValue([]),
+      getWindowTitleW: vi.fn().mockReturnValue("Other"),
+      getWindowRectByHwnd: vi.fn().mockReturnValue(null),
+      getWindowRoot: vi.fn((h: bigint) => h),
+      restoreAndFocusWindow: restoreMock,
+    }));
+    const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
+    const result = await scrollReadHandler({ action: "read", windowTitle: "Test", maxPages: 3, scrollKey: "PageDown", scrollDelayMs: 0, stopWhenNoChange: true });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.ok).toBe(true);
+    expect(body.pages).toBe(1);
+    expect(body.stoppedReason).toBe("foreground_refused");
+    expect(body.note).toContain("did not bring the window to the front");
+    expect(body.note).not.toContain("stopped being in front");
+    expect(pressKeyMock).not.toHaveBeenCalled();
+    // Forced once at the start (as capture is); the per-page ask is not forced.
+    expect(restoreMock.mock.calls.filter((c) => c[1]?.force === true)).toHaveLength(1);
+    expect(restoreMock.mock.calls[1]).toEqual([0xCAFEn, { force: true }]);
+  });
+
+  it("says the window stopped being in front when it came forward for a later page and then lost it", async () => {
+    vi.doMock("../../src/engine/ocr-bridge.js", () => ({
+      recognizeWindowByHwnd: vi.fn()
+        .mockResolvedValueOnce({ words: makeWords(["A"]), origin: { x: 0, y: 0 } })
+        .mockResolvedValueOnce({ words: makeWords(["B"]), origin: { x: 0, y: 0 } })
+        .mockResolvedValue({ words: makeWords(["C"]), origin: { x: 0, y: 0 } }),
+      ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
+      detectOcrLanguage: () => "en",
+    }));
+    const pressKeyMock = vi.fn().mockResolvedValue(undefined);
+    vi.doMock("../../src/engine/nutjs.js", () => ({ keyboard: { pressKey: pressKeyMock, releaseKey: vi.fn() } }));
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({ title: "TestWindow", hwnd: 0xCAFEn, warnings: [] }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
+    }));
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: vi.fn().mockReturnValue(false),
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: false, reason: "chromium" }),
+    }));
+    // Start: refused (plain, forced, then the title read); page 1's ask: in front; page 2's ask: refused.
+    const fg = vi.fn()
+      .mockReturnValueOnce(2n).mockReturnValueOnce(2n).mockReturnValueOnce(2n)
+      .mockReturnValueOnce(0xCAFEn)
+      .mockReturnValue(2n);
+    vi.doMock("../../src/engine/win32.js", () => ({
+      getForegroundHwnd: fg,
+      enumWindowsInZOrder: vi.fn().mockReturnValue([]),
+      getWindowTitleW: vi.fn().mockReturnValue("Other"),
+      getWindowRectByHwnd: vi.fn().mockReturnValue(null),
+      getWindowRoot: vi.fn((h: bigint) => h),
+      restoreAndFocusWindow: vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 }),
+    }));
+    const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
+    const result = await scrollReadHandler({ action: "read", windowTitle: "Test", maxPages: 3, scrollKey: "PageDown", scrollDelayMs: 0, stopWhenNoChange: true });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.pages).toBe(2);
+    expect(body.stoppedReason).toBe("foreground_refused");
+    expect(pressKeyMock).toHaveBeenCalledTimes(1);
+    expect(body.note).toContain("stopped being in front");
+  });
+
   it("skips BG path entirely when canInjectViaPostMessage reports unsupported (Chromium host) and goes straight to foreground fallback (round-5 regression)", async () => {
     // Chromium-class hosts: PostMessage would silently no-op so the BG
     // dispatch must be gated out before it is even attempted, otherwise the
