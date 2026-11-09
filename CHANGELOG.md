@@ -92,6 +92,13 @@
   machine that has it (found with Node v24.20.0): `wt.exe` is an app-execution alias, and that Node reports such a
   file as missing when asked whether it exists. The check now reads the alias itself. `host:'classic'` was not affected.
 
+### Added — macOS (preview)
+- **`desktop_discover` can list the app's menu bar (`menuBar: true`).** Each item is a `menuitem` named by its path,
+  such as `表示 > 科学計算`, and `desktop_act` `click` presses it without bringing the app forward. Some buttons
+  that open a menu answer `ok` and open nothing (Calculator's mode button); the same choice is usually in the
+  menu bar. The Apple menu is left out. Reading a large app's menu bar adds up to about 2 s, so it is read only
+  when asked (internal #258).
+
 ### Fixed — macOS (preview)
 - **`desktop_act` no longer reports a Finder rename that did not happen.** A file name in a Finder window was offered
   as a text field you could `type` into. The write changed only what the window showed: the file kept its name (until

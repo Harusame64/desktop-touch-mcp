@@ -872,6 +872,23 @@ fn modal_blocker(app: &AXUIElement, root: &AXUIElement, id: &str, timeout: f32) 
     if root_id.is_empty() {
         return None;
     }
+    // A menu bar item acts on the app's key window, but has no sheet under its own root: look at
+    // the focused and main windows instead, so a menu command is refused while their sheet is open
+    // as their own controls are (gate 2 on #904, internal #258).
+    if attr_string(root, "AXRole").as_deref() == Some("AXMenuBar") {
+        for name in ["AXFocusedWindow", "AXMainWindow"] {
+            let Some(w) = attr_element(app, name, timeout) else { continue };
+            if attr_string(&w, "AXRole").as_deref() == Some("AXSheet") {
+                return Some(format!("sheet:{}", attr_string(&w, "AXTitle").unwrap_or_default()));
+            }
+            if let Some(sheet) = children(&w, timeout)
+                .into_iter()
+                .find(|c| attr_string(c, "AXRole").as_deref() == Some("AXSheet"))
+            {
+                return Some(format!("sheet:{}", attr_string(&sheet, "AXTitle").unwrap_or_default()));
+            }
+        }
+    }
     for (i, child) in children(root, timeout).iter().enumerate() {
         if attr_string(child, "AXRole").as_deref() != Some("AXSheet") {
             continue;
