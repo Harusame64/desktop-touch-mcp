@@ -233,6 +233,7 @@ async function handleRunVba(args: z.infer<typeof runVbaSchema>): Promise<ToolRes
   const workbookPath = join(trustedDir, `dt_vba_${stampNs}.xlsm`);
 
   let sessionId: number | undefined;
+  let ran = false;
   try {
     sessionId = nativeExcel.excelSessionSpawn?.();
     if (sessionId === undefined) {
@@ -253,6 +254,7 @@ async function handleRunVba(args: z.infer<typeof runVbaSchema>): Promise<ToolRes
     nativeExcel.excelWorkbookSaveAs?.(sessionId, workbookPath, 52);
 
     nativeExcel.excelMacroRun?.(sessionId, args.macroName);
+    ran = true;
 
     return ok({
       ok: true,
@@ -272,10 +274,11 @@ async function handleRunVba(args: z.infer<typeof runVbaSchema>): Promise<ToolRes
     return failWith(mapNapiError(err), "excel", { macroName: args.macroName });
   } finally {
     if (sessionId !== undefined) {
-      // Close the run's own workbook on every path, failures included, before the session close: that close quits a
-      // hidden Excel, and a workbook left open kept one windowless EXCEL.EXE per failed run, holding the file (#345).
+      // Close the run's own workbook before the session close, which quits Excel only when nothing is open. A hidden
+      // run closes it on every path: a failed run used to leave one windowless EXCEL.EXE holding the file (#345). A
+      // visible run that failed keeps it on screen, as before, so the user can see where the macro stopped.
       try {
-        nativeExcel.excelWorkbookClose?.(sessionId, false);
+        if (ran || !args.visible) nativeExcel.excelWorkbookClose?.(sessionId, false);
       } catch {
         // Nothing was added (the run failed before Workbooks.Add) or Excel is gone.
       }

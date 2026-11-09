@@ -325,9 +325,11 @@ pub fn excel_workbook_save_as(
     })
 }
 
-/// Close the active workbook. `save_changes` maps directly to the
-/// `SaveChanges` argument of `Workbook.Close`. Does not close the
-/// Excel application — use [`excel_session_close`] for that.
+/// Close the workbook `excel_workbook_add_new` added in this session (not
+/// the active one, internal #345). `save_changes` maps directly to the
+/// `SaveChanges` argument of `Workbook.Close`. Throws when the session
+/// added no workbook. Does not close the Excel application — use
+/// [`excel_session_close`] for that.
 #[napi]
 pub fn excel_workbook_close(session_id: u32, save_changes: bool) -> Result<()> {
     napi_safe_call("excel_workbook_close", || {

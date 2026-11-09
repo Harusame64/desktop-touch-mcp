@@ -317,7 +317,7 @@ describe("excelHandler — run_vba", () => {
       throw new Error("VbaMacroExecutionFailed: Application.Run failed (HRESULT=0x800a03ec): ...");
     });
     vi.mocked(nativeExcel!.excelWorkbookClose!).mockImplementationOnce(() => {
-      throw new Error("ComCallFailed: ActiveWorkbook did not return IDispatch");
+      throw new Error("ComCallFailed: unexpected VARIANT shape: no workbook was added in this session");
     });
     const result = await excelHandler({
       action: "run_vba",
@@ -329,6 +329,24 @@ describe("excelHandler — run_vba", () => {
     expect(body.ok).toBe(false);
     expect(body.code).toBe("VbaMacroExecutionFailed");
     expect(nativeExcel!.excelSessionClose).toHaveBeenCalledWith(42);
+  });
+
+  it("a visible run that failed keeps its workbook on screen; a visible run that ran closes it (#345)", async () => {
+    vi.mocked(nativeExcel!.excelMacroRun!).mockImplementationOnce(() => {
+      throw new Error("VbaMacroExecutionFailed: Application.Run failed (HRESULT=0x800a03ec): ...");
+    });
+    const failed = parseResult(
+      await excelHandler({ action: "run_vba", code: SAMPLE_MACRO, macroName: "DesktopTouchAdHoc", visible: true })
+    );
+    expect(failed.code).toBe("VbaMacroExecutionFailed");
+    expect(nativeExcel!.excelWorkbookClose).not.toHaveBeenCalled();
+    expect(nativeExcel!.excelSessionClose).toHaveBeenCalledWith(42);
+
+    const ran = parseResult(
+      await excelHandler({ action: "run_vba", code: SAMPLE_MACRO, macroName: "DesktopTouchAdHoc", visible: true })
+    );
+    expect(ran.ok).toBe(true);
+    expect(nativeExcel!.excelWorkbookClose).toHaveBeenCalledWith(42, false);
   });
 
   it("cleans up the session even when SaveAs throws", async () => {

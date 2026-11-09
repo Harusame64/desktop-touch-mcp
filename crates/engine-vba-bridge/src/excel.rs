@@ -22,7 +22,7 @@
 //! - [`macro_run`] — calls `Application.Run` against a previously-added macro
 //! - [`workbook_close`] — closes the workbook [`workbook_add_new`] added
 //!   (not whatever is active: a macro may have made another one active),
-//!   with `DisplayAlerts` suppressed for the call
+//!   with `DisplayAlerts` and `EnableEvents` off for the call
 //!
 //! Functions for `eval_cell` / `refresh_power_query` listed in
 //! ADR §3.6 are still planned for a later commit.
@@ -46,12 +46,10 @@
 //!    `Application.Run`
 //! 7. `workbook_close(session, false)` — close the workbook (3) added,
 //!    without re-saving, on every path (a failed (5) or (6) included)
-//! 8. `drop(session)` — the STA worker ends Excel and releases the
-//!    `IDispatch` (internal #345). A hidden instance the user never took
-//!    over (`Visible` and `UserControl` both false) holds only what this
-//!    session opened, so every workbook in it is closed unsaved and Excel
-//!    is quit. Any other instance is quit only when no workbook is open in
-//!    it; otherwise it stays running, and the file stays held
+//! 8. `drop(session)` — the STA worker quits Excel when `UserControl` is
+//!    false and no workbook is open, then releases the `IDispatch`
+//!    (internal #345). Otherwise Excel is left to itself: a workbook still
+//!    open (a skipped (7), or one a macro opened) keeps it running
 //! 9. (caller's choice) `fs::remove_file(path)` — best-effort cleanup
 //!
 //! Sequence-violation failure modes for each step:
@@ -71,8 +69,8 @@
 //! - Skipping (7) (`workbook_close`): the workbook remains open
 //!   inside the alive `Excel.Application`; subsequent operations on
 //!   the same session see it as `ActiveWorkbook`. Tolerable for
-//!   chained authoring on a hidden instance (8) closes it; on a visible
-//!   or user-controlled one Excel then stays running
+//!   chained authoring, but (8) then leaves Excel running and the file
+//!   held (internal #345)
 //! - Skipping (8) (`drop(session)`) and immediately calling (9)
 //!   (`fs::remove_file`): Excel.exe still holds the file handle;
 //!   `remove_file` returns `ERROR_SHARING_VIOLATION`. The Phase 2e
@@ -152,8 +150,13 @@ pub fn workbook_add_new(session: &ExcelSession) -> VbaBridgeResult<()> {
         let workbooks_disp = variant_to_dispatch(&workbooks)
             .ok_or_else(|| make_unexpected("Workbooks property did not return IDispatch"))?;
         let new_book = dispatch::invoke_call(&workbooks_disp, "Add", &[])?;
+        let new_book = variant_to_dispatch(&new_book)
+            .ok_or_else(|| make_unexpected("Workbooks.Add did not return IDispatch"))?;
         // Kept so workbook_close closes this workbook and no other (#345).
-        apartment::remember_own_workbook(variant_to_dispatch(&new_book));
+        if apartment::own_workbook().is_some() {
+            eprintln!("[engine-vba-bridge] workbook_add_new: the earlier workbook of this session is no longer tracked and will not be closed by workbook_close");
+        }
+        apartment::remember_own_workbook(Some(new_book));
         Ok(())
     })
 }
@@ -389,25 +392,18 @@ pub fn macro_run(
     })
 }
 
-/// Close the active workbook.
+/// Close the workbook [`workbook_add_new`] added in this session.
 ///
-/// Calls `ActiveWorkbook.Close(SaveChanges)`. The `save_changes`
-/// argument maps directly to the COM method's first parameter:
-/// - `true` — persist any pending edits before closing
-/// - `false` — discard pending edits
+/// Not `ActiveWorkbook`: a macro that opens or adds a workbook makes that
+/// one active (internal #345). `save_changes` maps to `Workbook.Close`'s
+/// first parameter (`false` discards pending edits). `DisplayAlerts` and
+/// `EnableEvents` are off for the call and put back after, so neither an
+/// alert nor an event handler's dialog can block it in a hidden instance.
 ///
-/// Use this after [`macro_run`] (or any side-effect-bearing sequence)
-/// when the demo flow does not need the workbook to remain open. The
-/// `Excel.Application` itself stays alive — the session's STA worker
-/// thread holds the IDispatch reference and only releases it on
-/// [`ExcelSession`] drop.
-///
-/// Setting `save_changes = false` against a workbook with unsaved
-/// edits does NOT prompt the user (it suppresses the prompt
-/// internally). Setting `save_changes = true` against a workbook
-/// without a file path on disk will fail with a COM error because
-/// Excel does not know where to save; callers must run
-/// [`workbook_save_as`] first to anchor the workbook to a path.
+/// Fails with `ComCallFailed` when this session added no workbook (or
+/// already closed it). `Excel.Application` stays alive until the
+/// [`ExcelSession`] drop. Setting `save_changes = true` on a workbook
+/// with no path on disk fails: run [`workbook_save_as`] first.
 pub fn workbook_close(session: &ExcelSession, save_changes: bool) -> VbaBridgeResult<()> {
     session.with_app(move |app| {
         // The workbook workbook_add_new added, not ActiveWorkbook: a macro that
@@ -417,16 +413,19 @@ pub fn workbook_close(session: &ExcelSession, save_changes: bool) -> VbaBridgeRe
         let wb_disp = apartment::own_workbook()
             .ok_or_else(|| make_unexpected("no workbook was added in this session"))?;
 
-        // An alert in a hidden instance (the large-clipboard prompt after a
-        // macro copied a range) would block this call with nobody to answer.
-        let prev_display_alerts = dispatch::invoke_get(app, "DisplayAlerts", &[])
-            .unwrap_or_else(|_| true.into());
+        // An alert (the large-clipboard prompt after a macro copied a range)
+        // or an event handler's MsgBox would block this call in a hidden
+        // instance with nobody to answer.
+        let prev_alerts = dispatch::invoke_get(app, "DisplayAlerts", &[]).unwrap_or_else(|_| true.into());
+        let prev_events = dispatch::invoke_get(app, "EnableEvents", &[]).unwrap_or_else(|_| true.into());
         let _ = dispatch::invoke_put(app, "DisplayAlerts", false.into());
+        let _ = dispatch::invoke_put(app, "EnableEvents", false.into());
 
         let save_v: VARIANT = save_changes.into();
         let result = dispatch::invoke_call(&wb_disp, "Close", &[save_v]);
 
-        let _ = dispatch::invoke_put(app, "DisplayAlerts", prev_display_alerts);
+        let _ = dispatch::invoke_put(app, "EnableEvents", prev_events);
+        let _ = dispatch::invoke_put(app, "DisplayAlerts", prev_alerts);
         if result.is_ok() {
             apartment::remember_own_workbook(None);
         }
@@ -603,6 +602,11 @@ mod tests {
         }
     }
 
+    /// The EXCEL.EXE-count tests count every Excel on the machine, so they
+    /// must not overlap (cargo runs tests on parallel threads).
+    #[cfg(feature = "excel-installed")]
+    static EXCEL_COUNT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Number of EXCEL.EXE processes running now (tasklist, CSV, no header).
     #[cfg(feature = "excel-installed")]
     fn excel_process_count() -> usize {
@@ -635,6 +639,7 @@ mod tests {
     #[cfg(feature = "excel-installed")]
     #[test]
     fn a_failed_run_leaves_no_excel_running() {
+        let _serial = EXCEL_COUNT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let before = excel_process_count();
         let session = ExcelSession::spawn().expect("Excel must be installed for this test");
         set_visible(&session, false).expect("set_visible");
@@ -645,16 +650,38 @@ mod tests {
         assert_eq!(excel_count_returns_to(before), before, "an EXCEL.EXE stayed after a failed run");
     }
 
-    /// internal #345: a hidden session whose run left more than its own
-    /// workbook open (a macro's Workbooks.Add) still ends Excel on drop, and
-    /// workbook_close closes the session's workbook, not the active one.
+    /// internal #345: workbook_close closes the session's own workbook, not
+    /// the active one (a macro's Workbooks.Add made another one active); and
+    /// once that other one is closed too, the drop leaves no EXCEL.EXE.
     #[cfg(feature = "excel-installed")]
     #[test]
-    fn a_hidden_session_with_extra_workbooks_still_ends_excel() {
+    fn workbook_close_closes_the_sessions_own_workbook() {
+        let _serial = EXCEL_COUNT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let before = excel_process_count();
         let session = ExcelSession::spawn().expect("Excel must be installed for this test");
         set_visible(&session, false).expect("set_visible");
         workbook_add_new(&session).expect("workbook_add_new");
+        // COM identity: the IUnknown pointer of each open workbook.
+        let open_books = |session: &ExcelSession| {
+            session
+                .with_app(|app| {
+                    use windows::core::{IUnknown, Interface};
+                    let books = dispatch::invoke_get(app, "Workbooks", &[])?;
+                    let books = variant_to_dispatch(&books).expect("Workbooks");
+                    let n = i32::try_from(&dispatch::invoke_get(&books, "Count", &[])?).unwrap_or(0);
+                    let mut out = Vec::new();
+                    for i in 1..=n {
+                        let wb = dispatch::invoke_get(&books, "Item", &[i.into()])?;
+                        let wb = variant_to_dispatch(&wb).expect("Workbooks.Item");
+                        let unk: IUnknown = wb.cast().expect("IUnknown");
+                        out.push(unk.as_raw() as usize);
+                    }
+                    Ok(out)
+                })
+                .expect("open workbooks")
+        };
+        let own = open_books(&session);
+        assert_eq!(own.len(), 1);
         // What a macro's Workbooks.Add would do: another workbook, now active.
         session
             .with_app(|app| {
@@ -664,16 +691,18 @@ mod tests {
             })
             .expect("second Workbooks.Add");
         workbook_close(&session, false).expect("workbook_close");
-        let left = session
+        let left = open_books(&session);
+        assert_eq!(left.len(), 1);
+        assert_ne!(left[0], own[0], "workbook_close closed the active workbook instead of the session's own");
+        // Close the macro's workbook as its caller would; then nothing is open.
+        session
             .with_app(|app| {
-                let books = dispatch::invoke_get(app, "Workbooks", &[])?;
-                let books = variant_to_dispatch(&books).expect("Workbooks");
-                let n = dispatch::invoke_get(&books, "Count", &[])?;
-                Ok(i32::try_from(&n).unwrap_or(-1))
+                let wb = dispatch::invoke_get(app, "ActiveWorkbook", &[])?;
+                let wb = variant_to_dispatch(&wb).expect("ActiveWorkbook");
+                dispatch::invoke_call(&wb, "Close", &[false.into()]).map(|_| ())
             })
-            .expect("Workbooks.Count");
-        assert_eq!(left, 1, "workbook_close must close only the session's own workbook");
+            .expect("close the other workbook");
         drop(session);
-        assert_eq!(excel_count_returns_to(before), before, "an EXCEL.EXE stayed with an extra workbook open");
+        assert_eq!(excel_count_returns_to(before), before, "an EXCEL.EXE stayed with nothing open");
     }
 }

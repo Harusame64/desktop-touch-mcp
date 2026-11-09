@@ -865,8 +865,10 @@ export declare function excelWorkbookSaveAs(
   fileFormat: number,
 ): void
 
-/** Close the active workbook. Does not close `Excel.Application` —
- * use `excelSessionClose` for that. */
+/** Close the workbook `excelWorkbookAddNew` added in this session (not
+ * the active one, internal #345). Throws when the session added no
+ * workbook. Does not close `Excel.Application` — use `excelSessionClose`
+ * for that. */
 export declare function excelWorkbookClose(sessionId: number, saveChanges: boolean): void
 
 /** Add a VBA module to the active workbook + write source into it.
