@@ -359,7 +359,13 @@ pub fn excel_vba_module_add(
     })
 }
 
-/// Run a previously-added macro by name. Calls `Application.Run(macro_name)`.
+/// Run a previously-added macro by name. Calls `Application.Run(macro_name)`
+/// and returns what it returned when that is a string (`None` otherwise).
+///
+/// With `timeout_ms`, a watchdog ends this session's Excel process when Run
+/// has not returned by then, and the call fails with
+/// `VbaMacroExecutionFailed` saying so (internal #350): a VBA dialog,
+/// `End`, or an endless loop otherwise blocks it for ever.
 ///
 /// **Trust Center note (ADR-015 §3.6)**: macros on an in-memory unsaved
 /// workbook cannot be run regardless of `VBAWarnings` — Excel returns
@@ -368,18 +374,19 @@ pub fn excel_vba_module_add(
 /// before invoking `macro_run`.
 ///
 /// **TODO (Phase 4 reconsideration)**: this function is synchronous —
-/// the libuv main thread blocks for the full macro duration. User-
-/// authored VBA macros can run arbitrarily long; a long macro freezes
-/// the Node event loop including MCP stdin reads. If Phase 4 caller
-/// patterns expose this hazard, migrate to `AsyncTask` (matches the
-/// UIA-side pattern in `lib.rs`). The migration is non-breaking
-/// because the napi return type changes from `Result<()>` to
-/// `Promise<void>` which the TS layer already awaits anyway.
+/// the libuv main thread blocks for the full macro duration (up to the
+/// timeout). User-authored VBA macros can run arbitrarily long; a long
+/// macro freezes the Node event loop including MCP stdin reads. If Phase 4
+/// caller patterns expose this hazard, migrate to `AsyncTask` (matches the
+/// UIA-side pattern in `lib.rs`). The return type would change from
+/// `Result<Option<String>>` to `Promise<string | null>`: keep the string,
+/// which run_vba reads as the guard's answer.
 #[napi]
-pub fn excel_macro_run(session_id: u32, macro_name: String) -> Result<()> {
+pub fn excel_macro_run(session_id: u32, macro_name: String, timeout_ms: Option<u32>) -> Result<Option<String>> {
     napi_safe_call("excel_macro_run", || {
         let session = get_session(session_id)?;
-        map_bridge(excel::macro_run(&session, macro_name))
+        let timeout = timeout_ms.map(|ms| std::time::Duration::from_millis(ms as u64));
+        map_bridge(excel::macro_run(&session, macro_name, timeout))
     })
 }
 

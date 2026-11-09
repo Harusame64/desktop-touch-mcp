@@ -149,6 +149,21 @@ pub fn variant_to_dispatch(v: &VARIANT) -> Option<IDispatch> {
     }
 }
 
+/// The string a `VT_BSTR` VARIANT holds; `None` for any other type.
+///
+/// SAFETY: the union is read only under the `VT_BSTR` tag, and the BSTR is
+/// copied into a `String` without taking its ownership.
+pub fn variant_to_string(v: &VARIANT) -> Option<String> {
+    unsafe {
+        let inner = &v.Anonymous.Anonymous;
+        if inner.vt == windows::Win32::System::Variant::VT_BSTR {
+            Some((*inner.Anonymous.bstrVal).to_string())
+        } else {
+            None
+        }
+    }
+}
+
 /// Read a property by name from an `IDispatch`.
 ///
 /// Wraps `GetIDsOfNames(name)` + `Invoke(DISPATCH_PROPERTYGET)`.

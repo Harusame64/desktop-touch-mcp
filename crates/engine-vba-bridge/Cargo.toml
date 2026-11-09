@@ -32,6 +32,10 @@ windows = { version = "0.62", features = [
     "Win32_System_Ole",
     "Win32_System_Registry",
     "Win32_Foundation",
+    # run_vba's watchdog: the session's Excel pid from Application.Hwnd, and
+    # ending that process when Run does not return (internal #350).
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
 ] }
 
 [dev-dependencies]

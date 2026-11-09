@@ -34,6 +34,14 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **`excel` `run_vba` returns when the macro fails, instead of waiting for ever.** A runtime error in a hidden
+  run opened a VBA error dialog nobody could see, and the call never returned. The tool's server then timed out and
+  left Excel and the workbook behind. A runtime error now fails the call with `VbaMacroExecutionFailed` and the
+  VBA error number and text. A hidden run that has not returned after `timeoutSeconds` (new, default 30) has its
+  own Excel ended and fails the call the same way. This covers a compile error, a MsgBox or InputBox, `End`, and
+  an endless loop. A visible run is timed only when you pass `timeoutSeconds`, since you may be answering its
+  MsgBox or working in that Excel. A `Sub` that takes required arguments is now refused before Excel starts, since
+  run_vba calls it with none. The name `DesktopTouchRunGuard` is now taken by the tool (internal #350).
 - **`excel` `run_vba` runs the macro.** The module the code went into was named after the macro, and Excel then
   refused every run with "cannot run the macro" (0x800a03ec), whatever the code. The module now has its own
   name (#895).

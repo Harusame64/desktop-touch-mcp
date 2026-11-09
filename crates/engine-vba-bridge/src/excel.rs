@@ -41,7 +41,7 @@
 //!    — anchor to disk in a Trusted Location (the function internally
 //!    suppresses `DisplayAlerts` for the duration of the SaveAs call,
 //!    so the caller does NOT need to call [`set_display_alerts`])
-//! 6. `macro_run(session, macro_name)` — succeeds because (5) anchored
+//! 6. `macro_run(session, macro_name, timeout)` — succeeds because (5) anchored
 //!    the workbook in a Trusted Location and Trust Center allows
 //!    `Application.Run`
 //! 7. `workbook_close(session, false)` — close the workbook (3) added,
@@ -355,8 +355,13 @@ pub fn workbook_save_as(
 ///
 /// Calls `Application.Run(macro_name)`. The macro must already exist
 /// in the active workbook (typically added via [`vba_module_add`]).
-/// Returns `Ok(())` on successful invocation, or
+/// Returns what Run returned when it is a string (`None` otherwise), or
 /// [`VbaBridgeError::VbaMacroExecutionFailed`] if Excel rejects the call.
+///
+/// With `timeout`, a watchdog ends this session's Excel process when Run
+/// has not returned by then, and the call fails saying so (internal #350).
+/// When no Excel pid can be read for the watchdog, the call fails before
+/// Run rather than run without the timeout it was asked for.
 ///
 /// ## Trust Center gating (the reason Phase 2e exists)
 ///
@@ -378,10 +383,55 @@ pub fn workbook_save_as(
 pub fn macro_run(
     session: &ExcelSession,
     macro_name: String,
-) -> VbaBridgeResult<()> {
+    timeout: Option<std::time::Duration>,
+) -> VbaBridgeResult<Option<String>> {
     session.with_app(move |app| {
+        // A VBA dialog (a compile error, a MsgBox), `End`, an endless loop, or a hang after
+        // Err.Raise with no dialog at all keeps Run from returning, and this call — and the tool
+        // call above it — waits for ever (internal #350, measured by win 2026-11-09). With a
+        // timeout, a watchdog ends this session's own Excel process; Run then fails with an RPC
+        // error and the caller is told why.
+        let pid = timeout.and_then(|_| excel_pid(app));
+        let ended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let watchdog = match (timeout, pid) {
+            (Some(limit), Some(pid)) => {
+                let ended = ended.clone();
+                Some(std::thread::spawn(move || {
+                    let late = matches!(done_rx.recv_timeout(limit), Err(std::sync::mpsc::RecvTimeoutError::Timeout));
+                    if late && end_process(pid) {
+                        ended.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }))
+            }
+            (Some(_), None) => {
+                // Run without the watchdog could block for ever, the very thing the timeout was
+                // asked to prevent: refuse before Run (gate 2 on #910).
+                return Err(VbaBridgeError::VbaMacroExecutionFailed(
+                    "no Excel process id could be read from Application.Hwnd, so the timeout cannot be applied; the macro was not run".to_string(),
+                ));
+            }
+            _ => None,
+        };
         let name_v: VARIANT = BSTR::from(macro_name).into();
-        dispatch::invoke_call(app, "Run", &[name_v]).map_err(|e| match e {
+        let result = dispatch::invoke_call(app, "Run", &[name_v]);
+        let _ = done_tx.send(());
+        if let Some(w) = watchdog {
+            let _ = w.join();
+        }
+        // Run answered: its answer stands, even when the watchdog ended Excel at the same moment
+        // (gate 2 on #910).
+        if let Ok(v) = &result {
+            return Ok(dispatch::variant_to_string(v));
+        }
+        if ended.load(std::sync::atomic::Ordering::SeqCst) {
+            let secs = timeout.map(|t| t.as_secs()).unwrap_or_default();
+            return Err(VbaBridgeError::VbaMacroExecutionFailed(format!(
+                "the macro did not return within {secs} s, so this run's Excel (pid {}) was ended. A VBA dialog (a compile error, MsgBox, InputBox), `End`, or an endless loop keeps Application.Run from returning",
+                pid.unwrap_or_default()
+            )));
+        }
+        let v = result.map_err(|e| match e {
             VbaBridgeError::ComCallFailed { context, hresult } => {
                 VbaBridgeError::VbaMacroExecutionFailed(format!(
                     "Application.Run failed (HRESULT=0x{hresult:08x}): {context}"
@@ -389,8 +439,34 @@ pub fn macro_run(
             }
             other => other,
         })?;
-        Ok(())
+        Ok(dispatch::variant_to_string(&v))
     })
+}
+
+/// The process id of the Excel behind `app`, from `Application.Hwnd`.
+fn excel_pid(app: &windows::Win32::System::Com::IDispatch) -> Option<u32> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    let v = dispatch::invoke_get(app, "Hwnd", &[]).ok()?;
+    let hwnd = i64::try_from(&v).ok().or_else(|| i32::try_from(&v).ok().map(i64::from))?;
+    if hwnd == 0 {
+        return None;
+    }
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(HWND(hwnd as isize as *mut core::ffi::c_void), Some(&mut pid)) };
+    (pid != 0).then_some(pid)
+}
+
+/// End a process by id; `true` when it was ended.
+fn end_process(pid: u32) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+    unsafe {
+        let Ok(h) = OpenProcess(PROCESS_TERMINATE, false, pid) else { return false };
+        let ok = TerminateProcess(h, 1).is_ok();
+        let _ = CloseHandle(h);
+        ok
+    }
 }
 
 /// Close the workbook [`workbook_add_new`] added in this session.
@@ -548,7 +624,7 @@ pub(crate) mod tests {
         // never registered the Trusted Location or the registration
         // is stale (Excel reads it at process start). Surface that as
         // a panic with explicit remediation rather than a silent skip.
-        macro_run(&session, macro_name).unwrap_or_else(|e| {
+        macro_run(&session, macro_name, None).unwrap_or_else(|e| {
             panic!(
                 "macro_run FAILED after SaveAs to Trusted Location: {e}\n\
                  If this is HRESULT 0x800a03ec, the directory \
@@ -652,10 +728,101 @@ pub(crate) mod tests {
         let session = ExcelSession::spawn().expect("Excel must be installed for this test");
         set_visible(&session, false).expect("set_visible");
         workbook_add_new(&session).expect("workbook_add_new");
-        assert!(macro_run(&session, "NoSuchMacroInThisWorkbook".to_string()).is_err());
+        assert!(macro_run(&session, "NoSuchMacroInThisWorkbook".to_string(), None).is_err());
         workbook_close(&session, false).expect("workbook_close");
         drop(session);
         assert!(excel_count_returns_to(before) <= before, "an EXCEL.EXE stayed after a failed run");
+    }
+
+    /// Save the session's workbook into the managed Trusted Location, as run_vba does before
+    /// Run: with the documented Trust Center setup a macro in an unsaved workbook can be refused
+    /// with 0x800a03ec (codex on #910). Returns the path, for [`remove_saved`].
+    #[cfg(feature = "excel-installed")]
+    fn save_in_trusted_dir(session: &ExcelSession, tag: &str) -> std::path::PathBuf {
+        let dir = std::path::PathBuf::from(std::env::var("LOCALAPPDATA").expect("LOCALAPPDATA"))
+            .join("desktop-touch-mcp")
+            .join("trusted-vba");
+        assert!(dir.is_dir(), "Trusted Location missing: run `node scripts/enable-access-vbom.mjs`");
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = dir.join(format!("vba_bridge_{tag}_{nanos}.xlsm"));
+        workbook_save_as(
+            session,
+            path.to_str().expect("UTF-8 path").to_string(),
+            XlFileFormat::OpenXmlWorkbookMacroEnabled,
+        )
+        .expect("workbook_save_as");
+        path
+    }
+
+    /// Remove a workbook [`save_in_trusted_dir`] wrote and Excel's owner file beside it, which an
+    /// ended Excel leaves; Excel can hold the file a moment after it exits.
+    #[cfg(feature = "excel-installed")]
+    fn remove_saved(path: &std::path::Path) {
+        let owner = path.with_file_name(format!("~${}", path.file_name().unwrap().to_string_lossy()));
+        for p in [path.to_path_buf(), owner] {
+            for _ in 0..20 {
+                match std::fs::remove_file(&p) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                        std::thread::sleep(std::time::Duration::from_millis(250))
+                    }
+                    _ => break,
+                }
+            }
+        }
+    }
+
+    /// internal #350: a runtime error inside a guard (`On Error` around the call) comes back
+    /// as Run's string, with no dialog. Division by zero: 11 of 11 returned in win's spike
+    /// (Err.Raise hung with no dialog in some runs, so it is not the case pinned here).
+    #[cfg(feature = "excel-installed")]
+    #[test]
+    fn a_guarded_runtime_error_comes_back_as_text() {
+        let _serial = EXCEL_COUNT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let before = excel_process_count();
+        let session = ExcelSession::spawn().expect("Excel must be installed for this test");
+        set_visible(&session, false).expect("set_visible");
+        workbook_add_new(&session).expect("workbook_add_new");
+        let code = "Sub DtDivide()\r\n    Dim x\r\n    x = 1 / 0\r\nEnd Sub\r\n\r\n\
+                    Public Function DtGuard() As String\r\n    On Error GoTo Failed\r\n    DtDivide\r\n\
+                    DtGuard = \"OK\"\r\n    Exit Function\r\nFailed:\r\n\
+                    DtGuard = \"ERR \" & Err.Number & \": \" & Err.Description\r\nEnd Function\r\n";
+        vba_module_add(&session, "DtGuardModule".to_string(), code.to_string()).expect("vba_module_add");
+        let saved = save_in_trusted_dir(&session, "guard");
+        let out = macro_run(&session, "DtGuard".to_string(), Some(std::time::Duration::from_secs(30)))
+            .expect("the guard returns");
+        assert!(out.as_deref().is_some_and(|s| s.starts_with("ERR 11: ")), "got {out:?}");
+        workbook_close(&session, false).expect("workbook_close");
+        drop(session);
+        remove_saved(&saved);
+        assert!(excel_count_returns_to(before) <= before, "an EXCEL.EXE stayed after a guarded error");
+    }
+
+    /// internal #350: a macro that never returns has its Excel ended by the watchdog, and the
+    /// call fails with VbaMacroExecutionFailed instead of waiting for ever.
+    #[cfg(feature = "excel-installed")]
+    #[test]
+    fn a_macro_that_never_returns_is_ended_after_the_timeout() {
+        let _serial = EXCEL_COUNT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let before = excel_process_count();
+        let session = ExcelSession::spawn().expect("Excel must be installed for this test");
+        set_visible(&session, false).expect("set_visible");
+        workbook_add_new(&session).expect("workbook_add_new");
+        let code = "Sub DtForever()\r\n    Do\r\n        DoEvents\r\n    Loop\r\nEnd Sub\r\n";
+        vba_module_add(&session, "DtForeverModule".to_string(), code.to_string()).expect("vba_module_add");
+        let saved = save_in_trusted_dir(&session, "forever");
+        let t0 = std::time::Instant::now();
+        let err = macro_run(&session, "DtForever".to_string(), Some(std::time::Duration::from_secs(3)))
+            .expect_err("the watchdog ends the run");
+        let took = t0.elapsed();
+        assert!(matches!(&err, VbaBridgeError::VbaMacroExecutionFailed(m) if m.contains("did not return within 3 s")), "got {err:?}");
+        assert!(took < std::time::Duration::from_secs(20), "took {took:?}");
+        let _ = workbook_close(&session, false);
+        drop(session);
+        remove_saved(&saved);
+        assert!(excel_count_returns_to(before) <= before, "an EXCEL.EXE stayed after the watchdog");
     }
 
     /// internal #345: workbook_close closes the session's own workbook, not
