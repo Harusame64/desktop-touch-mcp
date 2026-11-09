@@ -138,8 +138,33 @@ describe("scroll(action='capture') checks the front before every key and frame (
     const body = textOf(await scrollCaptureHandler(args) as never);
     expect(body.code).toBe("ForegroundRestricted");
     expect(body.context?.lostPartWay ?? body.lostPartWay).toBe(true);
+    expect(JSON.stringify(body)).toContain("so no keys were sent");
     expect(mockPressKey).not.toHaveBeenCalled();
     expect(mockGrabRegion).not.toHaveBeenCalled();
+  });
+
+  it("says Ctrl+Home went to the target when the front is lost before the first frame", async () => {
+    // brought forward, before Ctrl+Home: in front; before frame 1: not.
+    mockForeground.mockReturnValueOnce(1n).mockReturnValueOnce(1n).mockReturnValue(999n);
+    const body = textOf(await scrollCaptureHandler(args) as never);
+    expect(body.code).toBe("ForegroundRestricted");
+    expect(JSON.stringify(body)).toContain("after Ctrl+Home was sent to it");
+    expect(JSON.stringify(body)).not.toContain("so no keys were sent");
+    expect(mockPressKey).toHaveBeenCalledTimes(1);
+    expect(mockGrabRegion).not.toHaveBeenCalled();
+  });
+
+  it("drops the tentatively kept near-duplicate frame when the front is lost after a first identical hit", async () => {
+    // in front for: bring, Ctrl+Home, frame 1, PageDown 1, frame 2 (identical: kept tentatively); lost before PageDown 2.
+    mockForeground
+      .mockReturnValueOnce(1n).mockReturnValueOnce(1n).mockReturnValueOnce(1n)
+      .mockReturnValueOnce(1n).mockReturnValueOnce(1n)
+      .mockReturnValue(999n);
+    const body = textOf(await scrollCaptureHandler(args) as never);
+    expect(body.ok).toBe(true);
+    expect(body.stoppedReason).toBe("foreground_lost");
+    expect(mockGrabRegion).toHaveBeenCalledTimes(2);
+    expect(body.frames).toBe(1);
   });
 
   it("stops after the frames it took when the window loses the front part way, sends no more keys and is not pulled back", async () => {

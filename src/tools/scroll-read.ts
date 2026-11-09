@@ -15,7 +15,9 @@ export { detectOcrLanguage };
 import { failWith, failCode } from "./_errors.js";
 import { WindowFrozenError } from "../engine/window-frozen.js";
 import { keyboard } from "../engine/nutjs.js";
-import { bringForward, LOST_FRONT_NOTE, NEVER_IN_FRONT_READ_NOTE } from "./_bring-forward.js";
+import {
+  bringForward, stillInFront, LOST_FRONT_NOTE, NEVER_IN_FRONT_READ_NOTE, OTHER_DESKTOP_READ_NOTE,
+} from "./_bring-forward.js";
 import { getWindowRectByHwnd } from "../engine/win32.js";
 import { canInjectAtTarget, postKeyComboToHwnd } from "../engine/bg-input.js";
 import { parseKeys } from "../utils/key-map.js";
@@ -95,6 +97,7 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
   // OFF (the OCR target can legitimately be a dialog).
   let focusedHwnd: bigint | null = null;
   let everInFront = false;
+  let onOtherDesktop = false;
   let focusedRegion: { x: number; y: number; width: number; height: number } | null = null;
 
   {
@@ -116,7 +119,7 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
       // OCR reads the window with PrintWindow, and the page keys go by PostMessage where the window
       // takes them; such a window is read to the end without the front (gate 2 on #915). A window that
       // takes page keys only in front (Chrome, measured by win2 2026-11-10) is asked with force here,
-      // as capture does; the per-page SendInput fallback below checks again and stops when it is not
+      // as capture does; the per-page SendInput fallback below only checks, and stops when it is not
       // in front (internal #326). A window on another virtual desktop is not brought forward: that
       // would switch the user's desktop.
       const brought = await bringForward(focusedHwnd, {
@@ -124,6 +127,7 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
         named: args.windowTitle,
       });
       everInFront = brought.ok;
+      onOtherDesktop = brought.offDesktop !== undefined;
       const focusResult = brought.offDesktop ? (getWindowRectByHwnd(focusedHwnd) ?? brought.rect) : brought.rect;
       if (focusResult.width >= 10 && focusResult.height >= 10) {
         focusedRegion = {
@@ -222,10 +226,10 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
         // SetForegroundWindow) instead of the legacy `Window.focus()` nutjs
         // method that came with the flat-window enumeration. Same observable
         // outcome (target window becomes foreground before nutjs keystroke).
-        // internal #326: SendInput goes to whatever is in front, so the window must be in front first.
-        // Not forced: a user who moved to another window is not pulled back every page (gate 2 on #915).
-        const brought = await bringForward(focusedHwnd, { force: false, named: args.windowTitle });
-        if (!brought.ok) {
+        // internal #326: SendInput goes to whatever is in front, so the window must be in front.
+        // Checked, not asked: a user who moved to another window is not pulled back (gate 2 on #915),
+        // as capture stops on foreground_lost.
+        if (!stillInFront(focusedHwnd)) {
           stoppedReason = "foreground_refused";
           break;
         }
@@ -266,7 +270,9 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
         dedupedLines: perPage.reduce((s, p) => s + p.duplicateLines, 0),
         perPage,
         ...(ocrError !== null ? { error: ocrError } : {}),
-        ...(stoppedReason === "foreground_refused" ? { note: everInFront ? LOST_FRONT_NOTE : NEVER_IN_FRONT_READ_NOTE } : {}),
+        ...(stoppedReason === "foreground_refused"
+          ? { note: onOtherDesktop ? OTHER_DESKTOP_READ_NOTE : everInFront ? LOST_FRONT_NOTE : NEVER_IN_FRONT_READ_NOTE }
+          : {}),
       }, null, 2),
     }],
   };

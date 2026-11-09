@@ -2,7 +2,9 @@ import { z } from "zod";
 import { logDispatchSink } from "./_resolve-log.js";
 import sharp from "sharp";
 import { keyboard, mouse } from "../engine/nutjs.js";
-import { bringForward, stillInFront, NOT_IN_FRONT_HINT, LOST_FRONT_NOTE } from "./_bring-forward.js";
+import {
+  bringForward, stillInFront, NOT_IN_FRONT_HINT, LOST_FRONT_NOTE, LOST_FRONT_BEFORE_FIRST_FRAME_HINT,
+} from "./_bring-forward.js";
 import { offDesktopFailure } from "./_off-desktop.js";
 import { grabScreenRegionValidated } from "../engine/image.js";
 import { failWith, failCode } from "./_errors.js";
@@ -427,15 +429,16 @@ export const scrollCaptureHandler = async ({
     // internal #326 (gate 2 on #915): checked again before every key and every frame. The window can
     // lose the front part way through (the user clicks elsewhere, a popup); then the run stops rather
     // than send keys to another window or capture it, and is not pulled back to the front.
-    const lostFront = () =>
+    // Before Ctrl+Home nothing was sent; after it, the target (only) got Ctrl+Home (gate 2 on #915).
+    const lostFront = (homeSent: boolean) =>
       failWith(new Error("ForegroundRestricted"), "scroll", {
-        windowTitle, hint: NOT_IN_FRONT_HINT, lostPartWay: true,
+        windowTitle, hint: homeSent ? LOST_FRONT_BEFORE_FIRST_FRAME_HINT : NOT_IN_FRONT_HINT, lostPartWay: true,
       });
     let lostPartWay = false;
 
     // Scroll to start position (Ctrl+Home → top-left in most apps)
     await sleep(300);
-    if (!stillInFront(targetHwnd!)) return lostFront();
+    if (!stillInFront(targetHwnd!)) return lostFront(false);
     await pressAndRelease("ctrl+home");
     await sleep(scrollDelayMs);
 
@@ -446,7 +449,7 @@ export const scrollCaptureHandler = async ({
 
     for (let i = 0; i <= maxScrolls; i++) {
       if (!stillInFront(targetHwnd!)) {
-        if (frames.length === 0) return lostFront();
+        if (frames.length === 0) return lostFront(true);
         lostPartWay = true;
         break;
       }
@@ -484,6 +487,10 @@ export const scrollCaptureHandler = async ({
         await sleep(scrollDelayMs);
       }
     }
+
+    // A frame pushed tentatively on a first identical hit is a near-duplicate when the run ends before
+    // the second hit (front lost, or maxScrolls): drop it as the page-end path does (gate 2 on #915).
+    if (identicalStreak === 1 && frames.length > 1) frames.pop();
 
     if (frames.length === 0) {
       return failCode("ToolError", "No frames captured");

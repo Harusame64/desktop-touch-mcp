@@ -642,8 +642,9 @@ describe("scrollReadHandler (mocked)", () => {
       stopWhenNoChange: true,
     });
 
-    // Initial focus + 1 re-focus before the only scroll keystroke (page 1 → page 2).
-    expect(restoreAndFocusMock).toHaveBeenCalledTimes(2);
+    // Initial focus only: the window is checked to be in front before the keystroke, not asked again
+    // (gate 2 on #915: a user who moved away is not pulled back).
+    expect(restoreAndFocusMock).toHaveBeenCalledTimes(1);
     expect(pressKeyMock).toHaveBeenCalled();
     expect(releaseKeyMock).toHaveBeenCalled();
   });
@@ -723,8 +724,48 @@ describe("scrollReadHandler (mocked)", () => {
     expect(body.note).toContain("stopped being in front");
     expect(body.text ?? body.lines ?? JSON.stringify(body)).toContain("A");
     expect(pressKeyMock).not.toHaveBeenCalled();
-    // Not pulled back: the per-page ask is never the forced one (gate 2 on #915).
-    expect(restoreMock).not.toHaveBeenCalledWith(0xCAFEn, { force: true });
+    // Not pulled back: only the initial focus asks; the page checks and stops (gate 2 on #915).
+    expect(restoreMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("says the window is on another desktop, not 'click it', when a keys-in-front window is off this desktop (internal #221)", async () => {
+    const pressKeyMock = vi.fn().mockResolvedValue(undefined);
+    vi.doMock("../../src/engine/ocr-bridge.js", () => ({
+      recognizeWindowByHwnd: vi.fn().mockResolvedValue({ words: makeWords(["A"]), origin: { x: 0, y: 0 } }),
+      ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
+      detectOcrLanguage: () => "en",
+    }));
+    vi.doMock("../../src/engine/nutjs.js", () => ({ keyboard: { pressKey: pressKeyMock, releaseKey: vi.fn() } }));
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({ title: "TestWindow", hwnd: 0xCAFEn, warnings: [] }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
+    }));
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: vi.fn().mockReturnValue(false),
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: false, reason: "chromium" }),
+    }));
+    vi.doMock("../../src/tools/_off-desktop.js", () => ({
+      offDesktopTarget: vi.fn().mockResolvedValue({ hwnd: 0xCAFEn, title: "TestWindow", sameTitleOnScreen: false }),
+    }));
+    const restoreMock = vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
+    vi.doMock("../../src/engine/win32.js", () => ({
+      getForegroundHwnd: vi.fn().mockReturnValue(2n),
+      enumWindowsInZOrder: vi.fn().mockReturnValue([{ hwnd: 0xCAFEn, title: "TestWindow", isCloaked: true }]),
+      getWindowTitleW: vi.fn().mockReturnValue("Other"),
+      getWindowRectByHwnd: vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 }),
+      getWindowRoot: vi.fn((h: bigint) => h),
+      restoreAndFocusWindow: restoreMock,
+    }));
+    const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
+    const result = await scrollReadHandler({ action: "read", windowTitle: "Test", maxPages: 3, scrollKey: "PageDown", scrollDelayMs: 0, stopWhenNoChange: true });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.ok).toBe(true);
+    expect(body.pages).toBe(1);
+    expect(body.stoppedReason).toBe("foreground_refused");
+    expect(body.note).toContain("another virtual desktop");
+    expect(body.note).not.toContain("click the target window");
+    expect(restoreMock).not.toHaveBeenCalled();
+    expect(pressKeyMock).not.toHaveBeenCalled();
   });
 
   // win2 2026-11-10: Chrome takes page keys only in front. With another window holding the front from
@@ -870,9 +911,9 @@ describe("scrollReadHandler (mocked)", () => {
 
     // postKeyComboToHwnd MUST NOT be invoked when canInject reports unsupported.
     expect(postKeyMock).not.toHaveBeenCalled();
-    // Fallback engaged: re-focus before the single scroll keystroke (Phase 5
-    // — restoreAndFocusWindow replaces the legacy Window.focus() method).
-    expect(restoreAndFocusMock).toHaveBeenCalledTimes(2);
+    // Fallback engaged: the window is checked to be in front before the single scroll keystroke; only
+    // the initial focus asks (gate 2 on #915).
+    expect(restoreAndFocusMock).toHaveBeenCalledTimes(1);
     expect(pressKeyMock).toHaveBeenCalled();
   });
 

@@ -82,6 +82,18 @@ export const NEVER_IN_FRONT_READ_NOTE =
   "reading stopped there instead of sending keys to another window. What was read is complete; click " +
   "the target window (or close the window in front), then call again for the rest.";
 
+/** Said when read stopped because the window, which takes page keys only in front, is on another virtual desktop. */
+export const OTHER_DESKTOP_READ_NOTE =
+  "The window is on another virtual desktop and takes page keys only while it is in front. Bringing it forward " +
+  "would switch the user's desktop, so reading stopped after what could be read without keys. Move the window to " +
+  "this desktop (or ask the user to switch), then call again for the rest.";
+
+/** Said when capture lost the front after Ctrl+Home went to the target and before the first frame. */
+export const LOST_FRONT_BEFORE_FIRST_FRAME_HINT =
+  "The window stopped being in front after Ctrl+Home was sent to it and before the first frame, so nothing was " +
+  "captured and no key went to another window. The window may now be scrolled to the top. Bring it forward and " +
+  "call again.";
+
 /** Said when the window stopped being in front part way through: what was read stands, the rest was not sent. */
 export const LOST_FRONT_NOTE =
   "The window stopped being in front part way through, so the run stopped there rather than send keys to another " +
