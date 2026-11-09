@@ -449,8 +449,24 @@ describe("title-bar buttons are named (2026-10-04)", () => {
   it("names the close button instead of leaving it nameless", () => {
     const close: any = { id: "a.0.5", rootKey: "R", elementKey: "K", depth: 1, role: "AXButton", subrole: "AXCloseButton", actions: ["AXPress"], valueSettable: false, childCount: 0 };
     expect(toCandidate(close, 7, "W", 1).label).toBe("Close window");
-    // internal #264: on a Japanese system the OS names it; that name comes first, the English beside it.
+    // internal #264: in an app running in Japanese macOS names it; that name comes first, the English beside it.
     expect(toCandidate({ ...close, roleDescription: "閉じるボタン" }, 7, "W", 1).label).toBe("閉じるボタン (Close window)");
+  });
+  // Gate 2 on #911.
+  it("keeps the English alone where macOS names it in English, or not at all", () => {
+    const close: any = { id: "a.0.5", rootKey: "R", elementKey: "K", depth: 1, role: "AXButton", subrole: "AXCloseButton", actions: ["AXPress"], valueSettable: false, childCount: 0 };
+    expect(toCandidate({ ...close, roleDescription: "close button" }, 7, "W", 1).label).toBe("Close window");
+    expect(toCandidate({ ...close, roleDescription: "Close Button" }, 7, "W", 1).label).toBe("Close window");
+    expect(toCandidate({ ...close, roleDescription: "" }, 7, "W", 1).label).toBe("Close window");
+    expect(toCandidate({ ...close, roleDescription: "  " }, 7, "W", 1).label).toBe("Close window");
+    const min = { ...close, subrole: "AXMinimizeButton" };
+    expect(toCandidate({ ...min, roleDescription: "しまうボタン" }, 7, "W", 1).label).toBe("しまうボタン (Minimize window)");
+    expect(toCandidate({ ...min, roleDescription: "minimize button" }, 7, "W", 1).label).toBe("Minimize window");
+  });
+  it("names it without changing what it is: the digest does not follow the language", () => {
+    const close: any = { id: "a.0.5", rootKey: "R", elementKey: "K", depth: 1, role: "AXButton", subrole: "AXCloseButton", actions: ["AXPress"], valueSettable: false, childCount: 0 };
+    const plain = toCandidate(close, 7, "W", 1);
+    expect(toCandidate({ ...close, roleDescription: "閉じるボタン" }, 7, "W", 1).digest).toBe(plain.digest);
   });
 });
 
