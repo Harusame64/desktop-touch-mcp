@@ -46,7 +46,8 @@ const MAX_CHARS_OVERRIDES: Record<string, number> = {
   // distance data and Phase 3 adds Tier 2 CDP semantics. Future phases (4: Tier
   // 3 PostMessage, 5: SSOT unification) will append more action notes, so the
   // override sits at 3000 with a comfortable buffer above the current ~2741.
-  scroll: 3000,
+  // internal #326 (PR #915) added the capture/read foreground codes and stop reasons (~3350).
+  scroll: 3400,
   // `keyboard` is the type / press / sequence dispatcher, and its description is
   // the only place an MCP client learns the destination rule: windowTitle or
   // hwnd is required, blank counts as neither, '@active' is the explicit way to

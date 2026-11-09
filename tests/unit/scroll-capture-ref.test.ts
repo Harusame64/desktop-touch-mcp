@@ -23,7 +23,8 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 
-const { mockCapture, mockGrabRegion, mockRestoreAndFocus, mockResolveWindowTarget, mockFindPlain, mockForeground, mockPressKey, mockOffDesktop } = vi.hoisted(() => ({
+const { mockReadPercent, mockCapture, mockGrabRegion, mockRestoreAndFocus, mockResolveWindowTarget, mockFindPlain, mockForeground, mockPressKey, mockOffDesktop } = vi.hoisted(() => ({
+  mockReadPercent: vi.fn(),
   mockCapture: vi.fn(),
   mockOffDesktop: vi.fn(),
   mockForeground: vi.fn(),
@@ -63,11 +64,16 @@ vi.mock("../../src/engine/image.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/image.js")>();
   return { ...actual, grabScreenRegionValidated: mockCapture };
 });
+// internal #326 (B): the UIA scroll position. Resolves null (no ScrollPattern) unless a test sets it.
+vi.mock("../../src/engine/native-engine.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/engine/native-engine.js")>();
+  return { ...actual, nativeUia: { ...(actual.nativeUia ?? {}), uiaReadScrollPercentAtHwnd: mockReadPercent } };
+});
 vi.mock("../../src/tools/_off-desktop.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_off-desktop.js")>();
   return { ...actual, offDesktopTarget: mockOffDesktop };
 });
-const { scrollCaptureHandler } = await import("../../src/tools/scroll-capture.js");
+const { scrollCaptureHandler, framesIdentical, changedPixelCount } = await import("../../src/tools/scroll-capture.js");
 
 /** A uniform-gray RGBA frame; identical reads trigger the page-end break. */
 function uniformFrame(w: number, h: number) {
@@ -87,6 +93,7 @@ beforeEach(() => {
   mockCapture.mockResolvedValue({ data: Buffer.alloc(200 * 200 * 4, 128), width: 200, height: 200, channels: 4 });
   mockForeground.mockReturnValue(1n);
   mockOffDesktop.mockResolvedValue(null);
+  mockReadPercent.mockResolvedValue(null);
 });
 afterEach(() => {
   delete process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR;
@@ -186,5 +193,62 @@ describe("scroll(action='capture') checks the front before every key and frame (
     expect(body.code).toBe("WindowOnOtherDesktop");
     expect(mockRestoreAndFocus).not.toHaveBeenCalled();
     expect(mockPressKey).not.toHaveBeenCalled();
+  });
+});
+
+// internal #326 (B), measured by win2 2026-11-10: on 165 px sections a PageDown changed only heading
+// digits, outside both strips, and the capture stopped after one frame.
+describe("scroll(action='capture') page end on periodic content (internal #326 (B))", () => {
+  const W = 1100, H = 850;
+  const frame = (paint?: (data: Buffer) => void) => {
+    const data = Buffer.alloc(W * H * 4, 200);
+    paint?.(data);
+    return { data, width: W, height: H, channels: 4 as const };
+  };
+  // Paint `count` pixels black from row 100 (outside the 40% and 70% strips).
+  const digits = (count: number) => (data: Buffer) => {
+    for (let i = 0; i < count; i++) {
+      const p = (100 * W + i) * 4;
+      data[p] = 0; data[p + 1] = 0; data[p + 2] = 0;
+    }
+  };
+
+  it("does not call frames identical when only a heading digit's worth of pixels changed outside the strips", () => {
+    // win2: 1,085-2,381 changed pixels per step part way down; the strips read MAE 0-1.
+    expect(changedPixelCount(frame(), frame(digits(1085)))).toBe(1085);
+    expect(framesIdentical(frame(), frame(digits(1085)), "down")).toBe(false);
+    expect(framesIdentical(frame(), frame(digits(1085)), "right")).toBe(false);
+  });
+
+  it("still calls frames identical past the end with a spinner or a blinking caret", () => {
+    // win2: about 270 pixels with a 32 px spinner, 0-14 with a caret.
+    expect(framesIdentical(frame(), frame(digits(272)), "down")).toBe(true);
+    expect(framesIdentical(frame(), frame(digits(14)), "down")).toBe(true);
+    expect(framesIdentical(frame(), frame(), "down")).toBe(true);
+  });
+
+  it("ignores a change below the colour delta (rendering noise)", () => {
+    const faint = (data: Buffer) => { for (let i = 0; i < 5000; i++) data[(100 * W + i) * 4] = 230; };
+    expect(changedPixelCount(frame(), frame(faint))).toBe(0);
+  });
+
+  it("goes on while the UIA scroll position moves, though the frames look identical", async () => {
+    // The fake frames are all the same; the position says the page is still scrolling.
+    let pct = 0;
+    mockReadPercent.mockImplementation(async () => (pct += 10));
+    const r = await scrollCaptureHandler({ windowTitle: "W", direction: "down", maxScrolls: 3, scrollDelayMs: 0, maxWidth: 800 } as never);
+    const body = JSON.parse((r.content as { type: string; text?: string }[]).find((b) => b.type === "text")!.text!);
+    expect(body.ok).toBe(true);
+    expect(mockCapture).toHaveBeenCalledTimes(4);
+    expect(body.warning).toContain("maxScrolls reached");
+  });
+
+  it("ends on identical frames when the UIA scroll position stopped moving", async () => {
+    mockReadPercent.mockResolvedValue(100);
+    const r = await scrollCaptureHandler({ windowTitle: "W", direction: "down", maxScrolls: 5, scrollDelayMs: 0, maxWidth: 800 } as never);
+    const body = JSON.parse((r.content as { type: string; text?: string }[]).find((b) => b.type === "text")!.text!);
+    expect(body.ok).toBe(true);
+    expect(mockCapture).toHaveBeenCalledTimes(3);
+    expect(body.warning).toBeUndefined();
   });
 });

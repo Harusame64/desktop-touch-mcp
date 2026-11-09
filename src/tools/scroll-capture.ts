@@ -7,6 +7,7 @@ import {
   LOST_FRONT_BEFORE_ANY_KEY_HINT, LOST_FRONT_BEFORE_FIRST_FRAME_HINT,
 } from "./_bring-forward.js";
 import { offDesktopFailure } from "./_off-desktop.js";
+import { nativeUia } from "../engine/native-engine.js";
 import { grabScreenRegionValidated } from "../engine/image.js";
 import { failWith, failCode } from "./_errors.js";
 import { parseKeys } from "../utils/key-map.js";
@@ -129,6 +130,21 @@ const MAE_THRESHOLD = 8;
 // MAE threshold for identical-frame detection (stricter — page-end check).
 const FRAMES_IDENTICAL_MAE = 4;
 
+// internal #326 (B), measured by win2 2026-11-10 in Chrome at 1100x850 (935,000 pixels): on a page
+// of 165 px sections, one PageDown (660 px) changed only heading digits, so both strips matched
+// (MAE 0-1) and the capture stopped after one frame. Whole-frame changed pixels (any channel off by
+// more than 32) were 1,085-2,381 per step part way down (0.12-0.25%), 0 past the end of a static
+// page, about 270 past the end with a 32 px spinner (0.03%), and 0-14 with a blinking caret. Frames
+// count as identical only when at most this fraction of their pixels changed.
+const CHANGED_PIXEL_DELTA = 32;
+const FRAMES_IDENTICAL_MAX_CHANGED_FRACTION = 0.0006;
+
+// The UIA scroll position, where the window exposes ScrollPattern (Chrome's document does): when it
+// moved, the page did not end, whatever the pixels say. A read is about 50 ms (win2); Chrome answers
+// only from its second query, so one read is made before the run.
+const SCROLL_PERCENT_TIMEOUT_MS = 200;
+const SCROLL_PERCENT_EPSILON = 0.01;
+
 // Strip dimensions for overlap detection.
 // Defined once here to avoid silent drift between findNewRows and the handler.
 const OVERLAP_STRIP_ROWS = 16;
@@ -155,6 +171,37 @@ function computeMAE(a: Buffer, b: Buffer): number {
   return sum / len;
 }
 
+/** Pixels where any colour channel differs by more than CHANGED_PIXEL_DELTA. @internal exported for tests */
+export function changedPixelCount(a: RawFrame, b: RawFrame): number {
+  const { channels } = a;
+  const colour = Math.min(channels, 3);
+  const len = Math.min(a.data.length, b.data.length);
+  let changed = 0;
+  for (let p = 0; p + channels <= len; p += channels) {
+    for (let c = 0; c < colour; c++) {
+      if (Math.abs(a.data[p + c]! - b.data[p + c]!) > CHANGED_PIXEL_DELTA) {
+        changed++;
+        break;
+      }
+    }
+  }
+  return changed;
+}
+
+/** The window's UIA scroll percent on the axis, or null when it exposes none (or is slow). */
+async function readScrollPercent(hwnd: bigint, axis: "vertical" | "horizontal"): Promise<number | null> {
+  const read = nativeUia?.uiaReadScrollPercentAtHwnd;
+  if (typeof read !== "function") return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((done) => { timer = setTimeout(() => done(null), SCROLL_PERCENT_TIMEOUT_MS); });
+  try {
+    const value = await Promise.race([read({ hwnd: hwnd.toString(), axis }).catch(() => null), timeout]);
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Check if two frames are "identical" (page-end detection).
  *
@@ -166,8 +213,15 @@ function computeMAE(a: Buffer, b: Buffer): number {
  *
  * Offsets are clamped so the strip never reads past the frame boundary.
  */
-function framesIdentical(a: RawFrame, b: RawFrame, direction: "down" | "right"): boolean {
+export function framesIdentical(a: RawFrame, b: RawFrame, direction: "down" | "right"): boolean {
   if (a.width !== b.width || a.height !== b.height || a.channels !== b.channels) return false;
+  // internal #326 (B): the strips alone miss a change outside them (a heading digit on periodic
+  // content), so frames whose strips match are also counted over the whole frame.
+  return stripsIdentical(a, b, direction) &&
+    changedPixelCount(a, b) <= a.width * a.height * FRAMES_IDENTICAL_MAX_CHANGED_FRACTION;
+}
+
+function stripsIdentical(a: RawFrame, b: RawFrame, direction: "down" | "right"): boolean {
   const { width, height, channels } = a;
 
   if (direction === "down") {
@@ -440,6 +494,11 @@ export const scrollCaptureHandler = async ({
       });
     let lostPartWay = false;
 
+    // internal #326 (B): the scroll position, where UIA has it. The first read wakes Chrome's
+    // accessibility tree (it answers from the second query on), so its value is not used.
+    const axis = direction === "down" ? "vertical" : "horizontal";
+    await readScrollPercent(targetHwnd!, axis);
+
     // Scroll to start position (Ctrl+Home → top-left in most apps)
     await sleep(300);
     if (!stillInFront(targetHwnd!)) return lostFront(false);
@@ -450,6 +509,7 @@ export const scrollCaptureHandler = async ({
     const frames: RawFrame[] = [];
     const warnings: string[] = [];
     let identicalStreak = 0; // consecutive identical-frame count; break only at 2
+    let lastPercent: number | null = null;
 
     for (let i = 0; i <= maxScrolls; i++) {
       if (!stillInFront(targetHwnd!)) {
@@ -458,10 +518,14 @@ export const scrollCaptureHandler = async ({
         break;
       }
       const frame = await captureRawRegion(targetRegion);
+      const percent = await readScrollPercent(targetHwnd!, axis);
+      const scrolled = lastPercent !== null && percent !== null && Math.abs(percent - lastPercent) >= SCROLL_PERCENT_EPSILON;
+      lastPercent = percent;
 
       // Page-end detection: require 2 consecutive identical frames to avoid
-      // false positives from repeating-pattern UIs (e.g. review sections).
-      if (frames.length > 0 && framesIdentical(frames[frames.length - 1]!, frame, direction)) {
+      // false positives from repeating-pattern UIs (e.g. review sections). A scroll position that
+      // moved overrules the pixels (internal #326 (B)).
+      if (frames.length > 0 && !scrolled && framesIdentical(frames[frames.length - 1]!, frame, direction)) {
         identicalStreak++;
         if (identicalStreak >= 2) {
           // Remove the streak=1 frame that was tentatively pushed last iteration —
