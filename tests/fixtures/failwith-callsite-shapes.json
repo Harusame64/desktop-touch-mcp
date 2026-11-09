@@ -286,14 +286,14 @@
     },
     {
       "file": "src/tools/excel.ts",
-      "line": 257,
+      "line": 277,
       "tool": "excel",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/excel.ts",
-      "line": 282,
+      "line": 302,
       "tool": "excel",
       "errKind": "string-literal",
       "contextShape": "none"

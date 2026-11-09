@@ -734,6 +734,46 @@ pub(crate) mod tests {
         assert!(excel_count_returns_to(before) <= before, "an EXCEL.EXE stayed after a failed run");
     }
 
+    /// Save the session's workbook into the managed Trusted Location, as run_vba does before
+    /// Run: with the documented Trust Center setup a macro in an unsaved workbook can be refused
+    /// with 0x800a03ec (codex on #910). Returns the path, for [`remove_saved`].
+    #[cfg(feature = "excel-installed")]
+    fn save_in_trusted_dir(session: &ExcelSession, tag: &str) -> std::path::PathBuf {
+        let dir = std::path::PathBuf::from(std::env::var("LOCALAPPDATA").expect("LOCALAPPDATA"))
+            .join("desktop-touch-mcp")
+            .join("trusted-vba");
+        assert!(dir.is_dir(), "Trusted Location missing: run `node scripts/enable-access-vbom.mjs`");
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = dir.join(format!("vba_bridge_{tag}_{nanos}.xlsm"));
+        workbook_save_as(
+            session,
+            path.to_str().expect("UTF-8 path").to_string(),
+            XlFileFormat::OpenXmlWorkbookMacroEnabled,
+        )
+        .expect("workbook_save_as");
+        path
+    }
+
+    /// Remove a workbook [`save_in_trusted_dir`] wrote and Excel's owner file beside it, which an
+    /// ended Excel leaves; Excel can hold the file a moment after it exits.
+    #[cfg(feature = "excel-installed")]
+    fn remove_saved(path: &std::path::Path) {
+        let owner = path.with_file_name(format!("~${}", path.file_name().unwrap().to_string_lossy()));
+        for p in [path.to_path_buf(), owner] {
+            for _ in 0..20 {
+                match std::fs::remove_file(&p) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                        std::thread::sleep(std::time::Duration::from_millis(250))
+                    }
+                    _ => break,
+                }
+            }
+        }
+    }
+
     /// internal #350: a runtime error inside a guard (`On Error` around the call) comes back
     /// as Run's string, with no dialog. Division by zero: 11 of 11 returned in win's spike
     /// (Err.Raise hung with no dialog in some runs, so it is not the case pinned here).
@@ -750,11 +790,13 @@ pub(crate) mod tests {
                     DtGuard = \"OK\"\r\n    Exit Function\r\nFailed:\r\n\
                     DtGuard = \"ERR \" & Err.Number & \": \" & Err.Description\r\nEnd Function\r\n";
         vba_module_add(&session, "DtGuardModule".to_string(), code.to_string()).expect("vba_module_add");
+        let saved = save_in_trusted_dir(&session, "guard");
         let out = macro_run(&session, "DtGuard".to_string(), Some(std::time::Duration::from_secs(30)))
             .expect("the guard returns");
         assert!(out.as_deref().is_some_and(|s| s.starts_with("ERR 11: ")), "got {out:?}");
         workbook_close(&session, false).expect("workbook_close");
         drop(session);
+        remove_saved(&saved);
         assert!(excel_count_returns_to(before) <= before, "an EXCEL.EXE stayed after a guarded error");
     }
 
@@ -770,6 +812,7 @@ pub(crate) mod tests {
         workbook_add_new(&session).expect("workbook_add_new");
         let code = "Sub DtForever()\r\n    Do\r\n        DoEvents\r\n    Loop\r\nEnd Sub\r\n";
         vba_module_add(&session, "DtForeverModule".to_string(), code.to_string()).expect("vba_module_add");
+        let saved = save_in_trusted_dir(&session, "forever");
         let t0 = std::time::Instant::now();
         let err = macro_run(&session, "DtForever".to_string(), Some(std::time::Duration::from_secs(3)))
             .expect_err("the watchdog ends the run");
@@ -778,6 +821,7 @@ pub(crate) mod tests {
         assert!(took < std::time::Duration::from_secs(20), "took {took:?}");
         let _ = workbook_close(&session, false);
         drop(session);
+        remove_saved(&saved);
         assert!(excel_count_returns_to(before) <= before, "an EXCEL.EXE stayed after the watchdog");
     }
 

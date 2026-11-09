@@ -575,6 +575,12 @@ describe("run_vba guard and timeout: gate 2 on #910", () => {
     expect(requiredParamsOf("Sub Foo(ByVal n As Long, Optional s As String)", "Foo")).toEqual(["ByVal n As Long"]);
     expect(requiredParamsOf("Private Sub Foo(Optional s As String, ParamArray rest())", "Foo")).toEqual([]);
     expect(requiredParamsOf("Sub Foo()", "Foo")).toEqual([]);
+    // codex on #910: a comma or a parenthesis inside a default value, and a continued line.
+    expect(requiredParamsOf('Sub Foo(Optional s As String = "a,b")', "Foo")).toEqual([]);
+    expect(requiredParamsOf('Sub Foo(Optional s As String = "a)", Optional t = "say ""x,y""")', "Foo")).toEqual([]);
+    expect(requiredParamsOf("Sub Foo( _\r\n    Optional n As Long = 1, _\r\n    Optional m As Long)", "Foo")).toEqual([]);
+    expect(requiredParamsOf('Sub Foo(Optional s = "a,b", n As Long)', "Foo")).toEqual(["n As Long"]);
+    expect(requiredParamsOf("Sub Foo(arr() As Long)", "Foo")).toEqual(["arr() As Long"]);
     const r = await excelHandler({
       action: "run_vba",
       code: "Sub Foo(ByVal n As Long)\r\nEnd Sub",

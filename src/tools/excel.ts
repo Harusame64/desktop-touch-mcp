@@ -91,12 +91,32 @@ export function codeDeclaresRunGuard(code: string): boolean {
  */
 export function requiredParamsOf(code: string, macroName: string): string[] {
   const escaped = macroName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const m = new RegExp(`^\\s*(?:Public\\s+|Private\\s+)?Sub\\s+${escaped}\\s*\\(([^)]*)\\)`, "im").exec(code);
+  // A declaration may run over lines with VBA's " _" continuation.
+  const joined = code.replace(/[ \t]_[ \t]*\r?\n/g, " ");
+  const m = new RegExp(`^\\s*(?:Public\\s+|Private\\s+)?Sub\\s+${escaped}\\s*\\(`, "im").exec(joined);
   if (!m) return [];
-  return m[1]!
-    .split(",")
-    .map((p) => p.trim())
-    .filter((p) => p !== "" && !/^(?:Optional|ParamArray)\b/i.test(p));
+  // Split the list on commas outside string literals, up to the closing parenthesis outside one: a
+  // default value such as "a,b" or "a)" is part of its parameter (codex on #910). VBA writes a quote
+  // inside a literal as "", which toggles twice and leaves the state as it was.
+  const params: string[] = [];
+  let current = "";
+  let quoted = false;
+  let depth = 0;
+  for (const ch of joined.slice(m.index + m[0].length)) {
+    if (ch === '"') quoted = !quoted;
+    else if (!quoted && ch === "(") depth++;
+    else if (!quoted && ch === ")") {
+      if (depth === 0) break;
+      depth--;
+    } else if (!quoted && depth === 0 && ch === ",") {
+      params.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  params.push(current);
+  return params.map((p) => p.trim()).filter((p) => p !== "" && !/^(?:Optional|ParamArray)\b/i.test(p));
 }
 
 /**
