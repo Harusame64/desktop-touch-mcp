@@ -509,3 +509,48 @@ describe("sheet warnings follow the target window (2026-10-04)", () => {
     expect(notes.warnings).toEqual(["title_matches_nothing_readable"]);
   });
 });
+
+// internal #256: a Finder name cell takes a value write, but only the window changes — the file
+// keeps its name. Measured on macOS 27.2 (2026-11-09): the cell carries AXFilename and AXURL, its
+// AXValue is settable, and AXConfirm after the write renames nothing either. Finder's rename
+// editor (Return on a selected row) carries no AXFilename, and a write there plus Return renames.
+describe("a text field that stands for a file (internal #256)", () => {
+  const nameCell = el({
+    role: "AXTextField", valueSettable: true, namesFile: true, value: "dummy-a.txt",
+    actions: ["AXOpen", "AXShowMenu", "AXConfirm"],
+  });
+  const renameEditor = el({ id: "a.0.2", role: "AXTextField", valueSettable: true, value: "dummy-a.txt" });
+
+  it("is a label read by its file name, and offers no type", () => {
+    expect(roleOf(nameCell)).toBe("label");
+    expect(actionabilityOf(nameCell)).toEqual(["read"]);
+    expect(isCandidate(nameCell)).toBe(true);
+    const c = toCandidate(nameCell, 7, "Win", 1000);
+    expect(c.role).toBe("label");
+    expect(c.label).toBe("dummy-a.txt");
+    expect(c.actionability).toEqual(["read"]);
+  });
+
+  it("refuses type and setValue with action_not_offered and writes nothing; the rename editor still types", async () => {
+    const exec = vi.fn(async () => "ax" as const);
+    const { DesktopFacade } = await import("../../src/tools/desktop.js");
+    const f = new DesktopFacade(
+      async () => [toCandidate(nameCell, 7, "Win", Date.now()), toCandidate(renameEditor, 7, "Win", Date.now())] as any,
+      { executorFn: exec },
+    );
+    const see = await f.see({ target: { windowTitle: "Win" } });
+    const cell = see.entities.find((e) => e.role === "label")!;
+    const editor = see.entities.find((e) => e.role === "textbox")!;
+    expect(cell.primaryAction).toBe("read");
+    expect((await f.touch({ lease: cell.lease, action: "type", text: "renamed-b.txt" })).reason).toBe("action_not_offered");
+    expect((await f.touch({ lease: cell.lease, action: "setValue", text: "renamed-b.txt" })).reason).toBe("action_not_offered");
+    expect(exec).not.toHaveBeenCalled();
+    expect((await f.touch({ lease: editor.lease, action: "type", text: "renamed-b.txt" })).ok).toBe(true);
+    expect(exec).toHaveBeenCalledTimes(1);
+  });
+
+  it("a plain settable text field without namesFile is still a textbox that types", () => {
+    expect(roleOf(renameEditor)).toBe("textbox");
+    expect(actionabilityOf(renameEditor)).toEqual(["type"]);
+  });
+});

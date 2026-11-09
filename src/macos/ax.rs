@@ -451,6 +451,10 @@ pub struct MacAxElement {
     pub focused: Option<bool>,
     pub actions: Vec<String>,
     pub value_settable: bool,
+    /// A text field that stands for a file (it carries `AXFilename`), such as a Finder name cell.
+    /// Writing its value changes only what the window shows, never the file's name (internal #256).
+    /// Read on text fields only; `None` elsewhere and when the field names no file.
+    pub names_file: Option<bool>,
     pub child_count: u32,
 }
 
@@ -593,6 +597,12 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         let focused = read!(attr_bool(&e, "AXFocused"));
         let actions = read!(action_names(&e));
         let value_settable = read!(is_settable(&e, "AXValue"));
+        // Asked of text fields only, so the walk spends no message on the rest.
+        let names_file = if matches!(role.as_str(), "AXTextField" | "AXTextArea" | "AXComboBox" | "AXSearchField") {
+            read!(attr(&e, "AXFilename")).is_ok().then_some(true)
+        } else {
+            None
+        };
         elements.push(MacAxElement {
             id: id.clone(),
             root_key: (*key).clone(),
@@ -616,6 +626,7 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
             focused,
             actions,
             value_settable,
+            names_file,
             child_count: kids.len() as u32,
         });
         if depth < max_depth {
