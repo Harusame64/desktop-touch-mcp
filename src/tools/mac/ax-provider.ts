@@ -39,8 +39,17 @@ export interface MacAxReadNotes {
   appTitle?: string;
 }
 
-/** The roles the resolver understands (`button`, `textbox`, `link`, `menuitem`, `label`). */
-export function roleOf(e: Pick<NativeMacAxElement, "role" | "subrole">): string {
+/**
+ * The roles the resolver understands (`button`, `textbox`, `link`, `menuitem`, `label`).
+ *
+ * A text field that stands for a file (a Finder name cell: it carries `AXFilename`) is a label.
+ * Its value is settable, but a write changes only what the window shows — the file keeps its
+ * name until the window is reopened — so offering `type` there let an agent report a rename
+ * that never happened (internal #256). Finder's own rename editor, opened with Return, carries
+ * no `AXFilename` and stays a textbox.
+ */
+export function roleOf(e: Pick<NativeMacAxElement, "role" | "subrole" | "namesFile">): string {
+  if (e.namesFile === true) return "label";
   switch (e.role) {
     case "AXButton":
     case "AXPopUpButton":
@@ -112,7 +121,7 @@ export function isCandidate(e: NativeMacAxElement): boolean {
 }
 
 /** What an element is under its window: role, element key, and a text's shown value. */
-function kindOf(e: Pick<NativeMacAxElement, "rootKey" | "elementKey" | "role" | "subrole" | "value">): string {
+function kindOf(e: Pick<NativeMacAxElement, "rootKey" | "elementKey" | "role" | "subrole" | "value" | "namesFile">): string {
   // A text is named by what it shows, so what it shows is part of what it is: when Calculator's
   // display changes, the post-act diff must see a different entity (codex, #780). Texts are only
   // read, never leased for an act, so a changing identity costs nothing there.
@@ -136,7 +145,7 @@ function kindOf(e: Pick<NativeMacAxElement, "rootKey" | "elementKey" | "role" | 
  */
 export function axDigest(
   pid: number,
-  e: Pick<NativeMacAxElement, "id" | "rootKey" | "elementKey" | "role" | "subrole" | "value">,
+  e: Pick<NativeMacAxElement, "id" | "rootKey" | "elementKey" | "role" | "subrole" | "value" | "namesFile">,
   unique = true
 ): string {
   const where = unique ? "" : `|${e.id}`;

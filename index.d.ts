@@ -969,6 +969,8 @@ export interface NativeMacAxElement {
   focused?: boolean
   actions: string[]
   valueSettable: boolean
+  /** A text field that stands for a file (it carries `AXFilename`, e.g. a Finder name cell): writing it renames nothing. */
+  namesFile?: boolean
   childCount: number
 }
 
