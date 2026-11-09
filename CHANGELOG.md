@@ -38,8 +38,9 @@
   target window to the front, they went on anyway. Ctrl+Home and Page Down then went into the window that was in
   front, and `capture` answered `ok: true` with a single frame of that other window. `capture` now tries once more
   with the forced request and refuses with `ForegroundRestricted` if the window still is not in front, before
-  sending anything. It checks again before every key and every frame, and when the window loses the front part way
-  it stops with the frames taken so far (`stoppedReason: "foreground_lost"`) rather than pull it back. `read` needs
+  sending anything. It checks again before every key and every frame. If the window loses the front before the first
+  frame, `capture` refuses the same way (at most Ctrl+Home went to the target, nothing to another window); after
+  that, it stops with the frames taken so far (`stoppedReason: "foreground_lost"`) rather than pull it back. `read` needs
   the front only where it falls back to sending keys. For a window that takes page keys only in front, such as
   Chrome, it asks with the forced request at the start, and when the window is not in front before a page key it
   stops with `stoppedReason: "foreground_refused"` and keeps the pages it read. Neither brings forward a window on another virtual desktop (internal #326).

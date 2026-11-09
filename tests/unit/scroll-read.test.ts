@@ -207,6 +207,8 @@ describe("scrollReadHandler (mocked)", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    // resetModules does not drop a doMock registration; the off-desktop test's must not reach the next test.
+    vi.doUnmock("../../src/tools/_off-desktop.js");
   });
 
   /**
@@ -804,8 +806,8 @@ describe("scrollReadHandler (mocked)", () => {
     expect(body.note).toContain("did not bring the window to the front");
     expect(body.note).not.toContain("stopped being in front");
     expect(pressKeyMock).not.toHaveBeenCalled();
-    // Forced once at the start (as capture is); the per-page ask is not forced.
-    expect(restoreMock.mock.calls.filter((c) => c[1]?.force === true)).toHaveLength(1);
+    // Asked at the start only, plain then forced (as capture is); the page checks and does not ask.
+    expect(restoreMock).toHaveBeenCalledTimes(2);
     expect(restoreMock.mock.calls[1]).toEqual([0xCAFEn, { force: true }]);
   });
 
@@ -828,7 +830,9 @@ describe("scrollReadHandler (mocked)", () => {
       postKeyComboToHwnd: vi.fn().mockReturnValue(false),
       canInjectAtTarget: vi.fn().mockReturnValue({ supported: false, reason: "chromium" }),
     }));
-    // Start: refused (plain, forced, then the title read); page 1's ask: in front; page 2's ask: refused.
+    const restoreMock = vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
+    // Start: refused (plain, forced, then the title read); page 1's check: in front (the user clicked it);
+    // page 2's check: not in front.
     const fg = vi.fn()
       .mockReturnValueOnce(2n).mockReturnValueOnce(2n).mockReturnValueOnce(2n)
       .mockReturnValueOnce(0xCAFEn)
@@ -839,11 +843,12 @@ describe("scrollReadHandler (mocked)", () => {
       getWindowTitleW: vi.fn().mockReturnValue("Other"),
       getWindowRectByHwnd: vi.fn().mockReturnValue(null),
       getWindowRoot: vi.fn((h: bigint) => h),
-      restoreAndFocusWindow: vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 }),
+      restoreAndFocusWindow: restoreMock,
     }));
     const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
     const result = await scrollReadHandler({ action: "read", windowTitle: "Test", maxPages: 3, scrollKey: "PageDown", scrollDelayMs: 0, stopWhenNoChange: true });
     const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(restoreMock).toHaveBeenCalledTimes(2);
     expect(body.pages).toBe(2);
     expect(body.stoppedReason).toBe("foreground_refused");
     expect(pressKeyMock).toHaveBeenCalledTimes(1);

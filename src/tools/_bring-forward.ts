@@ -40,7 +40,8 @@ export function stillInFront(hwnd: bigint): boolean {
   return root(fg) === root(hwnd);
 }
 
-function inFrontTitle(): string | undefined {
+/** The title of the foreground window, for a refusal's `inFront`. */
+export function inFrontTitle(): string | undefined {
   const fg = getForegroundHwnd();
   if (fg == null) return undefined;
   try {
@@ -87,6 +88,12 @@ export const OTHER_DESKTOP_READ_NOTE =
   "The window is on another virtual desktop and takes page keys only while it is in front. Bringing it forward " +
   "would switch the user's desktop, so reading stopped after what could be read without keys. Move the window to " +
   "this desktop (or ask the user to switch), then call again for the rest.";
+
+/** Said when capture lost the front after it was brought forward and before any key was sent. */
+export const LOST_FRONT_BEFORE_ANY_KEY_HINT =
+  "The window came to the front but stopped being in front before any key was sent, so nothing was sent and " +
+  "nothing was captured: keys sent now would go to the window in front (inFront). Bring the window forward and " +
+  "call again.";
 
 /** Said when capture lost the front after Ctrl+Home went to the target and before the first frame. */
 export const LOST_FRONT_BEFORE_FIRST_FRAME_HINT =

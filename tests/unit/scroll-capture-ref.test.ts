@@ -126,6 +126,8 @@ describe("scroll(action='capture') needs the window in front (internal #326)", (
     expect(mockPressKey).not.toHaveBeenCalled();
     expect(mockRestoreAndFocus).toHaveBeenCalledTimes(2);
     expect(mockRestoreAndFocus).toHaveBeenLastCalledWith(1n, { force: true });
+    expect(body.context?.attemptedForce).toBe(true);
+    expect(body.context?.inFront).toBe("Other");
   });
 
   it("goes on when the forced request brings it in front", async () => {
@@ -146,7 +148,9 @@ describe("scroll(action='capture') checks the front before every key and frame (
     const body = textOf(await scrollCaptureHandler(args) as never);
     expect(body.code).toBe("ForegroundRestricted");
     expect(body.context?.lostPartWay ?? body.lostPartWay).toBe(true);
-    expect(JSON.stringify(body)).toContain("so no keys were sent");
+    expect(JSON.stringify(body)).toContain("before any key was sent");
+    expect(JSON.stringify(body)).not.toContain("did not bring the window to the front");
+    expect(body.context?.inFront).toBe("Other");
     expect(mockPressKey).not.toHaveBeenCalled();
     expect(mockCapture).not.toHaveBeenCalled();
   });
@@ -157,7 +161,7 @@ describe("scroll(action='capture') checks the front before every key and frame (
     const body = textOf(await scrollCaptureHandler(args) as never);
     expect(body.code).toBe("ForegroundRestricted");
     expect(JSON.stringify(body)).toContain("after Ctrl+Home was sent to it");
-    expect(JSON.stringify(body)).not.toContain("so no keys were sent");
+    expect(JSON.stringify(body)).not.toContain("nothing was sent");
     expect(mockPressKey).toHaveBeenCalledTimes(1);
     expect(mockCapture).not.toHaveBeenCalled();
   });

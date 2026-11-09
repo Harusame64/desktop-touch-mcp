@@ -3,7 +3,8 @@ import { logDispatchSink } from "./_resolve-log.js";
 import sharp from "sharp";
 import { keyboard, mouse } from "../engine/nutjs.js";
 import {
-  bringForward, stillInFront, NOT_IN_FRONT_HINT, LOST_FRONT_NOTE, LOST_FRONT_BEFORE_FIRST_FRAME_HINT,
+  bringForward, stillInFront, inFrontTitle, NOT_IN_FRONT_HINT, LOST_FRONT_NOTE,
+  LOST_FRONT_BEFORE_ANY_KEY_HINT, LOST_FRONT_BEFORE_FIRST_FRAME_HINT,
 } from "./_bring-forward.js";
 import { offDesktopFailure } from "./_off-desktop.js";
 import { grabScreenRegionValidated } from "../engine/image.js";
@@ -432,7 +433,10 @@ export const scrollCaptureHandler = async ({
     // Before Ctrl+Home nothing was sent; after it, the target (only) got Ctrl+Home (gate 2 on #915).
     const lostFront = (homeSent: boolean) =>
       failWith(new Error("ForegroundRestricted"), "scroll", {
-        windowTitle, hint: homeSent ? LOST_FRONT_BEFORE_FIRST_FRAME_HINT : NOT_IN_FRONT_HINT, lostPartWay: true,
+        windowTitle,
+        hint: homeSent ? LOST_FRONT_BEFORE_FIRST_FRAME_HINT : LOST_FRONT_BEFORE_ANY_KEY_HINT,
+        inFront: inFrontTitle(),
+        lostPartWay: true,
       });
     let lostPartWay = false;
 
