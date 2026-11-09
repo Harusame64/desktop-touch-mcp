@@ -55,6 +55,14 @@ export class ModalBlockingError extends Error {
 function refuse(r: NativeMacActResult, what: string): never {
   const reason = r.reason ?? "unknown";
   if (reason === "modal_blocking") throw new ModalBlockingError(r.blocker);
+  if (reason === "not_applied_after_press") {
+    // The native write pressed an unfocused web field to focus it, then the write failed: something was done.
+    throw new ValueNotAppliedError(
+      `${what}: ${reason}`,
+      undefined,
+      "The field did not take the write, so it was pressed to focus it, and the write after that failed (the page may have replaced the field). Discover again and check the field before typing."
+    );
+  }
   if (GONE.has(reason)) {
     throw new TargetGoneError(
       `${what}: ${reason}`,

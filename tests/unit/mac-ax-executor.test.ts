@@ -57,6 +57,14 @@ describe("mac AX executor", () => {
     expect(setValue).toHaveBeenCalledWith(TARGET, "abc");
     expect(perform).not.toHaveBeenCalled();
   });
+  it("a write that failed after the native press is ValueNotAppliedError, not 'nothing was done' (codex on #913)", async () => {
+    const { setValue, exec } = setup();
+    setValue.mockResolvedValue({ ok: false, reason: "not_applied_after_press" });
+    const err: any = await exec(entity, "type", "abc").catch((e) => e);
+    expect(err.name).toBe("ValueNotAppliedError");
+    expect(err.callerDetail).toContain("pressed to focus it");
+    expect(err.callerDetail).not.toContain("Nothing");
+  });
   it("a different read-back is ValueNotAppliedError", async () => {
     const { setValue, exec } = setup();
     setValue.mockResolvedValue({ ok: true, valueAfter: "abX" });

@@ -729,7 +729,8 @@ pub struct MacActResult {
     /// Why the act was refused or failed: `element_not_found`,
     /// `element_changed`, `modal_blocking`, `action_not_advertised`, `value_not_settable`,
     /// `selection_not_settable`, `length_unknown`, `names_file` (a write to a field that stands for
-    /// a file, internal #256), or the AX error name.
+    /// a file, internal #256), `not_applied_after_press` (a web field was pressed to focus it and the
+    /// write after that failed, internal #261), or the AX error name.
     pub reason: Option<String>,
     /// The element's value read back after a write (capped).
     pub value_after: Option<String>,
@@ -989,8 +990,11 @@ pub(crate) fn set_value(t: &MacAxTarget, value: &str) -> MacActResult {
     let after = value_text_marked(&e);
     let ignored = write_was_ignored(before.as_ref(), after.as_ref(), value);
     if ignored && press_to_focus(&e, &t.expected_role) {
-        // The press happened: from here a failed write is "not applied", never "nothing was done".
-        let _ = write();
+        // The press happened: from here a failed write is "not applied", never "nothing was done" —
+        // and it must not pass for a success when the read-back is gone too (codex on #913).
+        if write() != AXError::Success {
+            return refused("not_applied_after_press");
+        }
         return MacActResult { ok: true, value_after: value_text(&e), ..Default::default() };
     }
     MacActResult { ok: true, value_after: after.map(|(s, _)| s), ..Default::default() }
