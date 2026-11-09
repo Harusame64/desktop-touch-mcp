@@ -227,8 +227,15 @@ describe("scroll(action='capture') page end on periodic content (internal #326 (
     const body = await run(5);
     expect(body.ok).toBe(true);
     expect(mockCapture).toHaveBeenCalledTimes(3);
-    // The warm-up and the first frame's read come back empty; no more reads after that.
-    expect(mockReadPercent).toHaveBeenCalledTimes(2);
+    // The warm-up (not counted) and the first two frames' reads come back empty; no more reads after that.
+    expect(mockReadPercent).toHaveBeenCalledTimes(3);
+  });
+
+  it("warms up before Ctrl+Home and asks the horizontal axis for direction 'right'", async () => {
+    mockReadPercent.mockResolvedValue(null);
+    await scrollCaptureHandler({ windowTitle: "W", direction: "right", maxScrolls: 2, scrollDelayMs: 0, maxWidth: 800 } as never);
+    expect(mockReadPercent).toHaveBeenCalledWith({ hwnd: "1", axis: "horizontal" });
+    expect(mockReadPercent.mock.invocationCallOrder[0]).toBeLessThan(mockPressKey.mock.invocationCallOrder[0]!);
   });
 
   it("keeps the last position across a failed read, so the next good read still shows movement", async () => {
@@ -252,21 +259,49 @@ describe("scrollPositionReader (internal #326 (B), gate 2 on #916)", () => {
     vi.useFakeTimers();
     try {
       mockReadPercent.mockImplementation(() => new Promise(() => {})); // never answers
-      const read = scrollPositionReader(1n, "vertical");
-      const first = read();
+      const reader = scrollPositionReader(1n, "vertical");
+      const first = reader.read();
       await vi.advanceTimersByTimeAsync(250);
       expect(await first).toBeNull();
-      expect(await read()).toBeNull();
+      expect(await reader.read()).toBeNull();
       expect(mockReadPercent).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
   });
 
+  it("does not count the warm-up, so a slow first read does not make it give up", async () => {
+    // Chrome waking up: the warm-up and the first counted read are empty, then it answers.
+    mockReadPercent.mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValue(20);
+    const reader = scrollPositionReader(1n, "vertical");
+    await reader.warmUp();
+    expect(await reader.read()).toBeNull();
+    expect(await reader.read()).toBe(20);
+  });
+
+  it("never gives up once a position was read, however many reads fail after it", async () => {
+    mockReadPercent.mockResolvedValueOnce(10).mockResolvedValueOnce(null).mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null).mockResolvedValue(50);
+    const reader = scrollPositionReader(1n, "vertical");
+    expect(await reader.read()).toBe(10);
+    for (let i = 0; i < 3; i++) expect(await reader.read()).toBeNull();
+    expect(await reader.read()).toBe(50);
+  });
+
+  it("gives up after two counted empty reads when it never read a position", async () => {
+    mockReadPercent.mockResolvedValue(null);
+    const reader = scrollPositionReader(1n, "vertical");
+    await reader.warmUp();
+    await reader.read();
+    await reader.read();
+    await reader.read();
+    expect(mockReadPercent).toHaveBeenCalledTimes(3);
+  });
+
   it("returns the position and passes the axis", async () => {
     mockReadPercent.mockResolvedValue(42.5);
-    const read = scrollPositionReader(7n, "horizontal");
-    expect(await read()).toBe(42.5);
+    const reader = scrollPositionReader(7n, "horizontal");
+    expect(await reader.read()).toBe(42.5);
     expect(mockReadPercent).toHaveBeenCalledWith({ hwnd: "7", axis: "horizontal" });
   });
 });

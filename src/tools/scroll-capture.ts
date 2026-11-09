@@ -138,36 +138,55 @@ const FRAMES_IDENTICAL_MAE = 4;
 // about 50 ms; Chrome answers only from its second query.
 const SCROLL_PERCENT_TIMEOUT_MS = 200;
 const SCROLL_PERCENT_EPSILON = 0.01;
-/** Empty reads in a row after which the window is taken to have no scroll position to read. */
+/**
+ * Counted empty reads, with no position read yet in the run, after which the window is taken to have
+ * no scroll position to read. The warm-up is not counted, and once a position has been read the
+ * reader never gives up: a slow moment part way must not hand the page end back to the pixels
+ * (gate 2 on #916).
+ */
 const SCROLL_PERCENT_EMPTY_READS = 2;
 
+export interface ScrollPositionReader {
+  /** Wakes the window's accessibility tree (Chrome answers from its second query); not counted. */
+  warmUp(): Promise<void>;
+  /** The scroll percent on the axis, or null (none, slow, or a read still running). */
+  read(): Promise<number | null>;
+}
+
 /**
- * A reader of the window's UIA scroll percent on one axis, for one capture run. Returns null when
- * there is none to read. It stops asking after SCROLL_PERCENT_EMPTY_READS empty reads in a row, and
- * never queues a read behind one still running: the timeout only stops the wait, while the native
- * read goes on holding the shared UIA thread (gate 2 on #916).
+ * A reader of the window's UIA scroll percent on one axis, for one capture run. It never queues a
+ * read behind one still running: the timeout only stops the wait, while the native read goes on
+ * holding the shared UIA thread (gate 2 on #916).
  */
-export function scrollPositionReader(hwnd: bigint, axis: "vertical" | "horizontal"): () => Promise<number | null> {
-  const read = nativeUia?.uiaReadScrollPercentAtHwnd;
-  let gaveUp = typeof read !== "function";
+export function scrollPositionReader(hwnd: bigint, axis: "vertical" | "horizontal"): ScrollPositionReader {
+  const native = nativeUia?.uiaReadScrollPercentAtHwnd;
+  let gaveUp = typeof native !== "function";
+  let everRead = false;
   let emptyReads = 0;
   let inFlight = false;
-  return async () => {
+  const ask = async (): Promise<number | null> => {
     if (gaveUp || inFlight) return null;
     inFlight = true;
-    const reading = read!({ hwnd: hwnd.toString(), axis })
+    const reading = native!({ hwnd: hwnd.toString(), axis })
       .then((v) => (typeof v === "number" && Number.isFinite(v) ? v : null), () => null)
       .finally(() => { inFlight = false; });
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<null>((done) => { timer = setTimeout(() => done(null), SCROLL_PERCENT_TIMEOUT_MS); });
     const value = await Promise.race([reading, timeout]);
     clearTimeout(timer);
-    if (value === null) {
-      if (++emptyReads >= SCROLL_PERCENT_EMPTY_READS) gaveUp = true;
-    } else {
-      emptyReads = 0;
-    }
     return value;
+  };
+  return {
+    warmUp: async () => { await ask(); },
+    read: async () => {
+      const value = await ask();
+      if (value !== null) {
+        everRead = true;
+      } else if (!everRead && ++emptyReads >= SCROLL_PERCENT_EMPTY_READS) {
+        gaveUp = true;
+      }
+      return value;
+    },
   };
 }
 
@@ -484,11 +503,12 @@ export const scrollCaptureHandler = async ({
 
     // internal #326 (B): the scroll position, where UIA has it. The first read wakes Chrome's
     // accessibility tree (it answers from the second query on), so its value is not used.
-    const readPosition = scrollPositionReader(targetHwnd!, direction === "down" ? "vertical" : "horizontal");
-    await readPosition();
+    const position = scrollPositionReader(targetHwnd!, direction === "down" ? "vertical" : "horizontal");
+    const warming = position.warmUp();
 
     // Scroll to start position (Ctrl+Home → top-left in most apps)
     await sleep(300);
+    await warming;
     if (!stillInFront(targetHwnd!)) return lostFront(false);
     await pressAndRelease("ctrl+home");
     await sleep(scrollDelayMs);
@@ -497,7 +517,10 @@ export const scrollCaptureHandler = async ({
     const frames: RawFrame[] = [];
     const warnings: string[] = [];
     let identicalStreak = 0; // consecutive identical-frame count; break only at 2
-    let lastPosition: number | null = null; // the last position read (a failed read keeps it)
+    // The last position read. A failed read keeps it, so the next good read can still show movement;
+    // compared across two steps, a frame at the very end can then count as moved once and stay in the
+    // stitch as a duplicate screen, which is preferred to ending early and losing the rest (gate 2 on #916).
+    let lastPosition: number | null = null;
 
     for (let i = 0; i <= maxScrolls; i++) {
       if (!stillInFront(targetHwnd!)) {
@@ -505,12 +528,11 @@ export const scrollCaptureHandler = async ({
         lostPartWay = true;
         break;
       }
-      const frame = await captureRawRegion(targetRegion);
-      const position = await readPosition();
+      const [frame, at] = await Promise.all([captureRawRegion(targetRegion), position.read()]);
       let scrolled = false;
-      if (position !== null) {
-        scrolled = lastPosition !== null && Math.abs(position - lastPosition) >= SCROLL_PERCENT_EPSILON;
-        lastPosition = position;
+      if (at !== null) {
+        scrolled = lastPosition !== null && Math.abs(at - lastPosition) >= SCROLL_PERCENT_EPSILON;
+        lastPosition = at;
       }
 
       // Page-end detection: require 2 consecutive identical frames to avoid
