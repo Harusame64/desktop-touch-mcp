@@ -488,10 +488,6 @@ export const scrollCaptureHandler = async ({
       }
     }
 
-    // A frame pushed tentatively on a first identical hit is a near-duplicate when the run ends before
-    // the second hit (front lost, or maxScrolls): drop it as the page-end path does (gate 2 on #915).
-    if (identicalStreak === 1 && frames.length > 1) frames.pop();
-
     if (frames.length === 0) {
       return failCode("ToolError", "No frames captured");
     }

@@ -23,7 +23,8 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 
-const { mockGrabRegion, mockRestoreAndFocus, mockResolveWindowTarget, mockFindPlain, mockForeground, mockPressKey, mockOffDesktop } = vi.hoisted(() => ({
+const { mockCapture, mockGrabRegion, mockRestoreAndFocus, mockResolveWindowTarget, mockFindPlain, mockForeground, mockPressKey, mockOffDesktop } = vi.hoisted(() => ({
+  mockCapture: vi.fn(),
   mockOffDesktop: vi.fn(),
   mockForeground: vi.fn(),
   mockPressKey: vi.fn(async () => {}),
@@ -56,6 +57,12 @@ vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
   return { ...actual, resolveWindowTarget: mockResolveWindowTarget, findPlainTopLevelWindowByTitle: mockFindPlain };
 });
 
+// The capture itself is faked at the backend selector, so the frames are the fake's whichever backend
+// the machine would pick (gdi-bitblt where the native addon loads skips nut-js entirely; agy on #915).
+vi.mock("../../src/engine/image.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/engine/image.js")>();
+  return { ...actual, grabScreenRegionValidated: mockCapture };
+});
 vi.mock("../../src/tools/_off-desktop.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_off-desktop.js")>();
   return { ...actual, offDesktopTarget: mockOffDesktop };
@@ -77,6 +84,7 @@ beforeEach(() => {
   mockFindPlain.mockReturnValue({ hwnd: 1n });
   mockRestoreAndFocus.mockReturnValue({ x: 0, y: 0, width: 200, height: 200 });
   mockGrabRegion.mockResolvedValue(uniformFrame(200, 200));
+  mockCapture.mockResolvedValue({ data: Buffer.alloc(200 * 200 * 4, 128), width: 200, height: 200, channels: 4 });
   mockForeground.mockReturnValue(1n);
   mockOffDesktop.mockResolvedValue(null);
 });
@@ -114,7 +122,7 @@ describe("scroll(action='capture') needs the window in front (internal #326)", (
     const body = JSON.parse((r.content[0] as { text: string }).text);
     expect(body.ok).toBe(false);
     expect(body.code).toBe("ForegroundRestricted");
-    expect(mockGrabRegion).not.toHaveBeenCalled();
+    expect(mockCapture).not.toHaveBeenCalled();
     expect(mockPressKey).not.toHaveBeenCalled();
     expect(mockRestoreAndFocus).toHaveBeenCalledTimes(2);
     expect(mockRestoreAndFocus).toHaveBeenLastCalledWith(1n, { force: true });
@@ -125,7 +133,7 @@ describe("scroll(action='capture') needs the window in front (internal #326)", (
     const r = await scrollCaptureHandler({ windowTitle: "W", direction: "down", maxScrolls: 1, scrollDelayMs: 0, maxWidth: 800 } as never);
     const text = (r.content as { type: string; text?: string }[]).find((b) => b.type === "text")!.text!;
     expect(JSON.parse(text).ok).toBe(true);
-    expect(mockGrabRegion).toHaveBeenCalled();
+    expect(mockCapture).toHaveBeenCalled();
   });
 });
 
@@ -140,7 +148,7 @@ describe("scroll(action='capture') checks the front before every key and frame (
     expect(body.context?.lostPartWay ?? body.lostPartWay).toBe(true);
     expect(JSON.stringify(body)).toContain("so no keys were sent");
     expect(mockPressKey).not.toHaveBeenCalled();
-    expect(mockGrabRegion).not.toHaveBeenCalled();
+    expect(mockCapture).not.toHaveBeenCalled();
   });
 
   it("says Ctrl+Home went to the target when the front is lost before the first frame", async () => {
@@ -151,21 +159,9 @@ describe("scroll(action='capture') checks the front before every key and frame (
     expect(JSON.stringify(body)).toContain("after Ctrl+Home was sent to it");
     expect(JSON.stringify(body)).not.toContain("so no keys were sent");
     expect(mockPressKey).toHaveBeenCalledTimes(1);
-    expect(mockGrabRegion).not.toHaveBeenCalled();
+    expect(mockCapture).not.toHaveBeenCalled();
   });
 
-  it("drops the tentatively kept near-duplicate frame when the front is lost after a first identical hit", async () => {
-    // in front for: bring, Ctrl+Home, frame 1, PageDown 1, frame 2 (identical: kept tentatively); lost before PageDown 2.
-    mockForeground
-      .mockReturnValueOnce(1n).mockReturnValueOnce(1n).mockReturnValueOnce(1n)
-      .mockReturnValueOnce(1n).mockReturnValueOnce(1n)
-      .mockReturnValue(999n);
-    const body = textOf(await scrollCaptureHandler(args) as never);
-    expect(body.ok).toBe(true);
-    expect(body.stoppedReason).toBe("foreground_lost");
-    expect(mockGrabRegion).toHaveBeenCalledTimes(2);
-    expect(body.frames).toBe(1);
-  });
 
   it("stops after the frames it took when the window loses the front part way, sends no more keys and is not pulled back", async () => {
     // brought forward, before Ctrl+Home, before frame 1: in front; before the first PageDown: not.

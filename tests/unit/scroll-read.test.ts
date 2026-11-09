@@ -263,8 +263,8 @@ describe("scrollReadHandler (mocked)", () => {
       enumWindowsInZOrder: vi.fn().mockReturnValue([]),
       getWindowTitleW: vi.fn().mockReturnValue(""),
       getWindowRectByHwnd: vi.fn().mockReturnValue(null),
-      getForegroundHwnd: vi.fn().mockReturnValue(1n),
-      getWindowRoot: vi.fn().mockReturnValue(1n),
+      getForegroundHwnd: vi.fn().mockReturnValue(0xCAFEn),
+      getWindowRoot: vi.fn((h: bigint) => h),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
         x: 0, y: 0, width: 800, height: 600,
       }),
@@ -324,8 +324,8 @@ describe("scrollReadHandler (mocked)", () => {
       enumWindowsInZOrder: vi.fn().mockReturnValue([]),
       getWindowTitleW: vi.fn().mockReturnValue(""),
       getWindowRectByHwnd: vi.fn().mockReturnValue(null),
-      getForegroundHwnd: vi.fn().mockReturnValue(1n),
-      getWindowRoot: vi.fn().mockReturnValue(1n),
+      getForegroundHwnd: vi.fn().mockReturnValue(0xCAFEn),
+      getWindowRoot: vi.fn((h: bigint) => h),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
         x: 0, y: 0, width: 800, height: 600,
       }),
@@ -386,8 +386,8 @@ describe("scrollReadHandler (mocked)", () => {
       enumWindowsInZOrder: vi.fn().mockReturnValue([]),
       getWindowTitleW: vi.fn().mockReturnValue(""),
       getWindowRectByHwnd: vi.fn().mockReturnValue(null),
-      getForegroundHwnd: vi.fn().mockReturnValue(1n),
-      getWindowRoot: vi.fn().mockReturnValue(1n),
+      getForegroundHwnd: vi.fn().mockReturnValue(0xCAFEn),
+      getWindowRoot: vi.fn((h: bigint) => h),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
         x: 0, y: 0, width: 800, height: 600,
       }),
@@ -441,8 +441,8 @@ describe("scrollReadHandler (mocked)", () => {
       enumWindowsInZOrder: vi.fn().mockReturnValue([]),
       getWindowTitleW: vi.fn().mockReturnValue(""),
       getWindowRectByHwnd: vi.fn().mockReturnValue(null),
-      getForegroundHwnd: vi.fn().mockReturnValue(1n),
-      getWindowRoot: vi.fn().mockReturnValue(1n),
+      getForegroundHwnd: vi.fn().mockReturnValue(0xCAFEn),
+      getWindowRoot: vi.fn((h: bigint) => h),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
         x: 0, y: 0, width: 800, height: 600,
       }),
@@ -498,8 +498,8 @@ describe("scrollReadHandler (mocked)", () => {
       enumWindowsInZOrder: vi.fn().mockReturnValue([]),
       getWindowTitleW: vi.fn().mockReturnValue(""),
       getWindowRectByHwnd: vi.fn().mockReturnValue(null),
-      getForegroundHwnd: vi.fn().mockReturnValue(1n),
-      getWindowRoot: vi.fn().mockReturnValue(1n),
+      getForegroundHwnd: vi.fn().mockReturnValue(0xCAFEn),
+      getWindowRoot: vi.fn((h: bigint) => h),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
         x: 0, y: 0, width: 800, height: 600,
       }),
@@ -558,8 +558,8 @@ describe("scrollReadHandler (mocked)", () => {
       enumWindowsInZOrder: vi.fn().mockReturnValue([]),
       getWindowTitleW: vi.fn().mockReturnValue(""),
       getWindowRectByHwnd: vi.fn().mockReturnValue(null),
-      getForegroundHwnd: vi.fn().mockReturnValue(1n),
-      getWindowRoot: vi.fn().mockReturnValue(1n),
+      getForegroundHwnd: vi.fn().mockReturnValue(0xCAFEn),
+      getWindowRoot: vi.fn((h: bigint) => h),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
         x: 0, y: 0, width: 800, height: 600,
       }),
@@ -626,8 +626,8 @@ describe("scrollReadHandler (mocked)", () => {
       enumWindowsInZOrder: vi.fn().mockReturnValue([]),
       getWindowTitleW: vi.fn().mockReturnValue(""),
       getWindowRectByHwnd: vi.fn().mockReturnValue(null),
-      getForegroundHwnd: vi.fn().mockReturnValue(1n),
-      getWindowRoot: vi.fn().mockReturnValue(1n),
+      getForegroundHwnd: vi.fn().mockReturnValue(0xCAFEn),
+      getWindowRoot: vi.fn((h: bigint) => h),
       restoreAndFocusWindow: restoreAndFocusMock,
     }));
 
@@ -893,8 +893,8 @@ describe("scrollReadHandler (mocked)", () => {
       enumWindowsInZOrder: vi.fn().mockReturnValue([]),
       getWindowTitleW: vi.fn().mockReturnValue(""),
       getWindowRectByHwnd: vi.fn().mockReturnValue(null),
-      getForegroundHwnd: vi.fn().mockReturnValue(1n),
-      getWindowRoot: vi.fn().mockReturnValue(1n),
+      getForegroundHwnd: vi.fn().mockReturnValue(0xCAFEn),
+      getWindowRoot: vi.fn((h: bigint) => h),
       restoreAndFocusWindow: restoreAndFocusMock,
     }));
 
@@ -963,8 +963,8 @@ describe("scrollReadHandler (mocked)", () => {
       enumWindowsInZOrder: vi.fn().mockReturnValue([]),
       getWindowTitleW: vi.fn().mockReturnValue(""),
       getWindowRectByHwnd: vi.fn().mockReturnValue(null),
-      getForegroundHwnd: vi.fn().mockReturnValue(1n),
-      getWindowRoot: vi.fn().mockReturnValue(1n),
+      getForegroundHwnd: vi.fn().mockReturnValue(0xCAFEn),
+      getWindowRoot: vi.fn((h: bigint) => h),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
         x: 0, y: 0, width: 800, height: 600,
       }),
@@ -1026,8 +1026,8 @@ describe("scrollReadHandler (mocked)", () => {
       enumWindowsInZOrder: vi.fn().mockReturnValue([]),
       getWindowTitleW: vi.fn().mockReturnValue(""),
       getWindowRectByHwnd: vi.fn().mockReturnValue(null),
-      getForegroundHwnd: vi.fn().mockReturnValue(1n),
-      getWindowRoot: vi.fn().mockReturnValue(1n),
+      getForegroundHwnd: vi.fn().mockReturnValue(0xCAFEn),
+      getWindowRoot: vi.fn((h: bigint) => h),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
         x: 0, y: 0, width: 800, height: 600,
       }),
@@ -1090,8 +1090,8 @@ describe("scrollReadHandler (mocked)", () => {
       enumWindowsInZOrder: vi.fn().mockReturnValue([]),
       getWindowTitleW: vi.fn().mockReturnValue(""),
       getWindowRectByHwnd: vi.fn().mockReturnValue(null),
-      getForegroundHwnd: vi.fn().mockReturnValue(1n),
-      getWindowRoot: vi.fn().mockReturnValue(1n),
+      getForegroundHwnd: vi.fn().mockReturnValue(0xCAFEn),
+      getWindowRoot: vi.fn((h: bigint) => h),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
         x: 0, y: 0, width: 800, height: 600,
       }),
