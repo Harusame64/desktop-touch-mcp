@@ -34,6 +34,10 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **Ctrl+C stops a command in a `key_locker` `launch_console` pane again.** In a classic console pane, Ctrl+C was
+  ignored, so a running command could not be interrupted. The pane inherited "ignore Ctrl+C" from the way it was
+  started. Its shell now turns normal Ctrl+C handling back on as it opens, whatever it inherited. Panes in Windows
+  Terminal were not affected (internal #344).
 - **`excel` `run_vba` returns when the macro fails, instead of waiting for ever.** A runtime error in a hidden
   run opened a VBA error dialog nobody could see, and the call never returned. The tool's server then timed out and
   left Excel and the workbook behind. A runtime error now fails the call with `VbaMacroExecutionFailed` and the
