@@ -15,7 +15,7 @@ export { detectOcrLanguage };
 import { failWith, failCode } from "./_errors.js";
 import { WindowFrozenError } from "../engine/window-frozen.js";
 import { keyboard } from "../engine/nutjs.js";
-import { restoreAndFocusWindow } from "../engine/win32.js";
+import { bringForward, NOT_IN_FRONT_HINT } from "./_bring-forward.js";
 import { canInjectAtTarget, postKeyComboToHwnd } from "../engine/bg-input.js";
 import { parseKeys } from "../utils/key-map.js";
 import {
@@ -111,7 +111,12 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
       // restoreAndFocusWindow restores from minimized + sets foreground + returns
       // the post-focus rect, replacing the previous `Window.focus()` + `Window.region`
       // pair from the nutjs flat enumeration.
-      const focusResult = restoreAndFocusWindow(focusedHwnd);
+      // internal #326: the page keys and the OCR'd frames are only the target's while it is in front.
+      const brought = await bringForward(focusedHwnd);
+      if (!brought.ok) {
+        return failWith(new Error("ForegroundRestricted"), "scroll", { windowTitle: args.windowTitle, hint: NOT_IN_FRONT_HINT });
+      }
+      const focusResult = brought.rect;
       if (focusResult.width >= 10 && focusResult.height >= 10) {
         focusedRegion = {
           x: focusResult.x,
@@ -131,7 +136,7 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
 
   const allLines: string[] = [];
   const perPage: Array<{ page: number; addedLines: number; duplicateLines: number }> = [];
-  let stoppedReason: "no_change" | "max_pages" | "ocr_empty" | "ocr_failed" = "max_pages";
+  let stoppedReason: "no_change" | "max_pages" | "ocr_empty" | "ocr_failed" | "foreground_refused" = "max_pages";
   let noChangeStreak = 0;
   let ocrError: string | null = null;
 
@@ -209,8 +214,15 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
         // SetForegroundWindow) instead of the legacy `Window.focus()` nutjs
         // method that came with the flat-window enumeration. Same observable
         // outcome (target window becomes foreground before nutjs keystroke).
-        restoreAndFocusWindow(focusedHwnd);
-        await new Promise<void>((r) => setTimeout(r, 100));
+        // internal #326: SendInput goes to whatever is in front, so the window must be in front first.
+        const brought = await bringForward(focusedHwnd);
+        if (!brought.ok) {
+          if (perPage.length === 0) {
+            return failWith(new Error("ForegroundRestricted"), "scroll", { windowTitle: args.windowTitle, hint: NOT_IN_FRONT_HINT });
+          }
+          stoppedReason = "foreground_refused";
+          break;
+        }
         const arr = parseKeys(combo);
         logDispatchSink({ sink: "sendinput", tool: "scroll:read", targetHwnd: null });
         await keyboard.pressKey(...arr);

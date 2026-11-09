@@ -34,6 +34,12 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **`scroll` `capture` and `read` no longer send keys to another window.** When Windows refused to bring the
+  target window to the front, they went on anyway. Ctrl+Home and Page Down then went into the window that was in
+  front, and `capture` answered `ok: true` with a single frame of that other window. They now try once more with
+  the forced request, and refuse with `ForegroundRestricted` if the window still is not in front, before sending
+  anything. `read` keeps the pages it already read and stops with `stoppedReason: "foreground_refused"` (internal
+  #326).
 - **Ctrl+C stops a command in a `key_locker` `launch_console` pane again.** In a classic console pane, Ctrl+C was
   ignored, so a running command could not be interrupted. The pane inherited "ignore Ctrl+C" from the way it was
   started. Its shell now turns normal Ctrl+C handling back on as it opens, whatever it inherited, and prints one line

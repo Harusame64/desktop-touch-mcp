@@ -23,7 +23,9 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 
-const { mockGrabRegion, mockRestoreAndFocus, mockResolveWindowTarget, mockFindPlain } = vi.hoisted(() => ({
+const { mockGrabRegion, mockRestoreAndFocus, mockResolveWindowTarget, mockFindPlain, mockForeground, mockPressKey } = vi.hoisted(() => ({
+  mockForeground: vi.fn(),
+  mockPressKey: vi.fn(async () => {}),
   mockGrabRegion: vi.fn(),
   mockRestoreAndFocus: vi.fn(),
   mockResolveWindowTarget: vi.fn(),
@@ -34,7 +36,7 @@ const { mockGrabRegion, mockRestoreAndFocus, mockResolveWindowTarget, mockFindPl
 // screen / keyboard / mouse / Region from it.
 vi.mock("../../src/engine/nutjs.js", () => ({
   screen: { grabRegion: mockGrabRegion },
-  keyboard: { pressKey: vi.fn(async () => {}), releaseKey: vi.fn(async () => {}) },
+  keyboard: { pressKey: mockPressKey, releaseKey: vi.fn(async () => {}) },
   mouse: { scrollRight: vi.fn(async () => {}) },
   Region: class { constructor(public x: number, public y: number, public width: number, public height: number) {} },
 }));
@@ -46,7 +48,7 @@ vi.mock("../../src/engine/nutjs.js", () => ({
 vi.mock("../../src/utils/key-map.js", () => ({ parseKeys: () => [] }));
 vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
-  return { ...actual, restoreAndFocusWindow: mockRestoreAndFocus };
+  return { ...actual, restoreAndFocusWindow: mockRestoreAndFocus, getForegroundHwnd: mockForeground, getWindowRoot: (h: bigint) => h };
 });
 vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_resolve-window.js")>();
@@ -70,6 +72,7 @@ beforeEach(() => {
   mockFindPlain.mockReturnValue({ hwnd: 1n });
   mockRestoreAndFocus.mockReturnValue({ x: 0, y: 0, width: 200, height: 200 });
   mockGrabRegion.mockResolvedValue(uniformFrame(200, 200));
+  mockForeground.mockReturnValue(1n);
 });
 afterEach(() => {
   delete process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR;
@@ -94,4 +97,28 @@ describe("scroll(action='capture') — ADR-026 §3 ref-only delivery", () => {
     expect(summary.direction).toBe("down");
     expect(typeof summary.frames).toBe("number");
   }, 15000);
+});
+
+// internal #326 (win2, 2026-11-09): Windows refused the foreground, keys went to the window in
+// front, and the capture answered ok:true with one frame of that window.
+describe("scroll(action='capture') needs the window in front (internal #326)", () => {
+  it("refuses with ForegroundRestricted, sends no keys and captures nothing, after asking twice (the second time forced)", async () => {
+    mockForeground.mockReturnValue(999n);
+    const r = await scrollCaptureHandler({ windowTitle: "W", direction: "down", maxScrolls: 3, scrollDelayMs: 0, maxWidth: 800 } as never);
+    const body = JSON.parse((r.content[0] as { text: string }).text);
+    expect(body.ok).toBe(false);
+    expect(body.code).toBe("ForegroundRestricted");
+    expect(mockGrabRegion).not.toHaveBeenCalled();
+    expect(mockPressKey).not.toHaveBeenCalled();
+    expect(mockRestoreAndFocus).toHaveBeenCalledTimes(2);
+    expect(mockRestoreAndFocus).toHaveBeenLastCalledWith(1n, { force: true });
+  });
+
+  it("goes on when the forced request brings it in front", async () => {
+    mockForeground.mockReturnValueOnce(999n).mockReturnValue(1n);
+    const r = await scrollCaptureHandler({ windowTitle: "W", direction: "down", maxScrolls: 1, scrollDelayMs: 0, maxWidth: 800 } as never);
+    const text = (r.content as { type: string; text?: string }[]).find((b) => b.type === "text")!.text!;
+    expect(JSON.parse(text).ok).toBe(true);
+    expect(mockGrabRegion).toHaveBeenCalled();
+  });
 });

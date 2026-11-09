@@ -2,7 +2,7 @@ import { z } from "zod";
 import { logDispatchSink } from "./_resolve-log.js";
 import sharp from "sharp";
 import { keyboard, mouse } from "../engine/nutjs.js";
-import { restoreAndFocusWindow } from "../engine/win32.js";
+import { bringForward, NOT_IN_FRONT_HINT } from "./_bring-forward.js";
 import { grabScreenRegionValidated } from "../engine/image.js";
 import { failWith, failCode } from "./_errors.js";
 import { parseKeys } from "../utils/key-map.js";
@@ -400,7 +400,12 @@ export const scrollCaptureHandler = async ({
 
     let targetRegion: { x: number; y: number; width: number; height: number } | null = null;
     if (targetHwnd !== null) {
-      const focusResult = restoreAndFocusWindow(targetHwnd);
+      // internal #326: keys and frames are only the target's while it is in front.
+      const brought = await bringForward(targetHwnd);
+      if (!brought.ok) {
+        return failWith(new Error("ForegroundRestricted"), "scroll", { windowTitle, hint: NOT_IN_FRONT_HINT });
+      }
+      const focusResult = brought.rect;
       if (focusResult.width >= 100 && focusResult.height >= 100) {
         targetRegion = {
           x: focusResult.x,
