@@ -41,6 +41,9 @@
   macro's code into `%LOCALAPPDATA%\desktop-touch-mcp\trusted-vba` and never removed it. The workbook is now
   removed once the macro has run, and any left from earlier runs is removed at the start of the next one
   (internal #336).
+- **`excel` `run_vba` no longer leaves Excel running after a failed run.** Each failed run left one Excel with no
+  window, holding that run's workbook open until you ended it or signed out. The workbook is now closed on every
+  run, and Excel is quit once no workbook is open in it (internal #345).
 - **A control character sent to a console window in the background acts as its Ctrl key.** `terminal` `send` and
   `keyboard` `type` in the background typed U+0003 as the letter `c` (and dropped the Ctrl of the others), so a
   "Ctrl+C" never stopped anything and left a stray `c` on the next line. U+0001 to U+001A (other than Tab,
