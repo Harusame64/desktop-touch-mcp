@@ -980,42 +980,73 @@ pub(crate) fn set_value(t: &MacAxTarget, value: &str) -> MacActResult {
         return r;
     }
     let v = CFString::from_str(value);
-    let err = unsafe { e.set_attribute_value(&cfstr("AXValue"), &v) };
+    let write = || unsafe { e.set_attribute_value(&cfstr("AXValue"), &v) };
+    let before = value_text_marked(&e);
+    let err = write();
     if err != AXError::Success {
         return refused(&ax_error_name(err));
     }
-    let after = value_text(&e);
-    if after.as_deref() != Some(capped(value).as_str()) && press_to_focus(&e) {
-        let err = unsafe { e.set_attribute_value(&cfstr("AXValue"), &v) };
-        if err != AXError::Success {
-            return refused(&ax_error_name(err));
-        }
+    let after = value_text_marked(&e);
+    let ignored = write_was_ignored(before.as_ref(), after.as_ref(), value);
+    if ignored && press_to_focus(&e, &t.expected_role) {
+        // The press happened: from here a failed write is "not applied", never "nothing was done".
+        let _ = write();
         return MacActResult { ok: true, value_after: value_text(&e), ..Default::default() };
     }
-    MacActResult { ok: true, value_after: after, ..Default::default() }
+    MacActResult { ok: true, value_after: after.map(|(s, _)| s), ..Default::default() }
 }
 
-/// `value` cut at the read-back cap, as `value_text` would return it.
-fn capped(value: &str) -> String {
-    value.chars().take(VALUE_CHAR_CAP).collect()
+/// Whether a write left the field exactly as it was: both reads came back whole and equal, and the
+/// text written was not that value already. A field that took the text and reformatted it (1.50 shown
+/// as 1.5), or one whose value could not be read, is not "ignored" (gate 2 on #913).
+fn write_was_ignored(before: Option<&(String, bool)>, after: Option<&(String, bool)>, value: &str) -> bool {
+    match (before, after) {
+        (Some((b, false)), Some((a, false))) => a == b && a.as_str() != value,
+        _ => false,
+    }
+}
+
+/// The text-field roles a press may focus. Not a combo box: its press can open a list.
+fn presses_to_focus(role: &str) -> bool {
+    matches!(role, "AXTextField" | "AXTextArea" | "AXSearchField")
 }
 
 /// A web page's text field takes a write only while it has the focus: Safari answered success to
-/// AXValue on an unfocused `<input>` and kept it empty (internal #261; measured
-/// 2026-11-09 on macOS 27.2). Setting AXFocused would focus it but also brings Safari to the front,
-/// which the act must not do; AXPress focuses it and leaves the foreground where it was. So when a
-/// write did not hold, a text field that has no focus and advertises AXPress is pressed, once, and
-/// written again. Not a combo box: its press can open a list. `true` when it pressed.
-fn press_to_focus(e: &AXUIElement) -> bool {
-    let role = attr_string(e, "AXRole");
-    if !matches!(role.as_deref(), Some("AXTextField" | "AXTextArea" | "AXSearchField")) {
+/// AXValue on an unfocused `<input>` and kept it unchanged (internal #261; measured 2026-11-09 on
+/// macOS 27.2, Safari in the background). Setting AXFocused would focus it but also brings Safari
+/// to the front, which the act must not do; AXPress focuses it and leaves the foreground where it
+/// was. So when a write was ignored, a text field inside web content (an AXWebArea above it) that
+/// has no focus and advertises AXPress is pressed, once, and written again. Native fields are not
+/// pressed: their press may run an action, and the cause was only measured in WebKit. `true` when
+/// it pressed.
+fn press_to_focus(e: &AXUIElement, role: &str) -> bool {
+    if !presses_to_focus(role) {
         return false;
     }
     if attr_bool(e, "AXFocused") != Some(false) || !action_names(e).iter().any(|a| a == "AXPress") {
         return false;
     }
+    if !inside_web_area(e) {
+        return false;
+    }
     let err = unsafe { e.perform_action(&cfstr("AXPress")) };
     err == AXError::Success
+}
+
+/// Whether an AXWebArea is among the element's ancestors (a few levels up is enough for a form
+/// field; the walk stops at the window).
+fn inside_web_area(e: &AXUIElement) -> bool {
+    let mut cur = attr_element(e, "AXParent", DEFAULT_TIMEOUT_SECS);
+    for _ in 0..32 {
+        let Some(p) = cur else { return false };
+        match attr_string(&p, "AXRole").as_deref() {
+            Some("AXWebArea") => return true,
+            Some("AXWindow") | Some("AXApplication") | None => return false,
+            _ => {}
+        }
+        cur = attr_element(&p, "AXParent", DEFAULT_TIMEOUT_SECS);
+    }
+    false
 }
 
 /// Insert text through the selection, no keyboard: move the caret to `at`
@@ -1067,6 +1098,30 @@ pub(crate) fn insert_text(t: &MacAxTarget, text: &str, at: Option<i64>) -> MacAc
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_write_is_ignored_only_when_the_whole_value_stayed_and_differs_from_the_text() {
+        let e = |s: &str| (s.to_string(), false);
+        // Safari, unfocused: empty before and after.
+        assert!(write_was_ignored(Some(&e("")), Some(&e("")), "yamada"));
+        // Took it, reformatted: changed, so not ignored.
+        assert!(!write_was_ignored(Some(&e("")), Some(&e("1.5")), "1.50"));
+        // Already that value: nothing to fix.
+        assert!(!write_was_ignored(Some(&e("abc")), Some(&e("abc")), "abc"));
+        // A value that could not be read, or was cut: not known to be unchanged.
+        assert!(!write_was_ignored(None, Some(&e("")), "x"));
+        assert!(!write_was_ignored(Some(&e("")), None, "x"));
+        assert!(!write_was_ignored(Some(&("a".into(), true)), Some(&("a".into(), true)), "x"));
+    }
+
+    #[test]
+    fn only_text_fields_are_pressed_to_focus() {
+        assert!(presses_to_focus("AXTextField"));
+        assert!(presses_to_focus("AXTextArea"));
+        assert!(presses_to_focus("AXSearchField"));
+        assert!(!presses_to_focus("AXComboBox"));
+        assert!(!presses_to_focus("AXButton"));
+    }
+
     use super::*;
 
     fn rect(x: f64) -> MacRect {

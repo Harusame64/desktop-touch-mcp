@@ -110,8 +110,8 @@
 ### Fixed — macOS (preview)
 - **`desktop_act` `type` reaches a web page's text field that does not have the focus.** Safari accepted the write
   to an unfocused `<input>` but kept it empty, and the act answered `value_not_applied`. Clicking the field first
-  helped. When a write does not hold and the field has no focus, the act now presses the field once, which focuses
-  it without bringing Safari forward, and writes again. Adding text with `append: true` to such a field still
+  helped. When a write leaves a web page's field unchanged and the field has no focus, the act now presses it once,
+  which focuses it without bringing Safari forward, and writes again. Native fields are not pressed. Adding text with `append: true` to such a field still
   answers `value_not_applied`: Safari ignores that kind of insertion even with the focus (internal #261).
 - **A window's close, minimize, zoom and full-screen buttons are named in the app's language.** They came back in
   English (`Close window`) beside controls named in Japanese, so a `query` such as "閉じる" did not find them. They now
