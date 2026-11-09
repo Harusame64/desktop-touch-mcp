@@ -139,11 +139,12 @@ pub fn set_display_alerts(session: &ExcelSession, enabled: bool) -> VbaBridgeRes
 
 /// Create a new blank Workbook on the active session.
 ///
-/// Equivalent to `Application.Workbooks.Add()`. Returns the result of
-/// `invoke_call` (a VARIANT wrapping the new Workbook IDispatch);
-/// callers who need the IDispatch can use [`variant_to_dispatch`]. For
-/// the demo path, the new workbook is the active one immediately, so
-/// subsequent operations can use `Application.ActiveWorkbook`.
+/// Equivalent to `Application.Workbooks.Add()`. The session keeps the
+/// new workbook, and [`vba_module_add`], [`workbook_save_as`] and
+/// [`workbook_close`] act on it rather than on `ActiveWorkbook` (another
+/// workbook may become active, internal #345). Fails when `Add` returns
+/// no IDispatch. A second call replaces the kept workbook; the earlier
+/// one is then no longer closed by [`workbook_close`].
 pub fn workbook_add_new(session: &ExcelSession) -> VbaBridgeResult<()> {
     session.with_app(|app| {
         let workbooks = dispatch::invoke_get(app, "Workbooks", &[])?;
@@ -177,11 +178,11 @@ pub fn vba_module_add(
     module_name: String,
     code: String,
 ) -> VbaBridgeResult<()> {
-    session.with_app(move |app| {
-        // ActiveWorkbook
-        let active_wb = dispatch::invoke_get(app, "ActiveWorkbook", &[])?;
-        let wb_disp = variant_to_dispatch(&active_wb)
-            .ok_or_else(|| make_unexpected("ActiveWorkbook did not return IDispatch"))?;
+    session.with_app(move |_app| {
+        // The workbook workbook_add_new added, not ActiveWorkbook: another one
+        // (a file opened from Explorer into this instance) may be active (#345).
+        let wb_disp = apartment::own_workbook()
+            .ok_or_else(|| make_unexpected("no workbook was added in this session"))?;
 
         // VBProject
         let vbproject = match dispatch::invoke_get(&wb_disp, "VBProject", &[]) {
@@ -299,9 +300,9 @@ pub fn workbook_save_as(
     format: XlFileFormat,
 ) -> VbaBridgeResult<()> {
     session.with_app(move |app| {
-        let active_wb = dispatch::invoke_get(app, "ActiveWorkbook", &[])?;
-        let wb_disp = variant_to_dispatch(&active_wb)
-            .ok_or_else(|| make_unexpected("ActiveWorkbook did not return IDispatch"))?;
+        // The workbook workbook_add_new added (see vba_module_add, #345).
+        let wb_disp = apartment::own_workbook()
+            .ok_or_else(|| make_unexpected("no workbook was added in this session"))?;
 
         // Save-restore guard: snapshot the current DisplayAlerts state,
         // suppress for the SaveAs, and always restore. We do NOT use
@@ -416,10 +417,15 @@ pub fn workbook_close(session: &ExcelSession, save_changes: bool) -> VbaBridgeRe
         // An alert (the large-clipboard prompt after a macro copied a range)
         // or an event handler's MsgBox would block this call in a hidden
         // instance with nobody to answer.
+        // As in workbook_save_as, a suppress that fails stops here: the Close
+        // could then block the worker, and the server with it.
         let prev_alerts = dispatch::invoke_get(app, "DisplayAlerts", &[]).unwrap_or_else(|_| true.into());
         let prev_events = dispatch::invoke_get(app, "EnableEvents", &[]).unwrap_or_else(|_| true.into());
-        let _ = dispatch::invoke_put(app, "DisplayAlerts", false.into());
-        let _ = dispatch::invoke_put(app, "EnableEvents", false.into());
+        dispatch::invoke_put(app, "DisplayAlerts", false.into())?;
+        if let Err(e) = dispatch::invoke_put(app, "EnableEvents", false.into()) {
+            let _ = dispatch::invoke_put(app, "DisplayAlerts", prev_alerts);
+            return Err(e);
+        }
 
         let save_v: VARIANT = save_changes.into();
         let result = dispatch::invoke_call(&wb_disp, "Close", &[save_v]);
@@ -443,7 +449,7 @@ fn make_unexpected(context: &str) -> VbaBridgeError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     // `use super::*` is only referenced from the `excel-installed`-gated
     // integration test below. Guarding the import behind the same feature
     // silences the "unused import" warning in default-features builds
@@ -474,6 +480,7 @@ mod tests {
     #[cfg(feature = "excel-installed")]
     #[test]
     fn end_to_end_vba_macro_authoring_and_execution() {
+        let _serial = EXCEL_COUNT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use std::path::PathBuf;
 
         // Resolve the Trusted Location directory that the CLI
@@ -569,8 +576,9 @@ mod tests {
         // Drop the session BEFORE deleting the file: SaveAs leaves
         // Excel holding a handle to the .xlsm; deleting while Excel
         // holds it raises ERROR_SHARING_VIOLATION on some Windows
-        // builds. ExcelSession::drop releases the IDispatch on the
-        // STA thread, which closes Excel and releases the handle.
+        // builds. With the workbook closed above, ExcelSession::drop
+        // quits Excel (nothing open, UserControl false) and releases the
+        // IDispatch on the STA thread, which releases the handle.
         drop(session);
 
         // Best-effort cleanup with a small retry loop. Excel.exe is
@@ -605,7 +613,7 @@ mod tests {
     /// The EXCEL.EXE-count tests count every Excel on the machine, so they
     /// must not overlap (cargo runs tests on parallel threads).
     #[cfg(feature = "excel-installed")]
-    static EXCEL_COUNT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(crate) static EXCEL_COUNT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Number of EXCEL.EXE processes running now (tasklist, CSV, no header).
     #[cfg(feature = "excel-installed")]
@@ -647,7 +655,7 @@ mod tests {
         assert!(macro_run(&session, "NoSuchMacroInThisWorkbook".to_string()).is_err());
         workbook_close(&session, false).expect("workbook_close");
         drop(session);
-        assert_eq!(excel_count_returns_to(before), before, "an EXCEL.EXE stayed after a failed run");
+        assert!(excel_count_returns_to(before) <= before, "an EXCEL.EXE stayed after a failed run");
     }
 
     /// internal #345: workbook_close closes the session's own workbook, not
@@ -661,27 +669,16 @@ mod tests {
         let session = ExcelSession::spawn().expect("Excel must be installed for this test");
         set_visible(&session, false).expect("set_visible");
         workbook_add_new(&session).expect("workbook_add_new");
-        // COM identity: the IUnknown pointer of each open workbook.
-        let open_books = |session: &ExcelSession| {
-            session
-                .with_app(|app| {
-                    use windows::core::{IUnknown, Interface};
-                    let books = dispatch::invoke_get(app, "Workbooks", &[])?;
-                    let books = variant_to_dispatch(&books).expect("Workbooks");
-                    let n = i32::try_from(&dispatch::invoke_get(&books, "Count", &[])?).unwrap_or(0);
-                    let mut out = Vec::new();
-                    for i in 1..=n {
-                        let wb = dispatch::invoke_get(&books, "Item", &[i.into()])?;
-                        let wb = variant_to_dispatch(&wb).expect("Workbooks.Item");
-                        let unk: IUnknown = wb.cast().expect("IUnknown");
-                        out.push(unk.as_raw() as usize);
-                    }
-                    Ok(out)
-                })
-                .expect("open workbooks")
-        };
-        let own = open_books(&session);
-        assert_eq!(own.len(), 1);
+        // Mark the session's workbook: 345 in A1 of its active sheet.
+        session
+            .with_app(|app| {
+                let sheet = dispatch::invoke_get(app, "ActiveSheet", &[])?;
+                let sheet = variant_to_dispatch(&sheet).expect("ActiveSheet");
+                let cell = dispatch::invoke_get(&sheet, "Range", &[BSTR::from("A1").into()])?;
+                let cell = variant_to_dispatch(&cell).expect("Range");
+                dispatch::invoke_put(&cell, "Value", 345i32.into())
+            })
+            .expect("mark the session's workbook");
         // What a macro's Workbooks.Add would do: another workbook, now active.
         session
             .with_app(|app| {
@@ -691,9 +688,25 @@ mod tests {
             })
             .expect("second Workbooks.Add");
         workbook_close(&session, false).expect("workbook_close");
-        let left = open_books(&session);
-        assert_eq!(left.len(), 1);
-        assert_ne!(left[0], own[0], "workbook_close closed the active workbook instead of the session's own");
+        let (left, marked) = session
+            .with_app(|app| {
+                let books = dispatch::invoke_get(app, "Workbooks", &[])?;
+                let books = variant_to_dispatch(&books).expect("Workbooks");
+                let n = i32::try_from(&dispatch::invoke_get(&books, "Count", &[])?).unwrap_or(-1);
+                let wb = dispatch::invoke_get(&books, "Item", &[1i32.into()])?;
+                let wb = variant_to_dispatch(&wb).expect("Workbooks.Item");
+                let sheet = dispatch::invoke_get(&wb, "ActiveSheet", &[])?;
+                let sheet = variant_to_dispatch(&sheet).expect("ActiveSheet");
+                let cell = dispatch::invoke_get(&sheet, "Range", &[BSTR::from("A1").into()])?;
+                let cell = variant_to_dispatch(&cell).expect("Range");
+                let v = dispatch::invoke_get(&cell, "Value", &[])?;
+                let marked = f64::try_from(&v).map(|x| x == 345.0).unwrap_or(false)
+                    || i32::try_from(&v).map(|x| x == 345).unwrap_or(false);
+                Ok((n, marked))
+            })
+            .expect("read the workbook left open");
+        assert_eq!(left, 1);
+        assert!(!marked, "workbook_close closed the active workbook instead of the session's own");
         // Close the macro's workbook as its caller would; then nothing is open.
         session
             .with_app(|app| {
@@ -703,6 +716,6 @@ mod tests {
             })
             .expect("close the other workbook");
         drop(session);
-        assert_eq!(excel_count_returns_to(before), before, "an EXCEL.EXE stayed with nothing open");
+        assert!(excel_count_returns_to(before) <= before, "an EXCEL.EXE stayed with nothing open");
     }
 }

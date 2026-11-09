@@ -852,10 +852,12 @@ export declare function excelSetVisible(sessionId: number, visible: boolean): vo
  * save-restore guard (ADR-015 §7 R9). Exposed for manual control. */
 export declare function excelSetDisplayAlerts(sessionId: number, enabled: boolean): void
 
-/** Create a fresh blank workbook on the active session. */
+/** Create a fresh blank workbook on the active session. The session keeps
+ * it: `excelVbaModuleAdd`, `excelWorkbookSaveAs` and `excelWorkbookClose`
+ * act on it, not on the active workbook (internal #345). */
 export declare function excelWorkbookAddNew(sessionId: number): void
 
-/** Save the active workbook. `fileFormat` is the numeric `XlFileFormat`
+/** Save the workbook `excelWorkbookAddNew` added. `fileFormat` is the numeric `XlFileFormat`
  * value; v1 supports `52` (xlOpenXMLWorkbookMacroEnabled / `.xlsm`) only —
  * passing other values throws `VbaUnsupportedArgumentType`. Internally
  * manages `DisplayAlerts` via a save-restore guard. */
@@ -871,7 +873,7 @@ export declare function excelWorkbookSaveAs(
  * for that. */
 export declare function excelWorkbookClose(sessionId: number, saveChanges: boolean): void
 
-/** Add a VBA module to the active workbook + write source into it.
+/** Add a VBA module to the workbook `excelWorkbookAddNew` added + write source into it.
  * Requires `AccessVBOM = 1` (HKCU or HKLM); otherwise throws
  * `VbaAccessNotTrusted`. */
 export declare function excelVbaModuleAdd(

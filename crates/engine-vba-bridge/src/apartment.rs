@@ -373,6 +373,8 @@ mod tests {
     #[cfg(feature = "excel-installed")]
     #[test]
     fn spawn_and_drop_against_real_excel() {
+        // Starts an Excel: not while the excel.rs tests count EXCEL.EXE.
+        let _serial = crate::excel::tests::EXCEL_COUNT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let session = ExcelSession::spawn().expect("Excel must be installed for this test");
         // Smallest possible work: ask the IDispatch for its own type
         // info pointer (we don't use it; this just round-trips a COM
