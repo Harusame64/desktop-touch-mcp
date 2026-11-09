@@ -138,6 +138,8 @@ const FRAMES_IDENTICAL_MAE = 4;
 // about 50 ms; Chrome answers only from its second query.
 const SCROLL_PERCENT_TIMEOUT_MS = 200;
 const SCROLL_PERCENT_EPSILON = 0.01;
+/** ScrollPattern's percent at the end of the range (both axes; Ctrl+Home starts at 0). */
+const SCROLL_PERCENT_END = 100;
 /**
  * Counted empty reads, with no position read yet in the run, after which the window is taken to have
  * no scroll position to read. The warm-up is not counted, and once a position has been read the
@@ -524,6 +526,12 @@ export const scrollCaptureHandler = async ({
     // compared across two steps, a frame at the very end can then count as moved once and stay in the
     // stitch as a duplicate screen, which is preferred to ending early and losing the rest (gate 2 on #916).
     let lastPosition: number | null = null;
+    // Whether the position has moved during this run, i.e. it follows the page. win2 2026-11-10: Chrome's
+    // position often reads one PageDown behind the frame (0.034 after a 660 px step), so two reads can
+    // match part way down; a position that follows the page must reach the end of its range before
+    // identical frames count toward the page end. One that never moves is likely another scroller's
+    // (internal #360), and the pixels decide as before.
+    let tracking = false;
 
     for (let i = 0; i <= maxScrolls; i++) {
       if (!stillInFront(targetHwnd!)) {
@@ -539,13 +547,15 @@ export const scrollCaptureHandler = async ({
         // reach 0, this can keep one duplicate frame, which is preferred to ending early.
         const before = lastPosition ?? (frames.length > 0 ? 0 : null);
         scrolled = before !== null && Math.abs(at - before) >= SCROLL_PERCENT_EPSILON;
+        if (scrolled) tracking = true;
         lastPosition = at;
       }
+      const shortOfEnd = tracking && lastPosition !== null && lastPosition < SCROLL_PERCENT_END - SCROLL_PERCENT_EPSILON;
 
       // Page-end detection: require 2 consecutive identical frames to avoid
       // false positives from repeating-pattern UIs (e.g. review sections). A scroll position that
-      // moved overrules the pixels (internal #326 (B)).
-      if (frames.length > 0 && !scrolled && framesIdentical(frames[frames.length - 1]!, frame, direction)) {
+      // moved, or one that follows the page and is short of its end, overrules the pixels (internal #326 (B)).
+      if (frames.length > 0 && !scrolled && !shortOfEnd && framesIdentical(frames[frames.length - 1]!, frame, direction)) {
         identicalStreak++;
         if (identicalStreak >= 2) {
           // Remove the streak=1 frame that was tentatively pushed last iteration —

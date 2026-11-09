@@ -248,6 +248,25 @@ describe("scroll(action='capture') page end on periodic content (internal #326 (
     expect(body.frames).toBe(2);
   });
 
+  it("does not end part way when a lagging position reads the same twice (win2 K2, Chrome)", async () => {
+    // warm-up, then frames 0..8. Chrome's position trails the frame by a step, so it repeats part way.
+    mockReadPercent.mockResolvedValueOnce(null);
+    for (const v of [0, 10, 20, 20, 20, 30, 100, 100]) mockReadPercent.mockResolvedValueOnce(v);
+    mockReadPercent.mockResolvedValue(100);
+    const body = await run(15);
+    // Frames 3 and 4 read 20 again but the position follows the page and is short of 100, so they do
+    // not count; the run ends on frames 7 and 8 at 100.
+    expect(mockCapture).toHaveBeenCalledTimes(9);
+    expect(body.warning).toBeUndefined();
+  });
+
+  it("lets the pixels decide when the position never moves (another scroller's)", async () => {
+    mockReadPercent.mockResolvedValue(35);
+    const body = await run(5);
+    expect(mockCapture).toHaveBeenCalledTimes(3);
+    expect(body.warning).toBeUndefined();
+  });
+
   it("keeps the last position across a failed read, so the next good read still shows movement", async () => {
     // warm-up, then frames 0..3: 10, (failed), 30, 40 — the page is still moving throughout.
     mockReadPercent

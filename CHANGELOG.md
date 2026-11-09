@@ -37,9 +37,10 @@
 - **`scroll` `capture` no longer stops after one frame on pages that repeat.** On a page of equal-height
   sections whose height divides the Page Down distance, one Page Down changed only the section numbers. The
   page-end test compared two thin bands of the frame, saw no change, and answered `ok: true` with the first
-  screen only. When the window reports its scroll position through UI Automation (Chrome does), a position
-  that moved now means the page has not ended, whatever the pixels show. Windows that report none end as before
-  (internal #326).
+  screen only. Notepad, whose lines differ only by their text, lost the last screen the same way. When the window
+  reports its scroll position through UI Automation (Chrome and Notepad do), a position that moved means the page
+  has not ended, and once it has moved, the page ends only when it reaches the end of its range, whatever the
+  pixels show. Windows that report none end as before (internal #326).
 - **`scroll` `capture` and `read` no longer send keys to another window.** When Windows refused to bring the
   target window to the front, they went on anyway. Ctrl+Home and Page Down then went into the window that was in
   front, and `capture` answered `ok: true` with a single frame of that other window. `capture` now tries once more
