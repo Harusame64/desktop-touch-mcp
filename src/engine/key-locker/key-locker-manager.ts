@@ -82,31 +82,38 @@ const CONSENT_FILE = "consent.json";
  *  `Injection.cs` ReVerify positive-allowlist). Windows Terminal is a XAML host with a different class. */
 const CONSOLE_WINDOW_CLASS = "ConsoleWindowClass";
 
-
 /**
  * The PowerShell a `launch_console` pane runs first, before its prompt: set the output codepage to
  * UTF-8 (La-0), set the window title the claim polls for, then let Ctrl+C reach the pane again.
  *
- * Ctrl+C was ignored in a classic pane (internal #344; measured by win2 2026-11-09 with the real key:
- * 0 of 3 interrupts, ConsoleFlags 3 in powershell). The pane is started by `spawn(..., {detached: true})`,
- * which on Windows makes a new process group, and a new process group starts with Ctrl+C ignored; the
- * flag is inherited down cmd → conhost → powershell, and from a server that itself inherited it. Clearing
- * it here, in the pane's own shell, works whatever its parents had: SetConsoleCtrlHandler(NULL, FALSE)
- * restores normal Ctrl+C handling, and the commands the shell starts inherit that. A pane under Windows
- * Terminal never had the flag (its parent is the terminal) and is unaffected.
+ * Why Ctrl+C was ignored (internal #344; measured by win2 2026-11-09 with the real key: 0 of 3
+ * interrupts, ConsoleFlags 3 in powershell, 1 in conhost): the pane is started by
+ * `spawn(cmd, ..., {detached: true})`, and libuv passes `detached` to CreateProcess as
+ * DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP. A new process group starts with an implicit
+ * SetConsoleCtrlHandler(NULL, TRUE) — Ctrl+C ignored — and that state is inherited by every child:
+ * cmd -> conhost -> powershell -> whatever the pane runs. A server that itself inherited it passes it
+ * on too, so changing the spawn alone does not fix every case (win2: 0 of 3 from such a server).
+ * Clearing it in the pane's own shell does: SetConsoleCtrlHandler(NULL, FALSE) restores normal Ctrl+C
+ * handling there, and the commands it starts inherit that (win2: 3 of 3, from a clean and from such a
+ * server; ConsoleFlags 2). A pane under Windows Terminal never had the flag (its parent is the terminal).
  *
- * After the title, so the claim does not wait on Add-Type; inside try/catch, so a failure leaves a pane
- * that works as before rather than failing the launch.
+ * After the title, so the claim does not wait on Add-Type (win2: launch time unchanged). When the call
+ * throws or returns false, the pane says so in one line rather than quietly keep ignoring Ctrl+C.
+ * The title goes into a single-quoted string, so it must hold no quote: only the nonce titles the
+ * manager makes are accepted.
  */
 export function paneSetupCommand(title: string): string {
+  if (!/^[A-Za-z0-9._-]+$/.test(title)) throw new Error(`paneSetupCommand: unexpected title ${JSON.stringify(title)}`);
   return (
     "try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() } catch {}; " +
     `$Host.UI.RawUI.WindowTitle = '${title}'; ` +
     "try { Add-Type -Namespace DesktopTouch -Name ConsoleCtrl -MemberDefinition " +
     "'[DllImport(\"kernel32.dll\")] public static extern bool SetConsoleCtrlHandler(System.IntPtr handler, bool add);'; " +
-    "[void][DesktopTouch.ConsoleCtrl]::SetConsoleCtrlHandler([System.IntPtr]::Zero, $false) } catch {}"
+    "if (-not [DesktopTouch.ConsoleCtrl]::SetConsoleCtrlHandler([System.IntPtr]::Zero, $false)) { throw 'SetConsoleCtrlHandler returned false' } } " +
+    "catch { Write-Host \"desktop-touch: Ctrl+C could not be turned back on in this window ($($_.Exception.Message)); it may not stop a running command.\" }"
   );
 }
+
 /** Read the persisted first-run consent flag (fail-closed: absent/corrupt/wrong-shape ⇒ false). */
 export function consentAccepted(storeDir?: string): boolean {
   const path = join(storeDir ?? defaultStoreDir(), CONSENT_FILE);
