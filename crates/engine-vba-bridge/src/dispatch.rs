@@ -109,6 +109,46 @@ unsafe fn bstr_to_string(b: &windows::core::BSTR) -> Option<String> {
     Some(b.to_string())
 }
 
+/// Extract an `IDispatch` pointer from a VARIANT that should carry one.
+///
+/// Returns `None` if the VARIANT does not contain a non-null IDispatch.
+/// Used to walk the Excel COM object graph (Workbook → VBProject → ...).
+///
+/// # SAFETY (Opus Round 1 P1-2)
+///
+/// The unsafe block accesses the VARIANT's anonymous union via raw
+/// field projection. This is safe under the following invariants:
+///
+/// - **Tag check first**: `inner.vt == VT_DISPATCH` is checked before
+///   reading `pdispVal`. windows-rs 0.62's `VARIANT_0_0_0` union
+///   guarantees that the `pdispVal` arm is the active member iff
+///   `vt == VT_DISPATCH`; reading it under a different tag is undefined
+///   behavior, which the tag check prevents.
+/// - **`ManuallyDrop` deref + clone semantic**: `pdispVal` is
+///   `ManuallyDrop<Option<IDispatch>>` in windows-rs 0.62. The `*`
+///   deref gives `&Option<IDispatch>`, and `.clone()` calls `AddRef`, so
+///   the returned `Option<IDispatch>` is independently refcount-managed.
+/// - **Apartment affinity**: every caller runs on the session's STA
+///   worker thread: inside a `with_app` closure (`excel.rs`) or in the
+///   worker's teardown (`apartment.rs`). The cloned `IDispatch` therefore
+///   lives on the apartment that created the source VARIANT.
+///
+/// **Structural hazard guard**: the returned `IDispatch` must not leave
+/// the worker thread. The one kept across calls (the workbook
+/// `workbook_add_new` added) lives in a thread-local of the worker
+/// (`apartment::remember_own_workbook`) and is released in its teardown
+/// before `CoUninitialize`.
+pub fn variant_to_dispatch(v: &VARIANT) -> Option<IDispatch> {
+    unsafe {
+        let inner = &v.Anonymous.Anonymous;
+        if inner.vt == windows::Win32::System::Variant::VT_DISPATCH {
+            (*inner.Anonymous.pdispVal).clone()
+        } else {
+            None
+        }
+    }
+}
+
 /// Read a property by name from an `IDispatch`.
 ///
 /// Wraps `GetIDsOfNames(name)` + `Invoke(DISPATCH_PROPERTYGET)`.

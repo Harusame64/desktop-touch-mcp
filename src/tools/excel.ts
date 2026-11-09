@@ -272,17 +272,15 @@ async function handleRunVba(args: z.infer<typeof runVbaSchema>): Promise<ToolRes
     return failWith(mapNapiError(err), "excel", { macroName: args.macroName });
   } finally {
     if (sessionId !== undefined) {
-      // Close the workbook on every path, failures included: the session close quits Excel only when no workbook
-      // is open, and a workbook left open kept one windowless EXCEL.EXE per failed run, holding the file (#345).
+      // Close the run's own workbook on every path, failures included, before the session close: that close quits a
+      // hidden Excel, and a workbook left open kept one windowless EXCEL.EXE per failed run, holding the file (#345).
       try {
         nativeExcel.excelWorkbookClose?.(sessionId, false);
       } catch {
-        // Nothing open (the run failed before Workbooks.Add) or Excel is gone.
+        // Nothing was added (the run failed before Workbooks.Add) or Excel is gone.
       }
-    }
-    if (sessionId !== undefined && nativeExcel.excelSessionClose) {
       try {
-        nativeExcel.excelSessionClose(sessionId);
+        nativeExcel.excelSessionClose?.(sessionId);
       } catch {
         // Best-effort cleanup.
       }

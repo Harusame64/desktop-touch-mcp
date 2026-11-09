@@ -20,14 +20,18 @@
 //! ## Drop / shutdown
 //!
 //! `ExcelSession::drop` signals shutdown via the bounded(1) shutdown
-//! channel and joins the worker. The worker drops the `Excel.Application`
-//! IDispatch on the worker thread (releasing the COM reference is
+//! channel and joins the worker. The worker first ends Excel where that
+//! loses nothing of the user's (`end_excel`: a hidden instance the user
+//! never took over has every workbook closed unsaved and is quit; any
+//! other is quit only with no workbook open, #345), then drops the
+//! `Excel.Application` IDispatch on the worker thread (releasing the COM reference is
 //! apartment-affine, so it must happen on the STA thread) and then
 //! calls `CoUninitialize`. If the caller has unfinished commands in
 //! flight when drop runs, those commands are still processed; the
 //! shutdown channel uses a `select!` priority so already-queued
 //! commands complete before shutdown observes the signal.
 
+use std::cell::RefCell;
 use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
 
@@ -296,9 +300,9 @@ fn worker_loop(
     //
     // Releasing the IDispatch alone does not end Excel: an instance that still
     // holds a workbook stays running with no window, and holds the workbook's
-    // file open (#345: one EXCEL.EXE left per failed run_vba). Quit only when
-    // no workbook is open, so nothing unsaved can be thrown away here.
-    quit_if_no_workbook_open(&app);
+    // file open (#345: one EXCEL.EXE left per failed run_vba).
+    OWN_WORKBOOK.with(|c| c.borrow_mut().take());
+    end_excel(&app);
     drop(app);
 
     unsafe {
@@ -306,17 +310,78 @@ fn worker_loop(
     }
 }
 
-/// Calls `Application.Quit` when `Workbooks.Count` reads 0. Any failure
-/// (Excel already gone, busy, a count that does not read) leaves Excel as it
-/// is: the caller only releases its reference, as before.
-fn quit_if_no_workbook_open(app: &IDispatch) {
-    let open = dispatch::invoke_get(app, "Workbooks", &[])
-        .ok()
-        .and_then(|v| crate::excel::variant_to_dispatch(&v))
-        .and_then(|books| dispatch::invoke_get(&books, "Count", &[]).ok())
-        .and_then(|v| i32::try_from(&v).ok());
-    if open == Some(0) {
-        let _ = dispatch::invoke_call(app, "Quit", &[]);
+thread_local! {
+    /// The workbook `excel::workbook_add_new` added on this STA worker, so
+    /// `excel::workbook_close` closes that one and not whatever a macro made
+    /// active (#345). Only the worker thread touches it; teardown releases it
+    /// before `CoUninitialize`.
+    static OWN_WORKBOOK: RefCell<Option<IDispatch>> = const { RefCell::new(None) };
+}
+
+/// Keep (or, with `None`, forget) the workbook this session added. Call it
+/// only on the STA worker (inside a `with_app` closure).
+pub(crate) fn remember_own_workbook(wb: Option<IDispatch>) {
+    OWN_WORKBOOK.with(|c| *c.borrow_mut() = wb);
+}
+
+/// The workbook this session added and has not closed yet. STA worker only.
+pub(crate) fn own_workbook() -> Option<IDispatch> {
+    OWN_WORKBOOK.with(|c| c.borrow().clone())
+}
+
+/// Ends the Excel this session created, as far as that loses nothing of the
+/// user's (#345).
+///
+/// - Hidden and never taken over by the user (`Visible` and `UserControl`
+///   both read false): everything open in it was opened by this session (the
+///   run's workbook, or what its macro opened), and nobody could see or save
+///   it. Every workbook is closed unsaved with `DisplayAlerts` off, then Quit.
+/// - Otherwise Quit only when `UserControl` reads false and no workbook is
+///   open, so a window the user is working in, or a workbook they opened,
+///   is never closed. Excel then stays running, as before.
+///
+/// A failure is logged to stderr and leaves Excel as it is.
+fn end_excel(app: &IDispatch) {
+    let read = |name: &str| dispatch::invoke_get(app, name, &[]);
+    let visible = read("Visible").ok().and_then(|v| bool::try_from(&v).ok());
+    let user_control = read("UserControl").ok().and_then(|v| bool::try_from(&v).ok());
+    let books = read("Workbooks").ok().and_then(|v| dispatch::variant_to_dispatch(&v));
+    let count = |b: &IDispatch| {
+        dispatch::invoke_get(b, "Count", &[]).ok().and_then(|v| i32::try_from(&v).ok())
+    };
+    let log = |what: &str| eprintln!("[engine-vba-bridge] closing Excel: {what}");
+
+    if visible == Some(false) && user_control == Some(false) {
+        if let Err(e) = dispatch::invoke_put(app, "DisplayAlerts", false.into()) {
+            log(&format!("DisplayAlerts=false refused, closing anyway: {e}"));
+        }
+        if let Some(books) = &books {
+            for i in (1..=count(books).unwrap_or(0)).rev() {
+                let closed = dispatch::invoke_get(books, "Item", &[i.into()])
+                    .and_then(|v| {
+                        dispatch::variant_to_dispatch(&v)
+                            .ok_or_else(|| VbaBridgeError::ComCallFailed {
+                                hresult: 0,
+                                context: "Workbooks.Item did not return IDispatch".to_string(),
+                            })
+                    })
+                    .and_then(|wb| dispatch::invoke_call(&wb, "Close", &[false.into()]));
+                if let Err(e) = closed {
+                    log(&format!("workbook {i} did not close: {e}"));
+                }
+            }
+        }
+    } else {
+        let open = books.as_ref().and_then(count);
+        if user_control != Some(false) || open != Some(0) {
+            log(&format!(
+                "left running (visible={visible:?}, userControl={user_control:?}, open workbooks={open:?})"
+            ));
+            return;
+        }
+    }
+    if let Err(e) = dispatch::invoke_call(app, "Quit", &[]) {
+        log(&format!("Quit failed: {e}"));
     }
 }
 
