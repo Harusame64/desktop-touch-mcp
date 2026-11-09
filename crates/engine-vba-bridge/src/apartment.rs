@@ -20,14 +20,17 @@
 //! ## Drop / shutdown
 //!
 //! `ExcelSession::drop` signals shutdown via the bounded(1) shutdown
-//! channel and joins the worker. The worker drops the `Excel.Application`
-//! IDispatch on the worker thread (releasing the COM reference is
+//! channel and joins the worker. The worker first quits Excel when
+//! nothing can be lost (`end_excel`: `UserControl` false and no workbook
+//! open, #345), then drops the
+//! `Excel.Application` IDispatch on the worker thread (releasing the COM reference is
 //! apartment-affine, so it must happen on the STA thread) and then
 //! calls `CoUninitialize`. If the caller has unfinished commands in
 //! flight when drop runs, those commands are still processed; the
 //! shutdown channel uses a `select!` priority so already-queued
 //! commands complete before shutdown observes the signal.
 
+use std::cell::RefCell;
 use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
 
@@ -38,6 +41,7 @@ use windows::Win32::System::Com::{
 };
 use windows::core::PCWSTR;
 
+use crate::dispatch;
 use crate::errors::{VbaBridgeError, VbaBridgeResult};
 
 /// Boxed closure that runs on the STA worker with the
@@ -292,10 +296,68 @@ fn worker_loop(
     // Drop the IDispatch on the apartment thread (release the COM
     // reference), then CoUninitialize. Order matters: CoUninitialize
     // invalidates interface pointers on this thread.
+    //
+    // Releasing the IDispatch alone does not end Excel: an instance that still
+    // holds a workbook stays running with no window, and holds the workbook's
+    // file open (#345: one EXCEL.EXE left per failed run_vba).
+    OWN_WORKBOOK.with(|c| c.borrow_mut().take());
+    end_excel(&app);
     drop(app);
 
     unsafe {
         CoUninitialize();
+    }
+}
+
+thread_local! {
+    /// The workbook `excel::workbook_add_new` added on this STA worker, so
+    /// `excel::workbook_close` closes that one and not whatever a macro made
+    /// active (#345). Only the worker thread touches it; teardown releases it
+    /// before `CoUninitialize`.
+    static OWN_WORKBOOK: RefCell<Option<IDispatch>> = const { RefCell::new(None) };
+}
+
+/// Keep (or, with `None`, forget) the workbook this session added. Call it
+/// only on the STA worker (inside a `with_app` closure).
+pub(crate) fn remember_own_workbook(wb: Option<IDispatch>) {
+    OWN_WORKBOOK.with(|c| *c.borrow_mut() = wb);
+}
+
+/// The workbook this session added and has not closed yet. STA worker only.
+pub(crate) fn own_workbook() -> Option<IDispatch> {
+    OWN_WORKBOOK.with(|c| c.borrow().clone())
+}
+
+/// Quits the Excel this session created when that cannot lose anything:
+/// `UserControl` reads false (Excel sets it true once the instance is visible
+/// or the user has used it) and `Workbooks.Count` reads 0, so there is no
+/// workbook to save and no window anyone is working in. Anything else leaves
+/// Excel as it was before #345: the IDispatch is released and Excel decides.
+///
+/// Workbooks are never closed here: one opened by a macro may run a
+/// `BeforeClose` handler whose `MsgBox` nobody could answer in a hidden
+/// instance, which would block this join and the server with it; and a file
+/// the user opened from Explorer can land in an automation instance. The run's
+/// own workbook is closed by `excel::workbook_close` before the drop.
+///
+/// What stopped the Quit is written to stderr.
+fn end_excel(app: &IDispatch) {
+    let user_control = dispatch::invoke_get(app, "UserControl", &[])
+        .ok()
+        .and_then(|v| bool::try_from(&v).ok());
+    let open = dispatch::invoke_get(app, "Workbooks", &[])
+        .ok()
+        .and_then(|v| dispatch::variant_to_dispatch(&v))
+        .and_then(|books| dispatch::invoke_get(&books, "Count", &[]).ok())
+        .and_then(|v| i32::try_from(&v).ok());
+    if user_control != Some(false) || open != Some(0) {
+        eprintln!(
+            "[engine-vba-bridge] Excel left to itself (userControl={user_control:?}, open workbooks={open:?})"
+        );
+        return;
+    }
+    if let Err(e) = dispatch::invoke_call(app, "Quit", &[]) {
+        eprintln!("[engine-vba-bridge] Excel.Quit failed: {e}");
     }
 }
 
@@ -311,6 +373,8 @@ mod tests {
     #[cfg(feature = "excel-installed")]
     #[test]
     fn spawn_and_drop_against_real_excel() {
+        // Starts an Excel: not while the excel.rs tests count EXCEL.EXE.
+        let _serial = crate::excel::tests::EXCEL_COUNT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let session = ExcelSession::spawn().expect("Excel must be installed for this test");
         // Smallest possible work: ask the IDispatch for its own type
         // info pointer (we don't use it; this just round-trips a COM

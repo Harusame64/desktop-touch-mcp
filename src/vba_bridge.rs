@@ -265,8 +265,8 @@ pub fn excel_set_display_alerts(session_id: u32, enabled: bool) -> Result<()> {
 // ─── Workbook lifecycle ──────────────────────────────────────────────
 
 /// Add a new blank workbook on the active session. Equivalent to
-/// `Application.Workbooks.Add()`. The new workbook becomes
-/// `ActiveWorkbook` immediately.
+/// `Application.Workbooks.Add()`. The session keeps it: the module add,
+/// SaveAs and close act on it, not on `ActiveWorkbook` (internal #345).
 #[napi]
 pub fn excel_workbook_add_new(session_id: u32) -> Result<()> {
     napi_safe_call("excel_workbook_add_new", || {
@@ -275,7 +275,7 @@ pub fn excel_workbook_add_new(session_id: u32) -> Result<()> {
     })
 }
 
-/// Save the active workbook to a file path using the given XlFileFormat
+/// Save the workbook `excel_workbook_add_new` added to a file path using the given XlFileFormat
 /// numeric value. The only format supported in v1 is
 /// `OpenXmlWorkbookMacroEnabled = 52` (`.xlsm`); passing any other
 /// numeric value is accepted by Excel COM but silently drops VBA on
@@ -325,9 +325,11 @@ pub fn excel_workbook_save_as(
     })
 }
 
-/// Close the active workbook. `save_changes` maps directly to the
-/// `SaveChanges` argument of `Workbook.Close`. Does not close the
-/// Excel application — use [`excel_session_close`] for that.
+/// Close the workbook `excel_workbook_add_new` added in this session (not
+/// the active one, internal #345). `save_changes` maps directly to the
+/// `SaveChanges` argument of `Workbook.Close`. Throws when the session
+/// added no workbook. Does not close the Excel application — use
+/// [`excel_session_close`] for that.
 #[napi]
 pub fn excel_workbook_close(session_id: u32, save_changes: bool) -> Result<()> {
     napi_safe_call("excel_workbook_close", || {
@@ -338,8 +340,8 @@ pub fn excel_workbook_close(session_id: u32, save_changes: bool) -> Result<()> {
 
 // ─── VBA authoring + execution ───────────────────────────────────────
 
-/// Add a VBA module to the active workbook and write source into it.
-/// Internally walks `Application.ActiveWorkbook.VBProject.VBComponents.Add(1)`
+/// Add a VBA module to the workbook `excel_workbook_add_new` added and write source into it.
+/// Internally walks `<that workbook>.VBProject.VBComponents.Add(1)`
 /// (`vbext_ct_StdModule`) → `<NewComponent>.CodeModule.AddFromString(code)`.
 ///
 /// Requires `AccessVBOM = 1` (HKCU or HKLM). Otherwise the VBProject
