@@ -984,7 +984,38 @@ pub(crate) fn set_value(t: &MacAxTarget, value: &str) -> MacActResult {
     if err != AXError::Success {
         return refused(&ax_error_name(err));
     }
-    MacActResult { ok: true, value_after: value_text(&e), ..Default::default() }
+    let after = value_text(&e);
+    if after.as_deref() != Some(capped(value).as_str()) && press_to_focus(&e) {
+        let err = unsafe { e.set_attribute_value(&cfstr("AXValue"), &v) };
+        if err != AXError::Success {
+            return refused(&ax_error_name(err));
+        }
+        return MacActResult { ok: true, value_after: value_text(&e), ..Default::default() };
+    }
+    MacActResult { ok: true, value_after: after, ..Default::default() }
+}
+
+/// `value` cut at the read-back cap, as `value_text` would return it.
+fn capped(value: &str) -> String {
+    value.chars().take(VALUE_CHAR_CAP).collect()
+}
+
+/// A web page's text field takes a write only while it has the focus: Safari answered success to
+/// AXValue on an unfocused `<input>` and kept it empty (internal #261; measured
+/// 2026-11-09 on macOS 27.2). Setting AXFocused would focus it but also brings Safari to the front,
+/// which the act must not do; AXPress focuses it and leaves the foreground where it was. So when a
+/// write did not hold, a text field that has no focus and advertises AXPress is pressed, once, and
+/// written again. Not a combo box: its press can open a list. `true` when it pressed.
+fn press_to_focus(e: &AXUIElement) -> bool {
+    let role = attr_string(e, "AXRole");
+    if !matches!(role.as_deref(), Some("AXTextField" | "AXTextArea" | "AXSearchField")) {
+        return false;
+    }
+    if attr_bool(e, "AXFocused") != Some(false) || !action_names(e).iter().any(|a| a == "AXPress") {
+        return false;
+    }
+    let err = unsafe { e.perform_action(&cfstr("AXPress")) };
+    err == AXError::Success
 }
 
 /// Insert text through the selection, no keyboard: move the caret to `at`
