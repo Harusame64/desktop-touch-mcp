@@ -329,9 +329,14 @@ export class SessionRegistry {
    * providers' target from this key alone, so `window:-1` beside a title became `{hwnd:"-1"}` and
    * the UIA lane read `@active` instead of the title the caller sent. An unusable hwnd with nothing
    * else keeps its own key, as before; the tool refuses that call before it gets here (#831).
+   *
+   * The key carries the handle as parsed, in decimal, not as spelled (internal #215): `"500"` and
+   * `"0x1F4"` are one window, so they are one session, and a read under either spelling makes the
+   * leases from the other stale.
    */
   resolveKey(target?: TargetSpec): TargetSessionKey {
-    if (target?.hwnd && parseTargetHwnd(target) !== undefined) return `window:${target.hwnd}`;
+    const handle = parseTargetHwnd(target);
+    if (handle !== undefined) return `window:${handle.toString()}`;
     if (target?.tabId)       return `tab:${target.tabId}`;
     if (target?.windowTitle) return `title:${target.windowTitle}`;
     if (target?.hwnd)        return `window:${target.hwnd}`;

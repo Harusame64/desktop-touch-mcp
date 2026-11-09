@@ -39,6 +39,21 @@ describe("SessionRegistry — key resolution", () => {
   });
 });
 
+describe("SessionRegistry — one session per window, however the handle is spelled (internal #215)", () => {
+  it("keys a hex and a decimal spelling of one handle alike, in decimal", () => {
+    const r = new SessionRegistry();
+    expect(r.resolveKey({ hwnd: "0x1F4" })).toBe("window:500");
+    expect(r.resolveKey({ hwnd: "500" })).toBe("window:500");
+    expect(r.getOrCreate(r.resolveKey({ hwnd: "0x1F4" }), makeOpts()))
+      .toBe(r.getOrCreate(r.resolveKey({ hwnd: "500" }), makeOpts()));
+  });
+
+  it("still keys an unusable handle by its spelling when nothing else aims", () => {
+    const r = new SessionRegistry();
+    expect(r.resolveKey({ hwnd: "A" })).toBe("window:A");
+  });
+});
+
 describe("SessionRegistry — session lifecycle", () => {
   it("getOrCreate returns the same session for the same key", () => {
     const r = new SessionRegistry();
