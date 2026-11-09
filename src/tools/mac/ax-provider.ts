@@ -19,7 +19,7 @@ import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
 export interface MacAxProviderDeps {
   listWindows(onScreenOnly?: boolean): NativeMacWindow[];
   getFocus(): Promise<NativeMacFocus>;
-  axTree(opts: { pid: number; maxElements?: number }): Promise<NativeMacAxTree>;
+  axTree(opts: { pid: number; maxElements?: number; includeMenuBar?: boolean }): Promise<NativeMacAxTree>;
   now(): number;
 }
 
@@ -189,9 +189,11 @@ export function toCandidate(
   pid: number,
   targetId: string,
   observedAtMs: number,
-  unique = true
+  unique = true,
+  /** A menu item's path ("表示 > 科学計算"), named in place of its own title. */
+  labelOverride?: string
 ): UiEntityCandidate {
-  const label = labelOf(e);
+  const label = labelOverride ?? labelOf(e);
   const secure = e.subrole === SECURE;
   return {
     source: "ax",
@@ -212,6 +214,37 @@ export function toCandidate(
   };
 }
 
+/**
+ * The app's menu bar items a caller can press, each named by its path ("表示 > 科学計算"), by id.
+ *
+ * A control that opens a menu inside a window may answer AXPress without opening it (Calculator's
+ * モード button, a SwiftUI menu: `ok` and nothing on screen, internal #258), and a menu opened on
+ * screen lives outside the window. The same choices sit in the menu bar, whose items take AXPress
+ * with the app in the background (measured 2026-11-09: 表示 > 科学計算 switched Calculator's mode
+ * while Finder stayed in front). Only leaves: a menu bar title or a submenu opens a menu on screen
+ * and does nothing a caller can read. The Apple menu (the bar's first item) is the system's, not
+ * the app's — Shut Down and Log Out live there — so it is left out.
+ */
+export function menuBarItems(elements: readonly NativeMacAxElement[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const bar = elements.find((e) => e.role === "AXMenuBar" && e.depth === 0);
+  if (bar === undefined) return out;
+  const byId = new Map(elements.map((e) => [e.id, e]));
+  const apple = `${bar.id}.0`;
+  for (const e of elements) {
+    if (e.role !== "AXMenuItem" || !e.id.startsWith(`${bar.id}.`)) continue;
+    if (e.id === apple || e.id.startsWith(`${apple}.`)) continue;
+    if (e.childCount > 0 || !e.actions.includes("AXPress") || !e.title) continue;
+    const names: string[] = [];
+    for (let id = e.id; id !== bar.id && id.includes("."); id = id.slice(0, id.lastIndexOf("."))) {
+      const a = byId.get(id);
+      if (a !== undefined && (a.role === "AXMenuItem" || a.role === "AXMenuBarItem") && a.title) names.unshift(a.title);
+    }
+    out.set(e.id, names.join(" > "));
+  }
+  return out;
+}
+
 /** The window's title as the root key carries it (title, then U+001F). */
 function rootTitle(rootKey: string): string {
   return rootKey.split("\u001f")[0] ?? "";
@@ -227,7 +260,9 @@ export async function readMacAxCandidates(
   target: { windowTitle?: string } | undefined,
   notes: MacAxReadNotes,
   /** Without a title: read this app instead of asking which is frontmost (a post-act read). */
-  pinnedPid?: number
+  pinnedPid?: number,
+  /** Also offer the app's menu bar items (`menuBarItems`). */
+  menuBar = false
 ): Promise<UiEntityCandidate[]> {
   const title = target?.windowTitle;
   let pid: number | undefined;
@@ -256,7 +291,7 @@ export async function readMacAxCandidates(
     // its warnings are answered and "nothing readable" is not (codex on #804).
     for (const [i, p] of pids.entries()) {
       const tried: MacAxReadNotes = { warnings: [] };
-      const found = await readPidUnderTitle(deps, title, p, tried);
+      const found = await readPidUnderTitle(deps, title, p, tried, menuBar);
       // Several sheets carry the title in this app: it refused to pick one, and a later app must
       // not answer in its place (codex on #804).
       const ambiguous = tried.warnings.includes("title_matches_several_sheets");
@@ -281,7 +316,7 @@ export async function readMacAxCandidates(
       return [];
     }
   }
-  return readPidUnderTitle(deps, title, pid, notes);
+  return readPidUnderTitle(deps, title, pid, notes, menuBar);
 }
 
 /**
@@ -295,11 +330,12 @@ async function readPidUnderTitle(
   deps: MacAxProviderDeps,
   title: string | undefined,
   pid: number,
-  notes: MacAxReadNotes
+  notes: MacAxReadNotes,
+  menuBar = false
 ): Promise<UiEntityCandidate[]> {
   notes.pid = pid;
 
-  const tree = await deps.axTree({ pid });
+  const tree = await deps.axTree(menuBar ? { pid, includeMenuBar: true } : { pid });
   if (tree.appTitle !== undefined) notes.appTitle = tree.appTitle;
   if (tree.error !== undefined) notes.warnings.push(`ax_error:${tree.error}`);
   if (tree.displayAsleep) notes.warnings.push("display_asleep");
@@ -344,10 +380,21 @@ async function readPidUnderTitle(
   const sheet = sheetsTitled.length === 1 ? sheetsTitled[0] : undefined;
   const underTitle = (e: NativeMacAxElement) =>
     !titled || rootTitle(e.rootKey).toLowerCase().includes(needle) || (sheet !== undefined && e.id.startsWith(`${sheet.id}.`));
-  const candidates = tree.elements
-    .filter(underTitle)
-    .filter(isCandidate)
-    .map((e) => toCandidate(e, pid, targetId, observedAtMs, unique.get(e.id) === true));
+  const menu = menuBar ? menuBarItems(tree.elements) : new Map<string, string>();
+  // Without a title every root is read, the menu bar too: its items come once, by their paths.
+  const bar = tree.elements.find((e) => e.role === "AXMenuBar" && e.depth === 0);
+  const inBar = (e: NativeMacAxElement) => bar !== undefined && (e.id === bar.id || e.id.startsWith(`${bar.id}.`));
+  const candidates = [
+    ...tree.elements
+      .filter((e) => !inBar(e))
+      .filter(underTitle)
+      .filter(isCandidate)
+      .map((e) => toCandidate(e, pid, targetId, observedAtMs, unique.get(e.id) === true)),
+    // The menu bar is the app's, not the window's: offered beside the titled window's controls.
+    ...tree.elements
+      .filter((e) => menu.has(e.id) && e.enabled !== false)
+      .map((e) => toCandidate(e, pid, targetId, observedAtMs, unique.get(e.id) === true, menu.get(e.id))),
+  ];
   // Say why a titled read came back empty rather than answer it as if the window held nothing
   // (internal #257) — unless a warning above already says why (a sleeping display, a cut-off or
   // failed read: the window may simply not have been walked).

@@ -27,6 +27,11 @@ export const macDiscoverSchema = {
   query: z.string().optional().describe("Filter entities by label substring (case-insensitive). Labels only: a text field without a label never matches, so look for role 'textbox' instead."),
   maxEntities: z.number().int().min(1).max(200).optional().describe("Override entity count limit"),
   debug: coercedBoolean().optional().describe("Include raw screen coordinates in response"),
+  menuBar: coercedBoolean()
+    .optional()
+    .describe(
+      "Also list the app's menu bar items (not the Apple menu), each labelled by its path such as '表示 > 科学計算', role menuitem, pressed with desktop_act click without bringing the app forward. Use it when a button that opens a menu answers ok but no menu appears, or for a command only the menu bar has. Combine with query (e.g. '表示 >') and view:'explore': a menu bar has hundreds of items, and reading it adds up to about 2 s in a large app (Safari)."
+    ),
 };
 
 export const macActSchema = {
@@ -99,7 +104,20 @@ export interface MacFacadeState {
   noTargetPid?: number;
   /** desktop_act `append: true` for the act in progress (acts run one at a time). */
   append?: boolean;
+  /** The discover in progress asked for the menu bar (`menuBar: true`). */
+  discoverMenuBar?: boolean;
+  /**
+   * The views read with the menu bar, newest last. The touch loop reads the target again for an
+   * act and passes only the target, so the act's read takes the menu bar when its lease's view had
+   * it: a menu item's lease would otherwise name an element that read does not hold.
+   */
+  menuBarViews?: string[];
+  /** The act in progress acts on a lease from a view read with the menu bar. */
+  actMenuBar?: boolean;
 }
+
+/** How many views read with the menu bar are remembered for their acts. */
+const MENU_BAR_VIEWS_KEPT = 32;
 
 export function createMacFacade(mac: NativeMac, state: MacFacadeState): DesktopFacade {
   const provider = async (input: DesktopSeeInput) => {
@@ -116,7 +134,8 @@ export function createMacFacade(mac: NativeMac, state: MacFacadeState): DesktopF
       },
       target,
       notes,
-      untargeted && state.phase === "act" ? state.noTargetPid : undefined
+      untargeted && state.phase === "act" ? state.noTargetPid : undefined,
+      state.phase === "act" ? state.actMenuBar === true : state.discoverMenuBar === true
     );
     if (untargeted && state.phase === "discover") state.noTargetPid = notes.pid;
     return candidates;
@@ -155,7 +174,7 @@ export function macDiscoverHandler(
   mac: NativeMac,
   facade: DesktopFacade,
   state: MacFacadeState,
-  input: DesktopSeeInput
+  input: DesktopSeeInput & { menuBar?: boolean }
 ): Promise<ToolResult> {
   return serialise(() => macDiscoverOnce(mac, facade, state, input));
 }
@@ -164,14 +183,24 @@ async function macDiscoverOnce(
   mac: NativeMac,
   facade: DesktopFacade,
   state: MacFacadeState,
-  input: DesktopSeeInput
+  input: DesktopSeeInput & { menuBar?: boolean }
 ): Promise<ToolResult> {
   const denied = permissionGate(mac, "desktop_discover");
   if (denied) return denied;
   state.last = undefined;
   state.phase = "discover";
+  const { menuBar, ...seeInput } = input;
+  state.discoverMenuBar = menuBar === true;
   // The schema promises raw rects for view:"debug"; the facade adds them only for `debug`.
-  const output = await facade.see(input.view === "debug" ? { ...input, debug: true } : input);
+  let output;
+  try {
+    output = await facade.see(seeInput.view === "debug" ? { ...seeInput, debug: true } : seeInput);
+  } finally {
+    state.discoverMenuBar = false;
+  }
+  if (menuBar === true) {
+    state.menuBarViews = [...(state.menuBarViews ?? []), output.viewId].slice(-MENU_BAR_VIEWS_KEPT);
+  }
   const notes = state.last as MacAxReadNotes | undefined;
   const warnings = [...((output as { warnings?: string[] }).warnings ?? []), ...(notes?.warnings ?? [])];
   const values = notes?.values ?? {};
@@ -216,12 +245,15 @@ async function macActOnce(
   state.phase = "act";
   state.last = undefined;
   state.append = input.append === true;
+  const viewId = (input.lease as { viewId?: unknown } | null | undefined)?.viewId;
+  state.actMenuBar = typeof viewId === "string" && (state.menuBarViews ?? []).includes(viewId);
   const { append: _append, ...touchInput } = input;
   let result;
   try {
     result = await facade.touch(touchInput as Parameters<DesktopFacade["touch"]>[0]);
   } finally {
     state.append = false;
+    state.actMenuBar = false;
   }
   return ok(qualifyPostRead(result, state.last));
 }
