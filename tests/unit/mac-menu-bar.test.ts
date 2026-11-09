@@ -37,15 +37,23 @@ const elements: NativeMacAxElement[] = [
 ];
 
 describe("menuBarItems (internal #258)", () => {
-  it("names each pressable leaf by its path, and leaves out the Apple menu, titles, submenus and separators", () => {
-    expect([...menuBarItems(elements).entries()]).toEqual([
+  it("names each enabled pressable leaf by its path, and leaves out the Apple menu, titles, submenus, separators and disabled items", () => {
+    const { barId, items } = menuBarItems(elements);
+    expect(barId).toBe("a.1");
+    expect([...items.entries()]).toEqual([
       ["a.1.1.0.0", "表示 > 科学計算"],
-      ["a.1.1.0.2", "表示 > フルスクリーンにする"],
       ["a.1.1.0.3.0.0", "表示 > 小数位 > 2桁"],
     ]);
   });
+  it("leaves out the Apple menu by its title too, where it is not the bar's first item (gate 2 on #904)", () => {
+    const moved = elements.map((e) =>
+      e.id.startsWith("a.1.0") ? { ...e, id: e.id.replace(/^a\.1\.0/, "a.1.9") } : e
+    );
+    const appleFirst = [...menuBarItems(moved).items.values()];
+    expect(appleFirst.some((l) => l.includes("システム終了"))).toBe(false);
+  });
   it("is empty when the read holds no menu bar", () => {
-    expect(menuBarItems(elements.filter((e) => !e.id.startsWith("a.1"))).size).toBe(0);
+    expect(menuBarItems(elements.filter((e) => !e.id.startsWith("a.1"))).items.size).toBe(0);
   });
 });
 
@@ -68,9 +76,38 @@ describe("readMacAxCandidates with the menu bar", () => {
     expect(d.axTree).toHaveBeenLastCalledWith({ pid: 7 });
     expect(labels(off)).toEqual(["button:モード"]);
     const on = await readMacAxCandidates(d as unknown as MacAxProviderDeps, { windowTitle: "計算機" }, notes, undefined, true);
-    expect(d.axTree).toHaveBeenLastCalledWith({ pid: 7, includeMenuBar: true });
+    expect(d.axTree).toHaveBeenLastCalledWith({ pid: 7, includeMenuBar: true, maxElements: 6000 });
     expect(labels(on)).toEqual(["button:モード", "menuitem:表示 > 科学計算", "menuitem:表示 > 小数位 > 2桁"]);
     expect(on.find((c) => c.label === "表示 > 科学計算")!.actionability).toEqual(["click", "invoke"]);
+  });
+  // internal #257 (gate 2 on #904): every app has a menu bar, so its items must not count as the
+  // titled window's: the next app listed is still read, and an app holding nothing under the title
+  // still says so.
+  it("does not let the menu bar stop the search for the app that holds the title", async () => {
+    const d = deps();
+    d.listWindows.mockReturnValue([
+      { windowId: 1, pid: 5, layer: 0, onScreen: true, title: "計算機" },
+      { windowId: 2, pid: 7, layer: 0, onScreen: true, title: "計算機" },
+    ]);
+    d.axTree.mockImplementation(async (o: { pid: number; includeMenuBar?: boolean }) => ({
+      pid: o.pid, appTitle: o.pid === 5 ? "Service" : "計算機", truncated: false, selfReference: false, displayAsleep: false, elapsedMs: 1,
+      elements: o.pid === 5 ? elements.filter((e) => e.id.startsWith("a.1")) : elements,
+    }));
+    const notes: MacAxReadNotes = { warnings: [] };
+    const r = await readMacAxCandidates(d as unknown as MacAxProviderDeps, { windowTitle: "計算機" }, notes, undefined, true);
+    expect(notes.pid).toBe(7);
+    expect(labels(r)).toContain("button:モード");
+  });
+  it("still warns title_matches_nothing_readable when only the menu bar was found", async () => {
+    const d = deps();
+    d.axTree.mockImplementation(async () => ({
+      pid: 7, appTitle: "計算機", truncated: false, selfReference: false, displayAsleep: false, elapsedMs: 1,
+      elements: elements.filter((e) => e.id.startsWith("a.1")),
+    }));
+    const notes: MacAxReadNotes = { warnings: [] };
+    const r = await readMacAxCandidates(d as unknown as MacAxProviderDeps, { windowTitle: "計算機" }, notes, undefined, true);
+    expect(notes.warnings).toContain("title_matches_nothing_readable");
+    expect(labels(r)).toEqual(["menuitem:表示 > 科学計算", "menuitem:表示 > 小数位 > 2桁"]);
   });
   it("without a title lists each menu item once, by its path", async () => {
     const d = deps();
@@ -112,6 +149,14 @@ describe("desktop_discover menuBar and the act on its lease", () => {
     expect(m.macAxTree.mock.calls.length).toBeGreaterThan(0);
     expect(m.macAxTree.mock.calls.every((c) => c[0].includeMenuBar === true)).toBe(true);
     expect(state.actMenuBar).toBe(false);
+
+    // gate 2 on #904: a window control's lease from the same menu bar view pays nothing for the bar.
+    const d2 = parse(await macDiscoverHandler(m as never, facade, state, { target: { windowTitle: "計算機" }, menuBar: true, view: "explore" }));
+    const modeInMenuView = d2.entities.find((e: { label?: string }) => e.label === "モード");
+    m.macAxTree.mockClear();
+    await macActHandler(m as never, facade, state, { lease: modeInMenuView.lease, action: "click" });
+    expect(m.macAxTree.mock.calls.length).toBeGreaterThan(0);
+    expect(m.macAxTree.mock.calls.every((c) => c[0].includeMenuBar !== true)).toBe(true);
 
     const p = parse(await macDiscoverHandler(m as never, facade, state, { target: { windowTitle: "計算機" } }));
     const mode = p.entities.find((e: { label?: string }) => e.label === "モード");

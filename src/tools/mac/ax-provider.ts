@@ -37,6 +37,8 @@ export interface MacAxReadNotes {
   truncated?: string[];
   pid?: number;
   appTitle?: string;
+  /** Entity ids of the menu bar items offered (`menuBar`): an act on one reads the menu bar again. */
+  menuEntityIds?: string[];
 }
 
 /**
@@ -221,29 +223,36 @@ export function toCandidate(
  * モード button, a SwiftUI menu: `ok` and nothing on screen, internal #258), and a menu opened on
  * screen lives outside the window. The same choices sit in the menu bar, whose items take AXPress
  * with the app in the background (measured 2026-11-09: 表示 > 科学計算 switched Calculator's mode
- * while Finder stayed in front). Only leaves: a menu bar title or a submenu opens a menu on screen
- * and does nothing a caller can read. The Apple menu (the bar's first item) is the system's, not
- * the app's — Shut Down and Log Out live there — so it is left out.
+ * while Finder stayed in front). Only enabled leaves: a menu bar title or a submenu opens a menu on
+ * screen and does nothing a caller can read. The Apple menu is the system's, not the app's — Shut
+ * Down and Log Out live there — so it is left out. Returns the bar's id with them.
  */
-export function menuBarItems(elements: readonly NativeMacAxElement[]): Map<string, string> {
-  const out = new Map<string, string>();
+export function menuBarItems(elements: readonly NativeMacAxElement[]): { barId?: string; items: Map<string, string> } {
+  const items = new Map<string, string>();
   const bar = elements.find((e) => e.role === "AXMenuBar" && e.depth === 0);
-  if (bar === undefined) return out;
+  if (bar === undefined) return { items };
   const byId = new Map(elements.map((e) => [e.id, e]));
-  const apple = `${bar.id}.0`;
+  // The Apple menu is the bar's first item and is titled "Apple"; either is enough to leave it out,
+  // so a bar that does not start with it does not hand it over by position.
+  const apples = elements
+    .filter((e) => e.role === "AXMenuBarItem" && (e.id === `${bar.id}.0` || e.title === "Apple"))
+    .map((e) => e.id);
   for (const e of elements) {
     if (e.role !== "AXMenuItem" || !e.id.startsWith(`${bar.id}.`)) continue;
-    if (e.id === apple || e.id.startsWith(`${apple}.`)) continue;
-    if (e.childCount > 0 || !e.actions.includes("AXPress") || !e.title) continue;
+    if (apples.some((a) => e.id.startsWith(`${a}.`))) continue;
+    if (e.childCount > 0 || !e.actions.includes("AXPress") || !e.title || e.enabled === false) continue;
     const names: string[] = [];
     for (let id = e.id; id !== bar.id && id.includes("."); id = id.slice(0, id.lastIndexOf("."))) {
       const a = byId.get(id);
       if (a !== undefined && (a.role === "AXMenuItem" || a.role === "AXMenuBarItem") && a.title) names.unshift(a.title);
     }
-    out.set(e.id, names.join(" > "));
+    items.set(e.id, names.join(" > "));
   }
-  return out;
+  return { barId: bar.id, items };
 }
+
+/** The read's element cap with the menu bar (the native default, 3000, is the window's). */
+const MAX_ELEMENTS_WITH_MENU_BAR = 6000;
 
 /** The window's title as the root key carries it (title, then U+001F). */
 function rootTitle(rootKey: string): string {
@@ -291,7 +300,10 @@ export async function readMacAxCandidates(
     // its warnings are answered and "nothing readable" is not (codex on #804).
     for (const [i, p] of pids.entries()) {
       const tried: MacAxReadNotes = { warnings: [] };
-      const found = await readPidUnderTitle(deps, title, p, tried, menuBar);
+      const read = await readPidUnderTitle(deps, title, p, tried, menuBar);
+      // Whether this app holds the title is judged by the window's controls alone: every app has a
+      // menu bar, so its items would stop the search at the first app listed (gate 2 on #904).
+      const found = read.own;
       // Several sheets carry the title in this app: it refused to pick one, and a later app must
       // not answer in its place (codex on #804).
       const ambiguous = tried.warnings.includes("title_matches_several_sheets");
@@ -302,7 +314,7 @@ export async function readMacAxCandidates(
       // incomplete, the panel is not reached by its title (measured complete, gate 2 on #805).
       if (found.length > 0 || ambiguous || unsureEmpty || i === pids.length - 1) {
         Object.assign(notes, { ...tried, warnings: [...notes.warnings, ...tried.warnings] });
-        return found;
+        return [...read.own, ...read.menu];
       }
     }
     return [];
@@ -316,7 +328,8 @@ export async function readMacAxCandidates(
       return [];
     }
   }
-  return readPidUnderTitle(deps, title, pid, notes, menuBar);
+  const read = await readPidUnderTitle(deps, title, pid, notes, menuBar);
+  return [...read.own, ...read.menu];
 }
 
 /**
@@ -332,10 +345,12 @@ async function readPidUnderTitle(
   pid: number,
   notes: MacAxReadNotes,
   menuBar = false
-): Promise<UiEntityCandidate[]> {
+): Promise<{ own: UiEntityCandidate[]; menu: UiEntityCandidate[] }> {
   notes.pid = pid;
 
-  const tree = await deps.axTree(menuBar ? { pid, includeMenuBar: true } : { pid });
+  // A menu bar is hundreds of elements (Safari's 848): its own room above the window's cap, so it
+  // does not cut the window's read short and turn its controls' relocation off (gate 2 on #904).
+  const tree = await deps.axTree(menuBar ? { pid, includeMenuBar: true, maxElements: MAX_ELEMENTS_WITH_MENU_BAR } : { pid });
   if (tree.appTitle !== undefined) notes.appTitle = tree.appTitle;
   if (tree.error !== undefined) notes.warnings.push(`ax_error:${tree.error}`);
   if (tree.displayAsleep) notes.warnings.push("display_asleep");
@@ -380,21 +395,19 @@ async function readPidUnderTitle(
   const sheet = sheetsTitled.length === 1 ? sheetsTitled[0] : undefined;
   const underTitle = (e: NativeMacAxElement) =>
     !titled || rootTitle(e.rootKey).toLowerCase().includes(needle) || (sheet !== undefined && e.id.startsWith(`${sheet.id}.`));
-  const menu = menuBar ? menuBarItems(tree.elements) : new Map<string, string>();
+  const { barId, items } = menuBar ? menuBarItems(tree.elements) : { barId: undefined, items: new Map<string, string>() };
   // Without a title every root is read, the menu bar too: its items come once, by their paths.
-  const bar = tree.elements.find((e) => e.role === "AXMenuBar" && e.depth === 0);
-  const inBar = (e: NativeMacAxElement) => bar !== undefined && (e.id === bar.id || e.id.startsWith(`${bar.id}.`));
-  const candidates = [
-    ...tree.elements
-      .filter((e) => !inBar(e))
-      .filter(underTitle)
-      .filter(isCandidate)
-      .map((e) => toCandidate(e, pid, targetId, observedAtMs, unique.get(e.id) === true)),
-    // The menu bar is the app's, not the window's: offered beside the titled window's controls.
-    ...tree.elements
-      .filter((e) => menu.has(e.id) && e.enabled !== false)
-      .map((e) => toCandidate(e, pid, targetId, observedAtMs, unique.get(e.id) === true, menu.get(e.id))),
-  ];
+  const inBar = (e: NativeMacAxElement) => barId !== undefined && (e.id === barId || e.id.startsWith(`${barId}.`));
+  const candidates = tree.elements
+    .filter((e) => !inBar(e))
+    .filter(underTitle)
+    .filter(isCandidate)
+    .map((e) => toCandidate(e, pid, targetId, observedAtMs, unique.get(e.id) === true));
+  // The menu bar is the app's, not the window's: offered beside the titled window's controls.
+  const menu = tree.elements
+    .filter((e) => items.has(e.id))
+    .map((e) => toCandidate(e, pid, targetId, observedAtMs, unique.get(e.id) === true, items.get(e.id)));
+  if (menu.length > 0) notes.menuEntityIds = menu.map((c) => `ent_${c.digest}`);
   // Say why a titled read came back empty rather than answer it as if the window held nothing
   // (internal #257) — unless a warning above already says why (a sleeping display, a cut-off or
   // failed read: the window may simply not have been walked).
@@ -413,5 +426,5 @@ async function readPidUnderTitle(
       (notes.truncated ??= []).push(`ent_${axDigest(pid, e, unique.get(e.id) === true)}`);
     }
   }
-  return candidates;
+  return { own: candidates, menu };
 }
