@@ -238,6 +238,16 @@ describe("scroll(action='capture') page end on periodic content (internal #326 (
     expect(mockReadPercent.mock.invocationCallOrder[0]).toBeLessThan(mockPressKey.mock.invocationCallOrder[0]!);
   });
 
+  it("compares a first good read after empty ones with the start, so one PageDown to the end is not lost", async () => {
+    // warm-up and frame 0 empty (Chrome waking), frame 1 reads 100 (one PageDown reached the end), then 100.
+    mockReadPercent.mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValue(100);
+    const body = await run(5);
+    expect(body.ok).toBe(true);
+    // frame 1 moved from the start (0 -> 100) and is kept; frames 2 and 3 are the identical pair that ends the run.
+    expect(mockCapture).toHaveBeenCalledTimes(4);
+    expect(body.frames).toBe(2);
+  });
+
   it("keeps the last position across a failed read, so the next good read still shows movement", async () => {
     // warm-up, then frames 0..3: 10, (failed), 30, 40 — the page is still moving throughout.
     mockReadPercent
@@ -286,6 +296,31 @@ describe("scrollPositionReader (internal #326 (B), gate 2 on #916)", () => {
     expect(await reader.read()).toBe(10);
     for (let i = 0; i < 3; i++) expect(await reader.read()).toBeNull();
     expect(await reader.read()).toBe(50);
+  });
+
+  it("does not count a read skipped while a slow one runs, and a late answer counts as read", async () => {
+    vi.useFakeTimers();
+    try {
+      let answer: (v: number) => void = () => {};
+      mockReadPercent
+        .mockImplementationOnce(() => new Promise((done) => { answer = done; })) // the warm-up hangs
+        .mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValue(30);
+      const reader = scrollPositionReader(1n, "vertical");
+      const warm = reader.warmUp();
+      await vi.advanceTimersByTimeAsync(250);
+      await warm;
+      // Two reads skipped behind the slow warm-up: not empty reads.
+      expect(await reader.read()).toBeNull();
+      expect(await reader.read()).toBeNull();
+      answer(5); // the warm-up answers late: the window has a position
+      await vi.advanceTimersByTimeAsync(0);
+      // Two real empty reads now do not make it give up.
+      expect(await reader.read()).toBeNull();
+      expect(await reader.read()).toBeNull();
+      expect(await reader.read()).toBe(30);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("gives up after two counted empty reads when it never read a position", async () => {

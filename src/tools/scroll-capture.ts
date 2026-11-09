@@ -164,27 +164,30 @@ export function scrollPositionReader(hwnd: bigint, axis: "vertical" | "horizonta
   let everRead = false;
   let emptyReads = 0;
   let inFlight = false;
-  const ask = async (): Promise<number | null> => {
-    if (gaveUp || inFlight) return null;
+  /** `asked` is false when no read was started (given up, or one still running): not an empty read. */
+  const ask = async (): Promise<{ asked: boolean; value: number | null }> => {
+    if (gaveUp || inFlight) return { asked: false, value: null };
     inFlight = true;
     const reading = native!({ hwnd: hwnd.toString(), axis })
       .then((v) => (typeof v === "number" && Number.isFinite(v) ? v : null), () => null)
+      .then((v) => {
+        // A position read at any time, the warm-up's or one that answered after its timeout, shows the
+        // window has one (agy on #916).
+        if (v !== null) everRead = true;
+        return v;
+      })
       .finally(() => { inFlight = false; });
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<null>((done) => { timer = setTimeout(() => done(null), SCROLL_PERCENT_TIMEOUT_MS); });
     const value = await Promise.race([reading, timeout]);
     clearTimeout(timer);
-    return value;
+    return { asked: true, value };
   };
   return {
     warmUp: async () => { await ask(); },
     read: async () => {
-      const value = await ask();
-      if (value !== null) {
-        everRead = true;
-      } else if (!everRead && ++emptyReads >= SCROLL_PERCENT_EMPTY_READS) {
-        gaveUp = true;
-      }
+      const { asked, value } = await ask();
+      if (value === null && asked && !everRead && ++emptyReads >= SCROLL_PERCENT_EMPTY_READS) gaveUp = true;
       return value;
     },
   };
@@ -531,7 +534,11 @@ export const scrollCaptureHandler = async ({
       const [frame, at] = await Promise.all([captureRawRegion(targetRegion), position.read()]);
       let scrolled = false;
       if (at !== null) {
-        scrolled = lastPosition !== null && Math.abs(at - lastPosition) >= SCROLL_PERCENT_EPSILON;
+        // With no earlier position (the first reads came back empty while Chrome woke up), a later
+        // frame is compared with the start Ctrl+Home went to (agy on #916). Where Ctrl+Home did not
+        // reach 0, this can keep one duplicate frame, which is preferred to ending early.
+        const before = lastPosition ?? (frames.length > 0 ? 0 : null);
+        scrolled = before !== null && Math.abs(at - before) >= SCROLL_PERCENT_EPSILON;
         lastPosition = at;
       }
 
