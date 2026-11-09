@@ -6,38 +6,77 @@
  * `restoreAndFocusWindow` and went on whatever happened. On a first call Windows refused the
  * foreground, so Ctrl+Home and PageDown went into the window that was in front (a terminal), the
  * frames showed that window, and the capture answered ok:true with one frame. This follows the
- * keyboard tool's ladder (`focusWindowForKeyboard`): ask, wait, check; escalate to the forced
- * (AttachThreadInput) path; check again. The caller refuses when it is still not in front.
+ * keyboard tool's ladder (`focusWindowForKeyboard`): ask, wait, check; with `force`, ask again on
+ * the forced (AttachThreadInput) path and check again. The caller refuses or stops when it is not in
+ * front.
+ *
+ * A window on another virtual desktop is not brought forward at all (internal #221): that would
+ * switch the user's desktop. "In front" is the foreground window's top-level root (GA_ROOT) being the
+ * target's: an owned dialog of the target in front is not the target, since keys would go to the
+ * dialog — the refusal names what is in front instead.
  */
-import { restoreAndFocusWindow, getForegroundHwnd, getWindowRoot } from "../engine/win32.js";
+import { restoreAndFocusWindow, getForegroundHwnd, getWindowRoot, enumWindowsInZOrder, getWindowTitleW } from "../engine/win32.js";
+import { offDesktopTarget, type OffDesktopTarget } from "./_off-desktop.js";
 
 export interface BroughtForward {
-  /** The window (or a window of its top-level tree) is in front. */
+  /** The target's top-level window is the foreground window. */
   ok: boolean;
-  /** The forced path was needed (or tried). */
+  /** The forced path was tried. */
   forced: boolean;
+  /** The target is on another virtual desktop: nothing was focused. */
+  offDesktop?: OffDesktopTarget;
+  /** The title of the window in front when `ok` is false. */
+  inFrontTitle?: string;
   rect: { x: number; y: number; width: number; height: number };
 }
 
 const SETTLE_MS = 100;
 
-function inFront(hwnd: bigint): boolean {
+/** Whether the target's top-level window is the foreground window now. */
+export function stillInFront(hwnd: bigint): boolean {
   const fg = getForegroundHwnd();
   if (fg == null) return false;
   const root = (h: bigint) => getWindowRoot(h) ?? h;
   return root(fg) === root(hwnd);
 }
 
-export async function bringForward(hwnd: bigint, settleMs = SETTLE_MS): Promise<BroughtForward> {
+function inFrontTitle(): string | undefined {
+  const fg = getForegroundHwnd();
+  if (fg == null) return undefined;
+  try {
+    return getWindowTitleW(fg) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function bringForward(
+  hwnd: bigint,
+  opts: { force: boolean; named?: string; settleMs?: number },
+): Promise<BroughtForward> {
+  const settle = opts.settleMs ?? SETTLE_MS;
+  const windows = enumWindowsInZOrder();
+  const listed = windows.find((w) => w.hwnd === hwnd);
+  const away = listed ? await offDesktopTarget(listed, windows, opts.named) : null;
+  if (away) return { ok: false, forced: false, offDesktop: away, rect: { x: 0, y: 0, width: 0, height: 0 } };
+
   let r = restoreAndFocusWindow(hwnd);
-  await new Promise<void>((done) => setTimeout(done, settleMs));
-  if (inFront(hwnd)) return { ok: true, forced: false, rect: { x: r.x, y: r.y, width: r.width, height: r.height } };
+  await new Promise<void>((done) => setTimeout(done, settle));
+  const rectOf = () => ({ x: r.x, y: r.y, width: r.width, height: r.height });
+  if (stillInFront(hwnd)) return { ok: true, forced: false, rect: rectOf() };
+  if (!opts.force) return { ok: false, forced: false, inFrontTitle: inFrontTitle(), rect: rectOf() };
   r = restoreAndFocusWindow(hwnd, { force: true });
-  await new Promise<void>((done) => setTimeout(done, settleMs));
-  return { ok: inFront(hwnd), forced: true, rect: { x: r.x, y: r.y, width: r.width, height: r.height } };
+  await new Promise<void>((done) => setTimeout(done, settle));
+  if (stillInFront(hwnd)) return { ok: true, forced: true, rect: rectOf() };
+  return { ok: false, forced: true, inFrontTitle: inFrontTitle(), rect: rectOf() };
 }
 
 /** The hint a refusal carries: nothing was sent, nothing was captured. */
 export const NOT_IN_FRONT_HINT =
-  "Windows refused to bring the window to the front (both the normal request and the forced one), so no keys were sent " +
-  "and nothing was captured: keys sent now would go to the window in front. Click the window or bring it forward, then try again.";
+  "Windows did not bring the window to the front, so no keys were sent: keys sent now would go to the window in front " +
+  "(inFront). Close or answer that window, or click the target window, then try again.";
+
+/** Said when the window stopped being in front part way through: what was read stands, the rest was not sent. */
+export const LOST_FRONT_NOTE =
+  "The window stopped being in front part way through, so the run stopped there rather than send keys to another " +
+  "window or capture it. What came before is complete; bring the window forward and call again for the rest.";

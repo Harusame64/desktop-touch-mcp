@@ -23,7 +23,8 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 
-const { mockGrabRegion, mockRestoreAndFocus, mockResolveWindowTarget, mockFindPlain, mockForeground, mockPressKey } = vi.hoisted(() => ({
+const { mockGrabRegion, mockRestoreAndFocus, mockResolveWindowTarget, mockFindPlain, mockForeground, mockPressKey, mockOffDesktop } = vi.hoisted(() => ({
+  mockOffDesktop: vi.fn(),
   mockForeground: vi.fn(),
   mockPressKey: vi.fn(async () => {}),
   mockGrabRegion: vi.fn(),
@@ -48,13 +49,17 @@ vi.mock("../../src/engine/nutjs.js", () => ({
 vi.mock("../../src/utils/key-map.js", () => ({ parseKeys: () => [] }));
 vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
-  return { ...actual, restoreAndFocusWindow: mockRestoreAndFocus, getForegroundHwnd: mockForeground, getWindowRoot: (h: bigint) => h };
+  return { ...actual, restoreAndFocusWindow: mockRestoreAndFocus, getForegroundHwnd: mockForeground, getWindowRoot: (h: bigint) => h, enumWindowsInZOrder: () => [{ hwnd: 1n, title: "W", isCloaked: false }], getWindowTitleW: () => "Other" };
 });
 vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_resolve-window.js")>();
   return { ...actual, resolveWindowTarget: mockResolveWindowTarget, findPlainTopLevelWindowByTitle: mockFindPlain };
 });
 
+vi.mock("../../src/tools/_off-desktop.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/tools/_off-desktop.js")>();
+  return { ...actual, offDesktopTarget: mockOffDesktop };
+});
 const { scrollCaptureHandler } = await import("../../src/tools/scroll-capture.js");
 
 /** A uniform-gray RGBA frame; identical reads trigger the page-end break. */
@@ -73,6 +78,7 @@ beforeEach(() => {
   mockRestoreAndFocus.mockReturnValue({ x: 0, y: 0, width: 200, height: 200 });
   mockGrabRegion.mockResolvedValue(uniformFrame(200, 200));
   mockForeground.mockReturnValue(1n);
+  mockOffDesktop.mockResolvedValue(null);
 });
 afterEach(() => {
   delete process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR;
@@ -120,5 +126,40 @@ describe("scroll(action='capture') needs the window in front (internal #326)", (
     const text = (r.content as { type: string; text?: string }[]).find((b) => b.type === "text")!.text!;
     expect(JSON.parse(text).ok).toBe(true);
     expect(mockGrabRegion).toHaveBeenCalled();
+  });
+});
+
+describe("scroll(action='capture') checks the front before every key and frame (gate 2 on #915)", () => {
+  const args = { windowTitle: "W", direction: "down", maxScrolls: 3, scrollDelayMs: 0, maxWidth: 800 } as never;
+  const textOf = (r: { content: { type: string; text?: string }[] }) => JSON.parse(r.content.find((b) => b.type === "text")!.text!);
+
+  it("refuses before Ctrl+Home when the window lost the front after it was brought forward", async () => {
+    mockForeground.mockReturnValueOnce(1n).mockReturnValue(999n);
+    const body = textOf(await scrollCaptureHandler(args) as never);
+    expect(body.code).toBe("ForegroundRestricted");
+    expect(body.context?.lostPartWay ?? body.lostPartWay).toBe(true);
+    expect(mockPressKey).not.toHaveBeenCalled();
+    expect(mockGrabRegion).not.toHaveBeenCalled();
+  });
+
+  it("stops after the frames it took when the window loses the front part way, sends no more keys and is not pulled back", async () => {
+    // brought forward, before Ctrl+Home, before frame 1: in front; before the first PageDown: not.
+    mockForeground.mockReturnValueOnce(1n).mockReturnValueOnce(1n).mockReturnValueOnce(1n).mockReturnValue(999n);
+    const body = textOf(await scrollCaptureHandler(args) as never);
+    expect(body.ok).toBe(true);
+    expect(body.frames).toBe(1);
+    expect(body.stoppedReason).toBe("foreground_lost");
+    expect(body.note).toContain("stopped being in front");
+    expect(mockPressKey).toHaveBeenCalledTimes(1); // Ctrl+Home only
+    expect(mockRestoreAndFocus).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a window on another virtual desktop without bringing it forward (internal #221)", async () => {
+    mockOffDesktop.mockResolvedValue({ hwnd: 1n, title: "W", sameTitleOnScreen: false });
+    const r = await scrollCaptureHandler({ ...(args as object), windowTitle: "W" } as never);
+    const body = JSON.parse((r.content[0] as { text: string }).text);
+    expect(body.code).toBe("WindowOnOtherDesktop");
+    expect(mockRestoreAndFocus).not.toHaveBeenCalled();
+    expect(mockPressKey).not.toHaveBeenCalled();
   });
 });

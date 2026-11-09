@@ -260,6 +260,9 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/win32.js", () => ({
       // internal #326: the window is in front (both resolve to one root).
+      enumWindowsInZOrder: vi.fn().mockReturnValue([]),
+      getWindowTitleW: vi.fn().mockReturnValue(""),
+      getWindowRectByHwnd: vi.fn().mockReturnValue(null),
       getForegroundHwnd: vi.fn().mockReturnValue(1n),
       getWindowRoot: vi.fn().mockReturnValue(1n),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
@@ -318,6 +321,9 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/win32.js", () => ({
       // internal #326: the window is in front (both resolve to one root).
+      enumWindowsInZOrder: vi.fn().mockReturnValue([]),
+      getWindowTitleW: vi.fn().mockReturnValue(""),
+      getWindowRectByHwnd: vi.fn().mockReturnValue(null),
       getForegroundHwnd: vi.fn().mockReturnValue(1n),
       getWindowRoot: vi.fn().mockReturnValue(1n),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
@@ -377,6 +383,9 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/win32.js", () => ({
       // internal #326: the window is in front (both resolve to one root).
+      enumWindowsInZOrder: vi.fn().mockReturnValue([]),
+      getWindowTitleW: vi.fn().mockReturnValue(""),
+      getWindowRectByHwnd: vi.fn().mockReturnValue(null),
       getForegroundHwnd: vi.fn().mockReturnValue(1n),
       getWindowRoot: vi.fn().mockReturnValue(1n),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
@@ -429,6 +438,9 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/win32.js", () => ({
       // internal #326: the window is in front (both resolve to one root).
+      enumWindowsInZOrder: vi.fn().mockReturnValue([]),
+      getWindowTitleW: vi.fn().mockReturnValue(""),
+      getWindowRectByHwnd: vi.fn().mockReturnValue(null),
       getForegroundHwnd: vi.fn().mockReturnValue(1n),
       getWindowRoot: vi.fn().mockReturnValue(1n),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
@@ -483,6 +495,9 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/win32.js", () => ({
       // internal #326: the window is in front (both resolve to one root).
+      enumWindowsInZOrder: vi.fn().mockReturnValue([]),
+      getWindowTitleW: vi.fn().mockReturnValue(""),
+      getWindowRectByHwnd: vi.fn().mockReturnValue(null),
       getForegroundHwnd: vi.fn().mockReturnValue(1n),
       getWindowRoot: vi.fn().mockReturnValue(1n),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
@@ -540,6 +555,9 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/win32.js", () => ({
       // internal #326: the window is in front (both resolve to one root).
+      enumWindowsInZOrder: vi.fn().mockReturnValue([]),
+      getWindowTitleW: vi.fn().mockReturnValue(""),
+      getWindowRectByHwnd: vi.fn().mockReturnValue(null),
       getForegroundHwnd: vi.fn().mockReturnValue(1n),
       getWindowRoot: vi.fn().mockReturnValue(1n),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
@@ -605,6 +623,9 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/win32.js", () => ({
       // internal #326: the window is in front (both resolve to one root).
+      enumWindowsInZOrder: vi.fn().mockReturnValue([]),
+      getWindowTitleW: vi.fn().mockReturnValue(""),
+      getWindowRectByHwnd: vi.fn().mockReturnValue(null),
       getForegroundHwnd: vi.fn().mockReturnValue(1n),
       getWindowRoot: vi.fn().mockReturnValue(1n),
       restoreAndFocusWindow: restoreAndFocusMock,
@@ -628,11 +649,13 @@ describe("scrollReadHandler (mocked)", () => {
   });
 
   // internal #326: SendInput goes to whatever is in front, so a window that will not come forward gets no keys.
-  it("refuses with ForegroundRestricted before any page when the window will not come forward", async () => {
+  it("goes on reading through PrintWindow and PostMessage when the window will not come forward (gate 2 on #915)", async () => {
     const pressKeyMock = vi.fn().mockResolvedValue(undefined);
-    const ocr = vi.fn();
+    const post = vi.fn().mockReturnValue(true);
     vi.doMock("../../src/engine/ocr-bridge.js", () => ({
-      recognizeWindowByHwnd: ocr,
+      recognizeWindowByHwnd: vi.fn()
+        .mockResolvedValueOnce({ words: makeWords(["A"]), origin: { x: 0, y: 0 } })
+        .mockResolvedValueOnce({ words: makeWords(["B"]), origin: { x: 0, y: 0 } }),
       ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
       detectOcrLanguage: () => "en",
     }));
@@ -642,23 +665,28 @@ describe("scrollReadHandler (mocked)", () => {
       findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
     }));
     vi.doMock("../../src/engine/bg-input.js", () => ({
-      postKeyComboToHwnd: vi.fn().mockReturnValue(false),
-      canInjectAtTarget: vi.fn().mockReturnValue({ supported: false }),
+      postKeyComboToHwnd: post,
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: true }),
     }));
     const restoreAndFocusMock = vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
     vi.doMock("../../src/engine/win32.js", () => ({
       getForegroundHwnd: vi.fn().mockReturnValue(2n),
+      enumWindowsInZOrder: vi.fn().mockReturnValue([]),
+      getWindowTitleW: vi.fn().mockReturnValue("Other"),
+      getWindowRectByHwnd: vi.fn().mockReturnValue(null),
       getWindowRoot: vi.fn((h: bigint) => h),
       restoreAndFocusWindow: restoreAndFocusMock,
     }));
     const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
-    const result = await scrollReadHandler({ action: "read", windowTitle: "Test", maxPages: 3, scrollKey: "PageDown", scrollDelayMs: 0, stopWhenNoChange: true });
+    const result = await scrollReadHandler({ action: "read", windowTitle: "Test", maxPages: 2, scrollKey: "PageDown", scrollDelayMs: 0, stopWhenNoChange: true });
     const body = JSON.parse((result.content[0] as { text: string }).text);
-    expect(body.ok).toBe(false);
-    expect(body.code).toBe("ForegroundRestricted");
-    expect(ocr).not.toHaveBeenCalled();
+    expect(body.ok).toBe(true);
+    expect(body.stoppedReason).toBe("max_pages");
+    expect(post).toHaveBeenCalled();
     expect(pressKeyMock).not.toHaveBeenCalled();
-    expect(restoreAndFocusMock).toHaveBeenLastCalledWith(0xCAFEn, { force: true });
+    // Asked once, not forced: read does not need the front for this window.
+    expect(restoreAndFocusMock).toHaveBeenCalledTimes(1);
+    expect(restoreAndFocusMock).toHaveBeenCalledWith(0xCAFEn);
   });
 
   it("stops with stoppedReason='foreground_refused' and keeps the pages read when the window will not come back before a scroll", async () => {
@@ -677,19 +705,26 @@ describe("scrollReadHandler (mocked)", () => {
       postKeyComboToHwnd: vi.fn().mockReturnValue(false),
       canInjectAtTarget: vi.fn().mockReturnValue({ supported: false }),
     }));
+    const restoreMock = vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
     // In front for the initial focus, then something else takes the foreground.
     const fg = vi.fn().mockReturnValueOnce(0xCAFEn).mockReturnValue(2n);
     vi.doMock("../../src/engine/win32.js", () => ({
       getForegroundHwnd: fg,
+      enumWindowsInZOrder: vi.fn().mockReturnValue([]),
+      getWindowTitleW: vi.fn().mockReturnValue("Other"),
+      getWindowRectByHwnd: vi.fn().mockReturnValue(null),
       getWindowRoot: vi.fn((h: bigint) => h),
-      restoreAndFocusWindow: vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 }),
+      restoreAndFocusWindow: restoreMock,
     }));
     const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
     const result = await scrollReadHandler({ action: "read", windowTitle: "Test", maxPages: 3, scrollKey: "PageDown", scrollDelayMs: 0, stopWhenNoChange: true });
     const body = JSON.parse((result.content[0] as { text: string }).text);
     expect(body.stoppedReason).toBe("foreground_refused");
+    expect(body.note).toContain("stopped being in front");
     expect(body.text ?? body.lines ?? JSON.stringify(body)).toContain("A");
     expect(pressKeyMock).not.toHaveBeenCalled();
+    // Not pulled back: the per-page ask is never the forced one (gate 2 on #915).
+    expect(restoreMock).not.toHaveBeenCalledWith(0xCAFEn, { force: true });
   });
 
   it("skips BG path entirely when canInjectViaPostMessage reports unsupported (Chromium host) and goes straight to foreground fallback (round-5 regression)", async () => {
@@ -732,6 +767,9 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/win32.js", () => ({
       // internal #326: the window is in front (both resolve to one root).
+      enumWindowsInZOrder: vi.fn().mockReturnValue([]),
+      getWindowTitleW: vi.fn().mockReturnValue(""),
+      getWindowRectByHwnd: vi.fn().mockReturnValue(null),
       getForegroundHwnd: vi.fn().mockReturnValue(1n),
       getWindowRoot: vi.fn().mockReturnValue(1n),
       restoreAndFocusWindow: restoreAndFocusMock,
@@ -799,6 +837,9 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/win32.js", () => ({
       // internal #326: the window is in front (both resolve to one root).
+      enumWindowsInZOrder: vi.fn().mockReturnValue([]),
+      getWindowTitleW: vi.fn().mockReturnValue(""),
+      getWindowRectByHwnd: vi.fn().mockReturnValue(null),
       getForegroundHwnd: vi.fn().mockReturnValue(1n),
       getWindowRoot: vi.fn().mockReturnValue(1n),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
@@ -859,6 +900,9 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/win32.js", () => ({
       // internal #326: the window is in front (both resolve to one root).
+      enumWindowsInZOrder: vi.fn().mockReturnValue([]),
+      getWindowTitleW: vi.fn().mockReturnValue(""),
+      getWindowRectByHwnd: vi.fn().mockReturnValue(null),
       getForegroundHwnd: vi.fn().mockReturnValue(1n),
       getWindowRoot: vi.fn().mockReturnValue(1n),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
@@ -920,6 +964,9 @@ describe("scrollReadHandler (mocked)", () => {
 
     vi.doMock("../../src/engine/win32.js", () => ({
       // internal #326: the window is in front (both resolve to one root).
+      enumWindowsInZOrder: vi.fn().mockReturnValue([]),
+      getWindowTitleW: vi.fn().mockReturnValue(""),
+      getWindowRectByHwnd: vi.fn().mockReturnValue(null),
       getForegroundHwnd: vi.fn().mockReturnValue(1n),
       getWindowRoot: vi.fn().mockReturnValue(1n),
       restoreAndFocusWindow: vi.fn().mockReturnValue({
