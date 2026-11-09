@@ -929,6 +929,16 @@ rather than reading it as a pass.
 Dev-only advisories (anything reached through `devDependencies`, e.g. `postcss`
 via `vitest` → `vite`) never enter the zip and are unaffected by this gap.
 
+The dev-only `minimatch` overrides (GHSA-g3hv-75wg-m249, Dependabot alert #85,
+added 2026-11-09) are scoped to the two parents that pull it:
+`"eslint": { "minimatch": "^11.0.1" }` (which also covers `@eslint/config-array`
+under it) and `"@typescript-eslint/typescript-estree": { "minimatch": "^11.0.1" }`.
+They are nested rather than global, because minimatch 11 removed `makeRe`, `AST`
+and some options: a future tool that wants `minimatch@^3` or `^9` keeps its own
+major. **Remove both entries** when eslint and `@typescript-eslint/typescript-estree`
+declare `minimatch` `^11` themselves (or a fixed 10.x ships). Check with
+`npm ls minimatch --all` that no path falls back below 11.0.1.
+
 ### Other notes
 
 - `docs/release-process.md` is tracked in git. An older note here claimed it was

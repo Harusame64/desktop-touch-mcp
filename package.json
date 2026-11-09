@@ -51,7 +51,12 @@
     "js-yaml": "^4.3.2",
     "ip-address": "^10.2.2",
     "postcss": "^8.5.18",
-    "minimatch": "^11.0.1"
+    "eslint": {
+      "minimatch": "^11.0.1"
+    },
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^11.0.1"
+    }
   },
   "napi": {
     "name": "desktop-touch-engine",
