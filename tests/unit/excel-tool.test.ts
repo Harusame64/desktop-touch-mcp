@@ -17,6 +17,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // Mock the native-engine surface BEFORE importing the handler so the
 // in-memory binding picks up the stub. Use `importOriginal` to preserve
@@ -35,7 +38,7 @@ vi.mock("../../src/engine/native-engine.js", async (importOriginal) => {
     excelWorkbookSaveAs: vi.fn(),
     excelWorkbookClose: vi.fn(),
     excelVbaModuleAdd: vi.fn(),
-    excelMacroRun: vi.fn(),
+    excelMacroRun: vi.fn(() => "OK"),
     excelCheckAccessVbom: vi.fn(() => ({
       trusted: true,
       lockedByPolicy: false,
@@ -45,7 +48,7 @@ vi.mock("../../src/engine/native-engine.js", async (importOriginal) => {
   return { ...actual, nativeExcel: stub };
 });
 
-import { excelHandler, excelSchema, codeDeclaresMacro } from "../../src/tools/excel.js";
+import { excelHandler, excelSchema, codeDeclaresMacro, withRunGuard } from "../../src/tools/excel.js";
 import { nativeExcel } from "../../src/engine/native-engine.js";
 
 function parseResult(r: { content: { type: string; text: string }[] }) {
@@ -277,14 +280,14 @@ describe("excelHandler — run_vba", () => {
     expect(nativeExcel!.excelVbaModuleAdd).toHaveBeenCalledWith(
       42,
       "DesktopTouchModule",
-      SAMPLE_MACRO
+      withRunGuard(SAMPLE_MACRO, "DesktopTouchAdHoc")
     );
     expect(nativeExcel!.excelWorkbookSaveAs).toHaveBeenCalledWith(
       42,
       expect.stringContaining(".xlsm"),
       52
     );
-    expect(nativeExcel!.excelMacroRun).toHaveBeenCalledWith(42, "DesktopTouchAdHoc");
+    expect(nativeExcel!.excelMacroRun).toHaveBeenCalledWith(42, "DesktopTouchRunGuard", 60_000);
     expect(nativeExcel!.excelWorkbookClose).toHaveBeenCalledWith(42, false);
     expect(nativeExcel!.excelSessionClose).toHaveBeenCalledWith(42);
   });
@@ -409,6 +412,7 @@ describe("run_vba workbook cleanup (internal #336)", () => {
     // mock*Once implementations queued: start this one clean.
     vi.mocked(nativeExcel!.excelWorkbookSaveAs!).mockReset();
     vi.mocked(nativeExcel!.excelMacroRun!).mockReset();
+    vi.mocked(nativeExcel!.excelMacroRun!).mockImplementation(() => "OK");
     // The native SaveAs writes the file; the mock does the same.
     vi.mocked(nativeExcel!.excelWorkbookSaveAs!).mockImplementationOnce((_s: unknown, path: unknown) => {
       writeFileSync(path as string, "");
@@ -448,5 +452,90 @@ describe("vbaModuleNameFor (#895)", () => {
     expect(vbaModuleNameFor("DesktopTouchAdHoc")).toBe("DesktopTouchModule");
     expect(vbaModuleNameFor("DesktopTouchModule")).toBe("DesktopTouchModule2");
     expect(vbaModuleNameFor("desktoptouchmodule")).toBe("DesktopTouchModule2");
+  });
+});
+
+// internal #350: a runtime error in the macro showed a VBA dialog over a hidden Excel and run_vba never
+// returned. The macro now runs inside a guard that answers "OK" or "ERR <n>: <text>", and the native run
+// ends this run's Excel after timeoutSeconds.
+describe("run_vba guard and timeout (internal #350)", () => {
+  const run = (extra: Record<string, unknown> = {}) =>
+    excelHandler({ action: "run_vba", code: SAMPLE_MACRO, ...extra } as never).then(parseResult);
+  const inTrustedDir = () => {
+    const appData = mkdtempSync(join(tmpdir(), "dt-350-"));
+    vi.stubEnv("LOCALAPPDATA", appData);
+    mkdirSync(join(appData, "desktop-touch-mcp", "trusted-vba"), { recursive: true });
+  };
+  beforeEach(() => {
+    inTrustedDir();
+    vi.mocked(nativeExcel!.excelMacroRun!).mockReset();
+  });
+
+  it("the guard calls the macro under On Error and answers OK or ERR", () => {
+    const g = withRunGuard("Private Sub Foo()\r\nEnd Sub", "Foo");
+    expect(g.startsWith("Private Sub Foo()\r\nEnd Sub\r\n")).toBe(true);
+    expect(g).toContain("Public Function DesktopTouchRunGuard() As String");
+    expect(g).toContain("On Error GoTo DesktopTouchRunGuardFailed");
+    expect(g).toMatch(/\r\n {4}Foo\r\n/);
+    expect(g).toContain('DesktopTouchRunGuard = "OK"');
+    expect(g).toContain('DesktopTouchRunGuard = "ERR " & Err.Number & ": " & Err.Description');
+  });
+
+  it("passes timeoutSeconds to the native run in milliseconds", async () => {
+    vi.mocked(nativeExcel!.excelMacroRun!).mockImplementation(() => "OK");
+    const r = await run({ timeoutSeconds: 5 });
+    expect(r.ok).toBe(true);
+    expect(nativeExcel!.excelMacroRun).toHaveBeenCalledWith(42, "DesktopTouchRunGuard", 5_000);
+  });
+
+  it("a runtime error comes back as VbaMacroExecutionFailed with its number and text, and a hidden run closes its workbook", async () => {
+    vi.mocked(nativeExcel!.excelMacroRun!).mockImplementation(() => "ERR 1000: boom");
+    const r = await run();
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("VbaMacroExecutionFailed");
+    expect(r.error).toContain("runtime error 1000: boom");
+    expect(r.context).toMatchObject({ vbaErrorNumber: 1000, vbaErrorDescription: "boom" });
+    expect(nativeExcel!.excelWorkbookClose).toHaveBeenCalledWith(42, false);
+    expect(nativeExcel!.excelSessionClose).toHaveBeenCalledWith(42);
+  });
+
+  it("a visible run whose macro raised keeps its workbook on screen", async () => {
+    vi.mocked(nativeExcel!.excelMacroRun!).mockImplementation(() => "ERR 11: 0 で除算しました。");
+    const r = await run({ visible: true });
+    expect(r.code).toBe("VbaMacroExecutionFailed");
+    expect(nativeExcel!.excelWorkbookClose).not.toHaveBeenCalled();
+    expect(nativeExcel!.excelSessionClose).toHaveBeenCalledWith(42);
+  });
+
+  it("a run that returns without the guard's word is not counted as done", async () => {
+    vi.mocked(nativeExcel!.excelMacroRun!).mockImplementation(() => null);
+    const r = await run();
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("VbaMacroExecutionFailed");
+  });
+
+  it("a native timeout is VbaMacroExecutionFailed and the session is still closed", async () => {
+    vi.mocked(nativeExcel!.excelMacroRun!).mockImplementation(() => {
+      throw new Error("VbaMacroExecutionFailed: the macro did not return within 60 s, so this run's Excel (pid 9) was ended.");
+    });
+    const r = await run();
+    expect(r.code).toBe("VbaMacroExecutionFailed");
+    expect(r.error).toContain("did not return within 60 s");
+    expect(nativeExcel!.excelSessionClose).toHaveBeenCalledWith(42);
+  });
+
+  it("refuses code that declares the guard's name, and the guard's name as macroName, before Excel starts", async () => {
+    const own = await excelHandler({
+      action: "run_vba",
+      code: "Sub DesktopTouchRunGuard()\r\nEnd Sub",
+      macroName: "DesktopTouchRunGuard",
+    } as never).then(parseResult);
+    expect(own.code).toBe("VbaModuleAuthoringFailed");
+    const declared = await excelHandler({
+      action: "run_vba",
+      code: SAMPLE_MACRO + "\r\nFunction DesktopTouchRunGuard()\r\nEnd Function",
+    } as never).then(parseResult);
+    expect(declared.code).toBe("VbaModuleAuthoringFailed");
+    expect(nativeExcel!.excelSessionSpawn).not.toHaveBeenCalled();
   });
 });

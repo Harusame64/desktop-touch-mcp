@@ -1071,6 +1071,8 @@ const SUGGESTS: Record<string, string[]> = {
     "ALTERNATIVELY: the DisplayAlerts save-restore guard failed during SaveAs — typically means the COM apartment is being torn down concurrently. Retry with a fresh excel() call.",
   ],
   VbaMacroExecutionFailed: [
+    "\"the macro raised runtime error <n>: <text>\": the macro ran and VBA stopped it with that error (context.vbaErrorNumber / vbaErrorDescription). Fix the code; nothing else is wrong with the setup.",
+    "\"did not return within <n> s\": the run's Excel was ended. A compile error, a MsgBox / InputBox, `End`, or an endless loop keeps Application.Run from returning. Fix the code, or raise timeoutSeconds for a macro that is just long.",
     "Application.Run rejected the macro. Most common cause is HRESULT 0x800a03ec: macros disabled by Trust Center.",
     "Ensure the workbook is in a registered Trusted Location (the bridge does this automatically via SaveAs to %LOCALAPPDATA%\\desktop-touch-mcp\\trusted-vba).",
     "Verify HKCU VBAWarnings=1 — otherwise dynamically-authored macros are blocked even from Trusted Locations.",

@@ -882,11 +882,14 @@ export declare function excelVbaModuleAdd(
   code: string,
 ): void
 
-/** Run a previously-added macro by name. Calls `Application.Run`.
+/** Run a previously-added macro by name. Calls `Application.Run` and
+ * returns what it returned when that is a string (null otherwise).
  * Requires the workbook to be anchored in a Trusted Location (see
  * ADR-015 §3.6 / Phase 2e); otherwise throws `VbaMacroExecutionFailed`
- * with HRESULT `0x800a03ec`. */
-export declare function excelMacroRun(sessionId: number, macroName: string): void
+ * with HRESULT `0x800a03ec`. With `timeoutMs`, ends this session's Excel
+ * when Run has not returned by then and throws `VbaMacroExecutionFailed`
+ * (internal #350). */
+export declare function excelMacroRun(sessionId: number, macroName: string, timeoutMs?: number | undefined | null): string | null
 
 /** Read HKCU / HKLM `AccessVBOM` state without modifying the registry.
  * Used by the Phase 4 MCP tool's `check_access_vbom` action. */

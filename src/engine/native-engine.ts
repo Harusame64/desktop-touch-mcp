@@ -878,7 +878,7 @@ export interface NativeExcel {
     moduleName: string,
     code: string,
   ): void;
-  excelMacroRun?(sessionId: number, macroName: string): void;
+  excelMacroRun?(sessionId: number, macroName: string, timeoutMs?: number): string | null;
 
   // Registry inspection (read-only)
   excelCheckAccessVbom?(): NativeExcelAccessVbomStatus;
