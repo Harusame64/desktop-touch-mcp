@@ -267,6 +267,15 @@ describe("scroll(action='capture') page end on periodic content (internal #326 (
     expect(body.warning).toBeUndefined();
   });
 
+  it("does not take a position that never moves as following the page when the first reads were empty", async () => {
+    // warm-up and frame 0 empty, then 35 for good: another scroller's, or a start Ctrl+Home did not reach.
+    mockReadPercent.mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValue(35);
+    const body = await run(8);
+    // frame 1 counts as moved once (0 -> 35); frames 2 and 3 are the identical pair that ends the run.
+    expect(mockCapture).toHaveBeenCalledTimes(4);
+    expect(body.warning).toBeUndefined();
+  });
+
   it("keeps the last position across a failed read, so the next good read still shows movement", async () => {
     // warm-up, then frames 0..3: 10, (failed), 30, 40 — the page is still moving throughout.
     mockReadPercent
@@ -337,6 +346,27 @@ describe("scrollPositionReader (internal #326 (B), gate 2 on #916)", () => {
       expect(await reader.read()).toBeNull();
       expect(await reader.read()).toBeNull();
       expect(await reader.read()).toBe(30);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("takes up reading again when the read it gave up on answers late", async () => {
+    vi.useFakeTimers();
+    try {
+      let answer: (v: number) => void = () => {};
+      mockReadPercent
+        .mockResolvedValueOnce(null) // counted empty read 1
+        .mockImplementationOnce(() => new Promise((done) => { answer = done; })) // read 2 times out
+        .mockResolvedValue(60);
+      const reader = scrollPositionReader(1n, "vertical");
+      expect(await reader.read()).toBeNull();
+      const second = reader.read();
+      await vi.advanceTimersByTimeAsync(250);
+      expect(await second).toBeNull(); // gave up here
+      answer(40); // ...but the window does have a position
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await reader.read()).toBe(60);
     } finally {
       vi.useRealTimers();
     }

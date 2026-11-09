@@ -175,7 +175,10 @@ export function scrollPositionReader(hwnd: bigint, axis: "vertical" | "horizonta
       .then((v) => {
         // A position read at any time, the warm-up's or one that answered after its timeout, shows the
         // window has one (agy on #916).
-        if (v !== null) everRead = true;
+        if (v !== null) {
+          everRead = true;
+          gaveUp = false; // it may have given up on this very read when it timed out
+        }
         return v;
       })
       .finally(() => { inFlight = false; });
@@ -547,7 +550,8 @@ export const scrollCaptureHandler = async ({
         // reach 0, this can keep one duplicate frame, which is preferred to ending early.
         const before = lastPosition ?? (frames.length > 0 ? 0 : null);
         scrolled = before !== null && Math.abs(at - before) >= SCROLL_PERCENT_EPSILON;
-        if (scrolled) tracking = true;
+        // Only two positions actually read show it follows the page; the assumed start does not (agy on #916).
+        if (scrolled && lastPosition !== null) tracking = true;
         lastPosition = at;
       }
       const shortOfEnd = tracking && lastPosition !== null && lastPosition < SCROLL_PERCENT_END - SCROLL_PERCENT_EPSILON;
