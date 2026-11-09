@@ -1019,6 +1019,8 @@ export interface NativeMacAxElement {
   valueSettable: boolean
   /** A text field that stands for a file (it carries `AXFilename`, e.g. a Finder name cell): writing it renames nothing. */
   namesFile?: boolean
+  /** The OS's name for a title-bar button (AXRoleDescription, e.g. "閉じるボタン"); only on those buttons. */
+  roleDescription?: string
   childCount: number
 }
 

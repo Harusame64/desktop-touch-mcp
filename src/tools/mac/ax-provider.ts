@@ -99,6 +99,10 @@ export function actionabilityOf(e: NativeMacAxElement): UiEntityCandidate["actio
  * nameless "button"s — and a caller pressing a nameless button closed a document (2026-10-04, the
  * sheet measurement). Name them by what they do.
  */
+/** What AppKit calls these buttons in English: the same thing as WINDOW_BUTTONS, not a second name. */
+const ENGLISH_ROLE_DESCRIPTIONS = new Set(["close button", "minimize button", "zoom button", "full screen button"]);
+
+/** The subroles here are the ones src/macos/ax.rs reads `roleDescription` for: change both together. */
 const WINDOW_BUTTONS: Record<string, string> = {
   AXCloseButton: "Close window",
   AXMinimizeButton: "Minimize window",
@@ -110,7 +114,14 @@ function labelOf(e: NativeMacAxElement): string | undefined {
   if (roleOf(e) === "label" && e.value) return e.value;
   if (e.title) return e.title;
   if (e.description) return e.description;
-  if (e.subrole !== undefined && WINDOW_BUTTONS[e.subrole] !== undefined) return WINDOW_BUTTONS[e.subrole];
+  if (e.subrole !== undefined && WINDOW_BUTTONS[e.subrole] !== undefined) {
+    // In the app's language first, as every other control is named, so a query such as "閉じる"
+    // finds it; the English name stays beside it for callers that look for that (internal #264).
+    // An app running in English names it "close button": that adds nothing (gate 2 on #911).
+    const english = WINDOW_BUTTONS[e.subrole];
+    const own = e.roleDescription?.trim();
+    return own && !ENGLISH_ROLE_DESCRIPTIONS.has(own.toLowerCase()) ? `${own} (${english})` : english;
+  }
   return undefined;
 }
 

@@ -108,6 +108,10 @@
   when asked (internal #258).
 
 ### Fixed — macOS (preview)
+- **A window's close, minimize, zoom and full-screen buttons are named in the app's language.** They came back in
+  English (`Close window`) beside controls named in Japanese, so a `query` such as "閉じる" did not find them. They now
+  carry the name macOS gives them in that app first, with the English after it: `閉じるボタン (Close window)`. An app
+  running in English keeps `Close window` (internal #264).
 - **`desktop_act` no longer reports a Finder rename that did not happen.** A file name in a Finder window was offered
   as a text field you could `type` into. The write changed only what the window showed: the file kept its name (until
   the window was reopened), and the reply was `ok: true`. A name that stands for a file is now a `label` you can read,
