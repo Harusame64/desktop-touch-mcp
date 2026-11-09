@@ -449,6 +449,8 @@ describe("title-bar buttons are named (2026-10-04)", () => {
   it("names the close button instead of leaving it nameless", () => {
     const close: any = { id: "a.0.5", rootKey: "R", elementKey: "K", depth: 1, role: "AXButton", subrole: "AXCloseButton", actions: ["AXPress"], valueSettable: false, childCount: 0 };
     expect(toCandidate(close, 7, "W", 1).label).toBe("Close window");
+    // internal #264: on a Japanese system the OS names it; that name comes first, the English beside it.
+    expect(toCandidate({ ...close, roleDescription: "閉じるボタン" }, 7, "W", 1).label).toBe("閉じるボタン (Close window)");
   });
 });
 

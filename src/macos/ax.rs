@@ -463,6 +463,10 @@ pub struct MacAxElement {
     /// Asked only of elements whose value is settable: `Some(true)` when it names a file, `None`
     /// otherwise (and when the read failed, which marks the tree `read_incomplete`).
     pub names_file: Option<bool>,
+    /// The OS's name for a title-bar button (`AXRoleDescription`, e.g. "閉じるボタン" on a
+    /// Japanese system): those carry no title or description of their own (internal #264).
+    /// Read for the close, minimize, zoom and full-screen buttons only; `None` elsewhere.
+    pub role_description: Option<String>,
     pub child_count: u32,
 }
 
@@ -620,6 +624,16 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         } else {
             None
         };
+        // Asked of the title bar's buttons only, so the walk spends no message on the rest.
+        let role_description = if role == "AXButton"
+            && matches!(
+                subrole.as_deref(),
+                Some("AXCloseButton" | "AXMinimizeButton" | "AXZoomButton" | "AXFullScreenButton")
+            ) {
+            read!(attr_string(&e, "AXRoleDescription")).filter(|s| !s.is_empty())
+        } else {
+            None
+        };
         elements.push(MacAxElement {
             id: id.clone(),
             root_key: (*key).clone(),
@@ -644,6 +658,7 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
             actions,
             value_settable,
             names_file,
+            role_description,
             child_count: kids.len() as u32,
         });
         if depth < max_depth {

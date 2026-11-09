@@ -110,7 +110,12 @@ function labelOf(e: NativeMacAxElement): string | undefined {
   if (roleOf(e) === "label" && e.value) return e.value;
   if (e.title) return e.title;
   if (e.description) return e.description;
-  if (e.subrole !== undefined && WINDOW_BUTTONS[e.subrole] !== undefined) return WINDOW_BUTTONS[e.subrole];
+  if (e.subrole !== undefined && WINDOW_BUTTONS[e.subrole] !== undefined) {
+    // In the user's language first, as every other control is named, so a query such as "閉じる"
+    // finds it; the English name stays beside it for callers that look for that (internal #264).
+    const english = WINDOW_BUTTONS[e.subrole];
+    return e.roleDescription ? `${e.roleDescription} (${english})` : english;
+  }
   return undefined;
 }
 
