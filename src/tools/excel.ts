@@ -342,6 +342,8 @@ async function handleRunVba(args: z.infer<typeof runVbaSchema>): Promise<ToolRes
 
   let sessionId: number | undefined;
   let ran = false;
+  // The watchdog ended this run's Excel: only then is its owner file left for us to remove.
+  let ended = false;
   try {
     sessionId = nativeExcel.excelSessionSpawn?.();
     if (sessionId === undefined) {
@@ -403,7 +405,9 @@ async function handleRunVba(args: z.infer<typeof runVbaSchema>): Promise<ToolRes
       },
     });
   } catch (err) {
-    return failWith(mapNapiError(err), "excel", { macroName: args.macroName });
+    const error = mapNapiError(err);
+    ended = /did not return within \d+ s/.test(error.message);
+    return failWith(error, "excel", { macroName: args.macroName });
   } finally {
     if (sessionId !== undefined) {
       // Close the run's own workbook before the session close, which quits Excel only when nothing is open. A hidden
@@ -421,9 +425,11 @@ async function handleRunVba(args: z.infer<typeof runVbaSchema>): Promise<ToolRes
       }
     }
     removeWorkbookSoon(workbookPath);
-    // Excel's owner file ("~$" + the name, holding the user's name). Excel removes it on a close; an
-    // Excel the watchdog ended leaves it (gate 2 on #910).
-    removeWorkbookSoon(join(dirname(workbookPath), "~$" + basename(workbookPath)));
+    // Excel's owner file ("~$" + the name, holding the user's name). Excel removes it itself when it
+    // closes the workbook; an Excel the watchdog ended leaves it (gate 2 on #910). Only then: touching
+    // it while a live Excel is still closing kept that Excel running until the last retry, 60 s later
+    // (win, 2026-11-09: 4 of 20 successful runs, each gone at exactly 60 s; 0 of 20 on main).
+    if (ended) removeWorkbookSoon(join(dirname(workbookPath), "~$" + basename(workbookPath)));
   }
 }
 

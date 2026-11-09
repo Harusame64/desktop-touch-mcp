@@ -619,4 +619,21 @@ describe("run_vba guard and timeout: gate 2 on #910", () => {
     expect(owner).not.toBe("");
     expect(existsSync(owner)).toBe(false);
   });
+
+  it("leaves the owner file to Excel when the run was not ended: removing it under a closing Excel held that Excel 60 s", async () => {
+    const { writeFileSync, existsSync, rmSync } = await import("node:fs");
+    for (const outcome of ["OK", "ERR 11: x"]) {
+      let owner = "";
+      vi.mocked(nativeExcel!.excelWorkbookSaveAs!).mockImplementationOnce((_s: unknown, path: unknown) => {
+        writeFileSync(path as string, "");
+        owner = join(dirname(path as string), "~$" + basename(path as string));
+        writeFileSync(owner, "");
+        return undefined as never;
+      });
+      vi.mocked(nativeExcel!.excelMacroRun!).mockImplementation(() => outcome);
+      await run();
+      expect(existsSync(owner), outcome).toBe(true);
+      rmSync(owner);
+    }
+  });
 });
