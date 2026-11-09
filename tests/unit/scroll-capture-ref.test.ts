@@ -23,7 +23,8 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 
-const { mockCapture, mockGrabRegion, mockRestoreAndFocus, mockResolveWindowTarget, mockFindPlain, mockForeground, mockPressKey, mockOffDesktop } = vi.hoisted(() => ({
+const { mockReadPercent, mockCapture, mockGrabRegion, mockRestoreAndFocus, mockResolveWindowTarget, mockFindPlain, mockForeground, mockPressKey, mockOffDesktop } = vi.hoisted(() => ({
+  mockReadPercent: vi.fn(),
   mockCapture: vi.fn(),
   mockOffDesktop: vi.fn(),
   mockForeground: vi.fn(),
@@ -63,11 +64,16 @@ vi.mock("../../src/engine/image.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/image.js")>();
   return { ...actual, grabScreenRegionValidated: mockCapture };
 });
+// internal #326 (B): the UIA scroll position. Resolves null (no ScrollPattern) unless a test sets it.
+vi.mock("../../src/engine/native-engine.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/engine/native-engine.js")>();
+  return { ...actual, nativeUia: { ...(actual.nativeUia ?? {}), uiaReadScrollPercentAtHwnd: mockReadPercent } };
+});
 vi.mock("../../src/tools/_off-desktop.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_off-desktop.js")>();
   return { ...actual, offDesktopTarget: mockOffDesktop };
 });
-const { scrollCaptureHandler } = await import("../../src/tools/scroll-capture.js");
+const { scrollCaptureHandler, scrollPositionReader } = await import("../../src/tools/scroll-capture.js");
 
 /** A uniform-gray RGBA frame; identical reads trigger the page-end break. */
 function uniformFrame(w: number, h: number) {
@@ -87,6 +93,7 @@ beforeEach(() => {
   mockCapture.mockResolvedValue({ data: Buffer.alloc(200 * 200 * 4, 128), width: 200, height: 200, channels: 4 });
   mockForeground.mockReturnValue(1n);
   mockOffDesktop.mockResolvedValue(null);
+  mockReadPercent.mockResolvedValue(null);
 });
 afterEach(() => {
   delete process.env.DESKTOP_TOUCH_SCREENSHOTS_DIR;
@@ -186,5 +193,199 @@ describe("scroll(action='capture') checks the front before every key and frame (
     expect(body.code).toBe("WindowOnOtherDesktop");
     expect(mockRestoreAndFocus).not.toHaveBeenCalled();
     expect(mockPressKey).not.toHaveBeenCalled();
+  });
+});
+
+// internal #326 (B), measured by win2 2026-11-10: on 165 px sections a PageDown changed only the
+// section numbers, the strips matched, and the capture stopped after one frame. The pixels cannot tell
+// that from a page end, so the UIA scroll position decides where the window has one.
+describe("scroll(action='capture') page end on periodic content (internal #326 (B))", () => {
+  const run = async (maxScrolls: number) => {
+    const r = await scrollCaptureHandler({ windowTitle: "W", direction: "down", maxScrolls, scrollDelayMs: 0, maxWidth: 800 } as never);
+    return JSON.parse((r.content as { type: string; text?: string }[]).find((b) => b.type === "text")!.text!);
+  };
+
+  it("goes on while the scroll position moves, though the frames look identical", async () => {
+    let pct = 0;
+    mockReadPercent.mockImplementation(async () => (pct += 10));
+    const body = await run(3);
+    expect(body.ok).toBe(true);
+    expect(mockCapture).toHaveBeenCalledTimes(4);
+    expect(body.warning).toContain("maxScrolls reached");
+  });
+
+  it("ends on identical frames once the scroll position stops moving", async () => {
+    mockReadPercent.mockResolvedValue(100);
+    const body = await run(5);
+    expect(body.ok).toBe(true);
+    expect(mockCapture).toHaveBeenCalledTimes(3);
+    expect(body.warning).toBeUndefined();
+  });
+
+  it("ends on identical frames as before when the window has no scroll position, and stops asking", async () => {
+    mockReadPercent.mockResolvedValue(null);
+    const body = await run(5);
+    expect(body.ok).toBe(true);
+    expect(mockCapture).toHaveBeenCalledTimes(3);
+    // The warm-up (not counted) and the first two frames' reads come back empty; no more reads after that.
+    expect(mockReadPercent).toHaveBeenCalledTimes(3);
+  });
+
+  it("warms up before Ctrl+Home and asks the horizontal axis for direction 'right'", async () => {
+    mockReadPercent.mockResolvedValue(null);
+    await scrollCaptureHandler({ windowTitle: "W", direction: "right", maxScrolls: 2, scrollDelayMs: 0, maxWidth: 800 } as never);
+    expect(mockReadPercent).toHaveBeenCalledWith({ hwnd: "1", axis: "horizontal" });
+    expect(mockReadPercent.mock.invocationCallOrder[0]).toBeLessThan(mockPressKey.mock.invocationCallOrder[0]!);
+  });
+
+  it("compares a first good read after empty ones with the start, so one PageDown to the end is not lost", async () => {
+    // warm-up and frame 0 empty (Chrome waking), frame 1 reads 100 (one PageDown reached the end), then 100.
+    mockReadPercent.mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValue(100);
+    const body = await run(5);
+    expect(body.ok).toBe(true);
+    // frame 1 moved from the start (0 -> 100) and is kept; frames 2 and 3 are the identical pair that ends the run.
+    expect(mockCapture).toHaveBeenCalledTimes(4);
+    expect(body.frames).toBe(2);
+  });
+
+  it("does not end part way when a lagging position reads the same twice (win2 K2, Chrome)", async () => {
+    // warm-up, then frames 0..8. Chrome's position trails the frame by a step, so it repeats part way.
+    mockReadPercent.mockResolvedValueOnce(null);
+    for (const v of [0, 10, 20, 20, 20, 30, 100, 100]) mockReadPercent.mockResolvedValueOnce(v);
+    mockReadPercent.mockResolvedValue(100);
+    const body = await run(15);
+    // Frames 3 and 4 read 20 again but the position follows the page and is short of 100, so they do
+    // not count; the run ends on frames 7 and 8 at 100.
+    expect(mockCapture).toHaveBeenCalledTimes(9);
+    expect(body.warning).toBeUndefined();
+  });
+
+  it("lets the pixels decide when the position never moves (another scroller's)", async () => {
+    mockReadPercent.mockResolvedValue(35);
+    const body = await run(5);
+    expect(mockCapture).toHaveBeenCalledTimes(3);
+    expect(body.warning).toBeUndefined();
+  });
+
+  it("does not take a position that never moves as following the page when the first reads were empty", async () => {
+    // warm-up and frame 0 empty, then 35 for good: another scroller's, or a start Ctrl+Home did not reach.
+    mockReadPercent.mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValue(35);
+    const body = await run(8);
+    // frame 1 counts as moved once (0 -> 35); frames 2 and 3 are the identical pair that ends the run.
+    expect(mockCapture).toHaveBeenCalledTimes(4);
+    expect(body.warning).toBeUndefined();
+  });
+
+  it("keeps the last position across a failed read, so the next good read still shows movement", async () => {
+    // warm-up, then frames 0..3: 10, (failed), 30, 40 — the page is still moving throughout.
+    mockReadPercent
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(10)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(30)
+      .mockResolvedValueOnce(40);
+    const body = await run(3);
+    // frame 1 (failed read) is the first identical hit; frame 2's position moved (10 -> 30), so the
+    // run does not end there and reaches maxScrolls.
+    expect(mockCapture).toHaveBeenCalledTimes(4);
+    expect(body.warning).toContain("maxScrolls reached");
+  });
+});
+
+describe("scrollPositionReader (internal #326 (B), gate 2 on #916)", () => {
+  it("does not queue a read behind one still running", async () => {
+    vi.useFakeTimers();
+    try {
+      mockReadPercent.mockImplementation(() => new Promise(() => {})); // never answers
+      const reader = scrollPositionReader(1n, "vertical");
+      const first = reader.read();
+      await vi.advanceTimersByTimeAsync(250);
+      expect(await first).toBeNull();
+      expect(await reader.read()).toBeNull();
+      expect(mockReadPercent).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not count the warm-up, so a slow first read does not make it give up", async () => {
+    // Chrome waking up: the warm-up and the first counted read are empty, then it answers.
+    mockReadPercent.mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValue(20);
+    const reader = scrollPositionReader(1n, "vertical");
+    await reader.warmUp();
+    expect(await reader.read()).toBeNull();
+    expect(await reader.read()).toBe(20);
+  });
+
+  it("never gives up once a position was read, however many reads fail after it", async () => {
+    mockReadPercent.mockResolvedValueOnce(10).mockResolvedValueOnce(null).mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null).mockResolvedValue(50);
+    const reader = scrollPositionReader(1n, "vertical");
+    expect(await reader.read()).toBe(10);
+    for (let i = 0; i < 3; i++) expect(await reader.read()).toBeNull();
+    expect(await reader.read()).toBe(50);
+  });
+
+  it("does not count a read skipped while a slow one runs, and a late answer counts as read", async () => {
+    vi.useFakeTimers();
+    try {
+      let answer: (v: number) => void = () => {};
+      mockReadPercent
+        .mockImplementationOnce(() => new Promise((done) => { answer = done; })) // the warm-up hangs
+        .mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValue(30);
+      const reader = scrollPositionReader(1n, "vertical");
+      const warm = reader.warmUp();
+      await vi.advanceTimersByTimeAsync(250);
+      await warm;
+      // Two reads skipped behind the slow warm-up: not empty reads.
+      expect(await reader.read()).toBeNull();
+      expect(await reader.read()).toBeNull();
+      answer(5); // the warm-up answers late: the window has a position
+      await vi.advanceTimersByTimeAsync(0);
+      // Two real empty reads now do not make it give up.
+      expect(await reader.read()).toBeNull();
+      expect(await reader.read()).toBeNull();
+      expect(await reader.read()).toBe(30);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("takes up reading again when the read it gave up on answers late", async () => {
+    vi.useFakeTimers();
+    try {
+      let answer: (v: number) => void = () => {};
+      mockReadPercent
+        .mockResolvedValueOnce(null) // counted empty read 1
+        .mockImplementationOnce(() => new Promise((done) => { answer = done; })) // read 2 times out
+        .mockResolvedValue(60);
+      const reader = scrollPositionReader(1n, "vertical");
+      expect(await reader.read()).toBeNull();
+      const second = reader.read();
+      await vi.advanceTimersByTimeAsync(250);
+      expect(await second).toBeNull(); // gave up here
+      answer(40); // ...but the window does have a position
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await reader.read()).toBe(60);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up after two counted empty reads when it never read a position", async () => {
+    mockReadPercent.mockResolvedValue(null);
+    const reader = scrollPositionReader(1n, "vertical");
+    await reader.warmUp();
+    await reader.read();
+    await reader.read();
+    await reader.read();
+    expect(mockReadPercent).toHaveBeenCalledTimes(3);
+  });
+
+  it("returns the position and passes the axis", async () => {
+    mockReadPercent.mockResolvedValue(42.5);
+    const reader = scrollPositionReader(7n, "horizontal");
+    expect(await reader.read()).toBe(42.5);
+    expect(mockReadPercent).toHaveBeenCalledWith({ hwnd: "7", axis: "horizontal" });
   });
 });
