@@ -25,7 +25,7 @@ function safeCode(code: string): string {
 function outcomeFields(o: CaptureLoopOutcome): Pick<PollEvent, "outcome" | "reason" | "matched" | "verified"> {
   switch (o.kind) {
     case "declined":
-      return { outcome: o.kind, reason: o.reason };
+      return { outcome: o.kind, reason: safeIdentifier(o.reason) };
     case "confirm_rejected":
     case "capture_cancelled":
     case "save_failed":
@@ -36,10 +36,10 @@ function outcomeFields(o: CaptureLoopOutcome): Pick<PollEvent, "outcome" | "reas
     case "fill_aborted":
       return { outcome: o.kind, reason: safeCode(o.code), matched: o.matched };
     case "discarded":
-      return { outcome: o.kind, reason: o.reason };
+      return { outcome: o.kind, reason: safeIdentifier(o.reason) };
     default: {
       const unknown: never = o;
-      return { outcome: String((unknown as { kind?: unknown }).kind ?? "unknown") };
+      return { outcome: safeIdentifier((unknown as { kind?: unknown }).kind) };
     }
   }
 }

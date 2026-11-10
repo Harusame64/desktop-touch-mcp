@@ -52,6 +52,7 @@
 //   * onPaneClosed — W2 close atomicity: `unwatchPane` paired same-turn with `tracker.forget`.
 
 import type { BindingMeta } from "./binding-store.js";
+import { safeIdentifier } from "./safe-identifier.js";
 import type { BindingUri } from "./binding.js";
 import {
   runCaptureLoop,
@@ -208,10 +209,8 @@ export function errorFields(err: unknown): { errorName: string; errorCode?: stri
   const isError = err instanceof Error;
   const errorName = isError ? safeIdentifier(err.name) : safeIdentifier(typeof err);
   const code = isError ? (err as { code?: unknown }).code : undefined;
-  return code === undefined ? { errorName } : { errorName, errorCode: safeIdentifier(code) };
+  return typeof code === "string" ? { errorName, errorCode: safeIdentifier(code) } : { errorName };
 }
-
-import { safeIdentifier } from "./safe-identifier.js";
 
 /** Is this throw the failsafe's typed rejection? Structural check on `err.name` — the driver must not
  *  import `utils/failsafe.js` (it would drag the nut-js native module into the engine-pure graph); the
@@ -317,8 +316,8 @@ export class KeyLockerCaptureDriver {
    * process), so no time param is plumbed here.
    */
   onLocalPaneLaunched(paneId: string, anchor: PaneAnchor, cwd?: string): void {
-    const old = this.panes.get(paneId)?.armed;
-    if (old) this.armEnded(paneId, old, () => ({ end: "pane_closed" }), true); // the record is replaced
+    const oldRec = this.panes.get(paneId);
+    if (oldRec !== undefined) this.releaseArm(paneId, oldRec, "pane_closed"); // the record is replaced
     if (this.panes.has(paneId)) this.deps.onPaneForgotten?.(paneId); // a reused id: the old pane's tags go
     this.tracker.beginLocalSession(paneId, cwd);
     this.watch.watchPane(paneId, anchor.shellPid);
@@ -444,16 +443,17 @@ export class KeyLockerCaptureDriver {
     const armed = rec.armed;
     try {
 
-      // §0-CORR.2 straggler backstop: register a still-pending ssh child (rare in fire-after). Idempotent.
-      if (rec.pendingSsh !== undefined && !rec.pendingSsh.registered) {
-        this.correlateSshChild(paneId, rec.anchor.shellPid, rec.pendingSsh);
-      }
-
       // Poller lifetime (OQ-W-2): a key-based ssh / cached sudo prints NO prompt — abandon (safe, no fill).
+      // First, so an arm whose polls keep throwing below still times out (gate 2 on #932).
       if (this.deps.nowMs() - armed.armedAtMs > this.pollTimeoutMs) {
         rec.armed = null;
         this.armEnded(paneId, armed, () => ({ end: "timed_out" }));
         return { status: "timed_out" };
+      }
+
+      // §0-CORR.2 straggler backstop: register a still-pending ssh child (rare in fire-after). Idempotent.
+      if (rec.pendingSsh !== undefined && !rec.pendingSsh.registered) {
+        this.correlateSshChild(paneId, rec.anchor.shellPid, rec.pendingSsh);
       }
 
       const verdict = await this.deps.readPromptTail(paneId);
@@ -524,6 +524,8 @@ export class KeyLockerCaptureDriver {
         } catch (err) {
           this.armEnded(paneId, armed, () => ({ end: "loop_threw", ...errorFields(err) }));
           throw err;
+        } finally {
+          armed.loopRunning = false;
         }
         this.armEnded(paneId, armed, () => ({ end: "loop_outcome", outcome }));
         return { status: "filled", outcome };
@@ -624,8 +626,8 @@ export class KeyLockerCaptureDriver {
    * the watch while a remote frame stays trusted. Idempotent.
    */
   onPaneClosed(paneId: string): void {
-    const armedNow = this.panes.get(paneId)?.armed;
-    if (armedNow) this.armEnded(paneId, armedNow, () => ({ end: "pane_closed" }), true);
+    const closing = this.panes.get(paneId);
+    if (closing !== undefined) this.releaseArm(paneId, closing, "pane_closed");
     this.watch.unwatchPane(paneId);
     this.tracker.forget(paneId);
     this.panes.delete(paneId);
@@ -687,6 +689,19 @@ export class KeyLockerCaptureDriver {
     } catch {
       /* observability only */
     }
+  }
+
+  /**
+   * A record that goes away (the pane closed, or a record replaced under its id) gives its arm up: reported,
+   * and cleared, so a poll still in flight on that record sees the arm gone (`superseded`) and stops — it
+   * neither fills a pane that is no longer this record nor reports a second end (gate 2 on #932). Not while
+   * the arm's capture loop runs: the loop owns it, and its outcome is the end.
+   */
+  private releaseArm(paneId: string, rec: PaneRecord, end: "pane_closed"): void {
+    const armed = rec.armed;
+    if (armed === null || armed.loopRunning === true) return;
+    this.armEnded(paneId, armed, () => ({ end }), true);
+    rec.armed = null;
   }
 
   /** A poll of `armed` threw before its loop: reported once per arm, never ending it (it re-polls). */

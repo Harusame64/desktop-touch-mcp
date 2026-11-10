@@ -92,6 +92,19 @@ describe("the driver reports every end of an arm, once", () => {
     await p.catch(() => {});
     expect(h.ends.map(([, e]) => e.end)).toEqual(["pane_closed"]);
   });
+  it("a record replaced under the id while a poll is reading: the poll stops, nothing is filled, one end", async () => {
+    let release!: (v: PromptVerdict) => void;
+    const injectPane = vi.fn(async () => ({ ok: true, injector: "console", verified: true }) as never);
+    const h = harness({ readPromptTail: vi.fn(() => new Promise<PromptVerdict>((r) => { release = r; })), injectPane });
+    h.driver.onDispatch("pane-1", "sudo apt update");
+    const p = h.driver.poll("pane-1");
+    await Promise.resolve();
+    h.driver.onLocalPaneLaunched("pane-1", { kind: "classic", hwnd: 1000n, shellPid: 1000, shellStartTimeMs: 10 } as never);
+    release(PROMPT(true));
+    await expect(p).resolves.toEqual({ status: "superseded" });
+    expect(injectPane).not.toHaveBeenCalled();
+    expect(h.ends.map(([, e]) => e.end)).toEqual(["pane_closed"]);
+  });
   it("a clear while the arm's loop runs is not an end: the loop's outcome is", async () => {
     let release!: (c: "save") => void;
     const h = harness({
@@ -174,6 +187,8 @@ describe("the diagnostic line holds no secret", () => {
     odd.name = "Bad name: hunter2";
     expect(errorFields(odd)).toEqual({ errorName: "other", errorCode: "other" });
     expect(errorFields("a string")).toEqual({ errorName: "string" });
+    // A code that is not a string (an errno) is left out, as before.
+    expect(errorFields(Object.assign(new Error("x"), { code: -4058 }))).toEqual({ errorName: "Error" });
   });
   it("writing never throws", () => {
     logged.length = 0;
