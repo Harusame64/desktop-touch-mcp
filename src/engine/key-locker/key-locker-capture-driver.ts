@@ -52,6 +52,7 @@
 //   * onPaneClosed — W2 close atomicity: `unwatchPane` paired same-turn with `tracker.forget`.
 
 import type { BindingMeta } from "./binding-store.js";
+import { safeIdentifier } from "./safe-identifier.js";
 import type { BindingUri } from "./binding.js";
 import {
   runCaptureLoop,
@@ -182,6 +183,33 @@ export interface CaptureDriverDeps {
    *  pane's kept fill_once tags here. Called from `onPaneClosed` — both the classic `window_disappeared` path
    *  and the wt shell-exit prune — and when `onLocalPaneLaunched` replaces an existing record. */
   onPaneForgotten?(paneId: string): void;
+  /**
+   * internal #283 — a pane's arm ended: how (`ArmEnd`), once per arm, wherever it was cleared — the poll, the
+   * tick's arm hygiene, a newer dispatch, `fill_once` taking the pane, the pane closing. The wiring writes it to
+   * the diagnostic log, so a locker that "did nothing" at a prompt says why. Must not throw.
+   */
+  onArmEnded?(paneId: string, end: ArmEnd): void;
+}
+
+/**
+ * How an arm ended (`onArmEnded`), once per arm — or, as `poll_threw`, a poll of it that threw before the
+ * loop (the arm stays set and re-polls; reported once per arm). `replaced`: a newer dispatch armed the pane
+ * again; `dropped_by_dispatch`: a newer dispatch cleared it without arming (not a credential, or the session
+ * sank). Never carries a secret: the loop's outcome as the loop returned it, an error's name and code.
+ */
+export type ArmEnd =
+  | {
+      end: "timed_out" | "session_changed" | "failsafe" | "replaced" | "dropped_by_dispatch" | "taken_by_fill_once" | "pane_closed";
+    }
+  | { end: "loop_outcome"; outcome: CaptureLoopOutcome }
+  | { end: "loop_threw" | "poll_threw"; errorName: string; errorCode?: string };
+
+/** The name of a thrown value and its `code`, each only as an identifier (`safeIdentifier`), never a message. */
+export function errorFields(err: unknown): { errorName: string; errorCode?: string } {
+  const isError = err instanceof Error;
+  const errorName = isError ? safeIdentifier(err.name) : safeIdentifier(typeof err);
+  const code = isError ? (err as { code?: unknown }).code : undefined;
+  return typeof code === "string" ? { errorName, errorCode: safeIdentifier(code) } : { errorName };
 }
 
 /** Is this throw the failsafe's typed rejection? Structural check on `err.name` — the driver must not
@@ -195,6 +223,12 @@ function isFailsafeEngaged(err: unknown): boolean {
 interface ArmedDispatch {
   /** The dispatched command — the AUTHORITATIVE binding source (never the prompt text). */
   command: string;
+  /** internal #283: a poll of this arm threw and that was reported — the next throws of the same arm are not. */
+  errorLogged?: boolean;
+  /** internal #283: this arm's end was reported (`onArmEnded`) — once per arm, whoever clears it. */
+  ended?: boolean;
+  /** internal #283: this arm's capture loop is running — its outcome is the arm's end, not a clear meanwhile. */
+  loopRunning?: boolean;
   /** The reconciled PRE-effect session the capture loop derives from (never a live tracker.get). */
   frozen: SessionFrame;
   /** The POST-record session at arm time — the state the pane is EXPECTED to hold when the armed command's
@@ -282,6 +316,8 @@ export class KeyLockerCaptureDriver {
    * process), so no time param is plumbed here.
    */
   onLocalPaneLaunched(paneId: string, anchor: PaneAnchor, cwd?: string): void {
+    const oldRec = this.panes.get(paneId);
+    if (oldRec !== undefined) this.releaseArm(paneId, oldRec, "pane_closed"); // the record is replaced
     if (this.panes.has(paneId)) this.deps.onPaneForgotten?.(paneId); // a reused id: the old pane's tags go
     this.tracker.beginLocalSession(paneId, cwd);
     this.watch.watchPane(paneId, anchor.shellPid);
@@ -379,10 +415,15 @@ export class KeyLockerCaptureDriver {
     //     The POST-record frame is captured as `expected` (the state the command's own prompt shows in) so
     //     `poll` can detect an EXTERNAL change before filling (Codex R2 P1 + Opus R2 P2).
     const postRecord = this.tracker.get(paneId);
+    const previous = rec.armed;
     rec.armed =
       isKnownSession(frozen) && isKnownSession(postRecord) && looksLikeCredential(command)
         ? { command, frozen, expected: postRecord, armedAtMs: this.deps.nowMs() }
         : null;
+    if (previous !== null) {
+      const armedAgain = rec.armed !== null;
+      this.armEnded(paneId, previous, () => ({ end: armedAgain ? "replaced" : "dropped_by_dispatch" }), true);
+    }
   }
 
   /**
@@ -399,16 +440,21 @@ export class KeyLockerCaptureDriver {
     // dispatch (duplicate capture/inject/save). `pollBusy` spans the WHOLE poll incl. the capture loop.
     if (rec.pollBusy) return { status: "busy" };
     rec.pollBusy = true;
+    const armed = rec.armed;
     try {
-      const armed = rec.armed;
+
+      // Poller lifetime (OQ-W-2): a key-based ssh / cached sudo prints NO prompt — abandon (safe, no fill).
+      // First, so an arm whose polls keep throwing below still times out (gate 2 on #932).
+      if (this.deps.nowMs() - armed.armedAtMs > this.pollTimeoutMs) {
+        rec.armed = null;
+        this.armEnded(paneId, armed, () => ({ end: "timed_out" }));
+        return { status: "timed_out" };
+      }
 
       // §0-CORR.2 straggler backstop: register a still-pending ssh child (rare in fire-after). Idempotent.
       if (rec.pendingSsh !== undefined && !rec.pendingSsh.registered) {
         this.correlateSshChild(paneId, rec.anchor.shellPid, rec.pendingSsh);
       }
-
-      // Poller lifetime (OQ-W-2): a key-based ssh / cached sudo prints NO prompt — abandon (safe, no fill).
-      if (this.deps.nowMs() - armed.armedAtMs > this.pollTimeoutMs) { rec.armed = null; return { status: "timed_out" }; }
 
       const verdict = await this.deps.readPromptTail(paneId);
       // The arm can be OVERWRITTEN during the (slow, UIA) read: onDispatch is NOT gated by `pollBusy`, so a
@@ -435,7 +481,10 @@ export class KeyLockerCaptureDriver {
         if (isFailsafeEngaged(err)) {
           // Guarded disarm — never clear a NEWER arm that replaced ours during the probe await (same
           // principle as the stale-arm re-check above).
-          if (rec.armed === armed) rec.armed = null;
+          if (rec.armed === armed) {
+            rec.armed = null;
+            this.armEnded(paneId, armed, () => ({ end: "failsafe" }));
+          }
           return { status: "declined" };
         }
         // Non-FailsafeError probe failure: mock-only in production (`checkFailsafe` is fail-open —
@@ -454,7 +503,11 @@ export class KeyLockerCaptureDriver {
       // mismatch here avoids opening a capture dialog on an already-changed pane. This is NOT the load-bearing
       // guard, though — the confirm/capture awaits below can change the session AFTER this check, so the
       // AUTHORITATIVE re-check is at the INJECTION INSTANT (`runCaptureLoopFor`'s injectPane wrapper, Codex R4).
-      if (!this.liveSessionMatchesExpected(paneId, armed.expected)) { rec.armed = null; return { status: "declined" }; }
+      if (!this.liveSessionMatchesExpected(paneId, armed.expected)) {
+        rec.armed = null;
+        this.armEnded(paneId, armed, () => ({ end: "session_changed" }));
+        return { status: "declined" };
+      }
 
       // A credential prompt appeared → run the loop. Mark `pre-landed` (§0-CORR.3) FIRST so a command
       // delivered while the shell is blocked at this prompt — including the Mode-A `runToExit` landed re-run
@@ -462,7 +515,19 @@ export class KeyLockerCaptureDriver {
       // resets `none`.
       rec.loopPhase = "pre-landed";
       try {
-        const outcome = await this.runCaptureLoopFor(rec, paneId, armed);
+        let outcome: CaptureLoopOutcome;
+        // While the loop runs, its outcome is the arm's end: a dispatch or the tick's hygiene that clears the
+        // arm meanwhile is not reported (internal #283, gate 2 on #932).
+        armed.loopRunning = true;
+        try {
+          outcome = await this.runCaptureLoopFor(rec, paneId, armed);
+        } catch (err) {
+          this.armEnded(paneId, armed, () => ({ end: "loop_threw", ...errorFields(err) }));
+          throw err;
+        } finally {
+          armed.loopRunning = false;
+        }
+        this.armEnded(paneId, armed, () => ({ end: "loop_outcome", outcome }));
         return { status: "filled", outcome };
       } finally {
         rec.loopPhase = "none";
@@ -470,6 +535,10 @@ export class KeyLockerCaptureDriver {
         // `rec.armed` with a newer arm, which must survive to be polled next.
         if (rec.armed === armed) rec.armed = null;
       }
+    } catch (err) {
+      // internal #283: the wiring swallows the rejection; the poll of THIS arm says it threw, once.
+      this.pollThrew(paneId, armed, err);
+      throw err;
     } finally {
       rec.pollBusy = false;
     }
@@ -502,6 +571,7 @@ export class KeyLockerCaptureDriver {
     if (rec.pollBusy || rec.loopPhase !== "none") return { ok: false, reason: "busy" };
     rec.pollBusy = true;
     rec.loopPhase = "pre-landed";
+    if (rec.armed !== null) this.armEnded(paneId, rec.armed, () => ({ end: "taken_by_fill_once" }), true);
     rec.armed = null;
     return { ok: true, anchor: rec.anchor, token: rec };
   }
@@ -556,6 +626,8 @@ export class KeyLockerCaptureDriver {
    * the watch while a remote frame stays trusted. Idempotent.
    */
   onPaneClosed(paneId: string): void {
+    const closing = this.panes.get(paneId);
+    if (closing !== undefined) this.releaseArm(paneId, closing, "pane_closed");
     this.watch.unwatchPane(paneId);
     this.tracker.forget(paneId);
     this.panes.delete(paneId);
@@ -595,7 +667,51 @@ export class KeyLockerCaptureDriver {
     // `armedPaneIds`. Disarm any pane whose (freshly-reconciled) live session no longer matches its arm's
     // `expected`. No extra tick — the tracker is already reconciled by the `watch.tick()` above.
     for (const [paneId, rec] of this.panes) {
-      if (rec.armed !== null && !sessionMatches(this.tracker.get(paneId), rec.armed.expected)) rec.armed = null;
+      if (rec.armed !== null && !sessionMatches(this.tracker.get(paneId), rec.armed.expected)) {
+        const was = rec.armed;
+        rec.armed = null;
+        this.armEnded(paneId, was, () => ({ end: "session_changed" }), true);
+      }
+    }
+  }
+
+  /**
+   * Tell the wiring an arm ended (`onArmEnded`), once per arm. `external`: cleared by something other than
+   * the arm's own poll (a dispatch, the tick's hygiene, fill_once, the pane closing) — not reported while the
+   * arm's capture loop runs, whose outcome is the end. The event is built inside the guard, so building it can
+   * no more disturb the driver than a throwing listener can.
+   */
+  private armEnded(paneId: string, armed: ArmedDispatch, make: () => ArmEnd, external = false): void {
+    if (armed.ended === true || (external && armed.loopRunning === true)) return;
+    armed.ended = true;
+    try {
+      this.deps.onArmEnded?.(paneId, make());
+    } catch {
+      /* observability only */
+    }
+  }
+
+  /**
+   * A record that goes away (the pane closed, or a record replaced under its id) gives its arm up: reported,
+   * and cleared, so a poll still in flight on that record sees the arm gone (`superseded`) and stops — it
+   * neither fills a pane that is no longer this record nor reports a second end (gate 2 on #932). Not while
+   * the arm's capture loop runs: the loop owns it, and its outcome is the end.
+   */
+  private releaseArm(paneId: string, rec: PaneRecord, end: "pane_closed"): void {
+    const armed = rec.armed;
+    if (armed === null || armed.loopRunning === true) return;
+    this.armEnded(paneId, armed, () => ({ end }), true);
+    rec.armed = null;
+  }
+
+  /** A poll of `armed` threw before its loop: reported once per arm, never ending it (it re-polls). */
+  private pollThrew(paneId: string, armed: ArmedDispatch, err: unknown): void {
+    if (armed.errorLogged === true || armed.loopRunning === true || armed.ended === true) return;
+    armed.errorLogged = true;
+    try {
+      this.deps.onArmEnded?.(paneId, { end: "poll_threw", ...errorFields(err) });
+    } catch {
+      /* observability only */
     }
   }
 
