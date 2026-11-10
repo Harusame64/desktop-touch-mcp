@@ -2182,7 +2182,7 @@ function withinMs<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
  * check ends unread (`false`). Before #237 such a read counted as "changed" and passed at once. On a
  * blank document ("" before) an empty read is the page as it is, and counts. Not closed: a before-read
  * caught mid-scroll also reads "" and cannot be told from a blank document, so after it any non-empty
- * read counts as a change (gate 2 on #921).
+ * read counts as a change (gate 2 on #921); and see `joinHostTexts` for a multi-page shape.
  */
 async function hostTextUnchanged(d: ExecutorDeps, root: bigint, before: string): Promise<boolean> {
   let readOnce = false;
@@ -4262,10 +4262,12 @@ export function clickLookupControlType(entity: UiEntity): string | undefined {
 
 /**
  * The host's visible page text from the bodies a read found: their non-empty texts joined, `""` when
- * every body it found was empty, and `undefined` when none carried a text. internal #237 (gate 2 on
- * #921): a body caught mid-scroll reads `""` (win2 W1), and with two pages in view the join was
- * `"\nP2 text"`, which differs from the text before and passed the read-back check — so an empty body
- * is dropped here, where the bodies are read. Exported for tests.
+ * every body it found was empty, and `undefined` when no body was read at all. internal #237: a body
+ * caught mid-scroll reads `""` (win2 W1), so an empty body is left out here, where the bodies are read.
+ * That makes a read whose only body is empty `""`, which the read-back check reads again. It does not
+ * close every multi-page shape: with two pages that both had text before and one empty after, the
+ * join is the other page's text alone, which still differs from before and counts as a change (agy on
+ * #921). win2 saw one body in every read on 2026-11-10 (n=1 throughout W1–W3). Exported for tests.
  */
 export function joinHostTexts(texts: ReadonlyArray<string | undefined>): string | undefined {
   const read = texts.filter((t): t is string => typeof t === "string");

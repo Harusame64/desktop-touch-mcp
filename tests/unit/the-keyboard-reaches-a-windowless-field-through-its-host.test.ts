@@ -322,14 +322,16 @@ describe("a type into Word's body fails only when the page text did not change a
   });
 
   it("on a blank document an empty read is the page as it is: refused when it stays empty (internal #237)", async () => {
-    const { out } = await typeReadBack("abc", ["", ""]);
+    const { out, readHostText } = await typeReadBack("abc", ["", ""]);
     expect((out as Error).name).toBe("ValueNotAppliedError");
+    expect(readHostText).toHaveBeenCalledTimes(7);
   });
 
-  it("joins only the bodies that carried text, so one body caught mid-scroll is not a change (gate 2 on #921)", async () => {
+  it("leaves empty bodies out of the join: all empty is \"\", none read is undefined (internal #237)", async () => {
     const { joinHostTexts } = await import("../../src/tools/desktop-executor.js");
     expect(joinHostTexts(["P1 text", "P2 text"])).toBe("P1 text\nP2 text");
-    expect(joinHostTexts(["", "P2 text"])).toBe("P2 text");
+    // one body caught mid-scroll beside the one that was read alone before: the same text, not a change
+    expect(joinHostTexts(["", "P2 text"])).toBe(joinHostTexts(["P2 text"]));
     expect(joinHostTexts(["", ""])).toBe("");
     expect(joinHostTexts([undefined, undefined])).toBeUndefined();
     expect(joinHostTexts([])).toBeUndefined();
