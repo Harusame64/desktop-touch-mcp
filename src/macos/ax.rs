@@ -1101,7 +1101,7 @@ fn siblings_now(element: &AXUIElement, at: usize, timeout_secs: f32) -> Result<S
     let to = (at + SIBLINGS_EACH_SIDE + 1).min(kids.len());
     let mut parts = String::new();
     for k in &kids[from..to] {
-        let mut read = |name: &'static str| {
+        let read = |name: &'static str| {
             unsafe { k.set_messaging_timeout(timeout_secs.min(left())) };
             attr_string_strict(k, name).ok().flatten().filter(|s| !s.is_empty())
         };
