@@ -993,18 +993,56 @@ fn only_item_named(cell: &AXUIElement, name: &str, timeout_secs: f32) -> bool {
             return false;
         }
         let Some(cells) = children_read(&r, timeout_secs) else { return false };
-        count += cells
-            .iter()
-            .filter(|c| {
-                let actions = action_names(c);
-                attr_string(c, "AXRole").as_deref() == Some("AXCell")
-                    && actions.iter().any(|a| a == "AXOpen")
-                    && !actions.iter().any(|a| a == "AXPress")
-                    && item_name(c, timeout_secs).as_deref() == Some(name)
-            })
-            .count();
+        for c in &cells {
+            // A cell whose identity cannot be read may be the twin: refuse rather than skip it
+            // (codex on #927). An attribute the cell does not give is an answer, not a failure.
+            let Ok(role) = attr_string_strict(c, "AXRole") else { return false };
+            if role.as_deref() != Some("AXCell") {
+                continue;
+            }
+            let Ok(actions) = action_names_strict(c) else { return false };
+            if !actions.iter().any(|a| a == "AXOpen") || actions.iter().any(|a| a == "AXPress") {
+                continue;
+            }
+            match item_name_strict(c, timeout_secs) {
+                Err(()) => return false,
+                Ok(Some(n)) if n == name => count += 1,
+                Ok(_) => {}
+            }
+        }
     }
     count == 1
+}
+
+/// `action_names`, failing when the read failed rather than answering "none".
+fn action_names_strict(e: &AXUIElement) -> Result<Vec<String>, AXError> {
+    let mut out: *const CFArray = std::ptr::null();
+    let err = unsafe { e.copy_action_names(NonNull::from(&mut out)) };
+    match err {
+        AXError::Success => {}
+        AXError::NoValue | AXError::AttributeUnsupported | AXError::ActionUnsupported => return Ok(Vec::new()),
+        other => return Err(other),
+    }
+    let Some(p) = NonNull::new(out as *mut CFArray<CFString>) else { return Ok(Vec::new()) };
+    let arr: CFRetained<CFArray<CFString>> = unsafe { CFRetained::from_raw(p) };
+    Ok(arr.iter().map(|s| s.to_string()).collect())
+}
+
+/// `item_name`, failing when a read it rests on failed (the children, a child's role, the first
+/// static text's value) rather than answering "no name": for the twin count, where an unread cell
+/// must not pass for one that names nothing.
+fn item_name_strict(cell: &AXUIElement, timeout_secs: f32) -> Result<Option<String>, ()> {
+    let kids = children_read(cell, timeout_secs).ok_or(())?;
+    for c in kids {
+        if attr_string_strict(&c, "AXRole").map_err(|_| ())?.as_deref() != Some("AXStaticText") {
+            continue;
+        }
+        if attr_opt(&c, "AXValue").map_err(|_| ())?.is_none() {
+            return Ok(None);
+        }
+        return Ok(value_text_marked(&c).and_then(|(text, cut)| (!text.is_empty() && !cut).then_some(text)));
+    }
+    Ok(None)
 }
 
 /// How long the act may spend counting a name over its list before it refuses (`only_item_named`).
