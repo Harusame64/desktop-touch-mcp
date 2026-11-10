@@ -143,6 +143,37 @@ describe("diffMode — ADR-026 §3 per-frame by-ref", () => {
   });
 });
 
+// internal #248 (win2): a title two windows carry captured the first with no word that it was ambiguous.
+describe("mode='background' — says when a title matched several windows (internal #248)", () => {
+  const win = (h: number, title: string) => ({ windowHandle: h, title: Promise.resolve(title), region: Promise.resolve({ left: 0, top: 0, width: 300, height: 200 }) });
+  const textOf = (r: { content: { type: string; text?: string }[] }) => r.content.filter((c) => c.type === "text").map((c) => c.text ?? "").join("\n");
+
+  it("captures the first match, and names the others with a way to choose", async () => {
+    mockResolveWindowTarget.mockResolvedValue(null);
+    mockGetWindows.mockResolvedValue([win(67756, "XBOX Console"), win(67686, "XBOX Accessories"), win(500, "Notepad")]);
+    mockGetWindowTitleW.mockImplementation((h: bigint) => (h === 67756n ? "XBOX Console" : h === 67686n ? "XBOX Accessories" : "Notepad"));
+    mockGetWindowRectByHwnd.mockReturnValue({ x: 10, y: 20, width: 300, height: 200 });
+    mockCaptureWindowBackground.mockClear();
+    mockCaptureWindowBackground.mockResolvedValue({ base64: B64, mimeType: "image/png", width: 300, height: 200 });
+    const result = await screenshotBgHandler({ windowTitle: "XBOX", maxDimension: 768, dotByDot: false, grayscale: false, webpQuality: 60, fullContent: true } as never);
+    expect(mockCaptureWindowBackground.mock.calls[0][0]).toBe(67756n);
+    const text = textOf(result as never);
+    expect(text).toContain("TitleMatchesSeveralWindows");
+    expect(text).toContain("67686");
+    expect(text).toContain("Pass hwnd");
+  });
+
+  it("says nothing when the title matched one window", async () => {
+    mockResolveWindowTarget.mockResolvedValue(null);
+    mockGetWindows.mockResolvedValue([win(67756, "XBOX Console"), win(500, "Notepad")]);
+    mockGetWindowTitleW.mockImplementation((h: bigint) => (h === 67756n ? "XBOX Console" : "Notepad"));
+    mockGetWindowRectByHwnd.mockReturnValue({ x: 10, y: 20, width: 300, height: 200 });
+    mockCaptureWindowBackground.mockResolvedValue({ base64: B64, mimeType: "image/png", width: 300, height: 200 });
+    const result = await screenshotBgHandler({ windowTitle: "XBOX", maxDimension: 768, dotByDot: false, grayscale: false, webpQuality: 60, fullContent: true } as never);
+    expect(textOf(result as never)).not.toContain("TitleMatchesSeveralWindows");
+  });
+});
+
 // Internal #243 (win2, 2026-10-04): every background capture failed "screenshot failed: " since at
 // least 1.16.0. The handler matched the resolved window's title again over nut-js's list and handed
 // nut-js's handle — a number — to natives that take a BigInt, which threw with an empty message.

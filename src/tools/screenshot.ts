@@ -1106,11 +1106,21 @@ export const screenshotBgHandler = async ({
       foundTitle = resolvedWin.title;
       windowScreenRegion = getWindowRectByHwnd(hwnd);
     } else {
+      // internal #248 (win2): a title that two windows carry captured the first in nut-js's list, with no
+      // word that it was ambiguous. The first is still taken; the others are counted and named.
+      const others: string[] = [];
+      let matched = false;
       for (const win of await getWindows()) {
         const raw = (win as unknown as { windowHandle: unknown }).windowHandle;
         const h = typeof raw === "number" || typeof raw === "bigint" ? BigInt(raw) : null;
         const title = h ? getWindowTitleW(h) : await win.title;
-        if (title.toLowerCase().includes(effectiveTitle.toLowerCase())) {
+        if (!title.toLowerCase().includes(effectiveTitle.toLowerCase())) continue;
+        if (matched) {
+          others.push(h !== null ? String(h) : `"${title}"`);
+          continue;
+        }
+        matched = true;
+        {
           hwnd = h;
           foundTitle = title;
           // GetWindowRect, as the resolved path uses: nut-js's region is clamped to the primary
@@ -1122,8 +1132,12 @@ export const screenshotBgHandler = async ({
             const reg = await win.region;
             windowScreenRegion = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
           }
-          break;
         }
+      }
+      if (hwnd !== null && others.length > 0) {
+        bgWarnings.push(
+          `TitleMatchesSeveralWindows: "${effectiveTitle}" matched ${others.length + 1} windows; captured hwnd ${String(hwnd)} ("${foundTitle}"), not ${others.join(", ")}. Pass hwnd to capture another.`,
+        );
       }
     }
 
