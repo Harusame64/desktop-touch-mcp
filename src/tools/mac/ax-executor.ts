@@ -20,6 +20,7 @@
 import type { NativeMacActResult, NativeMacAxTarget } from "../../engine/native-types.js";
 import { TargetGoneError, ValueNotAppliedError } from "../../engine/aim.js";
 import type { ExecutorFn } from "../desktop.js";
+import type { ExecutorOutcome } from "../../engine/world-graph/types.js";
 
 export interface MacAxExecutorDeps {
   perform(target: NativeMacAxTarget, action: string): Promise<NativeMacActResult>;
@@ -89,6 +90,36 @@ export class MacAxActError extends Error {
   }
 }
 
+/**
+ * Refusals of an open that come before anything was asked of the app: the element was not found by
+ * its keys, it does not advertise AXOpen, or a sheet blocks it. Nothing was done.
+ */
+const OPEN_NOT_SENT = new Set(["element_not_found", "element_changed", "action_not_advertised", "modal_blocking"]);
+
+/**
+ * internal #259 — open a cell (a Finder sidebar entry or list row) with AXOpen, as a double-click
+ * does: a folder opens in the window, a file in its app.
+ *
+ * AXOpen does not answer for what it did. Finder opened the item and answered
+ * `attribute_unsupported` every time (2026-11-10, macOS 27.2: three sidebar entries and a folder row,
+ * 5 of 5), and an opened item can take its cell with it. So once the action was sent, a failure is
+ * not "nothing was done": the act answers success with the open unconfirmed (`landing`), and the
+ * caller reads the view (`diff`, or discover again) to see whether it opened.
+ */
+async function openCell(deps: MacAxExecutorDeps, target: NativeMacAxTarget): Promise<ExecutorOutcome> {
+  const r = await deps.perform(target, "AXOpen");
+  if (r.ok) return { kind: "ax" };
+  if (OPEN_NOT_SENT.has(r.reason ?? "")) refuse(r, "open");
+  return {
+    kind: "ax",
+    landing: {
+      confirmed: false,
+      why: `The app answered the open with ${r.reason ?? "an error"}; Finder answers so even when the item opened. Read the view (diff, or desktop_discover again) to see whether it opened.`,
+      referenceFrom: "ax_open",
+    },
+  };
+}
+
 export function createMacAxExecutor(deps: MacAxExecutorDeps): ExecutorFn {
   return async (entity, action, text) => {
     const ax = entity.locator?.ax;
@@ -133,6 +164,12 @@ export function createMacAxExecutor(deps: MacAxExecutorDeps): ExecutorFn {
         );
       }
       return "ax";
+    }
+
+    if (ax.role === "AXCell") {
+      // Only invoke opens a cell (the loop refuses the rest first; this holds if a caller did not).
+      if (action !== "invoke") throw new MacAxActError(`${action} on a cell: only invoke opens it`, "invoke_required");
+      return openCell(deps, target);
     }
 
     // click / invoke / auto: the native call presses only what the element advertises.

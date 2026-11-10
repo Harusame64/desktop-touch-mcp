@@ -73,6 +73,9 @@ export function roleOf(e: Pick<NativeMacAxElement, "role" | "subrole" | "namesFi
       return "menuitem";
     case "AXStaticText":
       return "label";
+    // internal #259: a cell that opens (Finder's sidebar entries and list rows, `openableCells`).
+    case "AXCell":
+      return "listitem";
     default:
       return "unknown";
   }
@@ -105,6 +108,9 @@ export function stateText(axRole: string, value: string): string {
 /** The verbs the element itself offers: press only when it advertises AXPress. */
 export function actionabilityOf(e: NativeMacAxElement): UiEntityCandidate["actionability"] {
   const verbs: UiEntityCandidate["actionability"] = [];
+  // A cell opens rather than presses (internal #259): `invoke` alone, as a Windows list item's
+  // Invoke opens it. Never `click` — that would read as a press, and the cell has none.
+  if (e.role === "AXCell") return e.actions.includes("AXOpen") ? ["invoke"] : [];
   if (e.actions.includes("AXPress")) verbs.push("click", "invoke");
   if (e.valueSettable && e.subrole !== SECURE && roleOf(e) === "textbox") verbs.push("type");
   if (roleOf(e) === "label") verbs.push("read");
@@ -154,6 +160,31 @@ export function isCandidate(e: NativeMacAxElement): boolean {
   const verbs = actionabilityOf(e);
   if (verbs.some((v) => v !== "read")) return true;
   return verbs.includes("read") && labelOf(e) !== undefined;
+}
+
+/**
+ * internal #259 — the cells that open, each named by the text it holds. Finder's sidebar entries and
+ * list rows are AXOutline > AXRow > AXCell; the row has no AXPress, and the cell advertises AXOpen,
+ * which navigates a sidebar entry or opens a row's folder or file (measured 2026-11-10, macOS 27.2:
+ * デスクトップ / ダウンロード / 書類 and a folder row, 5 of 5). The cell itself has no title, so it is
+ * named by its own child text: a sidebar entry's AXStaticText, a row's name field (AXFilename).
+ */
+export function openableCells(elements: readonly NativeMacAxElement[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const cells = elements.filter((e) => e.role === "AXCell" && e.actions.includes("AXOpen"));
+  for (const cell of cells) {
+    const child = elements.find(
+      (e) =>
+        e.depth === cell.depth + 1 &&
+        e.id.startsWith(`${cell.id}.`) &&
+        e.value !== undefined &&
+        e.value !== "" &&
+        !e.valueTruncated &&
+        (e.role === "AXStaticText" || (e.role === "AXTextField" && e.namesFile === true))
+    );
+    if (child?.value !== undefined) out.set(cell.id, child.value);
+  }
+  return out;
 }
 
 /** What an element is under its window: role, element key, and a text's shown value. */
@@ -432,11 +463,13 @@ async function readPidUnderTitle(
   const { barId, items } = menuBar ? menuBarItems(tree.elements) : { barId: undefined, items: new Map<string, string>() };
   // Without a title every root is read, the menu bar too: its items come once, by their paths.
   const inBar = (e: NativeMacAxElement) => barId !== undefined && (e.id === barId || e.id.startsWith(`${barId}.`));
+  const cellNames = openableCells(tree.elements);
   const candidates = tree.elements
     .filter((e) => !inBar(e))
     .filter(underTitle)
-    .filter(isCandidate)
-    .map((e) => toCandidate(e, pid, targetId, observedAtMs, unique.get(e.id) === true));
+    // A cell that opens is offered only when it can be named (a nameless one cannot be told apart).
+    .filter((e) => isCandidate(e) && (e.role !== "AXCell" || cellNames.has(e.id)))
+    .map((e) => toCandidate(e, pid, targetId, observedAtMs, unique.get(e.id) === true, cellNames.get(e.id)));
   // The menu bar is the app's, not the window's: offered beside the titled window's controls.
   const menu = tree.elements
     .filter((e) => items.has(e.id))
