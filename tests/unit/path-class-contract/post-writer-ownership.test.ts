@@ -83,7 +83,7 @@ describe("PR-P2-1: obj.post container + snapshot fields owned by withPostState",
     ]);
     // Values come from the wrapper's (mocked) snapshot, not from handler data.
     expect(post.focusedWindow).toBeNull();
-    expect(post.focusedWindowUnread).toBe("foreground_unreadable");
+    expect(post.focusedWindowUnread).toBe("foreground_not_listed");
     expect(post.focusedElement).toBeNull();
     expect(post.windowChanged).toBe(false);
     expect(typeof post.elapsedMs).toBe("number");

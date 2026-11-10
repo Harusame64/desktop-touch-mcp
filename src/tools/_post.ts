@@ -17,7 +17,8 @@
  * server's memory, and anything that later prints it publishes what was in it.
  */
 
-import { enumWindowsInZOrder, getWindowProcessId, getProcessIdentityByPid, isWindowGone } from "../engine/win32.js";
+import { enumWindowsInZOrder, getWindowProcessId, getProcessIdentityByPid, getForegroundHwnd } from "../engine/win32.js";
+import { DIALOG_CLASSNAMES } from "./_resolve-window.js";
 import { getFocusedAndPointInfo } from "../engine/uia-bridge.js";
 import type { ToolResult } from "./_types.js";
 import type { RichBlock } from "../engine/uia-diff.js";
@@ -97,10 +98,11 @@ export interface PostElementInfo {
 export interface PostState {
   focusedWindow: string | null;
   /**
-   * internal #284 — why `focusedWindow` is null: the foreground could not be read (no window was active, or
-   * the read failed — for instance while the window the act closed was going away). Absent when it names one.
+   * internal #284 — why `focusedWindow` is null. `foreground_not_listed`: the window in front is not one the
+   * window list holds (untitled — the desktop after Win+D, the taskbar — or tiny, or the key locker);
+   * `foreground_unreadable`: the read failed. Absent when it names a window.
    */
-  focusedWindowUnread?: "foreground_unreadable";
+  focusedWindowUnread?: "foreground_not_listed" | "foreground_unreadable";
   /** UIA-derived focused element info. Null when UIA is unavailable or timed out. */
   focusedElement: PostElementInfo | null;
   windowChanged: boolean;
@@ -145,59 +147,91 @@ interface FocusSnapshot {
   title: string | null; hwnd: string | null; processName: string;
   /** The identity `identity-tracker.ts` uses, kept so "same window" is answerable later. */
   processPid: number; processStartTimeMs: number;
-  /** A dialog's shape (`#32770`, or owned by another window): what an act that closes one leaves behind. */
-  dialogLike: boolean;
+  /**
+   * A modal dialog in front — a dialog-class window (`DIALOG_CLASSNAMES`, the MessageBox), or one whose owner
+   * it disabled: what an act can close and leave another window in front. Not an owned tool palette, whose
+   * owner stays enabled.
+   */
+  modalDialog: boolean;
+  /** Why there is no window (`title`/`hwnd` null): the one in front is not listed, or the read failed. */
+  unread?: "foreground_not_listed" | "foreground_unreadable";
 }
 
 function snapshotFocus(): FocusSnapshot {
-  const none: FocusSnapshot = { title: null, hwnd: null, processName: "", processPid: 0, processStartTimeMs: 0, dialogLike: false };
+  const none = (unread: FocusSnapshot["unread"]): FocusSnapshot =>
+    ({ title: null, hwnd: null, processName: "", processPid: 0, processStartTimeMs: 0, modalDialog: false, unread });
   try {
     const wins = enumWindowsInZOrder();
     const fg = wins.find((w) => w.isActive);
-    if (!fg) return none;
+    if (!fg) return none("foreground_not_listed");
     const pid = getWindowProcessId(fg.hwnd);
     const ident = getProcessIdentityByPid(pid);
+    const owner = fg.ownerHwnd != null ? wins.find((w) => w.hwnd === fg.ownerHwnd) : undefined;
     return {
       title: fg.title, hwnd: String(fg.hwnd), processName: ident.processName,
       processPid: ident.pid ?? 0, processStartTimeMs: ident.processStartTimeMs ?? 0,
-      dialogLike: fg.className === "#32770" || fg.ownerHwnd != null,
+      modalDialog: DIALOG_CLASSNAMES.has(fg.className ?? "") || owner?.isEnabled === false,
     };
   } catch {
-    return none;
+    return none("foreground_unreadable");
   }
 }
 
-/** How long the read after an act waits for a dialog in front to go away (`settleClosingDialog`). */
+/** How long the read after an act waits, at most, for the dialog it closed to give up the foreground. */
 export const DIALOG_SETTLE_MS = 120;
 const DIALOG_SETTLE_STEP_MS = 10;
 
 /**
- * internal #284 — the foreground the act left behind, when it was a dialog the act was closing. The read
- * right after the handler returned can come before the dialog is destroyed: measured on win2 (2026-11-10,
- * main bff4db3b), click_element on Notepad's 名前を付けて保存 → キャンセル answered `post.focusedWindow:
- * "名前を付けて保存"` 9 times in 10, and on a MessageBox's OK 20 in 20, while by the time the reply reached
- * the caller the dialog was gone and another window had the foreground. So when the foreground is
- * dialog-shaped, the read waits up to `DIALOG_SETTLE_MS` for it to go away and reads again; a dialog that
- * stays (the act did not close it) costs that wait and is answered as read. Other windows are not waited for.
+ * internal #284 — the window in front after an act that closed a dialog. The read right after the handler
+ * returned could come before the dialog let go: measured on win2 (2026-11-10, main bff4db3b), click_element on
+ * Notepad's 名前を付けて保存 → キャンセル answered `post.focusedWindow: "名前を付けて保存"` 9 times in 10, and a
+ * MessageBox's OK "確認" 20 in 20, while by the time the reply reached the caller another window was in front.
+ *
+ * Waited for only when the act could have closed it: the act succeeded, the same modal dialog was in front
+ * before it and after it. Then the read waits, by the clock, for the foreground to be another window
+ * (`GetForegroundWindow` — the dialog may be hidden rather than destroyed, and a moment of no foreground in
+ * between is not the answer) and reads once more. A dialog that stays is answered as read, after the wait.
+ * A dialog the act opened, a palette, an ordinary window, a failed act: no wait (gate 2 on #933).
  */
-async function settleClosingDialog(after: FocusSnapshot, sleep: (ms: number) => Promise<void>): Promise<FocusSnapshot> {
-  if (!after.dialogLike || after.hwnd === null) return after;
-  let hwnd: bigint;
-  try { hwnd = BigInt(after.hwnd); } catch { return after; }
-  for (let waited = 0; waited < DIALOG_SETTLE_MS; waited += DIALOG_SETTLE_STEP_MS) {
-    if (isWindowGone(hwnd)) return snapshotFocus();
+async function settleClosingDialog(
+  before: FocusSnapshot,
+  after: FocusSnapshot,
+  actSucceeded: boolean,
+  sleep: (ms: number) => Promise<void>,
+  now: () => number,
+): Promise<FocusSnapshot> {
+  if (!actSucceeded || !after.modalDialog || after.hwnd === null || after.hwnd !== before.hwnd) return after;
+  let dialog: bigint;
+  try { dialog = BigInt(after.hwnd); } catch { return after; }
+  const deadline = now() + DIALOG_SETTLE_MS;
+  for (;;) {
+    let fg: bigint | null = null;
+    try { fg = getForegroundHwnd(); } catch { /* no answer: keep waiting */ }
+    if (fg !== null && fg !== dialog) return snapshotFocus();
+    if (now() >= deadline) return after;
     await sleep(DIALOG_SETTLE_STEP_MS);
   }
-  return isWindowGone(hwnd) ? snapshotFocus() : after;
 }
 
-/** The test seam for the settle's wait; production sleeps. */
+/** Whether the handler's reply is a success (`ok` not false): only then can the act have closed something. */
+function replySucceeded(result: ToolResult): boolean {
+  const block = result.content[0];
+  if (!block || block.type !== "text") return true;
+  try {
+    const parsed = JSON.parse(block.text) as { ok?: unknown } | null;
+    return !(parsed && typeof parsed === "object" && parsed.ok === false);
+  } catch {
+    return true;
+  }
+}
+
+/** The test seams for the settle's wait and clock; production sleeps and reads the clock. */
 let settleSleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms));
-/** Tests only: replace the settle's sleep (returns the previous one). */
-export function __setSettleSleepForTest(fn: (ms: number) => Promise<void>): (ms: number) => Promise<void> {
-  const prev = settleSleep;
-  settleSleep = fn;
-  return prev;
+let settleNow: () => number = () => Date.now();
+/** Tests only: replace the settle's sleep and clock. */
+export function __setSettleClockForTest(sleep: (ms: number) => Promise<void>, now: () => number): void {
+  settleSleep = sleep;
+  settleNow = now;
 }
 
 /**
@@ -595,7 +629,7 @@ export function withPostState<T extends Record<string, unknown>>(
     const before = snapshotFocus();
     const result = await handler(args);
     try {
-      const after = await settleClosingDialog(snapshotFocus(), settleSleep);
+      const after = await settleClosingDialog(before, snapshotFocus(), replySucceeded(result), settleSleep, settleNow);
       const verdict = valueBelongsToTheWindowActedOn(args as Record<string, unknown>, after, windowArgKeys);
       const focusedElement = await snapshotFocusedElement(verdict.carry);
       /**
@@ -731,7 +765,7 @@ export function withPostState<T extends Record<string, unknown>>(
       const windowChanged = !!after.hwnd && !!before.hwnd && after.hwnd !== before.hwnd;
       const post: PostState = {
         focusedWindow: after.title,
-        ...(after.hwnd === null && { focusedWindowUnread: "foreground_unreadable" as const }),
+        ...(after.unread !== undefined && { focusedWindowUnread: after.unread }),
         focusedElement,
         windowChanged,
         elapsedMs: Date.now() - startedAt,
@@ -755,7 +789,7 @@ export function withPostState<T extends Record<string, unknown>>(
             if (obj._perceptionForPost !== null && typeof obj._perceptionForPost === "object") {
               const failurePost: PostState = {
                 focusedWindow: after.title,
-                ...(after.hwnd === null && { focusedWindowUnread: "foreground_unreadable" as const }),
+                ...(after.unread !== undefined && { focusedWindowUnread: after.unread }),
                 focusedElement: null,
                 windowChanged: !!after.hwnd && !!before.hwnd && after.hwnd !== before.hwnd,
                 elapsedMs: Date.now() - startedAt,
