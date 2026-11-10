@@ -50,14 +50,11 @@ describe("SessionRegistry — one session per window, however the handle is spel
       .toBe(r.getOrCreate(r.resolveKey({ hwnd: "500" }), makeOpts()));
   });
 
-  it("keys every spelling BigInt reads, and the sign-extended spelling, as the one window (gate 2 on #917)", () => {
+  it("keys every spelling BigInt reads as the one window (gate 2 on #917)", () => {
     const r = new SessionRegistry();
     for (const hwnd of ["0x1f4", "0X1F4", " 500 ", "0o764", "0b111110100"]) {
       expect(r.resolveKey({ hwnd })).toBe("window:500");
     }
-    // user32 reads the low 32 bits: a handle with bit 31 set, and its sign extension, are one window.
-    expect(r.resolveKey({ hwnd: "0xFFFFFFFF80001234" })).toBe(r.resolveKey({ hwnd: "0x80001234" }));
-    expect(r.resolveKey({ hwnd: "0x80001234" })).toBe("window:2147488308");
     expect(r.resolveKey({ hwnd: "0x1F4", windowTitle: "App" })).toBe("window:500");
   });
 

@@ -74,9 +74,12 @@ export class OcrVisualAdapter {
       stableConsecutive: opts.stableConsecutive ?? 2,
     });
     // CandidateProducer.create wires onEvict → producer.evict automatically.
-    const producerTarget = target.tabId
-      ? { kind: "browserTab" as const, id: target.tabId }
-      : { kind: "window" as const, id: target.hwnd ?? target.windowTitle ?? "@active" };
+    // The candidates name the same target the adapter is keyed by (internal #215, agy on #917): a
+    // hex hwnd and a decimal one are one window, and an unusable hwnd beside a title is the title.
+    const key = this.targetKey;
+    const producerTarget = key.startsWith("tab:")
+      ? { kind: "browserTab" as const, id: key.slice(4) }
+      : { kind: "window" as const, id: key === "window:__default__" ? "@active" : key.replace(/^(?:window|title):/, "") };
     const { store, producer } = CandidateProducer.create(
       {}, // TrackStoreOptions — onEvict auto-wired by factory
       fusion,

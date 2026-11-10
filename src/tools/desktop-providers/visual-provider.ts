@@ -25,10 +25,6 @@ import { probeLane } from "../../engine/aim-probe.js";
 // vi.resetModules() + dynamic import() to re-evaluate.
 const VISUAL_GPU_DISABLED = process.env["DESKTOP_TOUCH_DISABLE_VISUAL_GPU"] === "1";
 
-/** The session's key for the target (internal #215: one rule, `targetSessionKey`). */
-function targetKeyFromSpec(target: TargetSpec | undefined): string {
-  return targetSessionKey(target);
-}
 
 export async function fetchVisualCandidates(
   target: TargetSpec | undefined,
@@ -53,7 +49,7 @@ export async function fetchVisualCandidates(
     return probeLane("visual_gpu", "skipped", { attempt, why: "no_backend" }, { candidates: [], warnings: ["visual_provider_unavailable"] });
   }
 
-  const targetKey  = targetKeyFromSpec(target);
+  const targetKey  = targetSessionKey(target);
   const warmTarget = targetKeyToWarmTarget(targetKey);
 
   // What this lane asks for; the warm state joins it once there is one.

@@ -253,3 +253,26 @@ describe("targetKeyFromSpec", () => {
     expect(targetKeyFromSpec({})).toBe("window:__default__");
   });
 });
+
+// ── internal #215 (agy on #917): the candidates name the target the adapter is keyed by ──────────
+describe("internal #215: candidates name the keyed target, not the hwnd as spelled", () => {
+  const poll = async (target: { hwnd?: string; windowTitle?: string; tabId?: string }) => {
+    const adapter = new OcrVisualAdapter(target, { minPollIntervalMs: 0 });
+    // Two polls: the fusion publishes a track once it is stable.
+    await adapter.pollOnce(target, [], makeSomResult(1).elements);
+    return adapter.pollOnce(target, [], makeSomResult(1).elements);
+  };
+
+  it("a hex hwnd: keyed and named as the decimal window", async () => {
+    expect(targetKeyFromSpec({ hwnd: "0x1F4" })).toBe("window:500");
+    const cands = await poll({ hwnd: "0x1F4" });
+    expect(cands.length).toBeGreaterThan(0);
+    expect(cands.every((c) => c.target.kind === "window" && c.target.id === "500")).toBe(true);
+  });
+
+  it("an unusable hwnd beside a title: named as the title, as the key is", async () => {
+    expect(targetKeyFromSpec({ hwnd: "-1", windowTitle: "X" })).toBe("title:X");
+    const cands = await poll({ hwnd: "-1", windowTitle: "X" });
+    expect(cands.every((c) => c.target.kind === "window" && c.target.id === "X")).toBe(true);
+  });
+});

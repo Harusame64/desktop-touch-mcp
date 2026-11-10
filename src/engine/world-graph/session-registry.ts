@@ -57,13 +57,15 @@ export function parseTargetHwnd(target: TargetSpec | undefined): bigint | undefi
  * the handle's spelling, gate 2 on #917).
  *
  * Priority: hwnd > tabId > windowTitle > default. The hwnd counts only when `parseTargetHwnd` takes
- * it (internal #310), and it is keyed as the window it names, not as spelled: decimal, low 32 bits,
- * since user32 reads only those (internal #314), so `"500"`, `"0x1F4"` and the sign-extended spelling
- * of a handle with bit 31 set are one key. An unusable hwnd with nothing else keeps its spelling.
+ * it (internal #310), and it is keyed by its parsed value in decimal, not as spelled, so `"500"` and
+ * `"0x1F4"` are one key. The value is `parseTargetHwnd`'s as it is (not cut to 32 bits): the title
+ * lookup and the title-mismatch check compare against that value (agy on #917), and a sign-extended
+ * handle with bit 31 set was not seen on a real machine (internal #314: 0 of 636). An unusable hwnd
+ * with nothing else keeps its spelling.
  */
 export function targetSessionKey(target?: TargetSpec): TargetSessionKey {
   const handle = parseTargetHwnd(target);
-  if (handle !== undefined) return `window:${(handle & 0xffff_ffffn).toString()}`;
+  if (handle !== undefined) return `window:${handle.toString()}`;
   if (target?.tabId)       return `tab:${target.tabId}`;
   if (target?.windowTitle) return `title:${target.windowTitle}`;
   if (target?.hwnd)        return `window:${target.hwnd}`;
