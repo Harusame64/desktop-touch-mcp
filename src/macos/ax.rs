@@ -970,21 +970,17 @@ pub(crate) fn perform(t: &MacAxTarget, action: &str) -> MacActResult {
     if err != AXError::Success {
         return MacActResult { performed: Some(true), ..refused(&ax_error_name(err)) };
     }
-    MacActResult { ok: true, performed: Some(true), value_after: value_text(&e), ..Default::default() }
+    // An open may take the element with it, and the app is busy opening: no read-back (gate 2 on #927).
+    let value_after = if action == "AXOpen" { None } else { value_text(&e) };
+    MacActResult { ok: true, performed: Some(true), value_after, ..Default::default() }
 }
 
-/// internal #259 — a list item's name: its first child that is a static text, or a text field that
-/// stands for a file (`AXFilename`), with a value neither empty nor cut. The same rule as
-/// `nameOpenableCells` (src/tools/mac/ax-provider.ts): change both together.
+/// internal #259 — a list item's name: its first child static text with a value neither empty nor
+/// cut (a Finder sidebar entry's). The same rule as `nameOpenableCells`
+/// (src/tools/mac/ax-provider.ts): change both together.
 fn item_name(cell: &AXUIElement, timeout_secs: f32) -> Option<String> {
     for c in children(cell, timeout_secs) {
-        let role = attr_string(&c, "AXRole");
-        let named = match role.as_deref() {
-            Some("AXStaticText") => true,
-            Some("AXTextField") => names_a_file(&c).unwrap_or(false),
-            _ => false,
-        };
-        if !named {
+        if attr_string(&c, "AXRole").as_deref() != Some("AXStaticText") {
             continue;
         }
         if let Some((text, cut)) = value_text_marked(&c)

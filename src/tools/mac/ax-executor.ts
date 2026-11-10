@@ -96,8 +96,8 @@ export class MacAxActError extends Error {
 }
 
 /**
- * internal #259 — open a list item (a Finder sidebar entry or list row) with AXOpen, as a double-click
- * does: a folder opens in the window, a file in its app.
+ * internal #259 — open a list item (a Finder sidebar entry) with AXOpen, as a click on it does: the
+ * window moves to that place.
  *
  * The name read for the item travels with the act (`expectedItemName`): the native act compares it
  * on the element it found, in the same call and just before AXOpen, and refuses when the row holds
@@ -112,7 +112,8 @@ export class MacAxActError extends Error {
  * anything else — refused, saying the item may have opened (an app slow to answer, `cannot_complete`,
  * may still open it: a caller told "nothing was done" would open it twice).
  */
-const OPEN_UNCONFIRMED = new Set(["attribute_unsupported"]);
+/** Finder's answer to an AXOpen it carried out (measured; the only list items offered are Finder's). */
+const FINDER_OPEN_ANSWER = "attribute_unsupported";
 
 export class OpenMayHaveHappenedError extends Error {
   readonly callerDetail: string;
@@ -129,9 +130,9 @@ async function openItem(deps: MacAxExecutorDeps, target: NativeMacAxTarget): Pro
   if (r.ok) return;
   const reason = r.reason ?? "unknown";
   if (r.performed !== true) refuse(r, "open");
-  if (OPEN_UNCONFIRMED.has(reason)) {
+  if (reason === FINDER_OPEN_ANSWER) {
     deps.noteOpenUnconfirmed?.(
-      `The app answered the open with ${reason}, which it may do even when the item opened. desktop_discover again to see whether it opened.`
+      `Finder answered the open with ${reason}, as it does when it opened the item. desktop_discover again (without a target, or by the new window title) to see where the window is.`
     );
     return;
   }

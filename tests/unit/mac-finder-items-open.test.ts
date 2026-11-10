@@ -1,8 +1,9 @@
 /**
- * internal #259 — Finder's sidebar entries and list rows are AXOutline > AXRow > AXCell; the cell
- * advertises AXOpen, and Finder opens the item yet answers `attribute_unsupported` (measured
- * 2026-11-10, macOS 27.2, 5 of 5). A cell that opens is offered as a `listitem` named by its text,
- * with `invoke` only; the act sends AXOpen and, once sent, never answers "nothing was done".
+ * internal #259 — Finder's sidebar entries are AXOutline > AXRow > AXCell; the cell advertises AXOpen,
+ * and Finder opens the place yet answers `attribute_unsupported` (measured 2026-11-10, macOS 27.2,
+ * 5 of 5). A sidebar entry is offered as a `listitem` named by its text, with `invoke` only; the act
+ * sends AXOpen with the name to check, and once sent never answers "nothing was done". List rows
+ * (a file-name field; two can show one name) are not offered (gate 2 on #927).
  */
 import { describe, it, expect, vi } from "vitest";
 import { readMacAxCandidates, type MacAxProviderDeps, type MacAxReadNotes } from "../../src/tools/mac/ax-provider.js";
@@ -41,22 +42,48 @@ const tree = async () => ({ pid: 7, appTitle: "Finder", truncated: false, selfRe
 const deps = () => ({ listWindows: vi.fn(() => [{ windowId: 1, pid: 7, layer: 0, onScreen: true, title: "ダウンロード" }]), getFocus: vi.fn(async () => ({ pid: 7 })), axTree: vi.fn(tree), now: () => 1 });
 
 describe("Finder cells that open are offered (internal #259)", () => {
-  it("offers a sidebar entry and a list row as listitems named by their text, with invoke only", async () => {
+  it("offers a sidebar entry as a listitem named by its text, with invoke only; a list row stays as it was", async () => {
     const notes: MacAxReadNotes = { warnings: [] };
     const cs = await readMacAxCandidates(deps() as unknown as MacAxProviderDeps, { windowTitle: "ダウンロード" }, notes);
     const items = cs.filter((c) => c.role === "listitem").map((c) => [c.label, c.actionability]);
-    expect(items).toEqual([["デスクトップ", ["invoke"]], ["pictkura-ci", ["invoke"]]]);
-    // The text an item is named by is not offered again beside it (gate 2 on #927); a heading's is.
-    expect(cs.filter((c) => c.label === "デスクトップ" || c.label === "pictkura-ci").map((c) => c.role)).toEqual(["listitem", "listitem"]);
+    expect(items).toEqual([["デスクトップ", ["invoke"]]]);
+    // The text an entry is named by is not offered again beside it (gate 2 on #927); a heading's is.
+    expect(cs.filter((c) => c.label === "デスクトップ").map((c) => c.role)).toEqual(["listitem"]);
     expect(cs.some((c) => c.label === "よく使う項目" && c.role === "label")).toBe(true);
+    // A row's file name is still the label it was (#256), not something to open.
+    expect(cs.filter((c) => c.label === "pictkura-ci").map((c) => [c.role, c.actionability])).toEqual([["label", ["read"]]]);
   });
-  it("makes a row that holds another item another entity (its name is part of its identity; gate 2 on #927)", async () => {
+  it("offers nothing to open in another app: Finder's answer to AXOpen was measured, no other's (gate 2 on #927)", async () => {
+    const d = { ...deps(), axTree: vi.fn(async () => ({ ...(await tree()), appTitle: "Mail" })) };
+    const cs = await readMacAxCandidates(d as unknown as MacAxProviderDeps, { windowTitle: "ダウンロード" }, { warnings: [] });
+    expect(cs.some((c) => c.role === "listitem")).toBe(false);
+  });
+  it("offers neither of two entries that show one name (two volumes named Untitled)", async () => {
+    current = [
+      ...elements,
+      el("a.0.0.9", "AXRow", { subrole: "AXOutlineRow" }),
+      el("a.0.0.9.0", "AXCell", { actions: ["AXOpen"] }),
+      el("a.0.0.9.0.0", "AXStaticText", { value: "デスクトップ" }),
+    ];
+    try {
+      const cs = await readMacAxCandidates(deps() as unknown as MacAxProviderDeps, { windowTitle: "ダウンロード" }, { warnings: [] });
+      expect(cs.some((c) => c.role === "listitem")).toBe(false);
+    } finally {
+      current = elements;
+    }
+  });
+  it("does not take a named entry for unique when a nameless twin is in the window (gate 2 on #927)", async () => {
+    const cs = await readMacAxCandidates(deps() as unknown as MacAxProviderDeps, { windowTitle: "ダウンロード" }, { warnings: [] });
+    // a.0.0.3.0 opens but holds no text: it is the named entry's twin but for the name.
+    expect(cs.find((c) => c.role === "listitem")!.locator?.ax?.unique).toBe(false);
+  });
+  it("makes a row that holds another entry another entity (its name is part of its identity; gate 2 on #927)", async () => {
     const digestOf = async () => {
       const cs = await readMacAxCandidates(deps() as unknown as MacAxProviderDeps, { windowTitle: "ダウンロード" }, { warnings: [] });
-      return cs.find((c) => c.role === "listitem" && c.locator?.ax?.id === "a.0.1.0.0")!.digest;
+      return cs.find((c) => c.role === "listitem" && c.locator?.ax?.id === "a.0.0.1.0")!.digest;
     };
     const before = await digestOf();
-    current = elements.map((e) => (e.id === "a.0.1.0.0.1" ? { ...e, value: "installer.dmg" } : e));
+    current = elements.map((e) => (e.id === "a.0.0.1.0.0" ? { ...e, value: "書類" } : e));
     try {
       expect(await digestOf()).not.toBe(before);
     } finally {
@@ -162,16 +189,18 @@ describe("desktop_act on a Finder item (internal #259)", () => {
     expect((m.macAxPerform.mock.calls[0] as unknown[])[1]).toBe("AXOpen");
     expect(r.ok).toBe(true);
     expect(r.open?.confirmed).toBe(false);
+    // Discover again whatever the diff says: the window is retitled (gate 2 on #927).
+    expect(r.next).toBe("refresh_view");
     expect(r.landing).toBeUndefined();
   });
-  it("hands the row's name to the native act, which refuses when the row now holds another item (gate 2 on #927)", async () => {
+  it("hands the entry's name to the native act, which refuses when the row now holds another entry (gate 2 on #927)", async () => {
     // The native act compares the name on the element it found; here it answers as it does then.
     const m = mac({ ok: false, reason: "element_changed" });
     const { state, facade } = await discover(m);
     const d = parse(await macDiscoverHandler(m as never, facade, state, { target: { windowTitle: "ダウンロード" }, view: "explore" }));
-    const row = d.entities.find((e: { label?: string }) => e.label === "pictkura-ci");
-    const r = parse(await macActHandler(m as never, facade, state, { lease: row.lease, action: "invoke" }));
-    expect((m.macAxPerform.mock.calls[0] as unknown[])[0]).toMatchObject({ expectedItemName: "pictkura-ci" });
+    const entry = d.entities.find((e: { label?: string; role?: string }) => e.label === "デスクトップ" && e.role === "listitem");
+    const r = parse(await macActHandler(m as never, facade, state, { lease: entry.lease, action: "invoke" }));
+    expect((m.macAxPerform.mock.calls[0] as unknown[])[0]).toMatchObject({ expectedItemName: "デスクトップ" });
     expect(r.ok).not.toBe(true);
     expect(r.open).toBeUndefined();
   });
@@ -193,11 +222,5 @@ describe("desktop_act on a Finder item (internal #259)", () => {
       expect(m.macAxPerform).not.toHaveBeenCalled();
       expect(r).toMatchObject({ ok: false, reason: "action_not_offered" });
     }
-  });
-  it("the executor refuses anything but invoke on a cell, should the loop let one through", async () => {
-    const perform = vi.fn(async () => ({ ok: true }));
-    const entity = { role: "listitem", locator: { ax: { pid: 7, id: "a.0.0.1.0", role: "AXCell", rootKey: WIN, elementKey: "k", unique: false } } } as never;
-    await expect(createMacAxExecutor({ perform, setValue: vi.fn() } as never)(entity, "click")).rejects.toBeInstanceOf(MacAxActError);
-    expect(perform).not.toHaveBeenCalled();
   });
 });

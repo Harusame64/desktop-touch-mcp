@@ -45,8 +45,8 @@ export interface MacAxReadNotes {
 /**
  * The roles the resolver understands (`button`, `textbox`, `link`, `menuitem`, `listitem`, `label`).
  *
- * A `listitem` is a cell that opens and does not press (`opensAsItem`; internal #259): Finder's
- * sidebar entries and list rows. Any other cell reads as before.
+ * A `listitem` is a Finder sidebar entry marked by `nameOpenableCells` (`opensAsItem`; internal
+ * #259). Any other cell reads as before.
  *
  * A text field that stands for a file (a Finder name cell: it carries `AXFilename`) is a label.
  * Its value is settable, but a write changes only what the window shows — the file keeps its
@@ -85,12 +85,12 @@ export function roleOf(e: Pick<NativeMacAxElement, "role" | "subrole" | "namesFi
 const SECURE = "AXSecureTextField";
 
 /**
- * internal #259 — a cell that opens and does not press: Finder's sidebar entries and list rows
- * advertise AXOpen alone. A cell that advertises AXPress keeps its press (a web table cell; gate 2
- * on #927): it is not a list item, and an act on it presses as before.
+ * internal #259 — an element `nameOpenableCells` marked as a list item that opens: a Finder sidebar
+ * entry. Only marked ones: any other cell reads as it did before (gate 2 on #927).
  */
-export function opensAsItem(e: Pick<NativeMacAxElement, "role" | "actions">): boolean {
-  return e.role === "AXCell" && e.actions.includes("AXOpen") && !e.actions.includes("AXPress");
+export type MacReadElement = NativeMacAxElement & { opensItem?: true };
+export function opensAsItem(e: Pick<MacReadElement, "role"> & { opensItem?: true }): boolean {
+  return e.opensItem === true;
 }
 
 /**
@@ -174,32 +174,57 @@ export function isCandidate(e: NativeMacAxElement): boolean {
 }
 
 /**
- * internal #259 — the cells that open, each named by the text it holds. Finder's sidebar entries and
- * list rows are AXOutline > AXRow > AXCell; the row has no AXPress, and the cell advertises AXOpen,
- * which navigates a sidebar entry or opens a row's folder or file (measured 2026-11-10, macOS 27.2:
- * デスクトップ / ダウンロード / 書類 and a folder row, 5 of 5). The cell itself has no title, so it
- * takes its own child text — a sidebar entry's AXStaticText, a row's name field (AXFilename) — as its
- * value: its name, and part of its identity (`kindOf`), so a lease for one row cannot open the item
- * that took that row's place (gate 2 on #927). The child text itself is not offered again when its
- * item is (`namedBy`: child id -> cell id): the item stands for it. One pass, by parent id. The same
- * rule as `item_name` (src/macos/ax.rs), which checks the name at the act: change both together.
+ * internal #259 — Finder's sidebar entries, as list items that open. A sidebar entry is an
+ * AXOutline > AXRow > AXCell; the row has no AXPress, and the cell advertises AXOpen (alone), which
+ * moves the window to that place (measured 2026-11-10, macOS 27.2: デスクトップ / ダウンロード / 書類,
+ * 5 of 5 with a folder row). The cell has no title, so it is named by its first child static text —
+ * the rule `item_name` (src/macos/ax.rs) checks at the act: change both together — and the name
+ * is part of its identity (`kindOf`).
+ *
+ * Only these (gate 2 on #927, three rounds, narrowed rather than patched):
+ *   - **Finder only.** Its answer to AXOpen (`attribute_unsupported` though it opened) was measured
+ *     there; another app's cell is not offered.
+ *   - **A static text name only**, which is what a sidebar entry holds. A list row is named by a
+ *     file-name field and opens a file in its app; two rows can show the same name (README.md in two
+ *     folders), so a shown name does not tell them apart. Rows are left for a read that carries the
+ *     item's URL.
+ *   - **A name no other entry in the window shows.** Two volumes named "Untitled" are not offered:
+ *     the name could not tell them apart at the act.
+ * The text an entry is named by is not offered beside it (`namedBy`: child id -> cell id). One pass.
  */
-export function nameOpenableCells(elements: readonly NativeMacAxElement[]): { elements: NativeMacAxElement[]; namedBy: Map<string, string> } {
+export function nameOpenableCells(
+  elements: readonly NativeMacAxElement[],
+  appTitle: string | undefined
+): { elements: MacReadElement[]; namedBy: Map<string, string> } {
+  if (appTitle !== "Finder") return { elements: [...elements], namedBy: new Map() };
   const parentOf = (id: string) => id.slice(0, id.lastIndexOf("."));
-  const cells = new Set(elements.filter(opensAsItem).map((e) => e.id));
+  const cells = new Map(
+    elements
+      .filter((e) => e.role === "AXCell" && e.actions.includes("AXOpen") && !e.actions.includes("AXPress"))
+      .map((e) => [e.id, e])
+  );
   const names = new Map<string, { value: string; child: string }>();
   for (const e of elements) {
     const parent = parentOf(e.id);
     if (!cells.has(parent) || names.has(parent)) continue;
-    if (e.value === undefined || e.value === "" || e.valueTruncated) continue;
-    if (e.role === "AXStaticText" || (e.role === "AXTextField" && e.namesFile === true)) names.set(parent, { value: e.value, child: e.id });
+    if (e.role !== "AXStaticText" || e.value === undefined || e.value === "" || e.valueTruncated) continue;
+    names.set(parent, { value: e.value, child: e.id });
+  }
+  // Within a window, a name shown by two entries names neither.
+  const seen = new Map<string, number>();
+  for (const [cell, n] of names) {
+    const k = `${cells.get(cell)!.rootKey}\u001f${n.value}`;
+    seen.set(k, (seen.get(k) ?? 0) + 1);
+  }
+  for (const [cell, n] of [...names]) {
+    if ((seen.get(`${cells.get(cell)!.rootKey}\u001f${n.value}`) ?? 0) > 1) names.delete(cell);
   }
   const namedBy = new Map([...names.entries()].map(([cell, n]) => [n.child, cell]));
   return {
-    // A cell that holds no text is not offered: a nameless one cannot be told from its neighbours.
-    elements: elements
-      .filter((e) => !cells.has(e.id) || names.has(e.id))
-      .map((e) => (names.has(e.id) ? { ...e, value: names.get(e.id)!.value } : e)),
+    elements: elements.map((e) => {
+      const n = names.get(e.id);
+      return n === undefined ? e : { ...e, value: n.value, opensItem: true as const };
+    }),
     namedBy,
   };
 }
@@ -463,7 +488,7 @@ async function readPidUnderTitle(
   const observedAtMs = deps.now();
   const targetId = title ?? tree.appTitle ?? String(pid);
   // Cells that open carry their name from here on (internal #259): offered, digested and compared by it.
-  const named = nameOpenableCells(tree.elements);
+  const named = nameOpenableCells(tree.elements, tree.appTitle);
   const unique = uniquenessOf(named.elements, tree.truncated || tree.readIncomplete === true);
   const titled = needle !== undefined && needle !== "";
   const windowsTitled = titled && tree.elements.some((e) => rootTitle(e.rootKey).toLowerCase().includes(needle));

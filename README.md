@@ -185,7 +185,7 @@ For a local checkout, register the built server directly:
 
 > **Limited preview.** The macOS build has only 4 of the tools — a small subset of the Windows build — and its behaviour may change between releases.
 
-On an Apple Silicon Mac (macOS 14 or later) the same `npx` command starts a macOS server with four tools: `desktop_state`, `desktop_discover`, `desktop_act` (press, open a Finder item, replace or append text) and `screenshot` (one window). The other tools are Windows-only and are not listed on macOS.
+On an Apple Silicon Mac (macOS 14 or later) the same `npx` command starts a macOS server with four tools: `desktop_state`, `desktop_discover`, `desktop_act` (press, open a Finder sidebar entry, replace or append text) and `screenshot` (one window). The other tools are Windows-only and are not listed on macOS.
 
 - Grant **Accessibility** — and **Screen Recording** for window titles and screenshots — to the app that runs the server (Terminal, iTerm, VS Code, the Claude app, …) in System Settings › Privacy & Security. On recent macOS the Accessibility pane can have another name; these commands open the two panes directly:
   ```bash
