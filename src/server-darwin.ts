@@ -67,7 +67,7 @@ if (!nativeMac) {
         "It needs Accessibility permission (and Screen Recording for window titles and screenshots) for the app that runs this server.",
         "1. desktop_state — orient: frontmost app, focused window/element, attention",
         "2. desktop_discover — find actionable entities (returns a lease each)",
-        "3. desktop_act(lease, action) — press, or replace a text field's value; the foreground is not taken",
+        "3. desktop_act(lease, action) — press, open a Finder sidebar entry (invoke), or replace a text field's value; the foreground is not taken",
         "4. desktop_state / desktop_discover — confirm",
         "screenshot(windowTitle?) — one window as PNG, when pixels are needed (Screen Recording permission)",
         "Discover right before each act. entity_not_found from desktop_act means the window changed since the discover, or the element is gone or no longer what was read: nothing was done; discover again.",

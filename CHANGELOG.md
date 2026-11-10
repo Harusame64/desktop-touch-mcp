@@ -162,6 +162,13 @@
   file as missing when asked whether it exists. The check now reads the alias itself. `host:'classic'` was not affected.
 
 ### Added — macOS (preview)
+- **`desktop_act` can open Finder's sidebar entries.** They came back as texts that could only be read, so a caller
+  could not move the window to another folder. Each is now a `listitem` named by its text, and `invoke` moves the window
+  there. `auto` and `click` do not open one. Just before opening, the act checks that the entry is still the one it was
+  named for; another is refused and nothing is opened. An entry whose name another entry in the window shows is not
+  offered. Finder answers an error even when it opened, so the act answers `ok` with `open.confirmed: false` and
+  `next: refresh_view`; discover again without a target or by the new window title. List rows are not offered yet
+  (internal #259; rows: #365).
 - **`desktop_discover` can list the app's menu bar (`menuBar: true`).** Each item is a `menuitem` named by its path,
   such as `表示 > 科学計算`, and `desktop_act` `click` presses it without bringing the app forward. Some buttons
   that open a menu answer `ok` and open nothing (Calculator's mode button); the same choice is usually in the

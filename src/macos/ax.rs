@@ -109,6 +109,12 @@ pub(crate) fn value_text(e: &AXUIElement) -> Option<String> {
 /// the whole text: writing it back with something added would delete the rest (codex, #782).
 pub(crate) fn value_text_marked(e: &AXUIElement) -> Option<(String, bool)> {
     let v = attr(e, "AXValue").ok()?;
+    value_text_of(&v)
+}
+
+/// An `AXValue` already read, rendered as `value_text_marked` renders it (internal #259: the twin
+/// count converts the value it read once, rather than reading it again — gate 2 on #927).
+fn value_text_of(v: &CFType) -> Option<(String, bool)> {
     let s = if let Some(s) = v.downcast_ref::<CFString>() {
         s.to_string()
     } else if let Some(n) = v.downcast_ref::<CFNumber>() {
@@ -720,6 +726,11 @@ pub struct MacAxTarget {
     /// not the one leased.
     pub relocatable: Option<bool>,
     pub timeout_secs: Option<f64>,
+    /// internal #259 — for an act on a list item (a Finder cell that opens): the name the caller read
+    /// for it, its first child text (`item_name`). Checked on the element found, in the same call and
+    /// just before the action, so a row that now holds another item is refused (`element_changed`),
+    /// never acted on: the element key holds no name (gate 2 on #927).
+    pub expected_item_name: Option<String>,
 }
 
 #[napi_derive::napi(object)]
@@ -737,6 +748,9 @@ pub struct MacActResult {
     pub role: Option<String>,
     /// For `modal_blocking`: `sheet:<title>` or `modal_window:<title>`.
     pub blocker: Option<String>,
+    /// `perform`: the action was sent to the app (internal #259). A failure with this set happened
+    /// after the app was asked, so it may have acted; without it nothing was asked.
+    pub performed: Option<bool>,
 }
 
 fn refused(reason: &str) -> MacActResult {
@@ -952,11 +966,154 @@ pub(crate) fn perform(t: &MacAxTarget, action: &str) -> MacActResult {
     if !action_names(&e).iter().any(|a| a == action) {
         return refused("action_not_advertised");
     }
+    if let Some(expected) = t.expected_item_name.as_deref() {
+        let timeout = t.timeout_secs.map(|s| s as f32).unwrap_or(DEFAULT_TIMEOUT_SECS);
+        if item_name(&e, timeout).as_deref() != Some(expected) || !only_item_named(&e, expected, timeout) {
+            return refused("element_changed");
+        }
+    }
     let err = unsafe { e.perform_action(&CFString::from_str(action)) };
     if err != AXError::Success {
-        return refused(&ax_error_name(err));
+        return MacActResult { performed: Some(true), ..refused(&ax_error_name(err)) };
     }
-    MacActResult { ok: true, value_after: value_text(&e), ..Default::default() }
+    // An open may take the element with it, and the app is busy opening: no read-back (gate 2 on #927).
+    let value_after = if action == "AXOpen" { None } else { value_text(&e) };
+    MacActResult { ok: true, performed: Some(true), value_after, ..Default::default() }
+}
+
+/// internal #259 — whether the cell is the only **openable** cell in its list (cell > row > outline,
+/// over the outline's `AXRows`) that this name names. Read at the act, not trusted from the
+/// discover: that read may have missed a twin (a part unread), and the name check alone could not
+/// tell two entries named alike apart (gate 2 on #927). Counted by the rule the discover offers by
+/// (`nameOpenableCells`: AXOpen and not AXPress), so a section heading that shows the same text is
+/// not a twin. Fails closed: a list or row that cannot be read, or a walk past `OPEN_CHECK_BUDGET`
+/// (an app too busy to answer), is not "only one".
+fn only_item_named(cell: &AXUIElement, name: &str, timeout_secs: f32) -> bool {
+    // Every message is held to the time left and the budget is checked after each, as `relocate`
+    // does (codex on #927): a busy app cannot hold the serialised act chain past the budget.
+    let t0 = std::time::Instant::now();
+    let left = || OPEN_CHECK_BUDGET.saturating_sub(t0.elapsed()).as_secs_f32().max(0.05);
+    let late = || t0.elapsed() >= OPEN_CHECK_BUDGET;
+    let held = |e: &AXUIElement| {
+        unsafe { e.set_messaging_timeout(timeout_secs.min(left())) };
+    };
+    held(cell);
+    let Some(row) = attr_element(cell, "AXParent", timeout_secs.min(left())) else { return false };
+    if late() {
+        return false;
+    }
+    held(&row);
+    let Some(list) = attr_element(&row, "AXParent", timeout_secs.min(left())) else { return false };
+    if late() {
+        return false;
+    }
+    held(&list);
+    let Ok(Some(rows)) = attr_opt(&list, "AXRows") else { return false };
+    if late() {
+        return false;
+    }
+    let mut count = 0;
+    for r in children_of(rows, timeout_secs.min(left())) {
+        if late() {
+            return false;
+        }
+        held(&r);
+        let Some(cells) = children_read(&r, timeout_secs.min(left())) else { return false };
+        for c in &cells {
+            if late() {
+                return false;
+            }
+            // A cell whose identity cannot be read may be the twin: refuse rather than skip it
+            // (codex on #927). An attribute the cell does not give is an answer, not a failure.
+            held(c);
+            let Ok(role) = attr_string_strict(c, "AXRole") else { return false };
+            if late() {
+                return false;
+            }
+            if role.as_deref() != Some("AXCell") {
+                continue;
+            }
+            held(c);
+            let Ok(actions) = action_names_strict(c) else { return false };
+            if late() {
+                return false;
+            }
+            if !actions.iter().any(|a| a == "AXOpen") || actions.iter().any(|a| a == "AXPress") {
+                continue;
+            }
+            match item_name_strict(c, &|| timeout_secs.min(left()), &held, &late) {
+                Err(()) => return false,
+                Ok(Some(n)) if n == name => count += 1,
+                Ok(_) => {}
+            }
+        }
+    }
+    !late() && count == 1
+}
+
+/// `action_names`, failing when the read failed rather than answering "none".
+fn action_names_strict(e: &AXUIElement) -> Result<Vec<String>, AXError> {
+    let mut out: *const CFArray = std::ptr::null();
+    let err = unsafe { e.copy_action_names(NonNull::from(&mut out)) };
+    match err {
+        AXError::Success => {}
+        AXError::NoValue | AXError::AttributeUnsupported | AXError::ActionUnsupported => return Ok(Vec::new()),
+        other => return Err(other),
+    }
+    let Some(p) = NonNull::new(out as *mut CFArray<CFString>) else { return Ok(Vec::new()) };
+    let arr: CFRetained<CFArray<CFString>> = unsafe { CFRetained::from_raw(p) };
+    Ok(arr.iter().map(|s| s.to_string()).collect())
+}
+
+/// `item_name`, failing when a read it rests on failed (the children, a child's role, the first
+/// static text's value) rather than answering "no name": for the twin count, where an unread cell
+/// must not pass for one that names nothing.
+fn item_name_strict(
+    cell: &AXUIElement,
+    left_secs: &dyn Fn() -> f32,
+    held: &dyn Fn(&AXUIElement),
+    late: &dyn Fn() -> bool,
+) -> Result<Option<String>, ()> {
+    // Every request held to the time left and the budget checked after each, as the caller does.
+    held(cell);
+    let kids = children_read(cell, left_secs()).ok_or(())?;
+    if late() {
+        return Err(());
+    }
+    for c in kids {
+        held(&c);
+        let role = attr_string_strict(&c, "AXRole").map_err(|_| ())?;
+        if late() {
+            return Err(());
+        }
+        if role.as_deref() != Some("AXStaticText") {
+            continue;
+        }
+        held(&c);
+        // The value read once: a second read that failed would pass for "no name".
+        let value = attr_opt(&c, "AXValue").map_err(|_| ())?;
+        if late() {
+            return Err(());
+        }
+        let Some(v) = value else { return Ok(None) };
+        return Ok(value_text_of(&v).and_then(|(text, cut)| (!text.is_empty() && !cut).then_some(text)));
+    }
+    Ok(None)
+}
+
+/// How long the act may spend counting a name over its list before it refuses (`only_item_named`).
+const OPEN_CHECK_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// internal #259 — a list item's name: its **first** child static text, when that one's value is
+/// neither empty nor cut; otherwise none — never the next text, which the read that offered the
+/// entry did not take. The same rule as `nameOpenableCells` (src/tools/mac/ax-provider.ts): change
+/// both together.
+fn item_name(cell: &AXUIElement, timeout_secs: f32) -> Option<String> {
+    let first = children(cell, timeout_secs)
+        .into_iter()
+        .find(|c| attr_string(c, "AXRole").as_deref() == Some("AXStaticText"))?;
+    let (text, cut) = value_text_marked(&first)?;
+    (!text.is_empty() && !cut).then_some(text)
 }
 
 /// Refuse a write to a field that stands for a file, or whose `AXFilename` could not be read:

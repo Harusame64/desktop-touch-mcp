@@ -47,7 +47,7 @@ export const macActSchema = {
   action: z
     .enum(["auto", "invoke", "click", "type", "setValue"])
     .optional()
-    .describe("'click'/'invoke'/'auto' press the element (only one that offers it). 'type' and 'setValue' REPLACE the field's whole value with text — to add text, use append: true instead of resending the old text (a long field's value from desktop_discover is cut: valueTruncated)."),
+    .describe("'click'/'invoke'/'auto' press the element (only one that offers it); 'invoke' on a listitem (a Finder sidebar entry) opens it, and 'auto' never does. 'type' and 'setValue' REPLACE the field's whole value with text — to add text, use append: true instead of resending the old text (a long field's value from desktop_discover is cut: valueTruncated)."),
   text: z.string().optional().describe("Text to set (required when action='type' or action='setValue')."),
   append: z
     .boolean()
@@ -59,11 +59,12 @@ export const macDiscoverDescription = buildDesc({
   purpose: "Find the controls of a macOS window you can act on, each with a lease for desktop_act.",
   details:
     "Reads the app's Accessibility tree (no screenshot, no foreground change). Entities carry label (a text's visible text), role " +
-    "(button/textbox/link/menuitem/label), primaryAction, and — for a text field — its current value (never a password field's; " +
+    "(button/textbox/link/menuitem/listitem/label), primaryAction, and — for a text field — its current value (never a password field's; " +
     "longer than 2000 characters: no value, valueTruncated: true), and the state of a control read as a button: a checkbox or " +
     "radio button gives value '1' on, '0' off, '2' mixed (a tab: '1' is the selected tab), a disclosure triangle '1' expanded, " +
     "'0' collapsed, and a pop-up the text it shows (the chosen option; a pull-down menu shows its title); " +
-    "buttons offer click, settable text fields offer type, texts only read. A file name shown as a field (a Finder list) is a label: writing it would rename nothing. Each lease carries expiresAtMs (its life adapts to the view and to how long you take between calls); after it, desktop_act answers lease_expired. " +
+    "buttons offer click, settable text fields offer type, texts only read. A file name shown as a field (a Finder list) is a label: writing it would rename nothing. " +
+    "A Finder sidebar entry is a listitem named by its text, offering invoke only: invoke moves the window to that place (an entry whose name another entry shows is not offered). Each lease carries expiresAtMs (its life adapts to the view and to how long you take between calls); after it, desktop_act answers lease_expired. " +
     "'warnings' says what the read could not do: display_asleep (macOS then answers windows with the app itself — wake the display and " +
     "discover again), no_window_matches_title, title_matches_nothing_readable (a window has the title but nothing under it can be acted on " +
     "or read: a panel drawn by another process, or the app names the window otherwise in Accessibility — omit target to read the frontmost " +
@@ -79,7 +80,7 @@ export const macDiscoverDescription = buildDesc({
 });
 
 export const macActDescription = buildDesc({
-  purpose: "Act on an entity from desktop_discover: press it, replace a text field's value, or append to it (append: true).",
+  purpose: "Act on an entity from desktop_discover: press it, open a list item (invoke), replace a text field's value, or append to it (append: true).",
   details:
     "Acts through Accessibility on the background app — the foreground is not taken. An element whose place among its siblings changed " +
     "(one before it came or went) is found again. Refused with entity_not_found when the element's window changed since the discover, or " +
@@ -88,7 +89,10 @@ export const macActDescription = buildDesc({
     "(answer that first). value_not_applied: the app took the write but the field does not hold the text " +
     "(it may reformat it, e.g. 1.50 shown as 1.5). A web page's text field without the focus that ignored the write is pressed once " +
     "(focusing it, without bringing the app forward) and written again. A sheet or app-modal window is checked at the act itself, so one that opened after " +
-    "the discover still refuses.",
+    "the discover still refuses. invoke on a listitem (a Finder sidebar entry) opens it; auto and click never do — ask for invoke. " +
+    "Just before opening, the entry is checked to be the one named; another is refused (entity_not_found, nothing was done). An open answers " +
+    "open: { confirmed } and next: refresh_view, and diff does not show it — the window is retitled, so discover again without a target or " +
+    "by the new title. Finder answers an error even when it opened: the act then answers ok with open.confirmed: false. Any other error after the open was sent says it may have opened.",
   prefer:
     "Send acts one at a time: each act can change the view, so acts sent together can refuse each other (entity_not_found; nothing was done). " +
     "Call desktop_state or desktop_discover afterwards to confirm. A write changes the field, not the file: saving is not done or reported.",
@@ -118,6 +122,8 @@ export interface MacFacadeState {
   menuBarViews?: [string, string[]][];
   /** The act in progress is on a menu bar item's lease. */
   actMenuBar?: boolean;
+  /** The act in progress carried out an open (internal #259): confirmed by the app or not, for `open`. */
+  openNote?: { confirmed: boolean; why?: string };
 }
 
 /** How many views read with the menu bar are remembered for their acts. */
@@ -151,6 +157,9 @@ export function createMacFacade(mac: NativeMac, state: MacFacadeState): DesktopF
       setValue: (t, v) => mac.macAxSetValue(t, v),
       insertText: (t, text, at) => mac.macAxInsertText(t, text, at),
       appendMode: () => state.append === true,
+      noteOpen: (note) => {
+        state.openNote = note;
+      },
     }),
   });
 }
@@ -253,6 +262,7 @@ async function macActOnce(
   state.phase = "act";
   state.last = undefined;
   state.append = input.append === true;
+  state.openNote = undefined;
   const lease = input.lease as { viewId?: unknown; entityId?: unknown } | null | undefined;
   state.actMenuBar = (state.menuBarViews ?? []).some(
     ([v, ids]) => v === lease?.viewId && typeof lease?.entityId === "string" && ids.includes(lease.entityId)
@@ -265,7 +275,12 @@ async function macActOnce(
     state.append = false;
     state.actMenuBar = false;
   }
-  return ok(qualifyPostRead(result, state.last));
+  const note = state.openNote;
+  state.openNote = undefined;
+  const qualified = qualifyPostRead(result, state.last);
+  // After an open, discover again whatever the diff says, confirmed or not: the window is retitled,
+  // so the read after the act may not have seen it at all (gate 2 on #927).
+  return ok(note !== undefined && qualified.ok === true ? { ...qualified, next: "refresh_view", open: note } : qualified);
 }
 
 /** Warnings that mean the read after the act did not see the app whole. */

@@ -177,7 +177,7 @@ npm run build
 
 > **機能を絞ったプレビューです。** macOS 版のツールは4つだけで、Windows 版のごく一部です。挙動はリリースのあいだに変わることがあります。
 
-Apple Silicon の Mac（macOS 14 以降）では、同じ `npx` で macOS 用のサーバーが起動します。使えるツールは `desktop_state`・`desktop_discover`・`desktop_act`（押す・文字の置き換え／追記）・`screenshot`（ウィンドウ1枚）の4つです。ほかのツールは Windows 専用で、macOS では一覧に出ません。
+Apple Silicon の Mac（macOS 14 以降）では、同じ `npx` で macOS 用のサーバーが起動します。使えるツールは `desktop_state`・`desktop_discover`・`desktop_act`（押す・Finder のサイドバーの場所を開く・文字の置き換え／追記）・`screenshot`（ウィンドウ1枚）の4つです。ほかのツールは Windows 専用で、macOS では一覧に出ません。
 
 - サーバーを動かすアプリ（ターミナル、iTerm、VS Code、Claude アプリなど）に、システム設定 › プライバシーとセキュリティ で **アクセシビリティ** を、ウィンドウのタイトルとスクリーンショットには **画面収録** も許可してください。最近の macOS では名前が変わっていることがあります（macOS 27 では「デバイスの制御とデータへのアクセス」と「画面収録とシステムオーディオ録音」）。次のコマンドで、それぞれの画面を直接開けます:
   ```bash
