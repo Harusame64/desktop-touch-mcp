@@ -2665,6 +2665,10 @@ export const terminalRunHandler = async ({
   let exitCode: number | undefined; // issue #386: set only on reason:'exited'
   let lastText = baselineRead?.text ?? "";
   let lastTextTime = Date.now();
+  // internal #241: the full text of the latest read, whichever mode — `lastText` above is the settle
+  // tracker's and is not updated on the tick a pattern matches (win2 on #923: the final read then saw the
+  // text from before the send and fell back to baseline_lost).
+  let lastReadText = baselineRead?.text ?? "";
   let firstChangeTime: number | null = null;
   // Quiet timer for (a) quiet mode and (b) the pattern-mode INVALID-REGEX
   // fallback (patternRe compile failed → this run degrades to the quiet branch).
@@ -2762,6 +2766,7 @@ export const terminalRunHandler = async ({
     const t0 = currentReadTitle();
     const initialPostSend = t0 !== null ? await readTerminalRaw(t0) : null;
     if (initialPostSend) {
+      lastReadText = initialPostSend.text;
       const newContent = newContentSinceBaseline(initialPostSend.text);
       // newContent === undefined → baseline lost, skip to avoid prior-history match.
       // newContent === "" is still a valid input for patterns like /^$/.
@@ -2819,6 +2824,7 @@ export const terminalRunHandler = async ({
     }
 
     const currentText = current.text;
+    lastReadText = currentText;
 
     if (until.mode === "exit" && exitShell) {
       // issue #386: echo-immune sentinel match. parseExitSentinel defers (no
@@ -2976,7 +2982,7 @@ export const terminalRunHandler = async ({
         // internal #241: the marker is gone, but this run's own echo anchors the output (the same rule the
         // until-loop used): the text after it is this run's, not pre-baseline residue.
         const ownEcho = integrity === "baseline_lost"
-          ? scanRegionAfterOwnEcho(lastText, baselineRead?.text ?? "", input, inputEchoes)
+          ? scanRegionAfterOwnEcho(lastReadText, baselineRead?.text ?? "", input, inputEchoes)
           : undefined;
         if (ownEcho !== undefined) {
           output = ownEcho;
