@@ -17,7 +17,16 @@ import { resolveCandidates } from "./resolver.js";
 // ── Target identification ─────────────────────────────────────────────────────
 
 /** Subset of DesktopSeeInput.target; defined here to avoid circular import. */
-export type TargetSpec = { windowTitle?: string; hwnd?: string; tabId?: string };
+export type TargetSpec = {
+  windowTitle?: string;
+  hwnd?: string;
+  tabId?: string;
+  /**
+   * macOS only: a CGWindowID (internal #265). Not an hwnd, so nothing that reads a Win32 window by
+   * its handle sees it; set by the Mac tools alone, which read it back in their provider.
+   */
+  macWindowId?: string;
+};
 
 
 /**
@@ -56,7 +65,7 @@ export function parseTargetHwnd(target: TargetSpec | undefined): bigint | undefi
  * keys share (internal #215; the visual provider and the OCR adapter kept their own copies keyed by
  * the handle's spelling, gate 2 on #917).
  *
- * Priority: hwnd > tabId > windowTitle > default. The hwnd counts only when `parseTargetHwnd` takes
+ * Priority: macWindowId (macOS) > hwnd > tabId > windowTitle > default. The hwnd counts only when `parseTargetHwnd` takes
  * it (internal #310), and it is keyed by its parsed value in decimal, not as spelled, so `"500"` and
  * `"0x1F4"` are one key. The value is `parseTargetHwnd`'s as it is (not cut to 32 bits): the title
  * lookup and the title-mismatch check compare against that value (agy on #917), and a sign-extended
@@ -64,6 +73,7 @@ export function parseTargetHwnd(target: TargetSpec | undefined): bigint | undefi
  * with nothing else keeps its spelling.
  */
 export function targetSessionKey(target?: TargetSpec): TargetSessionKey {
+  if (target?.macWindowId) return `window:mac:${target.macWindowId}`;
   const handle = parseTargetHwnd(target);
   if (handle !== undefined) return `window:${handle.toString()}`;
   if (target?.tabId)       return `tab:${target.tabId}`;
@@ -342,7 +352,7 @@ export class SessionRegistry {
   /**
    * Derive a stable session key from a target spec.
    *
-   * Priority: hwnd > tabId > windowTitle > default.
+   * Priority: macWindowId (macOS) > hwnd > tabId > windowTitle > default.
    * NOTE: `title:` keys are unstable — window titles can change (e.g. document rename,
    * tab title update). Prefer `hwnd` or `tabId` when available to avoid orphaned sessions.
    *

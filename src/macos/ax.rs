@@ -332,6 +332,175 @@ fn element_key(e: &AXUIElement) -> String {
     )
 }
 
+unsafe extern "C" {
+    fn dlsym(handle: *mut std::ffi::c_void, symbol: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+}
+
+/// HIServices' own lookup from an AX element to its CGWindowID: not in the public headers, though
+/// window managers have long used it. Looked up at run time, so a macOS without it costs only
+/// targeting by window id, not the whole addon (gate 2 on #928).
+type GetWindowFn = unsafe extern "C" fn(*const AXUIElement, *mut u32) -> AXError;
+
+fn get_window_fn() -> Option<GetWindowFn> {
+    static F: std::sync::OnceLock<Option<GetWindowFn>> = std::sync::OnceLock::new();
+    *F.get_or_init(|| {
+        // RTLD_DEFAULT: every image loaded, ApplicationServices among them.
+        let p = unsafe { dlsym(-2isize as *mut std::ffi::c_void, c"_AXUIElementGetWindow".as_ptr()) };
+        (!p.is_null()).then(|| unsafe { std::mem::transmute::<*mut std::ffi::c_void, GetWindowFn>(p) })
+    })
+}
+
+/// The CGWindowID of an AX window or sheet: the `windowId` the window list and screenshot report,
+/// which stays the same while the app retitles the window (internal #265; measured 2026-11-10: a
+/// Finder window kept 9199 from ダウンロード to 書類 and back, a TextEdit window kept 9451 when
+/// autosave named it after its first line, and TextEdit's save sheet answered its own 9463).
+/// `None` for an element that is not a window (Finder's desktop answers kAXErrorIllegalArgument).
+/// `window_id`, failing when the lookup failed rather than when the element is not a window
+/// (kAXErrorIllegalArgument, as Finder's desktop answers).
+fn window_id_strict(e: &AXUIElement) -> Result<Option<u32>, AXError> {
+    let Some(f) = get_window_fn() else { return Ok(None) };
+    let mut id: u32 = 0;
+    match unsafe { f(e as *const AXUIElement, &mut id) } {
+        AXError::Success => Ok((id != 0).then_some(id)),
+        AXError::IllegalArgument | AXError::NoValue | AXError::AttributeUnsupported => Ok(None),
+        err => Err(err),
+    }
+}
+
+type Root = (String, CFRetained<AXUIElement>);
+
+/// Where a read by window id starts: the element that is the window — a root, or a sheet with an
+/// id of its own under one — at its path, and the root it is under (whose key its elements carry).
+struct WindowStart {
+    path: String,
+    element: CFRetained<AXUIElement>,
+    /// The root the element is, or is under: `None` when the element is the root itself.
+    under: Option<CFRetained<AXUIElement>>,
+}
+
+/// What a read by window id walks: the element that is the window `id`, and the menu bar when it was
+/// asked for — nothing when the window is not found, so a missing window gets no walk of the bar
+/// (agy on #928). The last value says a read failed where it could have changed the answer: nothing
+/// matched (the window may be the root or sheet that did not answer), or the menu bar was asked for
+/// and a root that is not a window did not say its role.
+///
+/// Each root's own id is asked first, one message a root; only a root that is not a window is asked
+/// its role, for the menu bar. Only when no root is the window are the roots' direct children asked
+/// for a sheet (TextEdit's save sheet is a direct child of its window, measured 2026-11-10), and the
+/// walk then starts at the sheet, so its window's other content cannot spend the budget first. A
+/// child that fails to answer is passed over, not the end of the scan: right after キャンセル the
+/// closing sheet is such a child. Every message waits at most the time left, and the scan stops once
+/// `late()` says the budget is spent (codex and gate 2 on #928); the caller then stops the walk.
+fn window_roots(
+    roots: Vec<Root>,
+    id: u32,
+    include_menu_bar: bool,
+    timeout_secs: f32,
+    left: &dyn Fn() -> f32,
+    late: &dyn Fn() -> bool,
+) -> (Option<WindowStart>, Option<Root>, bool) {
+    let mut found: Option<WindowStart> = None;
+    let mut bar: Option<Root> = None;
+    let mut missed = false;
+    let mut bar_unknown = false;
+    let mut rest: Vec<Root> = Vec::new();
+    let is_bar = |r: &AXUIElement, bar_unknown: &mut bool| -> bool {
+        unsafe { r.set_messaging_timeout(timeout_secs.min(left())) };
+        match attr_string_strict(r, "AXRole") {
+            Ok(role) => role.as_deref() == Some("AXMenuBar"),
+            Err(_) => {
+                *bar_unknown = true;
+                false
+            }
+        }
+    };
+    for (rid, r) in roots {
+        if late() {
+            break;
+        }
+        if found.is_some() {
+            if !include_menu_bar || bar.is_some() {
+                break;
+            }
+            if is_bar(&r, &mut bar_unknown) {
+                bar = Some((rid, r));
+            }
+            continue;
+        }
+        unsafe { r.set_messaging_timeout(timeout_secs.min(left())) };
+        match window_id_strict(&r) {
+            Ok(Some(w)) if w == id => {
+                found = Some(WindowStart { path: rid, element: r, under: None });
+                continue;
+            }
+            // Another window: not the menu bar (TextEdit's menu bar answers the lookup with
+            // kAXErrorIllegalArgument, measured 2026-11-10), and a sheet of this window may be under it.
+            Ok(Some(_)) => {
+                rest.push((rid, r));
+                continue;
+            }
+            Ok(None) => {}
+            Err(_) => missed = true,
+        }
+        if late() {
+            break;
+        }
+        if include_menu_bar && bar.is_none() && is_bar(&r, &mut bar_unknown) {
+            bar = Some((rid, r));
+            continue;
+        }
+        rest.push((rid, r));
+    }
+    if found.is_none() {
+        'roots: for (rid, r) in rest {
+            if late() {
+                break 'roots;
+            }
+            unsafe { r.set_messaging_timeout(timeout_secs.min(left())) };
+            let Some(kids) = children_read(&r, timeout_secs.min(left())) else {
+                missed = true;
+                continue;
+            };
+            for (k, kid) in kids.into_iter().enumerate() {
+                if late() {
+                    break 'roots;
+                }
+                unsafe { kid.set_messaging_timeout(timeout_secs.min(left())) };
+                match attr_string_strict(&kid, "AXRole") {
+                    Ok(Some(role)) if role == "AXSheet" => {}
+                    Ok(_) => continue,
+                    Err(_) => {
+                        missed = true;
+                        continue;
+                    }
+                }
+                unsafe { kid.set_messaging_timeout(timeout_secs.min(left())) };
+                match window_id_strict(&kid) {
+                    Ok(Some(w)) if w == id => {
+                        found = Some(WindowStart { path: format!("{rid}.{k}"), element: kid, under: Some(r.clone()) });
+                        break 'roots;
+                    }
+                    Ok(_) => {}
+                    Err(_) => missed = true,
+                }
+            }
+        }
+    }
+    // Out of time before the window was found: what was not asked may have been it.
+    if found.is_none() && late() {
+        missed = true;
+    }
+    match found {
+        // Window ids are one window each: once it is found, a root that did not answer cannot change
+        // the answer — unless it may have been the menu bar (gate 2 on #928).
+        Some(w) => {
+            let bar_missed = include_menu_bar && bar_unknown && bar.is_none();
+            (Some(w), bar, bar_missed)
+        }
+        None => (None, None, missed),
+    }
+}
+
 pub(crate) fn root_key(e: &AXUIElement) -> String {
     let frame = frame(e)
         .map(|f| format!("{},{},{},{}", f.x, f.y, f.width, f.height))
@@ -439,6 +608,10 @@ pub struct MacAxTreeOptions {
     /// after every read, roots included, and no message waits past it, so
     /// the overrun is one message at most.
     pub max_ms: Option<u32>,
+    /// Walk only the element that is this window (a CGWindowID): a root, or a sheet with an id of its
+    /// own under one, plus the menu bar when asked (internal #265). That element then carries
+    /// `window_id`; no other does.
+    pub window_id: Option<u32>,
 }
 
 #[napi_derive::napi(object)]
@@ -475,6 +648,10 @@ pub struct MacAxElement {
     /// subroles of `WINDOW_BUTTONS` in src/tools/mac/ax-provider.ts; `None` elsewhere.
     pub role_description: Option<String>,
     pub child_count: u32,
+    /// In a read by window id: on the one element that is that window (a root, or a sheet with an
+    /// id of its own), its CGWindowID, the `windowId` of the window list (internal #265). `None` on
+    /// every other element, and in every other read.
+    pub window_id: Option<u32>,
 }
 
 #[napi_derive::napi(object)]
@@ -536,6 +713,23 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         Err(_) => None,
     };
 
+    // A macOS without the lookup cannot read by window id at all: say so, rather than answer an
+    // empty read the caller would retry (gate 2 on #928).
+    if opts.window_id.is_some() && get_window_fn().is_none() {
+        return MacAxTree {
+            pid: opts.pid,
+            app_title,
+            elements: Vec::new(),
+            truncated: false,
+            stopped_by: None,
+            self_reference: false,
+            read_incomplete: false,
+            display_asleep: display_asleep(),
+            error: Some("window_id_unsupported".to_string()),
+            elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
+        };
+    }
+
     let deadline = std::time::Duration::from_millis(opts.max_ms.unwrap_or(15_000) as u64);
     let late = || t0.elapsed() >= deadline;
     let left = || deadline.saturating_sub(t0.elapsed()).as_secs_f32().max(0.05);
@@ -551,13 +745,44 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
     let (root_list, mut self_reference) =
         roots(&app, opts.include_menu_bar.unwrap_or(false), timeout.min(left()), &late);
     let mut stack: Vec<Entry> = Vec::new();
-    for (id, e) in root_list {
-        if late() {
-            break;
+    // By window id, only the element that is the window, and the menu bar: the rest are not walked,
+    // so a big app's other windows cannot spend the budget first (gate 2 on #928). The path it starts
+    // at is the one element that carries the id (`window_id`), so the read and the caller agree on
+    // which element is the window without asking again.
+    let mut matched: Option<String> = None;
+    match opts.window_id {
+        Some(wid) => {
+            let (start, bar, unsure) =
+                window_roots(root_list, wid, opts.include_menu_bar == Some(true), timeout, &left, &late);
+            read_incomplete |= unsure;
+            if let Some(w) = start {
+                let root = w.under.clone().unwrap_or_else(|| w.element.clone());
+                unsafe { root.set_messaging_timeout(timeout.min(left())) };
+                let key = std::rc::Rc::new(root_key(&root));
+                let ancestors = match w.under {
+                    Some(under) => vec![app.clone(), under],
+                    None => vec![app.clone()],
+                };
+                matched = Some(w.path.clone());
+                // In walk order (the stack is reversed below): the window, then the menu bar.
+                stack.push((w.path, w.element, ancestors, key));
+                if let Some((bid, b)) = bar {
+                    unsafe { b.set_messaging_timeout(timeout.min(left())) };
+                    let bar_key = std::rc::Rc::new(root_key(&b));
+                    stack.push((bid, b, vec![app.clone()], bar_key));
+                }
+            }
         }
-        unsafe { e.set_messaging_timeout(timeout.min(left())) };
-        let key = std::rc::Rc::new(root_key(&e));
-        stack.push((id, e, vec![app.clone()], key));
+        None => {
+            for (id, e) in root_list {
+                if late() {
+                    break;
+                }
+                unsafe { e.set_messaging_timeout(timeout.min(left())) };
+                let key = std::rc::Rc::new(root_key(&e));
+                stack.push((id, e, vec![app.clone()], key));
+            }
+        }
     }
     if late() {
         stopped_by = Some("max_ms");
@@ -648,6 +873,8 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         } else {
             None
         };
+        // The element the read by id started at is the window; nothing is asked for it.
+        let window_id = if matched.as_deref() == Some(id.as_str()) { opts.window_id } else { None };
         elements.push(MacAxElement {
             id: id.clone(),
             root_key: (*key).clone(),
@@ -674,6 +901,7 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
             names_file,
             role_description,
             child_count: kids.len() as u32,
+            window_id,
         });
         if depth < max_depth {
             let mut chain = ancestors;

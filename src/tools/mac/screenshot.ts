@@ -35,13 +35,21 @@ export interface MacScreenshotDeps {
 
 export const macScreenshotSchema = {
   windowTitle: z.string().optional().describe("Window to capture (case-insensitive substring of its title). Omit for the frontmost app's window."),
+  windowId: z
+    .number()
+    .int()
+    .positive()
+    .max(0xffff_ffff)
+    .optional()
+    .describe("Window to capture by id (desktop_state windows[], or windowId from an earlier screenshot), instead of windowTitle: it names the window whatever it is titled now."),
   maxDimension: z.number().int().min(64).max(4096).optional().describe("Scale the longest edge down to this many pixels (default 1280)."),
 };
 
 export const macScreenshotDescription = buildDesc({
   purpose: "Capture one macOS window as a PNG image, without bringing it forward.",
   details:
-    "Returns the image plus JSON: windowId, title, pid, bounds (screen points, top-left origin), imageWidth/imageHeight, and " +
+    "Name the window by windowTitle or by windowId (desktop_state windows[]; it stays the same when the app retitles the window), " +
+    "or omit both for the frontmost app's window. Returns the image plus JSON: windowId, title, pid, bounds (screen points, top-left origin), imageWidth/imageHeight, and " +
     "pointsPerPixel (screen_x = bounds.x + image_x * pointsPerPixel; same for y — for a window that is on screen; a minimised or " +
     "other-Space window's bounds are not where it shows). A covered window is captured as it is now. " +
     "warnings: several_windows_match (the frontmost of them was taken), window_off_screen (minimised or on another Space; " +
@@ -82,6 +90,7 @@ const MAC_SUGGEST = {
     "Titles match as a case-insensitive substring; try a shorter part of the title.",
   ],
   noFront: ["Pass windowTitle; desktop_state shows which app is frontmost."],
+  noWindowId: ["Call desktop_state: windows[] lists the open windows with their windowId."],
   captureFailed: [
     "A minimised window or one on another Space may not be capturable: bring it back (or ask the user), then capture again.",
     "If the display is asleep, wake it and retry.",
@@ -97,7 +106,7 @@ const MAC_SUGGEST = {
     "Then restart this MCP server (restart or reconnect it in your MCP client). If captures still fail, quit and reopen the app that runs it.",
   ],
   untargetedNeedsAx: [
-    "Pass windowTitle: a titled capture needs only Screen Recording.",
+    "Pass windowTitle or windowId: a capture of a named window needs only Screen Recording.",
     "Or grant Accessibility: run `open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\"`, turn on the app that runs this server, then restart this MCP server (a running server did not see a new Accessibility grant).",
   ],
   encoderMissing: ["The image encoder (sharp) could not be loaded; reinstall the package so its macOS binary is present."],
@@ -109,14 +118,21 @@ interface Chosen {
 }
 
 /** Pick the window, front to back. Returns a failure result when there is none. */
-async function chooseWindow(deps: MacScreenshotDeps, title: string | undefined): Promise<Chosen | ToolResult> {
+async function chooseWindow(deps: MacScreenshotDeps, title: string | undefined, windowId?: number): Promise<Chosen | ToolResult> {
   // Front to back: on-screen windows in z-order first, then the rest (minimised, other Spaces).
   const onScreen = deps.listWindows(true).filter((w) => w.layer === 0);
   const seen = new Set(onScreen.map((w) => w.windowId));
   const all = [...onScreen, ...deps.listWindows(false).filter((w) => w.layer === 0 && !seen.has(w.windowId))];
 
   let matches: NativeMacWindow[];
-  if (title !== undefined && title !== "") {
+  if (windowId !== undefined) {
+    matches = all.filter((w) => w.windowId === windowId);
+    if (matches.length === 0) {
+      return failCode("WindowNotFound", `screenshot: no window has id ${windowId}; it may have been closed.`, {
+        suggest: [...MAC_SUGGEST.noWindowId],
+      });
+    }
+  } else if (title !== undefined && title !== "") {
     const needle = title.toLowerCase();
     matches = all.filter((w) => (w.title ?? "").toLowerCase().includes(needle));
     if (matches.length === 0) {
@@ -154,7 +170,7 @@ async function chooseWindow(deps: MacScreenshotDeps, title: string | undefined):
 
 export async function macScreenshotHandler(
   deps: MacScreenshotDeps,
-  input: { windowTitle?: string; maxDimension?: number }
+  input: { windowTitle?: string; windowId?: number; maxDimension?: number }
 ): Promise<ToolResult> {
   const permissions = deps.permissions();
   if (!permissions.screenCapture) {
@@ -163,15 +179,21 @@ export async function macScreenshotHandler(
       context: { permissions },
     });
   }
-  const untargeted = input.windowTitle === undefined || input.windowTitle === "";
+  const titled = input.windowTitle !== undefined && input.windowTitle !== "";
+  if (titled && input.windowId !== undefined) {
+    return failCode("InvalidArgs", "screenshot: pass windowTitle or windowId, not both.", {
+      suggest: ["Pass windowId alone: it names the window whatever it is titled now."],
+    });
+  }
+  const untargeted = !titled && input.windowId === undefined;
   if (untargeted && !permissions.accessibility) {
     // The frontmost app is asked through Accessibility (codex, #781).
-    return failCode("PermissionRequired", "screenshot: without windowTitle the frontmost app is found through Accessibility, which this process is not allowed to use.", {
+    return failCode("PermissionRequired", "screenshot: without windowTitle or windowId the frontmost app is found through Accessibility, which this process is not allowed to use.", {
       suggest: [...MAC_SUGGEST.untargetedNeedsAx],
       context: { permissions },
     });
   }
-  const chosen = await chooseWindow(deps, input.windowTitle);
+  const chosen = await chooseWindow(deps, input.windowTitle, input.windowId);
   if ("content" in chosen) return chosen;
   const { window, warnings } = chosen;
 
