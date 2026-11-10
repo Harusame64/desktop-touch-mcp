@@ -25,6 +25,15 @@
   (internal #281).
 
 ### Changed — Windows
+- **The key locker says in the diagnostic log why it did not fill a prompt.** When the locker watches a pane for a
+  password prompt after a command such as `ssh`, a watch that ended without filling anything left no trace. Now
+  each such end writes one line to the diagnostic log (`kind: "key_locker_poll"`). The line gives the end:
+  - the watch timed out with no prompt;
+  - it was replaced by a newer command, or given up;
+  - the dialog was cancelled, the save was declined or failed, or the fill was refused, with the reason;
+  - the watch failed, with the error's name.
+
+  It never contains a secret or an error message (internal #283).
 - **`key_locker` `fill_once` no longer types into a prompt that a background ssh made look like a password
   prompt.** It types only when the console is not echoing, and an ssh started in the background
   (`Start-Process ssh -NoNewWindow`) leaves the console that way while the shell's own `Read-Host` reads: the

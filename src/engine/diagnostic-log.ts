@@ -714,6 +714,21 @@ function ensureDir(path: string): void {
 
 export type DiagnosticEvent =
   | {
+      // internal #283: a key-locker poll that ended without carrying on — disarmed (timed out, voided,
+      // superseded), a capture loop that reached an outcome, or a poll that threw. Without it, a locker that
+      // "did nothing" at a prompt left no trace. Never a secret: outcome kinds and short codes only, and
+      // an error's name, not its message.
+      kind: "key_locker_poll";
+      paneId: string;
+      status: "timed_out" | "superseded" | "declined" | "filled" | "error";
+      /** For `filled`: the capture loop's outcome kind (`saved`, `capture_cancelled`, `fill_aborted`, …). */
+      outcome?: string;
+      /** The outcome's reason or code (`not_landed`, `never_suppressed`, `target_mismatch`, …). */
+      reason?: string;
+      /** For `error`: the thrown value's name (`Error`, `KeyLockerPipeError`, …). */
+      errorName?: string;
+    }
+  | {
       kind: "exit";
       trigger: string;
       exitCode: number;

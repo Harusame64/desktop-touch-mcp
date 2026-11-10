@@ -20,6 +20,7 @@
 //                  (`buildExitProbe`), NEVER re-running it.
 
 import type { ToolResult } from "./_types.js";
+import { logPollOutcome } from "../engine/key-locker/poll-log.js";
 import type { BindingMeta } from "../engine/key-locker/binding-store.js";
 import { BindingStore } from "../engine/key-locker/binding-store.js";
 import type { BindingUri } from "../engine/key-locker/binding.js";
@@ -420,7 +421,13 @@ export class KeyLockerWiring {
     // resolveBinding/confirmInjection/injectPane can reject through `withHost`) would otherwise become an
     // unhandledRejection → `server-windows.ts` `shutdown(1)` = ALL tools down (Opus W-4b P1). A swallowed poll
     // just re-polls next tick — bounded-safe, the fill-failure north-star. Never crash the server for a fill.
-    for (const paneId of this.driver.armedPaneIds()) void this.driver.poll(paneId).catch(() => {});
+    // internal #283: a poll that ends without a fill, or throws, says why in the diagnostic log.
+    for (const paneId of this.driver.armedPaneIds()) {
+      void this.driver.poll(paneId).then(
+        (result) => logPollOutcome(paneId, result),
+        (error: unknown) => logPollOutcome(paneId, undefined, error)
+      );
+    }
   }
 
   private enabled(): boolean {
