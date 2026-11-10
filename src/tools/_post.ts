@@ -148,9 +148,9 @@ interface FocusSnapshot {
   /** The identity `identity-tracker.ts` uses, kept so "same window" is answerable later. */
   processPid: number; processStartTimeMs: number;
   /**
-   * A modal dialog in front — a dialog-class window (`DIALOG_CLASSNAMES`, the MessageBox), or one whose owner
-   * it disabled: what an act can close and leave another window in front. Not an owned tool palette, whose
-   * owner stays enabled.
+   * A modal dialog in front — one whose owner it disabled (Save As, a save prompt), or a dialog-class window
+   * with no owner (`DIALOG_CLASSNAMES`: the MessageBox): what an act can close and leave another window in
+   * front. Not a modeless dialog (Notepad's 検索, whose owner stays enabled) nor an owned tool palette.
    */
   modalDialog: boolean;
   /** Why there is no window (`title`/`hwnd` null): the one in front is not listed, or the read failed. */
@@ -170,7 +170,7 @@ function snapshotFocus(): FocusSnapshot {
     return {
       title: fg.title, hwnd: String(fg.hwnd), processName: ident.processName,
       processPid: ident.pid ?? 0, processStartTimeMs: ident.processStartTimeMs ?? 0,
-      modalDialog: DIALOG_CLASSNAMES.has(fg.className ?? "") || owner?.isEnabled === false,
+      modalDialog: owner?.isEnabled === false || (fg.ownerHwnd == null && DIALOG_CLASSNAMES.has(fg.className ?? "")),
     };
   } catch {
     return none("foreground_unreadable");
@@ -187,11 +187,13 @@ const DIALOG_SETTLE_STEP_MS = 10;
  * Notepad's 名前を付けて保存 → キャンセル answered `post.focusedWindow: "名前を付けて保存"` 9 times in 10, and a
  * MessageBox's OK "確認" 20 in 20, while by the time the reply reached the caller another window was in front.
  *
- * Waited for only when the act could have closed it: the act succeeded, the same modal dialog was in front
- * before it and after it. Then the read waits, by the clock, for the foreground to be another window
- * (`GetForegroundWindow` — the dialog may be hidden rather than destroyed, and a moment of no foreground in
- * between is not the answer) and reads once more. A dialog that stays is answered as read, after the wait.
- * A dialog the act opened, a palette, an ordinary window, a failed act: no wait (gate 2 on #933).
+ * Waited for only when the act succeeded and a modal dialog was in front before it — read while it was
+ * blocking, since in the middle of closing it may already be hidden or its owner enabled again — or right
+ * after it (an act that brought the dialog forward and closed it; gate 2 on #933). The read then waits, by the
+ * clock, until a listed window other than that dialog is in front (`GetForegroundWindow`; a moment with no
+ * foreground, or the dialog hidden but still in front, is not the answer), and reads once more. A dialog that
+ * stays is answered as read, after the wait. A modeless dialog, a palette, an ordinary window, a failed act:
+ * no wait.
  */
 async function settleClosingDialog(
   before: FocusSnapshot,
@@ -200,16 +202,24 @@ async function settleClosingDialog(
   sleep: (ms: number) => Promise<void>,
   now: () => number,
 ): Promise<FocusSnapshot> {
-  if (!actSucceeded || !after.modalDialog || after.hwnd === null || after.hwnd !== before.hwnd) return after;
+  if (!actSucceeded) return after;
+  const dialogSnap = before.modalDialog ? before : after.modalDialog ? after : undefined;
+  if (dialogSnap === undefined || dialogSnap.hwnd === null) return after;
+  // The first read already shows another listed window in front: that is the answer.
+  if (after.hwnd !== null && after.hwnd !== dialogSnap.hwnd) return after;
   let dialog: bigint;
-  try { dialog = BigInt(after.hwnd); } catch { return after; }
+  try { dialog = BigInt(dialogSnap.hwnd); } catch { return after; }
   const deadline = now() + DIALOG_SETTLE_MS;
   for (;;) {
     let fg: bigint | null = null;
     try { fg = getForegroundHwnd(); } catch { /* no answer: keep waiting */ }
-    if (fg !== null && fg !== dialog) return snapshotFocus();
-    if (now() >= deadline) return after;
-    await sleep(DIALOG_SETTLE_STEP_MS);
+    if (fg !== null && fg !== dialog) {
+      const settled = snapshotFocus();
+      if (settled.hwnd !== null) return settled;
+    }
+    const left = deadline - now();
+    if (left <= 0) return fg !== null && fg !== dialog ? snapshotFocus() : after;
+    await sleep(Math.min(DIALOG_SETTLE_STEP_MS, left));
   }
 }
 

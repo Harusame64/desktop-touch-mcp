@@ -90,7 +90,8 @@ describe("the act closed the dialog that was in front", () => {
     const p = await post();
     expect(p!.focusedWindow).toBe("確認");
     expect(clock.slept).toBeGreaterThanOrEqual(DIALOG_SETTLE_MS);
-    expect(clock.slept).toBeLessThan(DIALOG_SETTLE_MS + 20);
+    // The last sleep is cut to what is left, so the clock passes the deadline by one overshoot (6) at most.
+    expect(clock.slept).toBeLessThanOrEqual(DIALOG_SETTLE_MS + 6);
   });
   it("the re-read finds the front window not listed: null, and says so", async () => {
     state.reads = [[box], [box], []];
@@ -98,12 +99,40 @@ describe("the act closed the dialog that was in front", () => {
     const p = await post();
     expect(p!.focusedWindow).toBeNull();
     expect(p!.focusedWindowUnread).toBe("foreground_not_listed");
+    // An unlisted window in front may be passing through: it waits for a listed one until the deadline.
+    expect(clock.slept).toBeGreaterThanOrEqual(DIALOG_SETTLE_MS);
+  });
+});
+
+describe("gate 2 on #933: the dialog read while it blocked, or brought forward by the act", () => {
+  it("the first read after the act finds no listed window (the dialog hidden): still waits, names Notepad", async () => {
+    state.reads = [[saveAs, notepadBlocked], [], [notepad]];
+    state.fg = [2n, 1n];
+    expect((await post())!.focusedWindow).toBe("無題 - メモ帳");
+  });
+  it("the owner is enabled again by the first read: the dialog was modal before, so it waits", async () => {
+    const wpf = win(6n, "確認", { className: "HwndWrapper[App;;1]", ownerHwnd: 1n });
+    state.reads = [[wpf, notepadBlocked], [wpf, win(1n, "無題 - メモ帳", { isActive: false })], [notepad]];
+    state.fg = [6n, 1n];
+    expect((await post())!.focusedWindow).toBe("無題 - メモ帳");
+  });
+  it("the act brought the dialog forward and closed it (another window in front before)", async () => {
+    const terminal = win(7n, "pwsh", { className: "CASCADIA_HOSTING_WINDOW_CLASS" });
+    state.reads = [[terminal], [saveAs, notepadBlocked], [notepad]];
+    state.fg = [2n, 1n];
+    expect((await post())!.focusedWindow).toBe("無題 - メモ帳");
+  });
+  it("a dialog the act opened is waited for, and answered as read when it stays", async () => {
+    state.reads = [[notepad], [saveAs, notepadBlocked]];
+    state.fg = [2n];
+    expect((await post())!.focusedWindow).toBe("名前を付けて保存");
+    expect(clock.slept).toBeGreaterThanOrEqual(DIALOG_SETTLE_MS);
   });
 });
 
 describe("no wait where the act cannot have closed it", () => {
   it.each([
-    ["a dialog the act opened (not in front before)", [[notepad], [saveAs, notepadBlocked]]],
+    ["a modeless dialog (#32770 whose owner stays enabled: Notepad's 検索)", [[win(8n, "検索", { className: "#32770", ownerHwnd: 1n }), win(1n, "Doc", { isActive: false })]]],
     ["an owned palette (its owner enabled)", [[win(5n, "Tools", { ownerHwnd: 1n }), win(1n, "Doc", { isActive: false })]]],
     ["an ordinary window", [[notepad]]],
   ])("%s", async (_n, reads) => {
