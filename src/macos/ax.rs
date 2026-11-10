@@ -355,20 +355,34 @@ fn get_window_fn() -> Option<GetWindowFn> {
 /// Finder window kept 9199 from ダウンロード to 書類 and back, a TextEdit window kept 9451 when
 /// autosave named it after its first line, and TextEdit's save sheet answered its own 9463).
 /// `None` for an element that is not a window (Finder's desktop answers kAXErrorIllegalArgument).
-pub(crate) fn window_id(e: &AXUIElement) -> Option<u32> {
-    let f = get_window_fn()?;
+/// `window_id`, failing when the lookup failed rather than when the element is not a window
+/// (kAXErrorIllegalArgument, as Finder's desktop answers).
+fn window_id_strict(e: &AXUIElement) -> Result<Option<u32>, AXError> {
+    let Some(f) = get_window_fn() else { return Ok(None) };
     let mut id: u32 = 0;
-    let err = unsafe { f(e as *const AXUIElement, &mut id) };
-    (err == AXError::Success && id != 0).then_some(id)
+    match unsafe { f(e as *const AXUIElement, &mut id) } {
+        AXError::Success => Ok((id != 0).then_some(id)),
+        AXError::IllegalArgument | AXError::NoValue | AXError::AttributeUnsupported => Ok(None),
+        err => Err(err),
+    }
 }
 
 /// Whether a root is the window `id`, or holds a sheet that is: the roots a read by window id
-/// walks. A sheet sits under its window's root, so the window is walked and the sheet comes with it.
-fn root_holds_window(root: &AXUIElement, id: u32, timeout_secs: f32) -> bool {
-    window_id(root) == Some(id)
-        || children(root, timeout_secs)
-            .iter()
-            .any(|k| attr_string(k, "AXRole").as_deref() == Some("AXSheet") && window_id(k) == Some(id))
+/// walks. A sheet is a direct child of its window's root (TextEdit's save sheet, measured
+/// 2026-11-10), so the window is walked and the sheet comes with it. `Err` when a read failed: the
+/// root is not known not to hold it (gate 2 on #928).
+fn root_holds_window(root: &AXUIElement, id: u32, timeout_secs: f32) -> Result<bool, ()> {
+    if window_id_strict(root).map_err(|_| ())? == Some(id) {
+        return Ok(true);
+    }
+    for k in children_read(root, timeout_secs).ok_or(())? {
+        if attr_string_strict(&k, "AXRole").map_err(|_| ())?.as_deref() == Some("AXSheet")
+            && window_id_strict(&k).map_err(|_| ())? == Some(id)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(crate) fn root_key(e: &AXUIElement) -> String {
@@ -581,6 +595,23 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         Err(_) => None,
     };
 
+    // A macOS without the lookup cannot read by window id at all: say so, rather than answer an
+    // empty read the caller would retry (gate 2 on #928).
+    if opts.window_id.is_some() && get_window_fn().is_none() {
+        return MacAxTree {
+            pid: opts.pid,
+            app_title,
+            elements: Vec::new(),
+            truncated: false,
+            stopped_by: None,
+            self_reference: false,
+            read_incomplete: false,
+            display_asleep: display_asleep(),
+            error: Some("window_id_unsupported".to_string()),
+            elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
+        };
+    }
+
     let deadline = std::time::Duration::from_millis(opts.max_ms.unwrap_or(15_000) as u64);
     let late = || t0.elapsed() >= deadline;
     let left = || deadline.saturating_sub(t0.elapsed()).as_secs_f32().max(0.05);
@@ -604,8 +635,11 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         // big app's other windows cannot spend the budget first (gate 2 on #928). The menu bar, when
         // asked for, is the app's and is kept (`roots` lists it only then).
         if let Some(wid) = opts.window_id {
-            let is_bar = attr_string(&e, "AXRole").as_deref() == Some("AXMenuBar");
-            let held = is_bar || root_holds_window(&e, wid, timeout.min(left()));
+            let is_bar = opts.include_menu_bar == Some(true) && attr_string(&e, "AXRole").as_deref() == Some("AXMenuBar");
+            let held = is_bar || root_holds_window(&e, wid, timeout.min(left())).unwrap_or_else(|_| {
+                read_incomplete = true;
+                false
+            });
             if late() {
                 break;
             }
@@ -708,7 +742,10 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         };
         // Asked in a read by window id only, of the roots and the sheets: those are the windows.
         let window_id = if opts.window_id.is_some() && (depth == 0 || role == "AXSheet") {
-            read!(window_id(&e))
+            read!(window_id_strict(&e)).unwrap_or_else(|_| {
+                read_incomplete = true;
+                None
+            })
         } else {
             None
         };

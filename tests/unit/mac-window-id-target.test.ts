@@ -4,7 +4,7 @@
  */
 import { describe, it, expect, vi } from "vitest";
 import { readMacAxCandidates, windowIdOf, type MacAxProviderDeps, type MacAxReadNotes } from "../../src/tools/mac/ax-provider.js";
-import { createMacFacade, macDiscoverHandler, macActHandler, type MacFacadeState } from "../../src/tools/mac/desktop-discover-act.js";
+import { createMacFacade, macDiscoverHandler, macActHandler, macDiscoverSchema, type MacFacadeState } from "../../src/tools/mac/desktop-discover-act.js";
 import { macScreenshotHandler } from "../../src/tools/mac/screenshot.js";
 import type { NativeMacAxElement } from "../../src/engine/native-types.js";
 import { targetSessionKey } from "../../src/engine/world-graph/session-registry.js";
@@ -135,7 +135,8 @@ describe("reading a window by its id", () => {
     expect(d.axTree).toHaveBeenCalledWith({ pid: 7, windowId: 9463 });
     expect(r.map((c) => c.label)).toEqual(["削除"]);
     expect(notes.windowTitle).toBe("保存");
-    expect(notes.warnings).toEqual(["sheet_open"]);
+    // The sheet is what is read, not a sheet open over it.
+    expect(notes.warnings).toEqual([]);
   });
 
   it("an element below a root that carries the id by mistake is not the window", async () => {
@@ -171,6 +172,22 @@ describe("reading a window by its id", () => {
     const r = await readMacAxCandidates(d as unknown as MacAxProviderDeps, { macWindowId: "9200" }, notes, undefined, true);
     expect(r).toEqual([]);
     expect(notes.warnings).toEqual(["window_id_not_in_tree"]);
+  });
+
+  it("an id it cannot read names no window, and the frontmost app is not read instead", async () => {
+    const d = mk();
+    const { r, notes } = await read(d, { macWindowId: "9007199254740993" });
+    expect(r).toEqual([]);
+    expect(notes.warnings).toEqual(["no_window_with_id"]);
+    expect(d.getFocus).not.toHaveBeenCalled();
+    expect(d.axTree).not.toHaveBeenCalled();
+  });
+
+  it("a macOS that cannot look windows up by id says so", async () => {
+    const d = mk(tree({ elements: [], error: "window_id_unsupported" }));
+    const { r, notes } = await read(d, { macWindowId: "9199" });
+    expect(r).toEqual([]);
+    expect(notes.warnings).toContain("ax_error:window_id_unsupported");
   });
 
   it("off screen and not in the tree: window_not_shown, not a read to retry", async () => {
@@ -258,6 +275,36 @@ describe("desktop_discover / desktop_act with target.windowId", () => {
     expect(a.ok).toBe(true);
     expect(a.diff).toContain("entity_disappeared");
     expect(a.postReadWarnings).toBeUndefined();
+  });
+
+  it("an act that closes a sheet the app keeps listed off screen: its entities disappeared", async () => {
+    const withSheet = tree({
+      elements: [
+        ...tree().elements,
+        el({ id: "a.1.2", rootKey: ROOT_B, role: "AXSheet", description: "保存", windowId: 9463 }),
+        el({ id: "a.1.2.0", rootKey: ROOT_B, actions: ["AXPress"], title: "キャンセル" }),
+      ],
+    });
+    const mac = fakeMac(withSheet);
+    const sheetListed = (onScreen: boolean) => [...LISTED, { windowId: 9463, pid: 7, layer: 0, onScreen, title: "保存" }];
+    mac.macListWindows.mockReturnValue(sheetListed(true));
+    const state: MacFacadeState = { phase: "discover" };
+    const facade = createMacFacade(mac as any, state);
+    const d = body(await macDiscoverHandler(mac as any, facade, state, { target: { windowId: 9463 } } as any));
+    expect(d.entities.map((e: any) => e.label)).toEqual(["キャンセル"]);
+    mac.macListWindows.mockReturnValue(sheetListed(false));
+    mac.macAxTree.mockResolvedValue(tree());
+    const a = body(await macActHandler(mac as any, facade, state, { lease: d.entities[0].lease, action: "click" }));
+    expect(a.ok).toBe(true);
+    expect(a.diff).toContain("entity_disappeared");
+    expect(a.postReadWarnings).toBeUndefined();
+  });
+
+  it("the schema takes a CGWindowID's range only", () => {
+    const t = macDiscoverSchema.target;
+    expect(t.safeParse({ windowId: 0xffff_ffff }).success).toBe(true);
+    expect(t.safeParse({ windowId: 0x1_0000_0000 }).success).toBe(false);
+    expect(t.safeParse({ windowId: 0 }).success).toBe(false);
   });
 
   it("a closed window: empty title, no_window_with_id", async () => {

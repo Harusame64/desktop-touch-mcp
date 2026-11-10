@@ -39,6 +39,7 @@ export const macScreenshotSchema = {
     .number()
     .int()
     .positive()
+    .max(0xffff_ffff)
     .optional()
     .describe("Window to capture by id (desktop_state windows[], or windowId from an earlier screenshot), instead of windowTitle: it names the window whatever it is titled now."),
   maxDimension: z.number().int().min(64).max(4096).optional().describe("Scale the longest edge down to this many pixels (default 1280)."),

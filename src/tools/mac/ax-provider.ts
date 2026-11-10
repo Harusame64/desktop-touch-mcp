@@ -410,6 +410,11 @@ export async function readMacAxCandidates(
   menuBar = false
 ): Promise<UiEntityCandidate[]> {
   const windowId = windowIdOf(target);
+  // An id this cannot read names no window: never the frontmost app in its place (gate 2 on #928).
+  if (windowId === undefined && target?.macWindowId !== undefined) {
+    notes.warnings.push("no_window_with_id");
+    return [];
+  }
   if (windowId !== undefined) {
     // A window id names one window, whatever it is titled now: the window list says whose it is,
     // and the read keeps to the root that is that window.
@@ -488,7 +493,7 @@ export async function readMacAxCandidates(
  * Warnings that say a read did not see its app whole. The post-act qualifier counts these and the
  * title's own (`INCOMPLETE_READ`, desktop-discover-act.ts) — one list, so the two cannot drift.
  */
-export const UNSURE_READ = /^(ax_error:|ax_read_incomplete$|display_asleep$|ax_self_reference$|truncated:|window_id_not_in_tree$|window_not_shown$)/;
+export const UNSURE_READ = /^(ax_error:|ax_read_incomplete$|display_asleep$|ax_self_reference$|truncated:|window_id_not_in_tree$)/;
 
 /** Read one app's tree and the candidates under the title (all of them without one). */
 async function readPidUnderTitle(
@@ -546,8 +551,13 @@ async function readPidUnderTitle(
     }
   }
   const sheetNeedle = title?.toLowerCase();
+  // A sheet read by its own id is what is read, not something open over it (gate 2 on #928).
   for (const sheet of tree.elements.filter(
-    (e) => e.role === "AXSheet" && inWindow(e) && (!sheetNeedle || rootTitle(e.rootKey).toLowerCase().includes(sheetNeedle))
+    (e) =>
+      e.role === "AXSheet" &&
+      inWindow(e) &&
+      !(windowRoots ?? []).includes(e.id) &&
+      (!sheetNeedle || rootTitle(e.rootKey).toLowerCase().includes(sheetNeedle))
   )) {
     const inside = tree.elements.some((e) => e.id.startsWith(`${sheet.id}.`) && (e.actions.length > 0 || e.valueSettable));
     const w = inside ? "sheet_open" : "sheet_open_in_other_process";

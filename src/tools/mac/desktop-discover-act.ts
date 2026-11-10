@@ -22,7 +22,7 @@ export const macDiscoverSchema = {
   target: z
     .object({
       windowTitle: z.string().optional(),
-      windowId: z.number().int().positive().optional(),
+      windowId: z.number().int().positive().max(0xffff_ffff).optional(),
     })
     .optional()
     .describe(
@@ -78,7 +78,8 @@ export const macDiscoverDescription = buildDesc({
     "discover each document by its own title), window_titles_unavailable (Screen Recording is not granted, so titles cannot be matched; " +
     "omit target to read the frontmost app), no_window_with_id (no app window has that id: it was closed, or the id is not an app window's — desktop_state lists the windows on screen), " +
     "window_id_not_in_tree (the window is on screen but the app's Accessibility tree did not show it: discover again, or target it by title), " +
-    "window_not_shown (the window is off screen and Accessibility does not show it: it was closed — an app can keep a closed sheet's window — or it is on another Space), no_frontmost_app, truncated:*, ax_error:*, ax_read_incomplete (part of the tree did not answer: discover again), sheet_open (answer the sheet first; acts behind it " +
+    "window_not_shown (the window is off screen and Accessibility does not show it: it was closed — an app can keep a closed sheet's window — or it is on another Space), " +
+    "ax_error:window_id_unsupported (this macOS cannot look windows up by id: target by title). The open/save panel's own window belongs to another process: target it by title (\"保存\" / \"Save\"). no_frontmost_app, truncated:*, ax_error:*, ax_read_incomplete (part of the tree did not answer: discover again), sheet_open (answer the sheet first; acts behind it " +
     "are refused), sheet_open_in_other_process (the sheet's controls belong to another process, e.g. the open/save panel: discover its " +
     "own title, such as \"Save\" / \"保存\").",
   prefer:
@@ -309,9 +310,10 @@ async function macActOnce(
 }
 
 /**
- * Warnings that mean the read after the act did not see the app whole. Not `no_window_with_id`: a
- * title can be gone because the window was retitled, but a window id that is gone is a closed window
- * (an act that pressed its close button), so its entities did disappear (gate 2 on #928).
+ * Warnings that mean the read after the act did not see the app whole. Not `no_window_with_id` or
+ * `window_not_shown`: a title can be gone because the window was retitled, but a window id that is
+ * gone — or listed off screen with nothing of it in the tree, as a sheet closed by キャンセル is — is a
+ * window the act closed, so its entities did disappear (gate 2 on #928, both rounds).
  */
 const INCOMPLETE_READ = {
   test: (w: string) => UNSURE_READ.test(w) || /^(no_window_matches_title|window_titles_unavailable|no_frontmost_app)$/.test(w),
