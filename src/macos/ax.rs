@@ -433,7 +433,8 @@ fn window_roots(
                 found = Some(WindowStart { path: rid, element: r, under: None });
                 continue;
             }
-            // Another window: not the menu bar, and a sheet of this window may be under it.
+            // Another window: not the menu bar (TextEdit's menu bar answers the lookup with
+            // kAXErrorIllegalArgument, measured 2026-11-10), and a sheet of this window may be under it.
             Ok(Some(_)) => {
                 rest.push((rid, r));
                 continue;
@@ -744,8 +745,6 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
     let (root_list, mut self_reference) =
         roots(&app, opts.include_menu_bar.unwrap_or(false), timeout.min(left()), &late);
     let mut stack: Vec<Entry> = Vec::new();
-    // By window id, only the root that is the window or holds it, and the menu bar: the rest are not
-    // walked, so a big app's other windows cannot spend the budget first (gate 2 on #928).
     // By window id, only the element that is the window, and the menu bar: the rest are not walked,
     // so a big app's other windows cannot spend the budget first (gate 2 on #928). The path it starts
     // at is the one element that carries the id (`window_id`), so the read and the caller agree on
