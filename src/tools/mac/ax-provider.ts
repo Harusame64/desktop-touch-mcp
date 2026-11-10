@@ -40,6 +40,20 @@ export interface MacAxReadNotes {
   appTitle?: string;
   /** Entity ids of the menu bar items offered (`menuBar`): an act on one reads the menu bar again. */
   menuEntityIds?: string[];
+  /** A read by window id: the title that window carries now (internal #265). */
+  windowTitle?: string;
+}
+
+/**
+ * The window a target names by id (internal #265): the facade keys its sessions by `hwnd`, so the
+ * Mac tool hands a `windowId` over as that (`toFacadeTarget`, desktop-discover-act.ts), and it comes
+ * back here as the CGWindowID it is.
+ */
+export function windowIdOf(target: { hwnd?: string } | undefined): number | undefined {
+  const raw = target?.hwnd;
+  if (raw === undefined || !/^[1-9][0-9]*$/.test(raw)) return undefined;
+  const id = Number(raw);
+  return Number.isSafeInteger(id) ? id : undefined;
 }
 
 /**
@@ -388,13 +402,25 @@ function rootTitle(rootKey: string): string {
  */
 export async function readMacAxCandidates(
   deps: MacAxProviderDeps,
-  target: { windowTitle?: string } | undefined,
+  target: { windowTitle?: string; hwnd?: string } | undefined,
   notes: MacAxReadNotes,
   /** Without a title: read this app instead of asking which is frontmost (a post-act read). */
   pinnedPid?: number,
   /** Also offer the app's menu bar items (`menuBarItems`). */
   menuBar = false
 ): Promise<UiEntityCandidate[]> {
+  const windowId = windowIdOf(target);
+  if (windowId !== undefined) {
+    // A window id names one window, whatever it is titled now: the window list says whose it is,
+    // and the read keeps to the root that is that window.
+    const listed = deps.listWindows(false).find((w) => w.layer === 0 && w.windowId === windowId);
+    if (listed === undefined) {
+      notes.warnings.push("no_window_with_id");
+      return [];
+    }
+    const read = await readPidUnderTitle(deps, undefined, listed.pid, notes, menuBar, windowId);
+    return [...read.own, ...read.menu];
+  }
   const title = target?.windowTitle;
   let pid: number | undefined;
   if (title !== undefined && title !== "") {
@@ -458,7 +484,7 @@ export async function readMacAxCandidates(
  * Warnings that say a read did not see its app whole. The post-act qualifier counts these and the
  * title's own (`INCOMPLETE_READ`, desktop-discover-act.ts) — one list, so the two cannot drift.
  */
-export const UNSURE_READ = /^(ax_error:|ax_read_incomplete$|display_asleep$|ax_self_reference$|truncated:)/;
+export const UNSURE_READ = /^(ax_error:|ax_read_incomplete$|display_asleep$|ax_self_reference$|truncated:|window_id_not_in_tree$)/;
 
 /** Read one app's tree and the candidates under the title (all of them without one). */
 async function readPidUnderTitle(
@@ -466,7 +492,9 @@ async function readPidUnderTitle(
   title: string | undefined,
   pid: number,
   notes: MacAxReadNotes,
-  menuBar = false
+  menuBar = false,
+  /** Read only the root that is this window (internal #265); `title` is not given with it. */
+  windowId?: number
 ): Promise<{ own: UiEntityCandidate[]; menu: UiEntityCandidate[] }> {
   notes.pid = pid;
 
@@ -487,9 +515,22 @@ async function readPidUnderTitle(
   // In this process when anything under it can be acted on; the open/save panel's sheet holds
   // nothing here (gate 2, #782: a child count misreads an in-process sheet wrapped in one group).
   // With a title, only the target window's sheets: another document's sheet does not block this one.
+  // By id: the roots that are the window. The app's other roots may reach it too (its focused or
+  // main window is listed once, `roots` in src/macos/ax.rs), so this is usually one.
+  const windowRoots =
+    windowId === undefined ? undefined : tree.elements.filter((e) => e.depth === 0 && e.windowId === windowId).map((e) => e.id);
+  const inWindow = (e: NativeMacAxElement) =>
+    windowRoots === undefined || windowRoots.some((r) => e.id === r || e.id.startsWith(`${r}.`));
+  if (windowRoots !== undefined) {
+    const root = tree.elements.find((e) => e.id === windowRoots[0]);
+    if (root !== undefined) notes.windowTitle = rootTitle(root.rootKey);
+    // The window is listed but no root read says it is that window: a sleeping display or a read
+    // cut short, or an app whose window AX does not reach. Not "the window holds nothing".
+    else if (!notes.warnings.includes("window_id_not_in_tree")) notes.warnings.push("window_id_not_in_tree");
+  }
   const sheetNeedle = title?.toLowerCase();
   for (const sheet of tree.elements.filter(
-    (e) => e.role === "AXSheet" && (!sheetNeedle || rootTitle(e.rootKey).toLowerCase().includes(sheetNeedle))
+    (e) => e.role === "AXSheet" && inWindow(e) && (!sheetNeedle || rootTitle(e.rootKey).toLowerCase().includes(sheetNeedle))
   )) {
     const inside = tree.elements.some((e) => e.id.startsWith(`${sheet.id}.`) && (e.actions.length > 0 || e.valueSettable));
     const w = inside ? "sheet_open" : "sheet_open_in_other_process";
@@ -498,7 +539,7 @@ async function readPidUnderTitle(
 
   const needle = sheetNeedle;
   const observedAtMs = deps.now();
-  const targetId = title ?? tree.appTitle ?? String(pid);
+  const targetId = windowId !== undefined ? `window:${windowId}` : (title ?? tree.appTitle ?? String(pid));
   // Cells that open carry their name from here on (internal #259): offered, digested and compared by it.
   // A read cut short may have missed a twin by name; a read with a part unread — Finder's usually
   // is — is left to the act, which counts the name in the list itself (`only_item_named`).
@@ -520,7 +561,8 @@ async function readPidUnderTitle(
       : tree.elements.filter((e) => e.role === "AXSheet" && (e.title ?? e.description ?? "").toLowerCase().includes(needle));
   const sheet = sheetsTitled.length === 1 ? sheetsTitled[0] : undefined;
   const underTitle = (e: NativeMacAxElement) =>
-    !titled || rootTitle(e.rootKey).toLowerCase().includes(needle) || (sheet !== undefined && e.id.startsWith(`${sheet.id}.`));
+    inWindow(e) &&
+    (!titled || rootTitle(e.rootKey).toLowerCase().includes(needle) || (sheet !== undefined && e.id.startsWith(`${sheet.id}.`)));
   const { barId, items } = menuBar ? menuBarItems(tree.elements) : { barId: undefined, items: new Map<string, string>() };
   // Without a title every root is read, the menu bar too: its items come once, by their paths.
   const inBar = (e: NativeMacAxElement) => barId !== undefined && (e.id === barId || e.id.startsWith(`${barId}.`));

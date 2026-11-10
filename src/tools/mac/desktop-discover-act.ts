@@ -15,14 +15,20 @@ import { DesktopFacade, type DesktopSeeInput } from "../desktop.js";
 import { buildDesc, ok, type ToolResult } from "../_types.js";
 import { failCode, getSuggestsForCode } from "../_errors.js";
 import { coercedBoolean } from "../_coerce.js";
-import { readMacAxCandidates, UNSURE_READ, type MacAxReadNotes } from "./ax-provider.js";
+import { readMacAxCandidates, UNSURE_READ, windowIdOf, type MacAxReadNotes } from "./ax-provider.js";
 import { createMacAxExecutor } from "./ax-executor.js";
 
 export const macDiscoverSchema = {
   target: z
-    .object({ windowTitle: z.string().optional() })
+    .object({
+      windowTitle: z.string().optional(),
+      windowId: z.number().int().positive().optional(),
+    })
     .optional()
-    .describe("Target window by title (case-insensitive substring; titles are in the user's language — desktop_state lists them). Omit for the frontmost app."),
+    .describe(
+      "Target window by title (case-insensitive substring; titles are in the user's language — desktop_state lists them) or by windowId (from desktop_state windows[] or screenshot), not both. " +
+        "A windowId keeps naming the same window when the app retitles it (TextEdit naming a new document after its first line, a Finder window moved to another folder). Omit for the frontmost app."
+    ),
   view: z.enum(["action", "explore", "debug"]).optional().describe("action (default, ≤20 entities), explore (≤50), debug (includes raw rect)"),
   query: z.string().optional().describe("Filter entities by label substring (case-insensitive). Labels only: a text field without a label never matches, so look for role 'textbox' instead."),
   maxEntities: z.number().int().min(1).max(200).optional().describe("Override entity count limit"),
@@ -70,7 +76,8 @@ export const macDiscoverDescription = buildDesc({
     "or read: a panel drawn by another process, or the app names the window otherwise in Accessibility — omit target to read the frontmost " +
     "app, or use the title of the window that holds it), title_matches_several_sheets (sheets of several documents carry the title: " +
     "discover each document by its own title), window_titles_unavailable (Screen Recording is not granted, so titles cannot be matched; " +
-    "omit target to read the frontmost app), no_frontmost_app, truncated:*, ax_error:*, ax_read_incomplete (part of the tree did not answer: discover again), sheet_open (answer the sheet first; acts behind it " +
+    "omit target to read the frontmost app), no_window_with_id (no window has that id: it was closed — desktop_state lists the open ones), " +
+    "window_id_not_in_tree (the window is open but the app's Accessibility tree did not show it: discover again, or target it by title), no_frontmost_app, truncated:*, ax_error:*, ax_read_incomplete (part of the tree did not answer: discover again), sheet_open (answer the sheet first; acts behind it " +
     "are refused), sheet_open_in_other_process (the sheet's controls belong to another process, e.g. the open/save panel: discover its " +
     "own title, such as \"Save\" / \"保存\").",
   prefer:
@@ -91,7 +98,7 @@ export const macActDescription = buildDesc({
     "(focusing it, without bringing the app forward) and written again. A sheet or app-modal window is checked at the act itself, so one that opened after " +
     "the discover still refuses. invoke on a listitem (a Finder sidebar entry) opens it; auto and click never do — ask for invoke. " +
     "Just before opening, the entry is checked to be the one named; another is refused (entity_not_found, nothing was done). An open answers " +
-    "open: { confirmed } and next: refresh_view, and diff does not show it — the window is retitled, so discover again without a target or " +
+    "open: { confirmed } and next: refresh_view, and diff does not show it — the window is retitled, so discover again by its windowId, without a target or " +
     "by the new title. Finder answers an error even when it opened: the act then answers ok with open.confirmed: false. Any other error after the open was sent says it may have opened.",
   prefer:
     "Send acts one at a time: each act can change the view, so acts sent together can refuse each other (entity_not_found; nothing was done). " +
@@ -133,8 +140,8 @@ export function createMacFacade(mac: NativeMac, state: MacFacadeState): DesktopF
   const provider = async (input: DesktopSeeInput) => {
     const notes: MacAxReadNotes = { warnings: [] };
     state.last = notes;
-    const target = input.target as { windowTitle?: string } | undefined;
-    const untargeted = target?.windowTitle === undefined || target.windowTitle === "";
+    const target = input.target as { windowTitle?: string; hwnd?: string } | undefined;
+    const untargeted = (target?.windowTitle === undefined || target.windowTitle === "") && windowIdOf(target) === undefined;
     const candidates = await readMacAxCandidates(
       {
         listWindows: (onScreenOnly) => mac.macListWindows(onScreenOnly),
@@ -200,9 +207,19 @@ async function macDiscoverOnce(
 ): Promise<ToolResult> {
   const denied = permissionGate(mac, "desktop_discover");
   if (denied) return denied;
+  const asked = input.target as { windowTitle?: string; windowId?: number } | undefined;
+  const windowId = asked?.windowId;
+  if (windowId !== undefined && asked?.windowTitle !== undefined && asked.windowTitle !== "") {
+    return failCode("InvalidArgs", "desktop_discover: pass target.windowTitle or target.windowId, not both.", {
+      suggest: ["Pass target.windowId alone: it names the window whatever it is titled now."],
+    });
+  }
   state.last = undefined;
   state.phase = "discover";
-  const { menuBar, ...seeInput } = input;
+  const { menuBar, ...rest } = input;
+  // The facade keys its sessions by `hwnd`: a window id goes in as that, so the session, and the
+  // read after an act, stay on the window by its id (`windowIdOf`, ax-provider.ts).
+  const seeInput = windowId !== undefined ? { ...rest, target: { hwnd: String(windowId) } } : rest;
   state.discoverMenuBar = menuBar === true;
   // The schema promises raw rects for view:"debug"; the facade adds them only for `debug`.
   let output;
@@ -231,6 +248,11 @@ async function macDiscoverOnce(
   );
   return ok({
     ...output,
+    // By id, the facade has only the number to call the window by: the title is the one read now,
+    // and empty when no window was read (the number is not a title; internal #211 item 5).
+    ...(windowId !== undefined && {
+      target: { ...output.target, title: notes?.windowTitle ?? "", windowId },
+    }),
     entities,
     ...(warnings.length > 0 && { warnings }),
     ...(notes?.appTitle !== undefined && { app: { title: notes.appTitle, pid: notes.pid } }),
@@ -284,7 +306,9 @@ async function macActOnce(
 }
 
 /** Warnings that mean the read after the act did not see the app whole. */
-const INCOMPLETE_READ = { test: (w: string) => UNSURE_READ.test(w) || /^(no_window_matches_title|window_titles_unavailable|no_frontmost_app)$/.test(w) };
+const INCOMPLETE_READ = {
+  test: (w: string) => UNSURE_READ.test(w) || /^(no_window_matches_title|window_titles_unavailable|no_frontmost_app|no_window_with_id)$/.test(w),
+};
 
 /**
  * The touch loop diffs the read after the act against the discover. When that read was

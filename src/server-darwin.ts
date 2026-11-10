@@ -69,7 +69,8 @@ if (!nativeMac) {
         "2. desktop_discover — find actionable entities (returns a lease each)",
         "3. desktop_act(lease, action) — press, open a Finder sidebar entry (invoke), or replace a text field's value; the foreground is not taken",
         "4. desktop_state / desktop_discover — confirm",
-        "screenshot(windowTitle?) — one window as PNG, when pixels are needed (Screen Recording permission)",
+        "screenshot(windowTitle? | windowId?) — one window as PNG, when pixels are needed (Screen Recording permission)",
+        "A window can be targeted by its windowId (desktop_state windows[]) instead of its title: the id stays the same when the app retitles the window.",
         "Discover right before each act. entity_not_found from desktop_act means the window changed since the discover, or the element is gone or no longer what was read: nothing was done; discover again.",
       ].join("\n"),
     }

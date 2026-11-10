@@ -162,12 +162,19 @@
   file as missing when asked whether it exists. The check now reads the alias itself. `host:'classic'` was not affected.
 
 ### Added — macOS (preview)
+- **A window can be targeted by its id, so a window the app retitles is not lost.** `desktop_discover` takes
+  `target.windowId` and `screenshot` takes `windowId`, in place of a title; `desktop_state` lists each window's
+  `windowId` in `windows[]`. The id stays the same when the app retitles the window — TextEdit naming a new document
+  after its first line, a Finder window moved to another folder — where a discover by the old title answered
+  `no_window_matches_title`. A discover by id answers the window's current title in `target.title`, and the read after
+  an act stays on that window. A closed window answers `no_window_with_id`. A title and an id together are refused
+  (internal #265).
 - **`desktop_act` can open Finder's sidebar entries.** They came back as texts that could only be read, so a caller
   could not move the window to another folder. Each is now a `listitem` named by its text, and `invoke` moves the window
   there. `auto` and `click` do not open one. Just before opening, the act checks that the entry is still the one it was
   named for; another is refused and nothing is opened. An entry whose name another entry in the window shows is not
   offered. Finder answers an error even when it opened, so the act answers `ok` with `open.confirmed: false` and
-  `next: refresh_view`; discover again without a target or by the new window title. List rows are not offered yet
+  `next: refresh_view`; discover again by the window's id, without a target, or by the new window title. List rows are not offered yet
   (internal #259; rows: #365).
 - **`desktop_discover` can list the app's menu bar (`menuBar: true`).** Each item is a `menuitem` named by its path,
   such as `表示 > 科学計算`, and `desktop_act` `click` presses it without bringing the app forward. Some buttons

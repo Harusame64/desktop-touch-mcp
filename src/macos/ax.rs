@@ -332,6 +332,22 @@ fn element_key(e: &AXUIElement) -> String {
     )
 }
 
+unsafe extern "C" {
+    /// HIServices' own lookup from an AX window to its CGWindowID (not in the public headers, but
+    /// what window managers have long used). Returns kAXErrorIllegalArgument for a root that is not
+    /// a window, such as Finder's desktop.
+    fn _AXUIElementGetWindow(element: *const AXUIElement, id: *mut u32) -> AXError;
+}
+
+/// The CGWindowID of an AX window: the `windowId` the window list and screenshot report, which
+/// stays the same while the app retitles the window (internal #265; measured 2026-11-10: a Finder
+/// window kept 9199 from ダウンロード to 書類 and back). `None` for a root that is not a window.
+pub(crate) fn window_id(e: &AXUIElement) -> Option<u32> {
+    let mut id: u32 = 0;
+    let err = unsafe { _AXUIElementGetWindow(e as *const AXUIElement, &mut id) };
+    (err == AXError::Success && id != 0).then_some(id)
+}
+
 pub(crate) fn root_key(e: &AXUIElement) -> String {
     let frame = frame(e)
         .map(|f| format!("{},{},{},{}", f.x, f.y, f.width, f.height))
@@ -475,6 +491,9 @@ pub struct MacAxElement {
     /// subroles of `WINDOW_BUTTONS` in src/tools/mac/ax-provider.ts; `None` elsewhere.
     pub role_description: Option<String>,
     pub child_count: u32,
+    /// For a root (depth 0) that is a window: its CGWindowID, the `windowId` of the window list
+    /// (internal #265). `None` below the roots, and for a root that is not a window.
+    pub window_id: Option<u32>,
 }
 
 #[napi_derive::napi(object)]
@@ -648,6 +667,8 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         } else {
             None
         };
+        // Asked of the roots only: the window an element is in is its root's.
+        let window_id = if depth == 0 { read!(window_id(&e)) } else { None };
         elements.push(MacAxElement {
             id: id.clone(),
             root_key: (*key).clone(),
@@ -674,6 +695,7 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
             names_file,
             role_description,
             child_count: kids.len() as u32,
+            window_id,
         });
         if depth < max_depth {
             let mut chain = ancestors;

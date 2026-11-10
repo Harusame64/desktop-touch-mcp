@@ -1022,6 +1022,8 @@ export interface NativeMacAxElement {
   /** The OS's name for a title-bar button (AXRoleDescription, e.g. "閉じるボタン"); only on those buttons. */
   roleDescription?: string
   childCount: number
+  /** For a root (depth 0) that is a window: its CGWindowID, the window list's `windowId`. */
+  windowId?: number
 }
 
 export interface NativeMacAxTree {
