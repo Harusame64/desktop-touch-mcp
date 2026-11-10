@@ -26,7 +26,7 @@ import { GuardedTouchLoop, type TouchAction } from "../../src/engine/world-graph
 import { LeaseStore } from "../../src/engine/world-graph/lease-store.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
 import { getSuggestsForCode } from "../../src/tools/_errors.js";
-import { uiaActionability } from "../../src/tools/desktop-providers/uia-provider.js";
+import { uiaActionability, uiaRoleFromControlType } from "../../src/tools/desktop-providers/uia-provider.js";
 import { resolveCandidates } from "../../src/engine/world-graph/resolver.js";
 
 /** A button as the resolver builds one: `invoke` and `click`, and nothing else. */
@@ -147,6 +147,9 @@ describe("internal #154 — an action the target does not offer", () => {
   it("auto selects a collection item that offers select, rather than invoking (opening) it", async () => {
     const { performed } = await act(listItem(), "auto");
     expect(performed).toEqual(["click"]); // the select road
+    // auto picked select itself, not a fall-back: with only select and type on offer, a missed select
+    // would come out as type (agy on #919).
+    expect((await act(listItem({ affordances: [{ verb: "select" }, { verb: "type" }] }), "auto")).performed).toEqual(["click"]);
     // An entity that lists select without being a collection item resolves auto to a verb it takes.
     const odd = { ...button(), affordances: [{ verb: "select" }, { verb: "invoke" }, { verb: "click" }] } as unknown as UiEntity;
     expect((await act(odd, "auto")).performed).toEqual(["invoke"]);
@@ -188,9 +191,16 @@ describe("internal #154 — an action the target does not offer", () => {
     expect(entity!.affordances.map((a) => a.verb)).toEqual(["select", "click", "invoke"]);
   });
 
+  it("the UIA provider gives list, tree and grid items the role listitem", () => {
+    for (const ct of ["ListItem", "DataItem", "TreeItem"]) expect(uiaRoleFromControlType(ct)).toBe("listitem");
+    expect(uiaRoleFromControlType("Button")).toBe("button");
+    expect(uiaRoleFromControlType("Pane")).toBe("unknown");
+  });
+
   it("the UIA provider offers select only on a collection item with SelectionItemPattern", () => {
     expect(uiaActionability("ListItem", ["SelectionItemPattern", "InvokePattern"])).toEqual(["select", "click", "invoke"]);
     expect(uiaActionability("TreeItem", ["SelectionItemPattern"])).toEqual(["select", "click"]);
+    expect(uiaActionability("DataItem", ["SelectionItemPattern"])).toEqual(["select", "click"]);
     expect(uiaActionability("DataItem", ["InvokePattern", "ValuePattern"])).toEqual(["click", "invoke"]);
     for (const ct of ["Button", "CheckBox", "Edit", "ComboBox", "Text", "Pane"]) {
       expect(uiaActionability(ct, ["SelectionItemPattern"])).not.toContain("select");

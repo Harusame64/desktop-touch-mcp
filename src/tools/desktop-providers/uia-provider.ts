@@ -21,7 +21,7 @@ import { WEB_AREA_AUTOMATION_ID } from "../_advisory.js";
 import type { UiElement } from "../../engine/uia-bridge.js";
 import { isCollectionItemControlType } from "../../engine/collection-item.js";
 
-function uiaRoleFromControlType(ct: string): string {
+export function uiaRoleFromControlType(ct: string): string {
   const map: Record<string, string> = {
     Button: "button", CheckBox: "button", RadioButton: "button",
     Edit: "textbox", ComboBox: "textbox",
