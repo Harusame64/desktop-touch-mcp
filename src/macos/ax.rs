@@ -1041,7 +1041,7 @@ fn only_item_named(cell: &AXUIElement, name: &str, timeout_secs: f32) -> bool {
             if !actions.iter().any(|a| a == "AXOpen") || actions.iter().any(|a| a == "AXPress") {
                 continue;
             }
-            match item_name_strict(c, &held, &late) {
+            match item_name_strict(c, &|| timeout_secs.min(left()), &held, &late) {
                 Err(()) => return false,
                 Ok(Some(n)) if n == name => count += 1,
                 Ok(_) => {}
@@ -1070,12 +1070,13 @@ fn action_names_strict(e: &AXUIElement) -> Result<Vec<String>, AXError> {
 /// must not pass for one that names nothing.
 fn item_name_strict(
     cell: &AXUIElement,
+    left_secs: &dyn Fn() -> f32,
     held: &dyn Fn(&AXUIElement),
     late: &dyn Fn() -> bool,
 ) -> Result<Option<String>, ()> {
     // Every request held to the time left and the budget checked after each, as the caller does.
     held(cell);
-    let kids = children_read(cell, DEFAULT_TIMEOUT_SECS).ok_or(())?;
+    let kids = children_read(cell, left_secs()).ok_or(())?;
     if late() {
         return Err(());
     }
