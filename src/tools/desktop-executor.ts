@@ -139,7 +139,13 @@ export interface ExecutorDeps {
    */
   /** Resolves with how the focus was moved to the element before the press, when the backend says (internal #216). */
   /** `focusedTextField`: internal #324 — a text field with no Invoke had the focus moved into it instead. */
-  uiaClick(windowTitle: string, name?: string, automationId?: string, hwnd?: bigint): Promise<{ focusedBy?: string; focusedTextField?: true } | void>;
+  /**
+   * `controlType`: internal #233 PR4 — the UIA control type discover read for the entity, so the lookup
+   * by name does not take another element whose name contains the same text (a label beside the
+   * button it names). Both roads match it as the reads report it (`actions.rs::matches_with_ct`, the
+   * PowerShell script's `ControlType.ProgrammaticName`). Absent for an entity no UIA read described.
+   */
+  uiaClick(windowTitle: string, name?: string, automationId?: string, hwnd?: bigint, controlType?: string): Promise<{ focusedBy?: string; focusedTextField?: true } | void>;
   /**
    * internal #233 — UIA SelectionItemPattern: select a collection item (ListItem, DataItem, TreeItem)
    * where a click lands on one, instead of `uiaClick`'s Invoke, which acts as a double-click on these
@@ -3320,7 +3326,14 @@ export function createDesktopExecutor(
         singleClick = selected;
       }
       if (singleClick === undefined) try {
-        const pressed = await d.uiaClick(winTitle, name, automationId, aimHwnd);
+        // internal #233 PR4: the type discover read, so the lookup by name does not take another element
+        // whose name contains the same text (win2 2026-11-10, WPF with no AutomationId: a click on the
+        // Button "Save" pressed the MenuItem "Save" above it, ok:true). Left off where it could stop the
+        // click finding a present element (gate 2 on #920): when discover's read was not the native
+        // client's (the clients name some types differently), and for Edit, Document and Text, which the
+        // clients name differently and the native one by the element's state (`mod.rs::reported_control_type`).
+        const lookupType = clickLookupControlType(entity);
+        const pressed = await d.uiaClick(winTitle, name, automationId, aimHwnd, ...(lookupType !== undefined ? [lookupType] : []));
         // internal #324 — `focusedTextField`: a text field with no Invoke had the focus moved into it, and
         // was not pressed. A field beside `why`, not a new `why`: the road is still UI Automation's click.
         probeRoute("uia", aimHwnd, entity, { why: "uia_invoke", focusedBy: pressed?.focusedBy ?? null, focusedTextField: pressed?.focusedTextField === true, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
@@ -3438,6 +3451,9 @@ export function createDesktopExecutor(
         // both clients match by a case-insensitive name substring, first in tree order, within a
         // window matched by a title substring (`uia-route-failure.ts`; the native road too — gate 2
         // on this change): a disabled "Save All" earlier in the tree answers for an enabled "Save".
+        // Since internal #233 PR4 the click also filters by the control type a native read reported
+        // (`clickLookupControlType`, itself a substring of the type name), which narrows that but does
+        // not close it: a same-typed "Save All" still answers for "Save".
         // So the answer is believed only with evidence that it is about THIS element: the read and
         // the click were both native (item 16's condition), AND the OS says the element's own
         // window, or the window the entity was captured in, does not take input. An AutomationId is
@@ -3765,13 +3781,13 @@ export function _realExecutorDepsForTest(): ExecutorDeps {
 function getSharedRealDeps(): ExecutorDeps {
   if (_realDepsCache) return _realDepsCache;
   _realDepsCache = {
-    async uiaClick(windowTitle, name, automationId, hwnd) {
+    async uiaClick(windowTitle, name, automationId, hwnd, controlType) {
       const { clickElement } = await import("../engine/uia-bridge.js");
       // ADR-036 — the bridge has taken a handle since H3 ("bypass title-based root search",
       // added for Save As and the other common dialogs), and `ui-elements.ts` has passed one
       // for every resolved window since then. What could not reach it was THIS path: the
       // interface above had nowhere to put a handle, so `desktop_act` always asked by title.
-      const r = await clickElement(windowTitle, name, automationId, undefined, hwnd !== undefined ? { hwnd } : undefined);
+      const r = await clickElement(windowTitle, name, automationId, controlType, hwnd !== undefined ? { hwnd } : undefined);
       // ADR-036 — "the window is gone" is not "UIA could not do it": see `aim.ts`.
       if (!r.ok && r.code === AIM_WINDOW_GONE) throw new AimedWindowGoneError(hwnd, r.error);
       // Which client answered, carried on the error: item 16 believes a "not found" only from the
@@ -4219,4 +4235,17 @@ function getSharedRealDeps(): ExecutorDeps {
     },
   };
   return _realDepsCache;
+}
+
+/**
+ * internal #233 PR4 — the control type the UI Automation click may look its element up by, or none.
+ * Both roads match it as a case-insensitive substring of the type name (`actions.rs::matches_with_ct`,
+ * the PowerShell script's `-like`), so `Button` also admits RadioButton and SplitButton: it narrows the
+ * lookup to the type and types whose name contains it, which is what keeps a MenuItem or Hyperlink
+ * of the same name out. Exported for tests.
+ */
+export function clickLookupControlType(entity: UiEntity): string | undefined {
+  const ct = entity.controlType;
+  if (ct === undefined || entity.locator?.uia?.via !== "native") return undefined;
+  return ct === "Edit" || ct === "Document" || ct === "Text" ? undefined : ct;
 }
