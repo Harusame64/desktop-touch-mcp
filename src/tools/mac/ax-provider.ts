@@ -292,6 +292,18 @@ export function axDigest(
 }
 
 /**
+ * internal #271 — the elements that have an alike one in this read (by `sortOf`, as
+ * `uniquenessOf` counts them, whole or not): the ones another element can come to stand in for. Not
+ * "not unique": a read that is not whole marks nothing unique (Finder's always is), and a sibling
+ * check on every element of such a read would refuse acts that main made, whenever a read near them
+ * failed or changed (gate 2 on #930).
+ */
+function withTwinSeen(elements: readonly NativeMacAxElement[]): Set<string> {
+  const whole = uniquenessOf(elements, false);
+  return new Set(elements.filter((e) => whole.get(e.id) === false).map((e) => e.id));
+}
+
+/**
  * Whether each element (by its path in this read) is the only one of its kind under its window.
  * A read cut short (`truncated`), or one where some element's children or identity could not be
  * read (`readIncomplete`), cannot say: a twin may lie past the cut, under that element, or read as
@@ -323,6 +335,44 @@ function sortOf(e: NativeMacAxElement): string {
   return `${e.rootKey}|${e.role}|${fields}${shown}`;
 }
 
+/** How many siblings on each side `siblingSignature` holds (`SIBLINGS_EACH_SIDE`, src/macos/ax.rs). */
+export const SIBLINGS_EACH_SIDE = 3;
+
+/**
+ * internal #271 — an element's siblings around it (`SIBLINGS_EACH_SIDE` on each side of it, itself
+ * among them, in order) as the native act reads them now (`sibling_entry` / `siblings_now`,
+ * src/macos/ax.rs; the two must agree character for character): role, title, description, and a
+ * static text's value. Safari flattens a list's rows into one parent, so a row's name sits next to
+ * its Delete button; when the rows are groups, each row's children differ by its name. `undefined`
+ * when the read does not hold every sibling in that span (by index, against the parent's
+ * `childCount`), or for a root: then nothing is compared.
+ */
+export function siblingSignature(e: NativeMacAxElement, byId: Map<string, NativeMacAxElement>): string | undefined {
+  const cut = e.id.lastIndexOf(".");
+  if (e.depth === 0 || cut < 0) return undefined;
+  const parentId = e.id.slice(0, cut);
+  const parent = byId.get(parentId);
+  const at = Number(e.id.slice(cut + 1));
+  if (parent === undefined || !Number.isInteger(at) || at >= parent.childCount) return undefined;
+  const from = Math.max(0, at - SIBLINGS_EACH_SIDE);
+  const to = Math.min(parent.childCount, at + SIBLINGS_EACH_SIDE + 1);
+  const span: NativeMacAxElement[] = [];
+  for (let i = from; i < to; i++) {
+    const k = byId.get(`${parentId}.${i}`);
+    if (k === undefined) return undefined;
+    span.push(k);
+  }
+  // Each field as its length in characters (code points, as Rust's chars().count()), a colon, and
+  // the text: a page's text may hold any separator (gate 2 on #930).
+  const field = (f: string) => `${[...f].length}:${f}`;
+  return span
+    .map((k) => {
+      const value = k.role === "AXStaticText" ? (k.value ?? "") : "";
+      return [k.role, k.title ?? "", k.description ?? "", value].map(field).join("");
+    })
+    .join("");
+}
+
 export function toCandidate(
   e: MacReadElement,
   pid: number,
@@ -330,7 +380,9 @@ export function toCandidate(
   observedAtMs: number,
   unique = true,
   /** A menu item's path ("表示 > 科学計算"), named in place of its own title. */
-  labelOverride?: string
+  labelOverride?: string,
+  /** internal #271 — for an element that is not unique: its siblings as read (`siblingSignature`). */
+  siblings?: string
 ): UiEntityCandidate {
   const label = labelOverride ?? labelOf(e);
   const secure = e.subrole === SECURE;
@@ -349,7 +401,9 @@ export function toCandidate(
     observedAtMs,
     status: "observed",
     digest: axDigest(pid, e, unique),
-    locator: { ax: { pid, id: e.id, role: e.role, rootKey: e.rootKey, elementKey: e.elementKey, unique } },
+    locator: {
+      ax: { pid, id: e.id, role: e.role, rootKey: e.rootKey, elementKey: e.elementKey, unique, ...(!unique && siblings !== undefined && { siblings }) },
+    },
   };
 }
 
@@ -597,13 +651,25 @@ async function readPidUnderTitle(
   // An item's text is left out only when the item itself is offered: a disabled sidebar entry (an
   // ejected volume) still reads by its text (gate 2 on #927).
   const offeredIds = new Set(offered.map((e) => e.id));
+  // An element not unique under its root is told from an alike one that comes to sit at its path by
+  // its siblings, as the native read saw them (internal #271): from the tree as read, not as named.
+  const byId = new Map(tree.elements.map((e) => [e.id, e]));
+  const twins = withTwinSeen(tree.elements);
+  const siblingsOf = (e: NativeMacAxElement, isUnique: boolean) =>
+    isUnique || !twins.has(e.id) ? undefined : siblingSignature(e, byId);
   const candidates = offered
     .filter((e) => !offeredIds.has(named.namedBy.get(e.id) ?? ""))
-    .map((e) => toCandidate(e, pid, targetId, observedAtMs, unique.get(e.id) === true));
+    .map((e) => {
+      const isUnique = unique.get(e.id) === true;
+      return toCandidate(e, pid, targetId, observedAtMs, isUnique, undefined, siblingsOf(byId.get(e.id) ?? e, isUnique));
+    });
   // The menu bar is the app's, not the window's: offered beside the titled window's controls.
   const menu = tree.elements
     .filter((e) => items.has(e.id))
-    .map((e) => toCandidate(e, pid, targetId, observedAtMs, unique.get(e.id) === true, items.get(e.id)));
+    .map((e) => {
+      const isUnique = unique.get(e.id) === true;
+      return toCandidate(e, pid, targetId, observedAtMs, isUnique, items.get(e.id), siblingsOf(e, isUnique));
+    });
   if (menu.length > 0) notes.menuEntityIds = menu.map((c) => `ent_${c.digest}`);
   // Say why a titled read came back empty rather than answer it as if the window held nothing
   // (internal #257) — unless a warning above already says why (a sleeping display, a cut-off or

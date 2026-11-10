@@ -26,6 +26,12 @@ export interface EntityLocator {
     rootKey: string;
     elementKey: string;
     unique?: boolean;
+    /**
+     * internal #271 — for an element that was not unique: its siblings as read
+     * (`siblingSignature`, src/tools/mac/ax-provider.ts). The act refuses when they are not the same
+     * now: another alike element at the same path and frame has other siblings.
+     */
+    siblings?: string;
   };
   /** UIA: element identified by AutomationId and/or accessible name. */
   uia?: {

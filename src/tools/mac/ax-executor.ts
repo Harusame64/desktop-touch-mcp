@@ -155,6 +155,8 @@ export function createMacAxExecutor(deps: MacAxExecutorDeps): ExecutorFn {
       expectedRootKey: ax.rootKey,
       expectedElementKey: ax.elementKey,
       relocatable: ax.unique === true,
+      // Not unique: the element is told from an alike one at the same path by its siblings (internal #271).
+      ...(ax.unique !== true && ax.siblings !== undefined && { expectedSiblings: ax.siblings }),
     };
 
     // A list item opens (internal #259), and only on invoke — before the write branch, so no verb

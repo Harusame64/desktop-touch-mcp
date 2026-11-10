@@ -959,6 +959,13 @@ pub struct MacAxTarget {
     /// just before the action, so a row that now holds another item is refused (`element_changed`),
     /// never acted on: the element key holds no name (gate 2 on #927).
     pub expected_item_name: Option<String>,
+    /// internal #271 — for an element that was not the only one of its kind under its root: its
+    /// siblings as read (`sibling_signature`). AX gives an element no identity of its own, so another
+    /// element alike that comes to sit at the same path and frame — the next row's Delete after a row
+    /// above went — passes the role and key checks; its siblings do not. Checked on the element
+    /// found, in the same call and before anything is sent; another, or a read that fails, is
+    /// refused (`element_changed`).
+    pub expected_siblings: Option<String>,
 }
 
 #[napi_derive::napi(object)]
@@ -1028,7 +1035,146 @@ fn locate(t: &MacAxTarget) -> Result<CFRetained<AXUIElement>, MacActResult> {
     if let Some(blocker) = modal_blocker(&app, &root, &id, timeout) {
         return Err(MacActResult { role: Some(role), blocker: Some(blocker), ..refused("modal_blocking") });
     }
+    // After the sheet check: a sheet that opened is a child of the window, so it changes the span of
+    // an element right under the window, and the caller must be told to answer it (gate 2 on #930).
+    if let Some(expected) = &t.expected_siblings {
+        // The siblings were read at the leased path: an element found elsewhere (`relocate`) has
+        // others, and is not compared with them (gate 2 on #930; the executor never asks both).
+        let now = if id == t.id {
+            let read = id
+                .rsplit_once('.')
+                .and_then(|(parent, at)| Some((parent, at.parse::<usize>().ok()?)))
+                .and_then(|(parent, at)| siblings_now(&app, parent, at, &e, timeout).ok());
+            // The checks above held the element to the budget; the act that follows gets the
+            // caller's timeout back (gate 2 on #930).
+            unsafe { e.set_messaging_timeout(timeout) };
+            read
+        } else {
+            None
+        };
+        if now.as_deref() != Some(expected.as_str()) {
+            return Err(MacActResult { role: Some(role), ..refused("element_changed") });
+        }
+    }
     Ok(e)
+}
+
+/// internal #271 — one sibling as `sibling_signature` writes it: its role, title and description,
+/// and a static text's value (the row's name, in a list whose rows are flattened into one parent, as
+/// Safari's are), each as its length in characters (Unicode scalar values), a colon, and the text.
+/// Lengths, not separators: a page's text may hold any character, and two spans must not read the
+/// same because one's text holds the separator (gate 2 on #930). src/tools/mac/ax-provider.ts writes
+/// the same from the tree it read (`siblingSignature`); the two must agree character for character.
+pub(crate) fn sibling_entry(role: &str, title: Option<&str>, description: Option<&str>, value: Option<&str>) -> String {
+    let value = if role == "AXStaticText" { value.unwrap_or("") } else { "" };
+    [role, title.unwrap_or(""), description.unwrap_or(""), value]
+        .iter()
+        .map(|f| format!("{}:{f}", f.chars().count()))
+        .collect()
+}
+
+/// How long the sibling check may take in all (`siblings_now`): every message waits at most the time
+/// left, and a check past it refuses, so a busy app cannot hold the serialised act chain (gate 2 on #930).
+const SIBLING_CHECK_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How many siblings on each side of the element `sibling_signature` holds: the row's name sits next
+/// to its button, and a parent with hundreds of children (a Safari page) costs a few reads, not
+/// hundreds, and a change far away (a clock) does not refuse the act. src/tools/mac/ax-provider.ts
+/// uses the same number (`SIBLINGS_EACH_SIDE`).
+pub(crate) const SIBLINGS_EACH_SIDE: usize = 3;
+
+/// `resolve`, held to a budget: each step waits at most the time left, and the walk stops (`None`)
+/// once `late()` says it is spent (codex on #930: ten slow ancestors went past the budget).
+fn resolve_within(
+    app: &AXUIElement,
+    path: &str,
+    timeout_secs: f32,
+    left: &dyn Fn() -> f32,
+    late: &dyn Fn() -> bool,
+) -> Option<CFRetained<AXUIElement>> {
+    let mut parts = path.split('.');
+    unsafe { app.set_messaging_timeout(timeout_secs.min(left())) };
+    let mut cur = match parts.next()? {
+        "a" => {
+            let i: usize = parts.next()?.parse().ok()?;
+            children(app, timeout_secs.min(left())).into_iter().nth(i)?
+        }
+        "f" => attr_element(app, "AXFocusedWindow", timeout_secs.min(left()))?,
+        "m" => attr_element(app, "AXMainWindow", timeout_secs.min(left()))?,
+        _ => return None,
+    };
+    for p in parts {
+        if late() {
+            return None;
+        }
+        let i: usize = p.parse().ok()?;
+        unsafe { cur.set_messaging_timeout(timeout_secs.min(left())) };
+        cur = children(&cur, timeout_secs.min(left())).into_iter().nth(i)?;
+    }
+    if late() {
+        return None;
+    }
+    Some(cur)
+}
+
+/// The siblings of `element` around index `at` (`SIBLINGS_EACH_SIDE` each way, itself among them), as
+/// `sibling_entry` writes them, in order, read now from the parent at `parent_path` — the parent the
+/// tree read walked into, not `AXParent`, which an app may point elsewhere (gate 2 on #930). `Err`
+/// when the parent or its children cannot be read, the child at `at` is not `element`, or the check
+/// runs past `SIBLING_CHECK_BUDGET` (every message is held to the time left). An attribute that
+/// fails is written empty, as the tree read writes it (it marks the read incomplete and leaves the
+/// field out): the two must agree, or an act the read offered would be refused (gate 2 on #930).
+/// The caller restores `element`'s own timeout.
+fn siblings_now(app: &AXUIElement, parent_path: &str, at: usize, element: &AXUIElement, timeout_secs: f32) -> Result<String, ()> {
+    let t0 = std::time::Instant::now();
+    let left = || SIBLING_CHECK_BUDGET.saturating_sub(t0.elapsed()).as_secs_f32().max(0.05);
+    let late = || t0.elapsed() >= SIBLING_CHECK_BUDGET;
+    let parent = resolve_within(app, parent_path, timeout_secs, &left, &late).ok_or(())?;
+    unsafe { parent.set_messaging_timeout(timeout_secs.min(left())) };
+    let kids = children_read(&parent, timeout_secs.min(left())).ok_or(())?;
+    if late() || at >= kids.len() || !same(&kids[at], element) {
+        return Err(());
+    }
+    let from = at.saturating_sub(SIBLINGS_EACH_SIDE);
+    let to = (at + SIBLINGS_EACH_SIDE + 1).min(kids.len());
+    let mut parts = String::new();
+    for k in &kids[from..to] {
+        let read = |name: &'static str| {
+            unsafe { k.set_messaging_timeout(timeout_secs.min(left())) };
+            attr_string_strict(k, name).ok().flatten().filter(|s| !s.is_empty())
+        };
+        let role = read("AXRole").unwrap_or_default();
+        let title = read("AXTitle");
+        let description = read("AXDescription");
+        let value = if role == "AXStaticText" {
+            unsafe { k.set_messaging_timeout(timeout_secs.min(left())) };
+            value_text_marked(k).map(|(s, _)| s)
+        } else {
+            None
+        };
+        if late() {
+            return Err(());
+        }
+        parts.push_str(&sibling_entry(&role, title.as_deref(), description.as_deref(), value.as_deref()));
+    }
+    Ok(parts)
+}
+
+#[cfg(test)]
+mod sibling_entry_tests {
+    use super::sibling_entry;
+
+    /// The same literal as tests/unit/an-alike-element-at-the-same-path-is-not-the-leased-one.test.ts:
+    /// the two sides must agree character for character (gate 2 on #930).
+    #[test]
+    fn writes_what_the_ts_side_writes() {
+        let span = [
+            sibling_entry("AXStaticText", None, None, Some("R1 りんご")),
+            sibling_entry("AXButton", Some("Delete"), None, Some("1")),
+        ]
+        .concat();
+        assert_eq!(span, "12:AXStaticText0:0:6:R1 りんご8:AXButton6:Delete0:0:");
+    }
 }
 
 /// The path of the root an element path starts from: `a.<i>`, `f` or `m`.

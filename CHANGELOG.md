@@ -192,6 +192,14 @@
   when asked (internal #258).
 
 ### Fixed — macOS (preview)
+- **`desktop_act` no longer presses the next row's button when the leased row went away.** Rows of a list often
+  have alike buttons (each row's Delete). When a row above the leased one was removed and the next row moved into its
+  place, the act took that row's button for the leased one and pressed it: in Safari, R1's Delete deleted R2. For an
+  element that has an alike one in the window, the act now also checks the elements next to it, as discovered. When
+  they changed, the act is refused with `entity_not_found` and nothing is pressed; discover again. A change farther
+  away (more than three elements on either side) does not refuse it, but a text right next to it that keeps changing (a
+  clock) does. Not covered: a button alone in its own container, or a row's name held inside another element, such as a
+  heading; and an element whose neighbours the discover did not read in full (internal #271; those cases: #367).
 - **`desktop_discover` says whether a checkbox is ticked and which option a pop-up shows.** A checkbox, radio button or
   pop-up came back as a `button` with no state, so a caller could not tell whether a box was ticked or which option
   was chosen. Their state now comes back as `value`: `1` on, `0` off and `2` mixed for a checkbox or radio button
