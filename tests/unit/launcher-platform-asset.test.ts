@@ -38,20 +38,45 @@ describe("the release zip for a platform", () => {
 });
 
 describe("started through npm's bin symlink (codex, #785)", () => {
-  it("counts a symlink to the launcher as the launcher, and another file as not", async () => {
-    const { mkdtempSync, symlinkSync, writeFileSync } = await import("node:fs");
+  it("counts the launcher's own path as the launcher, and another file as not", async () => {
+    const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { fileURLToPath } = await import("node:url");
     const { isLaunchedAsScript } = await import(/* @vite-ignore */ `${LAUNCHER.href}?bin`);
     const dir = mkdtempSync(join(tmpdir(), "dtmcp-bin-"));
-    const link = join(dir, "desktop-touch-mcp");
-    symlinkSync(fileURLToPath(LAUNCHER), link);
-    const other = join(dir, "other.js");
-    writeFileSync(other, "");
-    expect(isLaunchedAsScript(link, LAUNCHER.href)).toBe(true);
-    expect(isLaunchedAsScript(fileURLToPath(LAUNCHER), LAUNCHER.href)).toBe(true);
-    expect(isLaunchedAsScript(other, LAUNCHER.href)).toBe(false);
-    expect(isLaunchedAsScript(undefined, LAUNCHER.href)).toBe(false);
+    try {
+      const other = join(dir, "other.js");
+      writeFileSync(other, "");
+      expect(isLaunchedAsScript(fileURLToPath(LAUNCHER), LAUNCHER.href)).toBe(true);
+      expect(isLaunchedAsScript(other, LAUNCHER.href)).toBe(false);
+      expect(isLaunchedAsScript(undefined, LAUNCHER.href)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("counts a symlink to the launcher as the launcher", async (ctx) => {
+    const { mkdtempSync, rmSync, symlinkSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const { isLaunchedAsScript } = await import(/* @vite-ignore */ `${LAUNCHER.href}?bin`);
+    const dir = mkdtempSync(join(tmpdir(), "dtmcp-bin-"));
+    try {
+      const link = join(dir, "desktop-touch-mcp");
+      try {
+        symlinkSync(fileURLToPath(LAUNCHER), link);
+      } catch (e) {
+        // Windows refuses a symlink without Developer Mode or elevation (EPERM): that is the
+        // machine's permission, not the launcher's behaviour, so the cell says so and skips
+        // (internal #275). CI's runners can make one, so the cell runs there.
+        if ((e as NodeJS.ErrnoException).code === "EPERM") ctx.skip("this machine may not create symlinks (EPERM)");
+        throw e;
+      }
+      expect(isLaunchedAsScript(link, LAUNCHER.href)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
