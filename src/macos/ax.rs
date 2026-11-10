@@ -983,17 +983,34 @@ pub(crate) fn perform(t: &MacAxTarget, action: &str) -> MacActResult {
 /// not a twin. Fails closed: a list or row that cannot be read, or a walk past `OPEN_CHECK_BUDGET`
 /// (an app too busy to answer), is not "only one".
 fn only_item_named(cell: &AXUIElement, name: &str, timeout_secs: f32) -> bool {
-    let started = std::time::Instant::now();
-    let Some(row) = attr_element(cell, "AXParent", timeout_secs) else { return false };
-    let Some(list) = attr_element(&row, "AXParent", timeout_secs) else { return false };
+    // Every message is held to the time left and the budget is checked after each, as `relocate`
+    // does (codex on #927): a busy app cannot hold the serialised act chain past the budget.
+    let t0 = std::time::Instant::now();
+    let left = || OPEN_CHECK_BUDGET.saturating_sub(t0.elapsed()).as_secs_f32().max(0.05);
+    let late = || t0.elapsed() >= OPEN_CHECK_BUDGET;
+    let held = |e: &AXUIElement| unsafe { e.set_messaging_timeout(timeout_secs.min(left())) };
+    held(cell);
+    let Some(row) = attr_element(cell, "AXParent", timeout_secs.min(left())) else { return false };
+    if late() {
+        return false;
+    }
+    let Some(list) = attr_element(&row, "AXParent", timeout_secs.min(left())) else { return false };
+    if late() {
+        return false;
+    }
     let Ok(Some(rows)) = attr_opt(&list, "AXRows") else { return false };
     let mut count = 0;
-    for r in children_of(rows, timeout_secs) {
-        if started.elapsed() > OPEN_CHECK_BUDGET {
+    for r in children_of(rows, timeout_secs.min(left())) {
+        if late() {
             return false;
         }
-        let Some(cells) = children_read(&r, timeout_secs) else { return false };
+        held(&r);
+        let Some(cells) = children_read(&r, timeout_secs.min(left())) else { return false };
         for c in &cells {
+            if late() {
+                return false;
+            }
+            held(c);
             // A cell whose identity cannot be read may be the twin: refuse rather than skip it
             // (codex on #927). An attribute the cell does not give is an answer, not a failure.
             let Ok(role) = attr_string_strict(c, "AXRole") else { return false };
@@ -1004,14 +1021,14 @@ fn only_item_named(cell: &AXUIElement, name: &str, timeout_secs: f32) -> bool {
             if !actions.iter().any(|a| a == "AXOpen") || actions.iter().any(|a| a == "AXPress") {
                 continue;
             }
-            match item_name_strict(c, timeout_secs) {
+            match item_name_strict(c, timeout_secs.min(left())) {
                 Err(()) => return false,
                 Ok(Some(n)) if n == name => count += 1,
                 Ok(_) => {}
             }
         }
     }
-    count == 1
+    !late() && count == 1
 }
 
 /// `action_names`, failing when the read failed rather than answering "none".
