@@ -93,7 +93,8 @@ export const macActDescription = buildDesc({
   details:
     "Acts through Accessibility on the background app — the foreground is not taken. An element whose place among its siblings changed " +
     "(one before it came or went) is found again. Refused with entity_not_found when the element's window changed since the discover, or " +
-    "the element is gone or no longer what was read (nothing was done; discover again) — a window the app retitled counts as changed, " +
+    "the element is gone or no longer what was read (nothing was done; discover again) — an element alike others (each row's Delete) also when " +
+    "the elements next to it changed, so the next row's Delete that moved into its place is not pressed; a window the app retitled counts as changed, " +
     "so after an act that retitles it (TextEdit autosave naming a document) discover again, by windowId to keep the same window — and action_not_offered when the entity does not " +
     "offer the action (type on a button, click on a text), and modal_blocking when a sheet or an app-modal window is open over it " +
     "(answer that first). value_not_applied: the app took the write but the field does not hold the text " +

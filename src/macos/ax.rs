@@ -959,6 +959,13 @@ pub struct MacAxTarget {
     /// just before the action, so a row that now holds another item is refused (`element_changed`),
     /// never acted on: the element key holds no name (gate 2 on #927).
     pub expected_item_name: Option<String>,
+    /// internal #271 — for an element that was not the only one of its kind under its root: its
+    /// siblings as read (`sibling_signature`). AX gives an element no identity of its own, so another
+    /// element alike that comes to sit at the same path and frame — the next row's Delete after a row
+    /// above went — passes the role and key checks; its siblings do not. Checked on the element
+    /// found, in the same call and before anything is sent; another, or a read that fails, is
+    /// refused (`element_changed`).
+    pub expected_siblings: Option<String>,
 }
 
 #[napi_derive::napi(object)]
@@ -1024,11 +1031,68 @@ fn locate(t: &MacAxTarget) -> Result<CFRetained<AXUIElement>, MacActResult> {
             }
         }
     };
+    if let Some(expected) = &t.expected_siblings {
+        let now = id
+            .rsplit_once('.')
+            .and_then(|(parent, _)| resolve(&app, parent, timeout))
+            .and_then(|(_, parent)| siblings_now(&parent, child_index(&id)?, timeout).ok());
+        if now.as_deref() != Some(expected.as_str()) {
+            return Err(MacActResult { role: attr_string(&e, "AXRole"), ..refused("element_changed") });
+        }
+    }
     let role = attr_string(&e, "AXRole").unwrap_or_default();
     if let Some(blocker) = modal_blocker(&app, &root, &id, timeout) {
         return Err(MacActResult { role: Some(role), blocker: Some(blocker), ..refused("modal_blocking") });
     }
     Ok(e)
+}
+
+/// internal #271 — one sibling as `sibling_signature` writes it: its role, title and description,
+/// and a static text's value (the row's name, in a list whose rows are flattened into one parent, as
+/// Safari's are). src/tools/mac/ax-provider.ts writes the same from the tree it read
+/// (`siblingSignature`); the two must agree character for character.
+pub(crate) fn sibling_entry(role: &str, title: Option<&str>, description: Option<&str>, value: Option<&str>) -> String {
+    let value = if role == "AXStaticText" { value.unwrap_or("") } else { "" };
+    format!("{role}\u{1f}{}\u{1f}{}\u{1f}{value}", title.unwrap_or(""), description.unwrap_or(""))
+}
+
+/// How many siblings on each side of the element `sibling_signature` holds: the row's name sits next
+/// to its button, and a parent with hundreds of children (a Safari page) costs a few reads, not
+/// hundreds, and a change far away (a clock) does not refuse the act. src/tools/mac/ax-provider.ts
+/// uses the same number (`SIBLINGS_EACH_SIDE`).
+pub(crate) const SIBLINGS_EACH_SIDE: usize = 3;
+
+/// The last index of a child-index path.
+fn child_index(id: &str) -> Option<usize> {
+    id.rsplit_once('.')?.1.parse().ok()
+}
+
+/// The element's siblings around index `at` (`SIBLINGS_EACH_SIDE` each way, itself among them), as
+/// `sibling_entry` writes them, in order, read now. Each read is strict: a failure is an `Err`, not
+/// an absent attribute, so the act is refused rather than compared on a partial read.
+fn siblings_now(parent: &AXUIElement, at: usize, timeout_secs: f32) -> Result<String, ()> {
+    let kids = children_read(parent, timeout_secs).ok_or(())?;
+    if at >= kids.len() {
+        return Err(());
+    }
+    let from = at.saturating_sub(SIBLINGS_EACH_SIDE);
+    let to = (at + SIBLINGS_EACH_SIDE + 1).min(kids.len());
+    let mut parts = Vec::with_capacity(to - from);
+    for k in &kids[from..to] {
+        let role = attr_string_strict(k, "AXRole").map_err(|_| ())?.unwrap_or_default();
+        let title = attr_string_strict(k, "AXTitle").map_err(|_| ())?.filter(|s| !s.is_empty());
+        let description = attr_string_strict(k, "AXDescription").map_err(|_| ())?.filter(|s| !s.is_empty());
+        let value = if role == "AXStaticText" {
+            match attr_opt(k, "AXValue").map_err(|_| ())? {
+                Some(v) => value_text_of(&v).map(|(s, _)| s),
+                None => None,
+            }
+        } else {
+            None
+        };
+        parts.push(sibling_entry(&role, title.as_deref(), description.as_deref(), value.as_deref()));
+    }
+    Ok(parts.join("\u{1e}"))
 }
 
 /// The path of the root an element path starts from: `a.<i>`, `f` or `m`.

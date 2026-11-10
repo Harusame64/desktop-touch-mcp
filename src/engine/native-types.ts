@@ -1060,6 +1060,8 @@ export interface NativeMacAxTarget {
   timeoutSecs?: number
   /** For an act on a list item: the name read for it (its first child text). Checked just before the action; another name refuses (`element_changed`). */
   expectedItemName?: string
+  /** For an element that was not unique: its siblings as read (`siblingSignature`). Another set now refuses (`element_changed`, internal #271). */
+  expectedSiblings?: string
 }
 
 export interface NativeMacActResult {
