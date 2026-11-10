@@ -315,6 +315,26 @@ describe("a type into Word's body fails only when the page text did not change a
     expect(readHostText).toHaveBeenCalledTimes(3);
   });
 
+  it("ends unread, not unchanged, when every read after the post is empty (internal #237)", async () => {
+    const { out, readHostText } = await typeReadBack("abc", ["Hello.", ""]);
+    expect(out).toMatchObject({ kind: "keyboard", landing: { confirmed: false } });
+    expect(readHostText).toHaveBeenCalledTimes(7);
+  });
+
+  it("on a blank document an empty read is the page as it is: refused when it stays empty (internal #237)", async () => {
+    const { out } = await typeReadBack("abc", ["", ""]);
+    expect((out as Error).name).toBe("ValueNotAppliedError");
+  });
+
+  it("joins only the bodies that carried text, so one body caught mid-scroll is not a change (gate 2 on #921)", async () => {
+    const { joinHostTexts } = await import("../../src/tools/desktop-executor.js");
+    expect(joinHostTexts(["P1 text", "P2 text"])).toBe("P1 text\nP2 text");
+    expect(joinHostTexts(["", "P2 text"])).toBe("P2 text");
+    expect(joinHostTexts(["", ""])).toBe("");
+    expect(joinHostTexts([undefined, undefined])).toBeUndefined();
+    expect(joinHostTexts([])).toBeUndefined();
+  });
+
   it("passes when the page text cannot be read afterwards (an unreadable page is not 'no change')", async () => {
     const { out } = await typeReadBack("abc", ["Hello.", undefined]);
     expect(out).toMatchObject({ kind: "keyboard", landing: { confirmed: false } });
