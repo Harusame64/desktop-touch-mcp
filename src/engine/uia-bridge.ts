@@ -1428,6 +1428,13 @@ export interface UiElementsResult {
    * goes away when the native side takes a handle, which is the next change.
    */
   clientProviders?: "registered" | "noop" | "failed" | "unavailable";
+  /**
+   * internal #240 — the native read timed out and this result is the PowerShell fallback's. While
+   * another act held the engine's UI Automation thread, the fallback read a window with controls as
+   * empty (win2, 2026-11-10: a WinForms window with no child controls, 6 natively, 0 here), so this
+   * read may be missing what is there.
+   */
+  nativeTimedOut?: true;
   elements: UiElement[];
   /**
    * Which client read this tree — ADR-036 item 16. The two name one element in different
@@ -1640,8 +1647,7 @@ export async function getUiElements(
       try {
         const early = JSON.parse(salvaged);
         if (early && typeof early === "object" && early.error === undefined) {
-          if (nativeTimedOut && ((early as UiElementsResult).elementCount ?? 0) === 0) throw new Error(UIA_BUSY_EMPTY_FALLBACK, { cause: e });
-          return { ...(early as UiElementsResult), via: "powershell" };
+          return { ...(early as UiElementsResult), via: "powershell", ...(nativeTimedOut && { nativeTimedOut: true as const }) };
         }
       } catch { /* not an answer — fall through to the failure that is */ }
     }
@@ -1650,26 +1656,20 @@ export async function getUiElements(
   const result = JSON.parse(output);
   if (result.error) throw new Error(result.error);
   // internal #240 (win2, 2026-11-10): while another act's Invoke held the engine's UI Automation
-  // thread, the native read timed out at 8 s, and the PowerShell reads that fell back while several
-  // overlapped read a WinForms window as no elements at all (clientProviders "noop"); the same window
-  // read 28 when they did not overlap, and 6 natively once the thread was free. "Nothing there" after
-  // a native timeout is a read that could not be made, not an empty window: thrown, so the lane says
-  // it failed (`uia_provider_failed`) instead of reporting `uia_no_elements`, and not cached.
-  if (nativeTimedOut && (result.elementCount ?? (result.elements?.length ?? 0)) === 0) {
-    throw new Error(UIA_BUSY_EMPTY_FALLBACK);
-  }
+  // thread, the native read timed out at 8 s and fell back here. For a WinForms window with no child
+  // controls (FX216-KBOX) this road read no elements at all (clientProviders "noop"), whether the reads
+  // overlapped or not, where the native read gave 6 once the thread was free; for Notepad and a
+  // WinForms form it read 28. So a read made while busy may be missing what is there: it says so
+  // (`nativeTimedOut`, read by the discover provider as `uia_read_while_busy`) and is not cached. It is
+  // still returned: a blind window's empty read is what sends discover to OCR (gate 2 on #922).
 
   // A prefix of a window is not the window: caching it would serve it to `screenshot` for the
   // whole TTL as though it were complete.
-  if (cacheKey !== undefined && !result.truncated) {
+  if (cacheKey !== undefined && !result.truncated && !nativeTimedOut) {
     try { updateUiaCache(cacheKey, JSON.stringify({ ...result, readLimits: { maxDepth: psMaxDepth, maxElements: psMaxElements } })); } catch { /* ignore */ }
   }
-  return { ...(result as UiElementsResult), via: "powershell" };
+  return { ...(result as UiElementsResult), via: "powershell", ...(nativeTimedOut && { nativeTimedOut: true as const }) };
 }
-
-/** internal #240 — the read after a native timeout found nothing: not evidence of an empty window. */
-export const UIA_BUSY_EMPTY_FALLBACK =
-  "UI Automation was busy: the native read timed out and the fallback read found nothing, so this window could not be read";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Action-oriented element extraction

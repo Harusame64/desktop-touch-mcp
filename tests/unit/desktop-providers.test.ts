@@ -125,6 +125,24 @@ describe("composeCandidates — routing policy (P2-B)", () => {
 
 // ── Individual provider error resilience ─────────────────────────────────────
 
+describe("fetchUiaCandidates — a read made while UI Automation was busy (internal #240)", () => {
+  it("says uia_read_while_busy, not uia_no_elements, for an empty read after a native timeout, and keeps the blind warning", async () => {
+    uiaBridgeMocks.getUiElements.mockResolvedValue({ elements: [], elementCount: 0, windowRect: { x: 0, y: 0, width: 400, height: 300 }, nativeTimedOut: true, via: "powershell" });
+    uiaBridgeMocks.detectUiaBlind.mockReturnValue({ blind: true, reason: "too-few-elements" });
+    const r = await fetchUiaCandidates({ windowTitle: "FX216-KBOX" });
+    expect(r.warnings).toContain("uia_read_while_busy");
+    expect(r.warnings).not.toContain("uia_no_elements");
+    expect(r.warnings).toContain("uia_blind_too_few_elements"); // OCR still gets its chance
+  });
+
+  it("says uia_no_elements for an empty read that was not made while busy, as before", async () => {
+    uiaBridgeMocks.getUiElements.mockResolvedValue({ elements: [], elementCount: 0, windowRect: null });
+    const r = await fetchUiaCandidates({ windowTitle: "Empty" });
+    expect(r.warnings).toContain("uia_no_elements");
+    expect(r.warnings).not.toContain("uia_read_while_busy");
+  });
+});
+
 describe("fetchUiaCandidates — what it asks the bridge for (ADR-036)", () => {
   it("asks for the read to be scoped to the window the session names", async () => {
     // `pinnedHwnd` is a scoping request, and a scoped read is also the only one that can vouch

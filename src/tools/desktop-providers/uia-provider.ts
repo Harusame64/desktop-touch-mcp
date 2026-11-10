@@ -8,6 +8,9 @@
  * Warnings:
  *   uia_provider_failed       — getUiElements threw or returned an error
  *   uia_no_elements           — window found but no actionable elements returned
+ *   uia_read_while_busy       — (internal #240) the native read timed out (another act held UI
+ *                               Automation) and this is the fallback's read, which may be missing
+ *                               controls; said instead of uia_no_elements when it found none
  *   uia_blind_single_pane     — (H4) UIA tree is a single giant Pane (PWA/Electron/canvas)
  *   uia_blind_too_few_elements — (H4) UIA tree element count below threshold
  */
@@ -242,7 +245,10 @@ export async function fetchUiaCandidates(
       // a caller comparing against a title-derived read, or against a name a human read off the
       // screen, is looking at two vocabularies for one window.
       ...(result.clientProviders === "registered" ? ["uia_frame_names_synthesized"] : []),
-      ...(candidates.length === 0 ? ["uia_no_elements"] : []),
+      // internal #240: a read made while UI Automation was busy may be missing what is there, so an
+      // empty one is not called an empty window.
+      ...(result.nativeTimedOut ? ["uia_read_while_busy"] : []),
+      ...(candidates.length === 0 && !result.nativeTimedOut ? ["uia_no_elements"] : []),
     ];
 
     // H4: detect UIA-blind conditions (single-giant-pane / too-few-elements)
