@@ -1083,6 +1083,40 @@ const SIBLING_CHECK_BUDGET: std::time::Duration = std::time::Duration::from_secs
 /// uses the same number (`SIBLINGS_EACH_SIDE`).
 pub(crate) const SIBLINGS_EACH_SIDE: usize = 3;
 
+/// `resolve`, held to a budget: each step waits at most the time left, and the walk stops (`None`)
+/// once `late()` says it is spent (codex on #930: ten slow ancestors went past the budget).
+fn resolve_within(
+    app: &AXUIElement,
+    path: &str,
+    timeout_secs: f32,
+    left: &dyn Fn() -> f32,
+    late: &dyn Fn() -> bool,
+) -> Option<CFRetained<AXUIElement>> {
+    let mut parts = path.split('.');
+    unsafe { app.set_messaging_timeout(timeout_secs.min(left())) };
+    let mut cur = match parts.next()? {
+        "a" => {
+            let i: usize = parts.next()?.parse().ok()?;
+            children(app, timeout_secs.min(left())).into_iter().nth(i)?
+        }
+        "f" => attr_element(app, "AXFocusedWindow", timeout_secs.min(left()))?,
+        "m" => attr_element(app, "AXMainWindow", timeout_secs.min(left()))?,
+        _ => return None,
+    };
+    for p in parts {
+        if late() {
+            return None;
+        }
+        let i: usize = p.parse().ok()?;
+        unsafe { cur.set_messaging_timeout(timeout_secs.min(left())) };
+        cur = children(&cur, timeout_secs.min(left())).into_iter().nth(i)?;
+    }
+    if late() {
+        return None;
+    }
+    Some(cur)
+}
+
 /// The siblings of `element` around index `at` (`SIBLINGS_EACH_SIDE` each way, itself among them), as
 /// `sibling_entry` writes them, in order, read now from the parent at `parent_path` — the parent the
 /// tree read walked into, not `AXParent`, which an app may point elsewhere (gate 2 on #930). `Err`
@@ -1095,11 +1129,7 @@ fn siblings_now(app: &AXUIElement, parent_path: &str, at: usize, element: &AXUIE
     let t0 = std::time::Instant::now();
     let left = || SIBLING_CHECK_BUDGET.saturating_sub(t0.elapsed()).as_secs_f32().max(0.05);
     let late = || t0.elapsed() >= SIBLING_CHECK_BUDGET;
-    unsafe { app.set_messaging_timeout(timeout_secs.min(left())) };
-    let (_, parent) = resolve(app, parent_path, timeout_secs.min(left())).ok_or(())?;
-    if late() {
-        return Err(());
-    }
+    let parent = resolve_within(app, parent_path, timeout_secs, &left, &late).ok_or(())?;
     unsafe { parent.set_messaging_timeout(timeout_secs.min(left())) };
     let kids = children_read(&parent, timeout_secs.min(left())).ok_or(())?;
     if late() || at >= kids.len() || !same(&kids[at], element) {
