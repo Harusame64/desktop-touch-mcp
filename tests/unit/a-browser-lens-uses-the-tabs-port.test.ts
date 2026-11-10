@@ -1,11 +1,13 @@
 /**
  * internal #254 — the perception registry's browser-tab lenses read CDP at a fixed 9222: the tab list,
- * the identity, and every fluent refresh. They now use the configured port (the config file's
- * cdpPort) to find the tab, and the port the tab was listed on (`portForTab`) to read it.
+ * the identity, and every fluent refresh. They now find the tab on the configured port (the config
+ * file's cdpPort), record it on the lens's identity, and read on that recorded port — neither on the
+ * config as it is later nor on the shared tab-port cache (`portForTab`; gate 2 on #925).
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const { listTabsLight, portForTab, getTabContext, sensorLoopGetters } = vi.hoisted(() => ({
+const { listTabsLight, portForTab, getTabContext, sensorLoopGetters, getCdpPort } = vi.hoisted(() => ({
+  getCdpPort: vi.fn(() => 9333),
   listTabsLight: vi.fn(),
   portForTab: vi.fn(),
   getTabContext: vi.fn(),
@@ -29,12 +31,12 @@ vi.mock("../../src/engine/perception/sensors-cdp.js", async (importOriginal) => 
 });
 vi.mock("../../src/utils/desktop-config.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/utils/desktop-config.js")>();
-  return { ...actual, getCdpPort: () => 9333 };
+  return { ...actual, getCdpPort };
 });
 
 const registry = await import("../../src/engine/perception/registry.js");
 
-afterEach(() => { registry.__resetForTests(); vi.clearAllMocks(); sensorLoopGetters.length = 0; });
+afterEach(() => { registry.__resetForTests(); vi.clearAllMocks(); getCdpPort.mockReturnValue(9333); sensorLoopGetters.length = 0; });
 
 describe("a browser-tab lens reads CDP on the tab's port (internal #254)", () => {
   it("binds the tab on the configured port, records that port, and reads on it everywhere", async () => {
@@ -45,8 +47,9 @@ describe("a browser-tab lens reads CDP on the tab's port (internal #254)", () =>
     } as never);
     expect(listTabsLight).toHaveBeenCalledWith(9333);
     expect((registry.getLens(lensId)!.boundIdentity as { port: number }).port).toBe(9333);
-    // The registration read, readLens and the pre-tool guards all read on the lens's own port, not on
-    // whatever the shared tab-port cache says now (gate 2 on #925).
+    // After binding, neither the config as it is now nor the shared tab-port cache moves the lens:
+    // the registration read, readLens, the pre-tool guards and the sensor loop all use the recorded port.
+    getCdpPort.mockReturnValue(9555);
     portForTab.mockReturnValue(9444);
     await registry.readLens(lensId);
     await registry.evaluatePreToolGuards(lensId, "browser_click", {});
