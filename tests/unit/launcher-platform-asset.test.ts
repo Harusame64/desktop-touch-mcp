@@ -60,21 +60,27 @@ describe("whether the launcher was started as the script (codex, #785)", () => {
     const dir = mkdtempSync(join(tmpdir(), "dtmcp-bin-"));
     // npm's bin entry is a file symlink. Windows refuses one without Developer Mode or elevation
     // (EPERM; internal #275), but makes a directory junction for anyone, and the launcher resolves
-    // either through the same realpath: there the link is a junction to the file's folder.
-    const linkTo = (target: string, name: string): string => {
+    // either through the same realpath: there the link is a junction to the file's folder. So
+    // Windows checks a link in the middle of the path and POSIX (the macOS CI job) a link at the
+    // end, npm's shape (gate 2 on #931). rmSync removes a junction without walking into it.
+    const linkTo = (target: string, folder: string): string => {
+      // The same name for every link, each in its own folder: told apart by where it points, not
+      // by what it is called (gate 2 on #931).
+      mkdirSync(join(dir, folder));
+      const link = join(dir, folder, "desktop-touch-mcp");
       if (process.platform === "win32") {
-        symlinkSync(dirname(target), join(dir, name), "junction");
-        return join(dir, name, basename(target));
+        symlinkSync(dirname(target), link, "junction");
+        return join(link, basename(target));
       }
-      symlinkSync(target, join(dir, name));
-      return join(dir, name);
+      symlinkSync(target, link);
+      return link;
     };
     try {
       mkdirSync(join(dir, "elsewhere"));
       const other = join(dir, "elsewhere", "other.js");
       writeFileSync(other, "");
-      expect(isLaunchedAsScript(linkTo(fileURLToPath(LAUNCHER), "desktop-touch-mcp"), LAUNCHER.href)).toBe(true);
-      expect(isLaunchedAsScript(linkTo(other, "another-tool"), LAUNCHER.href)).toBe(false);
+      expect(isLaunchedAsScript(linkTo(fileURLToPath(LAUNCHER), "bin-a"), LAUNCHER.href)).toBe(true);
+      expect(isLaunchedAsScript(linkTo(other, "bin-b"), LAUNCHER.href)).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
