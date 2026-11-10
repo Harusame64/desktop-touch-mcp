@@ -19,7 +19,7 @@ import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.
 import { UIA_PRESS_ONLY_CONTROL_TYPES } from "../../engine/world-graph/guarded-touch.js";
 import { WEB_AREA_AUTOMATION_ID } from "../_advisory.js";
 import type { UiElement } from "../../engine/uia-bridge.js";
-import { COLLECTION_ITEM_CONTROL_TYPES } from "../../engine/collection-item.js";
+import { isCollectionItemControlType } from "../../engine/collection-item.js";
 
 function uiaRoleFromControlType(ct: string): string {
   const map: Record<string, string> = {
@@ -42,7 +42,7 @@ function uiaRoleFromControlType(ct: string): string {
 export function uiaActionability(ct: string, patterns: readonly string[] = []): Array<"click" | "invoke" | "type" | "select" | "read"> {
   if ((UIA_PRESS_ONLY_CONTROL_TYPES as readonly string[]).includes(ct)) return ["invoke", "click"];
   if (["Edit", "ComboBox"].includes(ct)) return ["type", "click"];
-  if ((COLLECTION_ITEM_CONTROL_TYPES as readonly string[]).includes(ct)) {
+  if (isCollectionItemControlType(ct)) {
     return [
       ...(patterns.includes("SelectionItemPattern") ? ["select" as const] : []),
       "click" as const,

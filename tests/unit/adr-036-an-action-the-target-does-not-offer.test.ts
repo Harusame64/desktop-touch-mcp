@@ -136,6 +136,14 @@ describe("internal #154 — an action the target does not offer", () => {
     }
   });
 
+  it("auto never invokes a collection item: one with Invoke and no SelectionItem is clicked (gate 2 on #919)", async () => {
+    // A DataGridView cell: Invoke starts editing it, a ListItem's Invoke opens it like a double-click.
+    const cell = listItem({ controlType: "DataItem", patterns: ["InvokePattern", "ValuePattern"], affordances: [{ verb: "click" }, { verb: "invoke" }] });
+    expect((await act(cell, "auto")).performed).toEqual(["click"]);
+    // An explicit invoke still opens it.
+    expect((await act(cell, "invoke")).performed).toEqual(["invoke"]);
+  });
+
   it("auto selects a collection item that offers select, rather than invoking (opening) it", async () => {
     const { performed } = await act(listItem(), "auto");
     expect(performed).toEqual(["click"]); // the select road

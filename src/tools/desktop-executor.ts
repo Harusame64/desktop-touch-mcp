@@ -54,7 +54,7 @@ import {
   VALUE_CHANGED_THEN_FAILED,
   ELEMENT_AMBIGUOUS,
 } from "../engine/aim.js";
-import { COLLECTION_ITEM_CONTROL_TYPES } from "../engine/collection-item.js";
+import { isCollectionItemControlType } from "../engine/collection-item.js";
 import type { TargetSpec } from "../engine/world-graph/session-registry.js";
 import type { AdvertisedExecutorKind } from "../capabilities/registry.js";
 import {
@@ -3314,7 +3314,7 @@ export function createDesktopExecutor(
       // A tree item, and an item with no SelectionItemPattern, leave the UIA road for the mouse road at the
       // end (`SingleClickNeeded`): a real single click is the select being imitated. Every other failure
       // of the select is refused, and nothing is pressed.
-      if (action === "click" && entity.controlType !== undefined && (COLLECTION_ITEM_CONTROL_TYPES as readonly string[]).includes(entity.controlType)) {
+      if (action === "click" && isCollectionItemControlType(entity.controlType)) {
         const selected = await selectCollectionItem(d, entity, winTitle, name, automationId, aimHwnd, addressed);
         if (!(selected instanceof SingleClickNeeded)) return selected;
         singleClick = selected;

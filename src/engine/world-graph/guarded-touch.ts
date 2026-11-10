@@ -5,7 +5,7 @@ import type { Rect, UiEntityCandidate } from "../vision-gpu/types.js";
 import { classifyModal, isUiaWindow } from "./session-registry.js";
 import { probeAim } from "../aim-probe.js";
 import { resolveCandidates } from "./resolver.js";
-import { collectionItemAdviceClass, COLLECTION_ITEM_CONTROL_TYPES, type CollectionItemAdviceClass } from "../collection-item.js";
+import { collectionItemAdviceClass, isCollectionItemControlType, type CollectionItemAdviceClass } from "../collection-item.js";
 
 export type TouchAction = "auto" | "invoke" | "click" | "type" | "setValue" | "select";
 
@@ -443,7 +443,10 @@ function resolveAction(entity: UiEntity, requested: TouchAction): TouchAction {
   const verbs = new Set(entity.affordances.map((a: UiAffordance) => a.verb));
   // The first verb the entity lists AND this loop accepts on it (internal #233 PR2): an entity that lists
   // `select` without being a UIA collection item must not resolve `auto` to a refusal.
-  return AUTO_PRIORITY.find((v) => verbs.has(v) && offersAction(entity, v)) ?? "click";
+  // On a collection item `auto` never invokes (gate 2 on #919): Invoke opens a list item like a
+  // double-click and starts editing a grid cell, while its click selects it — select, else click.
+  const item = entity.sources.includes("uia") && isCollectionItemControlType(entity.controlType);
+  return AUTO_PRIORITY.find((v) => verbs.has(v) && offersAction(entity, v) && !(item && v === "invoke")) ?? "click";
 }
 
 /**
@@ -460,8 +463,12 @@ function resolveAction(entity: UiEntity, requested: TouchAction): TouchAction {
  *
  * **internal #233 PR2 (2026-11-10) supplied both halves for one kind of target**, and only for it: the
  * UIA provider advertises `select` on a collection item with SelectionItemPattern, and the road is that
- * item's click, which selects it (#819). `offersAction` checks the source and the control type as well
- * as the affordance, so a producer that lists the verb anywhere else still gets the refusal below.
+ * item's click, which selects it (#819: SelectionItem.Select, or a real single click where the registry
+ * sends the item to the mouse; in Chromium content the click road keeps Invoke, which selects a list
+ * option). `offersAction` checks the source and the control type as well as the affordance, so a
+ * producer that lists the verb anywhere else still gets the refusal below. What follows is the history
+ * of why `select` was refused outright until then; the union now carries the verb, and the tripwire
+ * cells it names were rewritten to pin the new rule.
  *
  * ── WHY THIS REFUSED `select` OUTRIGHT, rather than "when the entity does not offer it" ─────────
  *
@@ -517,8 +524,7 @@ function offersAction(entity: UiEntity, action: TouchAction): boolean {
     // other entity is still refused before anything touches the world (internal #154, above).
     case "select":
       return entity.sources.includes("uia")
-        && entity.controlType !== undefined
-        && (COLLECTION_ITEM_CONTROL_TYPES as readonly string[]).includes(entity.controlType)
+        && isCollectionItemControlType(entity.controlType)
         && entity.affordances.some((a) => a.verb === "select");
     // **Text into a control UI Automation says only presses** (internal #154, W3). Measured, win2,
     // 2026-09-21: `setValue` with text on a Button answered `ok:true` with executor `keyboard` — no
@@ -829,18 +835,19 @@ export class GuardedTouchLoop {
     // tests). validation early-returns above bypass this hook by construction,
     // so failure paths never pollute the round-trip wallclock.
     this.leaseStore.recordAct(lease.viewId);
+    // internal #233 PR2: `select` (accepted only on a UIA collection item) is executed as that item's
+    // click, whose road selects it (#819). The executor has no select arm of its own.
+    const executedAction: TouchAction = concreteAction === "select" ? "click" : concreteAction;
     let outcome: ExecutorKind | ExecutorOutcome;
     try {
-      // internal #233 PR2: `select` (accepted only on a UIA collection item) is executed as that item's
-      // click, whose road selects it (#819). The executor has no select arm of its own.
-      outcome = await this.env.execute(entity, concreteAction === "select" ? "click" : concreteAction, text);
+      outcome = await this.env.execute(entity, executedAction, text);
     } catch (err) {
       // internal #291 — a click on a collection item that a coordinate refusal stopped: its advice
       // must not send it to click_element, whose Invoke opens, runs or edits these items. Put on every
       // refusal whose advice names click_element; `aim_route_failed` is not reached by such a click today
       // (the select road refuses as `executor_failed`, the mouse road never throws it), so its mark is
       // defensive (gate 2 on #833).
-      const itemAdvice = collectionItemAdviceClass(entity, concreteAction === "select" ? "click" : concreteAction);
+      const itemAdvice = collectionItemAdviceClass(entity, executedAction);
       const itemAdviceField = itemAdvice !== undefined ? { adviceClass: itemAdvice } : {};
       /**
        * ADR-036 item 13 — the sentence the thrower declared fit to publish, or nothing.
