@@ -96,7 +96,7 @@ const _defaultPort = getCdpPort();
  *
  * Asked only of a dialog-class window (`#32770`) that has no owner — the one modal the window
  * structure cannot show (internal #269: a PowerShell MessageBox, measured on win2 2026-11-10). Any
- * other modal is told by the owner it holds disabled, not by its title.
+ * other modal is told by the window it disables, not by its title.
  */
 export const MODAL_RE = /\b(?:dialog|confirm|alert|error|warning|save as)\b|警告|エラー|確認|通知|ダイアログ|名前を付けて/i;
 
@@ -630,29 +630,24 @@ export const desktopStateHandler = async (args: {
       }
     }
 
-    // Modal: a window that holds its owner disabled, the owner on screen (internal #269). That is what
-    // a modal does, whatever either window is titled. Measured on win2 (2026-11-10): Notepad's 名前を
-    // 付けて保存 and its 保存しますか, and VS Code's Open File and save prompt are #32770 windows owned
-    // by their app's window, which is disabled while they are up — the last three titled
-    // 「メモ帳」/「Visual Studio Code」/「Open File」, which the title regex this replaced missed; and
-    // Notepad showing error.log, which it took for a dialog, owns nothing. The owner must be on screen:
-    // a file's properties sheet is owned by a hidden, disabled StubWindow32 and blocks nothing. A
-    // dialog that is itself hidden or minimised still counts when its owner is shown and disabled
-    // (gate 2 on #801).
+    // Modal: a window on screen that is disabled (internal #269). That is what a modal does to the
+    // windows it blocks — its owner, or with a thread-modal one every window of its thread — whatever
+    // any of them is titled. Measured on win2 (2026-11-10): Notepad's 名前を付けて保存 and its
+    // 保存しますか, and VS Code's Open File and save prompt, are #32770 windows owned by their app's
+    // window, which is disabled while they are up — the last three titled 「メモ帳」/「Visual Studio
+    // Code」/「Open File」, which the title regex this replaced missed; and Notepad showing error.log,
+    // which it took for a dialog, is not disabled. Only windows on screen: a file's properties sheet
+    // is owned by a hidden, disabled StubWindow32, which the window list does not hold (it lists visible
+    // windows only), and blocks nothing on screen. The dialog itself may be minimised or on another
+    // desktop (gate 2 on #801): what is blocked is its owner, on screen.
     //
-    // A dialog with no owner (a PowerShell MessageBox) disables nothing the structure can show: such a
-    // window counts when it is of the dialog class and its title reads like one (`MODAL_RE`). A browser
-    // tab is never of that class, so its page title cannot raise it.
-    const shownIds = new Set(shown.map((w) => w.hwnd));
-    const byHwnd = new Map(wins.map((w) => [w.hwnd, w]));
-    const holdsShownOwnerDisabled = (w: (typeof wins)[number]): boolean => {
-      if (w.ownerHwnd == null || w.ownerHwnd === w.hwnd) return false;
-      const owner = byHwnd.get(w.ownerHwnd);
-      return owner !== undefined && shownIds.has(owner.hwnd) && owner.isEnabled === false;
-    };
+    // A dialog with no owner (a PowerShell MessageBox) disables nothing the window list can show: such
+    // a window counts when it is of the dialog class and its title reads like one (`MODAL_RE`). Not any
+    // ownerless window whose title reads like a dialog: that is how Notepad showing error.log was
+    // taken for one. A browser tab is never of that class, so its page title cannot raise it.
     const isOwnerlessDialog = (w: (typeof wins)[number]): boolean =>
-      shownIds.has(w.hwnd) && w.ownerHwnd == null && w.className === "#32770" && MODAL_RE.test(w.title);
-    const hasModal = wins.some((w) => holdsShownOwnerDisabled(w) || isOwnerlessDialog(w));
+      w.ownerHwnd == null && w.className === "#32770" && MODAL_RE.test(w.title);
+    const hasModal = shown.some((w) => w.isEnabled === false || isOwnerlessDialog(w));
 
     // ── Semantic level: focusedElement + cursorOverElement ─────────────────
     const fgTitle = fg?.title ?? "";
@@ -1269,7 +1264,7 @@ export function registerDesktopStateTools(server: McpServer): void {
       // the focused element changes". The habit they share is naming the most visible change in a
       // round that moved more than one thing; this form is read off the predicate instead.
       caveats:
-        "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal: a window holds its on-screen owner disabled (a Save As, a save prompt, an Open File — whatever it is titled), or a dialog with no owner (a message box) whose title reads like one (Error, 確認 …); a modal an app draws inside its own window, and browser alert/confirm dialogs, do not appear here. " +
+        "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal: a window on screen is disabled — what a Save As, a save prompt or an Open File does to the window it blocks, whatever either is titled — or a standard dialog with no owner (a message box) has a title that reads like one (Error, 確認 …). Not seen: a modal an app draws inside its own window, an ownerless modal of another framework that disables nothing, and browser alert/confirm dialogs. An app that disables its own window while busy reads as a modal. " +
         "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable. " +
         "focusedElement.value is the focused field's current text, so a plain credential field's value comes back like any other. Masked fields are withheld on the CDP road by rule; on the UIA road the value is whatever the provider serves and nothing here checks for a masked control — a masked field can arrive as mask characters, one per character of the secret, which nothing here distinguishes from its real value. It is also not always present, and hints.focusedElementValueAbsent says why when it is not: 'view_road_has_no_value' (the perception view is preferred and carries no values at all) or 'masked_on_this_road' (the CDP read dropped a masked field). No hint means nothing was dropped on the road that answered — on the UIA road an absent value can still be a field whose provider will not serve one.",
     }),

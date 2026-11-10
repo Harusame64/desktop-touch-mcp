@@ -140,9 +140,8 @@ const MODAL_CONTROL_TYPE = "Window";
  * in this codebase serve different layers and intentionally use different
  * signals:
  *
- *   - `desktop_state.hasModal` (`desktop-state.ts`) — window structure, no target: some window
- *     holds its on-screen owner disabled, or an ownerless `#32770` reads like a dialog
- *     (`MODAL_RE`; internal #269).
+ *   - `desktop_state.hasModal` (`desktop-state.ts`) — window state, no target: a window on screen
+ *     is disabled, or an ownerless `#32770` reads like a dialog (`MODAL_RE`; internal #269).
  *   - `classifyModal` (this function) — UIA-tree based; both pre-touch
  *     `blockingElement` resolution and post-touch `modal_appeared` /
  *     `modal_dismissed` diff detection.
