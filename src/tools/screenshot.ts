@@ -1132,12 +1132,15 @@ export const screenshotBgHandler = async ({
     // top-level windows, dialogs and owned windows left out), and said in the words other tools use.
     if (hwnd && resolvedWin === null) {
       const matches = findPlainTopLevelWindowsByTitle(effectiveTitle, { excludeMinimized: false, excludeDialogsAndOwned: true, logAs: "off" });
-      if (matches.length > 1) {
-        const others = matches.filter((m) => m.hwnd !== hwnd);
+      // The window captured is always one of the count: this loop can take an owned window the matcher
+      // leaves out (win2 on #924: "3 windows match" beside four names).
+      const others = matches.filter((m) => m.hwnd !== hwnd);
+      const total = others.length + 1;
+      if (total > 1) {
         const named = others.slice(0, 5).map((m) => `"${m.title}" (hwnd ${String(m.hwnd)})`).join(", ");
         const more = others.length > 5 ? ` and ${others.length - 5} more` : "";
         bgWarnings.push(
-          `${matches.length} windows match "${effectiveTitle}"; captured "${foundTitle}" (hwnd ${String(hwnd)}), not ${named}${more}. Pass hwnd to capture another.`,
+          `${total} windows match "${effectiveTitle}"; captured "${foundTitle}" (hwnd ${String(hwnd)}), not ${named}${more}. Pass hwnd to capture another.`,
         );
       }
     }
