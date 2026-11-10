@@ -1428,6 +1428,13 @@ export interface UiElementsResult {
    * goes away when the native side takes a handle, which is the next change.
    */
   clientProviders?: "registered" | "noop" | "failed" | "unavailable";
+  /**
+   * internal #240 — the native read timed out and this result is the PowerShell fallback's. While
+   * another act held the engine's UI Automation thread, the fallback read a window with controls as
+   * empty (win2, 2026-11-10: a WinForms window with no child controls, 6 natively, 0 here), so this
+   * read may be missing what is there.
+   */
+  nativeTimedOut?: true;
   elements: UiElement[];
   /**
    * Which client read this tree — ADR-036 item 16. The two name one element in different
@@ -1542,6 +1549,8 @@ export async function getUiElements(
   // What it costs to leave: 184 ms against 517 ms on the same window, a frame the PowerShell
   // road can only see by registering MSAA clientside providers, and English names for that
   // frame when it does (measured on Windows 2026-09-09).
+  // internal #240: whether the native read below timed out before this road falls back.
+  let nativeTimedOut = false;
   if (nativeUia?.uiaGetElements) {
     try {
       const result = await nativeUia.uiaGetElements({
@@ -1595,6 +1604,7 @@ export async function getUiElements(
       if (isNativeUiaTimeout(e) && targetDoesNotAnswer(windowTitle, scopeHwnd)) throw e;
       if (classic && classicCallReached(e)) markClassicUsed();
       if (options?.nativeOnly || classic) throw e;
+      nativeTimedOut = isNativeUiaTimeout(e);
       console.warn("[uia-bridge] Native uiaGetElements failed, falling back to PowerShell:", e);
       // fall through to PowerShell
     }
@@ -1637,7 +1647,7 @@ export async function getUiElements(
       try {
         const early = JSON.parse(salvaged);
         if (early && typeof early === "object" && early.error === undefined) {
-          return { ...(early as UiElementsResult), via: "powershell" };
+          return { ...(early as UiElementsResult), via: "powershell", ...(nativeTimedOut && { nativeTimedOut: true as const }) };
         }
       } catch { /* not an answer — fall through to the failure that is */ }
     }
@@ -1645,13 +1655,20 @@ export async function getUiElements(
   }
   const result = JSON.parse(output);
   if (result.error) throw new Error(result.error);
+  // internal #240 (win2, 2026-11-10): while another act's Invoke held the engine's UI Automation
+  // thread, the native read timed out at 8 s and fell back here. For a WinForms window with no child
+  // controls (FX216-KBOX) this road read no elements at all (clientProviders "noop"), whether the reads
+  // overlapped or not, where the native read gave 6 once the thread was free; for Notepad and a
+  // WinForms form it read 28. So a read made while busy may be missing what is there: it says so
+  // (`nativeTimedOut`, read by the discover provider as `uia_read_while_busy`) and is not cached. It is
+  // still returned: a blind window's empty read is what sends discover to OCR (gate 2 on #922).
 
   // A prefix of a window is not the window: caching it would serve it to `screenshot` for the
   // whole TTL as though it were complete.
-  if (cacheKey !== undefined && !result.truncated) {
+  if (cacheKey !== undefined && !result.truncated && !nativeTimedOut) {
     try { updateUiaCache(cacheKey, JSON.stringify({ ...result, readLimits: { maxDepth: psMaxDepth, maxElements: psMaxElements } })); } catch { /* ignore */ }
   }
-  return { ...(result as UiElementsResult), via: "powershell" };
+  return { ...(result as UiElementsResult), via: "powershell", ...(nativeTimedOut && { nativeTimedOut: true as const }) };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
