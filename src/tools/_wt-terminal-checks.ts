@@ -136,7 +136,6 @@ export function wtRefusalSentence(why: WtRefusal, opts: { tabName?: string; left
         "after the terminal was brought in front, and the paste would have gone there. Send again.";
     case "pane_not_focused":
       return "Nothing was typed: the Windows Terminal pane did not take the keyboard focus in time (or UI Automation " +
-        "was busy), so the paste was not sent — it would have gone to another control (an open find box, a tab). If " +
-        "the terminal is still in front, the previous window could not be put back.";
+        "was busy), so the paste was not sent — it would have gone to another control (an open find box, a tab)." + tail;
   }
 }

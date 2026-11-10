@@ -1216,13 +1216,18 @@ export function sendFailedWarning(payload: { code?: string; context?: { detail?:
   return `terminal(action='send') failed: ${payload.code}${detail}${left}`;
 }
 
-/** internal #286 — is Windows Terminal (or a window of its own) the window in front now? */
-function wtIsActive(hwnd: bigint): boolean {
+/** internal #286 — the window in front now, `undefined` when it cannot be read. */
+function activeHwnd(): bigint | null | undefined {
   try {
-    return enumWindowsInZOrder().find((w) => w.isActive)?.hwnd === hwnd;
+    return enumWindowsInZOrder().find((w) => w.isActive)?.hwnd ?? null;
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+/** internal #286 — is this window the one in front now? Fails closed (a failed read is "no"). */
+function wtIsActive(hwnd: bigint): boolean {
+  return activeHwnd() === hwnd;
 }
 
 /** internal #286 — the live readers behind the Windows Terminal checks. */
@@ -1410,6 +1415,8 @@ export const terminalSendHandler = async ({
       // steals focus to paste, which is the route a mis-resolved terminal
       // destination turns into a command run in the wrong shell.
       logDispatchSink({ sink: "foreground_flash", tool: "terminal:send", targetHwnd: channel.hwnd });
+      // The window the flash is to put back, read so its failures can say whether it did (agy on #934).
+      const flashPrev = flashTab?.ok ? activeHwnd() : undefined;
       const flashResult = injectViaForegroundFlash(
         channel.hwnd,
         channel.pid,
@@ -1422,11 +1429,13 @@ export const terminalSendHandler = async ({
       if (!flashResult.ok && flashTab?.ok &&
         (flashResult.reason === "terminal_tab_changed" || flashResult.reason === "terminal_focus_failed")) {
         // The flash raises these after it tried to put the foreground back, and does not say whether
-        // that worked, so it is read here (gate 2 on #934).
-        const leftInFront = wtIsActive(channel.hwnd);
+        // that worked, so it is read here: back means the window in front before the flash is in front
+        // again (gate 2 and agy on #934). A read that fails, either side, is "not back".
+        const now = activeHwnd();
+        const leftInFront = flashPrev === undefined || now === undefined || now !== flashPrev;
         return flashResult.reason === "terminal_tab_changed"
           ? wtRefusalFailure("tab_changed", win.title, { tabName: flashTab.tab.name, leftInFront }, { method: "foreground_flash", foregroundRestored: !leftInFront })
-          : wtRefusalFailure("pane_not_focused", win.title, {}, { method: "foreground_flash", foregroundRestored: !leftInFront });
+          : wtRefusalFailure("pane_not_focused", win.title, { leftInFront }, { method: "foreground_flash", foregroundRestored: !leftInFront });
       }
       if (!flashResult.ok) {
         // OQ8 follow-up: prefix the code so classify() routes this to

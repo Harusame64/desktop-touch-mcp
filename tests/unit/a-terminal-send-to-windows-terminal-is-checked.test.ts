@@ -378,11 +378,24 @@ describe("internal #286 — terminal:send method:'foreground_flash' to Windows T
     expect(r.error).toContain("Nothing was typed");
   });
 
-  it("says WT was left in front when the flash fails and WT is still the window in front", async () => {
-    mockFlash.mockImplementation(() => { front = WT; return { ok: false, reason: "terminal_tab_changed" } as never; });
+  it.each([
+    ["terminal_tab_changed", "tab_changed", WT],
+    ["terminal_focus_failed", "pane_not_focused", WT],
+    // A third window in front is not the user's window back either (agy on #934).
+    ["terminal_tab_changed", "tab_changed", 777n],
+    ["terminal_focus_failed", "pane_not_focused", 777n],
+  ] as const)("says the user's window was not put back when the flash fails with %s and %s is in front", async (reason, detail, after) => {
+    mockFlash.mockImplementation(() => { front = after; return { ok: false, reason } as never; });
     const r = parseResult(await flash());
-    expect(r.context).toMatchObject({ detail: "tab_changed", foregroundRestored: false });
+    expect(r.context).toMatchObject({ detail, foregroundRestored: false });
     expect(r.error).toContain("could not be put back");
+  });
+
+  it("does not say so when the flash fails and the user's window is back in front", async () => {
+    mockFlash.mockReturnValue({ ok: false, reason: "terminal_focus_failed" } as never);
+    const r = parseResult(await flash());
+    expect(r.context).toMatchObject({ detail: "pane_not_focused", foregroundRestored: true });
+    expect(r.error).not.toContain("could not be put back");
   });
 
   it("hands the flash the tab to hold to and asks it to focus the terminal pane", async () => {
