@@ -19,6 +19,7 @@ import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.
 import { UIA_PRESS_ONLY_CONTROL_TYPES } from "../../engine/world-graph/guarded-touch.js";
 import { WEB_AREA_AUTOMATION_ID } from "../_advisory.js";
 import type { UiElement } from "../../engine/uia-bridge.js";
+import { COLLECTION_ITEM_CONTROL_TYPES } from "../../engine/collection-item.js";
 
 function uiaRoleFromControlType(ct: string): string {
   const map: Record<string, string> = {
@@ -26,13 +27,28 @@ function uiaRoleFromControlType(ct: string): string {
     Edit: "textbox", ComboBox: "textbox",
     Hyperlink: "link", MenuItem: "menuitem",
     Text: "label", Document: "label",
+    // internal #233 PR2: list, tree and grid items (they read `unknown`, primaryAction `read`).
+    ListItem: "listitem", DataItem: "listitem", TreeItem: "listitem",
   };
   return map[ct] ?? "unknown";
 }
 
-function uiaActionability(ct: string): Array<"click" | "invoke" | "type" | "read"> {
+/**
+ * internal #233 PR2 — a collection item offers what its patterns say: `select` with
+ * SelectionItemPattern (first, so `auto` and `primaryAction` select it rather than open it),
+ * `invoke` (open or run it) with InvokePattern, and `click`, which selects it (#819: Select, or a
+ * real single click for an item with no SelectionItem, such as a DataGridView cell).
+ */
+export function uiaActionability(ct: string, patterns: readonly string[] = []): Array<"click" | "invoke" | "type" | "select" | "read"> {
   if ((UIA_PRESS_ONLY_CONTROL_TYPES as readonly string[]).includes(ct)) return ["invoke", "click"];
   if (["Edit", "ComboBox"].includes(ct)) return ["type", "click"];
+  if ((COLLECTION_ITEM_CONTROL_TYPES as readonly string[]).includes(ct)) {
+    return [
+      ...(patterns.includes("SelectionItemPattern") ? ["select" as const] : []),
+      "click" as const,
+      ...(patterns.includes("InvokePattern") ? ["invoke" as const] : []),
+    ];
+  }
   return ["read"];
 }
 
@@ -192,7 +208,7 @@ export async function fetchUiaCandidates(
         label: el.name,
         value: el.value,
         rect: el.boundingRect ?? undefined,
-        actionability: uiaActionability(el.controlType),
+        actionability: uiaActionability(el.controlType, normalizeUiaPatternNames(el.patterns)),
         // Issue #296: carry the UIA-side `controlType` and `patterns` through
         // so `CapabilityRegistry.lookup` can advertise executor preferences
         // at discover time (no extra UIA round-trip — `getUiElements` already

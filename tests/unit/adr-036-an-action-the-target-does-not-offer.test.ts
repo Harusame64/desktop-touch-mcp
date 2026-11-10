@@ -16,20 +16,18 @@
  * **THAT IS ONE STEP PAST THE FORBIDDEN ROAD.** The user named "a success reported for an act that
  * did not happen" on 2026-09-11. This is an act that DID happen and was not asked for.
  *
- * **AND IT IS NOT ABOUT BUTTONS.** `uiaActionability` and `cdpActionability` both return
- * `Array<"click" | "invoke" | "type" | "read">` — `"select"` is not in the type. No provider in this
- * product can advertise it, so every `select` the schema invites took the substitution. win2
- * measured one button; the cause is the whole road. The cell below pins that as a property of the
- * PRODUCERS, because a fix aimed at buttons would leave the rest.
+ * internal #233 PR2 (2026-11-10) made `select` real on one kind of target: a UIA collection item that
+ * exposes SelectionItemPattern, where the executor's click already selects (#819). Everywhere else the
+ * refusal stands, and the cells below pin both sides.
  */
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 
 import { GuardedTouchLoop, type TouchAction } from "../../src/engine/world-graph/guarded-touch.js";
 import { LeaseStore } from "../../src/engine/world-graph/lease-store.js";
 import type { UiEntity } from "../../src/engine/world-graph/types.js";
 import { getSuggestsForCode } from "../../src/tools/_errors.js";
+import { uiaActionability } from "../../src/tools/desktop-providers/uia-provider.js";
+import { resolveCandidates } from "../../src/engine/world-graph/resolver.js";
 
 /** A button as the resolver builds one: `invoke` and `click`, and nothing else. */
 const button = (): UiEntity => ({
@@ -45,11 +43,25 @@ const button = (): UiEntity => ({
   evidenceDigest: "d-button",
 } as unknown as UiEntity);
 
-// **THERE IS NO "SELECTABLE ENTITY" FIXTURE ANY MORE, and its absence is the point** (gate 2).
-// One stood here, used by a control asserting that `select` is "served when the target offers it".
-// It asserted against the INJECTED recorder executor, so what it proved was that the loop forwards
-// the verb — while the real executor has no `select` arm and would have pressed. An entity built by
-// the test to make a road look reachable is not evidence that the road exists.
+/**
+ * A list item as the resolver builds one from UIA (internal #233 PR2): the real executor takes its click
+ * to the select road (#819), so a loop that hands `select` over as `click` is the road that exists —
+ * the cells below pin the loop's half, and `a-click-on-a-list-item-selects-it.test.ts` the executor's.
+ */
+const listItem = (over: Partial<UiEntity> = {}): UiEntity => ({
+  entityId: "ent_item",
+  role: "listitem",
+  label: "ITEM",
+  confidence: 1,
+  sources: ["uia"],
+  controlType: "ListItem",
+  patterns: ["SelectionItemPattern", "InvokePattern"],
+  affordances: [{ verb: "select" }, { verb: "click" }, { verb: "invoke" }],
+  locator: { uia: { name: "ITEM" } },
+  generation: "gen-1",
+  evidenceDigest: "d-item",
+  ...over,
+} as unknown as UiEntity);
 
 
 /**
@@ -105,42 +117,31 @@ describe("internal #154 — an action the target does not offer", () => {
     }
   });
 
-  it("BOTH halves of \"select is not supported\" are pinned at their producers, not at a neighbour", () => {
-    // **THIS REPLACES A CONTROL THAT PROVED THE WRONG THING** (gate 2). It read
-    // `CONTROL: select is served when the target really offers it` and asserted
-    // `performed === ["select"]` against the INJECTED recorder executor — which shows the loop
-    // forwards the verb, and reads as "select is served". The real executor has no select arm at
-    // all, so the guard's forward-compatible form would have approved the verb the day a provider
-    // advertised it, and the press would have come back with the guard's blessing. Measured: every
-    // gate and every cell stayed green under exactly that change.
-    //
-    // So the two independent reasons are pinned where they are PRODUCED.
-    const read = (rel: string) =>
-      readFileSync(fileURLToPath(new URL(`../../src/${rel}`, import.meta.url)), "utf8");
+  it("select is accepted only on a UIA collection item that offers it, and reaches the executor as its click (internal #233 PR2)", async () => {
+    // The executor has no select arm. On a collection item a click takes the select road (#819:
+    // SelectionItem.Select, never Invoke), so that is what the loop hands over.
+    const { result, performed } = await act(listItem(), "select");
+    expect(result.ok).toBe(true);
+    expect(performed).toEqual(["click"]);
+    // Refused, nothing done: an item without the verb (no SelectionItemPattern), a non-UIA source, and a
+    // button that lists the verb anyway — on any of them the click would press, not select.
+    for (const entity of [
+      listItem({ affordances: [{ verb: "click" }, { verb: "invoke" }] }),
+      listItem({ sources: ["visual_gpu"] }),
+      { ...button(), affordances: [{ verb: "select" }, { verb: "invoke" }, { verb: "click" }] } as unknown as UiEntity,
+    ]) {
+      const refused = await act(entity, "select");
+      expect(refused.result.reason).toBe("action_not_offered");
+      expect(refused.performed).toEqual([]);
+    }
+  });
 
-    // (1) THE TYPE, not the six functions that fill it. An earlier version of this cell read
-    // `uiaActionability` and `cdpActionability` — two of the six writers — and a provider taught to
-    // advertise the verb without touching either of them went unnoticed (measured, same round).
-    const types = read("engine/vision-gpu/types.ts");
-    const field = /actionability:\s*(Array<[^>]*>)/.exec(types);
-    expect(field, "the actionability field is no longer declared the way this cell reads it").not.toBeNull();
-    expect(field![1], "a candidate can now carry `select` — the refusal is no longer total").not.toContain("select");
-    // CONTROL: the same read finds the verbs that ARE carried, so a declaration this regex stopped
-    // matching could not pass as "select is absent".
-    expect(field![1]).toContain("click");
-    expect(field![1]).toContain("invoke");
-
-    // (2) THE EXECUTOR'S DISPATCH. Every road branches on `type`/`setValue` and lets everything else
-    // fall to a click; there is no `select` arm. If one appears, the refusal above has a reason to
-    // be revisited — and whoever writes it is told so here rather than discovering it from a caller.
-    const executor = read("tools/desktop-executor.ts");
-    expect(
-      /action === "select"|case "select"/.test(executor),
-      "desktop-executor now branches on `select` — revisit the refusal in guarded-touch.ts",
-    ).toBe(false);
-    // CONTROL: the roads this asserts about are the ones that exist.
-    expect(executor).toContain('action === "setValue"');
-    expect(executor).toContain("uiaClick");
+  it("auto selects a collection item that offers select, rather than invoking (opening) it", async () => {
+    const { performed } = await act(listItem(), "auto");
+    expect(performed).toEqual(["click"]); // the select road
+    // An entity that lists select without being a collection item resolves auto to a verb it takes.
+    const odd = { ...button(), affordances: [{ verb: "select" }, { verb: "invoke" }, { verb: "click" }] } as unknown as UiEntity;
+    expect((await act(odd, "auto")).performed).toEqual(["invoke"]);
   });
 
   it("refuses before EITHER environment check, because no environment change fixes it", async () => {
@@ -168,26 +169,24 @@ describe("internal #154 — an action the target does not offer", () => {
     }
   });
 
-  it("no provider in this product advertises `select`, which is why this is not a button problem", () => {
-    // **The producers, not the symptom.** A fix aimed at buttons would leave every other target
-    // taking the substitution. Read from source: both actionability tables return a union that does
-    // not contain the verb.
-    const read = (rel: string) =>
-      readFileSync(fileURLToPath(new URL(`../../src/tools/desktop-providers/${rel}`, import.meta.url)), "utf8");
-    for (const [file, fn] of [
-      ["uia-provider.ts", "uiaActionability"],
-      ["browser-provider.ts", "cdpActionability"],
-    ] as const) {
-      const text = read(file);
-      const at = text.indexOf(`function ${fn}(`);
-      expect(at, `${fn} is gone — this cell is describing a function that no longer exists`).toBeGreaterThan(-1);
-      const signature = text.slice(at, text.indexOf("{", text.indexOf(")", at)));
-      expect(signature, `${fn}'s return type`).toContain("Array<");
-      expect(signature, `${fn} can now advertise select — the refusal above is no longer total`).not.toContain("select");
+  it("a list item keeps the role listitem through the resolver", () => {
+    const [entity] = resolveCandidates([{
+      source: "uia", target: { kind: "window", id: "W" }, label: "ITEM", role: "listitem",
+      rect: { x: 0, y: 0, width: 50, height: 20 }, actionability: ["select", "click", "invoke"],
+      confidence: 0.9, observedAtMs: 0, provisional: false, controlType: "ListItem",
+      patterns: ["SelectionItemPattern", "InvokePattern"], locator: { uia: { name: "ITEM" } },
+    } as never]);
+    expect(entity!.role).toBe("listitem");
+    expect(entity!.affordances.map((a) => a.verb)).toEqual(["select", "click", "invoke"]);
+  });
+
+  it("the UIA provider offers select only on a collection item with SelectionItemPattern", () => {
+    expect(uiaActionability("ListItem", ["SelectionItemPattern", "InvokePattern"])).toEqual(["select", "click", "invoke"]);
+    expect(uiaActionability("TreeItem", ["SelectionItemPattern"])).toEqual(["select", "click"]);
+    expect(uiaActionability("DataItem", ["InvokePattern", "ValuePattern"])).toEqual(["click", "invoke"]);
+    for (const ct of ["Button", "CheckBox", "Edit", "ComboBox", "Text", "Pane"]) {
+      expect(uiaActionability(ct, ["SelectionItemPattern"])).not.toContain("select");
     }
-    // The control: the same read DOES find the verbs that are advertised, so a signature that
-    // stopped matching would not pass as "select is absent".
-    expect(read("uia-provider.ts")).toContain('"invoke", "click"');
   });
 
   it("the advice tells the caller which action to ask for instead", async () => {

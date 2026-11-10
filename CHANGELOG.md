@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added — Windows
+- **`desktop_discover` marks list, tree and grid items as `listitem`, and `desktop_act` can select them.** Such an
+  item read through UI Automation used to come back as role `unknown` with primaryAction `read`, and
+  `action:"select"` was refused on every target. An item that exposes SelectionItem now offers `select`
+  (its primaryAction), `click`, and `invoke` when it can be opened. `select` and `auto` select the item, the
+  same road as its click, and never open it; `invoke` still opens or runs it. `select` on any other target is
+  refused as before (internal #233).
 - **`key_locker` `fill_once` can keep a password for one pane, so you type it only once.** Pass a `tag`
   (for example `tag:'jump'` for a jump host you re-enter). The first time, you type the password as before; it is
   typed into the prompt and then kept in the locker's memory for that `launch_console` pane until the pane
