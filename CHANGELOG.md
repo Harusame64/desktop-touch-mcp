@@ -41,8 +41,8 @@
 
 ### Fixed — Windows
 - **`screenshot` `mode: 'background'` says when its title matched more than one window.** It captured the first
-  window whose title contained the text, with no word that others matched too. The reply now names the others
-  and says to pass `hwnd` to capture another (internal #248).
+  window whose title contained the text, with no word that others matched too. The reply now says how many
+  windows match, names the others by title and handle, and says to pass `hwnd` to capture another (internal #248).
 - **`terminal` `run` no longer tells you to run a command again when it could not find its output.** The run
   finds its output by locating the text that was on screen before the send. When that text was redrawn
   afterwards (a terminal opened seconds before and still settling, or a prompt that rewrites itself on Enter),

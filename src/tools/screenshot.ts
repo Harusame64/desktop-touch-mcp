@@ -35,7 +35,7 @@ import { getTextViaTextPattern } from "../engine/uia-bridge.js";
 import { stripAnsi, tailLines } from "../engine/ansi.js";
 import { getWindowClassName } from "../engine/win32.js";
 import { isTerminalWindow } from "../utils/terminal-process.js";
-import { resolveWindowTarget } from "./_resolve-window.js";
+import { resolveWindowTarget, findPlainTopLevelWindowsByTitle } from "./_resolve-window.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas (plain objects — used by server.tool() and the macro registry)
@@ -1106,21 +1106,11 @@ export const screenshotBgHandler = async ({
       foundTitle = resolvedWin.title;
       windowScreenRegion = getWindowRectByHwnd(hwnd);
     } else {
-      // internal #248 (win2): a title that two windows carry captured the first in nut-js's list, with no
-      // word that it was ambiguous. The first is still taken; the others are counted and named.
-      const others: string[] = [];
-      let matched = false;
       for (const win of await getWindows()) {
         const raw = (win as unknown as { windowHandle: unknown }).windowHandle;
         const h = typeof raw === "number" || typeof raw === "bigint" ? BigInt(raw) : null;
         const title = h ? getWindowTitleW(h) : await win.title;
-        if (!title.toLowerCase().includes(effectiveTitle.toLowerCase())) continue;
-        if (matched) {
-          others.push(h !== null ? String(h) : `"${title}"`);
-          continue;
-        }
-        matched = true;
-        {
+        if (title.toLowerCase().includes(effectiveTitle.toLowerCase())) {
           hwnd = h;
           foundTitle = title;
           // GetWindowRect, as the resolved path uses: nut-js's region is clamped to the primary
@@ -1132,11 +1122,22 @@ export const screenshotBgHandler = async ({
             const reg = await win.region;
             windowScreenRegion = { x: reg.left, y: reg.top, width: reg.width, height: reg.height };
           }
+          break;
         }
       }
-      if (hwnd !== null && others.length > 0) {
+    }
+
+    // internal #248 (win2): a plain title that more than one window carries captured the first in
+    // nut-js's list without a word. Counted with the matcher `resolveWindowTarget` used for it (plain
+    // top-level windows, dialogs and owned windows left out), and said in the words other tools use.
+    if (hwnd && resolvedWin === null) {
+      const matches = findPlainTopLevelWindowsByTitle(effectiveTitle, { excludeMinimized: false, excludeDialogsAndOwned: true, logAs: "off" });
+      if (matches.length > 1) {
+        const others = matches.filter((m) => m.hwnd !== hwnd);
+        const named = others.slice(0, 5).map((m) => `"${m.title}" (hwnd ${String(m.hwnd)})`).join(", ");
+        const more = others.length > 5 ? ` and ${others.length - 5} more` : "";
         bgWarnings.push(
-          `TitleMatchesSeveralWindows: "${effectiveTitle}" matched ${others.length + 1} windows; captured hwnd ${String(hwnd)} ("${foundTitle}"), not ${others.join(", ")}. Pass hwnd to capture another.`,
+          `${matches.length} windows match "${effectiveTitle}"; captured "${foundTitle}" (hwnd ${String(hwnd)}), not ${named}${more}. Pass hwnd to capture another.`,
         );
       }
     }
