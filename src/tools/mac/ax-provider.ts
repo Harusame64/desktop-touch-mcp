@@ -494,7 +494,7 @@ export async function readMacAxCandidates(
  * Warnings that say a read did not see its app whole. The post-act qualifier counts these and the
  * title's own (`INCOMPLETE_READ`, desktop-discover-act.ts) — one list, so the two cannot drift.
  */
-export const UNSURE_READ = /^(ax_error:|ax_read_incomplete$|display_asleep$|ax_self_reference$|truncated:|window_id_not_in_tree$)/;
+export const UNSURE_READ = /^(ax_error:|ax_read_incomplete$|display_asleep$|ax_self_reference$|truncated:|window_id_not_in_tree$|window_not_shown$)/;
 
 /** Read one app's tree and the candidates under the title (all of them without one). */
 async function readPidUnderTitle(
@@ -533,23 +533,25 @@ async function readPidUnderTitle(
   // (TextEdit's save sheet, measured 2026-11-10) and sits under its window's root. The native read
   // walked only the root that holds it; a window's focused or main root is listed once (`roots`,
   // src/macos/ax.rs), so this is usually one.
-  const windowRoots =
+  const matched =
     windowId === undefined
       ? undefined
-      : tree.elements.filter((e) => (e.depth === 0 || e.role === "AXSheet") && e.windowId === windowId).map((e) => e.id);
+      : tree.elements.filter((e) => (e.depth === 0 || e.role === "AXSheet") && e.windowId === windowId);
+  const windowRoots = matched?.map((e) => e.id);
   const inWindow = (e: NativeMacAxElement) =>
     windowRoots === undefined || windowRoots.some((r) => e.id === r || e.id.startsWith(`${r}.`));
-  if (windowRoots !== undefined) {
-    const found = tree.elements.find((e) => e.id === windowRoots[0]);
-    if (found !== undefined) notes.windowTitle = found.depth === 0 ? rootTitle(found.rootKey) : (found.title ?? found.description ?? "");
-    // The window is listed but nothing read says it is that window: a sleeping display or a read
-    // cut short, or an app whose window AX does not reach. Not "the window holds nothing" — and
-    // nothing is offered, not even the menu bar: a read that has entities would let a query that
-    // matches none of them say the window was read (agy on #928).
-    else {
-      if (!notes.warnings.includes("window_id_not_in_tree")) notes.warnings.push("window_id_not_in_tree");
+  if (matched !== undefined) {
+    const found = matched[0];
+    if (found === undefined) {
+      // The window is listed but nothing read says it is that window: a sleeping display or a read
+      // cut short, or an app whose window AX does not reach. Not "the window holds nothing" — and
+      // nothing is offered, not even the menu bar: a read that has entities would let a query that
+      // matches none of them say the window was read (agy on #928). A read that failed outright
+      // says so already (ax_error:*, e.g. window_id_unsupported): "discover again" would not help.
+      if (tree.error === undefined) notes.warnings.push("window_id_not_in_tree");
       return { own: [], menu: [] };
     }
+    notes.windowTitle = found.depth === 0 ? rootTitle(found.rootKey) : (found.title ?? found.description ?? "");
   }
   const sheetNeedle = title?.toLowerCase();
   // A sheet read by its own id is what is read, not something open over it (gate 2 on #928).

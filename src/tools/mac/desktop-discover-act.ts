@@ -310,10 +310,11 @@ async function macActOnce(
 }
 
 /**
- * Warnings that mean the read after the act did not see the app whole. Not `no_window_with_id` or
- * `window_not_shown`: a title can be gone because the window was retitled, but a window id that is
- * gone — or listed off screen with nothing of it in the tree, as a sheet closed by キャンセル is — is a
- * window the act closed, so its entities did disappear (gate 2 on #928, both rounds).
+ * Warnings that mean the read after the act did not see the app whole. Not `no_window_with_id`: a
+ * title can be gone because the window was retitled, but a window id that is gone is a window the act
+ * closed, so its entities did disappear (gate 2 on #928). `window_not_shown` stays unsure (it is in
+ * `UNSURE_READ`): a sheet closed by キャンセル looks like that, but so does a window the act moved to
+ * another Space (full screen), which is still open (gate 2 on #928, round 3).
  */
 const INCOMPLETE_READ = {
   test: (w: string) => UNSURE_READ.test(w) || /^(no_window_matches_title|window_titles_unavailable|no_frontmost_app)$/.test(w),

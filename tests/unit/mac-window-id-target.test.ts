@@ -187,7 +187,8 @@ describe("reading a window by its id", () => {
     const d = mk(tree({ elements: [], error: "window_id_unsupported" }));
     const { r, notes } = await read(d, { macWindowId: "9199" });
     expect(r).toEqual([]);
-    expect(notes.warnings).toContain("ax_error:window_id_unsupported");
+    // Only that: "not in the tree" would send the caller to discover again, which cannot help.
+    expect(notes.warnings).toEqual(["ax_error:window_id_unsupported"]);
   });
 
   it("off screen and not in the tree: window_not_shown, not a read to retry", async () => {
@@ -277,7 +278,7 @@ describe("desktop_discover / desktop_act with target.windowId", () => {
     expect(a.postReadWarnings).toBeUndefined();
   });
 
-  it("an act that closes a sheet the app keeps listed off screen: its entities disappeared", async () => {
+  it("an act after which the sheet is listed off screen and not in the tree: unsure, not closed", async () => {
     const withSheet = tree({
       elements: [
         ...tree().elements,
@@ -296,8 +297,9 @@ describe("desktop_discover / desktop_act with target.windowId", () => {
     mac.macAxTree.mockResolvedValue(tree());
     const a = body(await macActHandler(mac as any, facade, state, { lease: d.entities[0].lease, action: "click" }));
     expect(a.ok).toBe(true);
-    expect(a.diff).toContain("entity_disappeared");
-    expect(a.postReadWarnings).toBeUndefined();
+    // Closed, or moved to another Space: the read cannot tell, so it does not say the entities went.
+    expect(a.diff ?? []).not.toContain("entity_disappeared");
+    expect(a.postReadWarnings).toEqual(["window_not_shown"]);
   });
 
   it("the schema takes a CGWindowID's range only", () => {
