@@ -109,6 +109,7 @@
     "WindowExcluded",
     "WindowFrozen",
     "WindowOnOtherDesktop",
+    "WindowsTerminalTargetUnsafe",
     "WorkingMemoryNUpperBoundExceeded"
   ],
   "failCodeCodes": [

@@ -25,6 +25,18 @@
   (internal #281).
 
 ### Changed — Windows
+- **`terminal` `send` and `run` no longer paste into Windows Terminal when it is the window in front, or into a
+  split tab.** Windows Terminal takes input only through the foreground, and `terminal` brings it in front and pastes
+  without asking (`desktop_act` asks first). It now makes the checks that hold without a question, and refuses with
+  `WindowsTerminalTargetUnsafe` (nothing typed; `context.detail` says which) when:
+  - the terminal is the window in front, where the user is working: when the client runs in one of its tabs, the
+    command would arrive there;
+  - its selected tab is split into panes, is not a terminal (the Settings tab), or cannot be read;
+  - its selected tab changed while the window was being brought in front.
+
+  `method:'foreground_flash'` makes the same checks, and now also puts the focus on the terminal pane before
+  pasting, so an open find box does not take the text. With `focusFirst:false` nothing is checked: the caller
+  types into the window in front on purpose (internal #286).
 - **The key locker says in the diagnostic log how each watch for a password prompt ended.** After a command such as
   `ssh`, the locker watches the pane for a password prompt. A watch that ended without filling anything left no
   trace. Now every end writes one line to the diagnostic log (`kind: "key_locker_poll"`):
