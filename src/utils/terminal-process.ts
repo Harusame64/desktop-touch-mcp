@@ -54,3 +54,23 @@ export function isTerminalClassProcessName(processName: string): boolean {
 export function isConsoleHostProcessName(processName: string): boolean {
   return CONSOLE_HOST_RE.test(processName);
 }
+
+/**
+ * The window classes of a terminal's own window: conhost (cmd, PowerShell, WSL) `ConsoleWindowClass`,
+ * Windows Terminal (and cmd.exe when it is the default terminal app) `CASCADIA_HOSTING_WINDOW_CLASS`.
+ * The one set for "this window is a terminal with a buffer to read": `desktop_discover`'s terminal
+ * lane (internal #761) and `screenshot`'s terminal guard (internal #229). Not here: Git Bash's
+ * `mintty`, which exposes no text to read (win2, 2026-11-10: the guard returned 0 characters), and
+ * VS Code's integrated terminal (a page inside `Chrome_WidgetWin_1`).
+ */
+export const TERMINAL_WINDOW_CLASSES: ReadonlySet<string> = new Set(["ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS"]);
+
+/**
+ * Whether a window is a terminal's window, by its class. internal #229 (win2, 2026-09-30):
+ * `screenshot(detail:"text")` asked the owning process's image name, so a WinForms form a PowerShell
+ * script showed (or `Out-GridView`) read as a terminal and came back with no actionables, although
+ * UIA listed its controls. A shell can own a GUI window; only the window's class says it is a terminal.
+ */
+export function isTerminalWindow(className: string): boolean {
+  return TERMINAL_WINDOW_CLASSES.has(className);
+}

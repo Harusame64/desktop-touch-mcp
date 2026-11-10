@@ -16,7 +16,12 @@ import path from "node:path";
 import crypto from "node:crypto";
 
 // ─── Hoisted mocks ────────────────────────────────────────────────────────────
-const { mockEnumWindowsInZOrder, mockGetWindowTitleW, mockGetWindowRectByHwnd, mockIsWindowProcessFrozen, mockVisibleFrame, mockHasBuffer, mockCaptureAllLayers, mockCaptureAndDiff, mockUpdateWindowCache, mockSaveSnapshot, mockGetWindows, mockResolveWindowTarget, mockCaptureWindowBackground, mockCaptureWindowWithFallback } = vi.hoisted(() => ({
+const { mockGetWindowClassName, mockGetTextViaTextPattern, mockGetUiElements, mockGetWindowProcessId, mockGetProcessIdentityByPid, mockEnumWindowsInZOrder, mockGetWindowTitleW, mockGetWindowRectByHwnd, mockIsWindowProcessFrozen, mockVisibleFrame, mockHasBuffer, mockCaptureAllLayers, mockCaptureAndDiff, mockUpdateWindowCache, mockSaveSnapshot, mockGetWindows, mockResolveWindowTarget, mockCaptureWindowBackground, mockCaptureWindowWithFallback } = vi.hoisted(() => ({
+  mockGetWindowClassName: vi.fn(() => ""),
+  mockGetTextViaTextPattern: vi.fn(),
+  mockGetUiElements: vi.fn(),
+  mockGetWindowProcessId: vi.fn(() => 1234),
+  mockGetProcessIdentityByPid: vi.fn(() => ({ pid: 1234, processName: "pwsh", processStartTimeMs: 100 })),
   mockEnumWindowsInZOrder: vi.fn(),
   mockGetWindowTitleW: vi.fn(),
   mockGetWindowRectByHwnd: vi.fn(),
@@ -41,7 +46,14 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
     getWindowTitleW: mockGetWindowTitleW,
     getWindowRectByHwnd: mockGetWindowRectByHwnd,
     isWindowProcessFrozen: mockIsWindowProcessFrozen,
+    getWindowClassName: mockGetWindowClassName,
+    getWindowProcessId: mockGetWindowProcessId,
+    getProcessIdentityByPid: mockGetProcessIdentityByPid,
   };
+});
+vi.mock("../../src/engine/uia-bridge.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/engine/uia-bridge.js")>();
+  return { ...actual, getTextViaTextPattern: mockGetTextViaTextPattern, getUiElements: mockGetUiElements };
 });
 vi.mock("../../src/engine/layer-buffer.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/layer-buffer.js")>();
@@ -525,5 +537,44 @@ describe("detail='ocr' — a frozen window is not captured (internal #247)", () 
 
     await screenshotOcrHandler({ windowTitle: "Settings", language: "ja" });
     expect(mockCaptureWindowBackground).toHaveBeenCalledTimes(1);
+  });
+});
+
+// internal #229: the terminal guard is decided by the window's class, not the owning process.
+describe("screenshot(detail:'text') terminal guard by window class (internal #229)", () => {
+  const con = { hwnd: 4242n, title: "k918-con", region: { x: 0, y: 0, width: 400, height: 300 }, zOrder: 0, isActive: true, isMinimized: false, isMaximized: false, isCloaked: false };
+  it("takes a ConsoleWindowClass window down the terminal road", async () => {
+    mockResolveWindowTarget.mockResolvedValue(null);
+    mockEnumWindowsInZOrder.mockReturnValue([con]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    mockGetWindowClassName.mockReturnValue("ConsoleWindowClass");
+    mockGetTextViaTextPattern.mockResolvedValue("C:\\> dir");
+    const result = await screenshotHandler({ ...baseArgs, windowTitle: "k918-con", detail: "text" });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.hints?.terminalGuard).toBe(true);
+    expect(body.textContent).toContain("dir");
+    expect(mockGetWindowClassName).toHaveBeenCalledWith(4242n);
+  });
+
+  it("lists the controls of a form a shell owns, instead of taking it down the terminal road", async () => {
+    // Owned by pwsh, which the old process-name rule took for a terminal (win2's #229 fixture).
+    mockResolveWindowTarget.mockResolvedValue(null);
+    mockEnumWindowsInZOrder.mockReturnValue([{ ...con, title: "k918-form" }]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    mockGetWindowClassName.mockReturnValue("WindowsForms10.Window.8.app.0.2bf8098_r6_ad1");
+    mockGetTextViaTextPattern.mockClear();
+    mockGetUiElements.mockResolvedValue({
+      windowTitle: "k918-form",
+      windowClassName: "WindowsForms10.Window.8.app.0.2bf8098_r6_ad1",
+      windowRect: { x: 0, y: 0, width: 400, height: 300 },
+      elementCount: 1,
+      elements: [{ name: "Submit", controlType: "Button", automationId: "submit", isEnabled: true, boundingRect: { x: 20, y: 40, width: 80, height: 24 }, patterns: ["InvokePattern"], depth: 1 }],
+    });
+    // ocrFallback "never": the UIA road only (one element would otherwise read as sparse and try OCR).
+    const result = await screenshotHandler({ ...baseArgs, windowTitle: "k918-form", detail: "text", ocrFallback: "never" });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.hints?.terminalGuard).toBeUndefined();
+    expect(mockGetTextViaTextPattern).not.toHaveBeenCalled();
+    expect(JSON.stringify(body.actionable)).toContain("Submit");
   });
 });
