@@ -24,6 +24,8 @@ vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
     // mocks will need to be re-added explicitly.
     getWindowClassName: vi.fn(() => "CASCADIA_HOSTING_WINDOW_CLASS"),
     getForegroundHwnd: vi.fn(() => 900n),
+    getWindowProcessId: vi.fn(() => 7),
+    getProcessIdentityByPid: vi.fn(() => ({ processName: "WindowsTerminal" })),
     getWindowRoot: vi.fn((h: bigint) => h),
   };
 });
@@ -53,6 +55,7 @@ vi.mock("../../src/engine/uia-bridge.js", () => ({
   // internal #221: the desktop manager says the fixture's cloaked windows are on another desktop.
   getVirtualDesktopStatus: vi.fn(async (hs: string[]) => Object.fromEntries(hs.map((h) => [h, false]))),
   getSelectedTab: vi.fn(),
+  selectedTabReadable: vi.fn(() => true),
 }));
 
 vi.mock("../../src/engine/ocr-bridge.js", () => ({
@@ -82,7 +85,7 @@ vi.mock(import("../../src/tools/keyboard.js"), async (importOriginal) => ({
   typeViaClipboard: vi.fn(() => Promise.resolve({ backend: "native", clipboardRestored: true })),
 }));
 
-import { terminalSendHandler } from "../../src/tools/terminal.js";
+import { terminalSendHandler, sendFailedWarning } from "../../src/tools/terminal.js";
 import * as win32 from "../../src/engine/win32.js";
 import * as uia from "../../src/engine/uia-bridge.js";
 import * as bg from "../../src/engine/bg-input.js";
@@ -96,6 +99,9 @@ const mockClass = vi.mocked(win32.getWindowClassName);
 const mockTab = vi.mocked(uia.getSelectedTab);
 const mockPaste = vi.mocked(kb.typeViaClipboard);
 const mockFlash = vi.mocked(bg.injectViaForegroundFlash);
+const mockReadable = vi.mocked(uia.selectedTabReadable);
+const mockPid = vi.mocked(win32.getWindowProcessId);
+const mockIdent = vi.mocked(win32.getProcessIdentityByPid);
 
 const WT = 100n;
 const OTHER = 900n;
@@ -137,6 +143,10 @@ beforeEach(() => {
   mockRoot.mockImplementation((h: bigint) => h);
   mockClass.mockReturnValue("CASCADIA_HOSTING_WINDOW_CLASS");
   mockTab.mockResolvedValue(tab("rt-1"));
+  mockReadable.mockReturnValue(true);
+  mockFlash.mockReturnValue({ ok: true, result: {} } as never);
+  mockPid.mockReturnValue(7);
+  mockIdent.mockReturnValue({ processName: "WindowsTerminal" } as never);
   delete process.env["DESKTOP_TOUCH_FORCE_FOCUS"];
 });
 
@@ -219,6 +229,45 @@ describe("internal #286 — terminal:send to Windows Terminal through the foregr
     expect(mockTab).not.toHaveBeenCalled();
   });
 
+  it("reads the window in front after the tab: a click into WT during the tab read is refused", async () => {
+    mockTab.mockImplementation(async () => { wtInFront = true; return tab("rt-1"); });
+    const r = parseResult(await send());
+    expect(r.context).toMatchObject({ detail: "in_front" });
+    expect(mockPaste).not.toHaveBeenCalled();
+  });
+
+  it("refuses with its own detail when this build cannot read a tab at all, without reading one", async () => {
+    mockReadable.mockReturnValue(false);
+    const r = parseResult(await send());
+    expect(r.context).toMatchObject({ detail: "tab_reader_unavailable" });
+    expect(r.error).toContain("Sending again gives the same answer");
+    expect(mockTab).not.toHaveBeenCalled();
+    expect(mockRestore).not.toHaveBeenCalled();
+  });
+
+  it("puts the user's window back after a late refusal even with restoreFocus:false (run sends it so)", async () => {
+    mockTab.mockResolvedValueOnce(tab("rt-1")).mockResolvedValueOnce(tab("rt-2"));
+    const r = parseResult(await send({ restoreFocus: false }));
+    expect(r.context).toMatchObject({ detail: "tab_changed" });
+    expect(mockRestore).toHaveBeenLastCalledWith(OTHER);
+  });
+
+  it("checks a window whose class could not be read when its process is Windows Terminal", async () => {
+    mockClass.mockReturnValue("");
+    wtInFront = true;
+    const r = parseResult(await send());
+    expect(r.context).toMatchObject({ detail: "in_front" });
+  });
+
+  it("does not check a window whose class could not be read when its process is another app (control)", async () => {
+    mockClass.mockReturnValue("");
+    mockIdent.mockReturnValue({ processName: "notepad" } as never);
+    wtInFront = true;
+    const r = parseResult(await send());
+    expect(mockTab).not.toHaveBeenCalled();
+    expect(r.code).not.toBe("WindowsTerminalTargetUnsafe");
+  });
+
   it("does not check a classic console (control)", async () => {
     mockClass.mockReturnValue("ConsoleWindowClass");
     wtInFront = true;
@@ -246,10 +295,42 @@ describe("internal #286 — terminal:send method:'foreground_flash' to Windows T
     expect(mockFlash).not.toHaveBeenCalled();
   });
 
+  it("does not check, and adds no pane options, with focusFirst:false (the key locker's exit probe)", async () => {
+    wtInFront = true;
+    const r = parseResult(await send({ method: "foreground_flash", focusFirst: false }));
+    expect(r.ok).toBe(true);
+    expect(mockTab).not.toHaveBeenCalled();
+    const opts = mockFlash.mock.calls[0]![3] as Record<string, unknown>;
+    expect(opts).not.toHaveProperty("focusTerminalPane");
+    expect(opts).not.toHaveProperty("expectedTabRuntimeId");
+  });
+
+  it.each([
+    ["terminal_tab_changed", "tab_changed"],
+    ["terminal_focus_failed", "pane_not_focused"],
+  ] as const)("says nothing was typed when the flash fails with %s", async (reason, detail) => {
+    mockFlash.mockReturnValue({ ok: false, reason } as never);
+    const r = parseResult(await flash());
+    expect(r.code).toBe("WindowsTerminalTargetUnsafe");
+    expect(r.context).toMatchObject({ detail, method: "foreground_flash" });
+    expect(r.error).toContain("Nothing was typed");
+  });
+
   it("hands the flash the tab to hold to and asks it to focus the terminal pane", async () => {
     const r = parseResult(await flash());
     expect(r.ok).toBe(true);
     expect(mockFlash).toHaveBeenCalledWith(WT, 42, "echo hi",
       expect.objectContaining({ focusTerminalPane: true, expectedTabRuntimeId: "rt-1" }));
+  });
+});
+
+describe("internal #286 — terminal:run says which check refused the send", () => {
+  it("carries context.detail next to the code", () => {
+    expect(sendFailedWarning({ code: "WindowsTerminalTargetUnsafe", context: { detail: "in_front" } }))
+      .toBe("terminal(action='send') failed: WindowsTerminalTargetUnsafe (in_front)");
+  });
+  it("is unchanged for a code without a detail, and for no code", () => {
+    expect(sendFailedWarning({ code: "ForegroundRestricted" })).toBe("terminal(action='send') failed: ForegroundRestricted");
+    expect(sendFailedWarning({})).toBe("terminal(action='send') failed");
   });
 });

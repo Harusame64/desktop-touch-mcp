@@ -28,6 +28,8 @@ export interface WtTab {
 }
 
 export interface WtCheckDeps {
+  /** False when this build or configuration cannot read a tab at all (native UIA disabled, old addon). */
+  tabReaderAvailable(): boolean;
   getForegroundHwnd(): bigint | null;
   getWindowRoot(hwnd: bigint): bigint | null;
   /** `undefined` when it cannot be read, `null` when the window shows no tab. */
@@ -35,7 +37,29 @@ export interface WtCheckDeps {
 }
 
 /** Why a paste into Windows Terminal was refused before anything was typed. */
-export type WtRefusal = "in_front" | "tab_unreadable" | "tab_split" | "tab_not_terminal" | "tab_changed";
+export type WtRefusal =
+  | "in_front"
+  | "tab_reader_unavailable"
+  | "tab_unreadable"
+  | "tab_split"
+  | "tab_not_terminal"
+  | "tab_changed"
+  | "pane_not_focused";
+
+/**
+ * Is this window Windows Terminal? By class, and by process when the class could not be read (an empty
+ * class name is a failed read): the checks must not be skipped because a read failed (gate 2 on #934).
+ */
+export function isWindowsTerminal(className: string, processName: () => string): boolean {
+  if (className === WT_WINDOW_CLASS) return true;
+  if (className !== "") return false;
+  try {
+    const name = processName();
+    return name === "" || /^windowsterminal(\.exe)?$/i.test(name);
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Is the terminal the window in front? Fails closed: a foreground that cannot be read counts as this
@@ -63,13 +87,20 @@ export async function readWtTab(
   return { ok: true, tab };
 }
 
-/** Checked before the terminal is brought in front. */
+/**
+ * Checked before the terminal is brought in front. The window in front is read LAST, after the awaited
+ * tab read, and the caller must not await between this and taking the foreground: the user can click
+ * into the terminal while the tab is read (gate 2 on #934; `desktop_act` does the same, #764).
+ */
 export async function checkWtBeforeForeground(
   hwnd: bigint,
   deps: WtCheckDeps,
 ): Promise<{ ok: true; tab: WtTab } | { ok: false; why: WtRefusal }> {
+  if (!deps.tabReaderAvailable()) return { ok: false, why: "tab_reader_unavailable" };
+  const read = await readWtTab(hwnd, deps);
+  if (!read.ok) return read;
   if (wtIsInFront(hwnd, deps)) return { ok: false, why: "in_front" };
-  return readWtTab(hwnd, deps);
+  return read;
 }
 
 /** Checked after the terminal was brought in front, before the paste. */
@@ -90,6 +121,10 @@ export function wtRefusalSentence(why: WtRefusal, tabName?: string): string {
       return "Nothing was typed: this Windows Terminal window is the window in front, where the user is working. " +
         "If the client runs in one of its tabs, the paste would arrive there. Use a terminal in another window, " +
         "or ask the user to switch to another window first.";
+    case "tab_reader_unavailable":
+      return "Nothing was typed: this server cannot read Windows Terminal's tabs (native UI Automation is disabled " +
+        "by DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1, or the native addon is too old), so which tab would receive the " +
+        "text is not known. Sending again gives the same answer.";
     case "tab_unreadable":
       return "Nothing was typed: the Windows Terminal window's selected tab could not be read, so which tab " +
         "would receive the text is not known.";
@@ -102,5 +137,9 @@ export function wtRefusalSentence(why: WtRefusal, tabName?: string): string {
     case "tab_changed":
       return "Nothing was typed: the Windows Terminal window's selected tab changed while it was being brought " +
         `in front${tabName !== undefined ? ` (it was "${tabName}")` : ""}.`;
+    case "pane_not_focused":
+      return "Nothing was typed: the Windows Terminal pane did not take the keyboard focus in time (or UI Automation " +
+        "was busy), so the paste was not sent — it would have gone to another control (an open find box, a tab). If " +
+        "the terminal is still in front, the previous window could not be put back.";
   }
 }

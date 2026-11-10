@@ -38,9 +38,9 @@ import { resolveBackgroundInputChannel } from "../engine/background-channel-reso
 import { parsePaneId, wtPaneTitleOf, WT_PANE_ID_SCHEMA_MAX } from "../engine/key-locker/pane-id.js";
 import { detectFocusLoss } from "./_focus.js";
 import { scanSinceMarkerNormEnd } from "./_since-marker.js";
-import { getTextViaTextPattern, getSelectedTab } from "../engine/uia-bridge.js";
+import { getTextViaTextPattern, getSelectedTab, selectedTabReadable } from "../engine/uia-bridge.js";
 import {
-  WT_WINDOW_CLASS,
+  isWindowsTerminal,
   checkWtBeforeForeground,
   checkWtSameTab,
   wtRefusalSentence,
@@ -1202,9 +1202,20 @@ export const terminalReadHandler = async ({
 // terminal_send
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * `terminal run`'s warning for a send that failed: the send's code, and its `context.detail` when it has
+ * one — a Windows Terminal refusal's detail says which check failed, and each has its own way on
+ * (internal #286, gate 2 on #934).
+ */
+export function sendFailedWarning(payload: { code?: string; context?: { detail?: unknown } }): string {
+  if (!payload.code) return "terminal(action='send') failed";
+  const detail = typeof payload.context?.detail === "string" ? ` (${payload.context.detail})` : "";
+  return `terminal(action='send') failed: ${payload.code}${detail}`;
+}
+
 /** internal #286 — the live readers behind the Windows Terminal checks. */
 function wtCheckDeps(): WtCheckDeps {
-  return { getForegroundHwnd, getWindowRoot, getSelectedTab };
+  return { tabReaderAvailable: selectedTabReadable, getForegroundHwnd, getWindowRoot, getSelectedTab };
 }
 
 /** internal #286 — a refused paste into Windows Terminal; nothing was typed. */
@@ -1373,10 +1384,13 @@ export const terminalSendHandler = async ({
       // desktop. (The wm_char branch above does not take it, and reaches such a window.)
       const flashAway = await offDesktopTarget(win, enumWindowsInZOrder, paneId === undefined ? windowTitle : undefined);
       if (flashAway) return offDesktopFailure("terminal:send", flashAway, { extra: { method: "foreground_flash" } });
-      // internal #286: the same checks as the foreground road; the flash then checks the tab again
-      // around its own focus move and puts the focus on the terminal pane before pasting.
-      const flashTab = await checkWtBeforeForeground(channel.hwnd, wtCheckDeps());
-      if (!flashTab.ok) return wtRefusalFailure(flashTab.why, win.title, undefined, { method: "foreground_flash" });
+      // internal #286: the same checks as the foreground road, and the flash then checks the tab again
+      // around its own focus move and puts the focus on the terminal pane before pasting. Not with
+      // focusFirst:false, as on the foreground road: the key locker's exit probe sends that way to a
+      // pane it just opened, usually the window in front (gate 2 on #934). Nothing awaits between
+      // this and the flash.
+      const flashTab = focusFirst ? await checkWtBeforeForeground(channel.hwnd, wtCheckDeps()) : null;
+      if (flashTab && !flashTab.ok) return wtRefusalFailure(flashTab.why, win.title, undefined, { method: "foreground_flash" });
       // ADR-035 Phase 1 — see the keyboard twin: the foreground-flash channel
       // steals focus to paste, which is the route a mis-resolved terminal
       // destination turns into a command run in the wrong shell.
@@ -1387,10 +1401,15 @@ export const terminalSendHandler = async ({
         input,
         {
           pressEnter: flashPressEnter, // terminal:send default true、改行終端なら抑止
-          focusTerminalPane: true,
-          expectedTabRuntimeId: flashTab.tab.runtimeId,
+          ...(flashTab?.ok && { focusTerminalPane: true, expectedTabRuntimeId: flashTab.tab.runtimeId }),
         },
       );
+      if (!flashResult.ok && flashTab?.ok && flashResult.reason === "terminal_tab_changed") {
+        return wtRefusalFailure("tab_changed", win.title, flashTab.tab.name, { method: "foreground_flash" });
+      }
+      if (!flashResult.ok && flashTab?.ok && flashResult.reason === "terminal_focus_failed") {
+        return wtRefusalFailure("pane_not_focused", win.title, undefined, { method: "foreground_flash" });
+      }
       if (!flashResult.ok) {
         // OQ8 follow-up: prefix the code so classify() routes this to
         // `ForegroundFlashFailed` (root suggest from SUGGESTS) instead of the
@@ -1815,7 +1834,8 @@ export const terminalSendHandler = async ({
     // user's decision), so the destination is checked the way `desktop_act` checks it around its
     // question. Only when this call takes the foreground: with focusFirst:false the caller types
     // into the window already in front on purpose.
-    const wtTab = focusFirst && targetClass === WT_WINDOW_CLASS
+    // Nothing awaits between this and the focus move below (gate 2 on #934).
+    const wtTab = focusFirst && isWindowsTerminal(targetClass, () => getProcessIdentityByPid(getWindowProcessId(win.hwnd)).processName)
       ? await checkWtBeforeForeground(win.hwnd, wtCheckDeps())
       : null;
     if (wtTab && !wtTab.ok) return wtRefusalFailure(wtTab.why, windowTitle);
@@ -1891,7 +1911,9 @@ export const terminalSendHandler = async ({
     if (wtTab?.ok) {
       const same = await checkWtSameTab(win.hwnd, wtTab.tab, wtCheckDeps());
       if (!same.ok) {
-        if (restoreFocus && prevFgHwnd && prevFgHwnd !== win.hwnd) {
+        // Put back whatever restoreFocus says: nothing was typed, and this call took the foreground
+        // (`run` sends restoreFocus:false, gate 2 on #934).
+        if (prevFgHwnd && prevFgHwnd !== win.hwnd) {
           try { restoreAndFocusWindow(prevFgHwnd); } catch { /* best-effort */ }
         }
         return wtRefusalFailure(same.why, windowTitle, wtTab.tab.name);
@@ -2565,11 +2587,11 @@ export const terminalRunHandler = async ({
     notifyDispatch: false as const,
   };
 
-  const parseSendResult = (r: ToolResult): { ok?: boolean; code?: string } | null => {
+  const parseSendResult = (r: ToolResult): { ok?: boolean; code?: string; context?: { detail?: unknown } } | null => {
     try {
       const block = r.content[0];
       if (block?.type === "text") {
-        return JSON.parse(block.text) as { ok?: boolean; code?: string };
+        return JSON.parse(block.text) as { ok?: boolean; code?: string; context?: { detail?: unknown } };
       }
     } catch { /* fall through */ }
     return null;
@@ -2588,7 +2610,7 @@ export const terminalRunHandler = async ({
   //     the cost of a brief focus steal — WT cannot take WM_CHAR anyway, and a
   //     non-conhost terminal has no no-steal console-paste equivalent.
   // Non-exit modes are unchanged (method:'auto').
-  let sendPayload: { ok?: boolean; code?: string } | null;
+  let sendPayload: { ok?: boolean; code?: string; context?: { detail?: unknown } } | null;
   if (until.mode === "exit") {
     const targetClass = (() => {
       try { return getWindowClassName(hwnd); } catch { return ""; }
@@ -2632,7 +2654,7 @@ export const terminalRunHandler = async ({
     // retry exhausted, etc.). Surface the code in warnings so callers can
     // branch on the underlying cause without parsing the message.
     const alive = isWindowStillAlive(hwnd);
-    const sendCode = sendPayload.code;
+
     const res: TerminalRunResponse = {
       ok: false,
       output: "",
@@ -2641,12 +2663,7 @@ export const terminalRunHandler = async ({
         elapsedMs: Date.now() - startedAt,
       },
       hwnd: String(hwnd),
-      warnings: [
-        ...warnings,
-        sendCode
-          ? `terminal(action='send') failed: ${sendCode}`
-          : `terminal(action='send') failed`,
-      ],
+      warnings: [...warnings, sendFailedWarning(sendPayload)],
     };
     return ok(res);
   }

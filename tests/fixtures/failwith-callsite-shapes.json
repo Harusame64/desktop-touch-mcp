@@ -538,14 +538,14 @@
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 1268,
+      "line": 1279,
       "tool": "terminal:send",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 1974,
+      "line": 1996,
       "tool": "terminal:send",
       "errKind": "identifier",
       "contextShape": "object-plain"

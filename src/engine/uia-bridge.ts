@@ -3362,6 +3362,11 @@ let warnedNoSelectedTab = false;
  * or the read failed). There is no PowerShell road: the caller holds a user's answer to this, and a
  * slow answer is not better than none.
  */
+/** internal #286 — can this build read a Windows Terminal tab at all? */
+export function selectedTabReadable(): boolean {
+  return typeof nativeUia?.uiaGetSelectedTab === "function";
+}
+
 export async function getSelectedTab(
   hwnd: bigint,
 ): Promise<{ name: string; runtimeId: string; paneCount: number } | null | undefined> {

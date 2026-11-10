@@ -32,11 +32,15 @@
   - the terminal is the window in front, where the user is working: when the client runs in one of its tabs, the
     command would arrive there;
   - its selected tab is split into panes, is not a terminal (the Settings tab), or cannot be read;
-  - its selected tab changed while the window was being brought in front.
+  - its selected tab changed while the window was being brought in front (the window you were in is put back);
+  - the server cannot read Windows Terminal's tabs at all (native UI Automation disabled with
+    `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1`, or an old native addon). Such a server pasted into Windows Terminal
+    before; it now refuses every time.
 
   `method:'foreground_flash'` makes the same checks, and now also puts the focus on the terminal pane before
   pasting, so an open find box does not take the text. With `focusFirst:false` nothing is checked: the caller
-  types into the window in front on purpose (internal #286).
+  types into the window in front on purpose. `run` names the check in its `send_failed` warning
+  (internal #286).
 - **The key locker says in the diagnostic log how each watch for a password prompt ended.** After a command such as
   `ssh`, the locker watches the pane for a password prompt. A watch that ended without filling anything left no
   trace. Now every end writes one line to the diagnostic log (`kind: "key_locker_poll"`):

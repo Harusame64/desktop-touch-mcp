@@ -46,7 +46,8 @@ vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
     // PR #209 Round 1 P2-3); if a future test exercises an alias-style
     // `windowTitle: 'pwsh'` against a target titled differently, those
     // mocks will need to be re-added explicitly.
-    getWindowClassName: vi.fn(() => ""),
+    // internal #286: a readable class that is not Windows Terminal ("" is a failed read, checked as WT).
+    getWindowClassName: vi.fn(() => "TestTerminalClass"),
   };
 });
 
