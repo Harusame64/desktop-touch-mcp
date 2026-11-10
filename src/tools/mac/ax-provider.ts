@@ -79,6 +79,14 @@ export function roleOf(e: Pick<NativeMacAxElement, "role" | "subrole" | "namesFi
 
 const SECURE = "AXSecureTextField";
 
+/**
+ * Controls whose AXValue is their state, read as a button: a checkbox or radio button ("1" on,
+ * "0" off, "2" mixed) and a pop-up (the option it shows). Without it a caller could not tell
+ * whether a box was ticked or which option was chosen (internal #262: Safari's web checkbox and
+ * select, measured 2026-11-10 — AX carried "1" and "緑", discover dropped both).
+ */
+const STATE_CONTROLS = new Set(["AXCheckBox", "AXRadioButton", "AXPopUpButton"]);
+
 /** The verbs the element itself offers: press only when it advertises AXPress. */
 export function actionabilityOf(e: NativeMacAxElement): UiEntityCandidate["actionability"] {
   const verbs: UiEntityCandidate["actionability"] = [];
@@ -428,7 +436,7 @@ async function readPidUnderTitle(
   if (titled && sheetsTitled.length > 1) notes.warnings.push("title_matches_several_sheets");
   else if (titled && candidates.length === 0 && !explained) notes.warnings.push("title_matches_nothing_readable");
   for (const c of candidates) {
-    if (c.role === "textbox" && c.value !== undefined && c.digest !== undefined) {
+    if ((c.role === "textbox" || STATE_CONTROLS.has(c.controlType ?? "")) && c.value !== undefined && c.digest !== undefined) {
       (notes.values ??= {})[`ent_${c.digest}`] = c.value;
     }
   }
