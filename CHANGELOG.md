@@ -40,6 +40,12 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **A type into Word's body is not passed on an empty read.** After typing, `desktop_act` reads the page text
+  back and refuses with `value_not_applied` only when it did not change. Right after a type, that read could
+  catch the page Word had just scrolled away from, whose visible text is empty, and an empty read counted as
+  "the text changed", so the check passed without having seen the page. An empty page body is now left out of
+  the read, and a read that saw no text where the page had text is read again; if no read sees the page, the
+  type passes unconfirmed, as an unreadable page always has (internal #237).
 - **`desktop_act` presses the control it discovered, not another one with the same text.** The UI Automation
   click looked its element up by name alone, as a substring, so where the controls have no AutomationId (common
   in WPF) another control with the same text earlier in the window could be the one pressed: a click on a

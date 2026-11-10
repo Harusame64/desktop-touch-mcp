@@ -2163,12 +2163,6 @@ async function keyboardRung(
     : { kind: "keyboard", landing: { confirmed: false, why: verdict.why, referenceFrom: verdict.referenceFrom } };
 }
 
-/**
- * Whether the host's visible page text is still exactly what it was before the post, after reading it
- * up to six times 200 ms apart (win2 read Word's body back in 85–250 ms; a slow Word may still be
- * typing). `false` as soon as one read differs, and when no read after the post succeeded — an
- * unreadable page is not evidence that nothing changed.
- */
 /** `p`, or `undefined` once `ms` have passed. The work behind `p` is not cancelled. */
 function withinMs<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
   return new Promise((resolve) => {
@@ -2177,6 +2171,19 @@ function withinMs<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
   });
 }
 
+/**
+ * Whether the host's visible page text is still exactly what it was before the post, after reading it
+ * up to six times 200 ms apart (win2 read Word's body back in 85–250 ms; a slow Word may still be
+ * typing). `false` as soon as one read differs, and when no read after the post saw anything — an
+ * unreadable page is not evidence that nothing changed.
+ *
+ * internal #237: an empty read (`""`, every visible body empty — see `joinHostTexts`) where the text
+ * before was not empty is a read that saw nothing, and is read again; if every read is like that, the
+ * check ends unread (`false`). Before #237 such a read counted as "changed" and passed at once. On a
+ * blank document ("" before) an empty read is the page as it is, and counts. Not closed: a before-read
+ * caught mid-scroll also reads "" and cannot be told from a blank document, so after it any non-empty
+ * read counts as a change (gate 2 on #921); and see `joinHostTexts` for a multi-page shape.
+ */
 async function hostTextUnchanged(d: ExecutorDeps, root: bigint, before: string): Promise<boolean> {
   let readOnce = false;
   // A deadline over the whole check, so a slow or failing read cannot hold the act (gate 2).
@@ -2187,6 +2194,10 @@ async function hostTextUnchanged(d: ExecutorDeps, root: bigint, before: string):
     // timeout shortens (PR codex). A read cut short counts as unread.
     const after = await withinMs(d.readHostText!(root), Math.max(0, deadline - Date.now()));
     if (after === undefined) continue;
+    // internal #237 (win2 W1/W2): right after a type, the read can catch the Edit of the page the view
+    // was on before it scrolled, whose visible range is empty. A read that saw no text where there was
+    // text is not a change: read again.
+    if (after === "" && before !== "") continue;
     readOnce = true;
     if (after !== before) return false;
   }
@@ -4119,8 +4130,7 @@ function getSharedRealDeps(): ExecutorDeps {
         // Native only: the PowerShell road never reads the page text (gate 2). The caller bounds the
         // wait; the timeout here binds only the PowerShell road, which nativeOnly does not take.
         const r = await getUiElements("", 64, 500, 2000, { pinnedHwnd: rootHwnd, readBodyText: true, nativeOnly: true });
-        const texts = r.elements.map((e) => e.visibleText).filter((t): t is string => typeof t === "string");
-        return texts.length > 0 ? texts.join("\n") : undefined;
+        return joinHostTexts(r.elements.map((e) => e.visibleText));
       } catch {
         return undefined;
       }
@@ -4248,4 +4258,19 @@ export function clickLookupControlType(entity: UiEntity): string | undefined {
   const ct = entity.controlType;
   if (ct === undefined || entity.locator?.uia?.via !== "native") return undefined;
   return ct === "Edit" || ct === "Document" || ct === "Text" ? undefined : ct;
+}
+
+/**
+ * The host's visible page text from the bodies a read found: their non-empty texts joined, `""` when
+ * every body it found was empty, and `undefined` when no body was read at all. internal #237: a body
+ * caught mid-scroll reads `""` (win2 W1), so an empty body is left out here, where the bodies are read.
+ * That makes a read whose only body is empty `""`, which the read-back check reads again. It does not
+ * close every multi-page shape: with two pages that both had text before and one empty after, the
+ * join is the other page's text alone, which still differs from before and counts as a change (agy on
+ * #921). win2 saw one body in every read on 2026-11-10 (n=1 throughout W1–W3). Exported for tests.
+ */
+export function joinHostTexts(texts: ReadonlyArray<string | undefined>): string | undefined {
+  const read = texts.filter((t): t is string => typeof t === "string");
+  if (read.length === 0) return undefined;
+  return read.filter((t) => t.length > 0).join("\n");
 }

@@ -302,6 +302,41 @@ describe("a type into Word's body fails only when the page text did not change a
     expect(readHostText).toHaveBeenCalledTimes(4);
   });
 
+  it("does not take an empty read for a change: it reads again, and refuses when the text then read back unchanged (internal #237)", async () => {
+    // win2 W2: the read right after the post caught an empty page. That alone used to pass the check.
+    const { out, readHostText } = await typeReadBack("abc", ["Hello.", "", "Hello."]);
+    expect((out as Error).name).toBe("ValueNotAppliedError");
+    expect(readHostText).toHaveBeenCalledTimes(7); // before, and six after: the empty one was not the verdict
+  });
+
+  it("passes when a read after the empty one shows the text changed (internal #237)", async () => {
+    const { out, readHostText } = await typeReadBack("abc", ["Hello.", "", "Hello. abc"]);
+    expect(out).toMatchObject({ kind: "keyboard", landing: { confirmed: false } });
+    expect(readHostText).toHaveBeenCalledTimes(3);
+  });
+
+  it("ends unread, not unchanged, when every read after the post is empty (internal #237)", async () => {
+    const { out, readHostText } = await typeReadBack("abc", ["Hello.", ""]);
+    expect(out).toMatchObject({ kind: "keyboard", landing: { confirmed: false } });
+    expect(readHostText).toHaveBeenCalledTimes(7);
+  });
+
+  it("on a blank document an empty read is the page as it is: refused when it stays empty (internal #237)", async () => {
+    const { out, readHostText } = await typeReadBack("abc", ["", ""]);
+    expect((out as Error).name).toBe("ValueNotAppliedError");
+    expect(readHostText).toHaveBeenCalledTimes(7);
+  });
+
+  it("leaves empty bodies out of the join: all empty is \"\", none read is undefined (internal #237)", async () => {
+    const { joinHostTexts } = await import("../../src/tools/desktop-executor.js");
+    expect(joinHostTexts(["P1 text", "P2 text"])).toBe("P1 text\nP2 text");
+    // one body caught mid-scroll beside the one that was read alone before: the same text, not a change
+    expect(joinHostTexts(["", "P2 text"])).toBe(joinHostTexts(["P2 text"]));
+    expect(joinHostTexts(["", ""])).toBe("");
+    expect(joinHostTexts([undefined, undefined])).toBeUndefined();
+    expect(joinHostTexts([])).toBeUndefined();
+  });
+
   it("passes when the page text cannot be read afterwards (an unreadable page is not 'no change')", async () => {
     const { out } = await typeReadBack("abc", ["Hello.", undefined]);
     expect(out).toMatchObject({ kind: "keyboard", landing: { confirmed: false } });
