@@ -720,7 +720,7 @@ export type DiagnosticEvent =
       kind: "key_locker_poll";
       paneId: string;
       end:
-        | "timed_out" | "session_changed" | "failsafe" | "replaced" | "taken_by_fill_once" | "pane_closed"
+        | "timed_out" | "session_changed" | "failsafe" | "replaced" | "dropped_by_dispatch" | "taken_by_fill_once" | "pane_closed"
         | "loop_outcome" | "loop_threw" | "poll_threw";
       /** For `loop_outcome`: the capture loop's outcome kind (`saved`, `capture_cancelled`, `fill_aborted`, …). */
       outcome?: string;

@@ -20,7 +20,7 @@
 //                  (`buildExitProbe`), NEVER re-running it.
 
 import type { ToolResult } from "./_types.js";
-import { armEndEvent, pollErrorEvent, writePollEvent } from "../engine/key-locker/poll-log.js";
+import { armEndEvent, writePollEvent } from "../engine/key-locker/poll-log.js";
 import type { BindingMeta } from "../engine/key-locker/binding-store.js";
 import { BindingStore } from "../engine/key-locker/binding-store.js";
 import type { BindingUri } from "../engine/key-locker/binding.js";
@@ -421,17 +421,9 @@ export class KeyLockerWiring {
     // resolveBinding/confirmInjection/injectPane can reject through `withHost`) would otherwise become an
     // unhandledRejection → `server-windows.ts` `shutdown(1)` = ALL tools down (Opus W-4b P1). A swallowed poll
     // just re-polls next tick — bounded-safe, the fill-failure north-star. Never crash the server for a fill.
-    // internal #283: how each arm ends is logged by the driver (`onArmEnded`); a poll that throws before the
-    // capture loop is logged here, once per arm (the arm stays set and re-polls every tick).
-    for (const paneId of this.driver.armedPaneIds()) {
-      void this.driver.poll(paneId).catch((error: unknown) => {
-        try {
-          if (this.driver.firstPollErrorOfArm(paneId)) writePollEvent(pollErrorEvent(paneId, error));
-        } catch {
-          /* never reject: an unhandled rejection takes every tool down */
-        }
-      });
-    }
+    // internal #283: how each arm ends, and a poll that threw, is reported by the driver itself
+    // (`onArmEnded`, once per arm) and written to the diagnostic log there.
+    for (const paneId of this.driver.armedPaneIds()) void this.driver.poll(paneId).catch(() => {});
   }
 
   private enabled(): boolean {

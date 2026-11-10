@@ -13,11 +13,11 @@ vi.mock("../../src/engine/diagnostic-log.js", async (importOriginal) => {
   return { ...actual, logDiagnostic: vi.fn((e: unknown) => { logged.push(e); }) };
 });
 
-import { KeyLockerCaptureDriver, type ArmEnd, type CaptureDriverDeps, type PromptVerdict } from "../../src/engine/key-locker/key-locker-capture-driver.js";
+import { KeyLockerCaptureDriver, errorFields, type ArmEnd, type CaptureDriverDeps, type PromptVerdict } from "../../src/engine/key-locker/key-locker-capture-driver.js";
 import { SessionTracker } from "../../src/engine/key-locker/session-tracker.js";
 import { SshSessionWatch, type ProcessSnapshot } from "../../src/engine/key-locker/ssh-session-watch.js";
 import { KeyLockerError } from "../../src/engine/key-locker-host.js";
-import { armEndEvent, pollErrorEvent, writePollEvent } from "../../src/engine/key-locker/poll-log.js";
+import { armEndEvent, writePollEvent } from "../../src/engine/key-locker/poll-log.js";
 
 const procs: Record<number, { parent: number; name: string; start: number }> = {
   500: { parent: 0, name: "windowsterminal", start: 1 },
@@ -67,12 +67,47 @@ describe("the driver reports every end of an arm, once", () => {
     await h.driver.poll("pane-1"); // not armed any more: nothing more
     expect(h.ends).toEqual([["pane-1", { end: "timed_out" }]]);
   });
-  it("replaced by a newer dispatch (credential or not)", () => {
+  it("a newer dispatch: replaced when it arms again, dropped_by_dispatch when it does not", () => {
     const h = harness();
     h.driver.onDispatch("pane-1", "sudo apt update");
+    h.driver.onDispatch("pane-1", "sudo ls");
     h.driver.onDispatch("pane-1", "ls");
-    h.driver.onDispatch("pane-1", "ls"); // no arm to replace: nothing
-    expect(h.ends).toEqual([["pane-1", { end: "replaced" }]]);
+    h.driver.onDispatch("pane-1", "ls"); // no arm to end: nothing
+    expect(h.ends.map(([, e]) => e.end)).toEqual(["replaced", "dropped_by_dispatch"]);
+  });
+  it("a record replaced under the same pane id reports its arm", () => {
+    const h = harness();
+    h.driver.onDispatch("pane-1", "sudo apt update");
+    h.driver.onLocalPaneLaunched("pane-1", { kind: "classic", hwnd: 1000n, shellPid: 1000, shellStartTimeMs: 10 } as never);
+    expect(h.ends.map(([, e]) => e.end)).toEqual(["pane_closed"]);
+  });
+  it("the pane closes while a poll is reading: one end, not a second from the poll", async () => {
+    let release!: (v: PromptVerdict) => void;
+    const h = harness({ readPromptTail: vi.fn(() => new Promise<PromptVerdict>((r) => { release = r; })) });
+    h.driver.onDispatch("pane-1", "sudo apt update");
+    const p = h.driver.poll("pane-1");
+    await Promise.resolve();
+    h.driver.onPaneClosed("pane-1");
+    release(PROMPT(true));
+    await p.catch(() => {});
+    expect(h.ends.map(([, e]) => e.end)).toEqual(["pane_closed"]);
+  });
+  it("a clear while the arm's loop runs is not an end: the loop's outcome is", async () => {
+    let release!: (c: "save") => void;
+    const h = harness({
+      readPromptTail: vi.fn(async () => PROMPT(true)),
+      offerSave: vi.fn(() => new Promise<"save">((r) => { release = r; })) as never,
+    });
+    h.driver.onDispatch("pane-1", "sudo apt update");
+    const p = h.driver.poll("pane-1");
+    for (let i = 0; i < 20 && release === undefined; i++) await new Promise((r) => setTimeout(r, 0));
+    // The login landed: a dispatch is admitted during the save offer, and the tick's hygiene runs.
+    h.driver.onDispatch("pane-1", "ls");
+    h.tracker.markUnknown("pane-1");
+    h.driver.tickWatch();
+    release("save");
+    await p;
+    expect(h.ends.map(([, e]) => e.end)).toEqual(["loop_outcome"]);
   });
   it("the pane closed, or fill_once took it", () => {
     const h = harness();
@@ -106,15 +141,18 @@ describe("the driver reports every end of an arm, once", () => {
     h.clock.ms += 10 * 60_000;
     await expect(h.driver.poll("pane-1")).resolves.toMatchObject({ status: "timed_out" });
   });
-  it("a poll that throws before the loop is reported once per arm", async () => {
-    const h = harness({ readPromptTail: vi.fn(async () => { throw new Error("uia"); }) });
+  it("a poll that throws before the loop is reported once per arm, for the arm that threw", async () => {
+    const h = harness({ readPromptTail: vi.fn(async () => { throw new KeyLockerError("KeyLockerPipeUnavailable", "gone"); }) });
     h.driver.onDispatch("pane-1", "sudo apt update");
-    await expect(h.driver.poll("pane-1")).rejects.toThrow("uia");
-    expect(h.driver.firstPollErrorOfArm("pane-1")).toBe(true);
-    await expect(h.driver.poll("pane-1")).rejects.toThrow("uia");
-    expect(h.driver.firstPollErrorOfArm("pane-1")).toBe(false);
-    h.driver.onDispatch("pane-1", "sudo ls"); // a new arm logs its first error again
-    expect(h.driver.firstPollErrorOfArm("pane-1")).toBe(true);
+    await expect(h.driver.poll("pane-1")).rejects.toThrow("gone");
+    await expect(h.driver.poll("pane-1")).rejects.toThrow("gone");
+    h.driver.onDispatch("pane-1", "sudo ls"); // a new arm reports its own first error
+    await expect(h.driver.poll("pane-1")).rejects.toThrow("gone");
+    expect(h.ends.map(([, e]) => e)).toEqual([
+      { end: "poll_threw", errorName: "KeyLockerError", errorCode: "KeyLockerPipeUnavailable" },
+      { end: "replaced" },
+      { end: "poll_threw", errorName: "KeyLockerError", errorCode: "KeyLockerPipeUnavailable" },
+    ]);
   });
 });
 
@@ -128,13 +166,14 @@ describe("the diagnostic line holds no secret", () => {
     expect(armEndEvent("p", { end: "loop_outcome", outcome: { kind: "saved", verified: true } }))
       .toEqual({ kind: "key_locker_poll", paneId: "p", end: "loop_outcome", outcome: "saved", verified: true });
   });
-  it("an error is written by its name and a KeyLockerError's code, never its message", () => {
-    const e = pollErrorEvent("p", new KeyLockerError("KeyLockerPipeUnavailable", "pipe gone while typing hunter2"));
+  it("an error is written by its name and code, each only as an identifier, never its message", () => {
+    const e = armEndEvent("p", { end: "poll_threw", ...errorFields(new KeyLockerError("KeyLockerPipeUnavailable", "pipe gone while typing hunter2")) });
     expect(e).toEqual({ kind: "key_locker_poll", paneId: "p", end: "poll_threw", errorName: "KeyLockerError", errorCode: "KeyLockerPipeUnavailable" });
     expect(JSON.stringify(e)).not.toContain("hunter2");
     const odd = Object.assign(new Error("x"), { code: "has spaces hunter2" });
-    expect(pollErrorEvent("p", odd)).toEqual({ kind: "key_locker_poll", paneId: "p", end: "poll_threw", errorName: "Error" });
-    expect(armEndEvent("p", { end: "loop_threw", errorName: "Error" })).toEqual({ kind: "key_locker_poll", paneId: "p", end: "loop_threw", errorName: "Error" });
+    odd.name = "Bad name: hunter2";
+    expect(errorFields(odd)).toEqual({ errorName: "other", errorCode: "other" });
+    expect(errorFields("a string")).toEqual({ errorName: "string" });
   });
   it("writing never throws", () => {
     logged.length = 0;

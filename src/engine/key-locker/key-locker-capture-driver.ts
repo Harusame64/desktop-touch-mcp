@@ -190,19 +190,28 @@ export interface CaptureDriverDeps {
   onArmEnded?(paneId: string, end: ArmEnd): void;
 }
 
-/** How an arm ended (`onArmEnded`). Never carries a secret: the loop's outcome as the loop returned it. */
+/**
+ * How an arm ended (`onArmEnded`), once per arm — or, as `poll_threw`, a poll of it that threw before the
+ * loop (the arm stays set and re-polls; reported once per arm). `replaced`: a newer dispatch armed the pane
+ * again; `dropped_by_dispatch`: a newer dispatch cleared it without arming (not a credential, or the session
+ * sank). Never carries a secret: the loop's outcome as the loop returned it, an error's name and code.
+ */
 export type ArmEnd =
-  | { end: "timed_out" | "session_changed" | "failsafe" | "replaced" | "taken_by_fill_once" | "pane_closed" }
+  | {
+      end: "timed_out" | "session_changed" | "failsafe" | "replaced" | "dropped_by_dispatch" | "taken_by_fill_once" | "pane_closed";
+    }
   | { end: "loop_outcome"; outcome: CaptureLoopOutcome }
-  /** The capture loop threw: the error's name, and a `KeyLockerError`'s code — never its message. */
-  | { end: "loop_threw"; errorName: string; errorCode?: string };
+  | { end: "loop_threw" | "poll_threw"; errorName: string; errorCode?: string };
 
-/** The name of a thrown value, and its `code` when it carries a short identifier (a `KeyLockerError`'s). */
+/** The name of a thrown value and its `code`, each only as an identifier (`safeIdentifier`), never a message. */
 export function errorFields(err: unknown): { errorName: string; errorCode?: string } {
-  const errorName = err instanceof Error ? err.name : typeof err;
-  const code = err instanceof Error ? (err as { code?: unknown }).code : undefined;
-  return typeof code === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(code) ? { errorName, errorCode: code } : { errorName };
+  const isError = err instanceof Error;
+  const errorName = isError ? safeIdentifier(err.name) : safeIdentifier(typeof err);
+  const code = isError ? (err as { code?: unknown }).code : undefined;
+  return code === undefined ? { errorName } : { errorName, errorCode: safeIdentifier(code) };
 }
+
+import { safeIdentifier } from "./safe-identifier.js";
 
 /** Is this throw the failsafe's typed rejection? Structural check on `err.name` — the driver must not
  *  import `utils/failsafe.js` (it would drag the nut-js native module into the engine-pure graph); the
@@ -215,8 +224,12 @@ function isFailsafeEngaged(err: unknown): boolean {
 interface ArmedDispatch {
   /** The dispatched command — the AUTHORITATIVE binding source (never the prompt text). */
   command: string;
-  /** internal #283: a poll of this arm threw and that was logged — the next throws of the same arm are not. */
+  /** internal #283: a poll of this arm threw and that was reported — the next throws of the same arm are not. */
   errorLogged?: boolean;
+  /** internal #283: this arm's end was reported (`onArmEnded`) — once per arm, whoever clears it. */
+  ended?: boolean;
+  /** internal #283: this arm's capture loop is running — its outcome is the arm's end, not a clear meanwhile. */
+  loopRunning?: boolean;
   /** The reconciled PRE-effect session the capture loop derives from (never a live tracker.get). */
   frozen: SessionFrame;
   /** The POST-record session at arm time — the state the pane is EXPECTED to hold when the armed command's
@@ -304,6 +317,8 @@ export class KeyLockerCaptureDriver {
    * process), so no time param is plumbed here.
    */
   onLocalPaneLaunched(paneId: string, anchor: PaneAnchor, cwd?: string): void {
+    const old = this.panes.get(paneId)?.armed;
+    if (old) this.armEnded(paneId, old, () => ({ end: "pane_closed" }), true); // the record is replaced
     if (this.panes.has(paneId)) this.deps.onPaneForgotten?.(paneId); // a reused id: the old pane's tags go
     this.tracker.beginLocalSession(paneId, cwd);
     this.watch.watchPane(paneId, anchor.shellPid);
@@ -401,11 +416,15 @@ export class KeyLockerCaptureDriver {
     //     The POST-record frame is captured as `expected` (the state the command's own prompt shows in) so
     //     `poll` can detect an EXTERNAL change before filling (Codex R2 P1 + Opus R2 P2).
     const postRecord = this.tracker.get(paneId);
-    if (rec.armed !== null) this.armEnded(paneId, { end: "replaced" });
+    const previous = rec.armed;
     rec.armed =
       isKnownSession(frozen) && isKnownSession(postRecord) && looksLikeCredential(command)
         ? { command, frozen, expected: postRecord, armedAtMs: this.deps.nowMs() }
         : null;
+    if (previous !== null) {
+      const armedAgain = rec.armed !== null;
+      this.armEnded(paneId, previous, () => ({ end: armedAgain ? "replaced" : "dropped_by_dispatch" }), true);
+    }
   }
 
   /**
@@ -422,8 +441,8 @@ export class KeyLockerCaptureDriver {
     // dispatch (duplicate capture/inject/save). `pollBusy` spans the WHOLE poll incl. the capture loop.
     if (rec.pollBusy) return { status: "busy" };
     rec.pollBusy = true;
+    const armed = rec.armed;
     try {
-      const armed = rec.armed;
 
       // §0-CORR.2 straggler backstop: register a still-pending ssh child (rare in fire-after). Idempotent.
       if (rec.pendingSsh !== undefined && !rec.pendingSsh.registered) {
@@ -433,7 +452,7 @@ export class KeyLockerCaptureDriver {
       // Poller lifetime (OQ-W-2): a key-based ssh / cached sudo prints NO prompt — abandon (safe, no fill).
       if (this.deps.nowMs() - armed.armedAtMs > this.pollTimeoutMs) {
         rec.armed = null;
-        this.armEnded(paneId, { end: "timed_out" });
+        this.armEnded(paneId, armed, () => ({ end: "timed_out" }));
         return { status: "timed_out" };
       }
 
@@ -464,7 +483,7 @@ export class KeyLockerCaptureDriver {
           // principle as the stale-arm re-check above).
           if (rec.armed === armed) {
             rec.armed = null;
-            this.armEnded(paneId, { end: "failsafe" });
+            this.armEnded(paneId, armed, () => ({ end: "failsafe" }));
           }
           return { status: "declined" };
         }
@@ -486,7 +505,7 @@ export class KeyLockerCaptureDriver {
       // AUTHORITATIVE re-check is at the INJECTION INSTANT (`runCaptureLoopFor`'s injectPane wrapper, Codex R4).
       if (!this.liveSessionMatchesExpected(paneId, armed.expected)) {
         rec.armed = null;
-        this.armEnded(paneId, { end: "session_changed" });
+        this.armEnded(paneId, armed, () => ({ end: "session_changed" }));
         return { status: "declined" };
       }
 
@@ -497,15 +516,16 @@ export class KeyLockerCaptureDriver {
       rec.loopPhase = "pre-landed";
       try {
         let outcome: CaptureLoopOutcome;
+        // While the loop runs, its outcome is the arm's end: a dispatch or the tick's hygiene that clears the
+        // arm meanwhile is not reported (internal #283, gate 2 on #932).
+        armed.loopRunning = true;
         try {
           outcome = await this.runCaptureLoopFor(rec, paneId, armed);
         } catch (err) {
-          // The finally below clears the arm before the rejection reaches the wiring, which could then not
-          // tell it apart from a routine tick: say it here, once (internal #283).
-          this.armEnded(paneId, { end: "loop_threw", ...errorFields(err) });
+          this.armEnded(paneId, armed, () => ({ end: "loop_threw", ...errorFields(err) }));
           throw err;
         }
-        this.armEnded(paneId, { end: "loop_outcome", outcome });
+        this.armEnded(paneId, armed, () => ({ end: "loop_outcome", outcome }));
         return { status: "filled", outcome };
       } finally {
         rec.loopPhase = "none";
@@ -513,6 +533,10 @@ export class KeyLockerCaptureDriver {
         // `rec.armed` with a newer arm, which must survive to be polled next.
         if (rec.armed === armed) rec.armed = null;
       }
+    } catch (err) {
+      // internal #283: the wiring swallows the rejection; the poll of THIS arm says it threw, once.
+      this.pollThrew(paneId, armed, err);
+      throw err;
     } finally {
       rec.pollBusy = false;
     }
@@ -545,7 +569,7 @@ export class KeyLockerCaptureDriver {
     if (rec.pollBusy || rec.loopPhase !== "none") return { ok: false, reason: "busy" };
     rec.pollBusy = true;
     rec.loopPhase = "pre-landed";
-    if (rec.armed !== null) this.armEnded(paneId, { end: "taken_by_fill_once" });
+    if (rec.armed !== null) this.armEnded(paneId, rec.armed, () => ({ end: "taken_by_fill_once" }), true);
     rec.armed = null;
     return { ok: true, anchor: rec.anchor, token: rec };
   }
@@ -600,7 +624,8 @@ export class KeyLockerCaptureDriver {
    * the watch while a remote frame stays trusted. Idempotent.
    */
   onPaneClosed(paneId: string): void {
-    if (this.panes.get(paneId)?.armed != null) this.armEnded(paneId, { end: "pane_closed" });
+    const armedNow = this.panes.get(paneId)?.armed;
+    if (armedNow) this.armEnded(paneId, armedNow, () => ({ end: "pane_closed" }), true);
     this.watch.unwatchPane(paneId);
     this.tracker.forget(paneId);
     this.panes.delete(paneId);
@@ -641,28 +666,35 @@ export class KeyLockerCaptureDriver {
     // `expected`. No extra tick — the tracker is already reconciled by the `watch.tick()` above.
     for (const [paneId, rec] of this.panes) {
       if (rec.armed !== null && !sessionMatches(this.tracker.get(paneId), rec.armed.expected)) {
+        const was = rec.armed;
         rec.armed = null;
-        this.armEnded(paneId, { end: "session_changed" });
+        this.armEnded(paneId, was, () => ({ end: "session_changed" }), true);
       }
     }
   }
 
   /**
-   * internal #283 — a poll of the pane's current arm threw (the wiring catches it, so it never reaches the
-   * server). True the first time for this arm, so the caller logs it once: the arm stays set and re-polls,
-   * and a read that keeps failing would otherwise log every tick until the arm times out.
+   * Tell the wiring an arm ended (`onArmEnded`), once per arm. `external`: cleared by something other than
+   * the arm's own poll (a dispatch, the tick's hygiene, fill_once, the pane closing) — not reported while the
+   * arm's capture loop runs, whose outcome is the end. The event is built inside the guard, so building it can
+   * no more disturb the driver than a throwing listener can.
    */
-  firstPollErrorOfArm(paneId: string): boolean {
-    const armed = this.panes.get(paneId)?.armed;
-    if (armed == null || armed.errorLogged === true) return false;
-    armed.errorLogged = true;
-    return true;
+  private armEnded(paneId: string, armed: ArmedDispatch, make: () => ArmEnd, external = false): void {
+    if (armed.ended === true || (external && armed.loopRunning === true)) return;
+    armed.ended = true;
+    try {
+      this.deps.onArmEnded?.(paneId, make());
+    } catch {
+      /* observability only */
+    }
   }
 
-  /** Tell the wiring an arm ended (`onArmEnded`); a throwing listener never disturbs the driver. */
-  private armEnded(paneId: string, end: ArmEnd): void {
+  /** A poll of `armed` threw before its loop: reported once per arm, never ending it (it re-polls). */
+  private pollThrew(paneId: string, armed: ArmedDispatch, err: unknown): void {
+    if (armed.errorLogged === true || armed.loopRunning === true || armed.ended === true) return;
+    armed.errorLogged = true;
     try {
-      this.deps.onArmEnded?.(paneId, end);
+      this.deps.onArmEnded?.(paneId, { end: "poll_threw", ...errorFields(err) });
     } catch {
       /* observability only */
     }
