@@ -47,7 +47,8 @@ export const macScreenshotSchema = {
 export const macScreenshotDescription = buildDesc({
   purpose: "Capture one macOS window as a PNG image, without bringing it forward.",
   details:
-    "Returns the image plus JSON: windowId, title, pid, bounds (screen points, top-left origin), imageWidth/imageHeight, and " +
+    "Name the window by windowTitle or by windowId (desktop_state windows[]; it stays the same when the app retitles the window), " +
+    "or omit both for the frontmost app's window. Returns the image plus JSON: windowId, title, pid, bounds (screen points, top-left origin), imageWidth/imageHeight, and " +
     "pointsPerPixel (screen_x = bounds.x + image_x * pointsPerPixel; same for y — for a window that is on screen; a minimised or " +
     "other-Space window's bounds are not where it shows). A covered window is captured as it is now. " +
     "warnings: several_windows_match (the frontmost of them was taken), window_off_screen (minimised or on another Space; " +
@@ -104,7 +105,7 @@ const MAC_SUGGEST = {
     "Then restart this MCP server (restart or reconnect it in your MCP client). If captures still fail, quit and reopen the app that runs it.",
   ],
   untargetedNeedsAx: [
-    "Pass windowTitle: a titled capture needs only Screen Recording.",
+    "Pass windowTitle or windowId: a capture of a named window needs only Screen Recording.",
     "Or grant Accessibility: run `open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\"`, turn on the app that runs this server, then restart this MCP server (a running server did not see a new Accessibility grant).",
   ],
   encoderMissing: ["The image encoder (sharp) could not be loaded; reinstall the package so its macOS binary is present."],
@@ -186,7 +187,7 @@ export async function macScreenshotHandler(
   const untargeted = !titled && input.windowId === undefined;
   if (untargeted && !permissions.accessibility) {
     // The frontmost app is asked through Accessibility (codex, #781).
-    return failCode("PermissionRequired", "screenshot: without windowTitle the frontmost app is found through Accessibility, which this process is not allowed to use.", {
+    return failCode("PermissionRequired", "screenshot: without windowTitle or windowId the frontmost app is found through Accessibility, which this process is not allowed to use.", {
       suggest: [...MAC_SUGGEST.untargetedNeedsAx],
       context: { permissions },
     });

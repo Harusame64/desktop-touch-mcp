@@ -7,6 +7,7 @@ import { readMacAxCandidates, windowIdOf, type MacAxProviderDeps, type MacAxRead
 import { createMacFacade, macDiscoverHandler, macActHandler, type MacFacadeState } from "../../src/tools/mac/desktop-discover-act.js";
 import { macScreenshotHandler } from "../../src/tools/mac/screenshot.js";
 import type { NativeMacAxElement } from "../../src/engine/native-types.js";
+import { targetSessionKey } from "../../src/engine/world-graph/session-registry.js";
 
 const el = (over: Partial<NativeMacAxElement> = {}): NativeMacAxElement => ({
   id: "a.0.1", rootKey: "Doc\u001f\u001f0,0,10,10", elementKey: "k", depth: 1, role: "AXButton",
@@ -41,18 +42,25 @@ const mk = (t = tree()) => ({
   axTree: vi.fn(async () => t),
   now: vi.fn(() => 1000),
 });
-const read = async (deps: ReturnType<typeof mk>, target: { hwnd?: string; windowTitle?: string }) => {
+const read = async (deps: ReturnType<typeof mk>, target: { macWindowId?: string; windowTitle?: string }) => {
   const notes: MacAxReadNotes = { warnings: [] };
   const r = await readMacAxCandidates(deps as unknown as MacAxProviderDeps, target, notes);
   return { r, notes };
 };
+
+describe("the session key", () => {
+  it("a Mac window id keys its own session, apart from an hwnd of the same number", () => {
+    expect(targetSessionKey({ macWindowId: "9199" })).toBe("window:mac:9199");
+    expect(targetSessionKey({ hwnd: "9199" })).toBe("window:9199");
+  });
+});
 
 describe("windowIdOf", () => {
   it.each([
     ["9199", 9199], ["0", undefined], ["", undefined], ["0x1F", undefined], ["-3", undefined], ["12a", undefined],
     ["99999999999999999999", undefined],
   ])("%s -> %s", (raw, expected) => {
-    expect(windowIdOf({ hwnd: raw })).toBe(expected);
+    expect(windowIdOf({ macWindowId: raw })).toBe(expected);
   });
   it("no target, no id", () => {
     expect(windowIdOf(undefined)).toBeUndefined();
@@ -62,8 +70,8 @@ describe("windowIdOf", () => {
 describe("reading a window by its id", () => {
   it("reads the app that owns the window, and only that window's root", async () => {
     const d = mk();
-    const { r, notes } = await read(d, { hwnd: "9200" });
-    expect(d.axTree).toHaveBeenCalledWith({ pid: 7 });
+    const { r, notes } = await read(d, { macWindowId: "9200" });
+    expect(d.axTree).toHaveBeenCalledWith({ pid: 7, windowId: 9200 });
     expect(d.getFocus).not.toHaveBeenCalled();
     // a.1 is the window; a.10 shares its title and the "a.1" prefix as text, and is another window.
     expect(r.map((c) => c.label)).toEqual(["Cancel"]);
@@ -80,14 +88,14 @@ describe("reading a window by its id", () => {
         el({ id: "a.0.1", rootKey: "ダウンロード\u001f\u001f0,0,10,10", actions: ["AXPress"], title: "OK" }),
       ],
     }));
-    const { r, notes } = await read(d, { hwnd: "9199" });
+    const { r, notes } = await read(d, { macWindowId: "9199" });
     expect(r.map((c) => c.label)).toEqual(["OK"]);
     expect(notes.windowTitle).toBe("ダウンロード");
   });
 
   it("a closed window: no_window_with_id, nothing read", async () => {
     const d = mk();
-    const { r, notes } = await read(d, { hwnd: "4242" });
+    const { r, notes } = await read(d, { macWindowId: "4242" });
     expect(r).toEqual([]);
     expect(notes.warnings).toEqual(["no_window_with_id"]);
     expect(d.axTree).not.toHaveBeenCalled();
@@ -96,7 +104,7 @@ describe("reading a window by its id", () => {
   it("a window above the app layer is not a target", async () => {
     const d = mk();
     d.listWindows.mockReturnValue([{ windowId: 9199, pid: 7, layer: 24, onScreen: true, title: "書類" }]);
-    const { r, notes } = await read(d, { hwnd: "9199" });
+    const { r, notes } = await read(d, { macWindowId: "9199" });
     expect(r).toEqual([]);
     expect(notes.warnings).toEqual(["no_window_with_id"]);
   });
@@ -108,10 +116,69 @@ describe("reading a window by its id", () => {
         el({ id: "a.0.1", rootKey: ROOT_A, actions: ["AXPress"], title: "OK" }),
       ],
     }));
-    const { r, notes } = await read(d, { hwnd: "9200" });
+    const { r, notes } = await read(d, { macWindowId: "9200" });
     expect(r).toEqual([]);
     expect(notes.warnings).toEqual(["window_id_not_in_tree"]);
     expect(notes.windowTitle).toBeUndefined();
+  });
+
+  it("a sheet's own id reads the sheet, under its window's root", async () => {
+    const d = mk(tree({
+      elements: [
+        ...tree().elements,
+        el({ id: "a.1.2", rootKey: ROOT_B, role: "AXSheet", description: "保存", windowId: 9463 }),
+        el({ id: "a.1.2.0", rootKey: ROOT_B, actions: ["AXPress"], title: "削除" }),
+      ],
+    }));
+    d.listWindows.mockReturnValue([...LISTED, { windowId: 9463, pid: 7, layer: 0, onScreen: true, title: "保存" }]);
+    const { r, notes } = await read(d, { macWindowId: "9463" });
+    expect(d.axTree).toHaveBeenCalledWith({ pid: 7, windowId: 9463 });
+    expect(r.map((c) => c.label)).toEqual(["削除"]);
+    expect(notes.windowTitle).toBe("保存");
+    expect(notes.warnings).toEqual(["sheet_open"]);
+  });
+
+  it("an element below a root that carries the id by mistake is not the window", async () => {
+    const d = mk(tree({
+      elements: [
+        el({ id: "a.0", depth: 0, role: "AXWindow", rootKey: ROOT_A }),
+        el({ id: "a.0.1", rootKey: ROOT_A, actions: ["AXPress"], title: "OK", windowId: 9199 }),
+      ],
+    }));
+    const { r, notes } = await read(d, { macWindowId: "9199" });
+    expect(r).toEqual([]);
+    expect(notes.warnings).toEqual(["window_id_not_in_tree"]);
+  });
+
+  it("not in the tree: the menu bar is not offered either", async () => {
+    const d = mk(tree({
+      elements: [
+        el({ id: "a.0", depth: 0, role: "AXWindow", rootKey: ROOT_A }),
+        el({ id: "a.0.1", rootKey: ROOT_A, actions: ["AXPress"], title: "OK" }),
+        el({ id: "a.1", depth: 0, role: "AXMenuBar", rootKey: "\u001f\u001f" }),
+        el({ id: "a.1.0", depth: 1, role: "AXMenuBarItem", rootKey: "\u001f\u001f", title: "Apple" }),
+        el({ id: "a.1.1", depth: 1, role: "AXMenuBarItem", rootKey: "\u001f\u001f", title: "ファイル" }),
+        el({ id: "a.1.1.0", depth: 2, role: "AXMenu", rootKey: "\u001f\u001f" }),
+        el({ id: "a.1.1.0.0", depth: 3, role: "AXMenuItem", rootKey: "\u001f\u001f", title: "閉じる", actions: ["AXPress"] }),
+      ],
+    }));
+    // The same read with the window in it offers the menu item: the fixture does reach the bar.
+    const withWindow = { ...d, axTree: vi.fn(async () => tree({ elements: [...(await d.axTree()).elements, el({ id: "a.2", depth: 0, role: "AXWindow", rootKey: ROOT_B, windowId: 9200 })] })) };
+    const seen: MacAxReadNotes = { warnings: [] };
+    const offered = await readMacAxCandidates(withWindow as unknown as MacAxProviderDeps, { macWindowId: "9200" }, seen, undefined, true);
+    expect(offered.map((c) => c.label)).toEqual(["ファイル > 閉じる"]);
+    const notes: MacAxReadNotes = { warnings: [] };
+    const r = await readMacAxCandidates(d as unknown as MacAxProviderDeps, { macWindowId: "9200" }, notes, undefined, true);
+    expect(r).toEqual([]);
+    expect(notes.warnings).toEqual(["window_id_not_in_tree"]);
+  });
+
+  it("off screen and not in the tree: window_not_shown, not a read to retry", async () => {
+    const d = mk();
+    d.listWindows.mockReturnValue([...LISTED, { windowId: 9463, pid: 7, layer: 0, onScreen: false, title: "保存" }]);
+    const { r, notes } = await read(d, { macWindowId: "9463" });
+    expect(r).toEqual([]);
+    expect(notes.warnings).toEqual(["window_not_shown"]);
   });
 
   it("a sheet in another window is not reported for this one", async () => {
@@ -122,8 +189,8 @@ describe("reading a window by its id", () => {
         el({ id: "a.1.2.0", rootKey: ROOT_B, actions: ["AXPress"], title: "削除" }),
       ],
     }));
-    expect((await read(d, { hwnd: "9199" })).notes.warnings).toEqual([]);
-    expect((await read(d, { hwnd: "9200" })).notes.warnings).toEqual(["sheet_open"]);
+    expect((await read(d, { macWindowId: "9199" })).notes.warnings).toEqual([]);
+    expect((await read(d, { macWindowId: "9200" })).notes.warnings).toEqual(["sheet_open"]);
   });
 });
 
@@ -149,13 +216,15 @@ describe("desktop_discover / desktop_act with target.windowId", () => {
     expect(d.target.title).toBe("写真");
     expect(d.target.windowId).toBe(9200);
     expect(d.entities.map((e: any) => e.label)).toEqual(["Cancel"]);
+    // The id is not handed to the facade as an hwnd: it would ask a Win32 cache and answer attention.
+    expect(d.attention).toBeUndefined();
     mac.macAxTree.mockClear();
     mac.macGetFocus.mockClear();
     const a = body(await macActHandler(mac as any, facade, state, { lease: d.entities[0].lease, action: "click" }));
     expect(a.ok).toBe(true);
     expect(mac.macAxPerform).toHaveBeenCalledTimes(1);
-    // The read after the act is of the same app by the id, not of whatever is frontmost (pid 8).
-    expect(mac.macAxTree).toHaveBeenCalledWith({ pid: 7 });
+    // The read after the act is of the same window by the id, not of whatever is frontmost (pid 8).
+    expect(mac.macAxTree).toHaveBeenCalledWith({ pid: 7, windowId: 9200 });
     expect(mac.macGetFocus).not.toHaveBeenCalled();
     expect(a.postReadWarnings).toBeUndefined();
   });
@@ -177,6 +246,18 @@ describe("desktop_discover / desktop_act with target.windowId", () => {
     mac.macGetFocus.mockResolvedValue({ pid: 7 });
     await macActHandler(mac as any, facade, state, { lease: front.entities[0].lease, action: "click" });
     expect(mac.macAxTree.mock.calls.map((c: any) => c[0].pid)).toEqual([8]);
+  });
+
+  it("an act that closes the window: its entities disappeared, the read is not called unsure", async () => {
+    const mac = fakeMac();
+    const state: MacFacadeState = { phase: "discover" };
+    const facade = createMacFacade(mac as any, state);
+    const d = body(await macDiscoverHandler(mac as any, facade, state, { target: { windowId: 9200 } } as any));
+    mac.macListWindows.mockReturnValue(LISTED.filter((w) => w.windowId !== 9200));
+    const a = body(await macActHandler(mac as any, facade, state, { lease: d.entities[0].lease, action: "click" }));
+    expect(a.ok).toBe(true);
+    expect(a.diff).toContain("entity_disappeared");
+    expect(a.postReadWarnings).toBeUndefined();
   });
 
   it("a closed window: empty title, no_window_with_id", async () => {

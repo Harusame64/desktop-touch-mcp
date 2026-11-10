@@ -167,8 +167,9 @@
   `windowId` in `windows[]`. The id stays the same when the app retitles the window — TextEdit naming a new document
   after its first line, a Finder window moved to another folder — where a discover by the old title answered
   `no_window_matches_title`. A discover by id answers the window's current title in `target.title`, and the read after
-  an act stays on that window. A closed window answers `no_window_with_id`. A title and an id together are refused
-  (internal #265).
+  an act stays on that window. A sheet has an id of its own (TextEdit's save sheet), which reads only the sheet. A closed
+  window answers `no_window_with_id`, and an off-screen window that Accessibility does not show answers `window_not_shown`
+  (an app can keep a closed sheet's window). A title and an id together are refused (internal #265).
 - **`desktop_act` can open Finder's sidebar entries.** They came back as texts that could only be read, so a caller
   could not move the window to another folder. Each is now a `listitem` named by its text, and `invoke` moves the window
   there. `auto` and `click` do not open one. Just before opening, the act checks that the entry is still the one it was

@@ -17,7 +17,16 @@ import { resolveCandidates } from "./resolver.js";
 // ── Target identification ─────────────────────────────────────────────────────
 
 /** Subset of DesktopSeeInput.target; defined here to avoid circular import. */
-export type TargetSpec = { windowTitle?: string; hwnd?: string; tabId?: string };
+export type TargetSpec = {
+  windowTitle?: string;
+  hwnd?: string;
+  tabId?: string;
+  /**
+   * macOS only: a CGWindowID (internal #265). Not an hwnd, so nothing that reads a Win32 window by
+   * its handle sees it; set by the Mac tools alone, which read it back in their provider.
+   */
+  macWindowId?: string;
+};
 
 
 /**
@@ -64,6 +73,7 @@ export function parseTargetHwnd(target: TargetSpec | undefined): bigint | undefi
  * with nothing else keeps its spelling.
  */
 export function targetSessionKey(target?: TargetSpec): TargetSessionKey {
+  if (target?.macWindowId) return `window:mac:${target.macWindowId}`;
   const handle = parseTargetHwnd(target);
   if (handle !== undefined) return `window:${handle.toString()}`;
   if (target?.tabId)       return `tab:${target.tabId}`;

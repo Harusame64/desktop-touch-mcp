@@ -73,7 +73,7 @@ const SUGGEST: Record<MacStateReason, string[]> = {
     "No app answered as frontmost. Call desktop_state again; if it persists, the app in front may not support Accessibility.",
   ],
   frontmost_guessed: [
-    "No app said it is frontmost, so the owner of the frontmost window is shown — a guess. Pass a window title (windows[] lists them) to desktop_discover / screenshot rather than relying on 'frontmost'.",
+    "No app said it is frontmost, so the owner of the frontmost window is shown — a guess. Pass a window's title or windowId (windows[] lists them) to desktop_discover / screenshot rather than relying on 'frontmost'.",
   ],
   read_failed: [
     "Part of the desktop could not be read (see hints.readErrors); what is shown was read. Call desktop_state again.",

@@ -19,7 +19,7 @@ import type { UiEntityCandidate } from "../../engine/vision-gpu/types.js";
 export interface MacAxProviderDeps {
   listWindows(onScreenOnly?: boolean): NativeMacWindow[];
   getFocus(): Promise<NativeMacFocus>;
-  axTree(opts: { pid: number; maxElements?: number; includeMenuBar?: boolean }): Promise<NativeMacAxTree>;
+  axTree(opts: { pid: number; maxElements?: number; includeMenuBar?: boolean; windowId?: number }): Promise<NativeMacAxTree>;
   now(): number;
 }
 
@@ -45,12 +45,12 @@ export interface MacAxReadNotes {
 }
 
 /**
- * The window a target names by id (internal #265): the facade keys its sessions by `hwnd`, so the
- * Mac tool hands a `windowId` over as that (`toFacadeTarget`, desktop-discover-act.ts), and it comes
- * back here as the CGWindowID it is.
+ * The window a target names by id (internal #265). The Mac tool hands a `windowId` to the facade as
+ * `macWindowId` (the facade keys its sessions by target, and an hwnd would be read as a Win32
+ * handle), and it comes back here as the CGWindowID it is.
  */
-export function windowIdOf(target: { hwnd?: string } | undefined): number | undefined {
-  const raw = target?.hwnd;
+export function windowIdOf(target: { macWindowId?: string } | undefined): number | undefined {
+  const raw = target?.macWindowId;
   if (raw === undefined || !/^[1-9][0-9]*$/.test(raw)) return undefined;
   const id = Number(raw);
   return Number.isSafeInteger(id) ? id : undefined;
@@ -402,7 +402,7 @@ function rootTitle(rootKey: string): string {
  */
 export async function readMacAxCandidates(
   deps: MacAxProviderDeps,
-  target: { windowTitle?: string; hwnd?: string } | undefined,
+  target: { windowTitle?: string; macWindowId?: string } | undefined,
   notes: MacAxReadNotes,
   /** Without a title: read this app instead of asking which is frontmost (a post-act read). */
   pinnedPid?: number,
@@ -419,6 +419,10 @@ export async function readMacAxCandidates(
       return [];
     }
     const read = await readPidUnderTitle(deps, undefined, listed.pid, notes, menuBar, windowId);
+    // Off screen and not in the tree: an app keeps a closed sheet's window listed (TextEdit's save
+    // sheet after キャンセル, measured 2026-11-10), and discovering again would answer the same.
+    const missing = notes.warnings.indexOf("window_id_not_in_tree");
+    if (missing >= 0 && !listed.onScreen) notes.warnings[missing] = "window_not_shown";
     return [...read.own, ...read.menu];
   }
   const title = target?.windowTitle;
@@ -484,7 +488,7 @@ export async function readMacAxCandidates(
  * Warnings that say a read did not see its app whole. The post-act qualifier counts these and the
  * title's own (`INCOMPLETE_READ`, desktop-discover-act.ts) — one list, so the two cannot drift.
  */
-export const UNSURE_READ = /^(ax_error:|ax_read_incomplete$|display_asleep$|ax_self_reference$|truncated:|window_id_not_in_tree$)/;
+export const UNSURE_READ = /^(ax_error:|ax_read_incomplete$|display_asleep$|ax_self_reference$|truncated:|window_id_not_in_tree$|window_not_shown$)/;
 
 /** Read one app's tree and the candidates under the title (all of them without one). */
 async function readPidUnderTitle(
@@ -500,7 +504,11 @@ async function readPidUnderTitle(
 
   // A menu bar is hundreds of elements (Safari's 848): its own room above the window's cap, so it
   // does not cut the window's read short and turn its controls' relocation off (gate 2 on #904).
-  const tree = await deps.axTree(menuBar ? { pid, includeMenuBar: true, maxElements: MAX_ELEMENTS_WITH_MENU_BAR } : { pid });
+  const tree = await deps.axTree({
+    pid,
+    ...(menuBar && { includeMenuBar: true, maxElements: MAX_ELEMENTS_WITH_MENU_BAR }),
+    ...(windowId !== undefined && { windowId }),
+  });
   if (tree.appTitle !== undefined) notes.appTitle = tree.appTitle;
   if (tree.error !== undefined) notes.warnings.push(`ax_error:${tree.error}`);
   if (tree.displayAsleep) notes.warnings.push("display_asleep");
@@ -515,18 +523,27 @@ async function readPidUnderTitle(
   // In this process when anything under it can be acted on; the open/save panel's sheet holds
   // nothing here (gate 2, #782: a child count misreads an in-process sheet wrapped in one group).
   // With a title, only the target window's sheets: another document's sheet does not block this one.
-  // By id: the roots that are the window. The app's other roots may reach it too (its focused or
-  // main window is listed once, `roots` in src/macos/ax.rs), so this is usually one.
+  // By id: the element that is the window — a root, or a sheet, which has a window id of its own
+  // (TextEdit's save sheet, measured 2026-11-10) and sits under its window's root. The native read
+  // walked only the root that holds it; a window's focused or main root is listed once (`roots`,
+  // src/macos/ax.rs), so this is usually one.
   const windowRoots =
-    windowId === undefined ? undefined : tree.elements.filter((e) => e.depth === 0 && e.windowId === windowId).map((e) => e.id);
+    windowId === undefined
+      ? undefined
+      : tree.elements.filter((e) => (e.depth === 0 || e.role === "AXSheet") && e.windowId === windowId).map((e) => e.id);
   const inWindow = (e: NativeMacAxElement) =>
     windowRoots === undefined || windowRoots.some((r) => e.id === r || e.id.startsWith(`${r}.`));
   if (windowRoots !== undefined) {
-    const root = tree.elements.find((e) => e.id === windowRoots[0]);
-    if (root !== undefined) notes.windowTitle = rootTitle(root.rootKey);
-    // The window is listed but no root read says it is that window: a sleeping display or a read
-    // cut short, or an app whose window AX does not reach. Not "the window holds nothing".
-    else if (!notes.warnings.includes("window_id_not_in_tree")) notes.warnings.push("window_id_not_in_tree");
+    const found = tree.elements.find((e) => e.id === windowRoots[0]);
+    if (found !== undefined) notes.windowTitle = found.depth === 0 ? rootTitle(found.rootKey) : (found.title ?? found.description ?? "");
+    // The window is listed but nothing read says it is that window: a sleeping display or a read
+    // cut short, or an app whose window AX does not reach. Not "the window holds nothing" — and
+    // nothing is offered, not even the menu bar: a read that has entities would let a query that
+    // matches none of them say the window was read (agy on #928).
+    else {
+      if (!notes.warnings.includes("window_id_not_in_tree")) notes.warnings.push("window_id_not_in_tree");
+      return { own: [], menu: [] };
+    }
   }
   const sheetNeedle = title?.toLowerCase();
   for (const sheet of tree.elements.filter(

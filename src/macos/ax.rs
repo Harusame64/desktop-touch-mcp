@@ -333,19 +333,42 @@ fn element_key(e: &AXUIElement) -> String {
 }
 
 unsafe extern "C" {
-    /// HIServices' own lookup from an AX window to its CGWindowID (not in the public headers, but
-    /// what window managers have long used). Returns kAXErrorIllegalArgument for a root that is not
-    /// a window, such as Finder's desktop.
-    fn _AXUIElementGetWindow(element: *const AXUIElement, id: *mut u32) -> AXError;
+    fn dlsym(handle: *mut std::ffi::c_void, symbol: *const std::ffi::c_char) -> *mut std::ffi::c_void;
 }
 
-/// The CGWindowID of an AX window: the `windowId` the window list and screenshot report, which
-/// stays the same while the app retitles the window (internal #265; measured 2026-11-10: a Finder
-/// window kept 9199 from ダウンロード to 書類 and back). `None` for a root that is not a window.
+/// HIServices' own lookup from an AX element to its CGWindowID: not in the public headers, though
+/// window managers have long used it. Looked up at run time, so a macOS without it costs only
+/// targeting by window id, not the whole addon (gate 2 on #928).
+type GetWindowFn = unsafe extern "C" fn(*const AXUIElement, *mut u32) -> AXError;
+
+fn get_window_fn() -> Option<GetWindowFn> {
+    static F: std::sync::OnceLock<Option<GetWindowFn>> = std::sync::OnceLock::new();
+    *F.get_or_init(|| {
+        // RTLD_DEFAULT: every image loaded, ApplicationServices among them.
+        let p = unsafe { dlsym(-2isize as *mut std::ffi::c_void, c"_AXUIElementGetWindow".as_ptr()) };
+        (!p.is_null()).then(|| unsafe { std::mem::transmute::<*mut std::ffi::c_void, GetWindowFn>(p) })
+    })
+}
+
+/// The CGWindowID of an AX window or sheet: the `windowId` the window list and screenshot report,
+/// which stays the same while the app retitles the window (internal #265; measured 2026-11-10: a
+/// Finder window kept 9199 from ダウンロード to 書類 and back, a TextEdit window kept 9451 when
+/// autosave named it after its first line, and TextEdit's save sheet answered its own 9463).
+/// `None` for an element that is not a window (Finder's desktop answers kAXErrorIllegalArgument).
 pub(crate) fn window_id(e: &AXUIElement) -> Option<u32> {
+    let f = get_window_fn()?;
     let mut id: u32 = 0;
-    let err = unsafe { _AXUIElementGetWindow(e as *const AXUIElement, &mut id) };
+    let err = unsafe { f(e as *const AXUIElement, &mut id) };
     (err == AXError::Success && id != 0).then_some(id)
+}
+
+/// Whether a root is the window `id`, or holds a sheet that is: the roots a read by window id
+/// walks. A sheet sits under its window's root, so the window is walked and the sheet comes with it.
+fn root_holds_window(root: &AXUIElement, id: u32, timeout_secs: f32) -> bool {
+    window_id(root) == Some(id)
+        || children(root, timeout_secs)
+            .iter()
+            .any(|k| attr_string(k, "AXRole").as_deref() == Some("AXSheet") && window_id(k) == Some(id))
 }
 
 pub(crate) fn root_key(e: &AXUIElement) -> String {
@@ -455,6 +478,9 @@ pub struct MacAxTreeOptions {
     /// after every read, roots included, and no message waits past it, so
     /// the overrun is one message at most.
     pub max_ms: Option<u32>,
+    /// Walk only the root that is this window (a CGWindowID), or holds a sheet that is (internal
+    /// #265). Roots and sheets then carry `window_id`; without it no element does.
+    pub window_id: Option<u32>,
 }
 
 #[napi_derive::napi(object)]
@@ -491,8 +517,8 @@ pub struct MacAxElement {
     /// subroles of `WINDOW_BUTTONS` in src/tools/mac/ax-provider.ts; `None` elsewhere.
     pub role_description: Option<String>,
     pub child_count: u32,
-    /// For a root (depth 0) that is a window: its CGWindowID, the `windowId` of the window list
-    /// (internal #265). `None` below the roots, and for a root that is not a window.
+    /// In a read by window id: a root's or a sheet's CGWindowID, the `windowId` of the window list
+    /// (internal #265). `None` elsewhere, and for a root that is not a window.
     pub window_id: Option<u32>,
 }
 
@@ -573,6 +599,19 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
     for (id, e) in root_list {
         if late() {
             break;
+        }
+        // By window id, only the root that is the window or holds it: the rest are not walked, so a
+        // big app's other windows cannot spend the budget first (gate 2 on #928). The menu bar, when
+        // asked for, is the app's and is kept (`roots` lists it only then).
+        if let Some(wid) = opts.window_id {
+            let is_bar = attr_string(&e, "AXRole").as_deref() == Some("AXMenuBar");
+            let held = is_bar || root_holds_window(&e, wid, timeout.min(left()));
+            if late() {
+                break;
+            }
+            if !held {
+                continue;
+            }
         }
         unsafe { e.set_messaging_timeout(timeout.min(left())) };
         let key = std::rc::Rc::new(root_key(&e));
@@ -667,8 +706,12 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         } else {
             None
         };
-        // Asked of the roots only: the window an element is in is its root's.
-        let window_id = if depth == 0 { read!(window_id(&e)) } else { None };
+        // Asked in a read by window id only, of the roots and the sheets: those are the windows.
+        let window_id = if opts.window_id.is_some() && (depth == 0 || role == "AXSheet") {
+            read!(window_id(&e))
+        } else {
+            None
+        };
         elements.push(MacAxElement {
             id: id.clone(),
             root_key: (*key).clone(),

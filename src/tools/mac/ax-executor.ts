@@ -137,7 +137,7 @@ async function openItem(deps: MacAxExecutorDeps, target: NativeMacAxTarget): Pro
   if (reason === FINDER_OPEN_ANSWER) {
     deps.noteOpen({
       confirmed: false,
-      why: `Finder answered the open with ${reason}, as it does when it opened the item. desktop_discover again (by the windowId, without a target, or by the new window title) to see where the window is.`,
+      why: `Finder answered the open with ${reason}, as it does when it opened the item. desktop_discover again (by its windowId from desktop_state, without a target, or by the new window title) to see where the window is.`,
     });
     return;
   }
