@@ -169,6 +169,11 @@
   when asked (internal #258).
 
 ### Fixed — macOS (preview)
+- **`desktop_discover` says whether a checkbox is ticked and which option a pop-up shows.** A checkbox, radio button or
+  pop-up came back as a `button` with no state, so a caller could not tell whether a box was ticked or which option
+  was chosen. Their state now comes back as `value`: `1` on, `0` off and `2` mixed for a checkbox or radio button
+  (for a tab, `1` is the selected tab), `1` expanded and `0` collapsed for a disclosure triangle, and the text a
+  pop-up shows (the chosen option; a pull-down menu shows its title). Choosing an option is not added (internal #262).
 - **`desktop_act` `type` reaches a web page's text field that does not have the focus.** Safari accepted the write
   to an unfocused `<input>` but kept it empty, and the act answered `value_not_applied`. Clicking the field first
   helped. When a write leaves a web page's field unchanged and the field has no focus, the act now presses it once,

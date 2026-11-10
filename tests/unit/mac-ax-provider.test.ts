@@ -495,6 +495,48 @@ describe("text field values for discover (dogfood 2026-10-04)", () => {
   });
 });
 
+describe("a checkbox, radio button or pop-up says its state (internal #262)", () => {
+  const tree = (elements: any[]) => ({ pid: 7, elements, truncated: false, selfReference: false, displayAsleep: false, elapsedMs: 1 });
+  const ctl = (id: string, role: string, title: string, value: string): any =>
+    ({ id, rootKey: "R", elementKey: `K${id}`, depth: 1, role, title, value, actions: ["AXPress"], valueSettable: false, childCount: 0 });
+  it("records the state as the value, as Safari's web checkbox, select and radios read (2026-10-05 / 11-10)", async () => {
+    const notes: any = { warnings: [] };
+    const cs = await readMacAxCandidates({ listWindows: vi.fn(() => []), getFocus: vi.fn(async () => ({ pid: 7 })), axTree: vi.fn(async () => tree([
+      ctl("a.0.1", "AXCheckBox", "同意", "1"),
+      ctl("a.0.2", "AXPopUpButton", "色", "緑"),
+      ctl("a.0.3", "AXRadioButton", "大", "0"),
+      ctl("a.0.4", "AXButton", "送信", "x"),
+    ])), now: () => 1 } as any, undefined, notes);
+    const by = (label: string) => `ent_${cs.find((c) => c.label === label)!.digest}`;
+    expect(notes.values).toEqual({ [by("同意")]: "1", [by("色")]: "緑", [by("大")]: "0" });
+  });
+  it("says a toggle's boolean answer as 1/0, and a disclosure triangle's state too (gate 2 on #926)", async () => {
+    const notes: any = { warnings: [] };
+    const cs = await readMacAxCandidates({ listWindows: vi.fn(() => []), getFocus: vi.fn(async () => ({ pid: 7 })), axTree: vi.fn(async () => tree([
+      ctl("a.0.1", "AXCheckBox", "Wi-Fi", "true"),
+      ctl("a.0.2", "AXRadioButton", "Off", "false"),
+      ctl("a.0.3", "AXDisclosureTriangle", "詳細", "1"),
+      ctl("a.0.4", "AXPopUpButton", "名前", "true"),
+    ])), now: () => 1 } as any, undefined, notes);
+    const by = (label: string) => `ent_${cs.find((c) => c.label === label)!.digest}`;
+    // A pop-up's text is what it shows, even "true": only a toggle's boolean is rewritten.
+    expect(notes.values).toEqual({ [by("Wi-Fi")]: "1", [by("Off")]: "0", [by("詳細")]: "1", [by("名前")]: "true" });
+  });
+  it("marks a pop-up whose shown text was cut, rather than giving no value and no sign", async () => {
+    const notes: any = { warnings: [] };
+    const cs = await readMacAxCandidates({ listWindows: vi.fn(() => []), getFocus: vi.fn(async () => ({ pid: 7 })), axTree: vi.fn(async () => tree([
+      { ...ctl("a.0.1", "AXPopUpButton", "パス", "x".repeat(2000)), valueTruncated: true },
+    ])), now: () => 1 } as any, undefined, notes);
+    expect(notes.values).toBeUndefined();
+    expect(notes.truncated).toEqual([`ent_${cs[0]!.digest}`]);
+  });
+  it("keeps the identity when the state changes, so a lease survives ticking the box", () => {
+    const off = toCandidate(ctl("a.0.1", "AXCheckBox", "同意", "0"), 7, "w", 1);
+    const on = toCandidate(ctl("a.0.1", "AXCheckBox", "同意", "1"), 7, "w", 1);
+    expect(on.digest).toBe(off.digest);
+  });
+});
+
 describe("a cut value is not offered as the text (codex #782)", () => {
   it("leaves the value out and records the field as truncated", async () => {
     const f: any = { id: "a.0.1", rootKey: "R", elementKey: "K", depth: 1, role: "AXTextArea", actions: [], valueSettable: true, childCount: 0, value: "x".repeat(2000), valueTruncated: true };

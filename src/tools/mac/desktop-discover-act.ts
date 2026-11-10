@@ -60,7 +60,9 @@ export const macDiscoverDescription = buildDesc({
   details:
     "Reads the app's Accessibility tree (no screenshot, no foreground change). Entities carry label (a text's visible text), role " +
     "(button/textbox/link/menuitem/label), primaryAction, and — for a text field — its current value (never a password field's; " +
-    "longer than 2000 characters: no value, valueTruncated: true); " +
+    "longer than 2000 characters: no value, valueTruncated: true), and the state of a control read as a button: a checkbox or " +
+    "radio button gives value '1' on, '0' off, '2' mixed (a tab: '1' is the selected tab), a disclosure triangle '1' expanded, " +
+    "'0' collapsed, and a pop-up the text it shows (the chosen option; a pull-down menu shows its title); " +
     "buttons offer click, settable text fields offer type, texts only read. A file name shown as a field (a Finder list) is a label: writing it would rename nothing. Each lease carries expiresAtMs (its life adapts to the view and to how long you take between calls); after it, desktop_act answers lease_expired. " +
     "'warnings' says what the read could not do: display_asleep (macOS then answers windows with the app itself — wake the display and " +
     "discover again), no_window_matches_title, title_matches_nothing_readable (a window has the title but nothing under it can be acted on " +

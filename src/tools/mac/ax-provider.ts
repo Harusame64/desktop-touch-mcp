@@ -30,10 +30,11 @@ export interface MacAxReadNotes {
    * The current value of each text field read, by entity id (`ent_` + digest). The shared entity
    * view carries no value, and `type` replaces the whole value, so without it a caller could not
    * add to a field without guessing its text (dogfood 2026-10-04: it read the text off a screenshot).
-   * Never a password field's (the candidate has no value then).
+   * Never a password field's (the candidate has no value then). Also a checkbox's, radio button's,
+   * disclosure triangle's or pop-up's state (`stateText`; internal #262): read-only, not text to edit.
    */
   values?: Record<string, string>;
-  /** Entity ids of text fields whose value is longer than the read cap (no value is given for them). */
+  /** Entity ids of text fields (or state controls) whose value is longer than the read cap (no value is given for them). */
   truncated?: string[];
   pid?: number;
   appTitle?: string;
@@ -78,6 +79,28 @@ export function roleOf(e: Pick<NativeMacAxElement, "role" | "subrole" | "namesFi
 }
 
 const SECURE = "AXSecureTextField";
+
+/**
+ * Controls read as a button whose AXValue is their state (internal #262: Safari's web checkbox and
+ * select came back with none — AX carried "1" and "緑", measured 2026-11-10). A toggle — checkbox,
+ * radio button (an AppKit tab too: 1 is the selected tab), disclosure triangle (1 expanded) — says
+ * "1"/"0"/"2" (on/off/mixed); a pop-up says the text it shows (the chosen option; a pull-down shows
+ * its title). The one place that decides which roles carry state.
+ */
+const TOGGLE_CONTROLS = new Set(["AXCheckBox", "AXRadioButton", "AXDisclosureTriangle"]);
+export function carriesState(axRole: string): boolean {
+  return TOGGLE_CONTROLS.has(axRole) || axRole === "AXPopUpButton";
+}
+
+/**
+ * The state as a caller reads it. The native read prints a CFBoolean value as "true"/"false" (an
+ * app may answer a toggle with a boolean rather than a number: gate 2 on #926), which a caller told
+ * "1 on" would read as off — a toggle says 1/0 whichever way the app answered.
+ */
+export function stateText(axRole: string, value: string): string {
+  if (!TOGGLE_CONTROLS.has(axRole)) return value;
+  return value === "true" ? "1" : value === "false" ? "0" : value;
+}
 
 /** The verbs the element itself offers: press only when it advertises AXPress. */
 export function actionabilityOf(e: NativeMacAxElement): UiEntityCandidate["actionability"] {
@@ -428,12 +451,12 @@ async function readPidUnderTitle(
   if (titled && sheetsTitled.length > 1) notes.warnings.push("title_matches_several_sheets");
   else if (titled && candidates.length === 0 && !explained) notes.warnings.push("title_matches_nothing_readable");
   for (const c of candidates) {
-    if (c.role === "textbox" && c.value !== undefined && c.digest !== undefined) {
-      (notes.values ??= {})[`ent_${c.digest}`] = c.value;
-    }
+    if (c.value === undefined || c.digest === undefined) continue;
+    if (c.role === "textbox") (notes.values ??= {})[`ent_${c.digest}`] = c.value;
+    else if (carriesState(c.controlType ?? "")) (notes.values ??= {})[`ent_${c.digest}`] = stateText(c.controlType!, c.value);
   }
   for (const e of tree.elements) {
-    if (e.valueTruncated && roleOf(e) === "textbox" && e.subrole !== SECURE) {
+    if (e.valueTruncated && (roleOf(e) === "textbox" || carriesState(e.role)) && e.subrole !== SECURE) {
       (notes.truncated ??= []).push(`ent_${axDigest(pid, e, unique.get(e.id) === true)}`);
     }
   }
