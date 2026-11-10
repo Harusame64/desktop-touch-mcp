@@ -510,39 +510,6 @@ export function scanRegionAfterEcho(
   return postBaseline.slice(idx + needle.length);
 }
 
-/**
- * internal #241 — the scan region when the baseline marker was NOT found: the text after this run's own
- * echoed command, located by count. The 256-char baseline hash misses when the text before the send is
- * redrawn afterwards (a terminal started seconds before, still settling: win2's 2.1.0 dogfood); the run
- * then could never match its pattern and ended `baseline_lost` after the command had run.
- *
- * Without the marker, the newest echo of `input` is this run's only once the text holds one MORE echo
- * than it did before the send: an earlier run of the same command, and its output, is otherwise the
- * last occurrence, and matching after it would fire on that run's output. So:
- *   - `undefined` (defer) until the count of echoes exceeds the count in `baselineText`, and for
- *     input this anchor does not apply to (multiline, blank, or not echoed — a hidden-input prompt);
- *   - otherwise the normalised text after the LAST echo.
- * Both texts are compared normalised (`normalizeForMarker`), as the marker path compares them.
- */
-export function scanRegionAfterOwnEcho(
-  text: string,
-  baselineText: string,
-  input: string,
-  inputEchoes = true,
-): string | undefined {
-  if (!inputEchoes) return undefined;
-  const needle = normalizeForMarker(input);
-  if (needle.length === 0 || needle.includes("\n")) return undefined;
-  const count = (hay: string): number => {
-    let n = 0;
-    for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + needle.length)) n++;
-    return n;
-  };
-  const norm = normalizeForMarker(text);
-  if (count(norm) <= count(normalizeForMarker(baselineText))) return undefined;
-  return norm.slice(norm.lastIndexOf(needle) + needle.length);
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // issue #386: echo-immune completion sentinel (until:{mode:'exit'})
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2665,10 +2632,6 @@ export const terminalRunHandler = async ({
   let exitCode: number | undefined; // issue #386: set only on reason:'exited'
   let lastText = baselineRead?.text ?? "";
   let lastTextTime = Date.now();
-  // internal #241: the full text of the latest read, whichever mode — `lastText` above is the settle
-  // tracker's and is not updated on the tick a pattern matches (win2 on #923: the final read then saw the
-  // text from before the send and fell back to baseline_lost).
-  let lastReadText = baselineRead?.text ?? "";
   let firstChangeTime: number | null = null;
   // Quiet timer for (a) quiet mode and (b) the pattern-mode INVALID-REGEX
   // fallback (patternRe compile failed → this run degrades to the quiet branch).
@@ -2727,9 +2690,7 @@ export const terminalRunHandler = async ({
   const newContentSinceBaseline = (text: string): string | undefined => {
     if (!sinceMarker) return undefined;
     const sliced = applySinceMarker(text, sinceMarker);
-    // internal #241: the marker missed (the text before the send was redrawn) — anchor on this run's own
-    // echo, counted against the text before the send, instead of never matching.
-    if (!sliced.matched) return scanRegionAfterOwnEcho(text, baselineRead?.text ?? "", input, inputEchoes);
+    if (!sliced.matched) return undefined;
     return scanRegionAfterEcho(sliced.text, input, inputEchoes);
   };
 
@@ -2766,7 +2727,6 @@ export const terminalRunHandler = async ({
     const t0 = currentReadTitle();
     const initialPostSend = t0 !== null ? await readTerminalRaw(t0) : null;
     if (initialPostSend) {
-      lastReadText = initialPostSend.text;
       const newContent = newContentSinceBaseline(initialPostSend.text);
       // newContent === undefined → baseline lost, skip to avoid prior-history match.
       // newContent === "" is still a valid input for patterns like /^$/.
@@ -2824,7 +2784,6 @@ export const terminalRunHandler = async ({
     }
 
     const currentText = current.text;
-    lastReadText = currentText;
 
     if (until.mode === "exit" && exitShell) {
       // issue #386: echo-immune sentinel match. parseExitSentinel defers (no
@@ -2979,31 +2938,25 @@ export const terminalRunHandler = async ({
           hints: parsed.hints,
         });
         outputIntegrity = integrity;
-        // internal #241: the marker is gone, but this run's own echo anchors the output (the same rule the
-        // until-loop used): the text after it is this run's, not pre-baseline residue.
-        const ownEcho = integrity === "baseline_lost"
-          ? scanRegionAfterOwnEcho(lastReadText, baselineRead?.text ?? "", input, inputEchoes)
-          : undefined;
-        if (ownEcho !== undefined) {
-          output = ownEcho;
-          outputIntegrity = "ok";
-          warnings.push(
-            "BaselineMarkerLost: the text before the send changed, so the output is anchored after this run's own echoed command instead.",
-          );
-        } else if (integrity === "baseline_lost") {
+        if (integrity === "baseline_lost") {
           output = "";
+          // internal #241 (win2, 2.1.0 dogfood and #923): the marker is also lost when the text on screen
+          // before the send is redrawn afterwards (a terminal still settling, a prompt that rewrites itself
+          // on Enter) — the command was sent and ran, and a caller told to "rerun" ran it twice. Trying to
+          // find this run's output another way (anchoring on its own echo, #923's first heads) could pass
+          // an earlier run's output off as this one's, so the reply says what is known instead: the
+          // command was sent and may have run.
           readError = {
             code: "BaselineMarkerLost",
             error:
-              "baseline marker lost beyond 32k scan window — scrollback may contain pre-baseline output (previous-session residue)",
+              "The command was sent and may have run (or still be running), but this run's output could not be told apart from what was on screen before it: the text before the send was not found again (it scrolled out of the 32k scan window, or was redrawn).",
             suggest: [
-              "Use until:{mode:'pattern', pattern:'<expected output>'} for long-running commands so the run can match without falling back to a marker scan",
-              "Increase timeoutMs and ensure the command produces output before quiet detection elapses",
-              "If the command genuinely produces no diff, call terminal({action:'send'}) followed by terminal({action:'read', sinceMarker:...}) for explicit incremental fetches",
+              "Do NOT run the command again to get its output: read the terminal with terminal({action:'read'}) and look for this run's output and prompt first.",
+              "If it is still running, wait and read again; for the next run, until:{mode:'exit'} ends on the command's own completion marker rather than this baseline.",
             ],
           };
           warnings.push(
-            "BaselineMarkerLost: scrollback may contain pre-baseline output — output suppressed. Use pattern mode for long-running commands.",
+            "BaselineMarkerLost: the command was sent and may have run; its output could not be separated from earlier text, so output is empty. Read the terminal before sending it again.",
           );
           // finalMarker stays undefined; the buffer we read is not a trusted
           // anchor for a follow-up sinceMarker call.
@@ -3281,7 +3234,7 @@ export function registerTerminalTools(server: McpServer): void {
         purpose: "Interact with a terminal window: read output, send input, or run+wait+read in one call. action='read' / action='send' absorb the formerly-standalone read/send tools (Phase 4).",
         details: "action='run' is the recommended high-level workflow: send command → wait until quiet/pattern/timeout → read output. The command text is passed as `input` (the legacy parameter name `command` is also accepted as a deprecated alias — see issue #245). Returns completion={reason, elapsedMs} first-class plus outputIntegrity:'ok'|'baseline_lost' so callers can detect when scrollback could not be anchored to the pre-send buffer. action='read' reads current text via UIA TextPattern (falls back to OCR); use sinceMarker for incremental diff. action='send' sends a command with focus management.",
         prefer: "action='run' for command execution + result. For long-running commands (test runners, builds, deploys) use until:{mode:'pattern', pattern:'<final marker>'} — the default quiet mode is tuned for short interactive commands and may complete prematurely on multi-second silent gaps mid-run. Use action='read'/'send' for fine-grained control or when you need to interleave other actions. read/send/run also accept a launch_console `paneId` (pass the paneId field, NOT windowTitle) to keep targeting a pane after its title changes.",
-        caveats: "Do not screenshot the terminal — action='read' is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | exited | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). until:{mode:'exit', shell:'bash'|'powershell'} (issue #386) returns completion.exitCode + reason:'exited' via an echo-immune sentinel that works for multiline input that pattern mode cannot anchor; pass shell explicitly (auto fails as ExitModeShellAmbiguous on WT/conhost/SSH), cmd is unsupported (ExitModeShellUnsupported), open-construct input is rejected (ExitModeUnsafeInput). When outputIntegrity:'baseline_lost' is returned, output is forced to '' and readError.code='BaselineMarkerLost' is set: rerun with until:{mode:'pattern',...} or longer timeoutMs. action='run' may also emit warnings prefixed FileLockCollision: when output reveals an EBUSY/Windows-lock/EAGAIN-EDEADLK file collision (issue #236). Default quietMs=1500 (issue #196); long silences require pattern mode. preferClipboard=true (send default) replaces the clipboard. Hidden-input prompts emit verifyDelivery.unverifiable (reason:'hidden_input_prompt') — use method:'foreground'. action='read' typed errors: TerminalWindowNotFound, TerminalTextPatternUnavailable (force source:'ocr'); stale sinceMarker → hints.terminalMarker.previousMatched:false on ok:true (omit sinceMarker). FG-path Win11 foreground refusal returns code:'ForegroundRestricted' — switch to method:'background' or DTM_BG_AUTO=1. Off-desktop target → WindowOnOtherDesktop, not sent. BG path auto-engages only when the target class is `ConsoleWindowClass` (conhost: cmd / PowerShell / pwsh) OR env DTM_BG_AUTO=1. Windows Terminal (`CASCADIA_HOSTING_WINDOW_CLASS`) is EXCLUDED (issue #173): WT runs on WinUI/XAML and silently drops WM_CHAR, so the FG path is default — pass sendOptions:{method:'background'} only if your WT build accepts BG input.",
+        caveats: "Do not screenshot the terminal — action='read' is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | exited | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). until:{mode:'exit', shell:'bash'|'powershell'} (issue #386) returns completion.exitCode + reason:'exited' via an echo-immune sentinel that works for multiline input that pattern mode cannot anchor; pass shell explicitly (auto fails as ExitModeShellAmbiguous on WT/conhost/SSH), cmd is unsupported (ExitModeShellUnsupported), open-construct input is rejected (ExitModeUnsafeInput). outputIntegrity:'baseline_lost' (output '', readError.code='BaselineMarkerLost'): the command was sent and may have run — read the terminal before sending it again. action='run' may also emit warnings prefixed FileLockCollision: when output reveals an EBUSY/Windows-lock/EAGAIN-EDEADLK file collision (issue #236). Default quietMs=1500 (issue #196); long silences require pattern mode. preferClipboard=true (send default) replaces the clipboard. Hidden-input prompts emit verifyDelivery.unverifiable (reason:'hidden_input_prompt') — use method:'foreground'. action='read' typed errors: TerminalWindowNotFound, TerminalTextPatternUnavailable (force source:'ocr'); stale sinceMarker → hints.terminalMarker.previousMatched:false on ok:true (omit sinceMarker). FG-path Win11 foreground refusal returns code:'ForegroundRestricted' — switch to method:'background' or DTM_BG_AUTO=1. Off-desktop target → WindowOnOtherDesktop, not sent. BG path auto-engages only when the target class is `ConsoleWindowClass` (conhost: cmd / PowerShell / pwsh) OR env DTM_BG_AUTO=1. Windows Terminal (`CASCADIA_HOSTING_WINDOW_CLASS`) is EXCLUDED (issue #173): WT runs on WinUI/XAML and silently drops WM_CHAR, so the FG path is default — pass sendOptions:{method:'background'} only if your WT build accepts BG input.",
         examples: [
           "terminal({action:'run', windowTitle:'PowerShell', input:'npm test', until:{mode:'pattern', pattern:'Test Files'}}) → recommended for test runners; matches when vitest summary appears",
           "terminal({action:'run', windowTitle:'pwsh', input:'ls'}) → quiet 1500ms wait, returns output (short interactive)",

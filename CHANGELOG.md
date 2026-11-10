@@ -40,12 +40,12 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
-- **`terminal` `run` no longer reports `baseline_lost` for a command that ran, when the screen before it was
-  redrawn.** The run finds its output by locating the text that was on screen before the send. When that text
-  changed afterwards (a terminal opened seconds before and still settling, or a prompt that rewrites itself
-  on Enter), the run could never match its pattern, waited out its time, and answered `BaselineMarkerLost`, so
-  a caller that retried ran the command twice. It now anchors after its own echoed command instead, once that
-  echo is on screen (single-line commands; a multiline or hidden input still waits as before) (internal #241).
+- **`terminal` `run` no longer tells you to run a command again when it could not find its output.** The run
+  finds its output by locating the text that was on screen before the send. When that text was redrawn
+  afterwards (a terminal opened seconds before and still settling, or a prompt that rewrites itself on Enter),
+  the command still ran, but the reply was `BaselineMarkerLost` with advice to rerun it, so the command ran
+  twice. The reply now says the command was sent and may have run, and to read the terminal before sending it
+  again (internal #241).
 - **`desktop_discover` says when UI Automation was busy, instead of calling a window empty.** While another act
   held UI Automation (a button that opened a modal message box), a discover of a different window waited out the
   8 s native read and fell back to a second reader, which can see fewer controls, or none, in some windows. The
