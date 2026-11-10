@@ -510,6 +510,39 @@ export function scanRegionAfterEcho(
   return postBaseline.slice(idx + needle.length);
 }
 
+/**
+ * internal #241 — the scan region when the baseline marker was NOT found: the text after this run's own
+ * echoed command, located by count. The 256-char baseline hash misses when the text before the send is
+ * redrawn afterwards (a terminal started seconds before, still settling: win2's 2.1.0 dogfood); the run
+ * then could never match its pattern and ended `baseline_lost` after the command had run.
+ *
+ * Without the marker, the newest echo of `input` is this run's only once the text holds one MORE echo
+ * than it did before the send: an earlier run of the same command, and its output, is otherwise the
+ * last occurrence, and matching after it would fire on that run's output. So:
+ *   - `undefined` (defer) until the count of echoes exceeds the count in `baselineText`, and for
+ *     input this anchor does not apply to (multiline, blank, or not echoed — a hidden-input prompt);
+ *   - otherwise the normalised text after the LAST echo.
+ * Both texts are compared normalised (`normalizeForMarker`), as the marker path compares them.
+ */
+export function scanRegionAfterOwnEcho(
+  text: string,
+  baselineText: string,
+  input: string,
+  inputEchoes = true,
+): string | undefined {
+  if (!inputEchoes) return undefined;
+  const needle = normalizeForMarker(input);
+  if (needle.length === 0 || needle.includes("\n")) return undefined;
+  const count = (hay: string): number => {
+    let n = 0;
+    for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + needle.length)) n++;
+    return n;
+  };
+  const norm = normalizeForMarker(text);
+  if (count(norm) <= count(normalizeForMarker(baselineText))) return undefined;
+  return norm.slice(norm.lastIndexOf(needle) + needle.length);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // issue #386: echo-immune completion sentinel (until:{mode:'exit'})
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2690,7 +2723,9 @@ export const terminalRunHandler = async ({
   const newContentSinceBaseline = (text: string): string | undefined => {
     if (!sinceMarker) return undefined;
     const sliced = applySinceMarker(text, sinceMarker);
-    if (!sliced.matched) return undefined;
+    // internal #241: the marker missed (the text before the send was redrawn) — anchor on this run's own
+    // echo, counted against the text before the send, instead of never matching.
+    if (!sliced.matched) return scanRegionAfterOwnEcho(text, baselineRead?.text ?? "", input, inputEchoes);
     return scanRegionAfterEcho(sliced.text, input, inputEchoes);
   };
 
@@ -2938,7 +2973,18 @@ export const terminalRunHandler = async ({
           hints: parsed.hints,
         });
         outputIntegrity = integrity;
-        if (integrity === "baseline_lost") {
+        // internal #241: the marker is gone, but this run's own echo anchors the output (the same rule the
+        // until-loop used): the text after it is this run's, not pre-baseline residue.
+        const ownEcho = integrity === "baseline_lost"
+          ? scanRegionAfterOwnEcho(lastText, baselineRead?.text ?? "", input, inputEchoes)
+          : undefined;
+        if (ownEcho !== undefined) {
+          output = ownEcho;
+          outputIntegrity = "ok";
+          warnings.push(
+            "BaselineMarkerLost: the text before the send changed, so the output is anchored after this run's own echoed command instead.",
+          );
+        } else if (integrity === "baseline_lost") {
           output = "";
           readError = {
             code: "BaselineMarkerLost",
