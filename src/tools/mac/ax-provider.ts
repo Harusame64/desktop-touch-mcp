@@ -531,12 +531,9 @@ async function readPidUnderTitle(
   // With a title, only the target window's sheets: another document's sheet does not block this one.
   // By id: the element that is the window — a root, or a sheet, which has a window id of its own
   // (TextEdit's save sheet, measured 2026-11-10) and sits under its window's root. The native read
-  // walked only the root that holds it; a window's focused or main root is listed once (`roots`,
-  // src/macos/ax.rs), so this is usually one.
-  const matched =
-    windowId === undefined
-      ? undefined
-      : tree.elements.filter((e) => (e.depth === 0 || e.role === "AXSheet") && e.windowId === windowId);
+  // started there and marked that one element with the id (`window_roots`, src/macos/ax.rs): which
+  // element is the window is decided once, there (gate 2 on #928).
+  const matched = windowId === undefined ? undefined : tree.elements.filter((e) => e.windowId === windowId);
   const windowRoots = matched?.map((e) => e.id);
   const inWindow = (e: NativeMacAxElement) =>
     windowRoots === undefined || windowRoots.some((r) => e.id === r || e.id.startsWith(`${r}.`));

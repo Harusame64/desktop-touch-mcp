@@ -139,18 +139,6 @@ describe("reading a window by its id", () => {
     expect(notes.warnings).toEqual([]);
   });
 
-  it("an element below a root that carries the id by mistake is not the window", async () => {
-    const d = mk(tree({
-      elements: [
-        el({ id: "a.0", depth: 0, role: "AXWindow", rootKey: ROOT_A }),
-        el({ id: "a.0.1", rootKey: ROOT_A, actions: ["AXPress"], title: "OK", windowId: 9199 }),
-      ],
-    }));
-    const { r, notes } = await read(d, { macWindowId: "9199" });
-    expect(r).toEqual([]);
-    expect(notes.warnings).toEqual(["window_id_not_in_tree"]);
-  });
-
   it("not in the tree: the menu bar is not offered either", async () => {
     const d = mk(tree({
       elements: [

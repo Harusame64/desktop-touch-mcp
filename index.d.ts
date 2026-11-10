@@ -949,7 +949,7 @@ export interface NativeMacAxTreeOptions {
   timeoutSecs?: number
   /** Budget for the whole walk, default 15000. */
   maxMs?: number
-  /** Walk only the root that is this window (a CGWindowID) or holds a sheet that is. */
+  /** Walk only the element that is this window (a CGWindowID: a root, or a sheet under one), plus the menu bar when asked. */
   windowId?: number
 }
 
@@ -979,7 +979,7 @@ export interface NativeMacAxElement {
   /** The OS's name for a title-bar button (AXRoleDescription, e.g. "閉じるボタン"); only on those buttons. */
   roleDescription?: string
   childCount: number
-  /** In a read by window id: a root's or a sheet's CGWindowID, the window list's `windowId`. */
+  /** In a read by window id: on the one element that is that window (a root, or a sheet), its CGWindowID. */
   windowId?: number
 }
 
