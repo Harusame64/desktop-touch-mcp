@@ -89,8 +89,8 @@ describe("desktop_state hasModal and visibleWindows (internal #253)", () => {
     expect((await read()).hasModal).toBe(false);
   });
 
-  it("the same title on a shown window still is (control)", async () => {
-    wins.value = [at(1n, "名前を付けて保存", 0), at(3n, "Visible", 2)];
+  it("the same title on a shown ownerless dialog still is (control)", async () => {
+    wins.value = [at(1n, "名前を付けて保存", 0, { className: "#32770" }), at(3n, "Visible", 2)];
     const out = await read();
     expect(out.hasModal).toBe(true);
     expect(out.visibleWindows).toBe(2);

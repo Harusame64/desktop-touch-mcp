@@ -20,15 +20,17 @@ import { parsePayload, sleep } from "./helpers/wait.js";
 import { restoreAndFocusWindow, enumWindowsInZOrder } from "../../src/engine/win32.js";
 
 /**
- * Dismiss stale modal dialogs left by previous E2E tests.
- * The get_context handler checks ALL windows against MODAL_RE,
- * so a leftover dialog from another test file pollutes hasModal.
+ * Dismiss stale modal dialogs left by previous E2E tests: a leftover dialog from another test file
+ * pollutes hasModal. hasModal goes by window state (a disabled window on screen; internal #269), and
+ * a leftover dialog may be titled like its app (Notepad's save prompt is 「メモ帳」), so standard
+ * dialogs (#32770) are dismissed whatever their title, as well as windows whose title reads like one.
  */
 async function dismissStaleModals() {
   const MODAL_RE = /dialog|confirm|prompt|alert|error|警告|エラー|確認|通知|ダイアログ/i;
   const wins = enumWindowsInZOrder();
   for (const w of wins) {
-    if (MODAL_RE.test(w.title)) {
+    const ownerDisabled = w.ownerHwnd != null && wins.some((o) => o.hwnd === w.ownerHwnd && o.isEnabled === false);
+    if (w.className === "#32770" || ownerDisabled || MODAL_RE.test(w.title)) {
       try {
         restoreAndFocusWindow(w.hwnd);
         await sleep(200);
@@ -223,7 +225,7 @@ describe("C3: hasModal real dialog detection", () => {
 
     const p = parsePayload(await getContextHandler());
 
-    // Modal is detected via MODAL_RE on window titles
+    // Modal is detected by the window the dialog disables (internal #269)
     expect(p.hasModal).toBe(true);
     expect(p.pageState).toBe("dialog");
 
