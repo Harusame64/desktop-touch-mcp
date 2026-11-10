@@ -54,7 +54,7 @@ export interface MacAxReadNotes {
  * that never happened (internal #256). Finder's own rename editor, opened with Return, carries
  * no `AXFilename` and stays a textbox.
  */
-export function roleOf(e: Pick<NativeMacAxElement, "role" | "subrole" | "namesFile" | "actions">): string {
+export function roleOf(e: Pick<MacReadElement, "role" | "subrole" | "namesFile" | "opensItem">): string {
   if (e.namesFile === true) return "label";
   if (opensAsItem(e)) return "listitem";
   switch (e.role) {
@@ -89,7 +89,7 @@ const SECURE = "AXSecureTextField";
  * entry. Only marked ones: any other cell reads as it did before (gate 2 on #927).
  */
 export type MacReadElement = NativeMacAxElement & { opensItem?: true };
-export function opensAsItem(e: Pick<MacReadElement, "role"> & { opensItem?: true }): boolean {
+export function opensAsItem(e: { opensItem?: true }): boolean {
   return e.opensItem === true;
 }
 
@@ -116,7 +116,7 @@ export function stateText(axRole: string, value: string): string {
 }
 
 /** The verbs the element itself offers: press only when it advertises AXPress. */
-export function actionabilityOf(e: NativeMacAxElement): UiEntityCandidate["actionability"] {
+export function actionabilityOf(e: MacReadElement): UiEntityCandidate["actionability"] {
   const verbs: UiEntityCandidate["actionability"] = [];
   // A cell that opens (internal #259): `invoke` alone, as a Windows list item's Invoke opens it.
   // Never `click` — that would read as a press, and the cell has none.
@@ -149,7 +149,7 @@ const WINDOW_BUTTONS: Record<string, string> = {
   AXZoomButton: "Zoom window",
 };
 
-function labelOf(e: NativeMacAxElement): string | undefined {
+function labelOf(e: MacReadElement): string | undefined {
   // A list item carries the text it holds as its value (`nameOpenableCells`).
   if ((roleOf(e) === "label" || roleOf(e) === "listitem") && e.value) return e.value;
   if (e.title) return e.title;
@@ -166,7 +166,7 @@ function labelOf(e: NativeMacAxElement): string | undefined {
 }
 
 /** Elements worth handing to a caller: something to act on, or a named label. */
-export function isCandidate(e: NativeMacAxElement): boolean {
+export function isCandidate(e: MacReadElement): boolean {
   if (e.enabled === false) return false;
   const verbs = actionabilityOf(e);
   if (verbs.some((v) => v !== "read")) return true;
@@ -190,13 +190,23 @@ export function isCandidate(e: NativeMacAxElement): boolean {
  *     item's URL.
  *   - **A name no other entry in the window shows.** Two volumes named "Untitled" are not offered:
  *     the name could not tell them apart at the act.
+ *   - **A read not cut short.** One cut short may have missed a twin. One with a part unread is
+ *     usual for Finder (`ax_read_incomplete` on every read, 2026-11-10), so the act itself counts the
+ *     name in the list (`only_item_named`, src/macos/ax.rs) and refuses unless it names one entry.
+ * The name is the cell's **first** static text child: when its value is missing, empty or cut, the
+ * entry has no name — never the next text, which the act's read would not agree on.
  * The text an entry is named by is not offered beside it (`namedBy`: child id -> cell id). One pass.
+ *
+ * Measured 2026-11-10 (macOS 27.2) in Finder's list, column, icon and gallery views: the only AXCells
+ * with AXOpen and a static text child are the sidebar's (20 per window); the content's items are a
+ * cell holding a file-name field (list), an AXGroup (column) or an AXImage (icon, gallery).
  */
 export function nameOpenableCells(
   elements: readonly NativeMacAxElement[],
-  appTitle: string | undefined
+  appTitle: string | undefined,
+  readWhole = true
 ): { elements: MacReadElement[]; namedBy: Map<string, string> } {
-  if (appTitle !== "Finder") return { elements: [...elements], namedBy: new Map() };
+  if (appTitle !== "Finder" || !readWhole) return { elements: [...elements], namedBy: new Map() };
   const parentOf = (id: string) => id.slice(0, id.lastIndexOf("."));
   const cells = new Map(
     elements
@@ -204,10 +214,12 @@ export function nameOpenableCells(
       .map((e) => [e.id, e])
   );
   const names = new Map<string, { value: string; child: string }>();
+  const firstTextSeen = new Set<string>();
   for (const e of elements) {
     const parent = parentOf(e.id);
-    if (!cells.has(parent) || names.has(parent)) continue;
-    if (e.role !== "AXStaticText" || e.value === undefined || e.value === "" || e.valueTruncated) continue;
+    if (!cells.has(parent) || e.role !== "AXStaticText" || firstTextSeen.has(parent)) continue;
+    firstTextSeen.add(parent);
+    if (e.value === undefined || e.value === "" || e.valueTruncated) continue;
     names.set(parent, { value: e.value, child: e.id });
   }
   // Within a window, a name shown by two entries names neither.
@@ -230,7 +242,7 @@ export function nameOpenableCells(
 }
 
 /** What an element is under its window: role, element key, and a text's shown value. */
-function kindOf(e: Pick<NativeMacAxElement, "rootKey" | "elementKey" | "role" | "subrole" | "value" | "namesFile" | "actions">): string {
+function kindOf(e: Pick<MacReadElement, "rootKey" | "elementKey" | "role" | "subrole" | "value" | "namesFile" | "opensItem">): string {
   // A text is named by what it shows, so what it shows is part of what it is: when Calculator's
   // display changes, the post-act diff must see a different entity (codex, #780). Texts are only
   // read, never leased for an act, so a changing identity costs nothing there. A list item is
@@ -257,7 +269,7 @@ function kindOf(e: Pick<NativeMacAxElement, "rootKey" | "elementKey" | "role" | 
  */
 export function axDigest(
   pid: number,
-  e: Pick<NativeMacAxElement, "id" | "rootKey" | "elementKey" | "role" | "subrole" | "value" | "namesFile" | "actions">,
+  e: Pick<MacReadElement, "id" | "rootKey" | "elementKey" | "role" | "subrole" | "value" | "namesFile" | "opensItem">,
   unique = true
 ): string {
   const where = unique ? "" : `|${e.id}`;
@@ -297,7 +309,7 @@ function sortOf(e: NativeMacAxElement): string {
 }
 
 export function toCandidate(
-  e: NativeMacAxElement,
+  e: MacReadElement,
   pid: number,
   targetId: string,
   observedAtMs: number,
@@ -488,7 +500,9 @@ async function readPidUnderTitle(
   const observedAtMs = deps.now();
   const targetId = title ?? tree.appTitle ?? String(pid);
   // Cells that open carry their name from here on (internal #259): offered, digested and compared by it.
-  const named = nameOpenableCells(tree.elements, tree.appTitle);
+  // A read cut short may have missed a twin by name; a read with a part unread — Finder's usually
+  // is — is left to the act, which counts the name in the list itself (`only_item_named`).
+  const named = nameOpenableCells(tree.elements, tree.appTitle, !tree.truncated);
   const unique = uniquenessOf(named.elements, tree.truncated || tree.readIncomplete === true);
   const titled = needle !== undefined && needle !== "";
   const windowsTitled = titled && tree.elements.some((e) => rootTitle(e.rootKey).toLowerCase().includes(needle));

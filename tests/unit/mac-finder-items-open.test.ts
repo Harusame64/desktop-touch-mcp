@@ -72,6 +72,30 @@ describe("Finder cells that open are offered (internal #259)", () => {
       current = elements;
     }
   });
+  it("names an entry by its first static text only: an unread first text names nothing (gate 2 on #927)", async () => {
+    current = [
+      el("a.0", "AXWindow", { title: "ダウンロード" }),
+      el("a.0.0", "AXCell", { actions: ["AXOpen"] }),
+      el("a.0.0.0", "AXStaticText"), // its value could not be read
+      el("a.0.0.1", "AXStaticText", { value: "サブタイトル" }),
+    ];
+    try {
+      const cs = await readMacAxCandidates(deps() as unknown as MacAxProviderDeps, { windowTitle: "ダウンロード" }, { warnings: [] });
+      expect(cs.some((c) => c.role === "listitem")).toBe(false);
+    } finally {
+      current = elements;
+    }
+  });
+  it("offers nothing to open from a read cut short (a twin may lie past the cut; gate 2 on #927)", async () => {
+    const d = { ...deps(), axTree: vi.fn(async () => ({ ...(await tree()), truncated: true })) };
+    const cs = await readMacAxCandidates(d as unknown as MacAxProviderDeps, { windowTitle: "ダウンロード" }, { warnings: [] });
+    expect(cs.some((c) => c.role === "listitem")).toBe(false);
+  });
+  it("still offers entries from a read with a part unread, as every Finder read is (the act counts the name itself)", async () => {
+    const d = { ...deps(), axTree: vi.fn(async () => ({ ...(await tree()), readIncomplete: true })) };
+    const cs = await readMacAxCandidates(d as unknown as MacAxProviderDeps, { windowTitle: "ダウンロード" }, { warnings: [] });
+    expect(cs.filter((c) => c.role === "listitem").map((c) => c.label)).toEqual(["デスクトップ"]);
+  });
   it("does not take a named entry for unique when a nameless twin is in the window (gate 2 on #927)", async () => {
     const cs = await readMacAxCandidates(deps() as unknown as MacAxProviderDeps, { windowTitle: "ダウンロード" }, { warnings: [] });
     // a.0.0.3.0 opens but holds no text: it is the named entry's twin but for the name.
@@ -121,21 +145,22 @@ describe("the act on a list item sends AXOpen with the name to check (internal #
   const entity = { role: "listitem", label: "デスクトップ", locator: { ax: { pid: 7, id: "a.0.0.1.0", role: "AXCell", rootKey: WIN, elementKey: "k", unique: false } } } as never;
   const run = async (answer: { ok: boolean; reason?: string; performed?: boolean }, action = "invoke") => {
     const perform = vi.fn(async (_t: unknown, _a: string) => answer);
-    const noteOpenUnconfirmed = vi.fn();
-    const out = await createMacAxExecutor({ perform, setValue: vi.fn(), noteOpenUnconfirmed } as never)(entity, action as never);
-    return { perform, out, noteOpenUnconfirmed };
+    const noteOpen = vi.fn();
+    const out = await createMacAxExecutor({ perform, setValue: vi.fn(), noteOpen } as never)(entity, action as never);
+    return { perform, out, noteOpen };
   };
   it("sends AXOpen, not AXPress, carrying the name read so the native act checks it just before (gate 2 on #927)", async () => {
-    const { perform, out, noteOpenUnconfirmed } = await run({ ok: true, performed: true });
+    const { perform, out, noteOpen } = await run({ ok: true, performed: true });
     expect(perform.mock.calls[0]![1]).toBe("AXOpen");
     expect(perform.mock.calls[0]![0]).toMatchObject({ id: "a.0.0.1.0", expectedItemName: "デスクトップ" });
     expect(out).toBe("ax");
-    expect(noteOpenUnconfirmed).not.toHaveBeenCalled();
+    expect(noteOpen).toHaveBeenCalledWith({ confirmed: true });
   });
   it("answers ok with the open unconfirmed only when it was sent and answered as Finder answers when it opened", async () => {
-    const { out, noteOpenUnconfirmed } = await run({ ok: false, reason: "attribute_unsupported", performed: true });
+    const { out, noteOpen } = await run({ ok: false, reason: "attribute_unsupported", performed: true });
     expect(out).toBe("ax");
-    expect(noteOpenUnconfirmed).toHaveBeenCalledTimes(1);
+    expect(noteOpen).toHaveBeenCalledTimes(1);
+    expect(noteOpen.mock.calls[0]![0]).toMatchObject({ confirmed: false });
   });
   it("says the item may have opened when it was sent and answered anything else (an app slow to answer: cannot_complete)", async () => {
     for (const reason of ["cannot_complete", "invalid_ui_element", "failure", "something_new"]) {
@@ -204,7 +229,7 @@ describe("desktop_act on a Finder item (internal #259)", () => {
     expect(r.ok).not.toBe(true);
     expect(r.open).toBeUndefined();
   });
-  it("a confirmed open, and the act after it, carry no open note", async () => {
+  it("a confirmed open says so and asks for a discover too; the act after an open carries no stale note (gate 2 on #927)", async () => {
     const m = mac({ ok: false, reason: "attribute_unsupported", performed: true });
     const { state, facade, item } = await discover(m);
     await macActHandler(m as never, facade, state, { lease: item.lease, action: "invoke" });
@@ -212,7 +237,11 @@ describe("desktop_act on a Finder item (internal #259)", () => {
     const again = await discover(m);
     const r = parse(await macActHandler(m as never, again.facade, again.state, { lease: again.item.lease, action: "invoke" }));
     expect(r.ok).toBe(true);
-    expect(r.open).toBeUndefined();
+    expect(r.open).toEqual({ confirmed: true });
+    expect(r.next).toBe("refresh_view");
+    // An act that is not an open, after one, carries no open note.
+    const auto = parse(await macActHandler(m as never, again.facade, again.state, { lease: again.item.lease, action: "auto" }));
+    expect(auto.open).toBeUndefined();
   });
   it("auto and click never open it: nothing is sent", async () => {
     for (const action of ["auto", "click"]) {

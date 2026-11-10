@@ -29,11 +29,12 @@ export interface MacAxExecutorDeps {
   /** Whether this act was asked to append (desktop_act `append: true`) rather than replace. */
   appendMode?(): boolean;
   /**
-   * internal #259 — an open was sent and the app did not confirm it; the tool says so beside the
-   * result (`open.confirmed: false`). Not the touch loop's `landing`: that is ADR-036's keyboard
-   * landing axis, which the route grid counts, and a mac open is not one of its roads.
+   * internal #259 — an open was carried out, confirmed by the app or not; the tool says so beside the
+   * result (`open: { confirmed, why? }`, and `next: refresh_view`: the window is retitled). Required,
+   * so no executor can answer an open as a plain success (gate 2 on #927). Not the touch loop's
+   * `landing`: that is ADR-036's keyboard landing axis, which the route grid counts.
    */
-  noteOpenUnconfirmed?(why: string): void;
+  noteOpen(note: { confirmed: boolean; why?: string }): void;
 }
 
 /** Mirrors `VALUE_CHAR_CAP` in src/macos/ax.rs. */
@@ -95,23 +96,6 @@ export class MacAxActError extends Error {
   }
 }
 
-/**
- * internal #259 — open a list item (a Finder sidebar entry) with AXOpen, as a click on it does: the
- * window moves to that place.
- *
- * The name read for the item travels with the act (`expectedItemName`): the native act compares it
- * on the element it found, in the same call and just before AXOpen, and refuses when the row holds
- * another item — the element key holds no name, so without it a re-sorted list would open the item
- * that took the row's place (gate 2 on #927, twice: a check in a separate read left a gap).
- *
- * AXOpen does not answer for what it did. Finder opened the item and answered
- * `attribute_unsupported` every time (2026-11-10, macOS 27.2: three sidebar entries and a folder row,
- * 5 of 5). The native act says whether the action was sent (`performed`), so nothing here is guessed
- * from the reason: not sent — refused as any act is (nothing was done); sent and answered with that
- * measured reason — success, the open unconfirmed (`noteOpenUnconfirmed`); sent and answered with
- * anything else — refused, saying the item may have opened (an app slow to answer, `cannot_complete`,
- * may still open it: a caller told "nothing was done" would open it twice).
- */
 /** Finder's answer to an AXOpen it carried out (measured; the only list items offered are Finder's). */
 const FINDER_OPEN_ANSWER = "attribute_unsupported";
 
@@ -125,15 +109,36 @@ export class OpenMayHaveHappenedError extends Error {
   }
 }
 
+/**
+ * internal #259 — open a list item (a Finder sidebar entry) with AXOpen, as a click on it does: the
+ * window moves to that place.
+ *
+ * The name read for the item travels with the act (`expectedItemName`): the native act compares it
+ * on the element it found, in the same call and just before AXOpen, and refuses when the row holds
+ * another item — the element key holds no name, so without it a re-sorted list would open the item
+ * that took the row's place (gate 2 on #927, twice: a check in a separate read left a gap).
+ *
+ * AXOpen does not answer for what it did. Finder opened the item and answered
+ * `attribute_unsupported` every time (2026-11-10, macOS 27.2: three sidebar entries and a folder row,
+ * 5 of 5). The native act says whether the action was sent (`performed`), so nothing here is guessed
+ * from the reason: not sent — refused as any act is (nothing was done); sent and answered with that
+ * measured reason — success, the open unconfirmed (`noteOpen`); sent and answered with
+ * anything else — refused, saying the item may have opened (an app slow to answer, `cannot_complete`,
+ * may still open it: a caller told "nothing was done" would open it twice).
+ */
 async function openItem(deps: MacAxExecutorDeps, target: NativeMacAxTarget): Promise<void> {
   const r = await deps.perform(target, "AXOpen");
-  if (r.ok) return;
+  if (r.ok) {
+    deps.noteOpen({ confirmed: true });
+    return;
+  }
   const reason = r.reason ?? "unknown";
   if (r.performed !== true) refuse(r, "open");
   if (reason === FINDER_OPEN_ANSWER) {
-    deps.noteOpenUnconfirmed?.(
-      `Finder answered the open with ${reason}, as it does when it opened the item. desktop_discover again (without a target, or by the new window title) to see where the window is.`
-    );
+    deps.noteOpen({
+      confirmed: false,
+      why: `Finder answered the open with ${reason}, as it does when it opened the item. desktop_discover again (without a target, or by the new window title) to see where the window is.`,
+    });
     return;
   }
   throw new OpenMayHaveHappenedError(reason);

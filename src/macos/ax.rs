@@ -962,7 +962,7 @@ pub(crate) fn perform(t: &MacAxTarget, action: &str) -> MacActResult {
     }
     if let Some(expected) = t.expected_item_name.as_deref() {
         let timeout = t.timeout_secs.map(|s| s as f32).unwrap_or(DEFAULT_TIMEOUT_SECS);
-        if item_name(&e, timeout).as_deref() != Some(expected) {
+        if item_name(&e, timeout).as_deref() != Some(expected) || !only_item_named(&e, expected, timeout) {
             return refused("element_changed");
         }
     }
@@ -975,22 +975,32 @@ pub(crate) fn perform(t: &MacAxTarget, action: &str) -> MacActResult {
     MacActResult { ok: true, performed: Some(true), value_after, ..Default::default() }
 }
 
-/// internal #259 — a list item's name: its first child static text with a value neither empty nor
-/// cut (a Finder sidebar entry's). The same rule as `nameOpenableCells`
-/// (src/tools/mac/ax-provider.ts): change both together.
-fn item_name(cell: &AXUIElement, timeout_secs: f32) -> Option<String> {
-    for c in children(cell, timeout_secs) {
-        if attr_string(&c, "AXRole").as_deref() != Some("AXStaticText") {
-            continue;
-        }
-        if let Some((text, cut)) = value_text_marked(&c)
-            && !text.is_empty()
-            && !cut
-        {
-            return Some(text);
-        }
+/// internal #259 — whether the cell is the only one in its list (cell > row > outline) that this
+/// name names. Read at the act, not trusted from the discover: that read may have missed a twin (a
+/// part unread), and the name check alone could not tell two entries named alike apart (gate 2 on
+/// #927). Fails closed: a list that cannot be read is not "only one".
+fn only_item_named(cell: &AXUIElement, name: &str, timeout_secs: f32) -> bool {
+    let Some(row) = attr_element(cell, "AXParent", timeout_secs) else { return false };
+    let Some(list) = attr_element(&row, "AXParent", timeout_secs) else { return false };
+    let Some(rows) = children_read(&list, timeout_secs) else { return false };
+    let mut count = 0;
+    for r in rows {
+        let Some(cells) = children_read(&r, timeout_secs) else { return false };
+        count += cells.iter().filter(|c| item_name(c, timeout_secs).as_deref() == Some(name)).count();
     }
-    None
+    count == 1
+}
+
+/// internal #259 — a list item's name: its **first** child static text, when that one's value is
+/// neither empty nor cut; otherwise none — never the next text, which the read that offered the
+/// entry did not take. The same rule as `nameOpenableCells` (src/tools/mac/ax-provider.ts): change
+/// both together.
+fn item_name(cell: &AXUIElement, timeout_secs: f32) -> Option<String> {
+    let first = children(cell, timeout_secs)
+        .into_iter()
+        .find(|c| attr_string(c, "AXRole").as_deref() == Some("AXStaticText"))?;
+    let (text, cut) = value_text_marked(&first)?;
+    (!text.is_empty() && !cut).then_some(text)
 }
 
 /// Refuse a write to a field that stands for a file, or whose `AXFilename` could not be read:
