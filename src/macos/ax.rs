@@ -370,15 +370,38 @@ fn window_id_strict(e: &AXUIElement) -> Result<Option<u32>, AXError> {
 /// Whether a root is the window `id`, or holds a sheet that is: the roots a read by window id
 /// walks. A sheet is a direct child of its window's root (TextEdit's save sheet, measured
 /// 2026-11-10), so the window is walked and the sheet comes with it. `Err` when a read failed: the
-/// root is not known not to hold it (gate 2 on #928).
-fn root_holds_window(root: &AXUIElement, id: u32, timeout_secs: f32) -> Result<bool, ()> {
+/// root is not known not to hold it (gate 2 on #928). Held to the read's budget: every message waits
+/// at most the time left, and the check stops as soon as `late()` says it is spent (codex on #928) —
+/// the caller then stops the walk.
+fn root_holds_window(
+    root: &AXUIElement,
+    id: u32,
+    timeout_secs: f32,
+    left: &dyn Fn() -> f32,
+    late: &dyn Fn() -> bool,
+) -> Result<bool, ()> {
+    unsafe { root.set_messaging_timeout(timeout_secs.min(left())) };
     if window_id_strict(root).map_err(|_| ())? == Some(id) {
         return Ok(true);
     }
-    for k in children_read(root, timeout_secs).ok_or(())? {
-        if attr_string_strict(&k, "AXRole").map_err(|_| ())?.as_deref() == Some("AXSheet")
-            && window_id_strict(&k).map_err(|_| ())? == Some(id)
-        {
+    if late() {
+        return Ok(false);
+    }
+    unsafe { root.set_messaging_timeout(timeout_secs.min(left())) };
+    for k in children_read(root, timeout_secs.min(left())).ok_or(())? {
+        if late() {
+            return Ok(false);
+        }
+        unsafe { k.set_messaging_timeout(timeout_secs.min(left())) };
+        let role = attr_string_strict(&k, "AXRole").map_err(|_| ())?;
+        if role.as_deref() != Some("AXSheet") {
+            continue;
+        }
+        if late() {
+            return Ok(false);
+        }
+        unsafe { k.set_messaging_timeout(timeout_secs.min(left())) };
+        if window_id_strict(&k).map_err(|_| ())? == Some(id) {
             return Ok(true);
         }
     }
@@ -639,8 +662,9 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
         // big app's other windows cannot spend the budget first (gate 2 on #928). The menu bar, when
         // asked for, is the app's and is kept (`roots` lists it only then).
         if let Some(wid) = opts.window_id {
+            unsafe { e.set_messaging_timeout(timeout.min(left())) };
             let is_bar = opts.include_menu_bar == Some(true) && attr_string(&e, "AXRole").as_deref() == Some("AXMenuBar");
-            let held = is_bar || root_holds_window(&e, wid, timeout.min(left())).unwrap_or_else(|_| {
+            let held = is_bar || root_holds_window(&e, wid, timeout, &left, &late).unwrap_or_else(|_| {
                 read_incomplete = true;
                 false
             });
