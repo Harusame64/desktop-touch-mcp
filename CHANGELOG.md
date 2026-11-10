@@ -168,7 +168,7 @@
   named for; another is refused and nothing is opened. An entry whose name another entry in the window shows is not
   offered. Finder answers an error even when it opened, so the act answers `ok` with `open.confirmed: false` and
   `next: refresh_view`; discover again without a target or by the new window title. List rows are not offered yet
-  (internal #259).
+  (internal #259; rows: #365).
 - **`desktop_discover` can list the app's menu bar (`menuBar: true`).** Each item is a `menuitem` named by its path,
   such as `表示 > 科学計算`, and `desktop_act` `click` presses it without bringing the app forward. Some buttons
   that open a menu answer `ok` and open nothing (Calculator's mode button); the same choice is usually in the

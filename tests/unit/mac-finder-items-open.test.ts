@@ -36,6 +36,7 @@ const elements: NativeMacAxElement[] = [
   el("a.0.1.0.0.1", "AXTextField", { value: "pictkura-ci", namesFile: true, valueSettable: true, actions: ["AXOpen", "AXShowMenu", "AXConfirm"] }),
   el("a.0.1.0.1", "AXCell"),
   el("a.0.1.0.1.0", "AXStaticText", { value: "フォルダ" }),
+  el("a.0.2", "AXButton", { title: "共有", actions: ["AXPress"] }),
 ];
 let current = elements;
 const tree = async () => ({ pid: 7, appTitle: "Finder", truncated: false, selfReference: false, displayAsleep: false, elapsedMs: 1, elements: current });
@@ -239,9 +240,14 @@ describe("desktop_act on a Finder item (internal #259)", () => {
     expect(r.ok).toBe(true);
     expect(r.open).toEqual({ confirmed: true });
     expect(r.next).toBe("refresh_view");
-    // An act that is not an open, after one, carries no open note.
-    const auto = parse(await macActHandler(m as never, again.facade, again.state, { lease: again.item.lease, action: "auto" }));
-    expect(auto.open).toBeUndefined();
+    // A successful act that is not an open, after one, carries no open note (gate 2 on #927: a
+    // refused act would never show it).
+    const third = parse(await macDiscoverHandler(m as never, again.facade, again.state, { target: { windowTitle: "ダウンロード" }, view: "explore" }));
+    const share = third.entities.find((e: { label?: string }) => e.label === "共有");
+    const press = parse(await macActHandler(m as never, again.facade, again.state, { lease: share.lease, action: "click" }));
+    expect(press.ok).toBe(true);
+    expect((m.macAxPerform.mock.calls.at(-1) as unknown[])[1]).toBe("AXPress");
+    expect(press.open).toBeUndefined();
   });
   it("auto and click never open it: nothing is sent", async () => {
     for (const action of ["auto", "click"]) {

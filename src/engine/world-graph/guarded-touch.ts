@@ -445,8 +445,8 @@ function resolveAction(entity: UiEntity, requested: TouchAction): TouchAction {
   // `select` without being a UIA collection item must not resolve `auto` to a refusal.
   // On a collection item `auto` never invokes (gate 2 on #919): Invoke opens a list item like a
   // double-click and starts editing a grid cell, while its click selects it — select, else click.
-  // A mac list item (a Finder sidebar entry or list row) opens on invoke too — a file in its app —
-  // so `auto` does not open it either (internal #259): the caller asks for invoke by name.
+  // A mac list item (a Finder sidebar entry) opens on invoke too, so `auto` does not open it either
+  // (internal #259): the caller asks for invoke by name, as for a Windows collection item.
   const item = (entity.sources.includes("uia") && isCollectionItemControlType(entity.controlType)) || isAxOpenableItem(entity);
   return AUTO_PRIORITY.find((v) => verbs.has(v) && offersAction(entity, v) && !(item && v === "invoke")) ?? "click";
 }

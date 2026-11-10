@@ -975,21 +975,40 @@ pub(crate) fn perform(t: &MacAxTarget, action: &str) -> MacActResult {
     MacActResult { ok: true, performed: Some(true), value_after, ..Default::default() }
 }
 
-/// internal #259 — whether the cell is the only one in its list (cell > row > outline) that this
-/// name names. Read at the act, not trusted from the discover: that read may have missed a twin (a
-/// part unread), and the name check alone could not tell two entries named alike apart (gate 2 on
-/// #927). Fails closed: a list that cannot be read is not "only one".
+/// internal #259 — whether the cell is the only **openable** cell in its list (cell > row > outline,
+/// over the outline's `AXRows`) that this name names. Read at the act, not trusted from the
+/// discover: that read may have missed a twin (a part unread), and the name check alone could not
+/// tell two entries named alike apart (gate 2 on #927). Counted by the rule the discover offers by
+/// (`nameOpenableCells`: AXOpen and not AXPress), so a section heading that shows the same text is
+/// not a twin. Fails closed: a list or row that cannot be read, or a walk past `OPEN_CHECK_BUDGET`
+/// (an app too busy to answer), is not "only one".
 fn only_item_named(cell: &AXUIElement, name: &str, timeout_secs: f32) -> bool {
+    let started = std::time::Instant::now();
     let Some(row) = attr_element(cell, "AXParent", timeout_secs) else { return false };
     let Some(list) = attr_element(&row, "AXParent", timeout_secs) else { return false };
-    let Some(rows) = children_read(&list, timeout_secs) else { return false };
+    let Ok(Some(rows)) = attr_opt(&list, "AXRows") else { return false };
     let mut count = 0;
-    for r in rows {
+    for r in children_of(rows, timeout_secs) {
+        if started.elapsed() > OPEN_CHECK_BUDGET {
+            return false;
+        }
         let Some(cells) = children_read(&r, timeout_secs) else { return false };
-        count += cells.iter().filter(|c| item_name(c, timeout_secs).as_deref() == Some(name)).count();
+        count += cells
+            .iter()
+            .filter(|c| {
+                let actions = action_names(c);
+                attr_string(c, "AXRole").as_deref() == Some("AXCell")
+                    && actions.iter().any(|a| a == "AXOpen")
+                    && !actions.iter().any(|a| a == "AXPress")
+                    && item_name(c, timeout_secs).as_deref() == Some(name)
+            })
+            .count();
     }
     count == 1
 }
+
+/// How long the act may spend counting a name over its list before it refuses (`only_item_named`).
+const OPEN_CHECK_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// internal #259 — a list item's name: its **first** child static text, when that one's value is
 /// neither empty nor cut; otherwise none — never the next text, which the read that offered the
