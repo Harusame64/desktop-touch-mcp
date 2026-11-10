@@ -2,7 +2,10 @@
  * Mac port M3-2b: the launcher installs the release zip for its platform — the Windows build on
  * Windows, the macOS build on Apple Silicon Macs — and verifies it against that zip's own SHA256.
  */
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const LAUNCHER = new URL("../../bin/launcher.js", import.meta.url);
@@ -37,21 +40,49 @@ describe("the release zip for a platform", () => {
   });
 });
 
-describe("started through npm's bin symlink (codex, #785)", () => {
-  it("counts a symlink to the launcher as the launcher, and another file as not", async () => {
-    const { mkdtempSync, symlinkSync, writeFileSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-    const { fileURLToPath } = await import("node:url");
+describe("whether the launcher was started as the script (codex, #785)", () => {
+  it("counts the launcher's own path as the launcher, and another file or no path as not", async () => {
     const { isLaunchedAsScript } = await import(/* @vite-ignore */ `${LAUNCHER.href}?bin`);
     const dir = mkdtempSync(join(tmpdir(), "dtmcp-bin-"));
-    const link = join(dir, "desktop-touch-mcp");
-    symlinkSync(fileURLToPath(LAUNCHER), link);
-    const other = join(dir, "other.js");
-    writeFileSync(other, "");
-    expect(isLaunchedAsScript(link, LAUNCHER.href)).toBe(true);
-    expect(isLaunchedAsScript(fileURLToPath(LAUNCHER), LAUNCHER.href)).toBe(true);
-    expect(isLaunchedAsScript(other, LAUNCHER.href)).toBe(false);
-    expect(isLaunchedAsScript(undefined, LAUNCHER.href)).toBe(false);
+    try {
+      const other = join(dir, "other.js");
+      writeFileSync(other, "");
+      expect(isLaunchedAsScript(fileURLToPath(LAUNCHER), LAUNCHER.href)).toBe(true);
+      expect(isLaunchedAsScript(other, LAUNCHER.href)).toBe(false);
+      expect(isLaunchedAsScript(undefined, LAUNCHER.href)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("counts a link to the launcher as the launcher, and a link to another file as not", async () => {
+    const { isLaunchedAsScript } = await import(/* @vite-ignore */ `${LAUNCHER.href}?bin`);
+    const dir = mkdtempSync(join(tmpdir(), "dtmcp-bin-"));
+    // npm's bin entry is a file symlink. Windows refuses one without Developer Mode or elevation
+    // (EPERM; internal #275), but makes a directory junction for anyone, and the launcher resolves
+    // either through the same realpath: there the link is a junction to the file's folder. So
+    // Windows checks a link in the middle of the path and POSIX (the macOS CI job) a link at the
+    // end, npm's shape (gate 2 on #931). rmSync removes a junction without walking into it.
+    const linkTo = (target: string, folder: string): string => {
+      // The same name for every link, each in its own folder: told apart by where it points, not
+      // by what it is called (gate 2 on #931).
+      mkdirSync(join(dir, folder));
+      const link = join(dir, folder, "desktop-touch-mcp");
+      if (process.platform === "win32") {
+        symlinkSync(dirname(target), link, "junction");
+        return join(link, basename(target));
+      }
+      symlinkSync(target, link);
+      return link;
+    };
+    try {
+      mkdirSync(join(dir, "elsewhere"));
+      const other = join(dir, "elsewhere", "other.js");
+      writeFileSync(other, "");
+      expect(isLaunchedAsScript(linkTo(fileURLToPath(LAUNCHER), "bin-a"), LAUNCHER.href)).toBe(true);
+      expect(isLaunchedAsScript(linkTo(other, "bin-b"), LAUNCHER.href)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
