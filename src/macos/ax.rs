@@ -1040,7 +1040,18 @@ fn locate(t: &MacAxTarget) -> Result<CFRetained<AXUIElement>, MacActResult> {
     if let Some(expected) = &t.expected_siblings {
         // The siblings were read at the leased path: an element found elsewhere (`relocate`) has
         // others, and is not compared with them (gate 2 on #930; the executor never asks both).
-        let now = if id == t.id { child_index(&id).and_then(|at| siblings_now(&e, at, timeout).ok()) } else { None };
+        let now = if id == t.id {
+            let read = id
+                .rsplit_once('.')
+                .and_then(|(parent, at)| Some((parent, at.parse::<usize>().ok()?)))
+                .and_then(|(parent, at)| siblings_now(&app, parent, at, &e, timeout).ok());
+            // The checks above held the element to the budget; the act that follows gets the
+            // caller's timeout back (gate 2 on #930).
+            unsafe { e.set_messaging_timeout(timeout) };
+            read
+        } else {
+            None
+        };
         if now.as_deref() != Some(expected.as_str()) {
             return Err(MacActResult { role: Some(role), ..refused("element_changed") });
         }
@@ -1072,23 +1083,20 @@ const SIBLING_CHECK_BUDGET: std::time::Duration = std::time::Duration::from_secs
 /// uses the same number (`SIBLINGS_EACH_SIDE`).
 pub(crate) const SIBLINGS_EACH_SIDE: usize = 3;
 
-/// The last index of a child-index path.
-fn child_index(id: &str) -> Option<usize> {
-    id.rsplit_once('.')?.1.parse().ok()
-}
-
 /// The siblings of `element` around index `at` (`SIBLINGS_EACH_SIDE` each way, itself among them), as
-/// `sibling_entry` writes them, in order, read now from its parent (`AXParent`, so the path is not
-/// walked again; gate 2 on #930). `Err` when the parent or its children cannot be read, the child at
-/// `at` is not `element`, or the check runs past `SIBLING_CHECK_BUDGET`. An attribute that fails is
-/// written empty, as the tree read writes it (it marks the read incomplete and leaves the field
-/// out): the two must agree, or an act the read offered would be refused (gate 2 on #930).
-fn siblings_now(element: &AXUIElement, at: usize, timeout_secs: f32) -> Result<String, ()> {
+/// `sibling_entry` writes them, in order, read now from the parent at `parent_path` — the parent the
+/// tree read walked into, not `AXParent`, which an app may point elsewhere (gate 2 on #930). `Err`
+/// when the parent or its children cannot be read, the child at `at` is not `element`, or the check
+/// runs past `SIBLING_CHECK_BUDGET` (every message is held to the time left). An attribute that
+/// fails is written empty, as the tree read writes it (it marks the read incomplete and leaves the
+/// field out): the two must agree, or an act the read offered would be refused (gate 2 on #930).
+/// The caller restores `element`'s own timeout.
+fn siblings_now(app: &AXUIElement, parent_path: &str, at: usize, element: &AXUIElement, timeout_secs: f32) -> Result<String, ()> {
     let t0 = std::time::Instant::now();
     let left = || SIBLING_CHECK_BUDGET.saturating_sub(t0.elapsed()).as_secs_f32().max(0.05);
     let late = || t0.elapsed() >= SIBLING_CHECK_BUDGET;
-    unsafe { element.set_messaging_timeout(timeout_secs.min(left())) };
-    let parent = attr_element(element, "AXParent", timeout_secs.min(left())).ok_or(())?;
+    unsafe { app.set_messaging_timeout(timeout_secs.min(left())) };
+    let (_, parent) = resolve(app, parent_path, timeout_secs.min(left())).ok_or(())?;
     if late() {
         return Err(());
     }
