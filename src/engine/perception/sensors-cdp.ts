@@ -33,7 +33,8 @@ let _drainTimer: ReturnType<typeof setInterval> | null = null;
  */
 export async function refreshCdpFluents(
   tabId: string,
-  port = 9222
+  /** internal #254: required — a default of 9222 is how every caller came to read the wrong port. */
+  port: number,
 ): Promise<Observation[]> {
   const seq = nextSeq();
   const nowMs = Date.now();
