@@ -12,8 +12,6 @@ import {
   getProcessIdentityByPid,
   getWindowProcessId,
   getWindowClassName,
-  getForegroundHwnd,
-  getWindowRoot,
   type WindowZInfo,
 } from "../engine/win32.js";
 import { logResolve, logDispatchSink, appendTopologyWarnings } from "./_resolve-log.js";
@@ -40,9 +38,10 @@ import { detectFocusLoss } from "./_focus.js";
 import { scanSinceMarkerNormEnd } from "./_since-marker.js";
 import { getTextViaTextPattern, getSelectedTab, selectedTabReadable } from "../engine/uia-bridge.js";
 import {
+  type WtTab,
   isWindowsTerminal,
-  checkWtBeforeForeground,
-  checkWtSameTab,
+  readWtTab,
+  checkWtTabInFront,
   wtRefusalSentence,
   type WtCheckDeps,
   type WtRefusal,
@@ -142,8 +141,8 @@ export const terminalSendSchema = {
     "cannot divert keystrokes. DTM_BG_AUTO=1 enables BG globally; 'auto' falls back to " +
     "foreground for other targets, Windows Terminal included (it takes no background input): " +
     "the foreground is taken without asking, and Windows Terminal is refused (WindowsTerminalTargetUnsafe, " +
-    "nothing typed) when it is the window in front or its selected tab is split, not a terminal, " +
-    "unreadable, or changes while it comes forward. " +
+    "nothing typed, context.detail) when its selected tab is split, not a terminal, unreadable, or changes " +
+    "while it comes forward, or when this server cannot read its tabs at all. " +
     "'background' forces WM_CHAR injection (no focus change); to a classic console the text goes in as key " +
     "presses, where U+0003 is Ctrl+C (a send of its own: the command first, then U+0003 alone) and U+0001-U+001A are Ctrl+letter. " +
     "'foreground' forces the current behavior (SetForegroundWindow + clipboard paste). " +
@@ -1215,18 +1214,18 @@ export function sendFailedWarning(payload: { code?: string; context?: { detail?:
 
 /** internal #286 — the live readers behind the Windows Terminal checks. */
 function wtCheckDeps(): WtCheckDeps {
-  return { tabReaderAvailable: selectedTabReadable, getForegroundHwnd, getWindowRoot, getSelectedTab };
+  return { tabReaderAvailable: selectedTabReadable, getSelectedTab };
 }
 
 /** internal #286 — a refused paste into Windows Terminal; nothing was typed. */
 function wtRefusalFailure(
   why: WtRefusal,
   windowTitle: string | undefined,
-  tabName?: string,
+  opts: { tabName?: string; leftInFront?: boolean } = {},
   extra: Record<string, unknown> = {},
 ): ToolResult {
   return failWith(
-    new Error(`WindowsTerminalTargetUnsafe: ${wtRefusalSentence(why, tabName)}`),
+    new Error(`WindowsTerminalTargetUnsafe: ${wtRefusalSentence(why, opts)}`),
     "terminal:send",
     { windowTitle, detail: why, ...extra },
   );
@@ -1384,13 +1383,16 @@ export const terminalSendHandler = async ({
       // desktop. (The wm_char branch above does not take it, and reaches such a window.)
       const flashAway = await offDesktopTarget(win, enumWindowsInZOrder, paneId === undefined ? windowTitle : undefined);
       if (flashAway) return offDesktopFailure("terminal:send", flashAway, { extra: { method: "foreground_flash" } });
-      // internal #286: the same checks as the foreground road, and the flash then checks the tab again
+      // internal #286: the tab checks of the foreground road; the flash then checks the tab again
       // around its own focus move and puts the focus on the terminal pane before pasting. Not with
-      // focusFirst:false, as on the foreground road: the key locker's exit probe sends that way to a
-      // pane it just opened, usually the window in front (gate 2 on #934). Nothing awaits between
-      // this and the flash.
-      const flashTab = focusFirst ? await checkWtBeforeForeground(channel.hwnd, wtCheckDeps()) : null;
-      if (flashTab && !flashTab.ok) return wtRefusalFailure(flashTab.why, win.title, undefined, { method: "foreground_flash" });
+      // focusFirst:false, as on the foreground road: the key locker's exit probe sends that way
+      // (gate 2 on #934). The flash does not restore a minimized window (gate 2 on #764), and a
+      // minimized window's tab is not read.
+      if (focusFirst && win.isMinimized) {
+        return wtRefusalFailure("minimized", win.title, {}, { method: "foreground_flash" });
+      }
+      const flashTab = focusFirst ? await readWtTab(channel.hwnd, wtCheckDeps()) : null;
+      if (flashTab && !flashTab.ok) return wtRefusalFailure(flashTab.why, win.title, {}, { method: "foreground_flash" });
       // ADR-035 Phase 1 — see the keyboard twin: the foreground-flash channel
       // steals focus to paste, which is the route a mis-resolved terminal
       // destination turns into a command run in the wrong shell.
@@ -1405,10 +1407,10 @@ export const terminalSendHandler = async ({
         },
       );
       if (!flashResult.ok && flashTab?.ok && flashResult.reason === "terminal_tab_changed") {
-        return wtRefusalFailure("tab_changed", win.title, flashTab.tab.name, { method: "foreground_flash" });
+        return wtRefusalFailure("tab_changed", win.title, { tabName: flashTab.tab.name }, { method: "foreground_flash" });
       }
       if (!flashResult.ok && flashTab?.ok && flashResult.reason === "terminal_focus_failed") {
-        return wtRefusalFailure("pane_not_focused", win.title, undefined, { method: "foreground_flash" });
+        return wtRefusalFailure("pane_not_focused", win.title, {}, { method: "foreground_flash" });
       }
       if (!flashResult.ok) {
         // OQ8 follow-up: prefix the code so classify() routes this to
@@ -1819,8 +1821,8 @@ export const terminalSendHandler = async ({
 
     // Capture current foreground for restore.
     const allBefore = enumWindowsInZOrder();
-    const prevFg = allBefore.find((w) => w.isActive);
-    const prevFgHwnd = prevFg?.hwnd ?? null;
+    let prevFg = allBefore.find((w) => w.isActive);
+    let prevFgHwnd = prevFg?.hwnd ?? null;
 
     const warnings: string[] = [];
     const homingNotes: string[] = [];
@@ -1831,14 +1833,23 @@ export const terminalSendHandler = async ({
     const away = focusFirst ? await offDesktopTarget(win, allBefore, paneId === undefined ? windowTitle : undefined) : null;
     if (away) return offDesktopFailure("terminal:send", away);
     // internal #286: Windows Terminal is brought in front and pasted into without asking (the
-    // user's decision), so the destination is checked the way `desktop_act` checks it around its
+    // user's decision), so its selected tab is checked the way `desktop_act` checks it around its
     // question. Only when this call takes the foreground: with focusFirst:false the caller types
-    // into the window already in front on purpose.
-    // Nothing awaits between this and the focus move below (gate 2 on #934).
-    const wtTab = focusFirst && isWindowsTerminal(targetClass, () => getProcessIdentityByPid(getWindowProcessId(win.hwnd)).processName)
-      ? await checkWtBeforeForeground(win.hwnd, wtCheckDeps())
-      : null;
-    if (wtTab && !wtTab.ok) return wtRefusalFailure(wtTab.why, windowTitle);
+    // into the window already in front on purpose. A minimized window's tab is read only once the
+    // focus move below has restored it (gate 2 on #934).
+    const isWt = focusFirst && isWindowsTerminal(canInjectViaPostMessage(win.hwnd));
+    let wtBefore: WtTab | null = null;
+    if (isWt && !win.isMinimized) {
+      const read = await readWtTab(win.hwnd, wtCheckDeps());
+      if (!read.ok) return wtRefusalFailure(read.why, windowTitle);
+      wtBefore = read.tab;
+    }
+    if (isWt) {
+      // The window to put back is the one in front now, after the tab read above: the user may have
+      // moved while it ran (gate 2 on #934).
+      prevFg = enumWindowsInZOrder().find((w) => w.isActive);
+      prevFgHwnd = prevFg?.hwnd ?? null;
+    }
     if (focusFirst) {
       // Windows SetForegroundWindow is racy under load — retry until the target
       // really is in the foreground (or give up after 5 tries).
@@ -1908,15 +1919,20 @@ export const terminalSendHandler = async ({
     }
 
     // internal #286: a tab switched while the window came forward would take the command.
-    if (wtTab?.ok) {
-      const same = await checkWtSameTab(win.hwnd, wtTab.tab, wtCheckDeps());
+    if (isWt) {
+      const same = await checkWtTabInFront(win.hwnd, wtBefore, wtCheckDeps());
       if (!same.ok) {
         // Put back whatever restoreFocus says: nothing was typed, and this call took the foreground
-        // (`run` sends restoreFocus:false, gate 2 on #934).
-        if (prevFgHwnd && prevFgHwnd !== win.hwnd) {
-          try { restoreAndFocusWindow(prevFgHwnd); } catch { /* best-effort */ }
+        // (`run` sends restoreFocus:false). Said when it did not work (gate 2 on #934).
+        let leftInFront = false;
+        const putBack = !!prevFgHwnd && prevFgHwnd !== win.hwnd;
+        if (putBack) {
+          try { restoreAndFocusWindow(prevFgHwnd); } catch { /* read below */ }
+          await new Promise<void>((r) => setTimeout(r, 100));
+          const fgNow = enumWindowsInZOrder().find((w) => w.isActive);
+          leftInFront = fgNow?.hwnd !== prevFgHwnd;
         }
-        return wtRefusalFailure(same.why, windowTitle, wtTab.tab.name);
+        return wtRefusalFailure(same.why, windowTitle, { tabName: wtBefore?.name, leftInFront }, putBack ? { foregroundRestored: !leftInFront } : {});
       }
     }
 
@@ -3311,7 +3327,7 @@ export function registerTerminalTools(server: McpServer): void {
         purpose: "Interact with a terminal window: read output, send input, or run+wait+read in one call. action='read' / action='send' absorb the formerly-standalone read/send tools (Phase 4).",
         details: "action='run' is the recommended high-level workflow: send command → wait until quiet/pattern/timeout → read output. The command text is passed as `input` (the legacy parameter name `command` is also accepted as a deprecated alias — see issue #245). Returns completion={reason, elapsedMs} first-class plus outputIntegrity:'ok'|'baseline_lost' so callers can detect when scrollback could not be anchored to the pre-send buffer. action='read' reads current text via UIA TextPattern (falls back to OCR); use sinceMarker for incremental diff. action='send' sends a command with focus management.",
         prefer: "action='run' for command execution + result. For long-running commands (test runners, builds, deploys) use until:{mode:'pattern', pattern:'<final marker>'} — the default quiet mode is tuned for short interactive commands and may complete prematurely on multi-second silent gaps mid-run. Use action='read'/'send' for fine-grained control or when you need to interleave other actions. read/send/run also accept a launch_console `paneId` (pass the paneId field, NOT windowTitle) to keep targeting a pane after its title changes.",
-        caveats: "Do not screenshot the terminal — action='read' is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | exited | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). until:{mode:'exit', shell:'bash'|'powershell'} (issue #386) returns completion.exitCode + reason:'exited' via an echo-immune sentinel that works for multiline input that pattern mode cannot anchor; pass shell explicitly (auto fails as ExitModeShellAmbiguous on WT/conhost/SSH), cmd is unsupported (ExitModeShellUnsupported), open-construct input is rejected (ExitModeUnsafeInput). outputIntegrity:'baseline_lost' (output '', readError.code='BaselineMarkerLost'): the command may have run — read this terminal before sending it again. action='run' may also emit warnings prefixed FileLockCollision: when output reveals an EBUSY/Windows-lock/EAGAIN-EDEADLK file collision (issue #236). Default quietMs=1500 (issue #196); long silences require pattern mode. preferClipboard=true (send default) replaces the clipboard. Hidden-input prompts emit verifyDelivery.unverifiable (reason:'hidden_input_prompt') — use method:'foreground'. action='read' typed errors: TerminalWindowNotFound, TerminalTextPatternUnavailable (force source:'ocr'); stale sinceMarker → hints.terminalMarker.previousMatched:false on ok:true (omit sinceMarker). FG-path Win11 foreground refusal returns code:'ForegroundRestricted' — switch to method:'background' or DTM_BG_AUTO=1. Off-desktop target → WindowOnOtherDesktop, not sent. BG path auto-engages only when the target class is `ConsoleWindowClass` (conhost: cmd / PowerShell / pwsh) OR env DTM_BG_AUTO=1. Windows Terminal drops WM_CHAR (issue #173), so it takes the FG path, without asking: WindowsTerminalTargetUnsafe (nothing typed, context.detail) when it is the window in front or its tab is split, not a terminal, unreadable or changed.",
+        caveats: "Do not screenshot the terminal — action='read' is cheaper and structured. action='run' supports completion reasons: quiet | pattern_matched | exited | timeout | window_closed | window_not_found | send_failed (send rejected on a live window — see warnings for the underlying error code). until:{mode:'exit', shell:'bash'|'powershell'} (issue #386) returns completion.exitCode + reason:'exited' via an echo-immune sentinel that works for multiline input that pattern mode cannot anchor; pass shell explicitly (auto fails as ExitModeShellAmbiguous on WT/conhost/SSH), cmd is unsupported (ExitModeShellUnsupported), open-construct input is rejected (ExitModeUnsafeInput). outputIntegrity:'baseline_lost' (output '', readError.code='BaselineMarkerLost'): the command may have run — read this terminal before sending it again. action='run' may also emit warnings prefixed FileLockCollision: when output reveals an EBUSY/Windows-lock/EAGAIN-EDEADLK file collision (issue #236). Default quietMs=1500 (issue #196); long silences require pattern mode. preferClipboard=true (send default) replaces the clipboard. Hidden-input prompts emit verifyDelivery.unverifiable (reason:'hidden_input_prompt') — use method:'foreground'. action='read' typed errors: TerminalWindowNotFound, TerminalTextPatternUnavailable (force source:'ocr'); stale sinceMarker → hints.terminalMarker.previousMatched:false on ok:true (omit sinceMarker). FG-path Win11 foreground refusal returns code:'ForegroundRestricted' — switch to method:'background' or DTM_BG_AUTO=1. Off-desktop target → WindowOnOtherDesktop, not sent. BG path auto-engages only when the target class is `ConsoleWindowClass` (conhost: cmd / PowerShell / pwsh) OR env DTM_BG_AUTO=1. Windows Terminal drops WM_CHAR (issue #173), so it takes the FG path, without asking: WindowsTerminalTargetUnsafe (nothing typed, context.detail) when its tab is split, not a terminal, unreadable or changed, or its tabs cannot be read here.",
         examples: [
           "terminal({action:'run', windowTitle:'PowerShell', input:'npm test', until:{mode:'pattern', pattern:'Test Files'}}) → recommended for test runners; matches when vitest summary appears",
           "terminal({action:'run', windowTitle:'pwsh', input:'ls'}) → quiet 1500ms wait, returns output (short interactive)",

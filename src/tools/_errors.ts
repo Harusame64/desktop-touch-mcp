@@ -361,11 +361,11 @@ const SUGGESTS: Record<string, string[]> = {
   // internal #286: terminal(action:'send'/'run') was about to bring Windows Terminal in front and
   // paste into it, and the destination failed a check; context.detail names which.
   WindowsTerminalTargetUnsafe: [
-    "Nothing was typed. context.detail says why: in_front (this Windows Terminal window is the window in front, where the user is working — the client may run in one of its tabs), tab_split (its selected tab is split into panes), tab_not_terminal (its selected tab is not a terminal, e.g. Settings), tab_unreadable (its selected tab could not be read), tab_changed (the selected tab changed while the window came forward), pane_not_focused (method:'foreground_flash': the pane did not take the keyboard focus; the terminal may be left in front), or tab_reader_unavailable (this server cannot read Windows Terminal's tabs at all).",
+    "Nothing was typed. context.detail says why: tab_split (its selected tab is split into panes), tab_not_terminal (its selected tab is not a terminal, e.g. Settings), tab_unreadable (its selected tab could not be read), tab_changed (the selected tab changed while the window came forward; context.foregroundRestored:false says the window the user was in could not be put back), tab_reader_unavailable (this server cannot read Windows Terminal's tabs at all), and for method:'foreground_flash' minimized (the flash does not restore it) or pane_not_focused (the pane did not take the keyboard focus; the terminal may be left in front).",
     "tab_reader_unavailable: sending again gives the same answer. Native UI Automation is disabled (DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1) or the native addon is too old; tell the user, or use a classic console (key_locker launch_console with host:'classic').",
-    "in_front: use a terminal in another window, or ask the user to switch to another window, then send again. Do not pass focusFirst:false to get past it: the text would go to the tab the user is in.",
-    "tab_split / tab_not_terminal: ask the user to select a terminal tab that is not split, or open one with key_locker launch_console.",
-    "tab_unreadable / tab_changed / pane_not_focused: read the terminal (terminal action:'read') and send again once its tab is settled; after pane_not_focused, tell the user first if the terminal was left in front.",
+    "tab_split / tab_not_terminal: ask the user to select a terminal tab that is not split, or open one with key_locker launch_console. Do not pass focusFirst:false to get past it: the text would go to whichever pane or control has the focus.",
+    "minimized: restore the window (focus_window), or send without method:'foreground_flash'.",
+    "tab_unreadable / tab_changed / pane_not_focused: read the terminal (terminal action:'read') and send again once its tab is settled; after pane_not_focused or foregroundRestored:false, tell the user first that the terminal was left in front.",
   ],
   // internal #221: the window the call would bring forward is on another virtual desktop. Refused
   // by `_off-desktop.ts` so the user's desktop is not switched; the message carries this code.

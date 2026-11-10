@@ -25,21 +25,21 @@
   (internal #281).
 
 ### Changed — Windows
-- **`terminal` `send` and `run` no longer paste into Windows Terminal when it is the window in front, or into a
-  split tab.** Windows Terminal takes input only through the foreground, and `terminal` brings it in front and pastes
-  without asking (`desktop_act` asks first). It now makes the checks that hold without a question, and refuses with
-  `WindowsTerminalTargetUnsafe` (nothing typed; `context.detail` says which) when:
-  - the terminal is the window in front, where the user is working: when the client runs in one of its tabs, the
-    command would arrive there;
-  - its selected tab is split into panes, is not a terminal (the Settings tab), or cannot be read;
-  - its selected tab changed while the window was being brought in front (the window you were in is put back);
+- **`terminal` `send` and `run` no longer paste into a split Windows Terminal tab, or one that changed on the way.**
+  Windows Terminal takes input only through the foreground, and `terminal` brings it in front and pastes without
+  asking (`desktop_act` asks first). It now checks the selected tab, and refuses with `WindowsTerminalTargetUnsafe`
+  (nothing typed; `context.detail` says which) when:
+  - the selected tab is split into panes, is not a terminal (the Settings tab), or cannot be read;
+  - the selected tab changed while the window was being brought in front. The window you were in is put back, and
+    `context.foregroundRestored:false` says when that did not work;
   - the server cannot read Windows Terminal's tabs at all (native UI Automation disabled with
     `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1`, or an old native addon). Such a server pasted into Windows Terminal
     before; it now refuses every time.
 
-  `method:'foreground_flash'` makes the same checks, and now also puts the focus on the terminal pane before
-  pasting, so an open find box does not take the text. With `focusFirst:false` nothing is checked: the caller
-  types into the window in front on purpose. `run` names the check in its `send_failed` warning
+  A terminal that is the window in front is not refused, so a command can still land in the tab the client runs in
+  when that tab is selected. `method:'foreground_flash'` makes the same checks, refuses a minimized window (it does
+  not restore one), and now puts the focus on the terminal pane before pasting, so an open find box does not take
+  the text. With `focusFirst:false` nothing is checked. `run` names the check in its `send_failed` warning
   (internal #286).
 - **The key locker says in the diagnostic log how each watch for a password prompt ended.** After a command such as
   `ssh`, the locker watches the pane for a password prompt. A watch that ended without filling anything left no
