@@ -444,6 +444,18 @@ describe("a native timeout on a target that does not answer is not waited for tw
     expect(psOutputs, "the fall-back did not run").toHaveLength(0);
   });
 
+  it("does not cache a read made while busy, so the next cached read reads again (internal #240)", async () => {
+    desktop.set(4243n, ["C", true]);
+    nativeElementsThrow = new Error(TIMEOUT);
+    psOutputs.push(JSON.stringify({ windowTitle: "C", elementCount: 0, elements: [], clientProviders: "noop" }));
+    await getUiElements("C", 3, 50, 30000, { pinnedHwnd: 4243n });
+    // The thread is free again: a cached read must not be served the busy one.
+    nativeElementsThrow = null;
+    const again = await getUiElements("C", 3, 50, 30000, { pinnedHwnd: 4243n, cached: true });
+    expect((again as { _cacheHit?: boolean })._cacheHit).toBeUndefined();
+    expect(again.nativeTimedOut).toBeUndefined();
+  });
+
   it("does not mark a fallback after a native failure that was not a timeout", async () => {
     desktop.set(4242n, ["B", true]);
     nativeElementsThrow = new Error("UIA COM thread disconnected");
