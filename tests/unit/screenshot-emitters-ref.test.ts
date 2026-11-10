@@ -16,7 +16,9 @@ import path from "node:path";
 import crypto from "node:crypto";
 
 // ─── Hoisted mocks ────────────────────────────────────────────────────────────
-const { mockEnumWindowsInZOrder, mockGetWindowTitleW, mockGetWindowRectByHwnd, mockIsWindowProcessFrozen, mockVisibleFrame, mockHasBuffer, mockCaptureAllLayers, mockCaptureAndDiff, mockUpdateWindowCache, mockSaveSnapshot, mockGetWindows, mockResolveWindowTarget, mockCaptureWindowBackground, mockCaptureWindowWithFallback } = vi.hoisted(() => ({
+const { mockGetWindowClassName, mockGetTextViaTextPattern, mockEnumWindowsInZOrder, mockGetWindowTitleW, mockGetWindowRectByHwnd, mockIsWindowProcessFrozen, mockVisibleFrame, mockHasBuffer, mockCaptureAllLayers, mockCaptureAndDiff, mockUpdateWindowCache, mockSaveSnapshot, mockGetWindows, mockResolveWindowTarget, mockCaptureWindowBackground, mockCaptureWindowWithFallback } = vi.hoisted(() => ({
+  mockGetWindowClassName: vi.fn(() => ""),
+  mockGetTextViaTextPattern: vi.fn(),
   mockEnumWindowsInZOrder: vi.fn(),
   mockGetWindowTitleW: vi.fn(),
   mockGetWindowRectByHwnd: vi.fn(),
@@ -41,7 +43,12 @@ vi.mock("../../src/engine/win32.js", async (importOriginal) => {
     getWindowTitleW: mockGetWindowTitleW,
     getWindowRectByHwnd: mockGetWindowRectByHwnd,
     isWindowProcessFrozen: mockIsWindowProcessFrozen,
+    getWindowClassName: mockGetWindowClassName,
   };
+});
+vi.mock("../../src/engine/uia-bridge.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/engine/uia-bridge.js")>();
+  return { ...actual, getTextViaTextPattern: mockGetTextViaTextPattern };
 });
 vi.mock("../../src/engine/layer-buffer.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/layer-buffer.js")>();
@@ -525,5 +532,34 @@ describe("detail='ocr' — a frozen window is not captured (internal #247)", () 
 
     await screenshotOcrHandler({ windowTitle: "Settings", language: "ja" });
     expect(mockCaptureWindowBackground).toHaveBeenCalledTimes(1);
+  });
+});
+
+// internal #229: the terminal guard is decided by the window's class, not the owning process.
+describe("screenshot(detail:'text') terminal guard by window class (internal #229)", () => {
+  const con = { hwnd: 4242n, title: "k918-con", region: { x: 0, y: 0, width: 400, height: 300 }, zOrder: 0, isActive: true, isMinimized: false, isMaximized: false, isCloaked: false };
+  it("takes a ConsoleWindowClass window down the terminal road", async () => {
+    mockResolveWindowTarget.mockResolvedValue(null);
+    mockEnumWindowsInZOrder.mockReturnValue([con]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    mockGetWindowClassName.mockReturnValue("ConsoleWindowClass");
+    mockGetTextViaTextPattern.mockResolvedValue("C:\\> dir");
+    const result = await screenshotHandler({ ...baseArgs, windowTitle: "k918-con", detail: "text" });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.hints?.terminalGuard).toBe(true);
+    expect(body.textContent).toContain("dir");
+    expect(mockGetWindowClassName).toHaveBeenCalledWith(4242n);
+  });
+
+  it("does not take another class down the terminal road (a form a shell showed)", async () => {
+    mockResolveWindowTarget.mockResolvedValue(null);
+    mockEnumWindowsInZOrder.mockReturnValue([{ ...con, title: "k918-form" }]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    mockGetWindowClassName.mockReturnValue("WindowsForms10.Window.8.app.0.2bf8098_r6_ad1");
+    mockGetTextViaTextPattern.mockClear();
+    const result = await screenshotHandler({ ...baseArgs, windowTitle: "k918-form", detail: "text" }).catch((e: unknown) => e);
+    const text = (result as { content?: { text?: string }[] }).content?.[0]?.text ?? "";
+    expect(text).not.toContain("terminalGuard");
+    expect(mockGetTextViaTextPattern).not.toHaveBeenCalled();
   });
 });

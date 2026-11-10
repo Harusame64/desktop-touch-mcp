@@ -44,6 +44,7 @@ import { WindowExcludedError }     from "../../engine/tool-exclusion.js";
 import { probeAim, probeLane, type ProbeLane } from "../../engine/aim-probe.js";
 import { containsPoint, toAim, readWindowIdentityFields, type WindowIdentity, type WindowRect, type AimOrigin } from "../../engine/aim.js";
 import { getWindowIdentity, getWindowClassName, getWindowTitleW, getWindowRectByHwnd, windowIsAlive } from "../../engine/win32.js";
+import { TERMINAL_WINDOW_CLASSES } from "../../utils/terminal-process.js";
 
 // ── G4: transient visual warnings trigger a single 200ms retry ────────────────
 // Covers the first-request race where VisualRuntime.attach() (fire-and-forget in
@@ -92,7 +93,7 @@ function settledLane(lane: ProbeLane, s: PromiseSettledResult<ProviderResult>, f
  * Not `bg-input.ts`'s `TERMINAL_WINDOW_CLASSES`: that set answers "takes a posted WM_CHAR", which
  * Windows Terminal does not, and this one answers "has a buffer the lane reads".
  */
-const TERMINAL_READ_CLASSES: ReadonlySet<string> = new Set(["ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS"]);
+const TERMINAL_READ_CLASSES: ReadonlySet<string> = TERMINAL_WINDOW_CLASSES; // one set with screenshot's guard (internal #229)
 
 /** How `isTerminalTarget` finds a target's window and its class; injectable for tests. */
 export interface TerminalLook {

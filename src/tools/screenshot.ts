@@ -33,10 +33,9 @@ import {
 } from "../engine/identity-tracker.js";
 import { getTextViaTextPattern } from "../engine/uia-bridge.js";
 import { stripAnsi, tailLines } from "../engine/ansi.js";
-import { getProcessIdentityByPid, getWindowProcessId, getWindowClassName } from "../engine/win32.js";
+import { getWindowClassName } from "../engine/win32.js";
 import { isTerminalWindow } from "../utils/terminal-process.js";
 import { resolveWindowTarget } from "./_resolve-window.js";
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas (plain objects — used by server.tool() and the macro registry)
@@ -628,15 +627,9 @@ export const screenshotHandler = async (args: {
         const isChromium = CHROMIUM_TITLE_RE.test(resolvedTitle);
 
         // terminalGuard — for terminal hosts, UIA actionable is meaningless; use TextPattern.
-        // Decided by the window, not by the process that owns it (internal #229).
-        let isTerminal = false;
-        if (targetHwnd !== null) {
-          let className: string | undefined;
-          let procName: string | undefined;
-          try { className = getWindowClassName(targetHwnd); } catch { /* ignore */ }
-          try { procName = getProcessIdentityByPid(getWindowProcessId(targetHwnd)).processName; } catch { /* ignore */ }
-          isTerminal = isTerminalWindow(className, procName);
-        }
+        // Decided by the window's class, not by the process that owns it (internal #229).
+        // getWindowClassName answers "" for a window it cannot read.
+        const isTerminal = targetHwnd !== null && isTerminalWindow(getWindowClassName(targetHwnd));
         if (isTerminal) {
           const obs = observeTarget(effectiveTitle, targetHwnd!, resolvedTitle);
           const identityHints = toTargetHints(obs.identity);

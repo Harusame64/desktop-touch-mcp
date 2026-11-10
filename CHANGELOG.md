@@ -37,7 +37,8 @@
 - **`screenshot` `detail: "text"` lists the controls of a window a PowerShell or cmd script shows.** A window
   counted as a terminal when its owning process was a shell, so a WinForms form shown from a script, or
   `Out-GridView`, came back with no actionables and an empty terminal text. Whether a window is a terminal is
-  now decided by the window's class (internal #229).
+  now decided by the window's class: a classic console or Windows Terminal. Git Bash's mintty, which gave no text
+  that way, now goes the ordinary road (internal #229).
 - **One window is one `desktop_discover` view, however its handle is spelled.** `target.hwnd: "500"` and
   `"0x1F4"` name the same window but kept two separate views, so discovering it again under one spelling
   left the leases from the other usable. They now share one view, and a new discover makes the older
