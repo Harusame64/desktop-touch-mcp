@@ -302,6 +302,19 @@ describe("a type into Word's body fails only when the page text did not change a
     expect(readHostText).toHaveBeenCalledTimes(4);
   });
 
+  it("does not take an empty read for a change: it reads again, and refuses when the text then read back unchanged (internal #237)", async () => {
+    // win2 W2: the read right after the post caught an empty page. That alone used to pass the check.
+    const { out, readHostText } = await typeReadBack("abc", ["Hello.", "", "Hello."]);
+    expect((out as Error).name).toBe("ValueNotAppliedError");
+    expect(readHostText).toHaveBeenCalledTimes(7); // before, and six after: the empty one was not the verdict
+  });
+
+  it("passes when a read after the empty one shows the text changed (internal #237)", async () => {
+    const { out, readHostText } = await typeReadBack("abc", ["Hello.", "", "Hello. abc"]);
+    expect(out).toMatchObject({ kind: "keyboard", landing: { confirmed: false } });
+    expect(readHostText).toHaveBeenCalledTimes(3);
+  });
+
   it("passes when the page text cannot be read afterwards (an unreadable page is not 'no change')", async () => {
     const { out } = await typeReadBack("abc", ["Hello.", undefined]);
     expect(out).toMatchObject({ kind: "keyboard", landing: { confirmed: false } });

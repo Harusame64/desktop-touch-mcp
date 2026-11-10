@@ -2187,6 +2187,11 @@ async function hostTextUnchanged(d: ExecutorDeps, root: bigint, before: string):
     // timeout shortens (PR codex). A read cut short counts as unread.
     const after = await withinMs(d.readHostText!(root), Math.max(0, deadline - Date.now()));
     if (after === undefined) continue;
+    // internal #237 (win2 W1/W2): right after a type, the read can catch the Edit of the page the view
+    // was on before it scrolled, whose visible range is empty — a body of "" though the page had text.
+    // An empty read where the text before was not empty is a read that saw nothing, not a change: read
+    // again. (It still counts as unread at the deadline, as before: never "unchanged".)
+    if (after === "" && before !== "") continue;
     readOnce = true;
     if (after !== before) return false;
   }
