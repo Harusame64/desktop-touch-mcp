@@ -63,7 +63,7 @@ export const perceptionRegisterSchema = {
     }),
   ]).describe(
     "Target entity to track. 'window' targets use Win32; 'browserTab' targets use CDP " +
-    "(requires Chrome/Edge running with --remote-debugging-port=9222)."
+    "(requires Chrome/Edge running with --remote-debugging-port on the configured CDP port, 9222 by default)."
   ),
   maintain: z.array(z.enum(FLUENT_KINDS))
     .default([...FLUENT_KINDS])

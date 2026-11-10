@@ -27,6 +27,7 @@ import type {
   Observation,
   PerceptionEnvelope,
   PerceptionLens,
+  BrowserTabIdentity,
 } from "./types.js";
 import { DirtyJournal } from "./dirty-journal.js";
 import { FluentStore } from "./fluent-store.js";
@@ -58,6 +59,7 @@ import {
   __resetCdpSensorForTests,
 } from "./sensors-cdp.js";
 import { listTabsLight } from "../cdp-bridge.js";
+import { getCdpPort } from "../../utils/desktop-config.js";
 import { enumWindowsInZOrder } from "../win32.js";
 import {
   createLensEventIndex,
@@ -260,7 +262,8 @@ function ensureSensorLoop(): void {
     _disposeCdpLoop = startCdpSensorLoop(
       () => [...lenses.values()]
         .filter(l => l.spec.target.kind === "browserTab")
-        .map(l => ({ tabId: l.binding.hwnd, port: 9222 })),
+        // internal #254: the port the lens bound its tab on (was a fixed 9222).
+        .map(l => ({ tabId: l.binding.hwnd, port: lensCdpPort(l) })),
       (_tabId, obs) => ingestObservations(obs)
     );
   }
@@ -815,6 +818,16 @@ function _registerBrowserTabLens(_spec: LensSpec): { lensId: string; seq: number
   );
 }
 
+/**
+ * internal #254 — the CDP port a browser-tab lens reads on: the one it bound its tab on, recorded on its
+ * identity, so what the lens says it is bound to and where it reads cannot part (gate 2 on #925). No
+ * config read per call: the sensor loop runs every 250 ms.
+ */
+function lensCdpPort(lens: PerceptionLens): number {
+  const port = (lens.boundIdentity as Partial<BrowserTabIdentity>).port;
+  return typeof port === "number" ? port : getCdpPort();
+}
+
 export async function registerLensAsync(spec: LensSpec): Promise<{ lensId: string; seq: number; digest: string }> {
   if (spec.target.kind !== "browserTab") {
     return registerLens(spec);
@@ -822,23 +835,25 @@ export async function registerLensAsync(spec: LensSpec): Promise<{ lensId: strin
 
   evictOldestIfNeeded();
 
-  const tabs = await listTabsLight();
+  // internal #254: the configured CDP port (the config file's cdpPort), not a fixed 9222; no tab is known yet.
+  const port = getCdpPort();
+  const tabs = await listTabsLight(port);
   const binding = resolveBrowserTabBindingFromTabs(spec, tabs);
   if (!binding) {
     const m = spec.target.match;
     const desc = m.urlIncludes ? `urlIncludes:"${m.urlIncludes}"` : `titleIncludes:"${m.titleIncludes}"`;
-    throw new Error(`Browser tab not found matching ${desc}. Is Chrome running with --remote-debugging-port=9222?`);
+    throw new Error(`Browser tab not found matching ${desc}. Is Chrome running with --remote-debugging-port=${port}?`);
   }
 
   const matchedTab = tabs.find(t => t.id === binding.hwnd)!;
-  const identity = buildBrowserTabIdentity(matchedTab.id, matchedTab.title, matchedTab.url, 9222);
+  const identity = buildBrowserTabIdentity(matchedTab.id, matchedTab.title, matchedTab.url, port);
 
   const lens = compileLens(spec, binding, identity, store.currentSeq());
 
   // Await initial CDP refresh so guard evaluation on the very next call sees
   // populated browser.readyState/url/title fluents instead of empty state.
   try {
-    const obs = await refreshCdpFluents(binding.hwnd, 9222);
+    const obs = await refreshCdpFluents(binding.hwnd, port);
     ingestObservations(obs);
   } catch { /* non-fatal — lens is registered; guards will show stale until next read */ }
 
@@ -900,7 +915,7 @@ export async function evaluatePreToolGuards(
   if (lens.spec.target.kind === "browserTab") {
     // Refresh CDP state before guard evaluation so browser.readyState/url are current.
     try {
-      const obs = await refreshCdpFluents(lens.binding.hwnd, 9222);
+      const obs = await refreshCdpFluents(lens.binding.hwnd, lensCdpPort(lens));
       ingestObservations(obs);
     } catch { /* non-fatal — guards evaluate on whatever is in the store */ }
   } else {
@@ -974,7 +989,7 @@ export async function readLens(
   touchLens(lensId);  // Phase E: promote to MRU on use
 
   if (lens.spec.target.kind === "browserTab") {
-    const cdpObs = await refreshCdpFluents(lens.binding.hwnd, 9222);
+    const cdpObs = await refreshCdpFluents(lens.binding.hwnd, lensCdpPort(lens));
     ingestObservations(cdpObs);
   } else {
     const obs = refreshWin32Fluents(
