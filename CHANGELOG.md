@@ -32,6 +32,7 @@
   - the selected tab is split into panes, is not a terminal (the Settings tab), or cannot be read;
   - the selected tab changed while the window was being brought in front. The window you were in is put back, and
     `context.foregroundRestored:false` says when that did not work;
+  - another window came in front while the tab was read, after the terminal was brought in front;
   - the server cannot read Windows Terminal's tabs at all (native UI Automation disabled with
     `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1`, or an old native addon). Such a server pasted into Windows Terminal
     before; it now refuses every time.

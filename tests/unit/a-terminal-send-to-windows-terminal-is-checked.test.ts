@@ -237,6 +237,13 @@ describe("internal #286 — terminal:send to Windows Terminal through the foregr
     expect(mockPaste).toHaveBeenCalledTimes(1);
   });
 
+  it("refuses when another window came in front during the tab read after the focus move (PR codex)", async () => {
+    mockTab.mockResolvedValueOnce(tab("rt-1")).mockImplementationOnce(async () => { front = OTHER; return tab("rt-1"); });
+    const r = parseResult(await send());
+    expect(r.context).toMatchObject({ detail: "foreground_moved" });
+    expect(mockPaste).not.toHaveBeenCalled();
+  });
+
   it("refuses a minimized WT whose tab, once restored, is split", async () => {
     wtMinimized = true;
     mockTab.mockResolvedValue(tab("rt-1", 2));

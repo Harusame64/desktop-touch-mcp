@@ -41,6 +41,7 @@ export type WtRefusal =
   | "tab_split"
   | "tab_not_terminal"
   | "tab_changed"
+  | "foreground_moved"
   | "pane_not_focused";
 
 /**
@@ -130,6 +131,9 @@ export function wtRefusalSentence(why: WtRefusal, opts: { tabName?: string; left
     case "tab_changed":
       return "Nothing was typed: the Windows Terminal window's selected tab changed while it was being brought " +
         `in front${opts.tabName !== undefined ? ` (it was "${opts.tabName}")` : ""}.` + tail;
+    case "foreground_moved":
+      return "Nothing was typed: another window came in front while the Windows Terminal tab was being read " +
+        "after the terminal was brought in front, and the paste would have gone there. Send again.";
     case "pane_not_focused":
       return "Nothing was typed: the Windows Terminal pane did not take the keyboard focus in time (or UI Automation " +
         "was busy), so the paste was not sent — it would have gone to another control (an open find box, a tab). If " +

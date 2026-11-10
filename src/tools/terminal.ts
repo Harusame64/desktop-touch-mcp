@@ -1959,6 +1959,10 @@ export const terminalSendHandler = async ({
         return wtRefusalFailure(same.why, windowTitle, { tabName: wtBefore?.name, leftInFront },
           prevFgHwnd !== win.hwnd ? { foregroundRestored: !leftInFront } : {});
       }
+      // The tab read awaits (up to 2 s): a window that came in front meanwhile would take the paste
+      // and the Enter (PR codex on #934). Nothing awaits between this and the paste. Not put back:
+      // the window in front now is the one the user moved to.
+      if (!wtIsActive(win.hwnd)) return wtRefusalFailure("foreground_moved", windowTitle);
     }
 
     if (preferClipboard) {
