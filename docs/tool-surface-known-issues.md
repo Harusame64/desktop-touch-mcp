@@ -27,7 +27,7 @@ LLM 非露出 (TS / jsdoc コメントのみ)、機能影響ゼロ。Phase 4 の
 
 - `tests/e2e/context-consistency.test.ts > C3: hasModal real dialog detection > hasModal:true and pageState:'dialog' when Save-As dialog is open`
   - 原因候補: Win11 で Notepad 新版 (MSStore UWP) が Save-As ダイアログの MODAL_RE にマッチしない (`feedback_notepad_launcher_msstore_hang.md`)
-  - 2026-11-10 追記: hasModal は題名の正規表現をやめ、画面上の無効な窓で判定するようになった（internal #269）。win2 で Notepad の名前を付けて保存・保存しますかは true を確認済み
+  - 2026-11-10 追記: hasModal は画面上の無効な窓で判定するようになった（internal #269）。題名（MODAL_RE）を見るのは、所有者の無い #32770（MessageBox）だけ。win2 で Notepad の名前を付けて保存・保存しますかは true を確認済み
 - `tests/e2e/rich-narration-edge.test.ts > B1: Chromium narrate:rich → chromium_sparse`
   - 原因候補: Chrome の `keyboard_press` フォーカス環境依存
 

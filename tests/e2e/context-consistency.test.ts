@@ -29,7 +29,8 @@ async function dismissStaleModals() {
   const MODAL_RE = /dialog|confirm|prompt|alert|error|警告|エラー|確認|通知|ダイアログ/i;
   const wins = enumWindowsInZOrder();
   for (const w of wins) {
-    if (w.className === "#32770" || MODAL_RE.test(w.title)) {
+    const ownerDisabled = w.ownerHwnd != null && wins.some((o) => o.hwnd === w.ownerHwnd && o.isEnabled === false);
+    if (w.className === "#32770" || ownerDisabled || MODAL_RE.test(w.title)) {
       try {
         restoreAndFocusWindow(w.hwnd);
         await sleep(200);

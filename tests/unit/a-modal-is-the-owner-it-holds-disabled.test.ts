@@ -77,8 +77,11 @@ describe("hasModal: a window on screen that is disabled (measured on win2)", () 
     expect(out.pageState).not.toBe("dialog");
   });
 
-  it("an ownerless dialog that is minimised is not (only a shown one reads)", async () => {
-    wins.value = [win(1n, "確認", "#32770", { isMinimized: true })];
+  it.each([
+    ["minimised", { isMinimized: true }],
+    ["on another desktop (internal #253)", { isCloaked: true }],
+  ])("an ownerless dialog %s is not (only a shown one reads)", async (_name, hidden) => {
+    wins.value = [win(1n, "確認", "#32770", hidden)];
     expect((await read()).hasModal).toBe(false);
   });
 });
