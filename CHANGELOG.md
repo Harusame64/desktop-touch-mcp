@@ -40,6 +40,9 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **A perception lens on a browser tab uses the configured CDP port.** Registering the lens and its later reads
+  always asked port 9222, so with `cdpPort` set to another port the tab was not found. The lens now finds the
+  tab on the configured port and reads it on the port the tab was listed on (internal #254).
 - **`screenshot` `mode: 'background'` says when its title matched more than one window.** It captured the first
   window whose title contained the text, with no word that others matched too. The reply now says how many
   windows match, names the others by title and handle, and says to pass `hwnd` to capture another (internal #248).
