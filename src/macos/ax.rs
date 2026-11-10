@@ -109,6 +109,12 @@ pub(crate) fn value_text(e: &AXUIElement) -> Option<String> {
 /// the whole text: writing it back with something added would delete the rest (codex, #782).
 pub(crate) fn value_text_marked(e: &AXUIElement) -> Option<(String, bool)> {
     let v = attr(e, "AXValue").ok()?;
+    value_text_of(&v)
+}
+
+/// An `AXValue` already read, rendered as `value_text_marked` renders it (internal #259: the twin
+/// count converts the value it read once, rather than reading it again — gate 2 on #927).
+fn value_text_of(v: &CFType) -> Option<(String, bool)> {
     let s = if let Some(s) = v.downcast_ref::<CFString>() {
         s.to_string()
     } else if let Some(n) = v.downcast_ref::<CFNumber>() {
@@ -988,17 +994,24 @@ fn only_item_named(cell: &AXUIElement, name: &str, timeout_secs: f32) -> bool {
     let t0 = std::time::Instant::now();
     let left = || OPEN_CHECK_BUDGET.saturating_sub(t0.elapsed()).as_secs_f32().max(0.05);
     let late = || t0.elapsed() >= OPEN_CHECK_BUDGET;
-    let held = |e: &AXUIElement| unsafe { e.set_messaging_timeout(timeout_secs.min(left())) };
+    let held = |e: &AXUIElement| {
+        unsafe { e.set_messaging_timeout(timeout_secs.min(left())) };
+    };
     held(cell);
     let Some(row) = attr_element(cell, "AXParent", timeout_secs.min(left())) else { return false };
     if late() {
         return false;
     }
+    held(&row);
     let Some(list) = attr_element(&row, "AXParent", timeout_secs.min(left())) else { return false };
     if late() {
         return false;
     }
+    held(&list);
     let Ok(Some(rows)) = attr_opt(&list, "AXRows") else { return false };
+    if late() {
+        return false;
+    }
     let mut count = 0;
     for r in children_of(rows, timeout_secs.min(left())) {
         if late() {
@@ -1010,18 +1023,25 @@ fn only_item_named(cell: &AXUIElement, name: &str, timeout_secs: f32) -> bool {
             if late() {
                 return false;
             }
-            held(c);
             // A cell whose identity cannot be read may be the twin: refuse rather than skip it
             // (codex on #927). An attribute the cell does not give is an answer, not a failure.
+            held(c);
             let Ok(role) = attr_string_strict(c, "AXRole") else { return false };
+            if late() {
+                return false;
+            }
             if role.as_deref() != Some("AXCell") {
                 continue;
             }
+            held(c);
             let Ok(actions) = action_names_strict(c) else { return false };
+            if late() {
+                return false;
+            }
             if !actions.iter().any(|a| a == "AXOpen") || actions.iter().any(|a| a == "AXPress") {
                 continue;
             }
-            match item_name_strict(c, timeout_secs.min(left())) {
+            match item_name_strict(c, &held, &late) {
                 Err(()) => return false,
                 Ok(Some(n)) if n == name => count += 1,
                 Ok(_) => {}
@@ -1048,16 +1068,34 @@ fn action_names_strict(e: &AXUIElement) -> Result<Vec<String>, AXError> {
 /// `item_name`, failing when a read it rests on failed (the children, a child's role, the first
 /// static text's value) rather than answering "no name": for the twin count, where an unread cell
 /// must not pass for one that names nothing.
-fn item_name_strict(cell: &AXUIElement, timeout_secs: f32) -> Result<Option<String>, ()> {
-    let kids = children_read(cell, timeout_secs).ok_or(())?;
+fn item_name_strict(
+    cell: &AXUIElement,
+    held: &dyn Fn(&AXUIElement),
+    late: &dyn Fn() -> bool,
+) -> Result<Option<String>, ()> {
+    // Every request held to the time left and the budget checked after each, as the caller does.
+    held(cell);
+    let kids = children_read(cell, DEFAULT_TIMEOUT_SECS).ok_or(())?;
+    if late() {
+        return Err(());
+    }
     for c in kids {
-        if attr_string_strict(&c, "AXRole").map_err(|_| ())?.as_deref() != Some("AXStaticText") {
+        held(&c);
+        let role = attr_string_strict(&c, "AXRole").map_err(|_| ())?;
+        if late() {
+            return Err(());
+        }
+        if role.as_deref() != Some("AXStaticText") {
             continue;
         }
-        if attr_opt(&c, "AXValue").map_err(|_| ())?.is_none() {
-            return Ok(None);
+        held(&c);
+        // The value read once: a second read that failed would pass for "no name".
+        let value = attr_opt(&c, "AXValue").map_err(|_| ())?;
+        if late() {
+            return Err(());
         }
-        return Ok(value_text_marked(&c).and_then(|(text, cut)| (!text.is_empty() && !cut).then_some(text)));
+        let Some(v) = value else { return Ok(None) };
+        return Ok(value_text_of(&v).and_then(|(text, cut)| (!text.is_empty() && !cut).then_some(text)));
     }
     Ok(None)
 }
