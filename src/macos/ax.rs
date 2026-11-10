@@ -416,7 +416,7 @@ fn window_roots(
     };
     for (rid, r) in roots {
         if late() {
-            return (None, None, missed);
+            break;
         }
         if found.is_some() {
             if !include_menu_bar || bar.is_some() {
@@ -442,7 +442,7 @@ fn window_roots(
             Err(_) => missed = true,
         }
         if late() {
-            return (None, None, missed);
+            break;
         }
         if include_menu_bar && bar.is_none() && is_bar(&r, &mut bar_unknown) {
             bar = Some((rid, r));
@@ -453,7 +453,7 @@ fn window_roots(
     if found.is_none() {
         'roots: for (rid, r) in rest {
             if late() {
-                return (None, None, missed);
+                break 'roots;
             }
             unsafe { r.set_messaging_timeout(timeout_secs.min(left())) };
             let Some(kids) = children_read(&r, timeout_secs.min(left())) else {
@@ -462,7 +462,7 @@ fn window_roots(
             };
             for (k, kid) in kids.into_iter().enumerate() {
                 if late() {
-                    return (None, None, missed);
+                    break 'roots;
                 }
                 unsafe { kid.set_messaging_timeout(timeout_secs.min(left())) };
                 match attr_string_strict(&kid, "AXRole") {
@@ -484,6 +484,10 @@ fn window_roots(
                 }
             }
         }
+    }
+    // Out of time before the window was found: what was not asked may have been it.
+    if found.is_none() && late() {
+        missed = true;
     }
     match found {
         // Window ids are one window each: once it is found, a root that did not answer cannot change
