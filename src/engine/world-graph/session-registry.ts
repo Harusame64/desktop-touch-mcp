@@ -52,6 +52,25 @@ export function parseTargetHwnd(target: TargetSpec | undefined): bigint | undefi
 }
 
 /**
+ * The session key for a target: the one rule `SessionRegistry.resolveKey` and the visual lanes'
+ * keys share (internal #215; the visual provider and the OCR adapter kept their own copies keyed by
+ * the handle's spelling, gate 2 on #917).
+ *
+ * Priority: hwnd > tabId > windowTitle > default. The hwnd counts only when `parseTargetHwnd` takes
+ * it (internal #310), and it is keyed as the window it names, not as spelled: decimal, low 32 bits,
+ * since user32 reads only those (internal #314), so `"500"`, `"0x1F4"` and the sign-extended spelling
+ * of a handle with bit 31 set are one key. An unusable hwnd with nothing else keeps its spelling.
+ */
+export function targetSessionKey(target?: TargetSpec): TargetSessionKey {
+  const handle = parseTargetHwnd(target);
+  if (handle !== undefined) return `window:${(handle & 0xffff_ffffn).toString()}`;
+  if (target?.tabId)       return `tab:${target.tabId}`;
+  if (target?.windowTitle) return `title:${target.windowTitle}`;
+  if (target?.hwnd)        return `window:${target.hwnd}`;
+  return "window:__default__";
+}
+
+/**
  * The one UIA control type that has been a modal (internal #126, half 2).
  *
  * UIA maps nine control types to a role and reports EVERY other one as `role:"unknown"`
@@ -330,17 +349,12 @@ export class SessionRegistry {
    * the UIA lane read `@active` instead of the title the caller sent. An unusable hwnd with nothing
    * else keeps its own key, as before; the tool refuses that call before it gets here (#831).
    *
-   * The key carries the handle as parsed, in decimal, not as spelled (internal #215): `"500"` and
-   * `"0x1F4"` are one window, so they are one session, and a read under either spelling makes the
-   * leases from the other stale.
+   * The key carries the window the handle names, not its spelling (internal #215): see
+   * `targetSessionKey`. A read under any spelling makes the leases from the others stale. The
+   * providers then get the target rebuilt from this key, so a hex hwnd comes back as decimal.
    */
   resolveKey(target?: TargetSpec): TargetSessionKey {
-    const handle = parseTargetHwnd(target);
-    if (handle !== undefined) return `window:${handle.toString()}`;
-    if (target?.tabId)       return `tab:${target.tabId}`;
-    if (target?.windowTitle) return `title:${target.windowTitle}`;
-    if (target?.hwnd)        return `window:${target.hwnd}`;
-    return "window:__default__";
+    return targetSessionKey(target);
   }
 
   /**

@@ -37,7 +37,8 @@
 - **One window is one `desktop_discover` view, however its handle is spelled.** `target.hwnd: "500"` and
   `"0x1F4"` name the same window but kept two separate views, so discovering it again under one spelling
   left the leases from the other usable. They now share one view, and a new discover makes the older
-  leases stale under either spelling (internal #215).
+  leases stale under either spelling. The reply names the window by its handle in decimal, whichever spelling
+  was sent (internal #215).
 - **`scroll` `capture` no longer stops after one frame on pages that repeat.** On a page of equal-height
   sections whose height divides the Page Down distance, one Page Down changed only the section numbers. The
   page-end test compared two thin bands of the frame, saw no change, and answered `ok: true` with the first

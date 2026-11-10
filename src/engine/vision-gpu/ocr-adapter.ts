@@ -26,7 +26,7 @@
  * know the difference. This is replaced by real per-frame ingestion in Phase 3.
  */
 
-import { parseTargetHwnd, type TargetSpec } from "../world-graph/session-registry.js";
+import { parseTargetHwnd, targetSessionKey, type TargetSpec } from "../world-graph/session-registry.js";
 import type { UiEntityCandidate } from "./types.js";
 import { TrackStore } from "./track-store.js";
 import { TemporalFusion } from "./temporal-fusion.js";
@@ -35,12 +35,9 @@ import { pushDirtySignal } from "./dirty-signal.js";
 import type { SomElement, OcrDictionaryEntry } from "../ocr-bridge.js";
 import { detectOcrLanguage } from "../ocr-bridge.js";
 
-/** Compute the targetKey that both visual-provider and pushDirtySignal use. */
+/** Compute the targetKey that both visual-provider and pushDirtySignal use: the session's key (internal #215). */
 export function targetKeyFromSpec(target: TargetSpec): string {
-  if (target.hwnd)        return `window:${target.hwnd}`;
-  if (target.tabId)       return `tab:${target.tabId}`;
-  if (target.windowTitle) return `title:${target.windowTitle}`;
-  return "window:__default__";
+  return targetSessionKey(target);
 }
 
 export interface OcrVisualAdapterOptions {

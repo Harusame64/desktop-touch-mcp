@@ -13,7 +13,7 @@
  * Phase 3-D: replace MockVisualBackend with OnnxBackend / SidecarBackend.
  */
 
-import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
+import { targetSessionKey, type TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 import { getVisualRuntime, targetKeyToWarmTarget } from "../../engine/vision-gpu/runtime.js";
 import { probeLane } from "../../engine/aim-probe.js";
@@ -25,11 +25,9 @@ import { probeLane } from "../../engine/aim-probe.js";
 // vi.resetModules() + dynamic import() to re-evaluate.
 const VISUAL_GPU_DISABLED = process.env["DESKTOP_TOUCH_DISABLE_VISUAL_GPU"] === "1";
 
+/** The session's key for the target (internal #215: one rule, `targetSessionKey`). */
 function targetKeyFromSpec(target: TargetSpec | undefined): string {
-  if (target?.hwnd)        return `window:${target.hwnd}`;
-  if (target?.tabId)       return `tab:${target.tabId}`;
-  if (target?.windowTitle) return `title:${target.windowTitle}`;
-  return "window:__default__";
+  return targetSessionKey(target);
 }
 
 export async function fetchVisualCandidates(
