@@ -1038,10 +1038,9 @@ fn locate(t: &MacAxTarget) -> Result<CFRetained<AXUIElement>, MacActResult> {
     // After the sheet check: a sheet that opened is a child of the window, so it changes the span of
     // an element right under the window, and the caller must be told to answer it (gate 2 on #930).
     if let Some(expected) = &t.expected_siblings {
-        let now = id
-            .rsplit_once('.')
-            .and_then(|(parent, _)| resolve(&app, parent, timeout))
-            .and_then(|(_, parent)| siblings_now(&parent, child_index(&id)?, &e, timeout).ok());
+        // The siblings were read at the leased path: an element found elsewhere (`relocate`) has
+        // others, and is not compared with them (gate 2 on #930; the executor never asks both).
+        let now = if id == t.id { child_index(&id).and_then(|at| siblings_now(&e, at, timeout).ok()) } else { None };
         if now.as_deref() != Some(expected.as_str()) {
             return Err(MacActResult { role: Some(role), ..refused("element_changed") });
         }
@@ -1051,12 +1050,21 @@ fn locate(t: &MacAxTarget) -> Result<CFRetained<AXUIElement>, MacActResult> {
 
 /// internal #271 — one sibling as `sibling_signature` writes it: its role, title and description,
 /// and a static text's value (the row's name, in a list whose rows are flattened into one parent, as
-/// Safari's are). src/tools/mac/ax-provider.ts writes the same from the tree it read
-/// (`siblingSignature`); the two must agree character for character.
+/// Safari's are), each as its length in characters (Unicode scalar values), a colon, and the text.
+/// Lengths, not separators: a page's text may hold any character, and two spans must not read the
+/// same because one's text holds the separator (gate 2 on #930). src/tools/mac/ax-provider.ts writes
+/// the same from the tree it read (`siblingSignature`); the two must agree character for character.
 pub(crate) fn sibling_entry(role: &str, title: Option<&str>, description: Option<&str>, value: Option<&str>) -> String {
     let value = if role == "AXStaticText" { value.unwrap_or("") } else { "" };
-    format!("{role}\u{1f}{}\u{1f}{}\u{1f}{value}", title.unwrap_or(""), description.unwrap_or(""))
+    [role, title.unwrap_or(""), description.unwrap_or(""), value]
+        .iter()
+        .map(|f| format!("{}:{f}", f.chars().count()))
+        .collect()
 }
+
+/// How long the sibling check may take in all (`siblings_now`): every message waits at most the time
+/// left, and a check past it refuses, so a busy app cannot hold the serialised act chain (gate 2 on #930).
+const SIBLING_CHECK_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// How many siblings on each side of the element `sibling_signature` holds: the row's name sits next
 /// to its button, and a parent with hundreds of children (a Safari page) costs a few reads, not
@@ -1069,28 +1077,49 @@ fn child_index(id: &str) -> Option<usize> {
     id.rsplit_once('.')?.1.parse().ok()
 }
 
-/// The element's siblings around index `at` (`SIBLINGS_EACH_SIDE` each way, itself among them), as
-/// `sibling_entry` writes them, in order, read now. `Err` when the children cannot be listed, or the
-/// child at `at` is not `element` (the parent was read again, and its rows may have been made anew
-/// in between; gate 2 on #930). An attribute that fails is written empty, as the tree read writes it
-/// (it marks the read incomplete and leaves the field out): the two must agree, or an act the read
-/// offered would be refused (gate 2 on #930).
-fn siblings_now(parent: &AXUIElement, at: usize, element: &AXUIElement, timeout_secs: f32) -> Result<String, ()> {
-    let kids = children_read(parent, timeout_secs).ok_or(())?;
-    if at >= kids.len() || !same(&kids[at], element) {
+/// The siblings of `element` around index `at` (`SIBLINGS_EACH_SIDE` each way, itself among them), as
+/// `sibling_entry` writes them, in order, read now from its parent (`AXParent`, so the path is not
+/// walked again; gate 2 on #930). `Err` when the parent or its children cannot be read, the child at
+/// `at` is not `element`, or the check runs past `SIBLING_CHECK_BUDGET`. An attribute that fails is
+/// written empty, as the tree read writes it (it marks the read incomplete and leaves the field
+/// out): the two must agree, or an act the read offered would be refused (gate 2 on #930).
+fn siblings_now(element: &AXUIElement, at: usize, timeout_secs: f32) -> Result<String, ()> {
+    let t0 = std::time::Instant::now();
+    let left = || SIBLING_CHECK_BUDGET.saturating_sub(t0.elapsed()).as_secs_f32().max(0.05);
+    let late = || t0.elapsed() >= SIBLING_CHECK_BUDGET;
+    unsafe { element.set_messaging_timeout(timeout_secs.min(left())) };
+    let parent = attr_element(element, "AXParent", timeout_secs.min(left())).ok_or(())?;
+    if late() {
+        return Err(());
+    }
+    unsafe { parent.set_messaging_timeout(timeout_secs.min(left())) };
+    let kids = children_read(&parent, timeout_secs.min(left())).ok_or(())?;
+    if late() || at >= kids.len() || !same(&kids[at], element) {
         return Err(());
     }
     let from = at.saturating_sub(SIBLINGS_EACH_SIDE);
     let to = (at + SIBLINGS_EACH_SIDE + 1).min(kids.len());
-    let mut parts = Vec::with_capacity(to - from);
+    let mut parts = String::new();
     for k in &kids[from..to] {
-        let role = attr_string_strict(k, "AXRole").ok().flatten().unwrap_or_default();
-        let title = attr_string_strict(k, "AXTitle").ok().flatten().filter(|s| !s.is_empty());
-        let description = attr_string_strict(k, "AXDescription").ok().flatten().filter(|s| !s.is_empty());
-        let value = if role == "AXStaticText" { value_text_marked(k).map(|(s, _)| s) } else { None };
-        parts.push(sibling_entry(&role, title.as_deref(), description.as_deref(), value.as_deref()));
+        let mut read = |name: &'static str| {
+            unsafe { k.set_messaging_timeout(timeout_secs.min(left())) };
+            attr_string_strict(k, name).ok().flatten().filter(|s| !s.is_empty())
+        };
+        let role = read("AXRole").unwrap_or_default();
+        let title = read("AXTitle");
+        let description = read("AXDescription");
+        let value = if role == "AXStaticText" {
+            unsafe { k.set_messaging_timeout(timeout_secs.min(left())) };
+            value_text_marked(k).map(|(s, _)| s)
+        } else {
+            None
+        };
+        if late() {
+            return Err(());
+        }
+        parts.push_str(&sibling_entry(&role, title.as_deref(), description.as_deref(), value.as_deref()));
     }
-    Ok(parts.join("\u{1e}"))
+    Ok(parts)
 }
 
 #[cfg(test)]
@@ -1105,8 +1134,8 @@ mod sibling_entry_tests {
             sibling_entry("AXStaticText", None, None, Some("R1 りんご")),
             sibling_entry("AXButton", Some("Delete"), None, Some("1")),
         ]
-        .join("\u{1e}");
-        assert_eq!(span, "AXStaticText\u{1f}\u{1f}\u{1f}R1 りんご\u{1e}AXButton\u{1f}Delete\u{1f}\u{1f}");
+        .concat();
+        assert_eq!(span, "12:AXStaticText0:0:6:R1 りんご8:AXButton6:Delete0:0:");
     }
 }
 

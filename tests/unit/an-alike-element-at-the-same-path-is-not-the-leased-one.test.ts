@@ -38,15 +38,16 @@ describe("siblingSignature", () => {
   it("is the siblings around it, in the native act's format, and tells R1's Delete from R2's", () => {
     const before = list(["R1 りんご", "R2 みかん", "R3 ぶどう"]);
     const r1 = sig(before, "a.0.0.2")!;
+    // The literal the Rust test pins too (sibling_entry_tests, src/macos/ax.rs).
     expect(r1).toBe(
       [
-        "AXGroup\u001f\u001f\u001f",
-        "AXStaticText\u001f\u001f\u001fR1 りんご",
-        "AXButton\u001fDelete\u001f\u001f",
-        "AXStaticText\u001f\u001f\u001fR2 みかん",
-        "AXButton\u001fDelete\u001f\u001f",
-        "AXStaticText\u001f\u001f\u001fR3 ぶどう",
-      ].join("\u001e")
+        "7:AXGroup0:0:0:",
+        "12:AXStaticText0:0:6:R1 りんご",
+        "8:AXButton6:Delete0:0:",
+        "12:AXStaticText0:0:6:R2 みかん",
+        "8:AXButton6:Delete0:0:",
+        "12:AXStaticText0:0:6:R3 ぶどう",
+      ].join("")
     );
     // R1 went: R2's Delete now sits at R1's path. Its siblings there are not R1's.
     const after = list(["R2 みかん", "R3 ぶどう"]);
@@ -62,7 +63,15 @@ describe("siblingSignature", () => {
   });
   it("reads a value for a static text only", () => {
     const e = [el("a.0", "AXWindow", { childCount: 2 }), el("a.0.0", "AXButton", { title: "Go", value: "1" }), el("a.0.1", "AXStaticText", { value: "x" })];
-    expect(sig(e, "a.0.0")).toBe("AXButton\u001fGo\u001f\u001f\u001eAXStaticText\u001f\u001f\u001fx");
+    expect(sig(e, "a.0.0")).toBe("8:AXButton2:Go0:0:12:AXStaticText0:0:1:x");
+  });
+  it("a separator in a page's text cannot make two spans read alike (lengths, not separators)", () => {
+    const a = [el("a.0", "AXWindow", { childCount: 2 }), el("a.0.0", "AXStaticText", { value: "x\u001f" }), el("a.0.1", "AXStaticText", { value: "y" })];
+    const b = [el("a.0", "AXWindow", { childCount: 2 }), el("a.0.0", "AXStaticText", { value: "x" }), el("a.0.1", "AXStaticText", { value: "\u001fy" })];
+    expect(sig(a, "a.0.0")).not.toBe(sig(b, "a.0.0"));
+    // Lengths count characters (code points), as Rust's chars().count(), not UTF-16 units.
+    const emoji = [el("a.0", "AXWindow", { childCount: 1 }), el("a.0.0", "AXStaticText", { value: "😀" })];
+    expect(sig(emoji, "a.0.0")).toBe("12:AXStaticText0:0:1:😀");
   });
   it("is undefined when the read does not hold every sibling in the span, or for a root", () => {
     const full = list(["R1", "R2"]);

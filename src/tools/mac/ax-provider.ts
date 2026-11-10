@@ -292,6 +292,18 @@ export function axDigest(
 }
 
 /**
+ * internal #271 — the elements that have an alike one in this read (by `sortOf`, as
+ * `uniquenessOf` counts them, whole or not): the ones another element can come to stand in for. Not
+ * "not unique": a read that is not whole marks nothing unique (Finder's always is), and a sibling
+ * check on every element of such a read would refuse acts that main made, whenever a read near them
+ * failed or changed (gate 2 on #930).
+ */
+function withTwinSeen(elements: readonly NativeMacAxElement[]): Set<string> {
+  const whole = uniquenessOf(elements, false);
+  return new Set(elements.filter((e) => whole.get(e.id) === false).map((e) => e.id));
+}
+
+/**
  * Whether each element (by its path in this read) is the only one of its kind under its window.
  * A read cut short (`truncated`), or one where some element's children or identity could not be
  * read (`readIncomplete`), cannot say: a twin may lie past the cut, under that element, or read as
@@ -299,19 +311,6 @@ export function axDigest(
  * press it for the other's lease (codex on #802).
  * None is.
  */
-/**
- * internal #271 — the elements that have an alike one in this read (by `sortOf`): the ones another
- * element can come to stand in for. Not "not unique": a read that is not whole marks nothing unique
- * (Finder's always is), and a sibling check on every element of such a read would refuse acts that
- * main made, whenever a read near them failed or changed (gate 2 on #930).
- */
-function withTwinSeen(elements: readonly NativeMacAxElement[]): Set<string> {
-  const sorts = elements.map(sortOf);
-  const count = new Map<string, number>();
-  for (const k of sorts) count.set(k, (count.get(k) ?? 0) + 1);
-  return new Set(elements.filter((_, i) => count.get(sorts[i]!)! > 1).map((e) => e.id));
-}
-
 function uniquenessOf(elements: readonly NativeMacAxElement[], truncated: boolean): Map<string, boolean> {
   const sorts = elements.map(sortOf);
   const count = new Map<string, number>();
@@ -363,12 +362,15 @@ export function siblingSignature(e: NativeMacAxElement, byId: Map<string, Native
     if (k === undefined) return undefined;
     span.push(k);
   }
+  // Each field as its length in characters (code points, as Rust's chars().count()), a colon, and
+  // the text: a page's text may hold any separator (gate 2 on #930).
+  const field = (f: string) => `${[...f].length}:${f}`;
   return span
     .map((k) => {
       const value = k.role === "AXStaticText" ? (k.value ?? "") : "";
-      return `${k.role}\u001f${k.title ?? ""}\u001f${k.description ?? ""}\u001f${value}`;
+      return [k.role, k.title ?? "", k.description ?? "", value].map(field).join("");
     })
-    .join("\u001e");
+    .join("");
 }
 
 export function toCandidate(
