@@ -10,10 +10,12 @@ import { describe, expect, it } from "vitest";
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(`../../src/${rel}`, import.meta.url)), "utf8");
 
 describe("baseline_lost does not tell the caller to run the command again (internal #241)", () => {
-  it("the terminal caveat says the command was sent, and to read before sending again", () => {
-    const catalog = read("stub-tool-catalog.ts");
-    expect(catalog).toContain("the command may have run — read this terminal before sending it again");
-    expect(catalog).not.toMatch(/baseline_lost[^"]*rerun with/);
+  it("the terminal caveat, in the source and in the served catalog, says to read before sending again", () => {
+    for (const rel of ["tools/terminal.ts", "stub-tool-catalog.ts"]) {
+      const text = read(rel);
+      expect(text, rel).toContain("the command may have run — read this terminal before sending it again");
+      expect(text, rel).not.toMatch(/baseline_lost[^"]*rerun/);
+    }
   });
 
   it("the run reply's advice and warning say to read this terminal first, and name no rerun or other mode", () => {
