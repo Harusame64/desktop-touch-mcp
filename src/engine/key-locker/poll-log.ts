@@ -1,43 +1,67 @@
 /**
- * internal #283 — say why a key-locker poll ended without a fill. The wiring arms every armed pane's poll each
- * tick and swallows its result (a rejected poll must never take the server down), so a locker that "did
- * nothing" at a prompt left no trace. A poll that ends a pane's arm, or runs the capture loop to an outcome,
- * or throws, now writes one diagnostic line. Routine ticks (`idle`, `polling`, `busy`) write nothing.
+ * internal #283 — say why the key locker did, or did not, fill a prompt. A pane's arm (the watch for a
+ * credential prompt after a command such as `ssh`) ends in the driver wherever it is cleared — the poll, the
+ * tick's arm hygiene, a newer dispatch, `fill_once`, the pane closing — and each end is written here as one
+ * diagnostic line. A poll that throws before the capture loop is written once per arm. Routine ticks write
+ * nothing.
+ *
+ * Never a secret: each outcome's fields are picked by kind, not copied — no `detail`, no error message. A
+ * `fill_aborted` code that carries a message (`loop_error:<message>`) is cut to its prefix.
  */
 
 import { logDiagnostic, type DiagnosticEvent } from "../diagnostic-log.js";
-import type { PollResult } from "./key-locker-capture-driver.js";
+import type { CaptureLoopOutcome } from "./capture-loop.js";
+import { errorFields, type ArmEnd } from "./key-locker-capture-driver.js";
 
 type PollEvent = Extract<DiagnosticEvent, { kind: "key_locker_poll" }>;
 
-/** The diagnostic line for one poll's end, or null for a routine tick. Never a secret. */
-export function pollOutcomeEvent(paneId: string, result: PollResult | undefined, error?: unknown): PollEvent | null {
-  if (result === undefined) {
-    const errorName = error instanceof Error ? error.name : typeof error;
-    return { kind: "key_locker_poll", paneId, status: "error", errorName };
-  }
-  switch (result.status) {
-    case "idle":
-    case "polling":
-    case "busy":
-      return null;
-    case "timed_out":
-    case "superseded":
+/** A fill_aborted code safe to write: an identifier as it is, `loop_error:<message>` cut to `loop_error`. */
+function safeCode(code: string): string {
+  if (code.startsWith("loop_error")) return "loop_error";
+  return /^[a-z][a-z0-9_]{0,63}$/i.test(code) ? code : "other";
+}
+
+/** The safe fields of a capture loop's outcome, by kind. */
+function outcomeFields(o: CaptureLoopOutcome): Pick<PollEvent, "outcome" | "reason" | "matched" | "verified"> {
+  switch (o.kind) {
     case "declined":
-      return { kind: "key_locker_poll", paneId, status: result.status };
-    case "filled": {
-      const o = result.outcome;
-      const reason = "reason" in o ? o.reason : "code" in o ? o.code : undefined;
-      return { kind: "key_locker_poll", paneId, status: "filled", outcome: o.kind, ...(reason !== undefined && { reason }) };
+      return { outcome: o.kind, reason: o.reason };
+    case "confirm_rejected":
+    case "capture_cancelled":
+    case "save_failed":
+      return { outcome: o.kind };
+    case "filled_from_store":
+    case "saved":
+      return { outcome: o.kind, verified: o.verified };
+    case "fill_aborted":
+      return { outcome: o.kind, reason: safeCode(o.code), matched: o.matched };
+    case "discarded":
+      return { outcome: o.kind, reason: o.reason };
+    default: {
+      const unknown: never = o;
+      return { outcome: String((unknown as { kind?: unknown }).kind ?? "unknown") };
     }
   }
 }
 
-/** Write the line for one poll's end (see `pollOutcomeEvent`). Never throws: it runs in a swallowed chain. */
-export function logPollOutcome(paneId: string, result: PollResult | undefined, error?: unknown): void {
+/** The diagnostic line for one arm's end. */
+export function armEndEvent(paneId: string, e: ArmEnd): PollEvent {
+  if (e.end === "loop_outcome") return { kind: "key_locker_poll", paneId, end: e.end, ...outcomeFields(e.outcome) };
+  if (e.end === "loop_threw") {
+    return { kind: "key_locker_poll", paneId, end: e.end, errorName: e.errorName, ...(e.errorCode !== undefined && { errorCode: e.errorCode }) };
+  }
+  return { kind: "key_locker_poll", paneId, end: e.end };
+}
+
+/** The diagnostic line for a poll that threw before the capture loop (the arm stays set and re-polls). */
+export function pollErrorEvent(paneId: string, err: unknown): PollEvent {
+  return { kind: "key_locker_poll", paneId, end: "poll_threw", ...errorFields(err) };
+}
+
+/** Write a line, never throwing: these run in the poll's swallowed chain and the driver's listener. */
+export function writePollEvent(event: PollEvent): void {
   try {
-    const event = pollOutcomeEvent(paneId, result, error);
-    if (event !== null) logDiagnostic(event);
+    logDiagnostic(event);
   } catch {
     /* best-effort: a log line is never worth a poll */
   }

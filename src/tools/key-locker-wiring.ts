@@ -20,7 +20,7 @@
 //                  (`buildExitProbe`), NEVER re-running it.
 
 import type { ToolResult } from "./_types.js";
-import { logPollOutcome } from "../engine/key-locker/poll-log.js";
+import { armEndEvent, pollErrorEvent, writePollEvent } from "../engine/key-locker/poll-log.js";
 import type { BindingMeta } from "../engine/key-locker/binding-store.js";
 import { BindingStore } from "../engine/key-locker/binding-store.js";
 import type { BindingUri } from "../engine/key-locker/binding.js";
@@ -421,12 +421,16 @@ export class KeyLockerWiring {
     // resolveBinding/confirmInjection/injectPane can reject through `withHost`) would otherwise become an
     // unhandledRejection → `server-windows.ts` `shutdown(1)` = ALL tools down (Opus W-4b P1). A swallowed poll
     // just re-polls next tick — bounded-safe, the fill-failure north-star. Never crash the server for a fill.
-    // internal #283: a poll that ends without a fill, or throws, says why in the diagnostic log.
+    // internal #283: how each arm ends is logged by the driver (`onArmEnded`); a poll that throws before the
+    // capture loop is logged here, once per arm (the arm stays set and re-polls every tick).
     for (const paneId of this.driver.armedPaneIds()) {
-      void this.driver.poll(paneId).then(
-        (result) => logPollOutcome(paneId, result),
-        (error: unknown) => logPollOutcome(paneId, undefined, error)
-      );
+      void this.driver.poll(paneId).catch((error: unknown) => {
+        try {
+          if (this.driver.firstPollErrorOfArm(paneId)) writePollEvent(pollErrorEvent(paneId, error));
+        } catch {
+          /* never reject: an unhandled rejection takes every tool down */
+        }
+      });
     }
   }
 
@@ -478,6 +482,8 @@ export class KeyLockerWiring {
 
       // internal #281: a closed (or re-anchored) pane takes its kept fill_once tags with it.
       onPaneForgotten: (paneId) => this.keptTags.dropPane(paneId),
+      // internal #283: every end of a pane's arm, wherever the driver clears it, to the diagnostic log.
+      onArmEnded: (paneId, end) => writePollEvent(armEndEvent(paneId, end)),
     };
   }
 

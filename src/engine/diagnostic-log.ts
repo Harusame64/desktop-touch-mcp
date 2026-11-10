@@ -714,19 +714,25 @@ function ensureDir(path: string): void {
 
 export type DiagnosticEvent =
   | {
-      // internal #283: a key-locker poll that ended without carrying on — disarmed (timed out, voided,
-      // superseded), a capture loop that reached an outcome, or a poll that threw. Without it, a locker that
-      // "did nothing" at a prompt left no trace. Never a secret: outcome kinds and short codes only, and
-      // an error's name, not its message.
+      // internal #283: how a key-locker arm (the watch for a credential prompt after a command) ended, or a
+      // poll of it that threw. Without it, a locker that "did nothing" at a prompt left no trace. Never a
+      // secret: outcome kinds, enum reasons and identifiers, an error's name and code — never a message.
       kind: "key_locker_poll";
       paneId: string;
-      status: "timed_out" | "superseded" | "declined" | "filled" | "error";
-      /** For `filled`: the capture loop's outcome kind (`saved`, `capture_cancelled`, `fill_aborted`, …). */
+      end:
+        | "timed_out" | "session_changed" | "failsafe" | "replaced" | "taken_by_fill_once" | "pane_closed"
+        | "loop_outcome" | "loop_threw" | "poll_threw";
+      /** For `loop_outcome`: the capture loop's outcome kind (`saved`, `capture_cancelled`, `fill_aborted`, …). */
       outcome?: string;
-      /** The outcome's reason or code (`not_landed`, `never_suppressed`, `target_mismatch`, …). */
+      /** The outcome's reason or code (`not_landed`, `never_suppressed`, `target_mismatch`, `loop_error`, …). */
       reason?: string;
-      /** For `error`: the thrown value's name (`Error`, `KeyLockerPipeError`, …). */
+      /** `fill_aborted`: whether it was the stored-secret autofill (true) or a just-captured fill. */
+      matched?: boolean;
+      /** `saved` / `filled_from_store`: the locker's injection-instant re-verify. */
+      verified?: boolean;
+      /** For `loop_threw` / `poll_threw`: the thrown value's name, and a `KeyLockerError`'s code. */
       errorName?: string;
+      errorCode?: string;
     }
   | {
       kind: "exit";
