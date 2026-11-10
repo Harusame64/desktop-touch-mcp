@@ -73,14 +73,17 @@ describe("PR-P2-1: obj.post container + snapshot fields owned by withPostState",
 
     expect(post).toBeDefined();
     // Exactly the snapshot field set — no perception/rich because no marker present.
+    // `focusedWindowUnread` comes with a null `focusedWindow` (internal #284): the mocked snapshot reads none.
     expect(Object.keys(post).sort()).toEqual([
       "elapsedMs",
       "focusedElement",
       "focusedWindow",
+      "focusedWindowUnread",
       "windowChanged",
     ]);
     // Values come from the wrapper's (mocked) snapshot, not from handler data.
     expect(post.focusedWindow).toBeNull();
+    expect(post.focusedWindowUnread).toBe("foreground_unreadable");
     expect(post.focusedElement).toBeNull();
     expect(post.windowChanged).toBe(false);
     expect(typeof post.elapsedMs).toBe("number");
@@ -139,6 +142,7 @@ describe("PR-P2-1: root temp markers moved to post.* then deleted", () => {
       "elapsedMs",
       "focusedElement",
       "focusedWindow",
+      "focusedWindowUnread",
       "perception",
       "windowChanged",
     ]);

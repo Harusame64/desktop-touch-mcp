@@ -50,6 +50,12 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **After an action that closes a dialog, `post.focusedWindow` names the window left in front, not the dialog.**
+  The window in front was read right after the action returned, before the dialog had gone away. So pressing
+  キャンセル in Notepad's 名前を付けて保存 answered `"名前を付けて保存"` 9 times in 10, and pressing OK in a message box
+  answered its title every time. When a dialog is in front after an action, the read now waits up to 120 ms for it to
+  go away and reads again. A dialog that stays open is reported as before. When nothing can be read as the window in
+  front, `post` says so (`focusedWindowUnread: "foreground_unreadable"`) (internal #284).
 - **`desktop_state` `hasModal` now goes by what a modal does, not by window titles.** It used to look for words such
   as Error, Confirm or 確認 in the titles of the windows on screen. So Notepad showing `error.log` was taken for a
   dialog. Dialogs titled like their app were missed: Notepad's save prompt (「メモ帳」) and VS Code's Open File and
