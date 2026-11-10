@@ -130,6 +130,28 @@ describe("gate 2 on #933: the dialog read while it blocked, or brought forward b
   });
 });
 
+describe("gate 2 on #933, round 3", () => {
+  it("a MessageBox owned by a hidden window (not listed) is modal: it waits", async () => {
+    const owned = win(9n, "確認", { className: "#32770", ownerHwnd: 99n });
+    state.reads = [[owned], [owned], [notepad]];
+    state.fg = [9n, 1n];
+    expect((await post())!.focusedWindow).toBe("無題 - メモ帳");
+  });
+  it("no foreground until the deadline: the dialog that went is not named", async () => {
+    state.readFn = () => (state.fgCount >= 1 ? [] : [box]);
+    state.fg = [null];
+    const p = await post();
+    expect(p!.focusedWindow).toBeNull();
+    expect(p!.focusedWindowUnread).toBe("foreground_not_listed");
+  });
+  it("activation passing back to the dialog is not the answer", async () => {
+    // fg says Notepad for a moment, but the list still shows the dialog; then Notepad for real
+    state.readFn = () => (state.fgCount >= 3 ? [notepad] : [saveAs, notepadBlocked]);
+    state.fg = [1n, 2n, 1n];
+    expect((await post())!.focusedWindow).toBe("無題 - メモ帳");
+  });
+});
+
 describe("no wait where the act cannot have closed it", () => {
   it.each([
     ["a modeless dialog (#32770 whose owner stays enabled: Notepad's 検索)", [[win(8n, "検索", { className: "#32770", ownerHwnd: 1n }), win(1n, "Doc", { isActive: false })]]],

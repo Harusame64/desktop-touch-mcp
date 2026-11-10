@@ -149,8 +149,9 @@ interface FocusSnapshot {
   processPid: number; processStartTimeMs: number;
   /**
    * A modal dialog in front — one whose owner it disabled (Save As, a save prompt), or a dialog-class window
-   * with no owner (`DIALOG_CLASSNAMES`: the MessageBox): what an act can close and leave another window in
-   * front. Not a modeless dialog (Notepad's 検索, whose owner stays enabled) nor an owned tool palette.
+   * (`DIALOG_CLASSNAMES`) whose owner is not a listed, enabled window: none (the MessageBox, the Run box) or
+   * one the window list leaves out (a hidden owner). What an act can close and leave another window in front.
+   * Not a dialog-class window whose listed owner stays enabled (Notepad's 検索), nor an owned tool palette.
    */
   modalDialog: boolean;
   /** Why there is no window (`title`/`hwnd` null): the one in front is not listed, or the read failed. */
@@ -170,7 +171,7 @@ function snapshotFocus(): FocusSnapshot {
     return {
       title: fg.title, hwnd: String(fg.hwnd), processName: ident.processName,
       processPid: ident.pid ?? 0, processStartTimeMs: ident.processStartTimeMs ?? 0,
-      modalDialog: owner?.isEnabled === false || (fg.ownerHwnd == null && DIALOG_CLASSNAMES.has(fg.className ?? "")),
+      modalDialog: owner?.isEnabled === false || (DIALOG_CLASSNAMES.has(fg.className ?? "") && owner === undefined),
     };
   } catch {
     return none("foreground_unreadable");
@@ -215,10 +216,13 @@ async function settleClosingDialog(
     try { fg = getForegroundHwnd(); } catch { /* no answer: keep waiting */ }
     if (fg !== null && fg !== dialog) {
       const settled = snapshotFocus();
-      if (settled.hwnd !== null) return settled;
+      // The dialog itself again (activation passed through and came back): not the answer yet.
+      if (settled.hwnd !== null && settled.hwnd !== dialogSnap.hwnd) return settled;
     }
     const left = deadline - now();
-    if (left <= 0) return fg !== null && fg !== dialog ? snapshotFocus() : after;
+    // Out of time: the dialog still in front is answered as read; anything else — no foreground, an
+    // unlisted one — is read once more, so a dialog already gone is never named (gate 2 on #933).
+    if (left <= 0) return fg === dialog ? after : snapshotFocus();
     await sleep(Math.min(DIALOG_SETTLE_STEP_MS, left));
   }
 }
