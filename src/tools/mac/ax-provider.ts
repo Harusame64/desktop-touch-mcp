@@ -53,7 +53,8 @@ export function windowIdOf(target: { macWindowId?: string } | undefined): number
   const raw = target?.macWindowId;
   if (raw === undefined || !/^[1-9][0-9]*$/.test(raw)) return undefined;
   const id = Number(raw);
-  return Number.isSafeInteger(id) ? id : undefined;
+  // A CGWindowID is a u32 (agy on #928).
+  return Number.isSafeInteger(id) && id <= 0xffff_ffff ? id : undefined;
 }
 
 /**

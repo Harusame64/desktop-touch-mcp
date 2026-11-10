@@ -58,7 +58,7 @@ describe("the session key", () => {
 describe("windowIdOf", () => {
   it.each([
     ["9199", 9199], ["0", undefined], ["", undefined], ["0x1F", undefined], ["-3", undefined], ["12a", undefined],
-    ["99999999999999999999", undefined],
+    ["99999999999999999999", undefined], ["4294967295", 4294967295], ["4294967296", undefined],
   ])("%s -> %s", (raw, expected) => {
     expect(windowIdOf({ macWindowId: raw })).toBe(expected);
   });

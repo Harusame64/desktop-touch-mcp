@@ -627,6 +627,10 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
     let (root_list, mut self_reference) =
         roots(&app, opts.include_menu_bar.unwrap_or(false), timeout.min(left()), &late);
     let mut stack: Vec<Entry> = Vec::new();
+    // In a read by window id: whether the window's root was found, and the menu bar held back until
+    // then — a window that is not there gets no walk of the bar either (agy on #928).
+    let mut window_found = false;
+    let mut held_bar: Option<Entry> = None;
     for (id, e) in root_list {
         if late() {
             break;
@@ -646,10 +650,20 @@ pub(crate) fn read_tree(opts: &MacAxTreeOptions) -> MacAxTree {
             if !held {
                 continue;
             }
+            if is_bar {
+                unsafe { e.set_messaging_timeout(timeout.min(left())) };
+                let key = std::rc::Rc::new(root_key(&e));
+                held_bar = Some((id, e, vec![app.clone()], key));
+                continue;
+            }
+            window_found = true;
         }
         unsafe { e.set_messaging_timeout(timeout.min(left())) };
         let key = std::rc::Rc::new(root_key(&e));
         stack.push((id, e, vec![app.clone()], key));
+    }
+    if window_found {
+        stack.extend(held_bar);
     }
     if late() {
         stopped_by = Some("max_ms");
