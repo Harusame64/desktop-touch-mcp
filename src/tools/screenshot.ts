@@ -35,7 +35,7 @@ import { getTextViaTextPattern } from "../engine/uia-bridge.js";
 import { stripAnsi, tailLines } from "../engine/ansi.js";
 import { getWindowClassName } from "../engine/win32.js";
 import { isTerminalWindow } from "../utils/terminal-process.js";
-import { resolveWindowTarget } from "./_resolve-window.js";
+import { resolveWindowTarget, findPlainTopLevelWindowsByTitle } from "./_resolve-window.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas (plain objects — used by server.tool() and the macro registry)
@@ -1124,6 +1124,24 @@ export const screenshotBgHandler = async ({
           }
           break;
         }
+      }
+    }
+
+    // internal #248 (win2): a plain title that more than one window carries captured the first in
+    // nut-js's list without a word. Counted with the matcher `resolveWindowTarget` used for it (plain
+    // top-level windows, dialogs and owned windows left out), and said in the words other tools use.
+    if (hwnd && resolvedWin === null) {
+      const matches = findPlainTopLevelWindowsByTitle(effectiveTitle, { excludeMinimized: false, excludeDialogsAndOwned: true, logAs: "off" });
+      // The window captured is always one of the count: this loop can take an owned window the matcher
+      // leaves out (win2 on #924: "3 windows match" beside four names).
+      const others = matches.filter((m) => m.hwnd !== hwnd);
+      const total = others.length + 1;
+      if (total > 1) {
+        const named = others.slice(0, 5).map((m) => `"${m.title}" (hwnd ${String(m.hwnd)})`).join(", ");
+        const more = others.length > 5 ? ` and ${others.length - 5} more` : "";
+        bgWarnings.push(
+          `${total} windows match "${effectiveTitle}"; captured "${foundTitle}" (hwnd ${String(hwnd)}), not ${named}${more}. Pass hwnd to capture another.`,
+        );
       }
     }
 
