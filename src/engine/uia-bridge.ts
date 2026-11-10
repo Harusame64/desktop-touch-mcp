@@ -1542,6 +1542,8 @@ export async function getUiElements(
   // What it costs to leave: 184 ms against 517 ms on the same window, a frame the PowerShell
   // road can only see by registering MSAA clientside providers, and English names for that
   // frame when it does (measured on Windows 2026-09-09).
+  // internal #240: whether the native read below timed out before this road falls back.
+  let nativeTimedOut = false;
   if (nativeUia?.uiaGetElements) {
     try {
       const result = await nativeUia.uiaGetElements({
@@ -1595,6 +1597,7 @@ export async function getUiElements(
       if (isNativeUiaTimeout(e) && targetDoesNotAnswer(windowTitle, scopeHwnd)) throw e;
       if (classic && classicCallReached(e)) markClassicUsed();
       if (options?.nativeOnly || classic) throw e;
+      nativeTimedOut = isNativeUiaTimeout(e);
       console.warn("[uia-bridge] Native uiaGetElements failed, falling back to PowerShell:", e);
       // fall through to PowerShell
     }
@@ -1637,6 +1640,7 @@ export async function getUiElements(
       try {
         const early = JSON.parse(salvaged);
         if (early && typeof early === "object" && early.error === undefined) {
+          if (nativeTimedOut && ((early as UiElementsResult).elementCount ?? 0) === 0) throw new Error(UIA_BUSY_EMPTY_FALLBACK, { cause: e });
           return { ...(early as UiElementsResult), via: "powershell" };
         }
       } catch { /* not an answer — fall through to the failure that is */ }
@@ -1645,6 +1649,15 @@ export async function getUiElements(
   }
   const result = JSON.parse(output);
   if (result.error) throw new Error(result.error);
+  // internal #240 (win2, 2026-11-10): while another act's Invoke held the engine's UI Automation
+  // thread, the native read timed out at 8 s, and the PowerShell reads that fell back while several
+  // overlapped read a WinForms window as no elements at all (clientProviders "noop"); the same window
+  // read 28 when they did not overlap, and 6 natively once the thread was free. "Nothing there" after
+  // a native timeout is a read that could not be made, not an empty window: thrown, so the lane says
+  // it failed (`uia_provider_failed`) instead of reporting `uia_no_elements`, and not cached.
+  if (nativeTimedOut && (result.elementCount ?? (result.elements?.length ?? 0)) === 0) {
+    throw new Error(UIA_BUSY_EMPTY_FALLBACK);
+  }
 
   // A prefix of a window is not the window: caching it would serve it to `screenshot` for the
   // whole TTL as though it were complete.
@@ -1653,6 +1666,10 @@ export async function getUiElements(
   }
   return { ...(result as UiElementsResult), via: "powershell" };
 }
+
+/** internal #240 — the read after a native timeout found nothing: not evidence of an empty window. */
+export const UIA_BUSY_EMPTY_FALLBACK =
+  "UI Automation was busy: the native read timed out and the fallback read found nothing, so this window could not be read";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Action-oriented element extraction

@@ -40,6 +40,12 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **`desktop_discover` says a window could not be read when UI Automation was busy, instead of calling it empty.**
+  While another act held UI Automation (a button that opened a modal message box), a discover of a different
+  window waited out the 8 s native read and fell back to a second reader, which could find nothing when several
+  reads overlapped. The reply said `uia_no_elements`, as for a window with no controls. A fallback read that
+  finds nothing after the native read timed out now fails the UI Automation lane (`uia_provider_failed`)
+  (internal #240).
 - **A type into Word's body is not passed on an empty read.** After typing, `desktop_act` reads the page text
   back and refuses with `value_not_applied` only when it did not change. Right after a type, that read could
   catch the page Word had just scrolled away from, whose visible text is empty, and an empty read counted as

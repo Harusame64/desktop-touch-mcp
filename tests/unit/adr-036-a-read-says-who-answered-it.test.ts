@@ -92,7 +92,7 @@ vi.mock("../../index.js", () => ({
 }));
 
 vi.resetModules();
-const { getElementBounds, getUiElements, isNativeUiaTimeout } = await import("../../src/engine/uia-bridge.js");
+const { getElementBounds, getUiElements, isNativeUiaTimeout, UIA_BUSY_EMPTY_FALLBACK } = await import("../../src/engine/uia-bridge.js");
 
 function scripts_reset(): void { psOutputs.length = 0; }
 beforeEach(() => { psOutputs.length = 0; psThrows = null; nativeAnswer = null; });
@@ -420,7 +420,8 @@ describe("a native timeout on a target that does not answer is not waited for tw
     desktop.set(4242n, ["B", false]);
     desktop.set(10n, ["B copy", true]);
     nativeElementsThrow = new Error(TIMEOUT);
-    psOutputs.push(JSON.stringify({ windowTitle: "B", elementCount: 0, elements: [] }));
+    const one = { name: "Save", controlType: "Button", automationId: "", isEnabled: true, boundingRect: { x: 1, y: 2, width: 3, height: 4 }, patterns: [], depth: 1 };
+    psOutputs.push(JSON.stringify({ windowTitle: "B", elementCount: 1, elements: [one] }));
     await expect(getUiElements("B", 3, 50, 30000, { pinnedHwnd: 4242n })).rejects.toThrow(TIMEOUT);
     // The handle answers: a healthy window whose read timed out in the queue behind a hung one
     // (one COM thread; gate 2 on #715). The script reaches it through FromHandle — fall back.
@@ -428,6 +429,24 @@ describe("a native timeout on a target that does not answer is not waited for tw
     const result = await getUiElements("B", 3, 50, 30000, { pinnedHwnd: 4242n });
     expect(result.windowTitle).toBe("B");
     expect(psOutputs).toHaveLength(0);
+  });
+
+  it("does not report an empty window when the fallback after a native timeout found nothing (internal #240)", async () => {
+    // win2 2026-11-10: while another act held the engine's UIA thread, overlapping PowerShell reads of a
+    // WinForms window came back with no elements (clientProviders "noop"); it held 6 natively.
+    desktop.set(4242n, ["B", true]);
+    nativeElementsThrow = new Error(TIMEOUT);
+    psOutputs.push(JSON.stringify({ windowTitle: "B", elementCount: 0, elements: [], clientProviders: "noop" }));
+    await expect(getUiElements("B", 3, 50, 30000, { pinnedHwnd: 4242n })).rejects.toThrow(UIA_BUSY_EMPTY_FALLBACK);
+    expect(psOutputs, "the fall-back did not run").toHaveLength(0);
+  });
+
+  it("keeps an empty fallback read when the native read failed another way (not busy: the window may be empty)", async () => {
+    desktop.set(4242n, ["B", true]);
+    nativeElementsThrow = new Error("UIA COM thread disconnected");
+    psOutputs.push(JSON.stringify({ windowTitle: "B", elementCount: 0, elements: [] }));
+    const result = await getUiElements("B", 3, 50, 30000, { pinnedHwnd: 4242n });
+    expect(result.elementCount).toBe(0);
   });
 
   it("recognises only the engine's own timeout shape", () => {
