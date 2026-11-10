@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, vi } from "vitest";
 import {
-  siblingSignature, childrenByParent, readMacAxCandidates, SIBLINGS_EACH_SIDE,
+  siblingSignature, readMacAxCandidates, SIBLINGS_EACH_SIDE,
   type MacAxProviderDeps, type MacAxReadNotes,
 } from "../../src/tools/mac/ax-provider.js";
 import { createMacAxExecutor } from "../../src/tools/mac/ax-executor.js";
@@ -31,7 +31,7 @@ const list = (names: string[]) => [
 ];
 const sig = (elements: NativeMacAxElement[], id: string) => {
   const byId = new Map(elements.map((e) => [e.id, e]));
-  return siblingSignature(byId.get(id)!, childrenByParent(elements), byId);
+  return siblingSignature(byId.get(id)!, byId);
 };
 
 describe("siblingSignature", () => {
@@ -99,6 +99,19 @@ describe("the provider and the executor carry it for an element that is not uniq
     const add = c.find((x) => x.label === "Add")!;
     expect(add.locator?.ax?.unique).toBe(true);
     expect(add.locator?.ax).not.toHaveProperty("siblings");
+  });
+  it("an element not known unique but with no twin in the read carries none (Finder reads incomplete)", async () => {
+    const elements = list(["R1"]);
+    const deps = {
+      listWindows: vi.fn(() => [{ windowId: 1, pid: 7, layer: 0, onScreen: true, title: "k271 rows" }]),
+      getFocus: vi.fn(),
+      axTree: vi.fn(async () => ({ pid: 7, appTitle: "Finder", elements, truncated: false, readIncomplete: true, selfReference: false, displayAsleep: false, elapsedMs: 1 })),
+      now: vi.fn(() => 1000),
+    };
+    const c = await readMacAxCandidates(deps as unknown as MacAxProviderDeps, { windowTitle: "k271" }, { warnings: [] });
+    const del = c.find((x) => x.label === "Delete")!;
+    expect(del.locator?.ax?.unique).toBe(false);
+    expect(del.locator?.ax).not.toHaveProperty("siblings");
   });
   it("the executor sends them as expectedSiblings, and not for a unique element", async () => {
     const perform = vi.fn(async () => ({ ok: true }));

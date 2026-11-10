@@ -1031,18 +1031,20 @@ fn locate(t: &MacAxTarget) -> Result<CFRetained<AXUIElement>, MacActResult> {
             }
         }
     };
+    let role = attr_string(&e, "AXRole").unwrap_or_default();
+    if let Some(blocker) = modal_blocker(&app, &root, &id, timeout) {
+        return Err(MacActResult { role: Some(role), blocker: Some(blocker), ..refused("modal_blocking") });
+    }
+    // After the sheet check: a sheet that opened is a child of the window, so it changes the span of
+    // an element right under the window, and the caller must be told to answer it (gate 2 on #930).
     if let Some(expected) = &t.expected_siblings {
         let now = id
             .rsplit_once('.')
             .and_then(|(parent, _)| resolve(&app, parent, timeout))
-            .and_then(|(_, parent)| siblings_now(&parent, child_index(&id)?, timeout).ok());
+            .and_then(|(_, parent)| siblings_now(&parent, child_index(&id)?, &e, timeout).ok());
         if now.as_deref() != Some(expected.as_str()) {
-            return Err(MacActResult { role: attr_string(&e, "AXRole"), ..refused("element_changed") });
+            return Err(MacActResult { role: Some(role), ..refused("element_changed") });
         }
-    }
-    let role = attr_string(&e, "AXRole").unwrap_or_default();
-    if let Some(blocker) = modal_blocker(&app, &root, &id, timeout) {
-        return Err(MacActResult { role: Some(role), blocker: Some(blocker), ..refused("modal_blocking") });
     }
     Ok(e)
 }
@@ -1068,31 +1070,44 @@ fn child_index(id: &str) -> Option<usize> {
 }
 
 /// The element's siblings around index `at` (`SIBLINGS_EACH_SIDE` each way, itself among them), as
-/// `sibling_entry` writes them, in order, read now. Each read is strict: a failure is an `Err`, not
-/// an absent attribute, so the act is refused rather than compared on a partial read.
-fn siblings_now(parent: &AXUIElement, at: usize, timeout_secs: f32) -> Result<String, ()> {
+/// `sibling_entry` writes them, in order, read now. `Err` when the children cannot be listed, or the
+/// child at `at` is not `element` (the parent was read again, and its rows may have been made anew
+/// in between; gate 2 on #930). An attribute that fails is written empty, as the tree read writes it
+/// (it marks the read incomplete and leaves the field out): the two must agree, or an act the read
+/// offered would be refused (gate 2 on #930).
+fn siblings_now(parent: &AXUIElement, at: usize, element: &AXUIElement, timeout_secs: f32) -> Result<String, ()> {
     let kids = children_read(parent, timeout_secs).ok_or(())?;
-    if at >= kids.len() {
+    if at >= kids.len() || !same(&kids[at], element) {
         return Err(());
     }
     let from = at.saturating_sub(SIBLINGS_EACH_SIDE);
     let to = (at + SIBLINGS_EACH_SIDE + 1).min(kids.len());
     let mut parts = Vec::with_capacity(to - from);
     for k in &kids[from..to] {
-        let role = attr_string_strict(k, "AXRole").map_err(|_| ())?.unwrap_or_default();
-        let title = attr_string_strict(k, "AXTitle").map_err(|_| ())?.filter(|s| !s.is_empty());
-        let description = attr_string_strict(k, "AXDescription").map_err(|_| ())?.filter(|s| !s.is_empty());
-        let value = if role == "AXStaticText" {
-            match attr_opt(k, "AXValue").map_err(|_| ())? {
-                Some(v) => value_text_of(&v).map(|(s, _)| s),
-                None => None,
-            }
-        } else {
-            None
-        };
+        let role = attr_string_strict(k, "AXRole").ok().flatten().unwrap_or_default();
+        let title = attr_string_strict(k, "AXTitle").ok().flatten().filter(|s| !s.is_empty());
+        let description = attr_string_strict(k, "AXDescription").ok().flatten().filter(|s| !s.is_empty());
+        let value = if role == "AXStaticText" { value_text_marked(k).map(|(s, _)| s) } else { None };
         parts.push(sibling_entry(&role, title.as_deref(), description.as_deref(), value.as_deref()));
     }
     Ok(parts.join("\u{1e}"))
+}
+
+#[cfg(test)]
+mod sibling_entry_tests {
+    use super::sibling_entry;
+
+    /// The same literal as tests/unit/an-alike-element-at-the-same-path-is-not-the-leased-one.test.ts:
+    /// the two sides must agree character for character (gate 2 on #930).
+    #[test]
+    fn writes_what_the_ts_side_writes() {
+        let span = [
+            sibling_entry("AXStaticText", None, None, Some("R1 りんご")),
+            sibling_entry("AXButton", Some("Delete"), None, Some("1")),
+        ]
+        .join("\u{1e}");
+        assert_eq!(span, "AXStaticText\u{1f}\u{1f}\u{1f}R1 りんご\u{1e}AXButton\u{1f}Delete\u{1f}\u{1f}");
+    }
 }
 
 /// The path of the root an element path starts from: `a.<i>`, `f` or `m`.
