@@ -139,7 +139,13 @@ export interface ExecutorDeps {
    */
   /** Resolves with how the focus was moved to the element before the press, when the backend says (internal #216). */
   /** `focusedTextField`: internal #324 — a text field with no Invoke had the focus moved into it instead. */
-  uiaClick(windowTitle: string, name?: string, automationId?: string, hwnd?: bigint): Promise<{ focusedBy?: string; focusedTextField?: true } | void>;
+  /**
+   * `controlType`: internal #233 PR4 — the UIA control type discover read for the entity, so the lookup
+   * by name does not take another element whose name contains the same text (a label beside the
+   * button it names). Both roads match it as the reads report it (`actions.rs::matches_with_ct`, the
+   * PowerShell script's `ControlType.ProgrammaticName`). Absent for an entity no UIA read described.
+   */
+  uiaClick(windowTitle: string, name?: string, automationId?: string, hwnd?: bigint, controlType?: string): Promise<{ focusedBy?: string; focusedTextField?: true } | void>;
   /**
    * internal #233 — UIA SelectionItemPattern: select a collection item (ListItem, DataItem, TreeItem)
    * where a click lands on one, instead of `uiaClick`'s Invoke, which acts as a double-click on these
@@ -3320,7 +3326,8 @@ export function createDesktopExecutor(
         singleClick = selected;
       }
       if (singleClick === undefined) try {
-        const pressed = await d.uiaClick(winTitle, name, automationId, aimHwnd);
+        // internal #233 PR4: the type discover read, only when it read one (a call without it is unchanged).
+        const pressed = await d.uiaClick(winTitle, name, automationId, aimHwnd, ...(entity.controlType !== undefined ? [entity.controlType] : []));
         // internal #324 — `focusedTextField`: a text field with no Invoke had the focus moved into it, and
         // was not pressed. A field beside `why`, not a new `why`: the road is still UI Automation's click.
         probeRoute("uia", aimHwnd, entity, { why: "uia_invoke", focusedBy: pressed?.focusedBy ?? null, focusedTextField: pressed?.focusedTextField === true, addressedBy: addressed.addressedBy, addressedElementBy: addressed.addressedElementBy, addressedWindowBy: addressed.addressedWindowBy });
@@ -3765,13 +3772,13 @@ export function _realExecutorDepsForTest(): ExecutorDeps {
 function getSharedRealDeps(): ExecutorDeps {
   if (_realDepsCache) return _realDepsCache;
   _realDepsCache = {
-    async uiaClick(windowTitle, name, automationId, hwnd) {
+    async uiaClick(windowTitle, name, automationId, hwnd, controlType) {
       const { clickElement } = await import("../engine/uia-bridge.js");
       // ADR-036 — the bridge has taken a handle since H3 ("bypass title-based root search",
       // added for Save As and the other common dialogs), and `ui-elements.ts` has passed one
       // for every resolved window since then. What could not reach it was THIS path: the
       // interface above had nowhere to put a handle, so `desktop_act` always asked by title.
-      const r = await clickElement(windowTitle, name, automationId, undefined, hwnd !== undefined ? { hwnd } : undefined);
+      const r = await clickElement(windowTitle, name, automationId, controlType, hwnd !== undefined ? { hwnd } : undefined);
       // ADR-036 — "the window is gone" is not "UIA could not do it": see `aim.ts`.
       if (!r.ok && r.code === AIM_WINDOW_GONE) throw new AimedWindowGoneError(hwnd, r.error);
       // Which client answered, carried on the error: item 16 believes a "not found" only from the

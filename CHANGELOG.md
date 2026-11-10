@@ -40,6 +40,10 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **`desktop_act` presses the control it discovered, not another one with the same text.** The UI Automation
+  click looked its element up by name alone, as a substring, so a label or another control whose name
+  contains the same text could be the one pressed. The lookup now also matches the control type discover read
+  (internal #233).
 - **`screenshot` `detail: "text"` lists the controls of a window a PowerShell or cmd script shows.** A window
   counted as a terminal when its owning process was a shell, so a WinForms form shown from a script, or
   `Out-GridView`, came back with no actionables and an empty terminal text. Whether a window is a terminal is
