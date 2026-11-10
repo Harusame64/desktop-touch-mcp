@@ -1206,10 +1206,23 @@ export const terminalReadHandler = async ({
  * one — a Windows Terminal refusal's detail says which check failed, and each has its own way on
  * (internal #286, gate 2 on #934).
  */
-export function sendFailedWarning(payload: { code?: string; context?: { detail?: unknown } }): string {
+export function sendFailedWarning(payload: { code?: string; context?: { detail?: unknown; foregroundRestored?: unknown } }): string {
   if (!payload.code) return "terminal(action='send') failed";
   const detail = typeof payload.context?.detail === "string" ? ` (${payload.context.detail})` : "";
-  return `terminal(action='send') failed: ${payload.code}${detail}`;
+  // Nothing was typed, but the terminal is in front of the user's window: they need to hear it first.
+  const left = payload.context?.foregroundRestored === false
+    ? "; the terminal was brought in front and the window the user was in could not be put back — tell the user first"
+    : "";
+  return `terminal(action='send') failed: ${payload.code}${detail}${left}`;
+}
+
+/** internal #286 — is Windows Terminal (or a window of its own) the window in front now? */
+function wtIsActive(hwnd: bigint): boolean {
+  try {
+    return enumWindowsInZOrder().find((w) => w.isActive)?.hwnd === hwnd;
+  } catch {
+    return false;
+  }
 }
 
 /** internal #286 — the live readers behind the Windows Terminal checks. */
@@ -1406,11 +1419,14 @@ export const terminalSendHandler = async ({
           ...(flashTab?.ok && { focusTerminalPane: true, expectedTabRuntimeId: flashTab.tab.runtimeId }),
         },
       );
-      if (!flashResult.ok && flashTab?.ok && flashResult.reason === "terminal_tab_changed") {
-        return wtRefusalFailure("tab_changed", win.title, { tabName: flashTab.tab.name }, { method: "foreground_flash" });
-      }
-      if (!flashResult.ok && flashTab?.ok && flashResult.reason === "terminal_focus_failed") {
-        return wtRefusalFailure("pane_not_focused", win.title, {}, { method: "foreground_flash" });
+      if (!flashResult.ok && flashTab?.ok &&
+        (flashResult.reason === "terminal_tab_changed" || flashResult.reason === "terminal_focus_failed")) {
+        // The flash raises these after it tried to put the foreground back, and does not say whether
+        // that worked, so it is read here (gate 2 on #934).
+        const leftInFront = wtIsActive(channel.hwnd);
+        return flashResult.reason === "terminal_tab_changed"
+          ? wtRefusalFailure("tab_changed", win.title, { tabName: flashTab.tab.name, leftInFront }, { method: "foreground_flash", foregroundRestored: !leftInFront })
+          : wtRefusalFailure("pane_not_focused", win.title, {}, { method: "foreground_flash", foregroundRestored: !leftInFront });
       }
       if (!flashResult.ok) {
         // OQ8 follow-up: prefix the code so classify() routes this to
@@ -1839,6 +1855,8 @@ export const terminalSendHandler = async ({
     // focus move below has restored it (gate 2 on #934).
     const isWt = focusFirst && isWindowsTerminal(canInjectViaPostMessage(win.hwnd));
     let wtBefore: WtTab | null = null;
+    // A server that cannot read tabs at all refuses before anything moves, minimized or not (gate 2 on #934).
+    if (isWt && !wtCheckDeps().tabReaderAvailable()) return wtRefusalFailure("tab_reader_unavailable", windowTitle);
     if (isWt && !win.isMinimized) {
       const read = await readWtTab(win.hwnd, wtCheckDeps());
       if (!read.ok) return wtRefusalFailure(read.why, windowTitle);
@@ -1924,15 +1942,22 @@ export const terminalSendHandler = async ({
       if (!same.ok) {
         // Put back whatever restoreFocus says: nothing was typed, and this call took the foreground
         // (`run` sends restoreFocus:false). Said when it did not work (gate 2 on #934).
-        let leftInFront = false;
-        const putBack = !!prevFgHwnd && prevFgHwnd !== win.hwnd;
-        if (putBack) {
-          try { restoreAndFocusWindow(prevFgHwnd); } catch { /* read below */ }
-          await new Promise<void>((r) => setTimeout(r, 100));
-          const fgNow = enumWindowsInZOrder().find((w) => w.isActive);
-          leftInFront = fgNow?.hwnd !== prevFgHwnd;
+        // Tried as the forward move is: plainly, then through AttachThreadInput (gate 2 on #934).
+        // With no window in front before, there is nothing to put back, and WT is left in front.
+        let leftInFront = prevFgHwnd !== win.hwnd;
+        if (prevFgHwnd && prevFgHwnd !== win.hwnd) {
+          for (const force of [false, true]) {
+            try {
+              if (force) restoreAndFocusWindow(prevFgHwnd, { force: true });
+              else restoreAndFocusWindow(prevFgHwnd);
+            } catch { /* read below */ }
+            await new Promise<void>((r) => setTimeout(r, 100));
+            leftInFront = enumWindowsInZOrder().find((w) => w.isActive)?.hwnd !== prevFgHwnd;
+            if (!leftInFront) break;
+          }
         }
-        return wtRefusalFailure(same.why, windowTitle, { tabName: wtBefore?.name, leftInFront }, putBack ? { foregroundRestored: !leftInFront } : {});
+        return wtRefusalFailure(same.why, windowTitle, { tabName: wtBefore?.name, leftInFront },
+          prevFgHwnd !== win.hwnd ? { foregroundRestored: !leftInFront } : {});
       }
     }
 
@@ -2603,11 +2628,12 @@ export const terminalRunHandler = async ({
     notifyDispatch: false as const,
   };
 
-  const parseSendResult = (r: ToolResult): { ok?: boolean; code?: string; context?: { detail?: unknown } } | null => {
+  type SendPayload = { ok?: boolean; code?: string; context?: { detail?: unknown; foregroundRestored?: unknown } };
+  const parseSendResult = (r: ToolResult): SendPayload | null => {
     try {
       const block = r.content[0];
       if (block?.type === "text") {
-        return JSON.parse(block.text) as { ok?: boolean; code?: string; context?: { detail?: unknown } };
+        return JSON.parse(block.text) as SendPayload;
       }
     } catch { /* fall through */ }
     return null;
@@ -2626,7 +2652,7 @@ export const terminalRunHandler = async ({
   //     the cost of a brief focus steal — WT cannot take WM_CHAR anyway, and a
   //     non-conhost terminal has no no-steal console-paste equivalent.
   // Non-exit modes are unchanged (method:'auto').
-  let sendPayload: { ok?: boolean; code?: string; context?: { detail?: unknown } } | null;
+  let sendPayload: SendPayload | null;
   if (until.mode === "exit") {
     const targetClass = (() => {
       try { return getWindowClassName(hwnd); } catch { return ""; }

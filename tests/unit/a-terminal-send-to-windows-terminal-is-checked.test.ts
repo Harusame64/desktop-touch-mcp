@@ -1,8 +1,8 @@
 /**
  * internal #286 — terminal send to Windows Terminal takes the foreground without asking, and checks
- * the destination the way desktop_act does around its question: not the window in front, a readable
- * selected tab with exactly one pane, and the same tab once the window is in front. Not the window in front
- * (the user's decision after gate 2 on #934: `run` leaves the terminal in front, and the next one was refused).
+ * its selected tab the way desktop_act does around its question: readable, exactly one pane, and the
+ * same tab once the window is in front. The window-in-front refusal is NOT made (the user's decision
+ * after gate 2 on #934: `run` leaves the terminal in front, and the next one was refused).
  *
  * Harness from `a-terminal-send-does-not-switch-the-desktop.test.ts`.
  */
@@ -24,10 +24,8 @@ vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
     // `windowTitle: 'pwsh'` against a target titled differently, those
     // mocks will need to be re-added explicitly.
     getWindowClassName: vi.fn(() => "CASCADIA_HOSTING_WINDOW_CLASS"),
-    getForegroundHwnd: vi.fn(() => 900n),
     getWindowProcessId: vi.fn(() => 7),
     getProcessIdentityByPid: vi.fn(() => ({ processName: "WindowsTerminal" })),
-    getWindowRoot: vi.fn((h: bigint) => h),
   };
 });
 
@@ -284,6 +282,41 @@ describe("internal #286 — terminal:send to Windows Terminal through the foregr
     expect(r.context).toMatchObject({ detail: "tab_split" });
   });
 
+  it("checks a window the classifier could not read at all (class_unknown)", async () => {
+    mockInject.mockReturnValue({ supported: false, reason: "class_unknown" });
+    mockTab.mockResolvedValue(tab("rt-1", 2));
+    const r = parseResult(await send());
+    expect(r.context).toMatchObject({ detail: "tab_split" });
+  });
+
+  it("refuses a minimized WT at once when no tab can be read here, without restoring it", async () => {
+    wtMinimized = true;
+    mockReadable.mockReturnValue(false);
+    const r = parseResult(await send());
+    expect(r.context).toMatchObject({ detail: "tab_reader_unavailable" });
+    expect(mockRestore).not.toHaveBeenCalled();
+  });
+
+  it("tries the put-back again through AttachThreadInput before saying it failed", async () => {
+    mockTab.mockResolvedValueOnce(tab("rt-1")).mockResolvedValueOnce(tab("rt-2"));
+    mockRestore.mockImplementation((h: unknown, o?: unknown) => {
+      if (h === WT) front = WT;
+      if (h === OTHER && (o as { force?: boolean } | undefined)?.force) front = OTHER;
+      return { x: 0, y: 0, width: 800, height: 600 };
+    });
+    const r = parseResult(await send());
+    expect(r.context).toMatchObject({ detail: "tab_changed", foregroundRestored: true });
+    expect(mockRestore).toHaveBeenLastCalledWith(OTHER, { force: true });
+  });
+
+  it("says WT was left in front when no window was in front before (nothing to put back)", async () => {
+    front = 0n;
+    mockTab.mockResolvedValueOnce(tab("rt-1")).mockResolvedValueOnce(tab("rt-2"));
+    const r = parseResult(await send());
+    expect(r.context).toMatchObject({ detail: "tab_changed", foregroundRestored: false });
+    expect(r.error).toContain("could not be put back");
+  });
+
   it.each(["ConsoleWindowClass", "Notepad"])("does not check a %s window (control)", async (cls) => {
     mockClass.mockReturnValue(cls);
     const r = parseResult(await send({ method: "foreground" }));
@@ -334,8 +367,15 @@ describe("internal #286 — terminal:send method:'foreground_flash' to Windows T
     mockFlash.mockReturnValue({ ok: false, reason } as never);
     const r = parseResult(await flash());
     expect(r.code).toBe("WindowsTerminalTargetUnsafe");
-    expect(r.context).toMatchObject({ detail, method: "foreground_flash" });
+    expect(r.context).toMatchObject({ detail, method: "foreground_flash", foregroundRestored: true });
     expect(r.error).toContain("Nothing was typed");
+  });
+
+  it("says WT was left in front when the flash fails and WT is still the window in front", async () => {
+    mockFlash.mockImplementation(() => { front = WT; return { ok: false, reason: "terminal_tab_changed" } as never; });
+    const r = parseResult(await flash());
+    expect(r.context).toMatchObject({ detail: "tab_changed", foregroundRestored: false });
+    expect(r.error).toContain("could not be put back");
   });
 
   it("hands the flash the tab to hold to and asks it to focus the terminal pane", async () => {
@@ -350,6 +390,12 @@ describe("internal #286 — terminal:run says which check refused the send", () 
   it("carries context.detail next to the code", () => {
     expect(sendFailedWarning({ code: "WindowsTerminalTargetUnsafe", context: { detail: "tab_split" } }))
       .toBe("terminal(action='send') failed: WindowsTerminalTargetUnsafe (tab_split)");
+  });
+  it("says the terminal was left in front of the user's window", () => {
+    expect(sendFailedWarning({ code: "WindowsTerminalTargetUnsafe", context: { detail: "tab_changed", foregroundRestored: false } }))
+      .toContain("could not be put back — tell the user first");
+    expect(sendFailedWarning({ code: "WindowsTerminalTargetUnsafe", context: { detail: "tab_changed", foregroundRestored: true } }))
+      .toBe("terminal(action='send') failed: WindowsTerminalTargetUnsafe (tab_changed)");
   });
   it("is unchanged for a code without a detail, and for no code", () => {
     expect(sendFailedWarning({ code: "ForegroundRestricted" })).toBe("terminal(action='send') failed: ForegroundRestricted");

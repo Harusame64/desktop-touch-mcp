@@ -50,7 +50,8 @@ export type WtRefusal =
  * Terminal rather than let through unchecked.
  */
 export function isWindowsTerminal(check: { reason?: string; className?: string; processName?: string }): boolean {
-  if (check.reason === "wt_xaml_pipeline") return true;
+  // `class_unknown` is the classifier's own failed read (a read threw) (gate 2 on #934).
+  if (check.reason === "wt_xaml_pipeline" || check.reason === "class_unknown") return true;
   return check.reason === undefined && !check.className && !check.processName;
 }
 
