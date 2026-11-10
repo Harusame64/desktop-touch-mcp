@@ -13,7 +13,7 @@
  * Phase 3-D: replace MockVisualBackend with OnnxBackend / SidecarBackend.
  */
 
-import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
+import { targetSessionKey, type TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 import { getVisualRuntime, targetKeyToWarmTarget } from "../../engine/vision-gpu/runtime.js";
 import { probeLane } from "../../engine/aim-probe.js";
@@ -25,12 +25,6 @@ import { probeLane } from "../../engine/aim-probe.js";
 // vi.resetModules() + dynamic import() to re-evaluate.
 const VISUAL_GPU_DISABLED = process.env["DESKTOP_TOUCH_DISABLE_VISUAL_GPU"] === "1";
 
-function targetKeyFromSpec(target: TargetSpec | undefined): string {
-  if (target?.hwnd)        return `window:${target.hwnd}`;
-  if (target?.tabId)       return `tab:${target.tabId}`;
-  if (target?.windowTitle) return `title:${target.windowTitle}`;
-  return "window:__default__";
-}
 
 export async function fetchVisualCandidates(
   target: TargetSpec | undefined,
@@ -55,7 +49,7 @@ export async function fetchVisualCandidates(
     return probeLane("visual_gpu", "skipped", { attempt, why: "no_backend" }, { candidates: [], warnings: ["visual_provider_unavailable"] });
   }
 
-  const targetKey  = targetKeyFromSpec(target);
+  const targetKey  = targetSessionKey(target);
   const warmTarget = targetKeyToWarmTarget(targetKey);
 
   // What this lane asks for; the warm state joins it once there is one.

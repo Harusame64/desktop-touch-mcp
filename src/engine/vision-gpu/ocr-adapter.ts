@@ -26,7 +26,7 @@
  * know the difference. This is replaced by real per-frame ingestion in Phase 3.
  */
 
-import { parseTargetHwnd, type TargetSpec } from "../world-graph/session-registry.js";
+import { parseTargetHwnd, targetSessionKey, type TargetSpec } from "../world-graph/session-registry.js";
 import type { UiEntityCandidate } from "./types.js";
 import { TrackStore } from "./track-store.js";
 import { TemporalFusion } from "./temporal-fusion.js";
@@ -35,12 +35,9 @@ import { pushDirtySignal } from "./dirty-signal.js";
 import type { SomElement, OcrDictionaryEntry } from "../ocr-bridge.js";
 import { detectOcrLanguage } from "../ocr-bridge.js";
 
-/** Compute the targetKey that both visual-provider and pushDirtySignal use. */
+/** Compute the targetKey that both visual-provider and pushDirtySignal use: the session's key (internal #215). */
 export function targetKeyFromSpec(target: TargetSpec): string {
-  if (target.hwnd)        return `window:${target.hwnd}`;
-  if (target.tabId)       return `tab:${target.tabId}`;
-  if (target.windowTitle) return `title:${target.windowTitle}`;
-  return "window:__default__";
+  return targetSessionKey(target);
 }
 
 export interface OcrVisualAdapterOptions {
@@ -77,9 +74,12 @@ export class OcrVisualAdapter {
       stableConsecutive: opts.stableConsecutive ?? 2,
     });
     // CandidateProducer.create wires onEvict → producer.evict automatically.
-    const producerTarget = target.tabId
-      ? { kind: "browserTab" as const, id: target.tabId }
-      : { kind: "window" as const, id: target.hwnd ?? target.windowTitle ?? "@active" };
+    // The candidates name the same target the adapter is keyed by (internal #215, agy on #917): a
+    // hex hwnd and a decimal one are one window, and an unusable hwnd beside a title is the title.
+    const key = this.targetKey;
+    const producerTarget = key.startsWith("tab:")
+      ? { kind: "browserTab" as const, id: key.slice(4) }
+      : { kind: "window" as const, id: key === "window:__default__" ? "@active" : key.replace(/^(?:window|title):/, "") };
     const { store, producer } = CandidateProducer.create(
       {}, // TrackStoreOptions — onEvict auto-wired by factory
       fusion,

@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
   SessionRegistry,
+  targetSessionKey,
   type SessionCreateOpts,
 } from "../../src/engine/world-graph/session-registry.js";
+import { targetKeyFromSpec } from "../../src/engine/vision-gpu/ocr-adapter.js";
 
 function makeOpts(overrides: Partial<SessionCreateOpts> = {}): SessionCreateOpts {
   return {
@@ -36,6 +38,38 @@ describe("SessionRegistry — key resolution", () => {
     const r = new SessionRegistry();
     expect(r.resolveKey({})).toBe("window:__default__");
     expect(r.resolveKey(undefined)).toBe("window:__default__");
+  });
+});
+
+describe("SessionRegistry — one session per window, however the handle is spelled (internal #215)", () => {
+  it("keys a hex and a decimal spelling of one handle alike, in decimal", () => {
+    const r = new SessionRegistry();
+    expect(r.resolveKey({ hwnd: "0x1F4" })).toBe("window:500");
+    expect(r.resolveKey({ hwnd: "500" })).toBe("window:500");
+    expect(r.getOrCreate(r.resolveKey({ hwnd: "0x1F4" }), makeOpts()))
+      .toBe(r.getOrCreate(r.resolveKey({ hwnd: "500" }), makeOpts()));
+  });
+
+  it("keys every spelling BigInt reads as the one window (gate 2 on #917)", () => {
+    const r = new SessionRegistry();
+    for (const hwnd of ["0x1f4", "0X1F4", " 500 ", "0o764", "0b111110100"]) {
+      expect(r.resolveKey({ hwnd })).toBe("window:500");
+    }
+    expect(r.resolveKey({ hwnd: "0x1F4", windowTitle: "App" })).toBe("window:500");
+  });
+
+  it("keys the visual lanes alike (one rule: targetSessionKey)", () => {
+    const r = new SessionRegistry();
+    for (const target of [{ hwnd: "0x1F4" }, { hwnd: "-1", windowTitle: "X" }, { tabId: "t" }, {}]) {
+      expect(targetSessionKey(target)).toBe(r.resolveKey(target));
+    }
+    expect(targetKeyFromSpec({ hwnd: "0x1F4" })).toBe("window:500");
+    expect(targetKeyFromSpec({ hwnd: "-1", windowTitle: "X" })).toBe("title:X");
+  });
+
+  it("still keys an unusable handle by its spelling when nothing else aims", () => {
+    const r = new SessionRegistry();
+    expect(r.resolveKey({ hwnd: "A" })).toBe("window:A");
   });
 });
 
