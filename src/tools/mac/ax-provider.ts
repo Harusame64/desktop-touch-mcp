@@ -43,7 +43,10 @@ export interface MacAxReadNotes {
 }
 
 /**
- * The roles the resolver understands (`button`, `textbox`, `link`, `menuitem`, `label`).
+ * The roles the resolver understands (`button`, `textbox`, `link`, `menuitem`, `listitem`, `label`).
+ *
+ * A `listitem` is a cell that opens and does not press (`opensAsItem`; internal #259): Finder's
+ * sidebar entries and list rows. Any other cell reads as before.
  *
  * A text field that stands for a file (a Finder name cell: it carries `AXFilename`) is a label.
  * Its value is settable, but a write changes only what the window shows — the file keeps its
@@ -51,8 +54,9 @@ export interface MacAxReadNotes {
  * that never happened (internal #256). Finder's own rename editor, opened with Return, carries
  * no `AXFilename` and stays a textbox.
  */
-export function roleOf(e: Pick<NativeMacAxElement, "role" | "subrole" | "namesFile">): string {
+export function roleOf(e: Pick<NativeMacAxElement, "role" | "subrole" | "namesFile" | "actions">): string {
   if (e.namesFile === true) return "label";
+  if (opensAsItem(e)) return "listitem";
   switch (e.role) {
     case "AXButton":
     case "AXPopUpButton":
@@ -73,15 +77,21 @@ export function roleOf(e: Pick<NativeMacAxElement, "role" | "subrole" | "namesFi
       return "menuitem";
     case "AXStaticText":
       return "label";
-    // internal #259: a cell that opens (Finder's sidebar entries and list rows, `openableCells`).
-    case "AXCell":
-      return "listitem";
     default:
       return "unknown";
   }
 }
 
 const SECURE = "AXSecureTextField";
+
+/**
+ * internal #259 — a cell that opens and does not press: Finder's sidebar entries and list rows
+ * advertise AXOpen alone. A cell that advertises AXPress keeps its press (a web table cell; gate 2
+ * on #927): it is not a list item, and an act on it presses as before.
+ */
+export function opensAsItem(e: Pick<NativeMacAxElement, "role" | "actions">): boolean {
+  return e.role === "AXCell" && e.actions.includes("AXOpen") && !e.actions.includes("AXPress");
+}
 
 /**
  * Controls read as a button whose AXValue is their state (internal #262: Safari's web checkbox and
@@ -108,9 +118,9 @@ export function stateText(axRole: string, value: string): string {
 /** The verbs the element itself offers: press only when it advertises AXPress. */
 export function actionabilityOf(e: NativeMacAxElement): UiEntityCandidate["actionability"] {
   const verbs: UiEntityCandidate["actionability"] = [];
-  // A cell opens rather than presses (internal #259): `invoke` alone, as a Windows list item's
-  // Invoke opens it. Never `click` — that would read as a press, and the cell has none.
-  if (e.role === "AXCell") return e.actions.includes("AXOpen") ? ["invoke"] : [];
+  // A cell that opens (internal #259): `invoke` alone, as a Windows list item's Invoke opens it.
+  // Never `click` — that would read as a press, and the cell has none.
+  if (opensAsItem(e)) return ["invoke"];
   if (e.actions.includes("AXPress")) verbs.push("click", "invoke");
   if (e.valueSettable && e.subrole !== SECURE && roleOf(e) === "textbox") verbs.push("type");
   if (roleOf(e) === "label") verbs.push("read");
@@ -140,7 +150,8 @@ const WINDOW_BUTTONS: Record<string, string> = {
 };
 
 function labelOf(e: NativeMacAxElement): string | undefined {
-  if (roleOf(e) === "label" && e.value) return e.value;
+  // A list item carries the text it holds as its value (`nameOpenableCells`).
+  if ((roleOf(e) === "label" || roleOf(e) === "listitem") && e.value) return e.value;
   if (e.title) return e.title;
   if (e.description) return e.description;
   if (e.subrole !== undefined && WINDOW_BUTTONS[e.subrole] !== undefined) {
@@ -166,33 +177,41 @@ export function isCandidate(e: NativeMacAxElement): boolean {
  * internal #259 — the cells that open, each named by the text it holds. Finder's sidebar entries and
  * list rows are AXOutline > AXRow > AXCell; the row has no AXPress, and the cell advertises AXOpen,
  * which navigates a sidebar entry or opens a row's folder or file (measured 2026-11-10, macOS 27.2:
- * デスクトップ / ダウンロード / 書類 and a folder row, 5 of 5). The cell itself has no title, so it is
- * named by its own child text: a sidebar entry's AXStaticText, a row's name field (AXFilename).
+ * デスクトップ / ダウンロード / 書類 and a folder row, 5 of 5). The cell itself has no title, so it
+ * takes its own child text — a sidebar entry's AXStaticText, a row's name field (AXFilename) — as its
+ * value: its name, and part of its identity (`kindOf`), so a lease for one row cannot open the item
+ * that took that row's place (gate 2 on #927). The child text itself is then not offered again
+ * (`hidden`): the item stands for it. One pass, by parent id.
  */
-export function openableCells(elements: readonly NativeMacAxElement[]): Map<string, string> {
-  const out = new Map<string, string>();
-  const cells = elements.filter((e) => e.role === "AXCell" && e.actions.includes("AXOpen"));
-  for (const cell of cells) {
-    const child = elements.find(
-      (e) =>
-        e.depth === cell.depth + 1 &&
-        e.id.startsWith(`${cell.id}.`) &&
-        e.value !== undefined &&
-        e.value !== "" &&
-        !e.valueTruncated &&
-        (e.role === "AXStaticText" || (e.role === "AXTextField" && e.namesFile === true))
-    );
-    if (child?.value !== undefined) out.set(cell.id, child.value);
+export function nameOpenableCells(elements: readonly NativeMacAxElement[]): { elements: NativeMacAxElement[]; hidden: Set<string> } {
+  const parentOf = (id: string) => id.slice(0, id.lastIndexOf("."));
+  const cells = new Set(elements.filter(opensAsItem).map((e) => e.id));
+  const names = new Map<string, { value: string; child: string }>();
+  for (const e of elements) {
+    const parent = parentOf(e.id);
+    if (!cells.has(parent) || names.has(parent)) continue;
+    if (e.value === undefined || e.value === "" || e.valueTruncated) continue;
+    if (e.role === "AXStaticText" || (e.role === "AXTextField" && e.namesFile === true)) names.set(parent, { value: e.value, child: e.id });
   }
-  return out;
+  const hidden = new Set([...names.values()].map((n) => n.child));
+  return {
+    // A cell that holds no text is not offered: a nameless one cannot be told from its neighbours.
+    elements: elements
+      .filter((e) => !cells.has(e.id) || names.has(e.id))
+      .map((e) => (names.has(e.id) ? { ...e, value: names.get(e.id)!.value } : e)),
+    hidden,
+  };
 }
 
 /** What an element is under its window: role, element key, and a text's shown value. */
-function kindOf(e: Pick<NativeMacAxElement, "rootKey" | "elementKey" | "role" | "subrole" | "value" | "namesFile">): string {
+function kindOf(e: Pick<NativeMacAxElement, "rootKey" | "elementKey" | "role" | "subrole" | "value" | "namesFile" | "actions">): string {
   // A text is named by what it shows, so what it shows is part of what it is: when Calculator's
   // display changes, the post-act diff must see a different entity (codex, #780). Texts are only
-  // read, never leased for an act, so a changing identity costs nothing there.
-  const shown = roleOf(e) === "label" ? `|${e.value ?? ""}` : "";
+  // read, never leased for an act, so a changing identity costs nothing there. A list item is
+  // named by the item it holds: a row that now holds another item is another entity, and the lease
+  // for the old one is refused rather than opening the new one (gate 2 on #927).
+  const r = roleOf(e);
+  const shown = r === "label" || r === "listitem" ? `|${e.value ?? ""}` : "";
   return `${e.rootKey}|${e.role}|${e.elementKey}${shown}`;
 }
 
@@ -212,7 +231,7 @@ function kindOf(e: Pick<NativeMacAxElement, "rootKey" | "elementKey" | "role" | 
  */
 export function axDigest(
   pid: number,
-  e: Pick<NativeMacAxElement, "id" | "rootKey" | "elementKey" | "role" | "subrole" | "value" | "namesFile">,
+  e: Pick<NativeMacAxElement, "id" | "rootKey" | "elementKey" | "role" | "subrole" | "value" | "namesFile" | "actions">,
   unique = true
 ): string {
   const where = unique ? "" : `|${e.id}`;
@@ -268,7 +287,7 @@ export function toCandidate(
     role: roleOf(e),
     ...(label !== undefined && { label }),
     // A cut value is not the field's text; it is left out rather than offered as if it were (codex, #782).
-    ...(!secure && roleOf(e) !== "label" && e.value !== undefined && !e.valueTruncated && { value: e.value }),
+    ...(!secure && roleOf(e) !== "label" && roleOf(e) !== "listitem" && e.value !== undefined && !e.valueTruncated && { value: e.value }),
     ...(e.frame !== undefined && { rect: { x: e.frame.x, y: e.frame.y, width: e.frame.width, height: e.frame.height } }),
     actionability: actionabilityOf(e),
     controlType: e.role,
@@ -442,7 +461,9 @@ async function readPidUnderTitle(
   const needle = sheetNeedle;
   const observedAtMs = deps.now();
   const targetId = title ?? tree.appTitle ?? String(pid);
-  const unique = uniquenessOf(tree.elements, tree.truncated || tree.readIncomplete === true);
+  // Cells that open carry their name from here on (internal #259): offered, digested and compared by it.
+  const named = nameOpenableCells(tree.elements);
+  const unique = uniquenessOf(named.elements, tree.truncated || tree.readIncomplete === true);
   const titled = needle !== undefined && needle !== "";
   const windowsTitled = titled && tree.elements.some((e) => rootTitle(e.rootKey).toLowerCase().includes(needle));
   // A sheet is not a window in the AX tree: its controls sit under its window's root, though the
@@ -463,13 +484,11 @@ async function readPidUnderTitle(
   const { barId, items } = menuBar ? menuBarItems(tree.elements) : { barId: undefined, items: new Map<string, string>() };
   // Without a title every root is read, the menu bar too: its items come once, by their paths.
   const inBar = (e: NativeMacAxElement) => barId !== undefined && (e.id === barId || e.id.startsWith(`${barId}.`));
-  const cellNames = openableCells(tree.elements);
-  const candidates = tree.elements
+  const candidates = named.elements
     .filter((e) => !inBar(e))
     .filter(underTitle)
-    // A cell that opens is offered only when it can be named (a nameless one cannot be told apart).
-    .filter((e) => isCandidate(e) && (e.role !== "AXCell" || cellNames.has(e.id)))
-    .map((e) => toCandidate(e, pid, targetId, observedAtMs, unique.get(e.id) === true, cellNames.get(e.id)));
+    .filter((e) => isCandidate(e) && !named.hidden.has(e.id))
+    .map((e) => toCandidate(e, pid, targetId, observedAtMs, unique.get(e.id) === true));
   // The menu bar is the app's, not the window's: offered beside the titled window's controls.
   const menu = tree.elements
     .filter((e) => items.has(e.id))

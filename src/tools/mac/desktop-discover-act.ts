@@ -15,7 +15,7 @@ import { DesktopFacade, type DesktopSeeInput } from "../desktop.js";
 import { buildDesc, ok, type ToolResult } from "../_types.js";
 import { failCode, getSuggestsForCode } from "../_errors.js";
 import { coercedBoolean } from "../_coerce.js";
-import { readMacAxCandidates, UNSURE_READ, type MacAxReadNotes } from "./ax-provider.js";
+import { readMacAxCandidates, nameOpenableCells, opensAsItem, UNSURE_READ, type MacAxReadNotes } from "./ax-provider.js";
 import { createMacAxExecutor } from "./ax-executor.js";
 
 export const macDiscoverSchema = {
@@ -90,8 +90,9 @@ export const macActDescription = buildDesc({
     "(it may reformat it, e.g. 1.50 shown as 1.5). A web page's text field without the focus that ignored the write is pressed once " +
     "(focusing it, without bringing the app forward) and written again. A sheet or app-modal window is checked at the act itself, so one that opened after " +
     "the discover still refuses. invoke on a listitem opens it (a file opens in its app); auto never opens one — ask for invoke. " +
-    "The app may not confirm an open (Finder answers an error even when it opened): the act then answers ok with landing.confirmed: false — " +
-    "read diff, or discover again, to see whether it opened.",
+    "The app may not confirm an open (Finder answers an error even when it opened): the act then answers ok with open.confirmed: false, " +
+    "and diff does not show it — discover again: a folder opened from the sidebar retitles the window (discover by the new title, or " +
+    "without a target), and a file opens in another app.",
   prefer:
     "Send acts one at a time: each act can change the view, so acts sent together can refuse each other (entity_not_found; nothing was done). " +
     "Call desktop_state or desktop_discover afterwards to confirm. A write changes the field, not the file: saving is not done or reported.",
@@ -121,6 +122,8 @@ export interface MacFacadeState {
   menuBarViews?: [string, string[]][];
   /** The act in progress is on a menu bar item's lease. */
   actMenuBar?: boolean;
+  /** The act in progress sent an open the app did not confirm (internal #259): why, for `open`. */
+  openUnconfirmed?: string;
 }
 
 /** How many views read with the menu bar are remembered for their acts. */
@@ -154,6 +157,18 @@ export function createMacFacade(mac: NativeMac, state: MacFacadeState): DesktopF
       setValue: (t, v) => mac.macAxSetValue(t, v),
       insertText: (t, text, at) => mac.macAxInsertText(t, text, at),
       appendMode: () => state.append === true,
+      noteOpenUnconfirmed: (why) => {
+        state.openUnconfirmed = why;
+      },
+      itemNameAt: async (t) => {
+        try {
+          const tree = await mac.macAxTree({ pid: t.pid });
+          const e = nameOpenableCells(tree.elements).elements.find((x) => x.id === t.id);
+          return e !== undefined && e.rootKey === t.expectedRootKey && opensAsItem(e) ? e.value : undefined;
+        } catch {
+          return undefined;
+        }
+      },
     }),
   });
 }
@@ -256,6 +271,7 @@ async function macActOnce(
   state.phase = "act";
   state.last = undefined;
   state.append = input.append === true;
+  state.openUnconfirmed = undefined;
   const lease = input.lease as { viewId?: unknown; entityId?: unknown } | null | undefined;
   state.actMenuBar = (state.menuBarViews ?? []).some(
     ([v, ids]) => v === lease?.viewId && typeof lease?.entityId === "string" && ids.includes(lease.entityId)
@@ -268,7 +284,10 @@ async function macActOnce(
     state.append = false;
     state.actMenuBar = false;
   }
-  return ok(qualifyPostRead(result, state.last));
+  const unconfirmed = state.openUnconfirmed;
+  state.openUnconfirmed = undefined;
+  const qualified = qualifyPostRead(result, state.last);
+  return ok(unconfirmed !== undefined && qualified.ok === true ? { ...qualified, open: { confirmed: false, why: unconfirmed } } : qualified);
 }
 
 /** Warnings that mean the read after the act did not see the app whole. */

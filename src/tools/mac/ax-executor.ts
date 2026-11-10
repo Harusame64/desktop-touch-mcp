@@ -20,7 +20,6 @@
 import type { NativeMacActResult, NativeMacAxTarget } from "../../engine/native-types.js";
 import { TargetGoneError, ValueNotAppliedError } from "../../engine/aim.js";
 import type { ExecutorFn } from "../desktop.js";
-import type { ExecutorOutcome } from "../../engine/world-graph/types.js";
 
 export interface MacAxExecutorDeps {
   perform(target: NativeMacAxTarget, action: string): Promise<NativeMacActResult>;
@@ -29,6 +28,18 @@ export interface MacAxExecutorDeps {
   insertText?(target: NativeMacAxTarget, text: string, at?: number): Promise<NativeMacActResult>;
   /** Whether this act was asked to append (desktop_act `append: true`) rather than replace. */
   appendMode?(): boolean;
+  /**
+   * internal #259 — an open was sent and the app did not confirm it; the tool says so beside the
+   * result (`open.confirmed: false`). Not the touch loop's `landing`: that is ADR-036's keyboard
+   * landing axis, which the route grid counts, and a mac open is not one of its roads.
+   */
+  noteOpenUnconfirmed?(why: string): void;
+  /**
+   * internal #259 — the name of the list item at this target now (`nameOpenableCells`), undefined
+   * when there is none or it cannot be read. The native act checks a cell by its element key, which
+   * holds no name, so a row that now holds another item would pass it (gate 2 on #927).
+   */
+  itemNameAt?(target: NativeMacAxTarget): Promise<string | undefined>;
 }
 
 /** Mirrors `VALUE_CHAR_CAP` in src/macos/ax.rs. */
@@ -91,33 +102,41 @@ export class MacAxActError extends Error {
 }
 
 /**
- * Refusals of an open that come before anything was asked of the app: the element was not found by
- * its keys, it does not advertise AXOpen, or a sheet blocks it. Nothing was done.
- */
-const OPEN_NOT_SENT = new Set(["element_not_found", "element_changed", "action_not_advertised", "modal_blocking"]);
-
-/**
- * internal #259 — open a cell (a Finder sidebar entry or list row) with AXOpen, as a double-click
+ * internal #259 — open a list item (a Finder sidebar entry or list row) with AXOpen, as a double-click
  * does: a folder opens in the window, a file in its app.
  *
  * AXOpen does not answer for what it did. Finder opened the item and answered
  * `attribute_unsupported` every time (2026-11-10, macOS 27.2: three sidebar entries and a folder row,
- * 5 of 5), and an opened item can take its cell with it. So once the action was sent, a failure is
- * not "nothing was done": the act answers success with the open unconfirmed (`landing`), and the
- * caller reads the view (`diff`, or discover again) to see whether it opened.
+ * 5 of 5). Only that measured answer is taken as "sent, not confirmed": the act answers success and
+ * the tool says the open is unconfirmed (`noteOpenUnconfirmed`). Every other failure refuses (gate 2
+ * on #927: an allowlist, so a reason added later, or one that means nothing was sent, cannot pass for
+ * a success) — `invalid_ui_element` with "not known whether it was done": an opened item can take its
+ * cell with it, so "the element is gone; nothing was done" would not hold.
  */
-async function openCell(deps: MacAxExecutorDeps, target: NativeMacAxTarget): Promise<ExecutorOutcome> {
+const OPEN_UNCONFIRMED = new Set(["attribute_unsupported"]);
+
+async function openItem(deps: MacAxExecutorDeps, target: NativeMacAxTarget, expectedName: string | undefined): Promise<void> {
+  // Read the item's name just before opening: another item sorted into the row is refused, never
+  // opened in its place. Fails closed: no reader, no name, or another name — nothing is sent.
+  const now = deps.itemNameAt === undefined || expectedName === undefined ? undefined : await deps.itemNameAt(target);
+  if (now === undefined || now !== expectedName) {
+    throw new TargetGoneError(
+      `open: the item is not ${JSON.stringify(expectedName)} now`,
+      undefined,
+      "The list item this act named is not there now (the row holds another item, or it could not be read). Nothing was done."
+    );
+  }
   const r = await deps.perform(target, "AXOpen");
-  if (r.ok) return { kind: "ax" };
-  if (OPEN_NOT_SENT.has(r.reason ?? "")) refuse(r, "open");
-  return {
-    kind: "ax",
-    landing: {
-      confirmed: false,
-      why: `The app answered the open with ${r.reason ?? "an error"}; Finder answers so even when the item opened. Read the view (diff, or desktop_discover again) to see whether it opened.`,
-      referenceFrom: "ax_open",
-    },
-  };
+  if (r.ok) return;
+  const reason = r.reason ?? "unknown";
+  if (OPEN_UNCONFIRMED.has(reason)) {
+    deps.noteOpenUnconfirmed?.(
+      `The app answered the open with ${reason}, which it may do even when the item opened. desktop_discover again to see whether it opened.`
+    );
+    return;
+  }
+  if (reason === "invalid_ui_element") throw new MacAxActError(`open: ${reason}`, reason);
+  refuse(r, "open");
 }
 
 export function createMacAxExecutor(deps: MacAxExecutorDeps): ExecutorFn {
@@ -166,10 +185,13 @@ export function createMacAxExecutor(deps: MacAxExecutorDeps): ExecutorFn {
       return "ax";
     }
 
-    if (ax.role === "AXCell") {
-      // Only invoke opens a cell (the loop refuses the rest first; this holds if a caller did not).
-      if (action !== "invoke") throw new MacAxActError(`${action} on a cell: only invoke opens it`, "invoke_required");
-      return openCell(deps, target);
+    // A list item opens (internal #259). The same fact the touch loop reads (the entity's role), so
+    // the two cannot disagree about which entities open (gate 2 on #927).
+    if (entity.role === "listitem") {
+      // Only invoke opens one (the loop refuses the rest first; this holds if a caller did not).
+      if (action !== "invoke") throw new MacAxActError(`${action} on a list item: only invoke opens it`, "invoke_required");
+      await openItem(deps, target, entity.label);
+      return "ax";
     }
 
     // click / invoke / auto: the native call presses only what the element advertises.

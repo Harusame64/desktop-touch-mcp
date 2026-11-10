@@ -165,7 +165,7 @@
 - **`desktop_act` can open Finder's sidebar entries and list rows.** They came back as texts that could only be read,
   so a caller could not move to another folder. Each is now a `listitem` named by its text, and `invoke` opens it as a
   double-click does: a folder in the window, a file in its app. `auto` and `click` do not open one. Finder answers an
-  error even when the item opened, so the act answers `ok` with `landing.confirmed: false`; discover again to see
+  error even when the item opened, so the act answers `ok` with `open.confirmed: false`; discover again to see
   where the window is (internal #259).
 - **`desktop_discover` can list the app's menu bar (`menuBar: true`).** Each item is a `menuitem` named by its path,
   such as `表示 > 科学計算`, and `desktop_act` `click` presses it without bringing the app forward. Some buttons

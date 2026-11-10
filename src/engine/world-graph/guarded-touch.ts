@@ -507,8 +507,9 @@ function axOffers(entity: UiEntity, verbs: readonly string[]): boolean {
 }
 
 /**
- * internal #259 — a mac `listitem` is a cell that opens (src/tools/mac/ax-provider.ts `roleOf`: only
- * AXCell reads so). By role: the resolver carries `controlType` from UIA candidates only.
+ * internal #259 — a mac `listitem` is a cell that opens (src/tools/mac/ax-provider.ts `opensAsItem`).
+ * By role: the resolver carries `controlType` from UIA candidates only, and the mac executor decides
+ * by the same role, so the two cannot disagree.
  */
 function isAxOpenableItem(entity: UiEntity): boolean {
   return entity.sources.includes("ax") && entity.role === "listitem";
