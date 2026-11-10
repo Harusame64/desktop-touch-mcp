@@ -720,6 +720,11 @@ pub struct MacAxTarget {
     /// not the one leased.
     pub relocatable: Option<bool>,
     pub timeout_secs: Option<f64>,
+    /// internal #259 — for an act on a list item (a Finder cell that opens): the name the caller read
+    /// for it, its first child text (`item_name`). Checked on the element found, in the same call and
+    /// just before the action, so a row that now holds another item is refused (`element_changed`),
+    /// never acted on: the element key holds no name (gate 2 on #927).
+    pub expected_item_name: Option<String>,
 }
 
 #[napi_derive::napi(object)]
@@ -737,6 +742,9 @@ pub struct MacActResult {
     pub role: Option<String>,
     /// For `modal_blocking`: `sheet:<title>` or `modal_window:<title>`.
     pub blocker: Option<String>,
+    /// `perform`: the action was sent to the app (internal #259). A failure with this set happened
+    /// after the app was asked, so it may have acted; without it nothing was asked.
+    pub performed: Option<bool>,
 }
 
 fn refused(reason: &str) -> MacActResult {
@@ -952,11 +960,41 @@ pub(crate) fn perform(t: &MacAxTarget, action: &str) -> MacActResult {
     if !action_names(&e).iter().any(|a| a == action) {
         return refused("action_not_advertised");
     }
+    if let Some(expected) = t.expected_item_name.as_deref() {
+        let timeout = t.timeout_secs.map(|s| s as f32).unwrap_or(DEFAULT_TIMEOUT_SECS);
+        if item_name(&e, timeout).as_deref() != Some(expected) {
+            return refused("element_changed");
+        }
+    }
     let err = unsafe { e.perform_action(&CFString::from_str(action)) };
     if err != AXError::Success {
-        return refused(&ax_error_name(err));
+        return MacActResult { performed: Some(true), ..refused(&ax_error_name(err)) };
     }
-    MacActResult { ok: true, value_after: value_text(&e), ..Default::default() }
+    MacActResult { ok: true, performed: Some(true), value_after: value_text(&e), ..Default::default() }
+}
+
+/// internal #259 — a list item's name: its first child that is a static text, or a text field that
+/// stands for a file (`AXFilename`), with a value neither empty nor cut. The same rule as
+/// `nameOpenableCells` (src/tools/mac/ax-provider.ts): change both together.
+fn item_name(cell: &AXUIElement, timeout_secs: f32) -> Option<String> {
+    for c in children(cell, timeout_secs) {
+        let role = attr_string(&c, "AXRole");
+        let named = match role.as_deref() {
+            Some("AXStaticText") => true,
+            Some("AXTextField") => names_a_file(&c).unwrap_or(false),
+            _ => false,
+        };
+        if !named {
+            continue;
+        }
+        if let Some((text, cut)) = value_text_marked(&c)
+            && !text.is_empty()
+            && !cut
+        {
+            return Some(text);
+        }
+    }
+    None
 }
 
 /// Refuse a write to a field that stands for a file, or whose `AXFilename` could not be read:

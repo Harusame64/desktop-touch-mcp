@@ -1054,6 +1054,8 @@ export interface NativeMacAxTarget {
   /** The element was the only one of its kind under its root, its position aside, when read: only then is it looked for where it moved (internal #260, #270). */
   relocatable?: boolean
   timeoutSecs?: number
+  /** For an act on a list item: the name read for it (its first child text). Checked just before the action; another name refuses (`element_changed`). */
+  expectedItemName?: string
 }
 
 export interface NativeMacActResult {
@@ -1065,6 +1067,8 @@ export interface NativeMacActResult {
   role?: string
   /** For `modal_blocking`: `sheet:<title>` or `modal_window:<title>`. */
   blocker?: string
+  /** `perform`: the action was sent to the app. A failure with this set may have acted; without it nothing was asked. */
+  performed?: boolean
 }
 
 export interface NativeMacCaptureOptions {

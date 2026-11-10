@@ -15,7 +15,7 @@ import { DesktopFacade, type DesktopSeeInput } from "../desktop.js";
 import { buildDesc, ok, type ToolResult } from "../_types.js";
 import { failCode, getSuggestsForCode } from "../_errors.js";
 import { coercedBoolean } from "../_coerce.js";
-import { readMacAxCandidates, nameOpenableCells, opensAsItem, UNSURE_READ, type MacAxReadNotes } from "./ax-provider.js";
+import { readMacAxCandidates, UNSURE_READ, type MacAxReadNotes } from "./ax-provider.js";
 import { createMacAxExecutor } from "./ax-executor.js";
 
 export const macDiscoverSchema = {
@@ -82,7 +82,8 @@ export const macDiscoverDescription = buildDesc({
 export const macActDescription = buildDesc({
   purpose: "Act on an entity from desktop_discover: press it, open a list item (invoke), replace a text field's value, or append to it (append: true).",
   details:
-    "Acts through Accessibility on the background app — the foreground is not taken. An element whose place among its siblings changed " +
+    "Acts through Accessibility on the background app — the foreground is not taken (opening a file with invoke starts its app, which may " +
+    "come forward). An element whose place among its siblings changed " +
     "(one before it came or went) is found again. Refused with entity_not_found when the element's window changed since the discover, or " +
     "the element is gone or no longer what was read (nothing was done; discover again), and action_not_offered when the entity does not " +
     "offer the action (type on a button, click on a text), and modal_blocking when a sheet or an app-modal window is open over it " +
@@ -159,15 +160,6 @@ export function createMacFacade(mac: NativeMac, state: MacFacadeState): DesktopF
       appendMode: () => state.append === true,
       noteOpenUnconfirmed: (why) => {
         state.openUnconfirmed = why;
-      },
-      itemNameAt: async (t) => {
-        try {
-          const tree = await mac.macAxTree({ pid: t.pid });
-          const e = nameOpenableCells(tree.elements).elements.find((x) => x.id === t.id);
-          return e !== undefined && e.rootKey === t.expectedRootKey && opensAsItem(e) ? e.value : undefined;
-        } catch {
-          return undefined;
-        }
       },
     }),
   });

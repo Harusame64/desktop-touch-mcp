@@ -34,12 +34,6 @@ export interface MacAxExecutorDeps {
    * landing axis, which the route grid counts, and a mac open is not one of its roads.
    */
   noteOpenUnconfirmed?(why: string): void;
-  /**
-   * internal #259 — the name of the list item at this target now (`nameOpenableCells`), undefined
-   * when there is none or it cannot be read. The native act checks a cell by its element key, which
-   * holds no name, so a row that now holds another item would pass it (gate 2 on #927).
-   */
-  itemNameAt?(target: NativeMacAxTarget): Promise<string | undefined>;
 }
 
 /** Mirrors `VALUE_CHAR_CAP` in src/macos/ax.rs. */
@@ -105,38 +99,43 @@ export class MacAxActError extends Error {
  * internal #259 — open a list item (a Finder sidebar entry or list row) with AXOpen, as a double-click
  * does: a folder opens in the window, a file in its app.
  *
+ * The name read for the item travels with the act (`expectedItemName`): the native act compares it
+ * on the element it found, in the same call and just before AXOpen, and refuses when the row holds
+ * another item — the element key holds no name, so without it a re-sorted list would open the item
+ * that took the row's place (gate 2 on #927, twice: a check in a separate read left a gap).
+ *
  * AXOpen does not answer for what it did. Finder opened the item and answered
  * `attribute_unsupported` every time (2026-11-10, macOS 27.2: three sidebar entries and a folder row,
- * 5 of 5). Only that measured answer is taken as "sent, not confirmed": the act answers success and
- * the tool says the open is unconfirmed (`noteOpenUnconfirmed`). Every other failure refuses (gate 2
- * on #927: an allowlist, so a reason added later, or one that means nothing was sent, cannot pass for
- * a success) — `invalid_ui_element` with "not known whether it was done": an opened item can take its
- * cell with it, so "the element is gone; nothing was done" would not hold.
+ * 5 of 5). The native act says whether the action was sent (`performed`), so nothing here is guessed
+ * from the reason: not sent — refused as any act is (nothing was done); sent and answered with that
+ * measured reason — success, the open unconfirmed (`noteOpenUnconfirmed`); sent and answered with
+ * anything else — refused, saying the item may have opened (an app slow to answer, `cannot_complete`,
+ * may still open it: a caller told "nothing was done" would open it twice).
  */
 const OPEN_UNCONFIRMED = new Set(["attribute_unsupported"]);
 
-async function openItem(deps: MacAxExecutorDeps, target: NativeMacAxTarget, expectedName: string | undefined): Promise<void> {
-  // Read the item's name just before opening: another item sorted into the row is refused, never
-  // opened in its place. Fails closed: no reader, no name, or another name — nothing is sent.
-  const now = deps.itemNameAt === undefined || expectedName === undefined ? undefined : await deps.itemNameAt(target);
-  if (now === undefined || now !== expectedName) {
-    throw new TargetGoneError(
-      `open: the item is not ${JSON.stringify(expectedName)} now`,
-      undefined,
-      "The list item this act named is not there now (the row holds another item, or it could not be read). Nothing was done."
-    );
+export class OpenMayHaveHappenedError extends Error {
+  readonly callerDetail: string;
+  constructor(reason: string) {
+    super(`open: ${reason} after the open was sent`);
+    this.name = "OpenMayHaveHappenedError";
+    this.callerDetail =
+      `The open was sent and the app answered ${reason}: the item may have opened. desktop_discover (or desktop_state) before trying again, so it is not opened twice.`;
   }
+}
+
+async function openItem(deps: MacAxExecutorDeps, target: NativeMacAxTarget): Promise<void> {
   const r = await deps.perform(target, "AXOpen");
   if (r.ok) return;
   const reason = r.reason ?? "unknown";
+  if (r.performed !== true) refuse(r, "open");
   if (OPEN_UNCONFIRMED.has(reason)) {
     deps.noteOpenUnconfirmed?.(
       `The app answered the open with ${reason}, which it may do even when the item opened. desktop_discover again to see whether it opened.`
     );
     return;
   }
-  if (reason === "invalid_ui_element") throw new MacAxActError(`open: ${reason}`, reason);
-  refuse(r, "open");
+  throw new OpenMayHaveHappenedError(reason);
 }
 
 export function createMacAxExecutor(deps: MacAxExecutorDeps): ExecutorFn {
@@ -151,6 +150,16 @@ export function createMacAxExecutor(deps: MacAxExecutorDeps): ExecutorFn {
       expectedElementKey: ax.elementKey,
       relocatable: ax.unique === true,
     };
+
+    // A list item opens (internal #259), and only on invoke — before the write branch, so no verb
+    // reaches the cell another way (gate 2 on #927). The same fact the touch loop reads (the entity's
+    // role), so the two cannot disagree about which entities open.
+    if (entity.role === "listitem") {
+      if (action !== "invoke") throw new MacAxActError(`${action} on a list item: only invoke opens it`, "invoke_required");
+      if (entity.label === undefined) throw new MacAxActError("open: the list item has no name to check", "item_name_unknown");
+      await openItem(deps, { ...target, expectedItemName: entity.label });
+      return "ax";
+    }
 
     if (action === "type" || action === "setValue") {
       // `auto` on a type-only field resolves to `type`; without text it must not fall to a press.
@@ -182,15 +191,6 @@ export function createMacAxExecutor(deps: MacAxExecutorDeps): ExecutorFn {
           "The app accepted the write but the field does not hold the text now (it may reformat or reject it)."
         );
       }
-      return "ax";
-    }
-
-    // A list item opens (internal #259). The same fact the touch loop reads (the entity's role), so
-    // the two cannot disagree about which entities open (gate 2 on #927).
-    if (entity.role === "listitem") {
-      // Only invoke opens one (the loop refuses the rest first; this holds if a caller did not).
-      if (action !== "invoke") throw new MacAxActError(`${action} on a list item: only invoke opens it`, "invoke_required");
-      await openItem(deps, target, entity.label);
       return "ax";
     }
 

@@ -180,10 +180,11 @@ export function isCandidate(e: NativeMacAxElement): boolean {
  * デスクトップ / ダウンロード / 書類 and a folder row, 5 of 5). The cell itself has no title, so it
  * takes its own child text — a sidebar entry's AXStaticText, a row's name field (AXFilename) — as its
  * value: its name, and part of its identity (`kindOf`), so a lease for one row cannot open the item
- * that took that row's place (gate 2 on #927). The child text itself is then not offered again
- * (`hidden`): the item stands for it. One pass, by parent id.
+ * that took that row's place (gate 2 on #927). The child text itself is not offered again when its
+ * item is (`namedBy`: child id -> cell id): the item stands for it. One pass, by parent id. The same
+ * rule as `item_name` (src/macos/ax.rs), which checks the name at the act: change both together.
  */
-export function nameOpenableCells(elements: readonly NativeMacAxElement[]): { elements: NativeMacAxElement[]; hidden: Set<string> } {
+export function nameOpenableCells(elements: readonly NativeMacAxElement[]): { elements: NativeMacAxElement[]; namedBy: Map<string, string> } {
   const parentOf = (id: string) => id.slice(0, id.lastIndexOf("."));
   const cells = new Set(elements.filter(opensAsItem).map((e) => e.id));
   const names = new Map<string, { value: string; child: string }>();
@@ -193,13 +194,13 @@ export function nameOpenableCells(elements: readonly NativeMacAxElement[]): { el
     if (e.value === undefined || e.value === "" || e.valueTruncated) continue;
     if (e.role === "AXStaticText" || (e.role === "AXTextField" && e.namesFile === true)) names.set(parent, { value: e.value, child: e.id });
   }
-  const hidden = new Set([...names.values()].map((n) => n.child));
+  const namedBy = new Map([...names.entries()].map(([cell, n]) => [n.child, cell]));
   return {
     // A cell that holds no text is not offered: a nameless one cannot be told from its neighbours.
     elements: elements
       .filter((e) => !cells.has(e.id) || names.has(e.id))
       .map((e) => (names.has(e.id) ? { ...e, value: names.get(e.id)!.value } : e)),
-    hidden,
+    namedBy,
   };
 }
 
@@ -484,10 +485,12 @@ async function readPidUnderTitle(
   const { barId, items } = menuBar ? menuBarItems(tree.elements) : { barId: undefined, items: new Map<string, string>() };
   // Without a title every root is read, the menu bar too: its items come once, by their paths.
   const inBar = (e: NativeMacAxElement) => barId !== undefined && (e.id === barId || e.id.startsWith(`${barId}.`));
-  const candidates = named.elements
-    .filter((e) => !inBar(e))
-    .filter(underTitle)
-    .filter((e) => isCandidate(e) && !named.hidden.has(e.id))
+  const offered = named.elements.filter((e) => !inBar(e) && underTitle(e) && isCandidate(e));
+  // An item's text is left out only when the item itself is offered: a disabled sidebar entry (an
+  // ejected volume) still reads by its text (gate 2 on #927).
+  const offeredIds = new Set(offered.map((e) => e.id));
+  const candidates = offered
+    .filter((e) => !offeredIds.has(named.namedBy.get(e.id) ?? ""))
     .map((e) => toCandidate(e, pid, targetId, observedAtMs, unique.get(e.id) === true));
   // The menu bar is the app's, not the window's: offered beside the titled window's controls.
   const menu = tree.elements

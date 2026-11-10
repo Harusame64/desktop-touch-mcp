@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, vi } from "vitest";
 import { readMacAxCandidates, type MacAxProviderDeps, type MacAxReadNotes } from "../../src/tools/mac/ax-provider.js";
-import { createMacAxExecutor, MacAxActError } from "../../src/tools/mac/ax-executor.js";
+import { createMacAxExecutor, MacAxActError, OpenMayHaveHappenedError } from "../../src/tools/mac/ax-executor.js";
 import { createMacFacade, macDiscoverHandler, macActHandler, type MacFacadeState } from "../../src/tools/mac/desktop-discover-act.js";
 import { TargetGoneError } from "../../src/engine/aim.js";
 import type { NativeMacAxElement } from "../../src/engine/native-types.js";
@@ -63,6 +63,19 @@ describe("Finder cells that open are offered (internal #259)", () => {
       current = elements;
     }
   });
+  it("still reads an item's text when the item itself is not offered (a disabled sidebar entry; gate 2 on #927)", async () => {
+    current = [
+      el("a.0", "AXWindow", { title: "ダウンロード" }),
+      el("a.0.0", "AXCell", { actions: ["AXOpen"], enabled: false }),
+      el("a.0.0.0", "AXStaticText", { value: "NAS" }),
+    ];
+    try {
+      const cs = await readMacAxCandidates(deps() as unknown as MacAxProviderDeps, { windowTitle: "ダウンロード" }, { warnings: [] });
+      expect(cs.map((c) => [c.label, c.role])).toEqual([["NAS", "label"]]);
+    } finally {
+      current = elements;
+    }
+  });
   it("keeps a cell that presses as it was: not a list item, pressed by click (a web table cell; gate 2 on #927)", async () => {
     current = [
       el("a.0", "AXWindow", { title: "ダウンロード" }),
@@ -77,57 +90,53 @@ describe("Finder cells that open are offered (internal #259)", () => {
   });
 });
 
-describe("the act on a cell sends AXOpen (internal #259)", () => {
+describe("the act on a list item sends AXOpen with the name to check (internal #259)", () => {
   const entity = { role: "listitem", label: "デスクトップ", locator: { ax: { pid: 7, id: "a.0.0.1.0", role: "AXCell", rootKey: WIN, elementKey: "k", unique: false } } } as never;
-  const run = async (answer: { ok: boolean; reason?: string }) => {
-    const perform = vi.fn(async () => answer);
+  const run = async (answer: { ok: boolean; reason?: string; performed?: boolean }, action = "invoke") => {
+    const perform = vi.fn(async (_t: unknown, _a: string) => answer);
     const noteOpenUnconfirmed = vi.fn();
-    const itemNameAt = vi.fn(async () => "デスクトップ");
-    const out = await createMacAxExecutor({ perform, setValue: vi.fn(), noteOpenUnconfirmed, itemNameAt } as never)(entity, "invoke");
+    const out = await createMacAxExecutor({ perform, setValue: vi.fn(), noteOpenUnconfirmed } as never)(entity, action as never);
     return { perform, out, noteOpenUnconfirmed };
   };
-  it("sends AXOpen, not AXPress", async () => {
-    const { perform, out, noteOpenUnconfirmed } = await run({ ok: true });
+  it("sends AXOpen, not AXPress, carrying the name read so the native act checks it just before (gate 2 on #927)", async () => {
+    const { perform, out, noteOpenUnconfirmed } = await run({ ok: true, performed: true });
     expect(perform.mock.calls[0]![1]).toBe("AXOpen");
+    expect(perform.mock.calls[0]![0]).toMatchObject({ id: "a.0.0.1.0", expectedItemName: "デスクトップ" });
     expect(out).toBe("ax");
     expect(noteOpenUnconfirmed).not.toHaveBeenCalled();
   });
-  it("answers ok with the open unconfirmed only for the answer Finder gives when it opened (attribute_unsupported)", async () => {
-    const { out, noteOpenUnconfirmed } = await run({ ok: false, reason: "attribute_unsupported" });
+  it("answers ok with the open unconfirmed only when it was sent and answered as Finder answers when it opened", async () => {
+    const { out, noteOpenUnconfirmed } = await run({ ok: false, reason: "attribute_unsupported", performed: true });
     expect(out).toBe("ax");
     expect(noteOpenUnconfirmed).toHaveBeenCalledTimes(1);
   });
-  it("refuses every other failure: an allowlist, so an unmeasured or later reason never passes for a success (gate 2 on #927)", async () => {
-    for (const reason of ["cannot_complete", "api_disabled", "failure", "ax_error_-25200", "something_new"]) {
-      await expect(run({ ok: false, reason })).rejects.toBeInstanceOf(MacAxActError);
+  it("says the item may have opened when it was sent and answered anything else (an app slow to answer: cannot_complete)", async () => {
+    for (const reason of ["cannot_complete", "invalid_ui_element", "failure", "something_new"]) {
+      const e = await run({ ok: false, reason, performed: true }).catch((x: unknown) => x);
+      expect(e).toBeInstanceOf(OpenMayHaveHappenedError);
+      expect((e as OpenMayHaveHappenedError).callerDetail).toMatch(/may have opened/);
     }
   });
-  it("says 'not known' rather than 'nothing was done' when the element went (an opened item can take its cell with it)", async () => {
-    const e = await run({ ok: false, reason: "invalid_ui_element" }).catch((x: unknown) => x);
-    expect(e).toBeInstanceOf(MacAxActError);
-    expect(e).not.toBeInstanceOf(TargetGoneError);
-  });
-  it("reads the item's name just before opening, and sends nothing when it is another item or cannot be read", async () => {
-    for (const now of ["installer.dmg", undefined]) {
-      const perform = vi.fn(async () => ({ ok: true }));
-      const out = createMacAxExecutor({ perform, setValue: vi.fn(), itemNameAt: vi.fn(async () => now) } as never)(entity, "invoke");
-      await expect(out).rejects.toBeInstanceOf(TargetGoneError);
-      expect(perform).not.toHaveBeenCalled();
-    }
-    // No reader at all: refused too (fails closed).
-    const perform = vi.fn(async () => ({ ok: true }));
-    await expect(createMacAxExecutor({ perform, setValue: vi.fn() } as never)(entity, "invoke")).rejects.toBeInstanceOf(TargetGoneError);
-    expect(perform).not.toHaveBeenCalled();
-  });
-  it("refuses, nothing done, when the open was never sent", async () => {
+  it("refuses as nothing done when it was never sent — whatever the reason, the flag decides, not the string", async () => {
+    await expect(run({ ok: false, reason: "element_changed" })).rejects.toBeInstanceOf(TargetGoneError); // another item in the row
     await expect(run({ ok: false, reason: "element_not_found" })).rejects.toBeInstanceOf(TargetGoneError);
-    await expect(run({ ok: false, reason: "element_changed" })).rejects.toBeInstanceOf(TargetGoneError);
     await expect(run({ ok: false, reason: "action_not_advertised" })).rejects.toBeInstanceOf(MacAxActError);
+    // Finder's own answer, but not sent: not a success.
+    await expect(run({ ok: false, reason: "attribute_unsupported" })).rejects.toBeInstanceOf(MacAxActError);
+  });
+  it("refuses any verb but invoke on a list item before anything is sent, type and setValue too (gate 2 on #927)", async () => {
+    for (const action of ["click", "auto", "type", "setValue"]) {
+      const perform = vi.fn(async () => ({ ok: true, performed: true }));
+      const setValue = vi.fn(async () => ({ ok: true }));
+      await expect(createMacAxExecutor({ perform, setValue } as never)(entity, action as never, "x")).rejects.toBeInstanceOf(MacAxActError);
+      expect(perform).not.toHaveBeenCalled();
+      expect(setValue).not.toHaveBeenCalled();
+    }
   });
 });
 
 describe("desktop_act on a Finder item (internal #259)", () => {
-  const mac = (answer: { ok: boolean; reason?: string }) => ({
+  const mac = (answer: { ok: boolean; reason?: string; performed?: boolean }) => ({
     macPermissions: () => ({ accessibility: true, screenCapture: true }),
     macListWindows: () => [{ windowId: 1, pid: 7, layer: 0, onScreen: true, title: "ダウンロード" }],
     macGetFocus: async () => ({ pid: 7 }),
@@ -145,7 +154,7 @@ describe("desktop_act on a Finder item (internal #259)", () => {
     return { state, facade, item };
   };
   it("invoke opens it, and an unconfirmed open answers ok with open.confirmed false", async () => {
-    const m = mac({ ok: false, reason: "attribute_unsupported" });
+    const m = mac({ ok: false, reason: "attribute_unsupported", performed: true });
     const { state, facade, item } = await discover(m);
     expect(item?.primaryAction).toBe("invoke");
     const r = parse(await macActHandler(m as never, facade, state, { lease: item.lease, action: "invoke" }));
@@ -155,26 +164,22 @@ describe("desktop_act on a Finder item (internal #259)", () => {
     expect(r.open?.confirmed).toBe(false);
     expect(r.landing).toBeUndefined();
   });
-  it("refuses a lease whose row now holds another item, rather than opening that one (gate 2 on #927)", async () => {
-    const m = mac({ ok: true });
+  it("hands the row's name to the native act, which refuses when the row now holds another item (gate 2 on #927)", async () => {
+    // The native act compares the name on the element it found; here it answers as it does then.
+    const m = mac({ ok: false, reason: "element_changed" });
     const { state, facade } = await discover(m);
     const d = parse(await macDiscoverHandler(m as never, facade, state, { target: { windowTitle: "ダウンロード" }, view: "explore" }));
     const row = d.entities.find((e: { label?: string }) => e.label === "pictkura-ci");
-    // Same path, same frame (the element key): another file sorted into that row.
-    current = elements.map((e) => (e.id === "a.0.1.0.0.1" ? { ...e, value: "installer.dmg" } : e));
-    try {
-      const r = parse(await macActHandler(m as never, facade, state, { lease: row.lease, action: "invoke" }));
-      expect(r.ok).not.toBe(true);
-      expect(m.macAxPerform).not.toHaveBeenCalled();
-    } finally {
-      current = elements;
-    }
+    const r = parse(await macActHandler(m as never, facade, state, { lease: row.lease, action: "invoke" }));
+    expect((m.macAxPerform.mock.calls[0] as unknown[])[0]).toMatchObject({ expectedItemName: "pictkura-ci" });
+    expect(r.ok).not.toBe(true);
+    expect(r.open).toBeUndefined();
   });
   it("a confirmed open, and the act after it, carry no open note", async () => {
-    const m = mac({ ok: false, reason: "attribute_unsupported" });
+    const m = mac({ ok: false, reason: "attribute_unsupported", performed: true });
     const { state, facade, item } = await discover(m);
     await macActHandler(m as never, facade, state, { lease: item.lease, action: "invoke" });
-    m.macAxPerform.mockImplementation(async () => ({ ok: true }));
+    m.macAxPerform.mockImplementation(async () => ({ ok: true, performed: true }));
     const again = await discover(m);
     const r = parse(await macActHandler(m as never, again.facade, again.state, { lease: again.item.lease, action: "invoke" }));
     expect(r.ok).toBe(true);
