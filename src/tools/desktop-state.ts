@@ -11,7 +11,6 @@ import {
   getVirtualScreen,
   getWindowProcessId,
   getProcessIdentityByPid,
-  getWindowIdentity,
 } from "../engine/win32.js";
 import { getHistorySnapshot } from "./_post.js";
 import { listRecentTargetKeys } from "../engine/perception/target-timeline.js";
@@ -94,60 +93,12 @@ const _defaultPort = getCdpPort();
  *
  * Exported so unit tests can pin both the true-positive and false-positive
  * contracts down — see tests/unit/modal-detection.test.ts.
+ *
+ * Asked only of a dialog-class window (`#32770`) that has no owner — the one modal the window
+ * structure cannot show (internal #269: a PowerShell MessageBox, measured on win2 2026-11-10). Any
+ * other modal is told by the owner it holds disabled, not by its title.
  */
 export const MODAL_RE = /\b(?:dialog|confirm|alert|error|warning|save as)\b|警告|エラー|確認|通知|ダイアログ|名前を付けて/i;
-
-/**
- * Window class names that REAL browsers (Chrome / Edge / Firefox / Brave /
- * etc.) AND Electron / CEF embedded apps (VS Code / Discord / Slack /
- * Cursor / Claude Desktop / Obsidian / …) share. Used together with
- * `isBrowserProcessName(processName)` below to gate the `hasModal`
- * heuristic — class match alone is NOT sufficient because most Electron
- * apps also report `Chrome_WidgetWin_1`. Exported so a unit test can pin
- * the contract.
- *
- * - `Chrome_WidgetWin_1` — Chromium's widget class (Chrome / Edge / Brave /
- *   Opera / Vivaldi / Arc / Thorium + every Electron / CEF app).
- * - `MozillaWindowClass` — Firefox-derived browsers (Firefox / Waterfox /
- *   LibreWolf / Tor Browser).
- */
-const BROWSER_TOP_LEVEL_CLASSES = new Set<string>([
-  "Chrome_WidgetWin_1",
-  "MozillaWindowClass",
-]);
-
-export function isBrowserTopLevelClass(className: string | undefined): boolean {
-  return className !== undefined && BROWSER_TOP_LEVEL_CLASSES.has(className);
-}
-
-/**
- * Process names of REAL browser executables (case-insensitive, no `.exe`).
- * Matches `getProcessIdentityByPid().processName` shape (which strips the
- * extension per its TSDoc, e.g. `chrome.exe` → `chrome`). Together with
- * `isBrowserTopLevelClass` this isolates the "browser tab title accidentally
- * matches MODAL_RE" false positive from genuine Electron / CEF app modals
- * (Codex P1 review on PR #324: VS Code etc. would otherwise be unable to
- * raise `hasModal:true`).
- *
- * Lowercase only; compare via `processName.toLowerCase()`.
- */
-const BROWSER_PROCESS_NAMES = new Set<string>([
-  "chrome",
-  "msedge",
-  "firefox",
-  "brave",
-  "opera",
-  "vivaldi",
-  "arc",
-  "thorium",
-  "iexplore",
-  "waterfox",
-  "librewolf",
-]);
-
-export function isBrowserProcessName(processName: string | undefined): boolean {
-  return processName !== undefined && BROWSER_PROCESS_NAMES.has(processName.toLowerCase());
-}
 
 // ─── Focused-element builders (D2-B-2) ───────────────────────────────────────
 // Three pure functions that project the engine's three focus sources
@@ -679,46 +630,29 @@ export const desktopStateHandler = async (args: {
       }
     }
 
-    // Modal heuristic — title-substring detection with browser-tab exclusion.
+    // Modal: a window that holds its owner disabled, the owner on screen (internal #269). That is what
+    // a modal does, whatever either window is titled. Measured on win2 (2026-11-10): Notepad's 名前を
+    // 付けて保存 and its 保存しますか, and VS Code's Open File and save prompt are #32770 windows owned
+    // by their app's window, which is disabled while they are up — the last three titled
+    // 「メモ帳」/「Visual Studio Code」/「Open File」, which the title regex this replaced missed; and
+    // Notepad showing error.log, which it took for a dialog, owns nothing. The owner must be on screen:
+    // a file's properties sheet is owned by a hidden, disabled StubWindow32 and blocks nothing. A
+    // dialog that is itself hidden or minimised still counts when its owner is shown and disabled
+    // (gate 2 on #801).
     //
-    // Title is checked first (cheap regex); the process-identity lookup runs
-    // only for the rare windows that BOTH match `MODAL_RE` AND carry a
-    // Chromium widget class. The exclusion fires only when the owning process
-    // is a real browser executable (chrome / msedge / firefox / …) — Electron
-    // / CEF apps (VS Code / Discord / Slack / …) share `Chrome_WidgetWin_1`
-    // but their MODAL_RE-matching titles ARE modals and must keep raising
-    // `hasModal: true` (Codex P1 review on PR #324).
-    //
-    // The false-positive being suppressed: a browser tab whose page title
-    // happens to contain "通知" / "Save As" / "Error" / "警告" etc. is page
-    // content, not a modal. Browsers render their own alert/confirm modals
-    // inside the tab via CDP, never as a separate top-level window.
-    //
-    // Tested by `tests/unit/modal-detection-browser-exclusion.test.ts`.
-    //
-    // A hidden or minimised window is not a modal in front of anything, though its title may read
-    // like one — a 'Save As' on another virtual desktop (internal #253). Unless it holds a shown
-    // window disabled: an owner a dialog has disabled is blocked whether the dialog is minimised
-    // or not yet shown (gate 2 on #801).
+    // A dialog with no owner (a PowerShell MessageBox) disables nothing the structure can show: such a
+    // window counts when it is of the dialog class and its title reads like one (`MODAL_RE`). A browser
+    // tab is never of that class, so its page title cannot raise it.
     const shownIds = new Set(shown.map((w) => w.hwnd));
-    const blocksAShownOwner = (w: (typeof wins)[number]): boolean =>
-      w.ownerHwnd != null && shownIds.has(w.ownerHwnd) && wins.find((o) => o.hwnd === w.ownerHwnd)?.isEnabled === false;
-    let hasModal = false;
-    for (const w of wins) {
-      if (!shownIds.has(w.hwnd) && !blocksAShownOwner(w)) continue;
-      if (!MODAL_RE.test(w.title)) continue;
-      if (isBrowserTopLevelClass(w.className)) {
-        // `getWindowIdentity` is an OpenProcess + QueryFullProcessImageName
-        // pair (≈ tens of µs per call). The double gate above keeps this
-        // out of the hot path — only runs for windows that BOTH match
-        // MODAL_RE AND carry the Chromium widget class, typically 0-1
-        // per desktop_state call.
-        const identity = getWindowIdentity(w.hwnd);
-        if (isBrowserProcessName(identity.processName)) continue;
-      }
-      hasModal = true;
-      break;
-    }
+    const byHwnd = new Map(wins.map((w) => [w.hwnd, w]));
+    const holdsShownOwnerDisabled = (w: (typeof wins)[number]): boolean => {
+      if (w.ownerHwnd == null || w.ownerHwnd === w.hwnd) return false;
+      const owner = byHwnd.get(w.ownerHwnd);
+      return owner !== undefined && shownIds.has(owner.hwnd) && owner.isEnabled === false;
+    };
+    const isOwnerlessDialog = (w: (typeof wins)[number]): boolean =>
+      shownIds.has(w.hwnd) && w.ownerHwnd == null && w.className === "#32770" && MODAL_RE.test(w.title);
+    const hasModal = wins.some((w) => holdsShownOwnerDisabled(w) || isOwnerlessDialog(w));
 
     // ── Semantic level: focusedElement + cursorOverElement ─────────────────
     const fgTitle = fg?.title ?? "";
@@ -1335,7 +1269,7 @@ export function registerDesktopStateTools(server: McpServer): void {
       // the focused element changes". The habit they share is naming the most visible change in a
       // round that moved more than one thing; this form is read off the predicate instead.
       caveats:
-        "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal is a heuristic: a window whose title reads like a dialog (Save As, Error, 確認 …), on screen or holding an on-screen owner disabled — browser alert/confirm dialogs do not appear here. " +
+        "Cannot detect non-UIA elements (custom-drawn UIs, game overlays). hasModal: a window holds its on-screen owner disabled (a Save As, a save prompt, an Open File — whatever it is titled), or a dialog with no owner (a message box) whose title reads like one (Error, 確認 …); a modal an app draws inside its own window, and browser alert/confirm dialogs, do not appear here. " +
         "includeDocument requires browser_open (CDP active); silently omitted otherwise with hints.documentUnavailable. " +
         "focusedElement.value is the focused field's current text, so a plain credential field's value comes back like any other. Masked fields are withheld on the CDP road by rule; on the UIA road the value is whatever the provider serves and nothing here checks for a masked control — a masked field can arrive as mask characters, one per character of the secret, which nothing here distinguishes from its real value. It is also not always present, and hints.focusedElementValueAbsent says why when it is not: 'view_road_has_no_value' (the perception view is preferred and carries no values at all) or 'masked_on_this_road' (the CDP read dropped a masked field). No hint means nothing was dropped on the road that answered — on the UIA road an absent value can still be a field whose provider will not serve one.",
     }),

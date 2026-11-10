@@ -40,6 +40,12 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **`desktop_state` `hasModal` now goes by what a modal does, not by window titles.** It used to look for words such
+  as Error, Confirm or 確認 in the titles of the windows on screen. So Notepad showing `error.log` was taken for a
+  dialog. Dialogs titled like their app were missed: Notepad's save prompt (「メモ帳」) and VS Code's Open File and
+  save prompt. `hasModal` is now true when a window holds its owner disabled while the owner is on screen. A message
+  box with no owner still counts by its title. A properties sheet, which disables nothing, does not count. A modal
+  that an app draws inside its own window is not seen (internal #269).
 - **`screenshot` `mode: 'background'` says when its title matched more than one window.** It captured the first
   window whose title contained the text, with no word that others matched too. The reply now says how many
   windows match, names the others by title and handle, and says to pass `hwnd` to capture another (internal #248).
