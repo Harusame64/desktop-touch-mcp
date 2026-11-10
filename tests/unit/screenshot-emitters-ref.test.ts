@@ -570,7 +570,8 @@ describe("screenshot(detail:'text') terminal guard by window class (internal #22
       elementCount: 1,
       elements: [{ name: "Submit", controlType: "Button", automationId: "submit", isEnabled: true, boundingRect: { x: 20, y: 40, width: 80, height: 24 }, patterns: ["InvokePattern"], depth: 1 }],
     });
-    const result = await screenshotHandler({ ...baseArgs, windowTitle: "k918-form", detail: "text" });
+    // ocrFallback "never": the UIA road only (one element would otherwise read as sparse and try OCR).
+    const result = await screenshotHandler({ ...baseArgs, windowTitle: "k918-form", detail: "text", ocrFallback: "never" });
     const body = JSON.parse((result.content[0] as { text: string }).text);
     expect(body.hints?.terminalGuard).toBeUndefined();
     expect(mockGetTextViaTextPattern).not.toHaveBeenCalled();
