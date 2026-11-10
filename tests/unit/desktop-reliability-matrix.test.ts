@@ -93,10 +93,11 @@ function median(xs: number[]): number {
 }
 
 /**
- * Auto-resolves to the highest-priority verb the entity advertises. Our
- * matrix entities expose actionability `["invoke","click","type","select"]`,
- * which AUTO_PRIORITY (invoke > click > type > select) collapses to
- * `"invoke"`. Keep this in sync with `resolveAction` in guarded-touch.ts.
+ * Auto-resolves to the highest-priority verb the entity advertises AND the loop accepts on it. Our
+ * matrix entities expose actionability `["invoke","click","type","select"]`; AUTO_PRIORITY is
+ * select > invoke > click > type, but `select` is accepted only on a UIA collection item (internal
+ * #233 PR2), so these entities collapse to `"invoke"`. Keep this in sync with `resolveAction` in
+ * guarded-touch.ts.
  */
 function expectedActionFor(action: TouchAction): TouchAction {
   return action === "auto" ? "invoke" : action;

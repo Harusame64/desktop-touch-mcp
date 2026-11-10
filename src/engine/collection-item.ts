@@ -6,6 +6,11 @@ import type { UiEntity } from "./world-graph/types.js";
  */
 export const COLLECTION_ITEM_CONTROL_TYPES = ["ListItem", "DataItem", "TreeItem"] as const;
 
+/** Whether a UIA control type is a collection item (the one test; gate 2 on #919). */
+export function isCollectionItemControlType(ct: string | undefined): boolean {
+  return ct !== undefined && (COLLECTION_ITEM_CONTROL_TYPES as readonly string[]).includes(ct);
+}
+
 export type CollectionItemAdviceClass = "collection_item_select" | "collection_item_select_no_invoke";
 
 /**
@@ -15,7 +20,6 @@ export type CollectionItemAdviceClass = "collection_item_select" | "collection_i
  * send the caller there. `_no_invoke` when discover read no InvokePattern on the item.
  */
 export function collectionItemAdviceClass(entity: UiEntity, action: string): CollectionItemAdviceClass | undefined {
-  if (action !== "click" || entity.controlType === undefined) return undefined;
-  if (!(COLLECTION_ITEM_CONTROL_TYPES as readonly string[]).includes(entity.controlType)) return undefined;
+  if (action !== "click" || !isCollectionItemControlType(entity.controlType)) return undefined;
   return (entity.patterns ?? []).includes("InvokePattern") ? "collection_item_select" : "collection_item_select_no_invoke";
 }

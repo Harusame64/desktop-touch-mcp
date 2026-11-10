@@ -109,7 +109,7 @@ Action Compiler は safety gate でもある。
 ```ts
 type UiEntity = {
   entityId: string;
-  role: "button" | "textbox" | "link" | "menuitem" | "label" | "unknown";
+  role: "button" | "textbox" | "link" | "menuitem" | "listitem" | "label" | "unknown";
   label?: string;
   rect?: Rect;
   confidence: number;

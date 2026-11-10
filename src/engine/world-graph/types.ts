@@ -2,7 +2,8 @@ import type { Rect } from "../vision-gpu/types.js";
 
 export type { Rect };
 
-export type UiEntityRole = "button" | "textbox" | "link" | "menuitem" | "label" | "unknown";
+/** `listitem`: a list, tree or grid item (internal #233 PR2). */
+export type UiEntityRole = "button" | "textbox" | "link" | "menuitem" | "listitem" | "label" | "unknown";
 
 /**
  * Source-specific locators for an entity.

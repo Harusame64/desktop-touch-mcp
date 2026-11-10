@@ -5,7 +5,7 @@ import type { Rect, UiEntityCandidate } from "../vision-gpu/types.js";
 import { classifyModal, isUiaWindow } from "./session-registry.js";
 import { probeAim } from "../aim-probe.js";
 import { resolveCandidates } from "./resolver.js";
-import { collectionItemAdviceClass, type CollectionItemAdviceClass } from "../collection-item.js";
+import { collectionItemAdviceClass, isCollectionItemControlType, type CollectionItemAdviceClass } from "../collection-item.js";
 
 export type TouchAction = "auto" | "invoke" | "click" | "type" | "setValue" | "select";
 
@@ -434,12 +434,19 @@ export interface TouchEnvironment {
 // CDP fill) is reachable through the 'type' affordance. setValue is only
 // meaningful as an *explicit* action requested by the caller, so auto-resolve
 // stays on the original verb set.
-const AUTO_PRIORITY: ReadonlyArray<Exclude<TouchAction, "auto" | "setValue">> = ["invoke", "click", "type", "select"];
+// internal #233 PR2: `select` first. Only a UIA collection item offers it, and on one `invoke` opens or runs
+// the item (Explorer opens the file) — `auto` must select it, as a click does.
+const AUTO_PRIORITY: ReadonlyArray<Exclude<TouchAction, "auto" | "setValue">> = ["select", "invoke", "click", "type"];
 
 function resolveAction(entity: UiEntity, requested: TouchAction): TouchAction {
   if (requested !== "auto") return requested;
   const verbs = new Set(entity.affordances.map((a: UiAffordance) => a.verb));
-  return AUTO_PRIORITY.find((v) => verbs.has(v)) ?? "click";
+  // The first verb the entity lists AND this loop accepts on it (internal #233 PR2): an entity that lists
+  // `select` without being a UIA collection item must not resolve `auto` to a refusal.
+  // On a collection item `auto` never invokes (gate 2 on #919): Invoke opens a list item like a
+  // double-click and starts editing a grid cell, while its click selects it — select, else click.
+  const item = entity.sources.includes("uia") && isCollectionItemControlType(entity.controlType);
+  return AUTO_PRIORITY.find((v) => verbs.has(v) && offersAction(entity, v) && !(item && v === "invoke")) ?? "click";
 }
 
 /**
@@ -454,7 +461,16 @@ function resolveAction(entity: UiEntity, requested: TouchAction): TouchAction {
  * 2026-09-11: not a success reported for an act that did not happen, but **an act the caller did not
  * ask for, performed on the world.**
  *
- * ── WHY THIS REFUSES `select` OUTRIGHT, rather than "when the entity does not offer it" ─────────
+ * **internal #233 PR2 (2026-11-10) supplied both halves for one kind of target**, and only for it: the
+ * UIA provider advertises `select` on a collection item with SelectionItemPattern, and the road is that
+ * item's click, which selects it (#819: SelectionItem.Select, or a real single click where the registry
+ * sends the item to the mouse; in Chromium content the click road keeps Invoke, which selects a list
+ * option). `offersAction` checks the source and the control type as well as the affordance, so a
+ * producer that lists the verb anywhere else still gets the refusal below. What follows is the history
+ * of why `select` was refused outright until then; the union now carries the verb, and the tripwire
+ * cells it names were rewritten to pin the new rule.
+ *
+ * ── WHY THIS REFUSED `select` OUTRIGHT, rather than "when the entity does not offer it" ─────────
  *
  * **The first version did the forward-compatible thing and it was a trap** (gate 2). It asked the
  * ENTITY — refuse unless the affordances list the verb — which expresses one of the two independent
@@ -502,9 +518,14 @@ function offersAction(entity: UiEntity, action: TouchAction): boolean {
     }
   }
   switch (action) {
-    // **NOT SUPPORTED BY THIS PRODUCT** — see above. Refused before anything touches the world.
+    // internal #233 PR2 — **only a UIA collection item that offers it.** The executor has no select
+    // arm; the loop hands this verb over as the click a collection item takes to its select road
+    // (#819), which never invokes. Anywhere else a click would press the target, so `select` on any
+    // other entity is still refused before anything touches the world (internal #154, above).
     case "select":
-      return false;
+      return entity.sources.includes("uia")
+        && isCollectionItemControlType(entity.controlType)
+        && entity.affordances.some((a) => a.verb === "select");
     // **Text into a control UI Automation says only presses** (internal #154, W3). Measured, win2,
     // 2026-09-21: `setValue` with text on a Button answered `ok:true` with executor `keyboard` — no
     // value was set, and the text went out as keystrokes to whatever held the focus.
@@ -814,16 +835,19 @@ export class GuardedTouchLoop {
     // tests). validation early-returns above bypass this hook by construction,
     // so failure paths never pollute the round-trip wallclock.
     this.leaseStore.recordAct(lease.viewId);
+    // internal #233 PR2: `select` (accepted only on a UIA collection item) is executed as that item's
+    // click, whose road selects it (#819). The executor has no select arm of its own.
+    const executedAction: TouchAction = concreteAction === "select" ? "click" : concreteAction;
     let outcome: ExecutorKind | ExecutorOutcome;
     try {
-      outcome = await this.env.execute(entity, concreteAction, text);
+      outcome = await this.env.execute(entity, executedAction, text);
     } catch (err) {
       // internal #291 — a click on a collection item that a coordinate refusal stopped: its advice
       // must not send it to click_element, whose Invoke opens, runs or edits these items. Put on every
       // refusal whose advice names click_element; `aim_route_failed` is not reached by such a click today
       // (the select road refuses as `executor_failed`, the mouse road never throws it), so its mark is
       // defensive (gate 2 on #833).
-      const itemAdvice = collectionItemAdviceClass(entity, concreteAction);
+      const itemAdvice = collectionItemAdviceClass(entity, executedAction);
       const itemAdviceField = itemAdvice !== undefined ? { adviceClass: itemAdvice } : {};
       /**
        * ADR-036 item 13 — the sentence the thrower declared fit to publish, or nothing.

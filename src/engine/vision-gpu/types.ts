@@ -76,7 +76,7 @@ export interface UiEntityCandidate {
    * The resolver merges these into UiEntity.locator.
    */
   locator?: import("../world-graph/types.js").EntityLocator;
-  /** Observed role; resolver normalises to "button"|"textbox"|"link"|"menuitem"|"label"|"unknown". */
+  /** Observed role; resolver normalises to "button"|"textbox"|"link"|"menuitem"|"listitem"|"label"|"unknown". */
   role?: string;
   label?: string;
   value?: string;
@@ -90,13 +90,12 @@ export interface UiEntityCandidate {
    * line anyone reads before deciding whether a provider may advertise `select`, and it told them
    * the resolver already does it. Nothing in the tree does.
    *
-   * **`"select"` IS NOT IN THIS UNION, AND `desktop_act` REFUSES THAT ACTION BECAUSE OF IT.** The
-   * refusal lives in `guarded-touch.ts` (`offersAction`), and a cell reads THIS DECLARATION rather
-   * than the six functions that fill it. Widening the union is therefore half of what supporting a
-   * new verb takes; the other half is an arm in `desktop-executor.ts`, which today lets everything
-   * that is not `type`/`setValue` fall through to a click.
+   * **`"select"` is carried only by a UIA collection item (ListItem, DataItem, TreeItem) that exposes
+   * SelectionItemPattern** (internal #233 PR2). `guarded-touch.ts` (`offersAction`) accepts the verb
+   * only there, and hands it to the executor as the click a collection item already takes to its
+   * select road (#819: SelectionItem.Select, never Invoke). Every other target refuses it.
    */
-  actionability: Array<"click" | "invoke" | "type" | "read">;
+  actionability: Array<"click" | "invoke" | "type" | "select" | "read">;
   /**
    * UIA control type (e.g. "Button", "ListItem", "CheckBox"). Populated only
    * by the UIA provider; absent for CDP / visual_gpu / OCR / SOM lanes.

@@ -9,7 +9,7 @@ import type {
 import { parseWindowHandle } from "../aim.js";
 
 const ROLE_ALLOW: ReadonlySet<string> = new Set([
-  "button", "textbox", "link", "menuitem", "label",
+  "button", "textbox", "link", "menuitem", "listitem", "label",
 ]);
 
 function normalizeRole(raw?: string): UiEntityRole {

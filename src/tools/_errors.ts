@@ -615,7 +615,7 @@ const SUGGESTS: Record<string, string[]> = {
     "If you meant to press it, ask for it: desktop_act(action='click') or action='invoke'. Do NOT assume the two are interchangeable — before this refusal existed, a substituted press answered ok:true and looked exactly like a requested one.",
     "The entity's affordances in the desktop_discover response say which actions it offers; action='auto' picks one of them for you.",
     "A type or setValue on a control UI Automation reports as a button, check box, radio button, hyperlink or menu item is this refusal too: none of them takes text, so nothing was typed — if you meant to press it, ask for click or invoke.",
-    "desktop_discover never offers 'select' on any target, so asking for it is always this refusal — reach a list item, combo entry or tab by clicking it. NOTE: screenshot(detail='elements') and workspace_snapshot DO print action:'select' on list items; that is a different reader's word for the same click, and desktop_act does not take it.",
+    "desktop_discover offers 'select' only on a list, tree or grid item read through UI Automation that exposes SelectionItem; on any other target (a combo entry, a tab, a web element, an item without it) asking for it is this refusal — click the item instead.",
   ],
   // Internal #247 — `WindowFrozenError` (`engine/window-frozen.ts`) declares this code.
   // Mac port (M2-1): macOS gives Accessibility to the app that runs the server, not to the server
