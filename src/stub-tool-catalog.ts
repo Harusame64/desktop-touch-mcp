@@ -1322,7 +1322,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
         "body": {
           "type": "string",
           "maxLength": 500,
-          "description": "Notification body text"
+          "description": "Notification body text (not empty: an empty balloon is not shown)"
         },
         "include": {
           "description": "Optional response-shape opt-in. `['envelope']` returns the self-documenting envelope (`_version` / `data` / `as_of` / `confidence`). `['raw']` forces raw shape (overrides DESKTOP_TOUCH_ENVELOPE=1 server default). Default behaviour is raw shape (compat with existing clients).",

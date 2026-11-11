@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed — Windows
+- **`notification_show` refuses an empty body instead of answering `ok: true` for a balloon that never appears.** Windows
+  does not show a balloon with no text, and the call still reported success. A body that is empty or only spaces is
+  now `InvalidArgs` (internal #377).
+
 ## [2.4.1] - 2026-11-11 — Pastes into Windows Terminal are checked, and more replies say when nothing happened
 
 Some calls that answered `ok: true` now refuse, with nothing typed: `terminal` `send` / `run` and `keyboard` `type`
