@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added — Windows
+- **`server_status` says which version answered (`version`).** Telling the build apart took `--help` or another
+  tool (internal #377).
+
 ### Fixed — Windows
 - **`notification_show` refuses an empty body instead of answering `ok: true` for a balloon that never appears.** Windows
   does not show a balloon with no text, and the call still reported success. A body that is empty or only spaces is
