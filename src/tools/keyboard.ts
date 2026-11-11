@@ -1312,11 +1312,14 @@ async function focusWindowForKeyboard(
     appendTopologyWarnings(warnings);
     // internal #380: the window its own dialog has disabled takes no input — refused before it is
     // brought in front of that dialog (which moved the focus off the dialog, and the keys went nowhere).
-    const picked = active && matches(active) ? active : windows.find(matches);
-    const blocked = picked ? blockedByDialogTarget(picked) : null;
+    // After the other-desktop check, as on the flash road (gate 2 on #954).
+    const activeMatches = !!active && matches(active);
+    const picked = activeMatches ? active : windows.find(matches);
+    const pickedAway = !activeMatches && picked ? await offDesktopTarget(picked, windows, explicitHwnd === undefined ? windowTitle : undefined) : null;
+    const blocked = picked && !pickedAway ? blockedByDialogTarget(picked) : null;
     if (blocked) {
       blockedByDialog = blocked;
-    } else if (active && matches(active)) {
+    } else if (activeMatches && active) {
       // Target is already in the foreground — nothing to do.
       if (beforeMove && !(await beforeMove(active))) {
         return { warnings, homingNotes, foregroundVerified, forceRefused, targetHwnd };
@@ -1324,10 +1327,10 @@ async function focusWindowForKeyboard(
       foregroundVerified = true;
       targetHwnd = active.hwnd;
     } else {
-      const target = windows.find(matches);
+      const target = picked;
       // internal #221: bringing a window on another virtual desktop forward switches the user's
       // desktop. Refused before anything is focused.
-      const away = target ? await offDesktopTarget(target, windows, explicitHwnd === undefined ? windowTitle : undefined) : null;
+      const away = pickedAway;
       if (away) {
         offDesktop = away;
       } else if (target && beforeMove && !(await beforeMove(target))) {
@@ -1805,6 +1808,10 @@ export const keyboardTypeHandler = async ({
           { windowTitle: effectiveWindowTitle }
         );
       }
+      // internal #380: whichever channel the flash resolves to, the keys would go to the dialog that
+      // disabled the window (wm_char: its file-name field, win2) or nowhere. Before the fix is spent.
+      const ffBlocked = blockedByDialogTarget(target);
+      if (ffBlocked) return blockedByDialogFailure("keyboard:type", ffBlocked, { lensId, extra: { method: "foreground_flash" } });
       // Past both flash refusals — the call is going ahead (ADR-038 P3).
       spendFix();
       // Lens / auto-guard: foregroundVerified=false because flash will steal
@@ -1916,9 +1923,6 @@ export const keyboardTypeHandler = async ({
       // without taking the foreground), as terminal's twin is (gate 2 on #763).
       const ffAway = await offDesktopTarget(target, wins, explicitHwnd === undefined ? effectiveWindowTitle : undefined);
       if (ffAway) return offDesktopFailure("keyboard:type", ffAway, { lensId, extra: { method: "foreground_flash" } });
-      // internal #380: the flash would bring the window in front of the dialog that disabled it.
-      const ffBlocked = blockedByDialogTarget(target);
-      if (ffBlocked) return blockedByDialogFailure("keyboard:type", ffBlocked, { lensId });
       // internal #372: into Windows Terminal, the flash pasted into a split tab's focused pane, an open
       // find box, or nowhere (the Settings tab), and answered ok (win2 spike). The tab checks terminal's
       // flash makes (internal #286) are made here too: not minimized (the flash does not restore it), one
@@ -2070,6 +2074,10 @@ export const keyboardTypeHandler = async ({
       // above raised one. Non-blocking observation — see `_resolve-log.ts`.
       appendTopologyWarnings(warnings);
       if (target) {
+        // internal #380: WM_CHAR posted to a window its dialog has disabled went into the dialog's
+        // file-name field (win2) — a window the call did not name.
+        const bgBlocked = blockedByDialogTarget(target);
+        if (bgBlocked) return blockedByDialogFailure("keyboard:type", bgBlocked, { lensId, extra: { method: effectiveMethod } });
         const bgCtrlC = ctrlCRefusal(target.hwnd, effectiveText);
         if (bgCtrlC !== null) return bgCtrlC;
         const check = canInjectViaPostMessage(target.hwnd);
@@ -3031,6 +3039,9 @@ export const keyboardPressHandler = async ({
       // ADR-035 Phase C-0: surface the stage-1 topology advisory if the resolve
       // above raised one. Non-blocking observation — see `_resolve-log.ts`.
       appendTopologyWarnings(warnings);
+      // internal #380: a key posted to a window its dialog has disabled goes to the dialog.
+      const bgPressBlocked = target ? blockedByDialogTarget(target) : null;
+      if (bgPressBlocked) return blockedByDialogFailure("keyboard:press", bgPressBlocked, { lensId, extra: { method: effectiveMethod } });
       // A thread with no focused window drops the key (see `threadHasNoFocus`); the road is not taken.
       const pressNoReceiver = !!target && canInjectViaPostMessage(target.hwnd).supported && threadHasNoFocus(target.hwnd);
       if (target && canInjectViaPostMessage(target.hwnd).supported && !pressNoReceiver) {

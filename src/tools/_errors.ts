@@ -378,7 +378,7 @@ const SUGGESTS: Record<string, string[]> = {
   // takes no input; refused by `_blocked-by-dialog.ts` before anything is focused.
   WindowBlockedByDialog: [
     "Nothing was focused or sent: the window takes no input while the dialog it opened is in front.",
-    "To type into the dialog, name it: pass context.dialogTitle as windowTitle (or its hwnd, where the tool takes one).",
+    "To type into the dialog, pass context.dialogHwnd as hwnd (context.dialogTitle names it; a title is matched as a substring and can pick another window).",
     "To type into the window itself, the dialog has to be finished or closed first — if it is the user's, ask them.",
   ],
   // ADR-029: a click / move / drag aimed at a point that is on no monitor.

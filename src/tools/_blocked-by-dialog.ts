@@ -1,46 +1,52 @@
 /**
- * internal #380 — a window that its own dialog has disabled is not brought forward or typed into.
+ * internal #380 — a window that its own dialog has disabled is not typed into.
  *
  * While a window's modal dialog is open (Notepad's Save As), Windows disables the window
- * (`IsWindowEnabled` false) and the dialog takes the input. `keyboard(windowTitle)` named the window,
- * brought it in front of its dialog, and typed: win2 measured `ok:true, typed: 4` with the keys in
- * neither the window nor the dialog — plain, forceFocus and clipboard alike — and the focus moved off
- * the dialog onto the disabled window (internal dev/953-hw, 5ccdf33a).
+ * (`IsWindowEnabled` false) and the dialog takes the input. win2 measured `keyboard` named at the
+ * window (internal dev/953-hw 5ccdf33a, dev/954-hw 9a43b76c):
+ * - the foreground roads (type plain, forceFocus, clipboard; press; sequence) brought the disabled
+ *   window in front of its dialog, answered ok:true, and the keys went nowhere;
+ * - the roads that post WM_CHAR (method:'background', a pinned hwnd, foreground_flash on a plain
+ *   window) answered ok:true with the text in the DIALOG's file-name field — a window the call did
+ *   not name.
+ * So every keyboard road asks here once it has picked its window, before anything is focused, sent
+ * or spent, and refuses instead.
  *
- * So the keyboard tools ask here once they have picked their window, before anything is focused, and
- * refuse instead. `isEnabled` is the enumeration's own read: it says false only when the OS said so.
- * The dialog is named from the window's last active popup, so the caller can type into it by name.
+ * The blocker is found as desktop_act's modal check finds it (`_window-blocker.ts`): the live window
+ * of the disabled window's owner family, else of its thread. When nothing live blocks it — a window
+ * disabled for its own work, or a minimized owner whose dialog is hidden with it — this answers null
+ * and the call goes on as before (bringing a minimized owner back brings its dialog back). A read
+ * that throws decides nothing.
  */
 
 import { failWith } from "./_errors.js";
 import type { ToolResult } from "./_types.js";
-import { getLastActivePopup, getWindowTitleW } from "../engine/win32.js";
+import { liveBlockerOf } from "./_window-blocker.js";
 import { buildEnvelopeFor } from "../engine/perception/registry.js";
 
 export interface BlockedByDialogTarget {
   hwnd: bigint;
   title: string;
-  /** The window's last active popup — the dialog that holds the input — when there is one. */
-  dialog: { hwnd: bigint; title: string } | null;
+  /** The window that holds the input: its title, else its class name, else "dialog". */
+  dialog: { hwnd: bigint; name: string };
 }
 
-/** Null when the window takes input, or when the OS did not say it does not. */
+/** `w` as the enumeration lists it: `isEnabled` is false only when the OS said so. */
 export function blockedByDialogTarget(w: { hwnd: bigint; title: string; isEnabled?: boolean }): BlockedByDialogTarget | null {
   if (w.isEnabled !== false) return null;
-  let dialog: BlockedByDialogTarget["dialog"] = null;
-  const popup = getLastActivePopup(w.hwnd);
-  if (popup !== null && popup !== w.hwnd) {
-    let title = "";
-    try { title = getWindowTitleW(popup); } catch { /* unnamed */ }
-    dialog = { hwnd: popup, title };
+  let blocker: { name: string; hwnd: bigint } | null;
+  try {
+    blocker = liveBlockerOf(w.hwnd);
+  } catch {
+    return null;
   }
-  return { hwnd: w.hwnd, title: w.title, dialog };
+  return blocker === null ? null : { hwnd: w.hwnd, title: w.title, dialog: blocker };
 }
 
 export function blockedByDialogFailure(
   toolName: string,
   blocked: BlockedByDialogTarget,
-  opts: { lensId?: string } = {},
+  opts: { lensId?: string; extra?: Record<string, unknown> } = {},
 ): ToolResult {
   const env = opts.lensId ? buildEnvelopeFor(opts.lensId, { toolName }) : null;
   return failWith(
@@ -52,7 +58,9 @@ export function blockedByDialogFailure(
     {
       hwnd: String(blocked.hwnd),
       windowTitle: blocked.title,
-      ...(blocked.dialog && { dialogHwnd: String(blocked.dialog.hwnd), dialogTitle: blocked.dialog.title }),
+      dialogHwnd: String(blocked.dialog.hwnd),
+      dialogTitle: blocked.dialog.name,
+      ...opts.extra,
       ...(env && { _perceptionForPost: env }),
     },
   );
