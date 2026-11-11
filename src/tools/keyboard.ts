@@ -2686,14 +2686,17 @@ export const keyboardTypeHandler = async ({
     // window is in front and the guard has passed, before Ctrl+A or any character. A read that fails or
     // finds no focus decides nothing.
     // internal #372: Windows Terminal — the tab is the same, WT is still in front, and the focus is on
-    // its pane. Here, after the guard and right before the text: the pane focus is the last thing that
-    // moves, so as little as possible runs between it and the typing.
+    // its pane. Here, after the guard and right before the text: nothing awaits between it and the
+    // first character (the focused-control read below is skipped for it).
     if (wtTarget) {
       const post = await wtAfterFocus(wtTarget.hwnd, wtTarget.before, wtTarget.prevFgHwnd);
       if (!post.ok) return keyboardWtFailure(post.refusal, effectiveWindowTitle);
     }
 
-    const focusedType = await focusedControlThatTakesNoText();
+    // Not asked for Windows Terminal once its checks passed: the focus was just put on its terminal pane,
+    // and this read awaits (up to 800 ms) between that and the text — a tab switched meanwhile would
+    // take it (gate 2 on #939).
+    const focusedType = wtTarget ? null : await focusedControlThatTakesNoText();
     if (focusedType !== null && !effectiveClipboard && /[ \r\n]/.test(effectiveText)) {
       return failWith(new Error("FocusedControlTakesNoText"), "keyboard:type", {
         focusedType,

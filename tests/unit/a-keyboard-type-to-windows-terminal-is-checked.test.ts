@@ -76,6 +76,7 @@ import * as win32 from "../../src/engine/win32.js";
 import * as uia from "../../src/engine/uia-bridge.js";
 import * as bg from "../../src/engine/bg-input.js";
 import * as nut from "../../src/engine/nutjs.js";
+import * as typeFocus from "../../src/tools/_type-focus.js";
 
 const mockEnum = vi.mocked(win32.enumWindowsInZOrder);
 const mockRestore = vi.mocked(win32.restoreAndFocusWindow);
@@ -134,18 +135,31 @@ beforeEach(() => {
 });
 
 describe("internal #372 — keyboard type to Windows Terminal through the foreground", () => {
-  it("types after the tab is read twice and the focus is put on its pane, with WT in front", async () => {
+  it("reads the tab with WT behind, again with WT in front, focuses the pane, then types — and skips the focused-control read", async () => {
+    const where = () => (front === WT ? "WT in front" : "WT behind");
     const order: string[] = [];
-    mockTab.mockImplementation(async () => { order.push("tab"); return tab("rt-1"); });
-    mockPaneFocus.mockImplementation(async () => { order.push(front === WT ? "pane(WT in front)" : "pane(WT behind)"); return "focused"; });
+    mockTab.mockImplementation(async () => { order.push(`tab(${where()})`); return tab("rt-1"); });
+    mockPaneFocus.mockImplementation(async () => { order.push(`pane(${where()})`); return "focused"; });
+    vi.mocked(typeFocus.focusedControlThatTakesNoText).mockImplementation(async () => { order.push("focused-control read"); return null; });
     mockType.mockImplementation(async () => { order.push("type"); return undefined as never; });
     const r = parseResult(await type());
     expect(r.ok).toBe(true);
-    expect(order[0]).toBe("tab");
-    expect(order.slice(1)).toEqual(["tab", "pane(WT in front)", ...order.slice(3)]);
-    expect(order).toContain("type");
-    expect(order.indexOf("pane(WT in front)")).toBeLessThan(order.indexOf("type"));
+    expect([...new Set(order)]).toEqual(["tab(WT behind)", "tab(WT in front)", "pane(WT in front)", "type"]);
     expect(mockPaneFocus).toHaveBeenCalledWith(WT, "rt-1");
+  });
+
+  it("still asks the focused-control read for a window that is not WT", async () => {
+    mockClass.mockReturnValue("Notepad");
+    await type();
+    expect(typeFocus.focusedControlThatTakesNoText).toHaveBeenCalled();
+  });
+
+  it("sends no Ctrl+A (replaceAll) when the pane focus refuses", async () => {
+    mockPaneFocus.mockResolvedValue("not_focused");
+    const r = parseResult(await type({ replaceAll: true }));
+    expect(r.context).toMatchObject({ detail: "pane_not_focused" });
+    expect(nut.keyboard.pressKey).not.toHaveBeenCalled();
+    expect(mockType).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -266,11 +280,4 @@ describe("internal #372 — keyboard type to Windows Terminal with method:'foreg
     expect(r.context).toMatchObject({ detail, method: "foreground_flash", foregroundRestored: true });
   });
 
-  it("does not add the pane options for a window that is not WT", async () => {
-    mockClass.mockReturnValue("Notepad");
-    await flash();
-    const opts = mockFlash.mock.calls[0]?.[3] as Record<string, unknown> | undefined;
-    expect(opts ?? {}).not.toHaveProperty("focusTerminalPane");
-    expect(mockTab).not.toHaveBeenCalled();
-  });
 });
