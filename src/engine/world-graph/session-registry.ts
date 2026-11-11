@@ -348,6 +348,12 @@ export class SessionRegistry {
   private readonly sessions = new Map<TargetSessionKey, SessionState>();
   /** viewId → key index so touch() can find the issuing session. */
   private readonly viewIdIndex = new Map<string, TargetSessionKey>();
+  /**
+   * internal #361 — viewIds that a later discover of the same target replaced, with their session's
+   * key. Bounded (oldest dropped first), and dropped with their session on eviction. Only to tell a
+   * lease from a replaced view ("re-run discover") from one whose view was never seen or was evicted.
+   */
+  private readonly retiredViewIds = new Map<string, TargetSessionKey>();
 
   /**
    * Derive a stable session key from a target spec.
@@ -406,17 +412,37 @@ export class SessionRegistry {
    * The old viewId is removed from the index to prevent unbounded growth during
    * frequent `see()` calls on the same target.
    *
-   * Stale leases (pointing to `oldViewId`) still safely fail — but as **`entity_not_found`**, not
-   * as `generation_mismatch`: the old id is DELETED from the index here, so `getByViewId` answers
-   * undefined and `validateLeaseOnly` returns before `LeaseStore.validate` ever sees the
-   * generation. The older wording said `generation_mismatch`, and internal#125's advice text
-   * inherited that claim before the Opus review caught it (2026-09-18). `generation_mismatch` is
-   * reachable, but by other routes — a concurrent act inside an in-flight `see()`, or a caller
-   * passing a `targetGeneration` that did not come from a lease.
+   * Stale leases (pointing to `oldViewId`) still fail: the old id is DELETED from the index here,
+   * so `getByViewId` answers undefined, and a lease from it is never validated against the new view.
+   * The old id is kept in `retiredViewIds` so the facade can answer `generation_mismatch` ("re-run
+   * discover") for it rather than `entity_not_found` (internal #361; before that it was
+   * `entity_not_found`, whose advice says the element may have gone).
    */
   replaceViewId(oldViewId: string | undefined, newViewId: string, key: TargetSessionKey): void {
-    if (oldViewId) this.viewIdIndex.delete(oldViewId);
+    if (oldViewId && oldViewId !== newViewId) {
+      this.viewIdIndex.delete(oldViewId);
+      this.retiredViewIds.delete(oldViewId);
+      this.retiredViewIds.set(oldViewId, key);
+      while (this.retiredViewIds.size > SessionRegistry.MAX_RETIRED_VIEW_IDS) {
+        const oldest = this.retiredViewIds.keys().next().value;
+        if (oldest === undefined) break;
+        this.retiredViewIds.delete(oldest);
+      }
+    }
+    this.retiredViewIds.delete(newViewId);
     this.viewIdIndex.set(newViewId, key);
+  }
+
+  /** How many replaced viewIds are remembered (internal #361). */
+  static readonly MAX_RETIRED_VIEW_IDS = 256;
+
+  /**
+   * internal #361 — was this viewId replaced by a later discover of a session that is still alive?
+   * False for a viewId never seen, one whose session was evicted, or one dropped from the bound.
+   */
+  isReplacedViewId(viewId: string): boolean {
+    const key = this.retiredViewIds.get(viewId);
+    return key !== undefined && this.sessions.has(key);
   }
 
   /**
@@ -430,6 +456,9 @@ export class SessionRegistry {
         this.sessions.delete(key);
         for (const [vid, k] of this.viewIdIndex) {
           if (k === key) this.viewIdIndex.delete(vid);
+        }
+        for (const [vid, k] of this.retiredViewIds) {
+          if (k === key) this.retiredViewIds.delete(vid);
         }
       }
     }

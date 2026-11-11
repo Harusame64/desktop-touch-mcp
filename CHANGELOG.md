@@ -68,6 +68,11 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **`desktop_act` with a lease from a replaced view says to discover again, not that the element is gone.** A
+  later `desktop_discover` of the same window replaces the view its earlier leases came from. Acting with such a
+  lease was refused as `entity_not_found`, whose advice says the element may have been removed or renamed. It is
+  now refused as `lease_generation_mismatch` (discover again and use the new lease). A lease whose view was never
+  issued, or whose session has expired, still answers `entity_not_found`. The same holds on macOS (internal #361).
 - **The npm launcher exits 1 after a failed download on Node 24.19, with no native assertion.** When the
   release fetch failed (a 404, for example), it printed `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)`
   after the real message and exited with another code. That came from Node.js itself, and Node 24.20 no longer does

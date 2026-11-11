@@ -278,9 +278,23 @@ describe("DesktopFacade — desktop_touch", () => {
     const oldLease = view1.entities[0].lease;
     await facade.see(); // replaceViewId evicts view1's viewId from index
     const result = await facade.touch({ lease: oldLease });
-    // viewId removed from index → entity_not_found (safe fail)
+    // viewId replaced by the second see() → "re-run discover" (internal #361; was entity_not_found)
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("entity_not_found");
+    if (!result.ok) expect(result.reason).toBe("lease_generation_mismatch");
+  });
+
+  it("validateLeaseOnly says the same: a replaced view is generation_mismatch, an unknown one entity_not_found (internal #361)", async () => {
+    const facade = new DesktopFacade(gameProvider);
+    const view1 = await facade.see();
+    const oldLease = view1.entities[0].lease;
+    await facade.see();
+    const replaced = facade.validateLeaseOnly(oldLease);
+    expect(replaced).toEqual({ ok: false, reason: "generation_mismatch" });
+    const unknown = facade.validateLeaseOnly({ ...oldLease, viewId: "never-issued" });
+    expect(unknown).toEqual({ ok: false, reason: "entity_not_found" });
+    const unknownTouch = await facade.touch({ lease: { ...oldLease, viewId: "never-issued" } });
+    expect(unknownTouch.ok).toBe(false);
+    if (!unknownTouch.ok) expect(unknownTouch.reason).toBe("entity_not_found");
   });
 
   it("touch returns entity_disappeared when entity vanishes after click", async () => {
@@ -743,8 +757,8 @@ describe("DesktopFacade — response-size aware lease TTL (H1)", () => {
     await facade.see({ view: "explore" }); // bumps generation, evicts view1 from viewId index
     const result = await facade.touch({ lease: oldLease });
     expect(result.ok).toBe(false);
-    // evicted from viewId index → entity_not_found (same as pre-H1 behavior)
-    if (!result.ok) expect(result.reason).toBe("entity_not_found");
+    // replaced in the viewId index → lease_generation_mismatch (internal #361; was entity_not_found)
+    if (!result.ok) expect(result.reason).toBe("lease_generation_mismatch");
   });
 
   it("stale lease safety: expired lease rejected even at high TTL (past 40s clock)", async () => {
@@ -911,9 +925,9 @@ describe("DesktopFacade — per-target session isolation (Batch A)", () => {
     const oldLease = view1.entities[0].lease;
     await facade.see({ target: TARGET_A }); // replaceViewId removes view1's viewId
     const result = await facade.touch({ lease: oldLease });
-    // Old viewId evicted from index → entity_not_found (safe fail)
+    // Old viewId replaced in the index → lease_generation_mismatch (internal #361; was entity_not_found)
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("entity_not_found");
+    if (!result.ok) expect(result.reason).toBe("lease_generation_mismatch");
   });
 
   it("two independent targets maintain separate generation counters", async () => {
