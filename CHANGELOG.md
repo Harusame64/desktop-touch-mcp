@@ -67,6 +67,10 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **The npm launcher exits 1 after a failed download on Node 24.19, with no native assertion.** When the
+  release fetch failed (a 404, for example), it printed `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)`
+  after the real message and exited with another code. That came from Node.js itself, and Node 24.20 no longer does
+  it (internal #290).
 - **After an action that closes a dialog, `post.focusedWindow` names the window left in front, not the dialog.**
   The window in front was read right after the action returned, before the dialog had let go. So pressing キャンセル
   in Notepad's 名前を付けて保存 answered `"名前を付けて保存"` 9 times in 10, and pressing OK in a message box answered its
