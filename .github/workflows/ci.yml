@@ -261,6 +261,10 @@ jobs:
       - name: Tool description caps (all tools, read from source)
         run: npx vitest run --project=unit tests/unit/tool-descriptions.test.ts
 
+      # internal #348: the release zips ship release/package-lock.json; it must pin what the root runs.
+      - name: Release lock matches the root lock
+        run: npx vitest run --project=unit tests/unit/release-lock-matches-the-root.test.ts
+
       - name: Smoke — the macOS server over MCP
         run: node scripts/smoke-macos.mjs
 

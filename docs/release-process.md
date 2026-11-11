@@ -857,19 +857,34 @@ Verify at: `https://registry.modelcontextprotocol.io/servers/io.github.Harusame6
 
 ## Operational Notes
 
-### The release zip does not inherit `overrides` (checked 2026-08-04)
+### The release zip's dependencies: `release/` (since internal #348, 2026-11-11)
 
-The zip's dependency tree is **not** the tree we test. Two facts about the
-"Install production dependencies" step in `release.yml`:
+Both zips install their runtime dependencies with `npm ci` from the committed
+`release/package.json` + `release/package-lock.json` (`release.yml` "Install
+production dependencies", `scripts/build-release-macos.mjs`). That lock pins
+every version the zip ships, and `release/package.json` carries the root's
+top-level `overrides`, so an override now reaches the zip. Both builds then run
+`npm audit --omit=dev --audit-level=high` on that tree and stop on a high or
+critical advisory.
 
-1. It synthesises a minimal `package.json` containing only `name`, `version`,
-   `type` and `dependencies`. The root **`overrides` block is dropped.**
-2. It runs `npm install --no-package-lock`, so every range resolves fresh at
-   build time rather than to the versions in our `package-lock.json`.
+- **Why a separate lock:** the npm package is only the launcher, so the runtime
+  packages are `devDependencies` at the root. Dependabot scores them
+  "development" there and an `npm audit --omit=dev` of the root skips them. In
+  `release/` they are production, and Dependabot watches that folder too.
+- **Keep the two in step:** `tests/unit/release-lock-matches-the-root.test.ts`
+  (run in CI's macOS job) fails when a runtime package's locked version or range
+  differs between `release/` and the root, or when the top-level `overrides`
+  differ. A Dependabot bump on one side is red until the other side matches.
+  Bump both: `npm install --package-lock-only --ignore-scripts <pkg>@<version>`
+  in `release/`, and the usual install at the root.
+- **Nested overrides** (the `eslint` / `@typescript-eslint` ones) are dev-only
+  and stay at the root.
 
-So a security fix applied through `overrides` protects local development and CI
-but has **no guaranteed effect on what users download**. Whether the zip is safe
-depends on what the ranges happen to resolve to that day.
+Before #348 (up to and including v2.4.x), the step synthesised a `package.json`
+with only `name`, `version`, `type` and `dependencies`, dropping the root
+`overrides`, and ran `npm install --no-package-lock`, so every range resolved
+fresh on release day. The measurements below are from that time (checked
+2026-08-04).
 
 For the three `ip-address` advisories the `overrides` entry guards against —
 GHSA-v2v4-37r5-5v8g (`<= 10.1.0`), GHSA-22jq-vg5j-6vgg (`10.1.1`–`10.2.0`) and
@@ -898,9 +913,10 @@ advisory's range.
 **Do not remove the `overrides` entry because `express-rate-limit` now declares
 a compatible range.** `^10.2.0` still admits 10.2.0 and 10.2.1, both inside the
 affected range of GHSA-4xrf-jv44-h6hh; `"ip-address": "^10.2.2"` is the floor
-that keeps those two out **of the tree we test and CI** — like every override,
-it does not reach the zip, so it is not artifact protection. `package.json` is
-JSON and cannot carry the comment, so this is where that rationale lives.
+that keeps those two out. Before #348 it reached only the tree we test and CI,
+not the zip; since #348 `release/package.json` carries it to the zip as well.
+`package.json` is JSON and cannot carry the comment, so this is where that
+rationale lives.
 
 **When you fix a runtime-dependency advisory with `overrides`, verify the fix in
 the built zip, not just in `npm ls`.** Check **every** installed copy, not the

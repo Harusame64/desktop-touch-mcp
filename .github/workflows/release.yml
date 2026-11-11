@@ -126,17 +126,10 @@ jobs:
           $pkgPath = Join-Path $releaseDir "package.json"
           $pkg = Get-Content -Raw -LiteralPath $pkgPath | ConvertFrom-Json
           $pkg.main = "dist/index.js"
-          $runtimeDeps = [ordered]@{}
-          foreach ($name in @(
-            "@modelcontextprotocol/sdk",
-            "@nut-tree-fork/nut-js",
-            "sharp",
-            "ws",
-            "zod"
-          )) {
-            $runtimeDeps[$name] = $pkg.devDependencies.PSObject.Properties[$name].Value
-          }
-          $pkg | Add-Member -Force -NotePropertyName "dependencies" -NotePropertyValue $runtimeDeps
+          # internal #348: the runtime dependencies are release/package.json's (locked by
+          # release/package-lock.json), not picked by name from the root devDependencies.
+          $releaseDeps = (Get-Content -Raw -LiteralPath "release\package.json" | ConvertFrom-Json).dependencies
+          $pkg | Add-Member -Force -NotePropertyName "dependencies" -NotePropertyValue $releaseDeps
           if ($pkg.PSObject.Properties.Name -contains "bin") {
             $pkg.PSObject.Properties.Remove("bin")
           }
@@ -151,33 +144,23 @@ jobs:
       - name: Install production dependencies
         shell: pwsh
         run: |
-          # Build a clean package.json with ONLY dependencies (no devDependencies)
-          # in a completely isolated temp directory to avoid any npm parent-traversal
-          # or cache interference from the workspace.
+          # internal #348: installed from the committed release/package.json + package-lock.json
+          # with npm ci, in an isolated temp directory (no npm parent-traversal or cache
+          # interference from the workspace). The lock pins every version the zip ships and
+          # carries release/package.json's overrides; before, npm install --no-package-lock
+          # resolved them on release day and the root overrides did not apply.
           $isolatedDir = Join-Path $env:TEMP "dtmcp-release-$(New-Guid)"
           New-Item -ItemType Directory -Path $isolatedDir | Out-Null
+          Copy-Item -LiteralPath "release\package.json" -Destination $isolatedDir
+          Copy-Item -LiteralPath "release\package-lock.json" -Destination $isolatedDir
 
-          # Read the release_build package.json (which has both dependencies and devDependencies)
-          $releasePkg = Get-Content -Raw -LiteralPath "release_build\package.json" | ConvertFrom-Json
-
-          # Create a minimal package.json with only the fields npm install needs
-          $minimalPkg = [ordered]@{
-            name         = $releasePkg.name
-            version      = $releasePkg.version
-            type         = "module"
-            dependencies = [ordered]@{}
-          }
-          foreach ($prop in $releasePkg.dependencies.PSObject.Properties) {
-            $minimalPkg.dependencies[$prop.Name] = $prop.Value
-          }
-          $minimalPkg | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath "$isolatedDir\package.json" -Encoding UTF8
-
-          Write-Host "=== Isolated package.json ==="
-          Get-Content "$isolatedDir\package.json"
-          Write-Host "=== Installing in $isolatedDir ==="
-
+          Write-Host "=== Installing release/package-lock.json in $isolatedDir ==="
           Push-Location $isolatedDir
-          npm install --no-package-lock 2>&1 | Write-Host
+          npm ci --omit=dev --no-audit --no-fund 2>&1 | Write-Host
+          if ($LASTEXITCODE -ne 0) { Pop-Location; throw "FATAL: npm ci failed ($LASTEXITCODE)" }
+          # What the zip ships is audited, not the root lock (whose runtime packages are dev-scoped).
+          npm audit --omit=dev --audit-level=high 2>&1 | Write-Host
+          if ($LASTEXITCODE -ne 0) { Pop-Location; throw "FATAL: npm audit found a high or critical advisory in what the zip ships" }
           Pop-Location
 
           # Verify node_modules was actually created
