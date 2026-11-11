@@ -442,6 +442,31 @@ describe("internal #286 — terminal:send to Windows Terminal through the foregr
     expect((r.hints.warnings as string[]).some((w) => /last line may stay on the prompt/.test(w))).toBe(true);
   });
 
+  it("presses Enter once when the caller asked for Enter too (run's normal call), and for several trailing newlines", async () => {
+    await send({ input: "echo r\n\n", pressEnter: true });
+    expect(mockPaste.mock.calls[0]![0]).toBe("echo r");
+    expect(vi.mocked(nut.keyboard.pressKey)).toHaveBeenCalledTimes(1);
+  });
+
+  it("trims a lone trailing \\r, and gives no several-lines warning for one line", async () => {
+    const r = parseResult(await send({ input: "echo x\r", pressEnter: false }));
+    expect(mockPaste.mock.calls[0]![0]).toBe("echo x");
+    expect(JSON.stringify(r.hints ?? {})).not.toMatch(/last line may stay/);
+  });
+
+  it("presses Enter and pastes nothing for text that is only line breaks", async () => {
+    const r = parseResult(await send({ input: "\n\n", pressEnter: false }));
+    expect(r.ok).toBe(true);
+    expect(mockPaste).not.toHaveBeenCalled();
+    expect(vi.mocked(nut.keyboard.pressKey)).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives no warning for several lines when no Enter follows", async () => {
+    const r = parseResult(await send({ input: "echo a\necho b", pressEnter: false }));
+    expect(JSON.stringify(r.hints ?? {})).not.toMatch(/last line may stay/);
+    expect(vi.mocked(nut.keyboard.pressKey)).not.toHaveBeenCalled();
+  });
+
   it("leaves a single line without a trailing newline as it was, with no warning", async () => {
     const r = parseResult(await send({ input: "echo ok", pressEnter: false }));
     expect(mockPaste.mock.calls[0]![0]).toBe("echo ok");

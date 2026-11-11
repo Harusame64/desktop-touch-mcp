@@ -2004,8 +2004,10 @@ export const terminalSendHandler = async ({
     let sendText = input;
     let enterAfter = pressEnter;
     if (isWt) {
-      const trimmed = input.replace(/(?:\r?\n)+$/, "");
-      if (trimmed !== input && trimmed !== "") {
+      // Any run of trailing line-break characters, a lone \r included (gate 2 on #944).
+      const trimmed = input.replace(/[\r\n]+$/, "");
+      if (trimmed !== input) {
+        // Text that is only line breaks: nothing is pasted, and the Enter is the whole send (gate 2 on #944).
         sendText = trimmed;
         enterAfter = true;
       }
@@ -2020,7 +2022,9 @@ export const terminalSendHandler = async ({
       }
     }
 
-    if (preferClipboard) {
+    if (sendText === "") {
+      // internal #375: only line breaks were given, and they are the Enter below; nothing to paste.
+    } else if (preferClipboard) {
       let chosenKey: "ctrl+v" | "ctrl+shift+v" = pasteKey === "auto" ? "ctrl+v" : pasteKey;
       if (pasteKey === "auto") {
         const procName = getProcessIdentityByPid(getWindowProcessId(win.hwnd)).processName.toLowerCase();
