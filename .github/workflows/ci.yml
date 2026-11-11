@@ -255,6 +255,12 @@ jobs:
       - name: macOS unit cells, and the launcher's cells on macOS (it picks and extracts the macOS zip here)
         run: npx vitest run --project=unit tests/unit/mac-*.test.ts tests/unit/launcher-*.test.ts
 
+      # internal #359: the tool-description length caps ran in no CI job, and #915 went 648 characters
+      # over the `scroll` cap with CI green. The file reads the tool sources as strings, so any runner
+      # that already runs vitest will do; this is the one that does.
+      - name: Tool description caps (all tools, read from source)
+        run: npx vitest run --project=unit tests/unit/tool-descriptions.test.ts
+
       - name: Smoke — the macOS server over MCP
         run: node scripts/smoke-macos.mjs
 
