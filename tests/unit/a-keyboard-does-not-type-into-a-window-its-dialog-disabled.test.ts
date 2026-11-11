@@ -81,6 +81,7 @@ vi.mock("../../src/tools/_resolve-window.js", () => ({
 import { keyboardPressHandler, keyboardTypeHandler, keyboardSequenceHandler } from "../../src/tools/keyboard.js";
 import * as win32 from "../../src/engine/win32.js";
 import * as guard from "../../src/tools/_action-guard.js";
+import * as resolver from "../../src/tools/_resolve-window.js";
 
 const mockEnum = vi.mocked(win32.enumWindowsInZOrder);
 const mockRestore = vi.mocked(win32.restoreAndFocusWindow);
@@ -117,7 +118,10 @@ const enabled = (isActive = false) => ({ ...fakeWindow("無題 - メモ帳", isA
 function withDialog() {
   blocker.answer = { name: "名前を付けて保存", hwnd: DIALOG };
 }
-beforeEach(() => { blocker.answer = null; });
+beforeEach(() => {
+  blocker.answer = null;
+  vi.mocked(resolver.resolveWindowTarget).mockImplementation((async ({ windowTitle }: { windowTitle?: string }) => ({ title: windowTitle, warnings: [] })) as never);
+});
 
 describe("internal #380 — keyboard and a window its dialog has disabled", () => {
   it("type is refused, nothing is focused, and the dialog is named", async () => {
@@ -197,24 +201,45 @@ describe("internal #380 — keyboard and a window its dialog has disabled", () =
     expect(r.context.method).toBe("background");
   });
 
-  it("disabled with nothing live blocking it (its own work, or a minimized owner) is brought forward as before", async () => {
+  it("disabled with no dialog showing (a minimized owner, win2 E3) is refused, with no dialog named", async () => {
     blocker.answer = null;
-    mockEnum
-      .mockReturnValueOnce([disabled()])
-      .mockReturnValueOnce([disabled(true)]);
-    const r = parseResult(await keyboardPressHandler({ keys: "a", windowTitle: "無題 - メモ帳", method: "foreground", trackFocus: false, settleMs: 0 }));
-    expect(r.code).not.toBe("WindowBlockedByDialog");
-    expect(mockRestore).toHaveBeenCalled();
+    mockEnum.mockReturnValue([{ ...disabled(), isMinimized: true }]);
+    const r = parseResult(await keyboardTypeHandler({ text: "m954", windowTitle: "無題 - メモ帳", method: "foreground", trackFocus: false, settleMs: 0 } as never));
+    expect(r.code).toBe("WindowBlockedByDialog");
+    expect(r.context.dialogHwnd).toBeUndefined();
+    expect(r.error).toMatch(/no dialog of its is showing/);
+    expect(r.suggest.join(" ")).toMatch(/focus_window/);
+    expect(mockRestore).not.toHaveBeenCalled();
   });
 
-  it("a blocker read that throws decides nothing: brought forward as before", async () => {
+  it("a blocker read that throws still refuses the disabled window, naming no dialog", async () => {
     blocker.answer = "throw";
-    mockEnum
-      .mockReturnValueOnce([disabled()])
-      .mockReturnValueOnce([disabled(true)]);
+    mockEnum.mockReturnValue([disabled()]);
     const r = parseResult(await keyboardPressHandler({ keys: "a", windowTitle: "無題 - メモ帳", method: "foreground", trackFocus: false, settleMs: 0 }));
-    expect(r.code).not.toBe("WindowBlockedByDialog");
-    expect(mockRestore).toHaveBeenCalled();
+    expect(r.code).toBe("WindowBlockedByDialog");
+    expect(r.context.dialogHwnd).toBeUndefined();
+  });
+
+  describe("an explicit hwnd the resolver moved onto the dialog (H3 case 5; win2 D4 typed into the dialog's field)", () => {
+    const redirect = () => vi.mocked(resolver.resolveWindowTarget).mockImplementation(async ({ hwnd, windowTitle }) =>
+      hwnd === "100"
+        ? { title: "名前を付けて保存", hwnd: DIALOG, warnings: ["parent_disabled_prefer_popup"] }
+        : { title: windowTitle!, warnings: [] }) as never;
+    for (const [name, call] of [
+      ["type", () => keyboardTypeHandler({ text: "w954", hwnd: "100", method: "foreground", trackFocus: false, settleMs: 0 } as never)],
+      ["press", () => keyboardPressHandler({ keys: "a", hwnd: "100", method: "foreground", trackFocus: false, settleMs: 0 } as never)],
+      ["sequence", () => keyboardSequenceHandler({ steps: [{ keys: "shift" }], hwnd: "100", trackFocus: false, settleMs: 0 } as never)],
+    ] as const) {
+      it(`${name} is refused, naming the owner and the dialog`, async () => {
+        redirect();
+        mockEnum.mockReturnValue([enabled()]);
+        const r = parseResult(await call());
+        expect(r.code).toBe("WindowBlockedByDialog");
+        expect(r.context).toMatchObject({ hwnd: "100", dialogHwnd: "555", dialogTitle: "名前を付けて保存" });
+        expect(mockRestore).not.toHaveBeenCalled();
+        expect(mockPost).not.toHaveBeenCalled();
+      });
+    }
   });
 
   it("on another virtual desktop as well, the desktop is what is said (as on the flash road)", async () => {

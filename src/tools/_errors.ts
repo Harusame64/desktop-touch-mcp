@@ -380,6 +380,7 @@ const SUGGESTS: Record<string, string[]> = {
     "Nothing was focused or sent: the window takes no input while the dialog it opened is in front.",
     "To type into the dialog, pass context.dialogHwnd as hwnd (context.dialogTitle names it; a title is matched as a substring and can pick another window).",
     "To type into the window itself, the dialog has to be finished or closed first — if it is the user's, ask them.",
+    "No context.dialogHwnd: no dialog of the window is showing. It may be minimized together with its dialog — bring it back (focus_window) and look (desktop_state hasModal) before typing again.",
   ],
   // ADR-029: a click / move / drag aimed at a point that is on no monitor.
   // Since Phase 2a mouse input reaches every monitor, so this is almost always

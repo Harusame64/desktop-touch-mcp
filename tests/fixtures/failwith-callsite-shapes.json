@@ -76,7 +76,7 @@
   "samples": [
     {
       "file": "src/tools/_blocked-by-dialog.ts",
-      "line": 52,
+      "line": 75,
       "tool": "(dynamic)",
       "errKind": "new-error",
       "contextShape": "object-plain"
@@ -321,42 +321,42 @@
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 1905,
+      "line": 1908,
       "tool": "keyboard:type",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2483,
+      "line": 2486,
       "tool": "keyboard:type",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3009,
+      "line": 3015,
       "tool": "keyboard:press",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3176,
+      "line": 3182,
       "tool": "keyboard:press",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3492,
+      "line": 3501,
       "tool": "keyboard:sequence",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3659,
+      "line": 3668,
       "tool": "keyboard:sequence",
       "errKind": "expression",
       "contextShape": "object-plain"

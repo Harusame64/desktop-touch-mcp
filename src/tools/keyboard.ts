@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { keyboard, withKeyboardLock, rawKeyboard } from "../engine/nutjs.js";
 import { parseKeys } from "../utils/key-map.js";
 import { assertKeyComboSafe } from "../utils/key-safety.js";
-import { enumWindowsInZOrder, getWindowClassName, restoreAndFocusWindow, getWindowRectByHwnd, getForegroundHwnd, getThreadFocus } from "../engine/win32.js";
+import { enumWindowsInZOrder, getWindowClassName, restoreAndFocusWindow, getWindowRectByHwnd, getForegroundHwnd, getThreadFocus, getWindowTitleW } from "../engine/win32.js";
 import { nativeWin32, hasNativeTypeViaClipboard } from "../engine/native-engine.js";
 import type { NativeTypeViaClipboardResult } from "../engine/native-types.js";
 // ADR-033: the fallback's command-line ceiling, the shared give-up budget and
@@ -93,7 +93,7 @@ export function pinnedHandle(
 import { resolveWindowTarget } from "./_resolve-window.js";
 import { parseWindowHandle } from "../engine/aim.js";
 import { offDesktopTarget, offDesktopFailure, type OffDesktopTarget } from "./_off-desktop.js";
-import { blockedByDialogTarget, blockedByDialogFailure, type BlockedByDialogTarget } from "./_blocked-by-dialog.js";
+import { blockedByDialogTarget, blockedByDialogFailure, redirectedToDialog, type BlockedByDialogTarget } from "./_blocked-by-dialog.js";
 import { activeHwnd, wtAfterFocus, wtBeforeFocus, wtCheckDeps, type WtGuardRefusal } from "./_wt-foreground-paste.js";
 import { readWtTab, wtRefusalSentence, type WtTab } from "./_wt-terminal-checks.js";
 import {
@@ -1706,6 +1706,9 @@ export const keyboardTypeHandler = async ({
     // Resolve hwnd / @active → effective window title (only when not using a fixId)
     const askedTitle = effectiveWindowTitle;
     const resolvedWin = !fixId ? await resolveWindowTarget({ hwnd, windowTitle: effectiveWindowTitle }) : null;
+    // internal #380: an explicit hwnd that the resolver moved onto the window's dialog is refused.
+    const redirected = redirectedToDialog(hwnd, resolvedWin, getWindowTitleW);
+    if (redirected) return blockedByDialogFailure("keyboard:type", redirected, { lensId });
     if (resolvedWin) effectiveWindowTitle = resolvedWin.title;
 
     // ADR-036 — the one handle this call is pinned to: focus matches it, the
@@ -2977,6 +2980,9 @@ export const keyboardPressHandler = async ({
 
     // Resolve hwnd / @active → effective window title
     const resolvedWin = await resolveWindowTarget({ hwnd, windowTitle });
+    // internal #380: an explicit hwnd that the resolver moved onto the window's dialog is refused.
+    const redirected = redirectedToDialog(hwnd, resolvedWin, getWindowTitleW);
+    if (redirected) return blockedByDialogFailure("keyboard:press", redirected, { lensId });
     const effectiveWindowTitle = resolvedWin?.title ?? windowTitle;
 
     // ADR-036 — the pinned handle. See the derivation in keyboard:type for why
@@ -3443,6 +3449,9 @@ export const keyboardSequenceHandler = async ({
 
     const askedTitle = effectiveWindowTitle;
     const resolvedWin = !fixId ? await resolveWindowTarget({ hwnd, windowTitle: effectiveWindowTitle }) : null;
+    // internal #380: an explicit hwnd that the resolver moved onto the window's dialog is refused.
+    const redirected = redirectedToDialog(hwnd, resolvedWin, getWindowTitleW);
+    if (redirected) return blockedByDialogFailure("keyboard:sequence", redirected, { lensId });
     if (resolvedWin) effectiveWindowTitle = resolvedWin.title;
 
     // ADR-036 — the pinned handle, hoisted out of the focus block below so the

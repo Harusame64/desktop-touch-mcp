@@ -13,10 +13,8 @@
  * or spent, and refuses instead.
  *
  * The blocker is found as desktop_act's modal check finds it (`_window-blocker.ts`): the live window
- * of the disabled window's owner family, else of its thread. When nothing live blocks it — a window
- * disabled for its own work, or a minimized owner whose dialog is hidden with it — this answers null
- * and the call goes on as before (bringing a minimized owner back brings its dialog back). A read
- * that throws decides nothing.
+ * of the disabled window's owner family, else of its thread. When none is live (a minimized owner
+ * whose dialog is hidden with it), the window is refused without a dialog to name.
  */
 
 import { failWith } from "./_errors.js";
@@ -27,20 +25,45 @@ import { buildEnvelopeFor } from "../engine/perception/registry.js";
 export interface BlockedByDialogTarget {
   hwnd: bigint;
   title: string;
-  /** The window that holds the input: its title, else its class name, else "dialog". */
-  dialog: { hwnd: bigint; name: string };
+  /**
+   * The window that holds the input: its title, else its class name, else "dialog". Null when none
+   * is live — a minimized owner whose dialog is hidden with it. Such a window is refused all the
+   * same: restored, it stayed disabled and the keys went nowhere (win2, dev/954-hw 649e581c).
+   */
+  dialog: { hwnd: bigint; name: string } | null;
 }
 
-/** `w` as the enumeration lists it: `isEnabled` is false only when the OS said so. */
+/**
+ * `w` as the enumeration lists it: `isEnabled` is false only when the OS said so. A disabled window
+ * takes no keyboard input, whatever disabled it, so every one is refused; the dialog is named when
+ * one is live.
+ */
 export function blockedByDialogTarget(w: { hwnd: bigint; title: string; isEnabled?: boolean }): BlockedByDialogTarget | null {
   if (w.isEnabled !== false) return null;
-  let blocker: { name: string; hwnd: bigint } | null;
+  let dialog: BlockedByDialogTarget["dialog"] = null;
   try {
-    blocker = liveBlockerOf(w.hwnd);
-  } catch {
-    return null;
-  }
-  return blocker === null ? null : { hwnd: w.hwnd, title: w.title, dialog: blocker };
+    dialog = liveBlockerOf(w.hwnd);
+  } catch { /* unnamed */ }
+  return { hwnd: w.hwnd, title: w.title, dialog };
+}
+
+/**
+ * An explicit `hwnd` naming a window its dialog has disabled is handed back as the DIALOG by
+ * `resolveWindowTarget` (`parent_disabled_prefer_popup`, H3 case 5 — kept for click_element). For
+ * the keyboard that typed into the dialog's file-name field, a window the call did not name (win2,
+ * dev/954-hw 649e581c), so it is refused as the windowTitle road is.
+ */
+export function redirectedToDialog(
+  hwndArg: string | undefined,
+  resolved: { hwnd: bigint; title: string; warnings: readonly string[] } | null | undefined,
+  ownerTitle: (h: bigint) => string,
+): BlockedByDialogTarget | null {
+  if (hwndArg === undefined || !resolved?.warnings.includes("parent_disabled_prefer_popup")) return null;
+  let owner: bigint;
+  try { owner = BigInt(hwndArg); } catch { return null; }
+  let title = "";
+  try { title = ownerTitle(owner); } catch { /* unnamed */ }
+  return { hwnd: owner, title, dialog: { hwnd: resolved.hwnd, name: resolved.title } };
 }
 
 export function blockedByDialogFailure(
@@ -51,15 +74,17 @@ export function blockedByDialogFailure(
   const env = opts.lensId ? buildEnvelopeFor(opts.lensId, { toolName }) : null;
   return failWith(
     new Error(
-      "WindowBlockedByDialog: the target window is disabled while a dialog it opened is in front, and " +
-        "it takes no input until the dialog closes. Nothing was focused or sent.",
+      blocked.dialog
+        ? "WindowBlockedByDialog: the target window is disabled while a dialog it opened is in front, and " +
+            "it takes no input until the dialog closes. Nothing was focused or sent."
+        : "WindowBlockedByDialog: the target window is disabled and takes no input, and no dialog of its is " +
+            "showing (it may be minimized with the window). Nothing was focused or sent.",
     ),
     toolName,
     {
       hwnd: String(blocked.hwnd),
       windowTitle: blocked.title,
-      dialogHwnd: String(blocked.dialog.hwnd),
-      dialogTitle: blocked.dialog.name,
+      ...(blocked.dialog && { dialogHwnd: String(blocked.dialog.hwnd), dialogTitle: blocked.dialog.name }),
       ...opts.extra,
       ...(env && { _perceptionForPost: env }),
     },

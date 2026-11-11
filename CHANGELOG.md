@@ -30,7 +30,8 @@
   Save As open, `keyboard` type, press and sequence named at Notepad brought it in front of the dialog, reported
   success, and typed nothing (with `forceFocus` and `use_clipboard` too). `method: 'background'`, a pinned `hwnd` and
   `foreground_flash` typed into the dialog's file-name field instead. They now answer `WindowBlockedByDialog` before
-  anything is focused or sent; `context.dialogHwnd` names the dialog to type into instead (internal #380).
+  anything is focused or sent; `context.dialogHwnd` names the dialog to type into instead. A disabled window whose
+  dialog is not showing (minimized with it) is refused too (internal #380).
 
 ## [2.4.1] - 2026-11-11 — Pastes into Windows Terminal are checked, and more replies say when nothing happened
 
