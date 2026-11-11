@@ -7,7 +7,7 @@
 // Usage: node scripts/build-release-macos.mjs [out.zip]   (default: desktop-touch-mcp-macos-arm64.zip)
 
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,8 +18,9 @@ const OUT = resolve(process.argv[2] ?? join(ROOT, "desktop-touch-mcp-macos-arm64
 // every tree scanner (eslint, check:config-vocabulary) as if they were source.
 const REL = mkdtempSync(join(tmpdir(), "dtmcp-release-macos-"));
 const ADDON = "desktop-touch-engine.darwin-arm64.node";
-// The runtime dependencies the Windows zip carries (release.yml); sharp brings its darwin binary.
-const RUNTIME_DEPS = ["@modelcontextprotocol/sdk", "@nut-tree-fork/nut-js", "sharp", "ws", "zod"];
+// The runtime dependencies both zips carry: release/package.json, locked by release/package-lock.json
+// (internal #348); sharp brings its darwin binary.
+const RELEASE_PKG = JSON.parse(readFileSync(join(ROOT, "release", "package.json"), "utf8"));
 
 const die = (m) => {
   console.error(`[build-release-macos] FAIL — ${m}`);
@@ -40,25 +41,23 @@ if (existsSync(join(ROOT, "assets"))) cpSync(join(ROOT, "assets"), join(REL, "as
 // package.json as the Windows zip has it: main, runtime dependencies, no bin/files/scripts.
 const pkg = JSON.parse(readFileSync(join(REL, "package.json"), "utf8"));
 pkg.main = "dist/index.js";
-pkg.dependencies = Object.fromEntries(
-  RUNTIME_DEPS.map((n) => {
-    const v = pkg.devDependencies?.[n] ?? pkg.dependencies?.[n];
-    if (!v) die(`no version for ${n} in package.json`);
-    return [n, v];
-  })
-);
+pkg.dependencies = RELEASE_PKG.dependencies;
 delete pkg.bin;
 delete pkg.files;
 delete pkg.scripts;
 writeFileSync(join(REL, "package.json"), `${JSON.stringify(pkg, null, 2)}\n`);
 
 // Production dependencies installed in isolation (the repo's devDependencies must not leak in).
+// internal #348: from the committed lock, with npm ci, then audited (high or critical stops the build).
 const iso = mkdtempSync(join(tmpdir(), "dtmcp-release-"));
-writeFileSync(
-  join(iso, "package.json"),
-  JSON.stringify({ name: pkg.name, version: pkg.version, type: "module", dependencies: pkg.dependencies }, null, 2)
-);
-execFileSync("npm", ["install", "--no-package-lock", "--no-audit", "--no-fund"], { cwd: iso, stdio: "inherit" });
+for (const f of ["package.json", "package-lock.json"]) copyFileSync(join(ROOT, "release", f), join(iso, f));
+execFileSync("npm", ["ci", "--omit=dev", "--no-audit", "--no-fund"], { cwd: iso, stdio: "inherit" });
+try {
+  execFileSync("npm", ["audit", "--omit=dev", "--audit-level=high"], { cwd: iso, stdio: "inherit" });
+} catch (e) {
+  // Exit 1 is also what a failed request to the registry gives: npm's own lines above say which.
+  die(`npm audit exited ${e?.status ?? "?"}: a high or critical advisory in what the zip ships, or the audit request failed (see npm's output above)`);
+}
 const nm = join(iso, "node_modules");
 const count = existsSync(nm) ? readdirSync(nm).filter((d) => !d.startsWith(".")).length : 0;
 if (count < 5) die(`expected 5+ top-level packages in node_modules, got ${count}`);

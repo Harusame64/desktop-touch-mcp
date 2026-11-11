@@ -1,5 +1,15 @@
 version: 2
 updates:
+  # internal #348: what the release zips ship (release/package-lock.json). These packages are
+  # devDependencies at the root (the npm package is only the launcher), where Dependabot scores
+  # them "development"; here they are production. A bump here must be matched at the root, and
+  # tests/unit/release-lock-matches-the-root.test.ts goes red until it is.
+  - package-ecosystem: "npm"
+    directory: "/release"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
