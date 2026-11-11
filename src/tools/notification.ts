@@ -13,10 +13,9 @@ import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 
 export const notificationShowSchema = {
   title: z.string().max(200).describe("Notification title"),
-  // internal #377: NotifyIcon.ShowBalloonTip throws on an empty text, inside the detached PowerShell
-  // that shows the balloon, so nothing appeared and the call answered ok:true. Refused up front.
-  body: z.string().max(500).refine((s) => s.trim() !== "", { message: "body must not be empty" })
-    .describe("Notification body text (not empty: an empty balloon is not shown)"),
+  // internal #377: an empty body is refused in the handler, not here: a schema refusal reaches the
+  // caller as a bare MCP -32602 line, without this server's envelope (code, suggest) (win2, PR #948).
+  body: z.string().max(500).describe("Notification body text (not empty: an empty balloon is not shown)"),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -30,7 +29,8 @@ export const notificationShowHandler = async ({
   title: string;
   body: string;
 }): Promise<ToolResult> => {
-  // internal #377: also checked here, for callers that do not go through the schema (run_macro).
+  // internal #377: NotifyIcon.ShowBalloonTip throws on an empty text, inside the detached PowerShell that
+  // shows the balloon, so nothing appeared and the call answered ok:true. Refused before anything starts.
   if (body.trim() === "") {
     return failCode("InvalidArgs", "notification_show: body must not be empty — an empty balloon is not shown", {
       suggest: ["Give the notification a body text."],

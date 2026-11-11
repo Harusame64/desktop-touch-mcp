@@ -22,10 +22,13 @@ describe("notification_show with an empty body", () => {
     expect(execFile).not.toHaveBeenCalled();
   });
 
-  it("is refused by the schema too", () => {
+  it("is not refused by the schema, so the caller gets this server's envelope (code, suggest), not a bare -32602", () => {
     const schema = z.object(notificationShowSchema);
-    expect(schema.safeParse({ title: "t", body: "" }).success).toBe(false);
-    expect(schema.safeParse({ title: "t", body: "  " }).success).toBe(false);
-    expect(schema.safeParse({ title: "", body: "hello" }).success).toBe(true);
+    expect(schema.safeParse({ title: "t", body: "" }).success).toBe(true);
+  });
+
+  it("carries a suggest", async () => {
+    const r = parse(await notificationShowHandler({ title: "t", body: "" }));
+    expect(Array.isArray(r.suggest) && r.suggest.length > 0).toBe(true);
   });
 });
