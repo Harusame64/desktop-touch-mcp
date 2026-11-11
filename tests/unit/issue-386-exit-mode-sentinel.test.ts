@@ -168,6 +168,83 @@ describe("buildExitCommand → parseExitSentinel round-trip (simulated buffer)",
   });
 });
 
+describe("buildExitCommand — PowerShell on one line in Windows Terminal (internal #374)", () => {
+  const one = (input: string) => buildExitCommand(input, "powershell", NONCE, { oneLine: true });
+
+  it("puts the input inside try on a single line, between the two echo markers", () => {
+    const cmd = one("Get-Item x");
+    expect(cmd).not.toMatch(/[\r\n]/);
+    expect(cmd.startsWith(`<#S${NONCE}#> $global:LASTEXITCODE = $null; $dtmcp_ok = $true; try { Get-Item x; $dtmcp_ok = $? } catch { $dtmcp_ok = $false;`)).toBe(true);
+    expect(cmd.endsWith(`<#E${NONCE}#>`)).toBe(true);
+    expect(cmd).not.toContain(TOKEN);
+  });
+
+  it("prints the sentinel from a finally, so a return in the input still reports (PR codex on #942)", () => {
+    const cmd = one("if ($true) { return }; Write-Output 'work'");
+    expect(cmd).toMatch(/ finally \{ \$dtmcp_c=\$LASTEXITCODE; \('__DTMCP'\+"_EXIT_[0-9a-f]+"\)\+'\|'\+\(\[string\]\$dtmcp_c\)\+'\|'\+\$dtmcp_ok \} <#E/);
+  });
+
+  it("is the multi-line form without oneLine (a classic console, whose paste runs every line)", () => {
+    expect(buildExitCommand("Get-Item x", "powershell", NONCE).split("\n")).toHaveLength(3);
+  });
+
+  it("drops trailing semicolons and spaces of the input, so no empty statement is made", () => {
+    expect(one("Get-Item x ;  ")).toContain("try { Get-Item x; $dtmcp_ok = $? }");
+  });
+
+  it.each(["a\nb", "a\r\nb", "Get-Item x # note", "echo '#1'", "echo a`;", "echo a`", ";", "icacls X:\\VMS --% /grant Dom\\HV:(CI)(OI)F"])(
+    "keeps the multi-line form for %j (a line break, a #, a trailing backtick, nothing left, stop-parsing)",
+    (input) => {
+      expect(one(input).split("\n").length).toBeGreaterThanOrEqual(3);
+    },
+  );
+
+  it("leaves bash as it was (it does not drop the Enter)", () => {
+    expect(buildExitCommand("ls", "bash", NONCE, { oneLine: true }).split("\n")).toHaveLength(2);
+  });
+
+  it("strips the whole echo even when the window wraps it into rows without the nonce (gate 2 on #942)", () => {
+    const cmd = one("Write-Output 'hi386'");
+    // An 80-column window with a real prompt: the start marker fits on the first row, the rest wraps.
+    const wrapped = `PS C:\\Users\\harus> ${cmd}`.match(/.{1,80}/g)!;
+    expect(wrapped.length).toBeGreaterThan(2);
+    expect(wrapped.slice(1, -1).some((r) => !r.includes(NONCE))).toBe(true);
+    const buffer = [...wrapped, "hi386", `${TOKEN}|0|True`, "PS C:\\>"].join("\n");
+    expect(parseExitSentinel(buffer, NONCE, "powershell")).toEqual({ matched: true, exitCode: 0 });
+    const out = stripExitArtifacts(buffer, NONCE);
+    expect(out).toBe("hi386\nPS C:\\>");
+  });
+
+  it.each([
+    [40, "\n"], [62, "\n"], [80, "\n"], [97, "\n"], [80, "\r\n"], [62, "\r\n"],
+  ])("strips the echo when a wrap at %i columns (rows ended by %j) splits a marker itself (PR codex on #942)", (cols, eol) => {
+    const cmd = one("Write-Output 'hi386'");
+    const prompt = "PS C:\\Users\\harus\\source\\repos\\some-long-project-name\\sub> "; // 62 characters
+    const wrapped = `${prompt}${cmd}`.match(new RegExp(`.{1,${cols}}`, "g"))!;
+    const buffer = [...wrapped, "hi386", `${TOKEN}|0|True`, "PS C:\\>"].join(eol);
+    const out = stripExitArtifacts(buffer, NONCE).replace(/\r/g, "");
+    // What this injected is gone; a row holding only the prompt, before the marker, may stay.
+    for (const injected of ["LASTEXITCODE", "dtmcp", "try {", "Out-Host", "__DTMCP", "_EXIT_", "<#"]) {
+      expect(out).not.toContain(injected);
+    }
+    expect(out.endsWith("hi386\nPS C:\\>")).toBe(true);
+  });
+
+  it("strips the rest of the echo when a read cut to its last rows starts past the start marker (PR codex on #942)", () => {
+    const cmd = one(`Write-Output '${"x".repeat(400)}'`);
+    const rows = `PS C:\\> ${cmd}`.match(/.{1,80}/g)!;
+    const buffer = [...rows.slice(3), "x-out", `${TOKEN}|0|True`, "PS C:\\>"].join("\n");
+    expect(buffer).not.toContain(`<#S${NONCE}`);
+    expect(stripExitArtifacts(buffer, NONCE)).toBe("x-out\nPS C:\\>");
+  });
+
+  it("keeps the output between the multi-line form's injected lines (no marker span there)", () => {
+    const [prologue, inputEcho, epilogueEcho] = buildExitCommand("Get-ChildItem", "powershell", NONCE).split("\n");
+    const out = stripExitArtifacts([prologue, inputEcho, "real", epilogueEcho, `${TOKEN}|0|True`].join("\n"), NONCE);
+    expect(out).toBe(`${inputEcho}\nreal`);
+  });
+});
+
 describe("buildExitProbe — epilogue-only probe (W-4 gap6: observe, never re-run)", () => {
   it("bash: contains NO command (never re-runs), and its OUTPUT round-trips to the exit code", () => {
     const probe = buildExitProbe("bash", NONCE);
