@@ -20,6 +20,12 @@
   the command, padded to the width in Windows Terminal, came back as the last line of `output`, and as all of it for a
   command that printed nothing. `output` now ends with the command's last line; what is printed after the run ends is
   not in it (internal #377).
+- **A refused `mouse_drag` no longer offers a `fixId` that clicks.** When the guard refused a drag, the reply said to
+  approve with `mouse_click({fixId})`, and that clicked the point the guard had refused instead of dragging.
+  `browser_navigate` and `browser_eval` were likewise told to approve with `browser_click`, and `set_element_value` with
+  `click_element`. A `fixId` is now offered only by the calls that accept one (`mouse_click`, `keyboard` type and
+  sequence, `click_element`, `browser_click`), and is taken only by the call it was offered to: a `keyboard` reply names
+  its action (internal #378).
 
 ## [2.4.1] - 2026-11-11 — Pastes into Windows Terminal are checked, and more replies say when nothing happened
 

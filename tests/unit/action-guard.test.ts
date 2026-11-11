@@ -27,7 +27,7 @@ vi.mock("../../src/engine/perception/guards.js", () => ({
 }));
 
 // Import after mocking
-import { runActionGuard, isAutoGuardEnabled } from "../../src/tools/_action-guard.js";
+import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix } from "../../src/tools/_action-guard.js";
 import { listEventsForTarget } from "../../src/engine/perception/target-timeline.js";
 import type { PerceptionLens, LensSpec } from "../../src/engine/perception/types.js";
 import { FluentStore } from "../../src/engine/perception/fluent-store.js";
@@ -466,5 +466,62 @@ describe("runActionGuard", () => {
     expect(ctxArg).toBeDefined();
     expect("foregroundVerified" in ctxArg).toBe(false);
   });
-});
 
+  // internal #378 spike (win2): the kinds share fix builders, so a refused mouse_drag was handed a
+  // mouse_click fix at the point it refused (approving it CLICKED there), and browser_navigate /
+  // browser_eval / set_element_value were told to approve with a tool that does something else.
+  // Each pair is the same refusal, run as the call that consumes a fix (with the action kind that call
+  // really uses) and as the call that does not.
+  describe("a fix is offered only to the call that consumes it", () => {
+    const windowIdentity = { hwnd: "12345", pid: 42, processName: "notepad.exe", processStartTimeMs: 5, titleResolved: "Untitled - Notepad" };
+    const tabIdentity = { tabId: "T1", port: 9222, url: "http://127.0.0.1/a", title: "A" };
+    const win = { kind: "window" as const, titleIncludes: "notepad" };
+    const tab = { kind: "browserTab" as const, port: 9222, tabId: "T1" };
+    type Call = { toolName: string; actionKind: "mouseClick" | "mouseDrag" | "browserCdp" | "uiaInvoke" | "uiaSetValue" | "keyboard" };
+    const cases: Array<{ consumer: Call; other: Call; failed: string; descriptor: unknown; clickCoordinates?: { x: number; y: number }; identity: unknown; changed?: string[]; hint: string }> = [
+      { consumer: { toolName: "mouse_click", actionKind: "mouseClick" }, other: { toolName: "mouse_drag", actionKind: "mouseDrag" },
+        failed: "safe.clickCoordinates", descriptor: win, clickCoordinates: { x: 200, y: 200 }, identity: windowIdentity, hint: "call mouse_click({fixId})" },
+      { consumer: { toolName: "browser_click", actionKind: "browserCdp" }, other: { toolName: "browser_navigate", actionKind: "browserCdp" },
+        failed: "browser.ready", descriptor: tab, identity: tabIdentity, hint: "call browser_click({fixId})" },
+      { consumer: { toolName: "browser_click", actionKind: "browserCdp" }, other: { toolName: "browser_eval", actionKind: "browserCdp" },
+        failed: "browser.ready", descriptor: tab, identity: tabIdentity, hint: "call browser_click({fixId})" },
+      { consumer: { toolName: "click_element", actionKind: "uiaInvoke" }, other: { toolName: "set_element_value", actionKind: "uiaSetValue" },
+        failed: "target.identityStable", descriptor: win, identity: windowIdentity, changed: ["identity"], hint: "call click_element({fixId})" },
+      { consumer: { toolName: "keyboard:type", actionKind: "keyboard" }, other: { toolName: "keyboard:press", actionKind: "keyboard" },
+        failed: "target.identityStable", descriptor: win, identity: windowIdentity, changed: ["identity"], hint: "call keyboard({action:'type', …, fixId})" },
+    ];
+    const run = async (c: (typeof cases)[number], call: Call) => {
+      mockResolveActionTarget.mockResolvedValue({
+        lens: makeFakeLens(), localStore: new FluentStore(), identity: c.identity, candidates: 1, warnings: [],
+        ...(c.changed && { changed: c.changed }),
+      });
+      mockEvaluateGuards.mockReturnValue(makeFailGuardResult(c.failed));
+      return runActionGuard({
+        toolName: call.toolName, actionKind: call.actionKind, descriptor: c.descriptor as never,
+        ...(c.clickCoordinates && { clickCoordinates: c.clickCoordinates }),
+      });
+    };
+    for (const c of cases) {
+      it(`${c.consumer.toolName} is offered it (control)`, async () => {
+        const r = await run(c, c.consumer);
+        expect(r.block).toBe(true);
+        expect(r.suggestedFix?.offeredTo).toBe(c.consumer.toolName);
+        expect(r.summary.next).toContain(c.hint);
+      });
+      it(`${c.other.toolName} is offered none`, async () => {
+        const r = await run(c, c.other);
+        expect(r.block).toBe(true);
+        expect(r.suggestedFix).toBeUndefined();
+        expect(r.summary.next).not.toMatch(/fixId/);
+      });
+    }
+
+    it("a fix offered to one keyboard action is not taken by another", async () => {
+      const r = await run(cases[4]!, { toolName: "keyboard:sequence", actionKind: "keyboard" });
+      const fixId = r.suggestedFix!.fixId;
+      expect(r.summary.next).toContain("call keyboard({action:'sequence', …, fixId})");
+      expect(validateAndPrepareFix(fixId, "keyboard", "keyboard:type")).toMatchObject({ ok: false, errorCode: "FixToolMismatch" });
+      expect(validateAndPrepareFix(fixId, "keyboard", "keyboard:sequence").errorCode).not.toBe("FixToolMismatch");
+    });
+  });
+});

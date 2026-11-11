@@ -146,13 +146,25 @@ export interface FixRevalidationResult {
  * Checks: existence+TTL, tool match, consumed, and targetFingerprint (v3 §7.2 rule 3).
  * The fix is NOT consumed here — callers must call consumeFix() after execution.
  */
+/**
+ * The calls that take a `fixId` back, as the guard names them. A fix is offered only to one of these,
+ * and only when its builder made it for that tool — so a refused mouse_drag, browser_navigate,
+ * browser_eval, set_element_value or keyboard press is never told to approve with a fix (internal
+ * #378 spike; gate 2 on #953). Add a call here when its handler starts to consume a fix.
+ */
+export const FIX_CONSUMERS = ["mouse_click", "keyboard:type", "keyboard:sequence", "click_element", "browser_click"] as const;
+
 export function validateAndPrepareFix(
   fixId: string,
-  expectedTool: SuggestedFix["tool"]
+  expectedTool: SuggestedFix["tool"],
+  consumer?: (typeof FIX_CONSUMERS)[number],
 ): FixRevalidationResult {
   const fix = resolveFix(fixId);
   if (!fix) return { ok: false, errorCode: "FixNotFoundOrExpired" };
   if (fix.tool !== expectedTool) return { ok: false, errorCode: "FixToolMismatch" };
+  if (consumer !== undefined && fix.offeredTo !== undefined && fix.offeredTo !== consumer) {
+    return { ok: false, errorCode: "FixToolMismatch" };
+  }
   if (fix.consumed) return { ok: false, errorCode: "FixAlreadyConsumed" };
   // v3 §7.2 rule 3: fingerprint must still match
   if (!revalidateFingerprint(fix)) return { ok: false, errorCode: "FixTargetMismatch" };
@@ -1149,11 +1161,18 @@ export async function runActionGuard(
       clickCoordinates,
       fixCarryingArgs
     );
-    if (fix) {
-      const stored = storeFix(fix);
+    // A fix is offered only to the tool that consumes it. The kinds share builders, so a refused
+    // mouse_drag was handed a mouse_click fix at its start (or end) point — approving it CLICKED the
+    // point the guard had just refused, instead of dragging — and browser_navigate / browser_eval, and
+    // set_element_value, were told to approve with browser_click / click_element, which do something
+    // else or nothing (internal #378 spike, win2). The tool's own retry advice stays in `next`.
+    const [refusedTool, refusedAction] = toolName.split(":");
+    const consumes = (FIX_CONSUMERS as readonly string[]).includes(toolName);
+    if (fix && consumes && fix.tool === refusedTool) {
+      const stored = storeFix({ ...fix, offeredTo: toolName });
       result.suggestedFix = stored;
-      const toolHint = fix.tool === "mouse_click" ? "mouse_click" : `${fix.tool}`;
-      result.summary.next += ` fixId="${stored.fixId}" is available — call ${toolHint}({fixId}) to approve.`;
+      const call = refusedAction ? `${refusedTool}({action:'${refusedAction}', …, fixId})` : `${refusedTool}({fixId})`;
+      result.summary.next += ` fixId="${stored.fixId}" is available — call ${call} to approve.`;
     }
   }
 
