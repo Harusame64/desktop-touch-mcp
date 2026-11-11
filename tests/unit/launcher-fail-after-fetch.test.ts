@@ -30,7 +30,7 @@ describe("failAfterFetch", () => {
     expect(calls).toEqual([]);
   });
 
-  it("after a 404 fetch, exits 1 by the loop ending, well before the grace runs out", () => {
+  it("after a 404 fetch, exits 1 without waiting out the grace (the fallback timer does not hold the loop)", () => {
     const r = runChild(`
       const server = http.createServer((_q, s) => { s.statusCode = 404; s.end("not found"); });
       await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
