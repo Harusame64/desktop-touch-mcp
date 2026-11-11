@@ -48,6 +48,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # PR codex on #940: release.yml's PowerShell runs only on a tag, and a parse error there (a
+      # `$LASTEXITCODE:` read as a scope) would have surfaced only when the release was cut. Every
+      # PowerShell block in the workflows is parsed here, on every PR.
+      - name: Parse the workflows' PowerShell blocks
+        run: npm run check:workflow-pwsh
+
       - name: Lint
         run: npm run lint
 
