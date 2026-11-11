@@ -195,6 +195,15 @@ describe("internal #372 — keyboard type to Windows Terminal through the foregr
     expect(mockRestore).toHaveBeenLastCalledWith(OTHER);
   });
 
+  it("says so when the pane did not take the focus and the user's window could not be put back", async () => {
+    mockPaneFocus.mockResolvedValue("not_focused");
+    otherRefusesFront = true;
+    const r = parseResult(await type());
+    expect(r.context).toMatchObject({ detail: "pane_not_focused", foregroundRestored: false });
+    expect(r.error).toContain("could not be put back");
+    expect(mockType).not.toHaveBeenCalled();
+  });
+
   it("refuses when the tab changed while WT came forward", async () => {
     mockTab.mockResolvedValueOnce(tab("rt-1")).mockResolvedValueOnce(tab("rt-2"));
     const r = parseResult(await type());
