@@ -1867,7 +1867,7 @@ export const terminalSendHandler = async ({
     // A server that cannot read tabs at all refuses before anything moves, minimized or not (gate 2 on #934).
     if (isWt && !wtCheckDeps().tabReaderAvailable()) return wtRefusalFailure("tab_reader_unavailable", windowTitle);
     // internal #370: the pane focus below needs this export; without it, refused before anything moves.
-    if (isWt && !terminalPaneFocusable()) return wtRefusalFailure("pane_not_focused", windowTitle);
+    if (isWt && !terminalPaneFocusable()) return wtRefusalFailure("pane_focus_unavailable", windowTitle);
     if (isWt && !win.isMinimized) {
       const read = await readWtTab(win.hwnd, wtCheckDeps());
       if (!read.ok) return wtRefusalFailure(read.why, windowTitle);
@@ -1979,6 +1979,9 @@ export const terminalSendHandler = async ({
       // tab item — so the focus is put on the tab's pane first, as the flash does (internal #230). The
       // tab must still be the one read above.
       const pane = await focusTerminalPane(win.hwnd, same.tab.runtimeId);
+      // Another window came in front during the pane's tree reads: nothing was focused, and the window
+      // the user moved to keeps the foreground — not put back (gate 2 on #936).
+      if (pane === "foreground_moved") return wtRefusalFailure("foreground_moved", windowTitle);
       if (pane !== "focused") return refuseInFront(pane === "tab_changed" ? "tab_changed" : "pane_not_focused");
       // The focus wait awaits too (up to 1 s). Nothing awaits between this and the paste.
       if (!wtIsActive(win.hwnd)) return wtRefusalFailure("foreground_moved", windowTitle);

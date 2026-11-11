@@ -44,7 +44,8 @@ export type WtRefusal =
   | "tab_not_terminal"
   | "tab_changed"
   | "foreground_moved"
-  | "pane_not_focused";
+  | "pane_not_focused"
+  | "pane_focus_unavailable";
 
 /**
  * Is this window Windows Terminal? Read by the same classifier that keeps it off the background road
@@ -138,7 +139,10 @@ export function wtRefusalSentence(why: WtRefusal, opts: { tabName?: string; left
         "after the terminal was brought in front, and the paste would have gone there. Send again.";
     case "pane_not_focused":
       return "Nothing was typed: the Windows Terminal pane did not take the keyboard focus in time (or UI Automation " +
-        "was busy, or this server's native addon is too old to move it), so the paste was not sent — it would have " +
-        "gone to another control (an open find box, a tab)." + tail;
+        "was busy), so the paste was not sent — it would have gone to another control (an open find box, a tab)." + tail;
+    case "pane_focus_unavailable":
+      return "Nothing was typed: this server's native addon is too old to put Windows Terminal's keyboard focus on " +
+        "its pane, so the paste could go to another control (an open find box, a tab). Sending again gives the same " +
+        "answer.";
   }
 }

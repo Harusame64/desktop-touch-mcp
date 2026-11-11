@@ -431,11 +431,13 @@ impl Task for WtFocusTerminalPaneTask {
             .hwnd
             .parse()
             .map_err(|e| napi::Error::from_reason(format!("wt_focus_terminal_pane: hwnd parse error: {e}")))?;
-        let outcome = win32::wt_focus::focus_terminal_pane(raw as isize, self.timeout_ms, self.expected_tab.clone());
+        // This caller does not hold the foreground: checked before SetFocus (gate 2 on #936).
+        let outcome = win32::wt_focus::focus_terminal_pane(raw as isize, self.timeout_ms, self.expected_tab.clone(), true);
         Ok(match outcome {
             win32::wt_focus::FocusOutcome::Focused => "focused",
             win32::wt_focus::FocusOutcome::TabChanged => "tab_changed",
             win32::wt_focus::FocusOutcome::NotFocused => "not_focused",
+            win32::wt_focus::FocusOutcome::ForegroundMoved => "foreground_moved",
         }
         .to_string())
     }
@@ -532,8 +534,9 @@ pub fn uia_get_selected_tab(hwnd: String) -> AsyncTask<UiaGetSelectedTabTask> {
 
 /// internal #370 — put Windows Terminal's keyboard focus on the one pane of its selected tab, and wait
 /// until UIA reports it focused (`"focused"`), the selected tab is not `expected_tab`
-/// (`"tab_changed"`), or neither within `timeout_ms` (`"not_focused"`). Call it only while the window
-/// is in front: `SetFocus` activates it.
+/// (`"tab_changed"`), another window is in front right before the focus move (`"foreground_moved"`,
+/// nothing moved), or none of these within `timeout_ms` (`"not_focused"`). Call it only while the
+/// window is in front: `SetFocus` activates it.
 #[cfg(windows)]
 #[napi]
 pub fn wt_focus_terminal_pane(

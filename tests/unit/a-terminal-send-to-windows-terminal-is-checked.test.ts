@@ -302,11 +302,23 @@ describe("internal #286 — terminal:send to Windows Terminal through the foregr
   it("refuses before anything moves when this build cannot focus the pane (an older addon)", async () => {
     mockFocusable.mockReturnValue(false);
     const r = parseResult(await send());
-    expect(r.context).toMatchObject({ detail: "pane_not_focused" });
+    expect(r.context).toMatchObject({ detail: "pane_focus_unavailable" });
+    expect(r.error).toContain("Sending again gives the same answer");
     expect(r.error).not.toContain("could not be put back");
     expect(mockRestore).not.toHaveBeenCalled();
     expect(mockTab).not.toHaveBeenCalled();
     expect(mockPaste).not.toHaveBeenCalled();
+  });
+
+  it("refuses, and does not take the foreground back, when the native side saw another window in front before SetFocus", async () => {
+    // Gate 2 on #936: SetFocus activates WT, so a window the user moved to during the pane's tree reads
+    // is checked natively; nothing was focused, and that window keeps the foreground.
+    mockPaneFocus.mockImplementation(async () => { front = OTHER; return "foreground_moved"; });
+    const r = parseResult(await send());
+    expect(r.context).toMatchObject({ detail: "foreground_moved" });
+    expect(r.context).not.toHaveProperty("foregroundRestored");
+    expect(mockPaste).not.toHaveBeenCalled();
+    expect(mockRestore).toHaveBeenCalledTimes(1);
   });
 
   it("refuses when another window came in front during the pane focus", async () => {
