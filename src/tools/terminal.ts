@@ -582,7 +582,12 @@ export function generateExitNonce(): string {
  * epilogue after an unterminated quote / here-doc / line continuation would be
  * swallowed by the open construct instead of executing.
  */
-export function buildExitCommand(input: string, shell: ExitShell, nonce: string): string {
+export function buildExitCommand(
+  input: string,
+  shell: ExitShell,
+  nonce: string,
+  opts: { oneLine?: boolean } = {},
+): string {
   const head = EXIT_TOKEN_HEAD;
   const tail = EXIT_TOKEN_TAIL_PREFIX + nonce;
   if (shell === "bash") {
@@ -591,18 +596,23 @@ export function buildExitCommand(input: string, shell: ExitShell, nonce: string)
     // multi-digit code (e.g. 127) cannot match mid-render as `1` (Codex P2).
     return `${input}\n__dtmcp_rc=$?; printf '%s%s|%d|\\n' '${head}' "${tail}" "$__dtmcp_rc"`;
   }
-  // internal #374: one line when the input allows it. After a multi-line paste, PSReadLine drops the
-  // first Enter, whenever it comes, and the epilogue line stayed on the prompt until the run timed out
-  // (win2 spike, internal 0e65af88: 5/5 for three lines, 5/5 run for the same joined with `; `). Joined
-  // the same way: `$?` after `; ` is the status of the input's last pipeline, as after a newline. Not
-  // for an input with a line break, or with a `#` (a comment would swallow the epilogue on its line):
-  // those keep the multi-line form below. The nonce is in the epilogue, so stripExitArtifacts drops the
-  // one echoed line (the command echo with it).
-  if (!/[\r\n#]/.test(input)) {
-    const body = input.replace(/[\s;]+$/, "");
+  // internal #374, `oneLine` (Windows Terminal): after a multi-line paste, PSReadLine drops the first
+  // Enter, whenever it comes, so the epilogue line stayed on the prompt and every run timed out (win2
+  // spike, internal 0e65af88: three lines left the third 5/5, joined with `; ` ran 5/5). There the
+  // command goes on one line. The input runs inside `try`: on one line a terminating error (`throw`,
+  // -ErrorAction Stop) would skip the rest of the line, epilogue included (gate 2 on #942), and `try`
+  // runs in the caller's scope. `$?` after the input is its last pipeline's status, as after a newline.
+  // `<#S…#>` / `<#E…#>` mark the two ends of the echo, which wraps in a narrow window: stripExitArtifacts
+  // drops the rows between them. Not for an input with a line break or a `#` (a comment would swallow
+  // the rest of the line), or ending in a backtick once trailing `;` are trimmed (it would escape the
+  // joining `;`): those keep the multi-line form below. A parse error in the input times out on this
+  // form, as every command did in Windows Terminal before.
+  const body = input.replace(/[\s;]+$/, "");
+  if (opts.oneLine && !/[\r\n#]/.test(input) && !body.endsWith("`") && body !== "") {
     return (
-      `$global:LASTEXITCODE = $null; ${body}; ` +
-      `$dtmcp_ok=$?; $dtmcp_c=$LASTEXITCODE; ('${head}'+"${tail}")+'|'+([string]$dtmcp_c)+'|'+$dtmcp_ok`
+      `<#S${nonce}#> $global:LASTEXITCODE = $null; $dtmcp_ok = $true; ` +
+      `try { ${body}; $dtmcp_ok = $? } catch { $dtmcp_ok = $false; $_ | Out-Host }; ` +
+      `$dtmcp_c=$LASTEXITCODE; ('${head}'+"${tail}")+'|'+([string]$dtmcp_c)+'|'+$dtmcp_ok <#E${nonce}#>`
     );
   }
   // powershell — the prologue carries a trailing `# <nonce>` comment (harmless;
@@ -1045,7 +1055,14 @@ export function resolveExitShell(
  * issue.
  */
 export function stripExitArtifacts(slice: string, nonce: string): string {
-  const kept = slice.split("\n").filter((line) => !line.includes(nonce));
+  // internal #374: the one-line PowerShell command (Windows Terminal) wraps in a narrow window, and its
+  // middle rows carry no nonce. Its echo starts with `<#S<nonce>#>` and ends with `<#E<nonce>#>`, and is
+  // printed before any output, so the rows from the first to the second are echo only (gate 2 on #942).
+  const rows = slice.split("\n");
+  const s = rows.findIndex((r) => r.includes(`<#S${nonce}#>`));
+  const e = s < 0 ? -1 : rows.findIndex((r, i) => i >= s && r.includes(`<#E${nonce}#>`));
+  if (s >= 0 && e >= s) rows.splice(s, e - s + 1);
+  const kept = rows.filter((line) => !line.includes(nonce));
   // Trim the blank edges the dropped lines can leave behind.
   return kept.join("\n").replace(/^\n+/, "").replace(/\n+$/, "");
 }
@@ -2577,7 +2594,13 @@ export const terminalRunHandler = async ({
   // exit mode sends the command WRAPPED with the completion epilogue; all other
   // modes send the raw input. (exitShell is non-null here whenever mode==='exit'.)
   const sendInput =
-    until.mode === "exit" && exitShell ? buildExitCommand(input, exitShell, exitNonce) : input;
+    until.mode === "exit" && exitShell
+      ? buildExitCommand(input, exitShell, exitNonce, {
+        // internal #374: one line into Windows Terminal (and other non-console hosts). A classic console
+        // takes the multi-line form through its own paste, where every line runs (unchanged).
+        oneLine: (() => { try { return getWindowClassName(hwnd) !== "ConsoleWindowClass"; } catch { return false; } })(),
+      })
+      : input;
 
   // Capture the baseline marker BEFORE sending. If we wait until after the send
   // returns, fast-completing commands (e.g. `echo`) may already have written
