@@ -1284,7 +1284,8 @@ export class DesktopFacade {
   validateLeaseOnly(lease: EntityLease): LeaseValidationResult {
     const session = this.registry.getByViewId(lease.viewId, this.opts.nowFn);
     if (!session) {
-      return { ok: false, reason: "entity_not_found" };
+      // internal #361: a view a later discover replaced is "re-run discover", not "the element is gone".
+      return { ok: false, reason: this.registry.isReplacedViewId(lease.viewId) ? "generation_mismatch" : "entity_not_found" };
     }
     return session.leaseStore.validate(lease, session.generation, session.entities);
   }
@@ -1302,7 +1303,12 @@ export class DesktopFacade {
     // could find its session evicted at the moment of touch.
     const session = this.registry.getByViewId(input.lease.viewId, this.opts.nowFn);
     if (!session) {
-      return { ok: false, reason: "entity_not_found", diff: [] };
+      // internal #361: as in validateLeaseOnly.
+      return {
+        ok: false,
+        reason: this.registry.isReplacedViewId(input.lease.viewId) ? "lease_generation_mismatch" : "entity_not_found",
+        diff: [],
+      };
     }
     try {
       return await session.loop.touch(input);

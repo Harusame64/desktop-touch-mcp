@@ -132,6 +132,62 @@ describe("SessionRegistry — viewId index", () => {
   });
 });
 
+describe("SessionRegistry — replaced viewIds (internal #361)", () => {
+  it("knows a viewId a later discover of a live session replaced", () => {
+    const r = new SessionRegistry();
+    const key = r.resolveKey({ hwnd: "1" });
+    r.getOrCreate(key, makeOpts());
+    r.replaceViewId(undefined, "view-first", key);
+    r.replaceViewId("view-first", "view-second", key);
+    expect(r.isReplacedViewId("view-first")).toBe(true);
+    expect(r.isReplacedViewId("view-second")).toBe(false);
+    expect(r.isReplacedViewId("never-seen")).toBe(false);
+  });
+
+  it("forgets it when its session is evicted", () => {
+    let now = 1000;
+    const r = new SessionRegistry();
+    const key = r.resolveKey({ hwnd: "1" });
+    r.getOrCreate(key, makeOpts({ nowFn: () => now }));
+    r.replaceViewId(undefined, "view-first", key);
+    r.replaceViewId("view-first", "view-second", key);
+    now = 2200;
+    r.evictStale(1000, () => now);
+    expect(r.isReplacedViewId("view-first")).toBe(false);
+    // A new session for the same target does not bring it back.
+    r.getOrCreate(key, makeOpts({ nowFn: () => now }));
+    expect(r.isReplacedViewId("view-first")).toBe(false);
+  });
+
+  it("does not retire a view whose session is gone when the replacement lands (gate 2 on #938)", () => {
+    let now = 1000;
+    const r = new SessionRegistry();
+    const key = r.resolveKey({ hwnd: "1" });
+    r.getOrCreate(key, makeOpts({ nowFn: () => now }));
+    r.replaceViewId(undefined, "view-first", key);
+    now = 2200;
+    r.evictStale(1000, () => now); // evicted while a see() was reading
+    r.replaceViewId("view-first", "view-second", key); // that see() lands
+    expect(r.getByViewId("view-first")).toBeUndefined();
+    r.getOrCreate(key, makeOpts({ nowFn: () => now }));
+    expect(r.isReplacedViewId("view-first")).toBe(false);
+  });
+
+  it("keeps at most MAX_RETIRED_VIEW_IDS, dropping the oldest", () => {
+    const r = new SessionRegistry();
+    const key = r.resolveKey({ hwnd: "1" });
+    r.getOrCreate(key, makeOpts());
+    const n = SessionRegistry.MAX_RETIRED_VIEW_IDS;
+    r.replaceViewId(undefined, "v0", key);
+    for (let i = 1; i <= n + 1; i++) r.replaceViewId(`v${i - 1}`, `v${i}`, key);
+    // v0..v(n) were replaced: n+1 of them, so v0 fell out of the bound.
+    expect(r.isReplacedViewId("v0")).toBe(false);
+    expect(r.isReplacedViewId("v1")).toBe(true);
+    expect(r.isReplacedViewId(`v${n}`)).toBe(true);
+    expect(r.isReplacedViewId(`v${n + 1}`)).toBe(false);
+  });
+});
+
 describe("SessionRegistry — eviction", () => {
   it("evictStale removes sessions older than ttlMs", () => {
     let now = 1000;

@@ -49,7 +49,7 @@ export const macActSchema = {
       expiresAtMs: z.number(),
       evidenceDigest: z.string(),
     })
-    .describe("Lease returned by desktop_discover. Re-call desktop_discover when desktop_act fails with lease_expired or entity_not_found."),
+    .describe("Lease returned by desktop_discover. Re-call desktop_discover when desktop_act fails with lease_expired, lease_generation_mismatch (a later discover of the window replaced this lease's view) or entity_not_found."),
   action: z
     .enum(["auto", "invoke", "click", "type", "setValue"])
     .optional()
