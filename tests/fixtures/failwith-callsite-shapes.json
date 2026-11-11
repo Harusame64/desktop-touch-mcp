@@ -76,7 +76,7 @@
   "samples": [
     {
       "file": "src/tools/_blocked-by-dialog.ts",
-      "line": 131,
+      "line": 133,
       "tool": "(dynamic)",
       "errKind": "new-error",
       "contextShape": "object-plain"

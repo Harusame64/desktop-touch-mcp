@@ -53,7 +53,9 @@ export interface BlockedByDialogTarget {
 /** A console, or a class that cannot be read — either way not refused (T1b; unknown goes on). */
 function mayTakeKeysWhileDisabled(hwnd: bigint): boolean {
   try {
-    return TERMINAL_WINDOW_CLASSES.has(getWindowClassName(hwnd));
+    // The class read answers "" when GetClassNameW fails (it does not throw): unread, so not refused.
+    const cls = getWindowClassName(hwnd);
+    return cls === "" || TERMINAL_WINDOW_CLASSES.has(cls);
   } catch {
     return true;
   }

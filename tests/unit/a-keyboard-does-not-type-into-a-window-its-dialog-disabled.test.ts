@@ -11,7 +11,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /** Which handles the OS reads as disabled, and which are consoles (internal #380 gates ask the handle). */
-const { gateState } = vi.hoisted(() => ({ gateState: { disabled: new Set<bigint>(), consoles: new Set<bigint>(), dead: new Set<bigint>(), lap: new Map<bigint, bigint>(), classThrows: false } }));
+const { gateState } = vi.hoisted(() => ({ gateState: { disabled: new Set<bigint>(), consoles: new Set<bigint>(), dead: new Set<bigint>(), lap: new Map<bigint, bigint>(), classThrows: false, classEmpty: false } }));
 
 // WM_CHAR delivery: supported, with a focused receiver — the background road is the one that delivers.
 vi.mock(import("../../src/engine/bg-input.js"), async (importOriginal) => {
@@ -35,6 +35,7 @@ vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
     restoreAndFocusWindow: vi.fn(),
     getWindowClassName: vi.fn((h: bigint) => {
       if (gateState.classThrows) throw new Error("class read tore");
+      if (gateState.classEmpty) return "";
       return gateState.consoles.has(h) ? "ConsoleWindowClass" : "Notepad";
     }),
     getWindowRoot: vi.fn((h: bigint) => h),
@@ -154,6 +155,7 @@ beforeEach(() => {
   gateState.dead.clear();
   gateState.lap.clear();
   gateState.classThrows = false;
+  gateState.classEmpty = false;
   mockEnum.mockReset();
   flashChannel.kind = "wm_char";
   vi.mocked(resolver.resolveWindowTarget).mockImplementation((async ({ windowTitle }: { windowTitle?: string }) => ({ title: windowTitle, warnings: [] })) as never);
@@ -332,6 +334,16 @@ describe("internal #380 — what the gates leave alone, and how they name", () =
     expect(r.error).not.toMatch(/no dialog of its is showing/);
   });
 
+
+  it("a class read that answers \"\" (GetClassNameW failed) is not refused either (PR codex on #954)", async () => {
+    withDialog();
+    gateState.classEmpty = true;
+    mockEnum
+      .mockReturnValueOnce([disabled()])
+      .mockReturnValueOnce([disabled(true)]);
+    const r = parseResult(await keyboardPressHandler({ keys: "a", windowTitle: "無題 - メモ帳", method: "foreground", trackFocus: false, settleMs: 0 }));
+    expect(r.code).not.toBe("WindowBlockedByDialog");
+  });
 
   it("a class that cannot be read is not refused (it may be a console)", async () => {
     withDialog();
