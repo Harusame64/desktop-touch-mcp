@@ -86,12 +86,7 @@ import {
   getWindowRenderState,
   getWindowRoot,
   windowIsAlive,
-  getWindowOwner,
   isWindowEnabled,
-  enumTopLevelWindowHandles,
-  getWindowThreadId,
-  getWindowTitleW,
-  getWindowClassName,
 } from "../engine/win32.js";
 import { compareAimIdentity, type Aim, type WindowIdentity } from "../engine/aim.js";
 import { probeAim } from "../engine/aim-probe.js";
@@ -394,10 +389,6 @@ export function productionFindBlockingWindow(
     row("unreadable");
     return cannotSay;
   }
-}
-
-function isPopupVisible(hwnd: bigint): boolean {
-  return getWindowRenderState(hwnd)?.visible ?? false;
 }
 
 /**
