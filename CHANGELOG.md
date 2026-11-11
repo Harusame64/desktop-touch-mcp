@@ -7,6 +7,9 @@
   tool (internal #377).
 
 ### Fixed — Windows
+- **`terminal run` that times out says the command may still be running.** It answers `ok: true` (the output was read,
+  and a failure would invite sending the command again), with nothing saying what the timeout meant. `warnings` now
+  says to read the terminal before sending anything else (internal #377).
 - **`notification_show` refuses an empty body instead of answering `ok: true` for a balloon that never appears.** Windows
   does not show a balloon with no text, and the call still reported success. A body that is empty or only spaces is
   now `InvalidArgs` (internal #377).
