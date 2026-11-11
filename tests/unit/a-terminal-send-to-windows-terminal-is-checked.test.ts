@@ -409,6 +409,15 @@ describe("internal #286 — terminal:send to Windows Terminal through the foregr
     expect((r.hints.warnings as string[]).filter((w) => /could not be checked/.test(w))).toHaveLength(1);
   });
 
+  // internal #377: a timed-out run answers ok:true (ok means the output was read), and says what that means.
+  it("run that times out says the command may still be running", async () => {
+    const r = parseResult(await terminalRunHandler({
+      windowTitle: "PowerShell", input: "echo hi", until: { mode: "pattern", pattern: "NEVER_SEEN_377" }, timeoutMs: 50,
+    } as never));
+    expect(r.completion.reason).toBe("timeout");
+    expect((r.warnings as string[]).filter((w) => /may still be running/.test(w))).toHaveLength(1);
+  });
+
   it("run carries the note too (gate 2 on #941: run kept only ok/code/context of the send)", async () => {
     vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "unknown", why: "x" });
     const r = parseResult(await terminalRunHandler({

@@ -3181,6 +3181,17 @@ export const terminalRunHandler = async ({
     }
   }
 
+  // internal #377 (2.4.1 dogfood): a run that timed out answers ok:true — ok means the output was read,
+  // and a failure would invite a wrapper to send the command again (#241). What timeout means for the
+  // command itself is said here.
+  if (completionReason === "timeout") {
+    warnings.push(
+      "The run timed out: the command may still be running, or may have stopped without the end this run " +
+      "waited for. ok:true only means the output was read. Read this terminal (terminal action:'read') before " +
+      "sending anything else to it.",
+    );
+  }
+
   // ADR-035 Phase C-0 — same advisory as the send path above.
   appendTopologyWarnings(warnings);
   const response: TerminalRunResponse = {
