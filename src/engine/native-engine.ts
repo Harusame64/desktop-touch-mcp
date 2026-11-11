@@ -460,7 +460,7 @@ export interface NativeUia {
   ): Promise<Record<string, boolean>>;
   /** internal #227 — the selected tab of a Windows Terminal window, or null. */
   uiaGetSelectedTab?(hwnd: string): Promise<NativeSelectedTab | null>;
-  /** internal #370 — focus WT's one pane of the selected tab: "focused" | "tab_changed" | "not_focused". */
+  /** internal #370 — focus WT's one pane of the selected tab: "focused" | "tab_changed" | "foreground_moved" | "not_focused". */
   wtFocusTerminalPane?(hwnd: string, timeoutMs: number, expectedTab?: string | null): Promise<string>;
   /** internal #216 — whether a classic call is still running (`uia-client-scope.ts`). */
   uiaClassicInUse?(): boolean;

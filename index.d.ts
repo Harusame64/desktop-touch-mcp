@@ -490,8 +490,9 @@ export declare function uiaGetSelectedTab(hwnd: string): Promise<SelectedTab | n
 /**
  * internal #370 — put Windows Terminal's keyboard focus on the one pane of its selected tab, and wait
  * until UIA reports it focused (`"focused"`), the selected tab is not `expected_tab`
- * (`"tab_changed"`), or neither within `timeout_ms` (`"not_focused"`). Call it only while the window
- * is in front: `SetFocus` activates it.
+ * (`"tab_changed"`), another window is in front right before the focus move (`"foreground_moved"`,
+ * nothing moved), or none of these within `timeout_ms` (`"not_focused"`). Call it only while the
+ * window is in front: `SetFocus` activates it.
  */
 export declare function wtFocusTerminalPane(hwnd: string, timeoutMs: number, expectedTab?: string | undefined | null): Promise<string>
 export interface SelectedTab {
