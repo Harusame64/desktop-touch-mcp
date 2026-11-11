@@ -381,7 +381,8 @@ function probeUrlMatches(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (/not connected|econnrefused|cdp/i.test(msg)) {
-        throw new Error(msg.startsWith("BrowserNotConnected:") ? msg : "BrowserNotConnected: " + msg, { cause: err });
+        if (msg.startsWith("BrowserNotConnected:")) throw err;
+        throw new Error("BrowserNotConnected: " + msg, { cause: err });
       }
       return null;
     }
@@ -407,7 +408,8 @@ function probeElementMatches(
       // Bubble up "browser not connected" — no point polling against a dead CDP.
       const msg = err instanceof Error ? err.message : String(err);
       if (/not connected|econnrefused|cdp/i.test(msg)) {
-        throw new Error(msg.startsWith("BrowserNotConnected:") ? msg : "BrowserNotConnected: " + msg, { cause: err });
+        if (msg.startsWith("BrowserNotConnected:")) throw err;
+        throw new Error("BrowserNotConnected: " + msg, { cause: err });
       }
       return null;
     }

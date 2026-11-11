@@ -16,7 +16,8 @@ vi.mock("../../src/utils/desktop-config.js", async (orig) => ({
 }));
 
 import { browserGetFormHandler, browserGetInteractiveHandler } from "../../src/tools/browser.js";
-import { waitUntilHandler } from "../../src/tools/wait-until.js";
+import { setBrowserSearchHook, waitUntilHandler } from "../../src/tools/wait-until.js";
+import { listTabs } from "../../src/engine/cdp-bridge.js";
 
 const realFetch = globalThis.fetch;
 
@@ -28,7 +29,7 @@ function nodeFetchFailure(): TypeError {
 beforeEach(() => {
   globalThis.fetch = vi.fn(async () => { throw nodeFetchFailure(); }) as never;
 });
-afterEach(() => { globalThis.fetch = realFetch; });
+afterEach(() => { globalThis.fetch = realFetch; setBrowserSearchHook(null); });
 
 function envelope(result: { content: Array<{ type: string; text?: string }> }): {
   ok: boolean; code: string; error: string; suggest?: string[];
@@ -62,5 +63,28 @@ describe("an unreachable CDP endpoint", () => {
     } as never));
     expect(env.code).toBe("BrowserNotConnected");
     expect(env.error).not.toContain("BrowserNotConnected: BrowserNotConnected:");
+  });
+
+  it("wait_until(element_matches) passes the declared error through as it is", async () => {
+    setBrowserSearchHook(async () => { await listTabs(9222); return []; });
+    const env = envelope(await waitUntilHandler({
+      condition: "element_matches", target: { by: "text", pattern: "Save", port: 9222 }, timeoutMs: 1000,
+    } as never));
+    expect(env.code).toBe("BrowserNotConnected");
+    expect(env.error).not.toContain("BrowserNotConnected: BrowserNotConnected:");
+  });
+});
+
+describe("a CDP endpoint that does not answer in time", () => {
+  it("is not declared BrowserNotConnected — something holds the port, and launching would start a second browser", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    }) as never;
+    const err = await listTabs(9222).then(() => null, (e: Error) => e);
+    expect(err?.message).toMatch(/^Cannot reach Chrome\/Edge CDP at port 9222/);
+    const env = envelope(await browserGetFormHandler({
+      selector: "#login-form", includeHidden: false, maxResults: 50, port: 9222, includeContext: false,
+    }));
+    expect(env.code).not.toBe("BrowserNotConnected");
   });
 });
