@@ -59,6 +59,12 @@ vi.mock("../../src/engine/uia-bridge.js", () => ({
   focusTerminalPane: vi.fn(),
 }));
 
+// internal #371: the client's own tab, read from the live process tree in production.
+vi.mock("../../src/engine/wt-own-tab.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/engine/wt-own-tab.js")>()),
+  ownTabTitle: vi.fn(async () => ({ state: "not_in_wt" })),
+}));
+
 vi.mock("../../src/engine/ocr-bridge.js", () => ({
   recognizeWindow: vi.fn(),
   ocrWordsToLines: vi.fn(),
@@ -91,6 +97,7 @@ import * as win32 from "../../src/engine/win32.js";
 import * as uia from "../../src/engine/uia-bridge.js";
 import * as bg from "../../src/engine/bg-input.js";
 import * as kb from "../../src/tools/keyboard.js";
+import * as ownTab from "../../src/engine/wt-own-tab.js";
 
 const mockEnum = vi.mocked(win32.enumWindowsInZOrder);
 const mockRestore = vi.mocked(win32.restoreAndFocusWindow);
@@ -153,6 +160,7 @@ beforeEach(() => {
     return { supported: true, className: cls, processName: cls === "" ? "" : "notepad" };
   });
   mockTab.mockResolvedValue(tab("rt-1"));
+  vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "not_in_wt" });
   mockReadable.mockReturnValue(true);
   mockFocusable.mockReturnValue(true);
   mockPaneFocus.mockResolvedValue("focused");
@@ -361,6 +369,39 @@ describe("internal #286 — terminal:send to Windows Terminal through the foregr
     expect(parseResult(await send({ method: "foreground" })).ok).toBe(true);
     expect(mockPaneFocus).not.toHaveBeenCalled();
     expect(mockFocusable).not.toHaveBeenCalled();
+  });
+
+  // internal #371
+  it("refuses the tab the client runs in before anything moves", async () => {
+    vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "title", title: "✳ PowerShell" });
+    const r = parseResult(await send());
+    expect(r.code).toBe("WindowsTerminalTargetUnsafe");
+    expect(r.context).toMatchObject({ detail: "own_tab" });
+    expect(r.error).toContain('("PowerShell")');
+    expect(mockRestore).not.toHaveBeenCalled();
+    expect(mockPaste).not.toHaveBeenCalled();
+  });
+
+  it("pastes, and says the check could not run, when the client's tab cannot be read", async () => {
+    vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "unknown", why: "the helper failed (ETIMEDOUT)" });
+    const r = parseResult(await send());
+    expect(r.ok).toBe(true);
+    expect(mockPaste).toHaveBeenCalledTimes(1);
+    expect(r.hints.warnings.filter((w: string) => /could not be checked/.test(w))).toHaveLength(1);
+  });
+
+  it("flashes, and says the check could not run, when the client's tab cannot be read", async () => {
+    vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "unknown", why: "x" });
+    const r = parseResult(await send({ method: "foreground_flash" }));
+    expect(r.ok).toBe(true);
+    expect(r.hints.warnings.join(" ")).toMatch(/could not be checked/);
+  });
+
+  it("refuses the client's tab on method:'foreground_flash' too, and does not flash", async () => {
+    vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "title", title: "PowerShell" });
+    const r = parseResult(await send({ method: "foreground_flash" }));
+    expect(r.context).toMatchObject({ detail: "own_tab", method: "foreground_flash" });
+    expect(mockFlash).not.toHaveBeenCalled();
   });
 
   it("checks the same way on method:'foreground' (which a run's exit-mode send forces)", async () => {

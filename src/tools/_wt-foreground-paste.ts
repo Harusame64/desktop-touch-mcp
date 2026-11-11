@@ -21,6 +21,7 @@
 import { enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
 import { focusTerminalPane, getSelectedTab, selectedTabReadable, terminalPaneFocusable } from "../engine/uia-bridge.js";
 import { checkWtTabInFront, readWtTab, type WtRefusal, type WtTab } from "./_wt-terminal-checks.js";
+import { ownTabTitle } from "../engine/wt-own-tab.js";
 
 /** A refused paste: nothing was typed. */
 export interface WtGuardRefusal {
@@ -49,7 +50,7 @@ export function wtIsActive(hwnd: bigint): boolean {
 
 /** The live tab readers, as `_wt-terminal-checks` takes them. */
 export function wtCheckDeps() {
-  return { tabReaderAvailable: selectedTabReadable, getSelectedTab };
+  return { tabReaderAvailable: selectedTabReadable, getSelectedTab, ownTabTitle: () => ownTabTitle() };
 }
 
 /**
@@ -58,15 +59,15 @@ export function wtCheckDeps() {
  */
 export async function wtBeforeFocus(
   win: { hwnd: bigint; isMinimized: boolean },
-): Promise<{ ok: true; before: WtTab | null } | { ok: false; refusal: WtGuardRefusal }> {
+): Promise<{ ok: true; before: WtTab | null; note?: string } | { ok: false; refusal: WtGuardRefusal }> {
   // A server that cannot read tabs at all refuses before anything moves, minimized or not (gate 2 on #934).
   if (!selectedTabReadable()) return { ok: false, refusal: { why: "tab_reader_unavailable" } };
   // The pane focus after the move needs this export; without it, refused before anything moves (#370).
   if (!terminalPaneFocusable()) return { ok: false, refusal: { why: "pane_focus_unavailable" } };
   if (win.isMinimized) return { ok: true, before: null };
   const read = await readWtTab(win.hwnd, wtCheckDeps());
-  if (!read.ok) return { ok: false, refusal: { why: read.why } };
-  return { ok: true, before: read.tab };
+  if (!read.ok) return { ok: false, refusal: { why: read.why, tabName: read.tabName } };
+  return { ok: true, before: read.tab, ...(read.note !== undefined && { note: read.note }) };
 }
 
 /**
@@ -77,9 +78,9 @@ export async function wtAfterFocus(
   hwnd: bigint,
   before: WtTab | null,
   prevFgHwnd: bigint | null,
-): Promise<{ ok: true } | { ok: false; refusal: WtGuardRefusal }> {
-  const refuseInFront = async (why: WtRefusal): Promise<{ ok: false; refusal: WtGuardRefusal }> => {
-    const tabName = before?.name;
+): Promise<{ ok: true; note?: string } | { ok: false; refusal: WtGuardRefusal }> {
+  const refuseInFront = async (why: WtRefusal, readName?: string): Promise<{ ok: false; refusal: WtGuardRefusal }> => {
+    const tabName = readName ?? before?.name;
     // WT no longer in front: the user moved to another window while this call read the tab or waited
     // for the pane's focus. That window keeps the foreground (PR codex on #936).
     if (!wtIsActive(hwnd)) return { ok: false, refusal: { why, tabName } };
@@ -108,7 +109,7 @@ export async function wtAfterFocus(
   };
 
   const same = await checkWtTabInFront(hwnd, before, wtCheckDeps());
-  if (!same.ok) return refuseInFront(same.why);
+  if (!same.ok) return refuseInFront(same.why, same.tabName);
   // The tab read awaits (up to 2 s): a window that came in front meanwhile would take the paste (PR
   // codex on #934). Not put back: that is the window the user moved to. Checked before the pane focus
   // too, whose SetFocus would take the foreground back.
@@ -121,5 +122,5 @@ export async function wtAfterFocus(
   if (pane !== "focused") return refuseInFront(pane === "tab_changed" ? "tab_changed" : "pane_not_focused");
   // The focus wait awaits too (up to 1 s). Nothing awaits between this and the caller's paste.
   if (!wtIsActive(hwnd)) return { ok: false, refusal: { why: "foreground_moved" } };
-  return { ok: true };
+  return { ok: true, ...(same.note !== undefined && { note: same.note }) };
 }

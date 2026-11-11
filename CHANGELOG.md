@@ -37,8 +37,10 @@
     `DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1`, or an old native addon). Such a server pasted into Windows Terminal
     before; it now refuses every time.
 
-  A terminal that is the window in front is not refused, so a command can still land in the tab the client runs in
-  when that tab is selected. Right before pasting, it now puts the keyboard focus on the tab's terminal pane, so an
+  A terminal that is the window in front is not refused. The tab the client runs in is: when this server runs inside
+  Windows Terminal, it reads the title of the client's console and refuses a selected tab with that name
+  (`own_tab`), whatever status symbol either one shows. When that title cannot be read, the text is sent and
+  `hints.warnings` says the check could not run (internal #371). Right before pasting, it now puts the keyboard focus on the tab's terminal pane, so an
   open find box or a focused tab item no longer takes the text (`send` answered `ok:true` with nothing run). When
   the focus does not arrive, nothing is typed (`pane_not_focused`) (internal #370). `method:'foreground_flash'`
   makes the same checks and refuses a minimized window (it does not restore one). With `focusFirst:false` nothing

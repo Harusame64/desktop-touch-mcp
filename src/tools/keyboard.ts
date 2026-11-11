@@ -1913,8 +1913,10 @@ export const keyboardTypeHandler = async ({
         return keyboardWtFailure({ why: "minimized" }, effectiveWindowTitle, { method: "foreground_flash" });
       }
       const ffTab = ffIsWt ? await readWtTab(channel.hwnd, wtCheckDeps()) : null;
-      if (ffTab && !ffTab.ok) return keyboardWtFailure({ why: ffTab.why }, effectiveWindowTitle, { method: "foreground_flash" });
+      if (ffTab && !ffTab.ok) return keyboardWtFailure({ why: ffTab.why, tabName: ffTab.tabName }, effectiveWindowTitle, { method: "foreground_flash" });
       const ffWarnings = [...warnings];
+      // internal #371: the own-tab check could not decide.
+      if (ffTab?.ok && ffTab.note !== undefined) ffWarnings.push(ffTab.note);
       if (replaceAll) {
         ffWarnings.push("ReplaceAllNotSupportedOnClipboardFlash");
       }
@@ -2691,6 +2693,8 @@ export const keyboardTypeHandler = async ({
     if (wtTarget) {
       const post = await wtAfterFocus(wtTarget.hwnd, wtTarget.before, wtTarget.prevFgHwnd);
       if (!post.ok) return keyboardWtFailure(post.refusal, effectiveWindowTitle);
+      // internal #371: the own-tab check could not decide (said once, from this read: it always runs).
+      if (post.note !== undefined) warnings.push(post.note);
     }
 
     // Not asked for Windows Terminal once its checks passed: the focus was just put on its terminal pane,

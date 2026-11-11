@@ -1396,7 +1396,7 @@ export const terminalSendHandler = async ({
         return wtRefusalFailure("minimized", win.title, {}, { method: "foreground_flash" });
       }
       const flashTab = focusFirst ? await readWtTab(channel.hwnd, wtCheckDeps()) : null;
-      if (flashTab && !flashTab.ok) return wtRefusalFailure(flashTab.why, win.title, {}, { method: "foreground_flash" });
+      if (flashTab && !flashTab.ok) return wtRefusalFailure(flashTab.why, win.title, { tabName: flashTab.tabName }, { method: "foreground_flash" });
       // ADR-035 Phase 1 — see the keyboard twin: the foreground-flash channel
       // steals focus to paste, which is the route a mis-resolved terminal
       // destination turns into a command run in the wrong shell.
@@ -1458,6 +1458,8 @@ export const terminalSendHandler = async ({
           foregroundRestoreMethod: flashResult.result?.foregroundRestoreMethod,
           clipboardRestored: flashResult.result?.clipboardRestored,
           clipboardSkippedFormats: flashResult.result?.clipboardSkippedFormats ?? [],
+          // internal #371: the own-tab check could not decide.
+          ...(flashTab?.ok && flashTab.note !== undefined && { warnings: [flashTab.note] }),
         },
       });
     }
@@ -1934,6 +1936,8 @@ export const terminalSendHandler = async ({
     if (isWt) {
       const post = await wtAfterFocus(win.hwnd, wtBefore, prevFgHwnd);
       if (!post.ok) return wtGuardFailure(post.refusal, windowTitle);
+      // internal #371: the own-tab check could not decide (said once, from this read: it always runs).
+      if (post.note !== undefined) warnings.push(post.note);
     }
 
     if (preferClipboard) {
