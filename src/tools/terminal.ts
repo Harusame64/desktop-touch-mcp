@@ -591,6 +591,20 @@ export function buildExitCommand(input: string, shell: ExitShell, nonce: string)
     // multi-digit code (e.g. 127) cannot match mid-render as `1` (Codex P2).
     return `${input}\n__dtmcp_rc=$?; printf '%s%s|%d|\\n' '${head}' "${tail}" "$__dtmcp_rc"`;
   }
+  // internal #374: one line when the input allows it. After a multi-line paste, PSReadLine drops the
+  // first Enter, whenever it comes, and the epilogue line stayed on the prompt until the run timed out
+  // (win2 spike, internal 0e65af88: 5/5 for three lines, 5/5 run for the same joined with `; `). Joined
+  // the same way: `$?` after `; ` is the status of the input's last pipeline, as after a newline. Not
+  // for an input with a line break, or with a `#` (a comment would swallow the epilogue on its line):
+  // those keep the multi-line form below. The nonce is in the epilogue, so stripExitArtifacts drops the
+  // one echoed line (the command echo with it).
+  if (!/[\r\n#]/.test(input)) {
+    const body = input.replace(/[\s;]+$/, "");
+    return (
+      `$global:LASTEXITCODE = $null; ${body}; ` +
+      `$dtmcp_ok=$?; $dtmcp_c=$LASTEXITCODE; ('${head}'+"${tail}")+'|'+([string]$dtmcp_c)+'|'+$dtmcp_ok`
+    );
+  }
   // powershell — the prologue carries a trailing `# <nonce>` comment (harmless;
   // PowerShell comments run to end-of-line, the assignment completes first) so
   // its ECHO line is nonce-scoped and stripExitArtifacts can drop it without a

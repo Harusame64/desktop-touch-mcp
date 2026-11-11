@@ -168,6 +168,37 @@ describe("buildExitCommand → parseExitSentinel round-trip (simulated buffer)",
   });
 });
 
+describe("buildExitCommand — PowerShell on one line (internal #374)", () => {
+  it("joins the prologue, a one-line input and the epilogue with '; ' on a single line", () => {
+    const cmd = buildExitCommand("Get-Item x", "powershell", NONCE);
+    expect(cmd).not.toMatch(/[\r\n]/);
+    expect(cmd.startsWith("$global:LASTEXITCODE = $null; Get-Item x; $dtmcp_ok=$?; $dtmcp_c=$LASTEXITCODE; ")).toBe(true);
+    expect(cmd).not.toContain(TOKEN);
+  });
+
+  it("drops trailing semicolons and spaces of the input, so no empty statement is made", () => {
+    expect(buildExitCommand("Get-Item x ;  ", "powershell", NONCE)).toContain("Get-Item x; $dtmcp_ok=$?");
+  });
+
+  it.each(["a\nb", "a\r\nb", "Get-Item x # note", "echo '#1'"])("keeps the multi-line form for %j (a line break or a #)", (input) => {
+    expect(buildExitCommand(input, "powershell", NONCE).split("\n").length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("leaves bash as it was (it does not drop the Enter)", () => {
+    expect(buildExitCommand("ls", "bash", NONCE).split("\n")).toHaveLength(2);
+  });
+
+  it("the one echoed line is dropped by stripExitArtifacts, and the sentinel still parses", () => {
+    const cmd = buildExitCommand("Get-ChildItem", "powershell", NONCE);
+    const buffer = [`PS C:\\> ${cmd}`, "Mode  Name", "----  ----", `${TOKEN}|0|True`, "PS C:\\>"].join("\n");
+    expect(parseExitSentinel(buffer, NONCE, "powershell")).toEqual({ matched: true, exitCode: 0 });
+    const out = stripExitArtifacts(buffer, NONCE);
+    expect(out).toContain("Mode  Name");
+    expect(out).not.toContain("__DTMCP");
+    expect(out).not.toContain("_EXIT_");
+  });
+});
+
 describe("buildExitProbe — epilogue-only probe (W-4 gap6: observe, never re-run)", () => {
   it("bash: contains NO command (never re-runs), and its OUTPUT round-trips to the exit code", () => {
     const probe = buildExitProbe("bash", NONCE);
@@ -366,8 +397,9 @@ describe("stripExitArtifacts — cosmetic removal of injected epilogue + sentine
   });
 
   it("powershell: drops the prologue echo + epilogue echo + sentinel lines", () => {
+    // An input with a `#` keeps the multi-line form (internal #374).
     const [prologue, inputEcho, epilogueEcho] = buildExitCommand(
-      "Get-ChildItem",
+      "Get-ChildItem # list",
       "powershell",
       NONCE,
     ).split("\n");
@@ -391,8 +423,9 @@ describe("stripExitArtifacts — cosmetic removal of injected epilogue + sentine
   it("powershell: keeps real output that legitimately prints the prologue literal (Codex #389 P2)", () => {
     // Only the FIRST `$global:LASTEXITCODE = $null` (the injected prologue echo)
     // is dropped; a later user-output line repeating the literal is kept.
+    // An input with a `#` keeps the multi-line form (internal #374).
     const [prologue, inputEcho, epilogueEcho] = buildExitCommand(
-      "Get-Content script.ps1",
+      "Get-Content script.ps1 # show",
       "powershell",
       NONCE,
     ).split("\n");

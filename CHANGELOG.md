@@ -76,6 +76,10 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **`terminal run` with `until:{mode:'exit'}` finishes in PowerShell inside Windows Terminal.** It timed out after 30 s
+  with `BaselineMarkerLost`, with its last line left on the prompt: after a multi-line paste, PowerShell's line
+  editor drops the first Enter. A one-line command is now sent as one line. A command with a line break or a `#`
+  is sent as before, and can still time out this way there (internal #374).
 - **`desktop_act` with a lease from a replaced view says to discover again, not that the element is gone.** A
   later `desktop_discover` of the same window replaces the view its earlier leases came from. Acting with such a
   lease was refused as `entity_not_found`, whose advice says the element may have been removed or renamed. It is
