@@ -225,6 +225,14 @@ describe("buildExitCommand — PowerShell on one line in Windows Terminal (inter
     expect(out.endsWith("hi386\nPS C:\\>")).toBe(true);
   });
 
+  it("strips the rest of the echo when a read cut to its last rows starts past the start marker (PR codex on #942)", () => {
+    const cmd = one(`Write-Output '${"x".repeat(400)}'`);
+    const rows = `PS C:\\> ${cmd}`.match(/.{1,80}/g)!;
+    const buffer = [...rows.slice(3), "x-out", `${TOKEN}|0|True`, "PS C:\\>"].join("\n");
+    expect(buffer).not.toContain(`<#S${NONCE}`);
+    expect(stripExitArtifacts(buffer, NONCE)).toBe("x-out\nPS C:\\>");
+  });
+
   it("keeps the output between the multi-line form's injected lines (no marker span there)", () => {
     const [prologue, inputEcho, epilogueEcho] = buildExitCommand("Get-ChildItem", "powershell", NONCE).split("\n");
     const out = stripExitArtifacts([prologue, inputEcho, "real", epilogueEcho, `${TOKEN}|0|True`].join("\n"), NONCE);

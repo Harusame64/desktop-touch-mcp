@@ -1065,10 +1065,13 @@ export function stripExitArtifacts(slice: string, nonce: string): string {
   const rows = slice.split("\n");
   const bare = rows.map((r) => r.replace(/\r$/, ""));
   const joined = bare.join("");
-  const sAt = joined.indexOf(`<#S${nonce}#>`);
+  const sFound = joined.indexOf(`<#S${nonce}#>`);
   const eMark = `<#E${nonce}#>`;
-  const eAt = sAt < 0 ? -1 : joined.indexOf(eMark, sAt);
-  if (sAt >= 0 && eAt >= 0) {
+  const eAt = joined.indexOf(eMark, Math.max(sFound, 0));
+  // A read cut to its last rows can start inside the echo, past the start marker (PR codex on #942): the
+  // echo is printed before any output, so everything up to the end marker is echo.
+  const sAt = sFound >= 0 ? sFound : 0;
+  if (eAt >= 0) {
     const rowOf = (offset: number): number => {
       let acc = 0;
       for (let i = 0; i < bare.length; i++) {
