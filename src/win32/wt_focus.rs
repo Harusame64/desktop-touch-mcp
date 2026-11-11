@@ -15,6 +15,7 @@
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow, GA_ROOT};
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::System::Variant::VariantClear;
 use windows::Win32::UI::Accessibility::{
@@ -38,13 +39,26 @@ pub enum FocusOutcome {
     TabChanged,
     /// Not exactly one pane, the UIA thread unavailable or past the deadline, or focus not arriving.
     NotFocused,
+    /// With `require_foreground`: right before `SetFocus`, the window in front was not this one. Nothing
+    /// was focused, so the window the user moved to keeps the foreground (gate 2 on #936).
+    ForegroundMoved,
 }
 
 /// Focus the one terminal pane of `target_hwnd_raw` and wait until UIA reports it as the focused
 /// element, up to `timeout_ms`. With `expected_tab`, the selected tab's RuntimeId must still be that
 /// one: only the selected tab's panes are in the tree, so a tab switched after the caller's last check
 /// would otherwise have its pane focused and pasted into (PR codex on #765).
-pub fn focus_terminal_pane(target_hwnd_raw: isize, timeout_ms: u32, expected_tab: Option<String>) -> FocusOutcome {
+///
+/// `require_foreground`: a caller that does not hold the foreground itself (internal #370: `terminal`'s
+/// default road, which checked it before this call) has the window in front checked again right before
+/// `SetFocus`, which would otherwise pull WT back in front of a window the user moved to during the
+/// tree reads below (gate 2 on #936). The flash holds the foreground and passes false.
+pub fn focus_terminal_pane(
+    target_hwnd_raw: isize,
+    timeout_ms: u32,
+    expected_tab: Option<String>,
+    require_foreground: bool,
+) -> FocusOutcome {
     // The deadline is fixed here, not when the UIA thread picks the task up. The wait below gives up
     // after it, but the task stays queued; a busy UIA thread could run it later, after the flash has
     // put the foreground back, and SetFocus activates WT — it would take the user's next keys
@@ -52,7 +66,7 @@ pub fn focus_terminal_pane(target_hwnd_raw: isize, timeout_ms: u32, expected_tab
     let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
     thread::execute_with_timeout(
         move |ctx: &UiaContext| -> napi::Result<FocusOutcome> {
-            Ok(focus_inner(ctx, target_hwnd_raw, deadline, expected_tab.as_deref()))
+            Ok(focus_inner(ctx, target_hwnd_raw, deadline, expected_tab.as_deref(), require_foreground))
         },
         timeout_ms + UIA_THREAD_BUFFER_MS,
     )
@@ -77,7 +91,13 @@ unsafe fn selected_tab_runtime_id(ctx: &UiaContext, root: &IUIAutomationElement)
     }
 }
 
-fn focus_inner(ctx: &UiaContext, target_hwnd_raw: isize, deadline: Instant, expected_tab: Option<&str>) -> FocusOutcome {
+fn focus_inner(
+    ctx: &UiaContext,
+    target_hwnd_raw: isize,
+    deadline: Instant,
+    expected_tab: Option<&str>,
+    require_foreground: bool,
+) -> FocusOutcome {
     use FocusOutcome::*;
     let target = HWND(target_hwnd_raw as *mut std::ffi::c_void);
     if Instant::now() >= deadline {
@@ -103,7 +123,16 @@ fn focus_inner(ctx: &UiaContext, target_hwnd_raw: isize, deadline: Instant, expe
         }
         let Ok(pane) = panes.GetElement(0) else { return NotFocused };
         // Checked again right before the call with the side effect: the tree reads above take time.
-        if Instant::now() >= deadline || pane.SetFocus().is_err() {
+        if Instant::now() >= deadline {
+            return NotFocused;
+        }
+        if require_foreground {
+            let fg = GetForegroundWindow();
+            if fg.0 != target.0 && GetAncestor(fg, GA_ROOT).0 != target.0 {
+                return ForegroundMoved;
+            }
+        }
+        if pane.SetFocus().is_err() {
             return NotFocused;
         }
         // And once more after the focus arrives (below), right before the caller pastes.

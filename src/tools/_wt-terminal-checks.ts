@@ -10,7 +10,9 @@
  * - its selected tab can be read and has exactly one pane: a split tab's paste goes to whichever pane
  *   has the focus, and a tab with no pane (WT's Settings tab) is not a terminal;
  * - the tab is still the same one after the terminal was brought in front, read by RuntimeId: a tab
- *   switched in between would take a command meant for another.
+ *   switched in between would take a command meant for another;
+ * - the keyboard focus is on that tab's pane right before the paste (internal #370): with WT's find box
+ *   open, or the focus on a tab item, the paste and the Enter go there and nothing runs.
  *
  * Not made: the window-in-front refusal. On the `desktop_act` road the question is in front while the
  * user answers, so a terminal in front is the user's own. Without a question this server puts the
@@ -42,7 +44,8 @@ export type WtRefusal =
   | "tab_not_terminal"
   | "tab_changed"
   | "foreground_moved"
-  | "pane_not_focused";
+  | "pane_not_focused"
+  | "pane_focus_unavailable";
 
 /**
  * Is this window Windows Terminal? Read by the same classifier that keeps it off the background road
@@ -95,11 +98,11 @@ export async function checkWtTabInFront(
   hwnd: bigint,
   before: WtTab | null,
   deps: WtCheckDeps,
-): Promise<{ ok: true } | { ok: false; why: WtRefusal }> {
+): Promise<{ ok: true; tab: WtTab } | { ok: false; why: WtRefusal }> {
   const now = await readWtTab(hwnd, deps);
   if (!now.ok) return now;
-  if (before === null) return { ok: true };
-  return now.tab.runtimeId === before.runtimeId ? { ok: true } : { ok: false, why: "tab_changed" };
+  if (before === null) return now;
+  return now.tab.runtimeId === before.runtimeId ? now : { ok: false, why: "tab_changed" };
 }
 
 /**
@@ -132,10 +135,14 @@ export function wtRefusalSentence(why: WtRefusal, opts: { tabName?: string; left
       return "Nothing was typed: the Windows Terminal window's selected tab changed while it was being brought " +
         `in front${opts.tabName !== undefined ? ` (it was "${opts.tabName}")` : ""}.` + tail;
     case "foreground_moved":
-      return "Nothing was typed: another window came in front while the Windows Terminal tab was being read " +
-        "after the terminal was brought in front, and the paste would have gone there. Send again.";
+      return "Nothing was typed: another window came in front while the Windows Terminal tab was being read or its " +
+        "pane focused, after the terminal was brought in front, and the paste would have gone there. Send again.";
     case "pane_not_focused":
       return "Nothing was typed: the Windows Terminal pane did not take the keyboard focus in time (or UI Automation " +
         "was busy), so the paste was not sent — it would have gone to another control (an open find box, a tab)." + tail;
+    case "pane_focus_unavailable":
+      return "Nothing was typed: this server's native addon is too old to put Windows Terminal's keyboard focus on " +
+        "its pane, so the paste could go to another control (an open find box, a tab). Sending again gives the same " +
+        "answer.";
   }
 }

@@ -70,6 +70,7 @@ export const uiaScrollByWheelAtHwnd = nativeBinding.uiaScrollByWheelAtHwnd;
 export const uiaReadScrollPercentAtHwnd = nativeBinding.uiaReadScrollPercentAtHwnd;
 export const uiaGetVirtualDesktopStatus = nativeBinding.uiaGetVirtualDesktopStatus;
 export const uiaGetSelectedTab = nativeBinding.uiaGetSelectedTab;
+export const wtFocusTerminalPane = nativeBinding.wtFocusTerminalPane;
 export const uiaClickElement = nativeBinding.uiaClickElement;
 export const uiaSetValue = nativeBinding.uiaSetValue;
 export const uiaInsertText = nativeBinding.uiaInsertText;

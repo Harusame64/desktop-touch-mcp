@@ -36,7 +36,7 @@ import { resolveBackgroundInputChannel } from "../engine/background-channel-reso
 import { parsePaneId, wtPaneTitleOf, WT_PANE_ID_SCHEMA_MAX } from "../engine/key-locker/pane-id.js";
 import { detectFocusLoss } from "./_focus.js";
 import { scanSinceMarkerNormEnd } from "./_since-marker.js";
-import { getTextViaTextPattern, getSelectedTab, selectedTabReadable } from "../engine/uia-bridge.js";
+import { getTextViaTextPattern, getSelectedTab, selectedTabReadable, terminalPaneFocusable, focusTerminalPane } from "../engine/uia-bridge.js";
 import {
   type WtTab,
   isWindowsTerminal,
@@ -1866,6 +1866,8 @@ export const terminalSendHandler = async ({
     let wtBefore: WtTab | null = null;
     // A server that cannot read tabs at all refuses before anything moves, minimized or not (gate 2 on #934).
     if (isWt && !wtCheckDeps().tabReaderAvailable()) return wtRefusalFailure("tab_reader_unavailable", windowTitle);
+    // internal #370: the pane focus below needs this export; without it, refused before anything moves.
+    if (isWt && !terminalPaneFocusable()) return wtRefusalFailure("pane_focus_unavailable", windowTitle);
     if (isWt && !win.isMinimized) {
       const read = await readWtTab(win.hwnd, wtCheckDeps());
       if (!read.ok) return wtRefusalFailure(read.why, windowTitle);
@@ -1947,12 +1949,15 @@ export const terminalSendHandler = async ({
 
     // internal #286: a tab switched while the window came forward would take the command.
     if (isWt) {
-      const same = await checkWtTabInFront(win.hwnd, wtBefore, wtCheckDeps());
-      if (!same.ok) {
-        // Put back whatever restoreFocus says: nothing was typed, and this call took the foreground
-        // (`run` sends restoreFocus:false). Said when it did not work (gate 2 on #934).
-        // Tried as the forward move is: plainly, then through AttachThreadInput (gate 2 on #934).
-        // With no window in front before, there is nothing to put back, and WT is left in front.
+      // A refusal after this call brought the terminal in front: nothing was typed, so the window the
+      // user was in is put back. Said when it did not work (gate 2 on #934). Tried as the forward move
+      // is: plainly, then through AttachThreadInput (gate 2 on #934). With no window in front before,
+      // there is nothing to put back, and WT is left in front.
+      const refuseInFront = async (why: WtRefusal) => {
+        // WT no longer in front: the user moved to another window while this call read the tab or
+        // waited for the pane's focus. That window keeps the foreground — putting the old one back
+        // would take it from them (PR codex on #936).
+        if (!wtIsActive(win.hwnd)) return wtRefusalFailure(why, windowTitle, { tabName: wtBefore?.name });
         let leftInFront = prevFgHwnd !== win.hwnd;
         if (prevFgHwnd && prevFgHwnd !== win.hwnd) {
           for (const force of [false, true]) {
@@ -1965,12 +1970,24 @@ export const terminalSendHandler = async ({
             if (!leftInFront) break;
           }
         }
-        return wtRefusalFailure(same.why, windowTitle, { tabName: wtBefore?.name, leftInFront },
+        return wtRefusalFailure(why, windowTitle, { tabName: wtBefore?.name, leftInFront },
           prevFgHwnd !== win.hwnd ? { foregroundRestored: !leftInFront } : {});
-      }
+      };
+      const same = await checkWtTabInFront(win.hwnd, wtBefore, wtCheckDeps());
+      if (!same.ok) return refuseInFront(same.why);
       // The tab read awaits (up to 2 s): a window that came in front meanwhile would take the paste
-      // and the Enter (PR codex on #934). Nothing awaits between this and the paste. Not put back:
-      // the window in front now is the one the user moved to.
+      // and the Enter (PR codex on #934). Not put back: the window in front now is the one the user
+      // moved to. Checked before the pane focus too, whose SetFocus would take the foreground back.
+      if (!wtIsActive(win.hwnd)) return wtRefusalFailure("foreground_moved", windowTitle);
+      // internal #370: the paste and the Enter go to WT's focused control — its find box when open, a
+      // tab item — so the focus is put on the tab's pane first, as the flash does (internal #230). The
+      // tab must still be the one read above.
+      const pane = await focusTerminalPane(win.hwnd, same.tab.runtimeId);
+      // Another window came in front during the pane's tree reads: nothing was focused, and the window
+      // the user moved to keeps the foreground — not put back (gate 2 on #936).
+      if (pane === "foreground_moved") return wtRefusalFailure("foreground_moved", windowTitle);
+      if (pane !== "focused") return refuseInFront(pane === "tab_changed" ? "tab_changed" : "pane_not_focused");
+      // The focus wait awaits too (up to 1 s). Nothing awaits between this and the paste.
       if (!wtIsActive(win.hwnd)) return wtRefusalFailure("foreground_moved", windowTitle);
     }
 

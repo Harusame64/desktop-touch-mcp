@@ -481,10 +481,11 @@ pub fn win32_foreground_flash_inject(
                 //      terminal pane first. Only now: SetFocus activates the window, and which
                 //      control has focus can be read only while WT is in front (win2, i230 spike).
                 if focus_terminal {
-                    terminal_focus_failed = match focus_terminal_pane(target.0 as isize, TERMINAL_FOCUS_TIMEOUT_MS, expected_tab.clone()) {
+                    terminal_focus_failed = match focus_terminal_pane(target.0 as isize, TERMINAL_FOCUS_TIMEOUT_MS, expected_tab.clone(), false) {
                         FocusOutcome::Focused => None,
                         FocusOutcome::TabChanged => Some(ForegroundFlashErrorReason::TerminalTabChanged),
-                        FocusOutcome::NotFocused => Some(ForegroundFlashErrorReason::TerminalFocusFailed),
+                        // Not asked for (require_foreground false); mapped so the match stays total.
+                        FocusOutcome::NotFocused | FocusOutcome::ForegroundMoved => Some(ForegroundFlashErrorReason::TerminalFocusFailed),
                     };
                 }
 

@@ -545,7 +545,7 @@
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 2050,
+      "line": 2067,
       "tool": "terminal:send",
       "errKind": "identifier",
       "contextShape": "object-plain"

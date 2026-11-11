@@ -38,10 +38,11 @@
     before; it now refuses every time.
 
   A terminal that is the window in front is not refused, so a command can still land in the tab the client runs in
-  when that tab is selected. `method:'foreground_flash'` makes the same checks, refuses a minimized window (it does
-  not restore one), and now puts the focus on the terminal pane before pasting, so an open find box does not take
-  the text. With `focusFirst:false` nothing is checked. `run` names the check in its `send_failed` warning
-  (internal #286).
+  when that tab is selected. Right before pasting, it now puts the keyboard focus on the tab's terminal pane, so an
+  open find box or a focused tab item no longer takes the text (`send` answered `ok:true` with nothing run). When
+  the focus does not arrive, nothing is typed (`pane_not_focused`) (internal #370). `method:'foreground_flash'`
+  makes the same checks and refuses a minimized window (it does not restore one). With `focusFirst:false` nothing
+  is checked. `run` names the check in its `send_failed` warning (internal #286).
 - **The key locker says in the diagnostic log how each watch for a password prompt ended.** After a command such as
   `ssh`, the locker watches the pane for a password prompt. A watch that ended without filling anything left no
   trace. Now every end writes one line to the diagnostic log (`kind: "key_locker_poll"`):
