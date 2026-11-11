@@ -391,6 +391,19 @@ describe("internal #286 — terminal:send method:'foreground_flash' to Windows T
     expect(r.error).toContain("could not be put back");
   });
 
+  it("says the user's window was not put back when the window in front cannot be read before or after the flash", async () => {
+    // The tab read is the last step before the flash, so from there on the foreground read throws
+    // (agy on #934: `now !== flashPrev` alone reads two failed reads as "back").
+    mockTab.mockImplementation(async () => {
+      mockEnum.mockImplementation(() => { throw new Error("enum failed"); });
+      return tab("rt-1");
+    });
+    mockFlash.mockReturnValue({ ok: false, reason: "terminal_focus_failed" } as never);
+    const r = parseResult(await flash());
+    expect(r.context).toMatchObject({ detail: "pane_not_focused", foregroundRestored: false });
+    expect(r.error).toContain("could not be put back");
+  });
+
   it("does not say so when the flash fails and the user's window is back in front", async () => {
     mockFlash.mockReturnValue({ ok: false, reason: "terminal_focus_failed" } as never);
     const r = parseResult(await flash());
