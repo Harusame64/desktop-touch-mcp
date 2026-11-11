@@ -76,6 +76,11 @@
   dialog's text box would press its default button (internal #325).
 
 ### Fixed — Windows
+- **`terminal send` into Windows Terminal runs a line that ends in a newline.** A trailing newline in the text did
+  not run it there: a single line stayed on the prompt, and text with a line break inside raised Windows
+  Terminal's multi-line paste warning, which held the paste. Both answered `ok:true`. The trailing newline is now
+  sent as the Enter when the text is pasted (typed text keeps its line breaks). Text with a line break inside also gets a warning that, in PowerShell, its last line may not
+  have run (internal #375).
 - **`terminal run` with `until:{mode:'exit'}` finishes in PowerShell inside Windows Terminal.** Every run there timed
   out after 30 s with `BaselineMarkerLost`, with its last line left on the prompt: after a multi-line paste,
   PowerShell's line editor drops the first Enter. In Windows Terminal a one-line command is now sent as one line,
