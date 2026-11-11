@@ -3,7 +3,7 @@ import { z } from "zod";
 import { showBalloonTip } from "../utils/balloon.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { failWith } from "./_errors.js";
+import { failCode, failWith } from "./_errors.js";
 import { withRichNarration } from "./_narration.js";
 import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 
@@ -13,7 +13,10 @@ import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 
 export const notificationShowSchema = {
   title: z.string().max(200).describe("Notification title"),
-  body: z.string().max(500).describe("Notification body text"),
+  // internal #377: NotifyIcon.ShowBalloonTip throws on an empty text, inside the detached PowerShell
+  // that shows the balloon, so nothing appeared and the call answered ok:true. Refused up front.
+  body: z.string().max(500).refine((s) => s.trim() !== "", { message: "body must not be empty" })
+    .describe("Notification body text (not empty: an empty balloon is not shown)"),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -27,6 +30,12 @@ export const notificationShowHandler = async ({
   title: string;
   body: string;
 }): Promise<ToolResult> => {
+  // internal #377: also checked here, for callers that do not go through the schema (run_macro).
+  if (body.trim() === "") {
+    return failCode("InvalidArgs", "notification_show: body must not be empty — an empty balloon is not shown", {
+      suggest: ["Give the notification a body text."],
+    });
+  }
   try {
     // ADR-030 Phase 1 W2: the raw NotifyIcon helper lives in
     // `src/utils/balloon.ts` (shared with the failsafe notification paths);

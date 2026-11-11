@@ -419,7 +419,7 @@
     },
     {
       "file": "src/tools/notification.ts",
-      "line": 49,
+      "line": 58,
       "tool": "notification_show",
       "errKind": "identifier",
       "contextShape": "none"
