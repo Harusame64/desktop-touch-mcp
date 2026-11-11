@@ -63,12 +63,12 @@ function fail(message) {
 }
 
 /**
- * `fail()` for a failure after this process has used `fetch`: exits 1 by letting the event loop end
+ * `fail()` for a failure that may follow a failed `fetch` (main's catch): exits 1 by letting the event loop end
  * rather than by `process.exit`. On Windows, Node 24.19.0 aborts in libuv
- * (`!(handle->flags & UV_HANDLE_CLOSING)`, async.c) when `process.exit` runs after a fetch — the user saw
+ * (`!(handle->flags & UV_HANDLE_CLOSING)`, async.c) when `process.exit` runs right after a failed fetch — the user saw
  * a native assertion and an exit code that was not 1 (internal #290: 5/5, also with the response body
  * cancelled first; exitCode instead: 5/5 exit 1, no assertion; 24.20.0 does not abort). A handle that
- * keeps the loop alive (stdin piped to a child) must not keep the launcher up, so `process.exit` still
+ * left alive by mistake must not keep the launcher up, so `process.exit` still
  * runs after `graceMs`, on a timer that does not itself hold the loop.
  *
  * @internal Exported for tests.
@@ -1094,7 +1094,10 @@ function launchServer(releaseDir) {
   }
 
   child.on("error", (error) => {
-    failAfterFetch(`Failed to start release runtime: ${error.message}`);
+    // fail(), not failAfterFetch(): an "exit" may follow an "error", and its process.exit(code ?? 0) would
+    // turn the 1 into 0 (agy on #935). process.exit after a download does not abort on 24.19 (win2: only
+    // right after a failed fetch did).
+    fail(`Failed to start release runtime: ${error.message}`);
   });
 
   child.on("exit", (code, signal) => {
