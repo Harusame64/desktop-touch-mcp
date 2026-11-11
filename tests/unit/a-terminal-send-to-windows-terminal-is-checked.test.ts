@@ -98,6 +98,7 @@ import * as uia from "../../src/engine/uia-bridge.js";
 import * as bg from "../../src/engine/bg-input.js";
 import * as kb from "../../src/tools/keyboard.js";
 import * as ownTab from "../../src/engine/wt-own-tab.js";
+import * as nut from "../../src/engine/nutjs.js";
 
 const mockEnum = vi.mocked(win32.enumWindowsInZOrder);
 const mockRestore = vi.mocked(win32.restoreAndFocusWindow);
@@ -422,6 +423,37 @@ describe("internal #286 — terminal:send to Windows Terminal through the foregr
     expect(r.context).toMatchObject({ detail: "own_tab", method: "foreground_flash" });
     expect(r.error).toContain('("PowerShell")');
     expect(mockFlash).not.toHaveBeenCalled();
+  });
+
+  // internal #375: a pasted trailing newline into WT does not run the line (dropped, or WT's multi-line
+  // paste warning holds the paste), so it becomes the Enter.
+  it("pastes a single line without its trailing newline and presses Enter instead", async () => {
+    const r = parseResult(await send({ input: "echo W1\r\n", pressEnter: false }));
+    expect(r.ok).toBe(true);
+    expect(mockPaste.mock.calls[0]![0]).toBe("echo W1");
+    expect(vi.mocked(nut.keyboard.pressKey)).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ sent: "echo W1", pressedEnter: true });
+  });
+
+  it("pastes several lines without the trailing newline, presses Enter, and says the last line may not have run", async () => {
+    const r = parseResult(await send({ input: "echo a\necho b\n", pressEnter: false }));
+    expect(mockPaste.mock.calls[0]![0]).toBe("echo a\necho b");
+    expect(vi.mocked(nut.keyboard.pressKey)).toHaveBeenCalledTimes(1);
+    expect((r.hints.warnings as string[]).some((w) => /last line may stay on the prompt/.test(w))).toBe(true);
+  });
+
+  it("leaves a single line without a trailing newline as it was, with no warning", async () => {
+    const r = parseResult(await send({ input: "echo ok", pressEnter: false }));
+    expect(mockPaste.mock.calls[0]![0]).toBe("echo ok");
+    expect(vi.mocked(nut.keyboard.pressKey)).not.toHaveBeenCalled();
+    expect(JSON.stringify(r.hints ?? {})).not.toMatch(/last line may stay/);
+  });
+
+  it("does not change the text for a window that is not WT", async () => {
+    mockClass.mockReturnValue("ConsoleWindowClass");
+    front = WT;
+    await send({ input: "echo c\n", pressEnter: false, method: "foreground" });
+    expect(mockPaste.mock.calls[0]?.[0]).toBe("echo c\n");
   });
 
   it("checks the same way on method:'foreground' (which a run's exit-mode send forces)", async () => {

@@ -1996,6 +1996,30 @@ export const terminalSendHandler = async ({
       if (post.note !== undefined) warnings.push(post.note);
     }
 
+    // internal #375 (win2 spike, internal f2cbbb0b): into Windows Terminal a pasted trailing newline does
+    // not run the line. A single line keeps it on the prompt (the newline is dropped), and text with a
+    // line break inside raises WT's multi-line paste warning, which holds the paste until it is answered.
+    // Both answered ok:true. So the trailing newlines are taken off the paste and sent as the Enter, as the
+    // flash does with its own input.
+    let sendText = input;
+    let enterAfter = pressEnter;
+    if (isWt) {
+      const trimmed = input.replace(/(?:\r?\n)+$/, "");
+      if (trimmed !== input && trimmed !== "") {
+        sendText = trimmed;
+        enterAfter = true;
+      }
+      // A line break inside: PowerShell's line editor drops the first Enter after a multi-line paste, so
+      // the last line may stay on the prompt (internal #374).
+      if (/[\r\n]/.test(sendText) && enterAfter) {
+        warnings.push(
+          "The text has more than one line, and in PowerShell inside Windows Terminal the last line may stay on the " +
+          "prompt without running. Read the terminal (terminal action:'read') before sending anything else; joining " +
+          "the commands on one line (a; b) avoids it.",
+        );
+      }
+    }
+
     if (preferClipboard) {
       let chosenKey: "ctrl+v" | "ctrl+shift+v" = pasteKey === "auto" ? "ctrl+v" : pasteKey;
       if (pasteKey === "auto") {
@@ -2007,13 +2031,13 @@ export const terminalSendHandler = async ({
       // ADR-035 Phase 1: the event is emitted inside `typeViaClipboard`, at the
       // paste boundary — the clipboard write can fail first, and a paste that
       // never happened must not be on record (Opus Round 2 P1).
-      clipboardOutcome = await typeViaClipboard(input, chosenKey, "terminal:send");
+      clipboardOutcome = await typeViaClipboard(sendText, chosenKey, "terminal:send");
     } else {
-      logDispatchSink({ sink: "sendinput", tool: "terminal:send", targetHwnd: null, payloadChars: input.length });
-      await keyboard.type(input);
+      logDispatchSink({ sink: "sendinput", tool: "terminal:send", targetHwnd: null, payloadChars: sendText.length });
+      await keyboard.type(sendText);
     }
 
-    if (pressEnter) {
+    if (enterAfter) {
       const enter = parseKeys("enter");
       await keyboard.pressKey(...enter);
       await keyboard.releaseKey(...enter);
@@ -2049,8 +2073,9 @@ export const terminalSendHandler = async ({
     appendTopologyWarnings(warnings);
     return ok({
       ok: true,
-      sent: input,
-      pressedEnter: pressEnter,
+      // What was typed and whether Enter followed: on Windows Terminal a trailing newline becomes the Enter (#375).
+      sent: sendText,
+      pressedEnter: enterAfter,
       focusRestored,
       ...(focusLost && { focusLost }),
       post: {
