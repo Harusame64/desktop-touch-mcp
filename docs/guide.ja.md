@@ -85,6 +85,7 @@ terminal({
 
 - **`shell` は明示指定推奨**（`'bash'` / `'powershell'`）。`shell:'auto'` はターミナル窓のプロセスから判定しますが、SSH / WSL の**中で**動く shell は見えません（窓はローカルホストのまま）。リモート/ネストしたセッションではリモート側の shell を渡してください（`auto` は警告を出し外側の shell を選ぶ場合があります）。プロセスを真に特定できない窓（Windows Terminal 等）は `ExitModeShellAmbiguous` を返します。
 - **first-class shell:** `bash` と `powershell`。`cmd.exe` は未対応（`ExitModeShellUnsupported`）。
+- **Windows Terminal の PowerShell では、コマンドを1行にして送ります**（複数行を貼ると、行の編集機能が直後の Enter を1回落とすため）。改行・`#`・`--%` を含む入力は複数行のまま送るため、構文として読めない入力と同じく、時間切れになることがあります。
 - **未完の構文で終わる入力は即座に reject**（`ExitModeUnsafeInput`）。閉じていない引用符 / here-doc / `$(…)` / 末尾の `\` または PowerShell バッククォートなどはハングせず弾きます。
 - exit mode は配送を自前制御するため、配送系の `sendOptions`（`method` / `preferClipboard` / `pressEnter` / `chunkSize` / `pasteKey`）は `InvalidArgs` で reject します（focus 系オプションは利用可）。
 
@@ -304,7 +305,7 @@ Windows のフォアグラウンド保護機能により、ピン固定された
 
 Windows Terminal は、前面からのキー入力しか受け取りません。裏から送った文字は無視されます。`desktop_act` が Windows Terminal の窓に打つときは、MCP クライアントの質問画面で先に利用者へ訊きます（例："Type "echo hi" into Windows Terminal (PowerShell)? Takes the foreground ~0.2 s."）。そのため、MCP の elicitation に対応したクライアント（`elicitation` の機能を名乗るもの。MCP 2025-06-18 で追加）を stdio でつないでいる必要があります。Accept なら、前面を一瞬借りて貼り付け、元の窓に戻します。貼り付けのたびに必ず訊きます。訊かずに許可する方法はありません。Decline・Esc・120 秒以内に答えがない・質問を出せないクライアント（`claude -p` や、HTTP の接続を使うクライアント）は、どれも「許可なし」です。何も打たず、`foreground_not_allowed` と、理由を書いた `detail` を返します。「許可なし」の後に、利用者に訊かずに別の道で打たないでください。質問に全文を窓の題名・選ばれているタブと一緒に出すため、文字は1行で、それらを合わせて 600 文字以内に限ります。同じ題名の窓がほかにあるときは、質問に画面のどこにある窓かを添えます。同じ場所に重なっている場合は打ちません。答えるまでの間に窓や選ばれているタブが変わった場合は、何も打ちません。ペインに分割したタブと、選ばれているタブを読めない窓には打ちません（答えている間は、どのペインに入るかを読めないため）。前面にある端末には打ちません（クライアントがそのタブで動いていると、そこに入るため）。別の窓の端末を使ってください。貼り付けの前に、端末のキーボードの焦点を入力欄へ移します。開いたままの検索窓に文字が入らないようにするためで、移せないときは何も打ちません。末尾の改行1つは Enter として送ります。毎回訊くので、エージェントは複数のコマンドを1行にまとめる（`a; b`）ほうがよいです。
 
-この質問は `desktop_act` の道でだけ出ます。`terminal(action:'run'/'send')` で Windows Terminal に送る道は、これまでどおり訊かずに前面を借りて貼り付けます。「許可なし」の後は、この道も使わないでください。
+この質問は `desktop_act` の道でだけ出ます。`terminal(action:'run'/'send')` と `keyboard(action:'type')` で Windows Terminal に送る道は、訊かずに前面を借りて貼り付けます。「許可なし」の後は、これらの道も使わないでください。訊かない代わりに、`terminal` は次の検査をします。選ばれているタブがペインに分割されている、端末でない、読めない、前面に出す間に変わった場合や、このサーバが Windows Terminal のタブをまったく読めない場合は、何も打たずに断ります（`WindowsTerminalTargetUnsafe`）。貼り付けの前に、そのタブの入力欄へキーボードの焦点を移します。開いたままの検索窓に文字が入らないようにするためで、移せないときは何も打ちません。前面にある端末は断りません（直前の `run` が前面に残した端末かもしれないため）。クライアントが動いているタブは断ります。サーバが Windows Terminal の中で動いているときは、クライアントのコンソールの題名を読み、選ばれているタブの題名がそれと同じなら断ります（`own_tab`）。題名を読めないときは送り、そのことを `hints.warnings` で伝えます。貼る文字の末尾の改行は Enter として送ります。`focusFirst:false` では何も検査しません。`keyboard(action:'type')` で Windows Terminal を対象にしたとき（`windowTitle`・`hwnd`・`@active` のどれでも）も、既定の道と `method:'foreground_flash'` の両方で同じ検査をします。ただし `terminal` と違い、クラス名を読めない窓は検査しません。
 
 ---
 

@@ -23,7 +23,7 @@ npx -y @harusame64/desktop-touch-mcp
 - **🛑 できない操作は「できた」と言わない** — 指定した欄に届かない入力、ダイアログに塞がれた窓、閉じた窓、別の仮想デスクトップの窓には、何も送らずに断り、理由と次の手を返します。`hwnd` で指した操作は、同じ題名の別の窓には届きません。
 - **🌐 深い窓まで読む（v2.1）** — UI Automation を深さ 64・500 要素まで読みます。2.0 では「読めない」と答えていた Chrome・Edge・VS Code のページ、値が欠けていた Explorer と設定、Word の本文が読めて、操作できます（例: Chrome のページは 6 要素・387 ms → 45 要素・186 ms）。
 - **🎯 Set-of-Marks（SoM）ビジュアルフォールバック** — ゲーム・RDP・アクセシビリティの木を持たないアプリなど、UIA が見えない窓でも、`desktop_discover` と `screenshot(detail="text")` が Hybrid Non-CDP パイプラインに切り替えます。Rust 画像前処理 → Windows OCR → クラスタリング → 赤い枠線 + 番号バッジ（`[1]`、`[2]`…）付き PNG を生成し、`clickAt` 座標付きの要素リストを返します。CDP 不要。
-- **⌨️ 裏からの入力が届かない窓にも打つ** — Windows Terminal には毎回利用者に訊いてから貼り付けます（MCP の elicitation に対応したクライアントを stdio で）。Word の本文には、Word が前面でも裏でもキャレット位置に打ちます。
+- **⌨️ 裏からの入力が届かない窓にも打つ** — Windows Terminal には、`desktop_act` は毎回利用者に訊いてから（MCP の elicitation に対応したクライアントを stdio で）、`terminal` と `keyboard` はタブを確かめてから貼り付けます。Word の本文には、Word が前面でも裏でもキャレット位置に打ちます。
 - **🔐 Key Locker — SSH / sudo のパスワードをターミナルが自動入力** — 認証情報はロッカー自身のセキュアダイアログに一度だけ入力して、この PC 上に暗号化保存（Windows DPAPI）— アシスタントには一切見えません。以後は `key_locker(action='launch_console')` で開いたコンソールで `ssh` / `sudo` を実行するだけで、隠しパスワードプロンプトに自動入力されます（既定では入力毎に確認あり）。詳細は [Key Locker](docs/guide.ja.md#key-locker-ターミナル認証情報の自動入力) 参照。
 - **⚡ Rust ネイティブコア** — UIA ブリッジと画像差分を Rust（`napi-rs` + `windows-rs`）のネイティブアドオンで実装。UIA は専用スレッドから COM で直接呼び、PowerShell を起動しません。画像差分は SSE2 SIMD。アドオンが無い環境では、全関数が PowerShell に透過フォールバックします。npm ランチャーは、入れた版に対応する GitHub Release だけを取得し、Windows 用 zip を検証してから展開します。
 - **LLM ネイティブ設計** — 人間の操作を模倣するのではなく、「LLM がいかにコンテキストを消費せず高速に動けるか」を前提に設計。`run_macro` による複数操作の一括実行（API 往復の削減）と、**MPEG P-frame 方式のレイヤー差分** (`diffMode`) を組み合わせることで、無駄な画像転送や推論ループを極限まで削ぎ落とす。
