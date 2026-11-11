@@ -218,8 +218,11 @@ async function fetchTabs(port: number): Promise<CdpTab[]> {
       signal: AbortSignal.timeout(CONNECT_TIMEOUT_MS),
     });
   } catch (err) {
+    // Declared code (internal #377 item 4): Node's fetch says only "TypeError: fetch failed" — the
+    // ECONNREFUSED is in its cause, not its text — so the classifier's substring arm never fired
+    // and every browser_* tool answered a bare ToolError with no next step.
     throw new Error(
-      `Cannot reach Chrome/Edge CDP at port ${port}. ` +
+      `BrowserNotConnected: Cannot reach Chrome/Edge CDP at port ${port}. ` +
         `Make sure the browser is running with --remote-debugging-port=${port}. ` +
         `Original error: ${String(err)}`,
       { cause: err },
