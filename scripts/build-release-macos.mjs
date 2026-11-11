@@ -54,8 +54,9 @@ for (const f of ["package.json", "package-lock.json"]) copyFileSync(join(ROOT, "
 execFileSync("npm", ["ci", "--omit=dev", "--no-audit", "--no-fund"], { cwd: iso, stdio: "inherit" });
 try {
   execFileSync("npm", ["audit", "--omit=dev", "--audit-level=high"], { cwd: iso, stdio: "inherit" });
-} catch {
-  die("npm audit found a high or critical advisory in what the zip ships");
+} catch (e) {
+  // Exit 1 is also what a failed request to the registry gives: npm's own lines above say which.
+  die(`npm audit exited ${e?.status ?? "?"}: a high or critical advisory in what the zip ships, or the audit request failed (see npm's output above)`);
 }
 const nm = join(iso, "node_modules");
 const count = existsSync(nm) ? readdirSync(nm).filter((d) => !d.startsWith(".")).length : 0;

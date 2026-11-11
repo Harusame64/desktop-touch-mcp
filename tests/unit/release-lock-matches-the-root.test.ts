@@ -1,7 +1,8 @@
 /**
  * internal #348 — the release zips ship what release/package-lock.json pins (installed with npm ci by
  * release.yml and scripts/build-release-macos.mjs). The tests and the dev server run on the root lock.
- * The versions they share must be the same, or the zip ships code nothing here ran.
+ * Every package the release lock ships must be at the version the root lock runs, or the zip ships code
+ * nothing here ran. `node scripts/sync-release-lock.mjs` regenerates the release lock from the root one.
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -38,6 +39,15 @@ describe("release/package-lock.json", () => {
       Object.entries(rootPkg.overrides as Record<string, unknown>).filter(([, v]) => typeof v === "string"),
     );
     expect(releasePkg.overrides).toEqual(rootOverrides);
+  });
+
+  it("pins every package it ships to the version the root lock runs, not only the direct ones (gate 2 on #940)", () => {
+    // Regenerate with `node scripts/sync-release-lock.mjs` after a change to the root lock.
+    const drift = Object.entries(releaseLock.packages as Record<string, { version?: string }>)
+      .filter(([k]) => k.startsWith("node_modules/"))
+      .filter(([k, v]) => rootLock.packages[k]?.version !== v.version)
+      .map(([k, v]) => `${k}: release ${v.version} / root ${rootLock.packages[k]?.version ?? "absent"}`);
+    expect(drift).toEqual([]);
   });
 
   it("locks the Windows and the macOS binaries the zips need", () => {

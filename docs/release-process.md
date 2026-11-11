@@ -874,9 +874,12 @@ critical advisory.
 - **Keep the two in step:** `tests/unit/release-lock-matches-the-root.test.ts`
   (run in CI's macOS job) fails when a runtime package's locked version or range
   differs between `release/` and the root, or when the top-level `overrides`
-  differ. A Dependabot bump on one side is red until the other side matches.
-  Bump both: `npm install --package-lock-only --ignore-scripts <pkg>@<version>`
-  in `release/`, and the usual install at the root.
+  differ, and when any package the release lock ships is at another version than
+  the root lock's. Change the root first (the usual install), then run
+  `node scripts/sync-release-lock.mjs`: it regenerates `release/package-lock.json`
+  from the root lock, so every shipped package is at the version the tests run.
+  A Dependabot PR on `/release` alone is therefore red; apply its bump at the root
+  and run the script.
 - **Nested overrides** (the `eslint` / `@typescript-eslint` ones) are dev-only
   and stay at the root.
 

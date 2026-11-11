@@ -160,7 +160,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Pop-Location; throw "FATAL: npm ci failed ($LASTEXITCODE)" }
           # What the zip ships is audited, not the root lock (whose runtime packages are dev-scoped).
           npm audit --omit=dev --audit-level=high 2>&1 | Write-Host
-          if ($LASTEXITCODE -ne 0) { Pop-Location; throw "FATAL: npm audit found a high or critical advisory in what the zip ships" }
+          # Exit 1 is also what a failed request to the registry gives: npm's own lines above say which.
+          if ($LASTEXITCODE -ne 0) { Pop-Location; throw "FATAL: npm audit exited $LASTEXITCODE: a high or critical advisory in what the zip ships, or the audit request failed (see npm's output above)" }
           Pop-Location
 
           # Verify node_modules was actually created
