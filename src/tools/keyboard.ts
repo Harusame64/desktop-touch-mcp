@@ -93,7 +93,7 @@ export function pinnedHandle(
 import { resolveWindowTarget } from "./_resolve-window.js";
 import { parseWindowHandle } from "../engine/aim.js";
 import { offDesktopFailure, type OffDesktopTarget } from "./_off-desktop.js";
-import { beforeForeground, beforePost, blockedByDialogFailure, redirectedToDialog, type BlockedByDialogTarget } from "./_blocked-by-dialog.js";
+import { beforeForeground, beforePost, blockedByDialogFailure, type BlockedByDialogTarget } from "./_blocked-by-dialog.js";
 import { activeHwnd, wtAfterFocus, wtBeforeFocus, wtCheckDeps, type WtGuardRefusal } from "./_wt-foreground-paste.js";
 import { readWtTab, wtRefusalSentence, type WtTab } from "./_wt-terminal-checks.js";
 import {
@@ -1313,13 +1313,15 @@ async function focusWindowForKeyboard(
     // The window this call will bring forward, and its gate (`_blocked-by-dialog.ts`): another
     // virtual desktop (internal #221), then disabled by its dialog (internal #380). Both refuse
     // before anything is focused.
-    const activeMatches = !!active && matches(active);
-    const picked = activeMatches ? active : windows.find(matches);
+    const activeMatch = active && matches(active) ? active : undefined;
+    const picked = activeMatch ?? windows.find(matches);
     const gate = picked ? await beforeForeground(picked, windows, explicitHwnd === undefined ? windowTitle : undefined) : null;
-    const pickedAway = gate && "offDesktop" in gate ? gate.offDesktop : null;
     if (gate && "blockedByDialog" in gate) {
       blockedByDialog = gate.blockedByDialog;
-    } else if (activeMatches && active) {
+    } else if (gate && "offDesktop" in gate) {
+      offDesktop = gate.offDesktop;
+    } else if (activeMatch) {
+      const active = activeMatch;
       // Target is already in the foreground — nothing to do.
       if (beforeMove && !(await beforeMove(active))) {
         return { warnings, homingNotes, foregroundVerified, forceRefused, targetHwnd };
@@ -1328,10 +1330,7 @@ async function focusWindowForKeyboard(
       targetHwnd = active.hwnd;
     } else {
       const target = picked;
-      const away = pickedAway;
-      if (away) {
-        offDesktop = away;
-      } else if (target && beforeMove && !(await beforeMove(target))) {
+      if (target && beforeMove && !(await beforeMove(target))) {
         return { warnings, homingNotes, foregroundVerified, forceRefused, targetHwnd };
       } else if (target) {
         // Always verify foreground after focus so the auto-guard does not block
@@ -1704,9 +1703,6 @@ export const keyboardTypeHandler = async ({
     // Resolve hwnd / @active → effective window title (only when not using a fixId)
     const askedTitle = effectiveWindowTitle;
     const resolvedWin = !fixId ? await resolveWindowTarget({ hwnd, windowTitle: effectiveWindowTitle }) : null;
-    // internal #380: an explicit hwnd that the resolver moved onto the window's dialog is refused.
-    const redirected = redirectedToDialog(hwnd, resolvedWin);
-    if (redirected) return blockedByDialogFailure("keyboard:type", redirected, { lensId });
     if (resolvedWin) effectiveWindowTitle = resolvedWin.title;
 
     // ADR-036 — the one handle this call is pinned to: focus matches it, the
@@ -1718,9 +1714,11 @@ export const keyboardTypeHandler = async ({
     // search happened to land on would make the guard's multi-match count
     // vacuous — it would see one candidate every time, for every caller.
     //
-    // The resolver can hand back a different handle than the argument: when the
-    // named window is blocked by its own modal, it moves to the dialog — and that
-    // call is refused just above (internal #380, `redirectedToDialog`).
+    // The pinned handle can differ from the argument: when the named window is
+    // blocked by its own modal, the resolver hands back the active popup. That
+    // is the handle the keys will reach, so that is the one to pin (the reply
+    // says so: parent_disabled_prefer_popup). Kept by internal #380: a press of
+    // Escape at the owner closed its dialog this way.
     //
     // `@active` pins too (`pinnedHandle`): it names the foreground window, not a search.
     const explicitHwnd = pinnedHandle(hwnd, askedTitle, resolvedWin);
@@ -1813,7 +1811,10 @@ export const keyboardTypeHandler = async ({
       // of the dialog that disabled the window (win2). Asked before the fix is spent; the resolver
       // only reads. The clipboard_flash channel (Windows Terminal) takes the foreground and is asked
       // with the off-desktop check below.
-      if (resolveBackgroundInputChannel(target.hwnd, { allowedChannels: ["wm_char", "clipboard_flash"] }).kind === "wm_char") {
+      const channel = resolveBackgroundInputChannel(target.hwnd, {
+        allowedChannels: ["wm_char", "clipboard_flash"],
+      });
+      if (channel.kind === "wm_char") {
         const ffBlocked = beforePost(target.hwnd);
         if (ffBlocked) return blockedByDialogFailure("keyboard:type", ffBlocked, { lensId, extra: { method: "foreground_flash" } });
       }
@@ -1835,10 +1836,6 @@ export const keyboardTypeHandler = async ({
       const ffCtrlC = ctrlCRefusal(target.hwnd, effectiveText);
       if (ffCtrlC !== null) return ffCtrlC;
       const ffPerception = ffGuard.perceptionEnv;
-
-      const channel = resolveBackgroundInputChannel(target.hwnd, {
-        allowedChannels: ["wm_char", "clipboard_flash"],
-      });
 
       if (channel.kind === "unsupported") {
         return failWith(
@@ -2985,9 +2982,6 @@ export const keyboardPressHandler = async ({
 
     // Resolve hwnd / @active → effective window title
     const resolvedWin = await resolveWindowTarget({ hwnd, windowTitle });
-    // internal #380: an explicit hwnd that the resolver moved onto the window's dialog is refused.
-    const redirected = redirectedToDialog(hwnd, resolvedWin);
-    if (redirected) return blockedByDialogFailure("keyboard:press", redirected, { lensId });
     const effectiveWindowTitle = resolvedWin?.title ?? windowTitle;
 
     // ADR-036 — the pinned handle. See the derivation in keyboard:type for why
@@ -3454,9 +3448,6 @@ export const keyboardSequenceHandler = async ({
 
     const askedTitle = effectiveWindowTitle;
     const resolvedWin = !fixId ? await resolveWindowTarget({ hwnd, windowTitle: effectiveWindowTitle }) : null;
-    // internal #380: an explicit hwnd that the resolver moved onto the window's dialog is refused.
-    const redirected = redirectedToDialog(hwnd, resolvedWin);
-    if (redirected) return blockedByDialogFailure("keyboard:sequence", redirected, { lensId });
     if (resolvedWin) effectiveWindowTitle = resolvedWin.title;
 
     // ADR-036 — the pinned handle, hoisted out of the focus block below so the

@@ -28,11 +28,12 @@
   its action (internal #378).
 - **`keyboard` refuses a window that its own dialog has disabled, instead of answering `ok: true`.** With Notepad's
   Save As open, `keyboard` type, press and sequence named at Notepad brought it in front of the dialog, reported
-  success, and typed nothing (with `forceFocus` and `use_clipboard` too). `method: 'background'`, a pinned `hwnd` and
+  success, and typed nothing (with `forceFocus` and `use_clipboard` too). `method: 'background'` and
   `foreground_flash` typed into the dialog's file-name field instead. They now answer `WindowBlockedByDialog` before
   anything is focused or sent; `context.dialogHwnd` names the dialog to type into instead. A disabled window whose
-  dialog is not showing (minimized with it) is refused too. A console window is not refused: a console disabled by
-  its Properties dialog still takes the keys into its input line (internal #380).
+  dialog is not showing (minimized with it) is refused too. Unchanged: an `hwnd` naming the window still goes to its
+  dialog and says so (`parent_disabled_prefer_popup`), as for `click_element`; a console window is not refused, since
+  a console disabled by its Properties dialog still takes the keys into its input line (internal #380).
 
 ## [2.4.1] - 2026-11-11 — Pastes into Windows Terminal are checked, and more replies say when nothing happened
 

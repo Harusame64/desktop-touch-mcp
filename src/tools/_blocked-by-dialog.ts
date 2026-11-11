@@ -23,9 +23,14 @@
  * - a window whose enabled state cannot be read goes on as before (the enumeration and
  *   `isWindowEnabled` both answer "enabled" when they cannot ask).
  *
- * The dialog is named as desktop_act's modal check names it (`_window-blocker.ts`): the live window
- * of the disabled window's owner family, else of its thread. Not the last active popup, which names
- * a disabled owned window after a forced foreground (K2).
+ * The dialog is named by the window's last active popup when that one is live (visible and enabled
+ * — a modal stays enabled; a clicked modeless palette does not become it, K2), else as desktop_act's
+ * modal check names it (`_window-blocker.ts`): the live window of the owner family, else of its
+ * thread. The last active popup alone named a disabled owned window after a forced foreground (K2).
+ *
+ * An explicit `hwnd` naming such a window is NOT refused: `resolveWindowTarget` moves it onto the
+ * dialog (`parent_disabled_prefer_popup`, H3 case 5) and says so, and a press of Escape at the owner
+ * closed the dialog that way — a road that works stays (gate 2 on #954).
  */
 
 import { failWith } from "./_errors.js";
@@ -33,9 +38,8 @@ import type { ToolResult } from "./_types.js";
 import { liveBlockerOf } from "./_window-blocker.js";
 import { offDesktopTarget, type OffDesktopTarget } from "./_off-desktop.js";
 import { buildEnvelopeFor } from "../engine/perception/registry.js";
-import { getWindowClassName, getWindowRoot, getWindowTitleW, isWindowEnabled } from "../engine/win32.js";
+import { getLastActivePopup, getWindowClassName, getWindowRenderState, getWindowRoot, getWindowTitleW, isWindowEnabled, windowIsAlive } from "../engine/win32.js";
 import { TERMINAL_WINDOW_CLASSES } from "../engine/bg-input.js";
-import { parseWindowHandle } from "../engine/aim.js";
 
 export interface BlockedByDialogTarget {
   hwnd: bigint;
@@ -46,27 +50,44 @@ export interface BlockedByDialogTarget {
   dialogUnread?: true;
 }
 
-function isConsoleClass(hwnd: bigint): boolean {
+/** A console, or a class that cannot be read — either way not refused (T1b; unknown goes on). */
+function mayTakeKeysWhileDisabled(hwnd: bigint): boolean {
   try {
     return TERMINAL_WINDOW_CLASSES.has(getWindowClassName(hwnd));
   } catch {
-    return false;
+    return true;
   }
+}
+
+function lastActivePopupIfLive(owner: bigint): { hwnd: bigint; name: string } | null {
+  const popup = getLastActivePopup(owner);
+  if (popup === null || popup === owner) return null;
+  if (!isWindowEnabled(popup) || !(getWindowRenderState(popup)?.visible ?? false)) return null;
+  let title = "";
+  try { title = getWindowTitleW(popup); } catch { /* untitled */ }
+  let name = title;
+  if (name === "") { try { name = getWindowClassName(popup) || "dialog"; } catch { name = "dialog"; } }
+  return { hwnd: popup, name };
 }
 
 function blocked(hwnd: bigint, title: string): BlockedByDialogTarget {
   try {
-    return { hwnd, title, dialog: liveBlockerOf(hwnd) };
+    return { hwnd, title, dialog: lastActivePopupIfLive(hwnd) ?? liveBlockerOf(hwnd) };
   } catch {
     return { hwnd, title, dialog: null, dialogUnread: true };
   }
 }
 
+/** The one rule both gates apply to a top-level window: read disabled, and not one that takes keys. */
+function refuse(hwnd: bigint, title: string, enabled: boolean): BlockedByDialogTarget | null {
+  if (enabled) return null;
+  if (mayTakeKeysWhileDisabled(hwnd)) return null;
+  return blocked(hwnd, title);
+}
+
 /** A top-level window as the enumeration lists it: `isEnabled` is false only when the OS said so. */
 export function disabledByDialog(w: { hwnd: bigint; title: string; isEnabled?: boolean }): BlockedByDialogTarget | null {
-  if (w.isEnabled !== false) return null;
-  if (isConsoleClass(w.hwnd)) return null;
-  return blocked(w.hwnd, w.title);
+  return refuse(w.hwnd, w.title, w.isEnabled !== false);
 }
 
 type Listed = Parameters<typeof offDesktopTarget>[0];
@@ -86,34 +107,14 @@ export async function beforeForeground(
 
 /** Before WM_CHAR is posted to `hwnd`: its top-level window, disabled and not a console, is refused. */
 export function beforePost(hwnd: bigint): BlockedByDialogTarget | null {
+  // IsWindowEnabled is false for a handle that names no window: a window that closed since it was
+  // picked is not "disabled" — it goes on, and the delivery says what happened (gate 2 on #954).
+  if (windowIsAlive(hwnd) === false) return null;
   let root: bigint = hwnd;
   try { root = getWindowRoot(hwnd) ?? hwnd; } catch { /* the handle itself */ }
-  if (isWindowEnabled(root)) return null;
-  if (isConsoleClass(root)) return null;
   let title = "";
   try { title = getWindowTitleW(root); } catch { /* untitled */ }
-  return blocked(root, title);
-}
-
-/**
- * An explicit `hwnd` naming a window its dialog has disabled is handed back as the DIALOG by
- * `resolveWindowTarget` (`parent_disabled_prefer_popup`, H3 case 5 — kept for click_element, where a
- * click at the dialog's button is what the caller meant). For the keyboard it typed into the
- * dialog's file-name field (win2, dev/954-hw), so it is refused as the windowTitle road is, and the
- * dialog is named the same way; the popup the resolver moved to stands in only when the family walk
- * names none.
- */
-export function redirectedToDialog(
-  hwndArg: string | undefined,
-  resolved: { hwnd: bigint; title: string; warnings: readonly string[] } | null | undefined,
-): BlockedByDialogTarget | null {
-  if (hwndArg === undefined || !resolved?.warnings.includes("parent_disabled_prefer_popup")) return null;
-  const owner = parseWindowHandle(hwndArg);
-  if (owner === undefined) return null;
-  let title = "";
-  try { title = getWindowTitleW(owner); } catch { /* untitled */ }
-  const b = blocked(owner, title);
-  return b.dialog !== null ? b : { hwnd: owner, title, dialog: { hwnd: resolved.hwnd, name: resolved.title } };
+  return refuse(root, title, isWindowEnabled(root));
 }
 
 export function blockedByDialogFailure(

@@ -11,7 +11,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /** Which handles the OS reads as disabled, and which are consoles (internal #380 gates ask the handle). */
-const { gateState } = vi.hoisted(() => ({ gateState: { disabled: new Set<bigint>(), consoles: new Set<bigint>() } }));
+const { gateState } = vi.hoisted(() => ({ gateState: { disabled: new Set<bigint>(), consoles: new Set<bigint>(), dead: new Set<bigint>(), lap: new Map<bigint, bigint>(), classThrows: false } }));
 
 // WM_CHAR delivery: supported, with a focused receiver — the background road is the one that delivers.
 vi.mock(import("../../src/engine/bg-input.js"), async (importOriginal) => {
@@ -33,9 +33,15 @@ vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
     ...actual,
     enumWindowsInZOrder: vi.fn(),
     restoreAndFocusWindow: vi.fn(),
-    getWindowClassName: vi.fn((h: bigint) => (gateState.consoles.has(h) ? "ConsoleWindowClass" : "Notepad")),
+    getWindowClassName: vi.fn((h: bigint) => {
+      if (gateState.classThrows) throw new Error("class read tore");
+      return gateState.consoles.has(h) ? "ConsoleWindowClass" : "Notepad";
+    }),
     getWindowRoot: vi.fn((h: bigint) => h),
-    isWindowEnabled: vi.fn((h: bigint) => !gateState.disabled.has(h)),
+    isWindowEnabled: vi.fn((h: bigint) => !gateState.disabled.has(h) && !gateState.dead.has(h)),
+    windowIsAlive: vi.fn((h: bigint) => !gateState.dead.has(h)),
+    getLastActivePopup: vi.fn((h: bigint) => gateState.lap.get(h) ?? null),
+    getWindowRenderState: vi.fn(() => ({ visible: true })),
     getWindowTitleW: vi.fn((h: bigint) => (h === 100n ? "無題 - メモ帳" : "")),
   };
 });
@@ -145,6 +151,10 @@ beforeEach(() => {
   blocker.answer = null;
   gateState.disabled.clear();
   gateState.consoles.clear();
+  gateState.dead.clear();
+  gateState.lap.clear();
+  gateState.classThrows = false;
+  mockEnum.mockReset();
   flashChannel.kind = "wm_char";
   vi.mocked(resolver.resolveWindowTarget).mockImplementation((async ({ windowTitle }: { windowTitle?: string }) => ({ title: windowTitle, warnings: [] })) as never);
 });
@@ -246,33 +256,18 @@ describe("internal #380 — keyboard and a window its dialog has disabled", () =
     expect(r.context.dialogHwnd).toBeUndefined();
   });
 
-  describe("an explicit hwnd the resolver moved onto the dialog (H3 case 5; win2 D4 typed into the dialog's field)", () => {
-    const redirect = () => vi.mocked(resolver.resolveWindowTarget).mockImplementation(async ({ hwnd, windowTitle }) =>
-      hwnd === "100"
-        ? { title: "名前を付けて保存", hwnd: DIALOG, warnings: ["parent_disabled_prefer_popup"] }
-        : { title: windowTitle!, warnings: [] }) as never;
-    for (const [name, call] of [
-      ["type", () => keyboardTypeHandler({ text: "w954", hwnd: "100", method: "foreground", trackFocus: false, settleMs: 0 } as never)],
-      ["press", () => keyboardPressHandler({ keys: "a", hwnd: "100", method: "foreground", trackFocus: false, settleMs: 0 } as never)],
-      ["sequence", () => keyboardSequenceHandler({ steps: [{ keys: "shift" }], hwnd: "100", trackFocus: false, settleMs: 0 } as never)],
-    ] as const) {
-      it(`${name} is refused, naming the owner and the dialog`, async () => {
-        redirect();
-        mockEnum.mockReturnValue([enabled()]);
-        const r = parseResult(await call());
-        expect(r.code).toBe("WindowBlockedByDialog");
-        expect(r.context).toMatchObject({ hwnd: "100", dialogHwnd: "555", dialogTitle: "名前を付けて保存" });
-        expect(mockRestore).not.toHaveBeenCalled();
-        expect(mockPost).not.toHaveBeenCalled();
-      });
-    }
-  });
-
-  it("on another virtual desktop as well, the desktop is what is said (as on the flash road)", async () => {
-    withDialog();
-    mockEnum.mockReturnValue([{ ...disabled(), isCloaked: true }]);
-    const r = parseResult(await keyboardPressHandler({ keys: "a", windowTitle: "無題 - メモ帳", method: "foreground", trackFocus: false, settleMs: 0 }));
-    expect(r.code).toBe("WindowOnOtherDesktop");
+  describe("an explicit hwnd the resolver moved onto the dialog (H3 case 5) is kept, as for click_element", () => {
+    it("press Escape at the owner goes to the dialog, not refused (gate 2 on #954: it closed the dialog on main)", async () => {
+      vi.mocked(resolver.resolveWindowTarget).mockImplementation((async ({ hwnd, windowTitle }: { hwnd?: string; windowTitle?: string }) =>
+        hwnd === "100"
+          ? { title: "名前を付けて保存", hwnd: DIALOG, warnings: ["parent_disabled_prefer_popup"] }
+          : { title: windowTitle!, warnings: [] }) as never);
+      mockEnum
+        .mockReturnValueOnce([disabled(), { ...fakeWindow("名前を付けて保存", true, DIALOG) }])
+        .mockReturnValueOnce([disabled(), { ...fakeWindow("名前を付けて保存", true, DIALOG) }]);
+      const r = parseResult(await keyboardPressHandler({ keys: "escape", hwnd: "100", method: "foreground", trackFocus: false, settleMs: 0 } as never));
+      expect(r.code).not.toBe("WindowBlockedByDialog");
+    });
   });
 
   it("an enabled window is brought forward as before (control)", async () => {
@@ -337,21 +332,37 @@ describe("internal #380 — what the gates leave alone, and how they name", () =
     expect(r.error).not.toMatch(/no dialog of its is showing/);
   });
 
-  it("the hwnd redirect names the dialog as the title road does, not the popup the resolver moved to (win2 K2)", async () => {
-    const PALETTE = 999n;
-    blocker.answer = { name: "名前を付けて保存", hwnd: DIALOG };
-    vi.mocked(resolver.resolveWindowTarget).mockImplementation((async () => ({ title: "FIND", hwnd: PALETTE, warnings: ["parent_disabled_prefer_popup"] })) as never);
-    mockEnum.mockReturnValue([enabled()]);
-    const r = parseResult(await keyboardTypeHandler({ text: "w", hwnd: "100", method: "foreground", trackFocus: false, settleMs: 0 } as never));
-    expect(r.context).toMatchObject({ hwnd: "100", dialogHwnd: "555", dialogTitle: "名前を付けて保存" });
+
+  it("a class that cannot be read is not refused (it may be a console)", async () => {
+    withDialog();
+    gateState.classThrows = true;
+    mockEnum
+      .mockReturnValueOnce([disabled()])
+      .mockReturnValueOnce([disabled(true)]);
+    const r = parseResult(await keyboardPressHandler({ keys: "a", windowTitle: "無題 - メモ帳", method: "foreground", trackFocus: false, settleMs: 0 }));
+    expect(r.code).not.toBe("WindowBlockedByDialog");
   });
 
-  it("…and falls back to that popup when the family walk names none", async () => {
-    blocker.answer = null;
-    vi.mocked(resolver.resolveWindowTarget).mockImplementation((async () => ({ title: "名前を付けて保存", hwnd: DIALOG, warnings: ["parent_disabled_prefer_popup"] })) as never);
-    mockEnum.mockReturnValue([enabled()]);
-    const r = parseResult(await keyboardTypeHandler({ text: "w", hwnd: "100", method: "foreground", trackFocus: false, settleMs: 0 } as never));
-    expect(r.context).toMatchObject({ hwnd: "100", dialogHwnd: "555" });
+  it("the post gate lets a handle that names no window go on (IsWindowEnabled is false for it)", () => {
+    gateState.dead.add(NOTEPAD);
+    expect(beforePost(NOTEPAD)).toBeNull();
+  });
+
+  it("names the last active popup when it is live, ahead of the family walk (win2 K2)", async () => {
+    blocker.answer = { name: "FIND", hwnd: 999n };
+    gateState.lap.set(NOTEPAD, DIALOG);
+    mockEnum.mockReturnValue([disabled()]);
+    vi.mocked(win32.getWindowTitleW).mockImplementation((h: unknown) => (h === DIALOG ? "名前を付けて保存" : h === NOTEPAD ? "無題 - メモ帳" : ""));
+    const r = parseResult(await keyboardPressHandler({ keys: "a", windowTitle: "無題 - メモ帳", method: "foreground", trackFocus: false, settleMs: 0 }));
+    expect(r.context).toMatchObject({ dialogHwnd: "555", dialogTitle: "名前を付けて保存" });
+  });
+
+  it("…and the family walk when the last active popup is itself disabled (after a forced foreground, K2)", async () => {
+    blocker.answer = { name: "名前を付けて保存", hwnd: DIALOG };
+    gateState.lap.set(NOTEPAD, 999n);
+    gateState.disabled.add(999n);
+    mockEnum.mockReturnValue([disabled()]);
+    const r = parseResult(await keyboardPressHandler({ keys: "a", windowTitle: "無題 - メモ帳", method: "foreground", trackFocus: false, settleMs: 0 }));
+    expect(r.context).toMatchObject({ dialogHwnd: "555" });
   });
 });
-
