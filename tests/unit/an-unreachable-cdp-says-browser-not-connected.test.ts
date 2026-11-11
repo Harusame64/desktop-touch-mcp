@@ -85,6 +85,7 @@ describe("a CDP endpoint that does not answer in time", () => {
     const env = envelope(await browserGetFormHandler({
       selector: "#login-form", includeHidden: false, maxResults: 50, port: 9222, includeContext: false,
     }));
-    expect(env.code).not.toBe("BrowserNotConnected");
+    // The generic timeout arm takes it, as before #951: "wait and retry" (browser_open's description says so).
+    expect(env.code).toBe("UiaTimeout");
   });
 });

@@ -3596,7 +3596,7 @@ export function registerBrowserTools(server: McpServer): void {
     "Returns tabs[] with id, url, title, active — pass tabId to browser_* tools to target a specific tab. " +
     "Caveats: CDP connection is per-process; if Chrome restarts, call browser_open again to get fresh tab IDs. " +
     "A Chrome session started without --remote-debugging-port cannot be taken over — close it first or use a separate userDataDir. " +
-    "If the CDP endpoint is unreachable and launch is omitted, returns ok:false (code:'BrowserNotConnected' when nothing answers on the port; code:'ToolError' when something else holds it or it does not answer in time); re-call with launch:{} (idempotent) to auto-spawn or start Chrome manually with --remote-debugging-port=9222.",
+    "If the CDP endpoint is unreachable and launch is omitted, returns ok:false (code:'BrowserNotConnected' when nothing answers on the port; code:'UiaTimeout' when it does not answer in time — wait and retry; code:'ToolError' when something else answers on it); re-call with launch:{} (idempotent) to auto-spawn or start Chrome manually with --remote-debugging-port=9222.",
     browserOpenRegistrationSchema,
     browserOpenRegistrationHandler as typeof browserOpenHandler
   );
