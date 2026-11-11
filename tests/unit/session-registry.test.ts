@@ -159,6 +159,20 @@ describe("SessionRegistry — replaced viewIds (internal #361)", () => {
     expect(r.isReplacedViewId("view-first")).toBe(false);
   });
 
+  it("does not retire a view whose session is gone when the replacement lands (gate 2 on #938)", () => {
+    let now = 1000;
+    const r = new SessionRegistry();
+    const key = r.resolveKey({ hwnd: "1" });
+    r.getOrCreate(key, makeOpts({ nowFn: () => now }));
+    r.replaceViewId(undefined, "view-first", key);
+    now = 2200;
+    r.evictStale(1000, () => now); // evicted while a see() was reading
+    r.replaceViewId("view-first", "view-second", key); // that see() lands
+    expect(r.getByViewId("view-first")).toBeUndefined();
+    r.getOrCreate(key, makeOpts({ nowFn: () => now }));
+    expect(r.isReplacedViewId("view-first")).toBe(false);
+  });
+
   it("keeps at most MAX_RETIRED_VIEW_IDS, dropping the oldest", () => {
     const r = new SessionRegistry();
     const key = r.resolveKey({ hwnd: "1" });

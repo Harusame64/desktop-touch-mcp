@@ -72,7 +72,7 @@
   later `desktop_discover` of the same window replaces the view its earlier leases came from. Acting with such a
   lease was refused as `entity_not_found`, whose advice says the element may have been removed or renamed. It is
   now refused as `lease_generation_mismatch` (discover again and use the new lease). A lease whose view was never
-  issued, or whose session has expired, still answers `entity_not_found`. The same holds on macOS (internal #361).
+  issued, or whose session has expired, still answers `entity_not_found` (internal #361).
 - **The npm launcher exits 1 after a failed download on Node 24.19, with no native assertion.** When the
   release fetch failed (a 404, for example), it printed `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)`
   after the real message and exited with another code. That came from Node.js itself, and Node 24.20 no longer does
@@ -239,6 +239,9 @@
   when asked (internal #258).
 
 ### Fixed — macOS (preview)
+- **`desktop_act` with a lease from a replaced view answers `lease_generation_mismatch`, not `entity_not_found`.** A
+  later `desktop_discover` of the same window replaces the view its earlier leases came from; acting with one of
+  them now says so. Discover again and use the new lease. The tool and server descriptions name it (internal #361).
 - **`desktop_act` no longer presses the next row's button when the leased row went away.** Rows of a list often
   have alike buttons (each row's Delete). When a row above the leased one was removed and the next row moved into its
   place, the act took that row's button for the leased one and pressed it: in Safari, R1's Delete deleted R2. For an

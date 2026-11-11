@@ -419,8 +419,10 @@ export class SessionRegistry {
    * `entity_not_found`, whose advice says the element may have gone).
    */
   replaceViewId(oldViewId: string | undefined, newViewId: string, key: TargetSessionKey): void {
-    if (oldViewId && oldViewId !== newViewId) {
-      this.viewIdIndex.delete(oldViewId);
+    if (oldViewId) this.viewIdIndex.delete(oldViewId);
+    // Retired only while its session lives: a see() whose session was evicted mid-read must not make
+    // its old view look replaced once the key is recreated (gate 2 on #938).
+    if (oldViewId && oldViewId !== newViewId && this.sessions.has(key)) {
       this.retiredViewIds.delete(oldViewId);
       this.retiredViewIds.set(oldViewId, key);
       while (this.retiredViewIds.size > SessionRegistry.MAX_RETIRED_VIEW_IDS) {
