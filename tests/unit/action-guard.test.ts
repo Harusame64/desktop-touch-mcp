@@ -466,5 +466,49 @@ describe("runActionGuard", () => {
     expect(ctxArg).toBeDefined();
     expect("foregroundVerified" in ctxArg).toBe(false);
   });
+
+  // internal #378 spike (win2): the kinds share fix builders, so a refused mouse_drag was handed a
+  // mouse_click fix at the point it refused (approving it CLICKED there), and browser_navigate /
+  // browser_eval / set_element_value were told to approve with a tool that does something else.
+  // Each pair: the same refusal offers a fix to the tool that consumes it, and none to the other.
+  describe("a fix is offered only to the tool that consumes it", () => {
+    const windowIdentity = { hwnd: "12345", pid: 42, processName: "notepad.exe", processStartTimeMs: 5, titleResolved: "Untitled - Notepad" };
+    const tabIdentity = { tabId: "T1", port: 9222, url: "http://127.0.0.1/a", title: "A" };
+    const cases = [
+      { consumer: "mouse_click", other: "mouse_drag", actionKind: "mouseDrag" as const, failed: "safe.clickCoordinates",
+        descriptor: { kind: "window" as const, titleIncludes: "notepad" }, clickCoordinates: { x: 200, y: 200 }, identity: windowIdentity, changed: undefined },
+      { consumer: "browser_click", other: "browser_navigate", actionKind: "browserCdp" as const, failed: "browser.ready",
+        descriptor: { kind: "browserTab" as const, port: 9222, tabId: "T1" }, clickCoordinates: undefined, identity: tabIdentity, changed: undefined },
+      { consumer: "browser_click", other: "browser_eval", actionKind: "browserCdp" as const, failed: "browser.ready",
+        descriptor: { kind: "browserTab" as const, port: 9222, tabId: "T1" }, clickCoordinates: undefined, identity: tabIdentity, changed: undefined },
+      { consumer: "click_element", other: "set_element_value", actionKind: "uiaSetValue" as const, failed: "target.identityStable",
+        descriptor: { kind: "window" as const, titleIncludes: "notepad" }, clickCoordinates: undefined, identity: windowIdentity, changed: ["identity"] },
+    ];
+    for (const c of cases) {
+      const run = async (toolName: string) => {
+        mockResolveActionTarget.mockResolvedValue({
+          lens: makeFakeLens(), localStore: new FluentStore(), identity: c.identity, candidates: 1, warnings: [],
+          ...(c.changed && { changed: c.changed }),
+        });
+        mockEvaluateGuards.mockReturnValue(makeFailGuardResult(c.failed));
+        return runActionGuard({
+          toolName, actionKind: c.actionKind, descriptor: c.descriptor as never,
+          ...(c.clickCoordinates && { clickCoordinates: c.clickCoordinates }),
+        });
+      };
+      it(`${c.consumer} is offered it (control)`, async () => {
+        const r = await run(c.consumer);
+        expect(r.block).toBe(true);
+        expect(r.suggestedFix?.tool).toBe(c.consumer);
+        expect(r.summary.next).toContain(`call ${c.consumer}({fixId})`);
+      });
+      it(`${c.other} is not told to approve with ${c.consumer}`, async () => {
+        const r = await run(c.other);
+        expect(r.block).toBe(true);
+        expect(r.suggestedFix).toBeUndefined();
+        expect(r.summary.next).not.toMatch(/fixId/);
+      });
+    }
+  });
 });
 

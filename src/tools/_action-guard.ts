@@ -1149,7 +1149,13 @@ export async function runActionGuard(
       clickCoordinates,
       fixCarryingArgs
     );
-    if (fix) {
+    // A fix is offered only to the tool that consumes it. The kinds share builders, so a refused
+    // mouse_drag was handed a mouse_click fix at its start (or end) point — approving it CLICKED the
+    // point the guard had just refused, instead of dragging — and browser_navigate / browser_eval, and
+    // set_element_value, were told to approve with browser_click / click_element, which do something
+    // else or nothing (internal #378 spike, win2). The tool's own retry advice stays in `next`.
+    const refusedTool = toolName.split(":")[0];
+    if (fix && fix.tool === refusedTool) {
       const stored = storeFix(fix);
       result.suggestedFix = stored;
       const toolHint = fix.tool === "mouse_click" ? "mouse_click" : `${fix.tool}`;
