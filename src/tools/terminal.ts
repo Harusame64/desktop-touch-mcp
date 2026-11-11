@@ -1954,6 +1954,10 @@ export const terminalSendHandler = async ({
       // is: plainly, then through AttachThreadInput (gate 2 on #934). With no window in front before,
       // there is nothing to put back, and WT is left in front.
       const refuseInFront = async (why: WtRefusal) => {
+        // WT no longer in front: the user moved to another window while this call read the tab or
+        // waited for the pane's focus. That window keeps the foreground — putting the old one back
+        // would take it from them (PR codex on #936).
+        if (!wtIsActive(win.hwnd)) return wtRefusalFailure(why, windowTitle, { tabName: wtBefore?.name });
         let leftInFront = prevFgHwnd !== win.hwnd;
         if (prevFgHwnd && prevFgHwnd !== win.hwnd) {
           for (const force of [false, true]) {

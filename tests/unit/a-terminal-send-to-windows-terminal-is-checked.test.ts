@@ -291,6 +291,25 @@ describe("internal #286 — terminal:send to Windows Terminal through the foregr
     expect(mockRestore).toHaveBeenLastCalledWith(OTHER);
   });
 
+  it.each([
+    ["the pane focus", "pane_not_focused"],
+    ["the tab read after the focus move", "tab_changed"],
+  ] as const)("does not take the foreground from a window the user moved to during %s (PR codex)", async (during, detail) => {
+    const THIRD = 777n;
+    const third = () => [...screen().map((w) => ({ ...w, isActive: false })), win(THIRD, "Browser", true)];
+    if (detail === "pane_not_focused") {
+      mockPaneFocus.mockImplementation(async () => { mockEnum.mockImplementation(third); return "not_focused"; });
+    } else {
+      mockTab.mockResolvedValueOnce(tab("rt-1")).mockImplementationOnce(async () => { mockEnum.mockImplementation(third); return tab("rt-2"); });
+    }
+    const r = parseResult(await send());
+    expect(r.context).toMatchObject({ detail });
+    expect(r.context).not.toHaveProperty("foregroundRestored");
+    expect(r.error).not.toContain("could not be put back");
+    expect(mockRestore).not.toHaveBeenCalledWith(OTHER);
+    expect(mockPaste).not.toHaveBeenCalled();
+  });
+
   it("says so when the pane did not take the focus and the user's window could not be put back", async () => {
     mockPaneFocus.mockResolvedValue("not_focused");
     otherRefusesFront = true;
