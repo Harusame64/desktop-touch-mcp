@@ -210,6 +210,19 @@ describe("buildExitCommand — PowerShell on one line in Windows Terminal (inter
     expect(out).toBe("hi386\nPS C:\\>");
   });
 
+  it.each([40, 62, 80, 97])("strips the echo when a wrap at %i columns splits a marker itself (PR codex on #942)", (cols) => {
+    const cmd = one("Write-Output 'hi386'");
+    const prompt = "PS C:\\Users\\harus\\source\\repos\\some-long-project-name\\sub> "; // 62 characters
+    const wrapped = `${prompt}${cmd}`.match(new RegExp(`.{1,${cols}}`, "g"))!;
+    const buffer = [...wrapped, "hi386", `${TOKEN}|0|True`, "PS C:\\>"].join("\n");
+    const out = stripExitArtifacts(buffer, NONCE);
+    // What this injected is gone; a row holding only the prompt, before the marker, may stay.
+    for (const injected of ["LASTEXITCODE", "dtmcp", "try {", "Out-Host", "__DTMCP", "_EXIT_", "<#"]) {
+      expect(out).not.toContain(injected);
+    }
+    expect(out.endsWith("hi386\nPS C:\\>")).toBe(true);
+  });
+
   it("keeps the output between the multi-line form's injected lines (no marker span there)", () => {
     const [prologue, inputEcho, epilogueEcho] = buildExitCommand("Get-ChildItem", "powershell", NONCE).split("\n");
     const out = stripExitArtifacts([prologue, inputEcho, "real", epilogueEcho, `${TOKEN}|0|True`].join("\n"), NONCE);

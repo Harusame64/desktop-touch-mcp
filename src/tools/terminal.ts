@@ -1058,10 +1058,26 @@ export function stripExitArtifacts(slice: string, nonce: string): string {
   // internal #374: the one-line PowerShell command (Windows Terminal) wraps in a narrow window, and its
   // middle rows carry no nonce. Its echo starts with `<#S<nonce>#>` and ends with `<#E<nonce>#>`, and is
   // printed before any output, so the rows from the first to the second are echo only (gate 2 on #942).
+  // The markers are found in the rows joined without breaks, so a marker that a wrap split is still
+  // found, and the match is mapped back to the rows it spans (PR codex on #942).
   const rows = slice.split("\n");
-  const s = rows.findIndex((r) => r.includes(`<#S${nonce}#>`));
-  const e = s < 0 ? -1 : rows.findIndex((r, i) => i >= s && r.includes(`<#E${nonce}#>`));
-  if (s >= 0 && e >= s) rows.splice(s, e - s + 1);
+  const joined = rows.join("");
+  const sAt = joined.indexOf(`<#S${nonce}#>`);
+  const eMark = `<#E${nonce}#>`;
+  const eAt = sAt < 0 ? -1 : joined.indexOf(eMark, sAt);
+  if (sAt >= 0 && eAt >= 0) {
+    const rowOf = (offset: number): number => {
+      let acc = 0;
+      for (let i = 0; i < rows.length; i++) {
+        acc += rows[i]!.length;
+        if (offset < acc) return i;
+      }
+      return rows.length - 1;
+    };
+    const first = rowOf(sAt);
+    const last = rowOf(eAt + eMark.length - 1);
+    rows.splice(first, last - first + 1);
+  }
   const kept = rows.filter((line) => !line.includes(nonce));
   // Trim the blank edges the dropped lines can leave behind.
   return kept.join("\n").replace(/^\n+/, "").replace(/\n+$/, "");
