@@ -56,8 +56,9 @@ const MAX_CHARS_OVERRIDES: Record<string, number> = {
   // guaranteed DestinationRequired round-trip, which is what this text exists to
   // prevent. It sat at 2487 of 2500 before that rule landed — 99.5% of the cap —
   // so stating it at all needed room. Trimmed as far as it goes without dropping
-  // guidance (~2824); the override sits at 3000 with a small buffer.
-  keyboard: 3000,
+  // guidance (~2824); the override sat at 3000 with a small buffer. Later refusals used the buffer up
+  // (exactly 3000 before internal #380 added WindowBlockedByDialog next to WindowOnOtherDesktop: 3,055).
+  keyboard: 3200,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -374,6 +374,13 @@ const SUGGESTS: Record<string, string[]> = {
     "If context.sameTitleOnScreen is true, a window with that title is on this desktop — name that one exactly (its hwnd, where the tool takes one, or a more specific windowTitle) to act on it.",
     "To act on the window itself, ask the user to switch to its desktop or move it here, then retry.",
   ],
+  // internal #380: the window is disabled while its own dialog is open (Notepad's Save As), so it
+  // takes no input; refused by `_blocked-by-dialog.ts` before anything is focused.
+  WindowBlockedByDialog: [
+    "Nothing was focused or sent: the window takes no input while the dialog it opened is in front.",
+    "To type into the dialog, name it: pass context.dialogTitle as windowTitle (or its hwnd, where the tool takes one).",
+    "To type into the window itself, the dialog has to be finished or closed first — if it is the user's, ask them.",
+  ],
   // ADR-029: a click / move / drag aimed at a point that is on no monitor.
   // Since Phase 2a mouse input reaches every monitor, so this is almost always
   // stale coordinates; the primary-monitor-only wording applies to an
