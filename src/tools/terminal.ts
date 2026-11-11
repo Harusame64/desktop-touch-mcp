@@ -1396,7 +1396,7 @@ export const terminalSendHandler = async ({
         return wtRefusalFailure("minimized", win.title, {}, { method: "foreground_flash" });
       }
       const flashTab = focusFirst ? await readWtTab(channel.hwnd, wtCheckDeps()) : null;
-      if (flashTab && !flashTab.ok) return wtRefusalFailure(flashTab.why, win.title, {}, { method: "foreground_flash" });
+      if (flashTab && !flashTab.ok) return wtRefusalFailure(flashTab.why, win.title, { tabName: flashTab.tabName }, { method: "foreground_flash" });
       // ADR-035 Phase 1 — see the keyboard twin: the foreground-flash channel
       // steals focus to paste, which is the route a mis-resolved terminal
       // destination turns into a command run in the wrong shell.
@@ -1458,6 +1458,8 @@ export const terminalSendHandler = async ({
           foregroundRestoreMethod: flashResult.result?.foregroundRestoreMethod,
           clipboardRestored: flashResult.result?.clipboardRestored,
           clipboardSkippedFormats: flashResult.result?.clipboardSkippedFormats ?? [],
+          // internal #371: the own-tab check could not decide.
+          ...(flashTab?.ok && flashTab.note !== undefined && { warnings: [flashTab.note] }),
         },
       });
     }
@@ -1934,6 +1936,8 @@ export const terminalSendHandler = async ({
     if (isWt) {
       const post = await wtAfterFocus(win.hwnd, wtBefore, prevFgHwnd);
       if (!post.ok) return wtGuardFailure(post.refusal, windowTitle);
+      // internal #371: the own-tab check could not decide (said once, from this read: it always runs).
+      if (post.note !== undefined) warnings.push(post.note);
     }
 
     if (preferClipboard) {
@@ -2603,7 +2607,10 @@ export const terminalRunHandler = async ({
     notifyDispatch: false as const,
   };
 
-  type SendPayload = { ok?: boolean; code?: string; context?: { detail?: unknown; foregroundRestored?: unknown } };
+  type SendPayload = {
+    ok?: boolean; code?: string; context?: { detail?: unknown; foregroundRestored?: unknown };
+    hints?: { warnings?: unknown };
+  };
   const parseSendResult = (r: ToolResult): SendPayload | null => {
     try {
       const block = r.content[0];
@@ -2691,6 +2698,12 @@ export const terminalRunHandler = async ({
   // epilogue-wrapped `sendInput`. Positive gate (=== true) so a null/unparsed
   // payload stays fail-closed (no phantom record). This is the single notifier
   // for the run path; the nested send was suppressed via notifyDispatch=false.
+  // internal #371 (gate 2 on #941): the send's own warnings — among them "whether the selected tab is the
+  // client's could not be checked" — are the run's too; they were dropped with the rest of its reply.
+  if (sendPayload?.ok === true && Array.isArray(sendPayload.hints?.warnings)) {
+    for (const w of sendPayload.hints.warnings) if (typeof w === "string" && !warnings.includes(w)) warnings.push(w);
+  }
+
   if (sendPayload?.ok === true) {
     // Key by the PUBLIC paneId when the caller targeted one (a wt pane's driver key is `wt:…`, NOT the
     // host-window String(hwnd) — keying by hwnd would silently never arm the autofill loop for wt panes).

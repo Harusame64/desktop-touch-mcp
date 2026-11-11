@@ -321,42 +321,42 @@
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2406,
+      "line": 2408,
       "tool": "keyboard:type",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2578,
+      "line": 2580,
       "tool": "keyboard:type",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 2942,
+      "line": 2946,
       "tool": "keyboard:press",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3337,
+      "line": 3341,
       "tool": "keyboard:press",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3407,
+      "line": 3411,
       "tool": "keyboard:sequence",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/keyboard.ts",
-      "line": 3458,
+      "line": 3462,
       "tool": "keyboard:sequence",
       "errKind": "new-error",
       "contextShape": "object-plain"

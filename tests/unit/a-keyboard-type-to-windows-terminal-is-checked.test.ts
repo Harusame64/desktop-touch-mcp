@@ -42,6 +42,12 @@ vi.mock("../../src/engine/uia-bridge.js", () => ({
   focusTerminalPane: vi.fn(),
 }));
 
+// internal #371: the client's own tab, read from the live process tree in production.
+vi.mock("../../src/engine/wt-own-tab.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/engine/wt-own-tab.js")>()),
+  ownTabTitle: vi.fn(async () => ({ state: "not_in_wt" })),
+}));
+
 vi.mock("../../src/engine/nutjs.js", () => ({
   keyboard: { type: vi.fn(), pressKey: vi.fn(), releaseKey: vi.fn() },
   withKeyboardLock: async (fn: () => unknown) => fn(),
@@ -77,6 +83,7 @@ import * as uia from "../../src/engine/uia-bridge.js";
 import * as bg from "../../src/engine/bg-input.js";
 import * as nut from "../../src/engine/nutjs.js";
 import * as typeFocus from "../../src/tools/_type-focus.js";
+import * as ownTab from "../../src/engine/wt-own-tab.js";
 
 const mockEnum = vi.mocked(win32.enumWindowsInZOrder);
 const mockRestore = vi.mocked(win32.restoreAndFocusWindow);
@@ -128,6 +135,7 @@ beforeEach(() => {
     ? { supported: false, reason: "wt_xaml_pipeline", className: "CASCADIA_HOSTING_WINDOW_CLASS" }
     : { supported: true, className: "Notepad" }) as never);
   mockTab.mockResolvedValue(tab("rt-1"));
+  vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "not_in_wt" });
   mockFocusable.mockReturnValue(true);
   mockPaneFocus.mockResolvedValue("focused");
   mockFlash.mockReturnValue({ ok: true, result: {} } as never);
@@ -225,6 +233,23 @@ describe("internal #372 — keyboard type to Windows Terminal through the foregr
     expect(mockType).not.toHaveBeenCalled();
   });
 
+  // internal #371
+  it("refuses the tab the client runs in before anything moves", async () => {
+    vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "title", title: "◐ PowerShell" });
+    const r = parseResult(await type());
+    expect(r.context).toMatchObject({ detail: "own_tab" });
+    expect(mockRestore).not.toHaveBeenCalled();
+    expect(mockType).not.toHaveBeenCalled();
+  });
+
+  it("types, and says the check could not run, when the client's tab cannot be read", async () => {
+    vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "unknown", why: "no ancestor below Windows Terminal has a console window" });
+    const r = parseResult(await type());
+    expect(r.ok).toBe(true);
+    expect(mockType).toHaveBeenCalled();
+    expect(JSON.stringify(r).match(/could not be checked/g)).toHaveLength(1);
+  });
+
   it("does not check a window that is not WT", async () => {
     mockClass.mockReturnValue("Notepad");
     await type();
@@ -260,6 +285,21 @@ describe("internal #372 — keyboard type to Windows Terminal with method:'foreg
     wtMinimized = true;
     const r = parseResult(await flash());
     expect(r.context).toMatchObject({ detail: "minimized" });
+    expect(mockFlash).not.toHaveBeenCalled();
+  });
+
+  it("flashes, and says the check could not run, when the client's tab cannot be read", async () => {
+    vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "unknown", why: "x" });
+    const r = parseResult(await flash());
+    expect(r.ok).toBe(true);
+    expect((r.hints.warnings as string[]).filter((w) => /could not be checked/.test(w))).toHaveLength(1);
+  });
+
+  it("refuses the client's tab on the flash too, and does not flash", async () => {
+    vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "title", title: "PowerShell" });
+    const r = parseResult(await flash());
+    expect(r.context).toMatchObject({ detail: "own_tab", method: "foreground_flash" });
+    expect(r.error).toContain('("PowerShell")');
     expect(mockFlash).not.toHaveBeenCalled();
   });
 

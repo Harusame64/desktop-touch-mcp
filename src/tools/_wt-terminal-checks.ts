@@ -22,6 +22,8 @@
  * same-titled twin the question must tell apart).
  */
 
+import { normalizeTabName, type OwnTabTitle } from "../engine/wt-own-tab.js";
+
 export interface WtTab {
   name: string;
   runtimeId: string;
@@ -33,6 +35,11 @@ export interface WtCheckDeps {
   tabReaderAvailable(): boolean;
   /** `undefined` when it cannot be read, `null` when the window shows no tab. */
   getSelectedTab(hwnd: bigint): Promise<WtTab | null | undefined>;
+  /**
+   * internal #371 — the name of the tab this server's client runs in. Absent: not checked (tests that
+   * do not exercise it).
+   */
+  ownTabTitle?(): Promise<OwnTabTitle>;
 }
 
 /** Why a paste into Windows Terminal was refused before anything was typed. */
@@ -45,7 +52,8 @@ export type WtRefusal =
   | "tab_changed"
   | "foreground_moved"
   | "pane_not_focused"
-  | "pane_focus_unavailable";
+  | "pane_focus_unavailable"
+  | "own_tab";
 
 /**
  * Is this window Windows Terminal? Read by the same classifier that keeps it off the background road
@@ -75,17 +83,35 @@ export function wtIsInFront(
   }
 }
 
-/** The selected tab, or why it cannot be pasted into. */
+/**
+ * The selected tab, or why it cannot be pasted into. `note`: the own-tab check (internal #371) could not
+ * decide; the paste goes ahead and the caller says so.
+ */
 export async function readWtTab(
   hwnd: bigint,
   deps: WtCheckDeps,
-): Promise<{ ok: true; tab: WtTab } | { ok: false; why: WtRefusal }> {
+): Promise<{ ok: true; tab: WtTab; note?: string } | { ok: false; why: WtRefusal; tabName?: string }> {
   if (!deps.tabReaderAvailable()) return { ok: false, why: "tab_reader_unavailable" };
   let tab: WtTab | null | undefined;
   try { tab = await deps.getSelectedTab(hwnd); } catch { tab = undefined; }
   if (!tab) return { ok: false, why: "tab_unreadable" };
   if (tab.paneCount > 1) return { ok: false, why: "tab_split" };
   if (tab.paneCount !== 1) return { ok: false, why: "tab_not_terminal" };
+  if (!deps.ownTabTitle) return { ok: true, tab };
+  // internal #371: not the tab this server's client runs in. Refused only when known; when it cannot be
+  // read, the paste goes ahead with a note (the maintainer's rule, 2026-11-11).
+  let own: OwnTabTitle;
+  try { own = await deps.ownTabTitle(); } catch (e) { own = { state: "unknown", why: e instanceof Error ? e.message : String(e) }; }
+  if (own.state === "title") {
+    const mine = normalizeTabName(own.title);
+    if (mine !== "" && normalizeTabName(tab.name) === mine) return { ok: false, why: "own_tab", tabName: tab.name };
+  }
+  if (own.state === "unknown") {
+    return {
+      ok: true, tab,
+      note: `This server runs inside Windows Terminal, and whether the selected tab is the one its client runs in could not be checked (${own.why}). If the client runs in that tab, the text arrived there as the user's input.`,
+    };
+  }
   return { ok: true, tab };
 }
 
@@ -98,7 +124,7 @@ export async function checkWtTabInFront(
   hwnd: bigint,
   before: WtTab | null,
   deps: WtCheckDeps,
-): Promise<{ ok: true; tab: WtTab } | { ok: false; why: WtRefusal }> {
+): Promise<{ ok: true; tab: WtTab; note?: string } | { ok: false; why: WtRefusal; tabName?: string }> {
   const now = await readWtTab(hwnd, deps);
   if (!now.ok) return now;
   if (before === null) return now;
@@ -140,6 +166,11 @@ export function wtRefusalSentence(why: WtRefusal, opts: { tabName?: string; left
     case "pane_not_focused":
       return "Nothing was typed: the Windows Terminal pane did not take the keyboard focus in time (or UI Automation " +
         "was busy), so the paste was not sent — it would have gone to another control (an open find box, a tab)." + tail;
+    case "own_tab":
+      return "Nothing was typed: the Windows Terminal tab selected in that window has the name of the tab this server's " +
+        `client runs in${opts.tabName !== undefined ? ` ("${opts.tabName}")` : ""}, and the text would arrive as the user's ` +
+        "own input to the client. The tabs are matched by name: use a terminal in another tab or window with another " +
+        "name (key_locker launch_console opens one), or ask the user to rename the tab." + tail;
     case "pane_focus_unavailable":
       return "Nothing was typed: this server's native addon is too old to put Windows Terminal's keyboard focus on " +
         "its pane, so the paste could go to another control (an open find box, a tab). Sending again gives the same " +
