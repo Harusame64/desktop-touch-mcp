@@ -1076,7 +1076,7 @@ export function stripExitArtifacts(slice: string, nonce: string): string {
   // echo is printed before any output, so everything up to the end marker is echo.
   const sAt = sFound >= 0 ? sFound : 0;
   // The row an offset in `joined` falls in, and where that row starts. Both cuts below are worked out on
-  // `bare` before `rows` changes, so neither depends on the order they are applied in (gate 2 on #952).
+  // `bare` before `rows` changes; the later rows go first, so the echo's row numbers still hold (agy on #952).
   const rowOf = (offset: number): { row: number; start: number } => {
     let acc = 0;
     for (let i = 0; i < bare.length; i++) {
@@ -1101,7 +1101,8 @@ export function stripExitArtifacts(slice: string, nonce: string): string {
   if (echo !== null) rows.splice(echo.first, Math.min(echo.last, rows.length - 1) - echo.first + 1);
   const kept = rows.filter((line) => !line.includes(nonce));
   // Trim the blank edges the dropped lines can leave behind — at the end, also the padding and \r that
-  // Windows Terminal leaves on the last row (gate 2 on #952).
+  // Windows Terminal leaves on the last row (gate 2 on #952). Spaces the command itself printed at the very
+  // end go too: in Windows Terminal they cannot be told from the padding (agy on #952).
   return kept.join("\n").replace(/^\n+/, "").replace(/\s+$/, "");
 }
 
