@@ -1075,36 +1075,34 @@ export function stripExitArtifacts(slice: string, nonce: string): string {
   // A read cut to its last rows can start inside the echo, past the start marker (PR codex on #942): the
   // echo is printed before any output, so everything up to the end marker is echo.
   const sAt = sFound >= 0 ? sFound : 0;
-  const rowOf = (offset: number): number => {
+  // The row an offset in `joined` falls in, and where that row starts. Both cuts below are worked out on
+  // `bare` before `rows` changes, so neither depends on the order they are applied in (gate 2 on #952).
+  const rowOf = (offset: number): { row: number; start: number } => {
     let acc = 0;
     for (let i = 0; i < bare.length; i++) {
+      if (offset < acc + bare[i]!.length) return { row: i, start: acc };
       acc += bare[i]!.length;
-      if (offset < acc) return i;
     }
-    return rows.length - 1;
+    return { row: bare.length - 1, start: acc - (bare[bare.length - 1]?.length ?? 0) };
   };
   // internal #377 item 1: the sentinel is the last thing the run prints; the rows after it are the shell's
   // next prompt (in Windows Terminal, padded to the width), which came back as the end of `output` — the
   // whole of it for a command that prints nothing. Cut from the sentinel's row. The echo never holds the
-  // token whole (buildExitCommand splits it), so its first whole occurrence is the output line; it is
-  // found in the joined rows, so a sentinel that a narrow window wrapped is found too. Output that ended
-  // without a newline (bash `printf 'X'`) shares the sentinel's row: what is before the token is kept.
+  // token whole (buildExitCommand splits it), so its first whole occurrence is the output line. Output that
+  // ended without a newline shares the sentinel's row: what is before the token is kept.
   const tokenAt = joined.indexOf(exitToken(nonce), eAt >= 0 ? eAt : 0);
-  if (tokenAt >= 0) {
-    const r = rowOf(tokenAt);
-    const rowStart = bare.slice(0, r).reduce((n, row) => n + row.length, 0);
-    const before = bare[r]!.slice(0, tokenAt - rowStart);
-    rows.splice(r);
-    if (before !== "") rows.push(before);
+  const tail = tokenAt >= 0 ? rowOf(tokenAt) : null;
+  const echo = eAt >= 0 ? { first: rowOf(sAt).row, last: rowOf(eAt + eMark.length - 1).row } : null;
+  if (tail !== null) {
+    const before = bare[tail.row]!.slice(0, tokenAt - tail.start);
+    rows.splice(tail.row);
+    rows.push(before);
   }
-  if (eAt >= 0) {
-    const first = rowOf(sAt);
-    const last = rowOf(eAt + eMark.length - 1);
-    rows.splice(first, last - first + 1);
-  }
+  if (echo !== null) rows.splice(echo.first, Math.min(echo.last, rows.length - 1) - echo.first + 1);
   const kept = rows.filter((line) => !line.includes(nonce));
-  // Trim the blank edges the dropped lines can leave behind.
-  return kept.join("\n").replace(/^\n+/, "").replace(/\n+$/, "");
+  // Trim the blank edges the dropped lines can leave behind — at the end, also the padding and \r that
+  // Windows Terminal leaves on the last row (gate 2 on #952).
+  return kept.join("\n").replace(/^\n+/, "").replace(/\s+$/, "");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -18,7 +18,8 @@
   `browser_open` (internal #377).
 - **`terminal run` with `until: {mode: 'exit'}` no longer ends `output` with the next prompt.** The shell's prompt after
   the command, padded to the width in Windows Terminal, came back as the last line of `output`, and as all of it for a
-  command that printed nothing. `output` now stops where the command's own output ends (internal #377).
+  command that printed nothing. `output` now ends with the command's last line; what is printed after the run ends is
+  not in it (internal #377).
 
 ## [2.4.1] - 2026-11-11 — Pastes into Windows Terminal are checked, and more replies say when nothing happened
 

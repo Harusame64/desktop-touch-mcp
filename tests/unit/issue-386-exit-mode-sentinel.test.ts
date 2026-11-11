@@ -507,7 +507,7 @@ describe("stripExitArtifacts — cosmetic removal of injected epilogue + sentine
     const pad = (t: string) => t.padEnd(120, " ");
     const cmd = buildExitCommand("echo Y1-1", "powershell", NONCE, { oneLine: true });
     const buffer = [pad(`PS C:\\Users\\harus> ${cmd}`), pad("Y1-1"), pad(`${TOKEN}|0|True`), pad("PS C:\\Users\\harus> ")].join(eol);
-    expect(stripExitArtifacts(buffer, NONCE).replace(/\s+$/, "")).toBe("Y1-1");
+    expect(stripExitArtifacts(buffer, NONCE)).toBe("Y1-1");
   });
 
   it("answers nothing for a command that printed nothing, not the prompt", () => {
@@ -524,6 +524,13 @@ describe("stripExitArtifacts — cosmetic removal of injected epilogue + sentine
     expect(stripExitArtifacts(buffer, NONCE)).toBe("$ printf 'X'\nX");
   });
 
+  it("leaves no row of blanks when only padding is before the token on its row", () => {
+    const buffer = ["out-2\r", `     ${TOKEN}|0|True\r`, "PS C:\\> \r"].join("\n");
+    expect(stripExitArtifacts(buffer, NONCE)).toBe("out-2");
+  });
+
+  // Not reached by a run today: parseExitSentinel looks within one row, so a wrapped sentinel times out
+  // (internal #379). The strip already finds it in the joined rows, as it does the <#S/<#E markers.
   it("finds a sentinel that a narrow window wrapped, and drops what follows it", () => {
     const nonce = generateExitNonce();
     const token = `__DTMCP_EXIT_${nonce}`;
