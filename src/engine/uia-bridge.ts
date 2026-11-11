@@ -3356,6 +3356,11 @@ export function detectUiaBlind(
 
 let warnedNoSelectedTab = false;
 
+/** internal #286 — can this build read a Windows Terminal tab at all? */
+export function selectedTabReadable(): boolean {
+  return typeof nativeUia?.uiaGetSelectedTab === "function";
+}
+
 /**
  * internal #227 — the selected tab of a Windows Terminal window: its name and UIA RuntimeId, `null`
  * when the window shows no selected tab, `undefined` when it could not be asked (no native engine,

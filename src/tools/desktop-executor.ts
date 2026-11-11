@@ -22,6 +22,7 @@
 import type { UiEntity, ExecutorKind, ExecutorOutcome } from "../engine/world-graph/types.js";
 import { logResolve, logDispatchSink } from "./_resolve-log.js";
 import { EMOJI_VARIATION_BASES, EMOJI_ZWJ_SEQUENCES } from "./_emoji-variation-bases.js";
+import { wtIsInFront } from "./_wt-terminal-checks.js";
 import { askToTakeForeground, foregroundDescription, callWasCancelled, ASK_TIMEOUT_MS, ASK_TEXT_SHOWN_MAX, ASK_TITLE_SHOWN_MAX, ASK_DESCRIPTION_SHOWN_MAX, type ForegroundRefusal } from "./_ask-user.js";
 import { offDesktopTarget } from "./_off-desktop.js";
 import type { TouchAction } from "../engine/world-graph/guarded-touch.js";
@@ -460,16 +461,10 @@ export async function pasteIntoTerminalThroughForeground(hwnd: bigint, text: str
    * Enter arrive as the user's next message (win2 measured exactly that, #764 P1-2). A terminal in
    * another window, or a client in another app, is not in front.
    */
-  const isInFront = (): boolean => {
-    // Fails closed, as every other check here does: a foreground that cannot be read (no native
-    // binding, or none during a focus change) counts as this terminal (gate 2 on #764).
-    try {
-      const fg = getForegroundHwnd();
-      return fg === null || fg === hwnd || getWindowRoot(fg) === hwnd;
-    } catch {
-      return true;
-    }
-  };
+  // Fails closed, as every other check here does: a foreground that cannot be read (no native
+  // binding, or none during a focus change) counts as this terminal (gate 2 on #764). The rule is
+  // shared with `terminal` (internal #286).
+  const isInFront = (): boolean => wtIsInFront(hwnd, { getForegroundHwnd, getWindowRoot });
   const refuseInFront = (): never => {
     throw new TerminalForegroundRefusal(
       "Nothing was typed: this terminal is the window in front, where the user is working. If the client " +

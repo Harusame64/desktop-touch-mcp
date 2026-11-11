@@ -358,6 +358,15 @@ const SUGGESTS: Record<string, string[]> = {
     "If the call originates from a background process or service, the OS suppresses foreground transfers — proxy the focus request via the foreground app.",
     "Skip explicit focus_window: tools that accept windowTitle directly (keyboard / desktop_act / browser_click) handle focus internally and may succeed where focus_window cannot.",
   ],
+  // internal #286: terminal(action:'send'/'run') was about to bring Windows Terminal in front and
+  // paste into it, and the destination failed a check; context.detail names which.
+  WindowsTerminalTargetUnsafe: [
+    "Nothing was typed. context.detail says why: tab_split (its selected tab is split into panes), tab_not_terminal (its selected tab is not a terminal, e.g. Settings), tab_unreadable (its selected tab could not be read), tab_changed (the selected tab changed while the window came forward; context.foregroundRestored:false says the window the user was in could not be put back), tab_reader_unavailable (this server cannot read Windows Terminal's tabs at all), foreground_moved (another window came in front while the tab was read; send again), and for method:'foreground_flash' minimized (the flash does not restore it) or pane_not_focused (the pane did not take the keyboard focus; the terminal may be left in front).",
+    "tab_reader_unavailable: sending again gives the same answer. Native UI Automation is disabled (DESKTOP_TOUCH_DISABLE_NATIVE_UIA=1) or the native addon is too old; tell the user, or use a classic console (key_locker launch_console with host:'classic').",
+    "tab_split / tab_not_terminal: ask the user to select a terminal tab that is not split, or open one with key_locker launch_console. Do not pass focusFirst:false to get past it: the text would go to whichever pane or control has the focus.",
+    "minimized: restore the window (focus_window), or send without method:'foreground_flash'.",
+    "tab_unreadable / tab_changed / pane_not_focused: read the terminal (terminal action:'read') and send again once its tab is settled; after pane_not_focused or foregroundRestored:false, tell the user first that the terminal was left in front.",
+  ],
   // internal #221: the window the call would bring forward is on another virtual desktop. Refused
   // by `_off-desktop.ts` so the user's desktop is not switched; the message carries this code.
   WindowOnOtherDesktop: [
@@ -540,7 +549,7 @@ const SUGGESTS: Record<string, string[]> = {
   ForegroundNotAllowed: [
     "Windows Terminal takes input only through the foreground; if_unexpected.detail says why that did not happen: the user declined, dismissed the question, or did not answer; this client cannot ask; the terminal is on another virtual desktop or no longer open, or its window, process or active tab changed or could not be read, or it is the window in front (the client may run in one of its tabs — use a terminal in another window), or its selected tab is split into panes or is not a terminal; the text or the window title cannot be shown in full (more than one line, over 600 / 200 characters, or a control, bidirectional or invisible character); or the paste itself failed, in which case the detail says whether anything was typed — read the terminal before any retry.",
     "If the user declined, dismissed or did not answer it, do NOT type into the terminal another way — not keyboard, not clipboard, and not terminal(action:'run'/'send'), which types into Windows Terminal through the foreground without asking: that works around their answer. Ask in the conversation first, and do not repeat the act after a timeout.",
-    "If this client cannot ask, typing into Windows Terminal is not possible here: tell the user, who can type it themselves. Do not use terminal(action:'send', method:'foreground_flash') instead: it has none of these checks.",
+    "If this client cannot ask, typing into Windows Terminal is not possible here: tell the user, who can type it themselves. Do not use terminal(action:'send'/'run') instead: it does not ask.",
     "Every type is asked about, so chain commands on one line (a; b or a && b, up to 600 characters) rather than one act each. On another virtual desktop: ask the user to switch to it, or move the terminal here.",
   ],
   // ADR-036 item 16 — the entity could not be found: missing from the live view (or the view has
