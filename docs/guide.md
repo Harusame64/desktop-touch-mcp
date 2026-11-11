@@ -472,6 +472,8 @@ If the force attempt is refused despite `AttachThreadInput`, the response is `ok
 
 A window on another virtual desktop is not brought forward, because that would switch the user's desktop. `keyboard`, `terminal` send and the mouse tools (when homing brings the window forward) refuse with `code: "WindowOnOtherDesktop"`, and nothing is sent. `context.sameTitleOnScreen: true` means a window with the same title is on this desktop: name that one exactly (its `hwnd` where the tool takes one, or a more specific `windowTitle`). `focus_window` still brings such a window forward.
 
+A window that its own dialog has disabled (while a Save As is open, for example) takes no input, so `keyboard` named at it by `windowTitle` does not bring it in front of that dialog or type past it into the dialog: it refuses with `code: "WindowBlockedByDialog"`, and nothing is focused or sent. `context.dialogHwnd` and `context.dialogTitle` name the dialog; to type into it, pass `context.dialogHwnd` as `hwnd`. A console window is not refused: it still takes keys while its Properties dialog is open. An `hwnd` naming the window goes to its dialog instead, as with `click_element`, and the reply says so (`parent_disabled_prefer_popup`).
+
 **Global default via environment variable:**
 
 ```json

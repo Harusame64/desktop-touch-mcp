@@ -92,7 +92,8 @@ export function pinnedHandle(
 
 import { resolveWindowTarget } from "./_resolve-window.js";
 import { parseWindowHandle } from "../engine/aim.js";
-import { offDesktopTarget, offDesktopFailure, type OffDesktopTarget } from "./_off-desktop.js";
+import { offDesktopFailure, type OffDesktopTarget } from "./_off-desktop.js";
+import { beforeForeground, beforePost, blockedByDialogFailure, type BlockedByDialogTarget } from "./_blocked-by-dialog.js";
 import { activeHwnd, wtAfterFocus, wtBeforeFocus, wtCheckDeps, type WtGuardRefusal } from "./_wt-foreground-paste.js";
 import { readWtTab, wtRefusalSentence, type WtTab } from "./_wt-terminal-checks.js";
 import {
@@ -1238,6 +1239,8 @@ interface FocusForKeyboardResult {
    * desktop. Nothing was focused: the caller refuses rather than switch the user's desktop.
    */
   offDesktop?: OffDesktopTarget;
+  /** internal #380 — the window is disabled by a dialog it opened; nothing was focused. */
+  blockedByDialog?: BlockedByDialogTarget;
 }
 
 /** internal #372 — a refused type into Windows Terminal: nothing was typed. */
@@ -1277,6 +1280,7 @@ async function focusWindowForKeyboard(
   let forceRefused = false;
   let targetHwnd: bigint | null = null;
   let offDesktop: OffDesktopTarget | undefined;
+  let blockedByDialog: BlockedByDialogTarget | undefined;
   const needle = windowTitle.toLowerCase();
   // Match by hwnd when supplied, else fall back to title-substring.
   const matches = (w: { title: string; hwnd: bigint }): boolean =>
@@ -1306,7 +1310,18 @@ async function focusWindowForKeyboard(
     // ADR-035 Phase C-0: the stage-1 topology advisory, if the resolve above
     // raised one. Rides the same `warnings` array every caller already merges.
     appendTopologyWarnings(warnings);
-    if (active && matches(active)) {
+    // The window this call will bring forward, and its gate (`_blocked-by-dialog.ts`): another
+    // virtual desktop (internal #221), then disabled by its dialog (internal #380). Both refuse
+    // before anything is focused.
+    const activeMatch = active && matches(active) ? active : undefined;
+    const picked = activeMatch ?? windows.find(matches);
+    const gate = picked ? await beforeForeground(picked, windows, explicitHwnd === undefined ? windowTitle : undefined) : null;
+    if (gate && "blockedByDialog" in gate) {
+      blockedByDialog = gate.blockedByDialog;
+    } else if (gate && "offDesktop" in gate) {
+      offDesktop = gate.offDesktop;
+    } else if (activeMatch) {
+      const active = activeMatch;
       // Target is already in the foreground — nothing to do.
       if (beforeMove && !(await beforeMove(active))) {
         return { warnings, homingNotes, foregroundVerified, forceRefused, targetHwnd };
@@ -1314,13 +1329,8 @@ async function focusWindowForKeyboard(
       foregroundVerified = true;
       targetHwnd = active.hwnd;
     } else {
-      const target = windows.find(matches);
-      // internal #221: bringing a window on another virtual desktop forward switches the user's
-      // desktop. Refused before anything is focused.
-      const away = target ? await offDesktopTarget(target, windows, explicitHwnd === undefined ? windowTitle : undefined) : null;
-      if (away) {
-        offDesktop = away;
-      } else if (target && beforeMove && !(await beforeMove(target))) {
+      const target = picked;
+      if (target && beforeMove && !(await beforeMove(target))) {
         return { warnings, homingNotes, foregroundVerified, forceRefused, targetHwnd };
       } else if (target) {
         // Always verify foreground after focus so the auto-guard does not block
@@ -1356,7 +1366,10 @@ async function focusWindowForKeyboard(
   } catch {
     // best-effort
   }
-  return { warnings, homingNotes, foregroundVerified, forceRefused, targetHwnd, ...(offDesktop && { offDesktop }) };
+  return {
+    warnings, homingNotes, foregroundVerified, forceRefused, targetHwnd,
+    ...(offDesktop && { offDesktop }), ...(blockedByDialog && { blockedByDialog }),
+  };
 }
 
 /**
@@ -1703,7 +1716,9 @@ export const keyboardTypeHandler = async ({
     //
     // The pinned handle can differ from the argument: when the named window is
     // blocked by its own modal, the resolver hands back the active popup. That
-    // is the handle the keys will reach, so that is the one to pin.
+    // is the handle the keys will reach, so that is the one to pin (the reply
+    // says so: parent_disabled_prefer_popup). Kept by internal #380: a press of
+    // Escape at the owner closed its dialog this way.
     //
     // `@active` pins too (`pinnedHandle`): it names the foreground window, not a search.
     const explicitHwnd = pinnedHandle(hwnd, askedTitle, resolvedWin);
@@ -1792,6 +1807,17 @@ export const keyboardTypeHandler = async ({
           { windowTitle: effectiveWindowTitle }
         );
       }
+      // internal #380: on a plain window the flash posts WM_CHAR, which went into the file-name field
+      // of the dialog that disabled the window (win2). Asked before the fix is spent; the resolver
+      // only reads. The clipboard_flash channel (Windows Terminal) takes the foreground and is asked
+      // with the off-desktop check below.
+      const channel = resolveBackgroundInputChannel(target.hwnd, {
+        allowedChannels: ["wm_char", "clipboard_flash"],
+      });
+      if (channel.kind === "wm_char") {
+        const ffBlocked = beforePost(target.hwnd);
+        if (ffBlocked) return blockedByDialogFailure("keyboard:type", ffBlocked, { lensId, extra: { method: "foreground_flash" } });
+      }
       // Past both flash refusals — the call is going ahead (ADR-038 P3).
       spendFix();
       // Lens / auto-guard: foregroundVerified=false because flash will steal
@@ -1810,10 +1836,6 @@ export const keyboardTypeHandler = async ({
       const ffCtrlC = ctrlCRefusal(target.hwnd, effectiveText);
       if (ffCtrlC !== null) return ffCtrlC;
       const ffPerception = ffGuard.perceptionEnv;
-
-      const channel = resolveBackgroundInputChannel(target.hwnd, {
-        allowedChannels: ["wm_char", "clipboard_flash"],
-      });
 
       if (channel.kind === "unsupported") {
         return failWith(
@@ -1898,11 +1920,13 @@ export const keyboardTypeHandler = async ({
       // `SendInput(Ctrl+V)` で送るべき (native scope の改修、別 follow-up PR)。
       // 当面 (本 PR scope): clipboard_flash 経路では replaceAll を **silent
       // ignore せず warning で caller に明示** (`ReplaceAllNotSupportedOnClipboardFlash`)。
-      // internal #221: the flash takes the foreground for the target — refused when it is on
-      // another virtual desktop. Placed after the unsupported and wm_char branches (wm_char posts
-      // without taking the foreground), as terminal's twin is (gate 2 on #763).
-      const ffAway = await offDesktopTarget(target, wins, explicitHwnd === undefined ? effectiveWindowTitle : undefined);
-      if (ffAway) return offDesktopFailure("keyboard:type", ffAway, { lensId, extra: { method: "foreground_flash" } });
+      // internal #221 / #380: the flash takes the foreground for the target — the foreground gate
+      // (another virtual desktop, then disabled by its dialog). Placed after the unsupported and
+      // wm_char branches (wm_char posts without taking the foreground), as terminal's twin is
+      // (gate 2 on #763).
+      const ffGate = await beforeForeground(target, wins, explicitHwnd === undefined ? effectiveWindowTitle : undefined);
+      if (ffGate && "offDesktop" in ffGate) return offDesktopFailure("keyboard:type", ffGate.offDesktop, { lensId, extra: { method: "foreground_flash" } });
+      if (ffGate && "blockedByDialog" in ffGate) return blockedByDialogFailure("keyboard:type", ffGate.blockedByDialog, { lensId, extra: { method: "foreground_flash" } });
       // internal #372: into Windows Terminal, the flash pasted into a split tab's focused pane, an open
       // find box, or nowhere (the Settings tab), and answered ok (win2 spike). The tab checks terminal's
       // flash makes (internal #286) are made here too: not minimized (the flash does not restore it), one
@@ -2061,6 +2085,11 @@ export const keyboardTypeHandler = async ({
         // is not taken — refused below when it was asked for, the foreground road otherwise.
         const noReceiver = check.supported && threadHasNoFocus(target.hwnd);
         if (check.supported && !noReceiver) {
+          // internal #380: WM_CHAR posted to a window its dialog has disabled went into the dialog's
+          // file-name field (win2) — a window the call did not name. Asked once this road is the one
+          // that delivers: when it is not, auto falls through to the foreground road and its gate.
+          const bgBlocked = beforePost(target.hwnd);
+          if (bgBlocked) return blockedByDialogFailure("keyboard:type", bgBlocked, { lensId, extra: { method: effectiveMethod } });
           // Phase A safety: evaluate lensId / auto-guard BEFORE WM_CHAR send so
           // the BG path doesn't silently bypass guards that the foreground path
           // would have run (PR #64 Codex P1). foregroundVerified=true is the
@@ -2559,6 +2588,7 @@ export const keyboardTypeHandler = async ({
       foregroundVerified = fw.foregroundVerified;
       // internal #221: the window is on another virtual desktop — refused, nothing focused or sent.
       if (fw.offDesktop) return offDesktopFailure("keyboard:type", fw.offDesktop, { lensId });
+      if (fw.blockedByDialog) return blockedByDialogFailure("keyboard:type", fw.blockedByDialog, { lensId });
       // Issue #202: when both default and force escalation refused, surface
       // ForegroundRestricted typed code + ok:false (mirror window.ts:170-185
       // contract from PR #201). Returning ok:true with just a warning was
@@ -3017,6 +3047,9 @@ export const keyboardPressHandler = async ({
       // A thread with no focused window drops the key (see `threadHasNoFocus`); the road is not taken.
       const pressNoReceiver = !!target && canInjectViaPostMessage(target.hwnd).supported && threadHasNoFocus(target.hwnd);
       if (target && canInjectViaPostMessage(target.hwnd).supported && !pressNoReceiver) {
+        // internal #380: a key posted to a window its dialog has disabled goes to the dialog.
+        const bgPressBlocked = beforePost(target.hwnd);
+        if (bgPressBlocked) return blockedByDialogFailure("keyboard:press", bgPressBlocked, { lensId, extra: { method: effectiveMethod } });
         // Phase A safety: evaluate lensId / auto-guard before WM_CHAR send so
         // BG path doesn't silently bypass guards (PR #64 Codex P1). See type
         // handler comment above for foregroundVerified=true rationale.
@@ -3232,6 +3265,7 @@ export const keyboardPressHandler = async ({
       foregroundVerified = fw.foregroundVerified;
       // internal #221: the window is on another virtual desktop — refused, nothing focused or sent.
       if (fw.offDesktop) return offDesktopFailure("keyboard:press", fw.offDesktop, { lensId });
+      if (fw.blockedByDialog) return blockedByDialogFailure("keyboard:press", fw.blockedByDialog, { lensId });
       // Issue #202: same contract as keyboard:type above — typed
       // ForegroundRestricted on dual refusal (mirror window.ts:170-185).
       if (fw.forceRefused) {
@@ -3453,6 +3487,7 @@ export const keyboardSequenceHandler = async ({
       foregroundVerified = fw.foregroundVerified;
       // internal #221: the window is on another virtual desktop — refused, nothing focused or sent.
       if (fw.offDesktop) return offDesktopFailure("keyboard:sequence", fw.offDesktop, { lensId });
+      if (fw.blockedByDialog) return blockedByDialogFailure("keyboard:sequence", fw.blockedByDialog, { lensId });
       targetHwnd = fw.targetHwnd;
       if (fw.forceRefused) {
         const earlyEnv = lensId ? buildEnvelopeFor(lensId, { toolName: "keyboard:sequence" }) : null;
@@ -3948,7 +3983,7 @@ export function registerKeyboardTools(server: McpServer): void {
         purpose: "Send keyboard input to a window: 'type' for text, 'press' for key combos, 'sequence' for atomic multi-step chords.",
         details: "action='type' inserts text (auto-clipboard for non-ASCII, bypassing IME conversion). action='press' sends key combos like 'ctrl+c'/'alt+tab'. action='sequence' runs ordered steps in one keyboard lock — use for Alt+letter, letter mnemonic chains where intermediate tool calls would close the menu. windowTitle or hwnd is REQUIRED (blank/whitespace counts as neither) — the server focuses and auto-guards that window (identity, foreground, modal) first, and a call with neither stops with DestinationRequired before any key is sent. Use windowTitle:'@active' to aim at the foreground window on purpose; an hwnd naming a titleless window works only while that window is already foreground. DESKTOP_TOUCH_REQUIRE_DESTINATION=0 downgrades the stop to a warning.",
         prefer: "Set lensId for perception guards. Use desktop_act({action:'setValue'}) for UIA ValuePattern text fields.",
-        caveats: "win+r/win+x/win+s/win+l blocked. action='type' does not handle CJK IME composition — use use_clipboard=true or desktop_act({action:'setValue'}); neither lands while an IME composition is pending — commit or cancel it first. hints.clipboard says the backend and if the clipboard was restored. Non-ASCII text (CJK, emoji, diacritics, smart quotes) auto-clipboards, as keystrokes drop it or trigger Chrome accelerators; pass forceKeystrokes:true to disable. Background (PostMessage/WM_CHAR) auto-engages for classic console windows (cmd / PowerShell in conhost); DTM_BG_AUTO=1 enables globally. Windows Terminal: foreground, checked as terminal is (WindowsTerminalTargetUnsafe). Foreground non-terminal type runs a per-chunk leash; user focus-steal mid-stream aborts with FocusLostDuringType + context.typed/remaining; pass abortOnFocusLoss:false to disable. BG type verifies WM_CHAR via UIA TextPattern read-back; mismatch returns BackgroundInputNotDelivered. BG press read-back is scoped to terminal-class + enter/tab/arrow; other combos return verifyDelivery:'unverifiable', failure returns BackgroundKeyNotDelivered. action='sequence' is FG-only (BG/foreground_flash schema-rejected); emits verifyDelivery:'focus_only'; mid-loop focus theft returns MenuFocusLostMidSequence + context.remaining: Step[]. Win11 FG refusal returns ForegroundRestricted — terminal-class targets auto-engage BG (except a combo with ctrl/shift/alt and type with replaceAll, which go through FG and can return ForegroundRestricted too); non-terminal switch to desktop_act / click_element. Off-desktop target → WindowOnOtherDesktop.",
+        caveats: "win+r/win+x/win+s/win+l blocked. action='type' does not handle CJK IME composition — use use_clipboard=true or desktop_act({action:'setValue'}); neither lands while an IME composition is pending — commit or cancel it first. hints.clipboard says the backend and if the clipboard was restored. Non-ASCII text (CJK, emoji, diacritics, smart quotes) auto-clipboards, as keystrokes drop it or trigger Chrome accelerators; pass forceKeystrokes:true to disable. Background (PostMessage/WM_CHAR) auto-engages for classic console windows (cmd / PowerShell in conhost); DTM_BG_AUTO=1 enables globally. Windows Terminal: foreground, checked as terminal is (WindowsTerminalTargetUnsafe). Foreground non-terminal type runs a per-chunk leash; user focus-steal mid-stream aborts with FocusLostDuringType + context.typed/remaining; pass abortOnFocusLoss:false to disable. BG type verifies WM_CHAR via UIA TextPattern read-back; mismatch returns BackgroundInputNotDelivered. BG press read-back is scoped to terminal-class + enter/tab/arrow; other combos return verifyDelivery:'unverifiable', failure returns BackgroundKeyNotDelivered. action='sequence' is FG-only (BG/foreground_flash schema-rejected); emits verifyDelivery:'focus_only'; mid-loop focus theft returns MenuFocusLostMidSequence + context.remaining: Step[]. Win11 FG refusal returns ForegroundRestricted — terminal-class targets auto-engage BG (except a combo with ctrl/shift/alt and type with replaceAll, which go through FG and can return ForegroundRestricted too); non-terminal switch to desktop_act / click_element. Off-desktop target → WindowOnOtherDesktop. Window disabled by its dialog → WindowBlockedByDialog.",
         examples: [
           "keyboard({action:'type', text:'hello', windowTitle:'Untitled - Notepad'}) → text injected (guarded)",
           "keyboard({action:'type', text:'hello', windowTitle:'@active'}) → typed into the foreground window",

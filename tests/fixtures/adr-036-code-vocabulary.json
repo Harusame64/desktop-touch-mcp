@@ -106,6 +106,7 @@
     "Unknown",
     "UnknownScheme",
     "ValueNotApplied",
+    "WindowBlockedByDialog",
     "WindowExcluded",
     "WindowFrozen",
     "WindowOnOtherDesktop",
