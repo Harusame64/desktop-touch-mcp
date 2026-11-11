@@ -167,9 +167,10 @@ export function wtRefusalSentence(why: WtRefusal, opts: { tabName?: string; left
       return "Nothing was typed: the Windows Terminal pane did not take the keyboard focus in time (or UI Automation " +
         "was busy), so the paste was not sent — it would have gone to another control (an open find box, a tab)." + tail;
     case "own_tab":
-      return "Nothing was typed: the Windows Terminal tab selected in that window is the one this server's client " +
-        `runs in${opts.tabName !== undefined ? ` ("${opts.tabName}")` : ""}, and the text would arrive as the user's own ` +
-        "input to the client. Use a terminal in another tab or window (key_locker launch_console opens one)." + tail;
+      return "Nothing was typed: the Windows Terminal tab selected in that window has the name of the tab this server's " +
+        `client runs in${opts.tabName !== undefined ? ` ("${opts.tabName}")` : ""}, and the text would arrive as the user's ` +
+        "own input to the client. The tabs are matched by name: use a terminal in another tab or window with another " +
+        "name (key_locker launch_console opens one), or ask the user to rename the tab." + tail;
     case "pane_focus_unavailable":
       return "Nothing was typed: this server's native addon is too old to put Windows Terminal's keyboard focus on " +
         "its pane, so the paste could go to another control (an open find box, a tab). Sending again gives the same " +

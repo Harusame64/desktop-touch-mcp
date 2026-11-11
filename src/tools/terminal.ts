@@ -2607,7 +2607,10 @@ export const terminalRunHandler = async ({
     notifyDispatch: false as const,
   };
 
-  type SendPayload = { ok?: boolean; code?: string; context?: { detail?: unknown; foregroundRestored?: unknown } };
+  type SendPayload = {
+    ok?: boolean; code?: string; context?: { detail?: unknown; foregroundRestored?: unknown };
+    hints?: { warnings?: unknown };
+  };
   const parseSendResult = (r: ToolResult): SendPayload | null => {
     try {
       const block = r.content[0];
@@ -2695,6 +2698,12 @@ export const terminalRunHandler = async ({
   // epilogue-wrapped `sendInput`. Positive gate (=== true) so a null/unparsed
   // payload stays fail-closed (no phantom record). This is the single notifier
   // for the run path; the nested send was suppressed via notifyDispatch=false.
+  // internal #371 (gate 2 on #941): the send's own warnings — among them "whether the selected tab is the
+  // client's could not be checked" — are the run's too; they were dropped with the rest of its reply.
+  if (sendPayload?.ok === true && Array.isArray(sendPayload.hints?.warnings)) {
+    for (const w of sendPayload.hints.warnings) if (typeof w === "string" && !warnings.includes(w)) warnings.push(w);
+  }
+
   if (sendPayload?.ok === true) {
     // Key by the PUBLIC paneId when the caller targeted one (a wt pane's driver key is `wt:…`, NOT the
     // host-window String(hwnd) — keying by hwnd would silently never arm the autofill loop for wt panes).

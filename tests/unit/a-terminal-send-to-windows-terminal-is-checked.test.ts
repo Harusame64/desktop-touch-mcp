@@ -92,7 +92,7 @@ vi.mock(import("../../src/tools/keyboard.js"), async (importOriginal) => ({
   typeViaClipboard: vi.fn(() => Promise.resolve({ backend: "native", clipboardRestored: true })),
 }));
 
-import { terminalSendHandler, sendFailedWarning } from "../../src/tools/terminal.js";
+import { terminalSendHandler, terminalRunHandler, sendFailedWarning } from "../../src/tools/terminal.js";
 import * as win32 from "../../src/engine/win32.js";
 import * as uia from "../../src/engine/uia-bridge.js";
 import * as bg from "../../src/engine/bg-input.js";
@@ -394,13 +394,22 @@ describe("internal #286 — terminal:send to Windows Terminal through the foregr
     vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "unknown", why: "x" });
     const r = parseResult(await send({ method: "foreground_flash" }));
     expect(r.ok).toBe(true);
-    expect(r.hints.warnings.join(" ")).toMatch(/could not be checked/);
+    expect((r.hints.warnings as string[]).filter((w) => /could not be checked/.test(w))).toHaveLength(1);
+  });
+
+  it("run carries the note too (gate 2 on #941: run kept only ok/code/context of the send)", async () => {
+    vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "unknown", why: "x" });
+    const r = parseResult(await terminalRunHandler({
+      windowTitle: "PowerShell", input: "echo hi", until: { mode: "quiet", quietMs: 0 }, timeoutMs: 50,
+    } as never));
+    expect((r.warnings as string[]).filter((w) => /could not be checked/.test(w))).toHaveLength(1);
   });
 
   it("refuses the client's tab on method:'foreground_flash' too, and does not flash", async () => {
     vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "title", title: "PowerShell" });
     const r = parseResult(await send({ method: "foreground_flash" }));
     expect(r.context).toMatchObject({ detail: "own_tab", method: "foreground_flash" });
+    expect(r.error).toContain('("PowerShell")');
     expect(mockFlash).not.toHaveBeenCalled();
   });
 

@@ -247,7 +247,7 @@ describe("internal #372 — keyboard type to Windows Terminal through the foregr
     const r = parseResult(await type());
     expect(r.ok).toBe(true);
     expect(mockType).toHaveBeenCalled();
-    expect(JSON.stringify(r)).toMatch(/could not be checked/);
+    expect(JSON.stringify(r).match(/could not be checked/g)).toHaveLength(1);
   });
 
   it("does not check a window that is not WT", async () => {
@@ -292,13 +292,14 @@ describe("internal #372 — keyboard type to Windows Terminal with method:'foreg
     vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "unknown", why: "x" });
     const r = parseResult(await flash());
     expect(r.ok).toBe(true);
-    expect(r.hints.warnings.join(" ")).toMatch(/could not be checked/);
+    expect((r.hints.warnings as string[]).filter((w) => /could not be checked/.test(w))).toHaveLength(1);
   });
 
   it("refuses the client's tab on the flash too, and does not flash", async () => {
     vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "title", title: "PowerShell" });
     const r = parseResult(await flash());
     expect(r.context).toMatchObject({ detail: "own_tab", method: "foreground_flash" });
+    expect(r.error).toContain('("PowerShell")');
     expect(mockFlash).not.toHaveBeenCalled();
   });
 

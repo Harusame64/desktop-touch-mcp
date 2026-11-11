@@ -37,16 +37,31 @@ describe("ancestorsBelowWt", () => {
 });
 
 describe("the helper", () => {
+  const b64 = (s: string) => Buffer.from(s, "utf16le").toString("base64");
   it("tries the pids in the order given", () => {
-    expect(helperScript([10, 14, 15])).toContain("foreach ($p in @(10,14,15))");
+    expect(helperScript([15, 14, 10])).toContain("foreach ($p in @(15,14,10))");
+  });
+  it("takes only a console whose window belongs to a Windows Terminal window (gate 2 on #941)", () => {
+    expect(helperScript([1])).toContain("-ne 'CASCADIA_HOSTING_WINDOW_CLASS'");
+  });
+  it("prints only ASCII: the title as base64 of UTF-16, not through the console code page (gate 2 on #941)", () => {
+    const s = helperScript([1]);
+    expect(s).toContain("[Text.Encoding]::Unicode.GetBytes");
+    expect(s).not.toContain("ConvertTo-Json");
+    expect(s).not.toMatch(/OutputEncoding/);
+  });
+  it.each(["✳ win2", "◐ 作業", "PowerShell"])("reads the title %j back exactly", (title) => {
+    expect(parseHelperOutput(`{"pid":15,"title16":"${b64(title)}"}`)).toEqual({ state: "title", title });
   });
   it.each<[string, OwnTabTitle["state"]]>([
-    ['{"pid":15,"title":"✳ win2"}', "title"],
     ['{"none":true}', "unknown"],
     ["", "unknown"],
-    ['{"pid":15,"title":"◐ "}', "unknown"],
+    ["???", "unknown"],
   ])("reads %j as %s", (out, state) => {
     expect(parseHelperOutput(out).state).toBe(state);
+  });
+  it("reads a symbol-only title as unknown", () => {
+    expect(parseHelperOutput(`{"pid":15,"title16":"${b64("◐ ")}"}`).state).toBe("unknown");
   });
 });
 
@@ -60,7 +75,7 @@ describe("readWtTab and the client's own tab", () => {
   it("refuses the client's tab, whichever status symbol either side shows", async () => {
     const r = await readWtTab(1n, deps({ state: "title", title: "✳ win2" }, "◐ win2"));
     expect(r).toEqual({ ok: false, why: "own_tab", tabName: "◐ win2" });
-    expect(wtRefusalSentence("own_tab", { tabName: "◐ win2" })).toMatch(/^Nothing was typed: .*the one this server's client runs in \("◐ win2"\)/);
+    expect(wtRefusalSentence("own_tab", { tabName: "◐ win2" })).toMatch(/^Nothing was typed: .*the name of the tab this server's client runs in \("◐ win2"\)/);
   });
 
   it("passes another tab", async () => {
