@@ -22,8 +22,10 @@
   not in it (internal #377).
 - **A refused `mouse_drag` no longer offers a `fixId` that clicks.** When the guard refused a drag, the reply said to
   approve with `mouse_click({fixId})`, and that clicked the point the guard had refused instead of dragging.
-  `browser_navigate` and `browser_eval` were likewise told to approve with `browser_click`. A `fixId` is now offered
-  only by the tools that accept one (`mouse_click`, `keyboard` type, `click_element`, `browser_click`) (internal #378).
+  `browser_navigate` and `browser_eval` were likewise told to approve with `browser_click`, and `set_element_value` with
+  `click_element`. A `fixId` is now offered only by the calls that accept one (`mouse_click`, `keyboard` type and
+  sequence, `click_element`, `browser_click`), and is taken only by the call it was offered to: a `keyboard` reply names
+  its action (internal #378).
 
 ## [2.4.1] - 2026-11-11 — Pastes into Windows Terminal are checked, and more replies say when nothing happened
 

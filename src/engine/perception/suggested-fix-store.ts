@@ -39,6 +39,12 @@ export interface SuggestedFix {
   fixId: string;
   /** v3 §7.1: all 4 supported tool kinds */
   tool: "mouse_click" | "keyboard" | "browser_click" | "click_element";
+  /**
+   * The call that was refused and is told to approve with this fix, as the guard names it
+   * (`keyboard:type`, `browser_click`). A consumer that is told its own name checks it, so a fix
+   * offered to one keyboard action is not taken by another (gate 2 on #953).
+   */
+  offeredTo?: string;
   args: Record<string, unknown>;
   targetFingerprint: TargetFingerprint;
   createdAtMs: number;

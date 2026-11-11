@@ -524,7 +524,7 @@ describe("ADR-038 — a keyboard write without a destination is refused", () => 
     } as never);
     const r = body(await keyboardTypeHandler({ ...TYPE_NO_DESTINATION, fixId: "fix-1" }));
     expectRefused(r, "keyboard:type");
-    expect(mockValidateAndPrepareFix).toHaveBeenCalledWith("fix-1", "keyboard");
+    expect(mockValidateAndPrepareFix).toHaveBeenCalledWith("fix-1", "keyboard", "keyboard:type");
     expect(mockConsumeFix).not.toHaveBeenCalled();
   });
 

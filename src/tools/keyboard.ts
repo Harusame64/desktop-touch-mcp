@@ -1681,7 +1681,7 @@ export const keyboardTypeHandler = async ({
     // not spend the one-shot approval it never got to use.
     let effectiveWindowTitle = windowTitle;
     if (fixId) {
-      const vr = validateAndPrepareFix(fixId, "keyboard");
+      const vr = validateAndPrepareFix(fixId, "keyboard", "keyboard:type");
       if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "keyboard");
       if (typeof vr.fix.args.windowTitle === "string") effectiveWindowTitle = vr.fix.args.windowTitle;
       if (typeof vr.fix.args.text === "string") effectiveText = vr.fix.args.text;
@@ -3407,7 +3407,7 @@ export const keyboardSequenceHandler = async ({
     // the destination check has let the call through (see keyboard:type).
     let effectiveWindowTitle = windowTitle;
     if (fixId) {
-      const vr = validateAndPrepareFix(fixId, "keyboard");
+      const vr = validateAndPrepareFix(fixId, "keyboard", "keyboard:sequence");
       if (!vr.ok || !vr.fix) return failWith(new Error(vr.errorCode!), "keyboard:sequence");
       if (typeof vr.fix.args.windowTitle === "string") effectiveWindowTitle = vr.fix.args.windowTitle;
     }
