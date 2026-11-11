@@ -901,7 +901,7 @@ export const desktopSeeSchema = {
 };
 
 export const desktopTouchSchema = {
-  lease:  leaseSchema.describe("Lease returned by desktop_discover. Expires after TTL; re-call desktop_discover if desktop_act fails with lease_expired."),
+  lease:  leaseSchema.describe("Lease returned by desktop_discover. Expires after TTL; re-call desktop_discover if desktop_act fails with lease_expired, or with lease_generation_mismatch (a later discover of the window replaced this lease's view)."),
   action: z.enum(["auto", "invoke", "click", "type", "setValue", "select"]).optional().describe(
     "action='select' selects a list, tree or grid item read through UI Automation whose affordances list 'select' (the same road as its click); on any other target it is REFUSED (action_not_offered) and nothing is done. " +
     "A click on a list, tree or grid item read through UI Automation selects it, as a single click does, except in Chromium-based content (UI Automation FrameworkId 'Chrome'), which keeps Invoke; action='invoke' opens or runs it when the item has a UI Automation Invoke (an item without one, such as a WPF list item, takes a single click either way). " +
