@@ -1,6 +1,10 @@
 # Changelog
 
-## [Unreleased]
+## [2.4.1] - 2026-11-11 — Pastes into Windows Terminal are checked, and more replies say when nothing happened
+
+Some calls that answered `ok: true` now refuse, with nothing typed: `terminal` `send` / `run` and `keyboard` `type`
+into a Windows Terminal tab that is split, is not a terminal, changed on the way, or is the one the client runs in
+(`WindowsTerminalTargetUnsafe`). The release zips now install their dependencies from a committed lock.
 
 ### Added — Windows
 - **`desktop_discover` marks list, tree and grid items as `listitem`, and `desktop_act` can select them.** Such an
