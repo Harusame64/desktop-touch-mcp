@@ -601,7 +601,8 @@ export function buildExitCommand(
   // spike, internal 0e65af88: three lines left the third 5/5, joined with `; ` ran 5/5). There the
   // command goes on one line. The input runs inside `try`: on one line a terminating error (`throw`,
   // -ErrorAction Stop) would skip the rest of the line, epilogue included (gate 2 on #942), and `try`
-  // runs in the caller's scope. `$?` after the input is its last pipeline's status, as after a newline.
+  // runs in the caller's scope. The epilogue is the `finally`, so a top-level `return` in the input,
+  // which `catch` does not see, still reports (PR codex on #942). `$?` after the input is its last pipeline's status, as after a newline.
   // `<#S…#>` / `<#E…#>` mark the two ends of the echo, which wraps in a narrow window: stripExitArtifacts
   // drops the rows between them. Not for an input with a line break or a `#` (a comment would swallow
   // the rest of the line), or ending in a backtick once trailing `;` are trimmed (it would escape the
@@ -611,8 +612,8 @@ export function buildExitCommand(
   if (opts.oneLine && !/[\r\n#]/.test(input) && !body.endsWith("`") && body !== "") {
     return (
       `<#S${nonce}#> $global:LASTEXITCODE = $null; $dtmcp_ok = $true; ` +
-      `try { ${body}; $dtmcp_ok = $? } catch { $dtmcp_ok = $false; $_ | Out-Host }; ` +
-      `$dtmcp_c=$LASTEXITCODE; ('${head}'+"${tail}")+'|'+([string]$dtmcp_c)+'|'+$dtmcp_ok <#E${nonce}#>`
+      `try { ${body}; $dtmcp_ok = $? } catch { $dtmcp_ok = $false; $_ | Out-Host } ` +
+      `finally { $dtmcp_c=$LASTEXITCODE; ('${head}'+"${tail}")+'|'+([string]$dtmcp_c)+'|'+$dtmcp_ok } <#E${nonce}#>`
     );
   }
   // powershell — the prologue carries a trailing `# <nonce>` comment (harmless;

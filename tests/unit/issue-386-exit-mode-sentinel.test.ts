@@ -179,6 +179,11 @@ describe("buildExitCommand — PowerShell on one line in Windows Terminal (inter
     expect(cmd).not.toContain(TOKEN);
   });
 
+  it("prints the sentinel from a finally, so a return in the input still reports (PR codex on #942)", () => {
+    const cmd = one("if ($true) { return }; Write-Output 'work'");
+    expect(cmd).toMatch(/ finally \{ \$dtmcp_c=\$LASTEXITCODE; \('__DTMCP'\+"_EXIT_[0-9a-f]+"\)\+'\|'\+\(\[string\]\$dtmcp_c\)\+'\|'\+\$dtmcp_ok \} <#E/);
+  });
+
   it("is the multi-line form without oneLine (a classic console, whose paste runs every line)", () => {
     expect(buildExitCommand("Get-Item x", "powershell", NONCE).split("\n")).toHaveLength(3);
   });
