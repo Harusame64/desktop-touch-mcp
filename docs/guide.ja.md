@@ -280,7 +280,7 @@ Windows のフォアグラウンド保護機能により、ピン固定された
 
 別の仮想デスクトップにある窓は、前面に出しません（利用者のデスクトップが切り替わるため）。`keyboard` / `terminal` の send / マウス系（homing で前面に出すとき）は `code: "WindowOnOtherDesktop"` で断り、何も送りません。`context.sameTitleOnScreen: true` は、同じ題名の窓がいまのデスクトップにあるという意味です。その窓を正確に指定してください（道具が受け取るなら `hwnd`、そうでなければより詳しい `windowTitle`）。`focus_window` はこれまでどおり前面に出します。
 
-自分の開いたダイアログ（「名前を付けて保存」など）が出ている間、その窓は無効になり、入力を受け付けません。そのため `keyboard` は、`windowTitle` で指しても `hwnd` で指しても、その窓をダイアログより前に出さず、ダイアログにも打たずに、`code: "WindowBlockedByDialog"` で断ります。焦点も動かさず、何も送りません。ダイアログは `context.dialogHwnd` と `context.dialogTitle` で示します。ダイアログに打つときは、`context.dialogHwnd` を `hwnd` に渡してください。
+自分の開いたダイアログ（「名前を付けて保存」など）が出ている間、その窓は無効になり、入力を受け付けません。そのため `keyboard` は、`windowTitle` で指しても `hwnd` で指しても、その窓をダイアログより前に出さず、ダイアログにも打たずに、`code: "WindowBlockedByDialog"` で断ります。焦点も動かさず、何も送りません。ダイアログは `context.dialogHwnd` と `context.dialogTitle` で示します。ダイアログに打つときは、`context.dialogHwnd` を `hwnd` に渡してください。コンソールの窓は断りません。プロパティのダイアログが開いていても、入力を受け付けるためです。
 
 **環境変数でグローバルデフォルトを設定する:**
 

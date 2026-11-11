@@ -31,7 +31,8 @@
   success, and typed nothing (with `forceFocus` and `use_clipboard` too). `method: 'background'`, a pinned `hwnd` and
   `foreground_flash` typed into the dialog's file-name field instead. They now answer `WindowBlockedByDialog` before
   anything is focused or sent; `context.dialogHwnd` names the dialog to type into instead. A disabled window whose
-  dialog is not showing (minimized with it) is refused too (internal #380).
+  dialog is not showing (minimized with it) is refused too. A console window is not refused: a console disabled by
+  its Properties dialog still takes the keys into its input line (internal #380).
 
 ## [2.4.1] - 2026-11-11 — Pastes into Windows Terminal are checked, and more replies say when nothing happened
 

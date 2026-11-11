@@ -10,6 +10,21 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+/** Which handles the OS reads as disabled, and which are consoles (internal #380 gates ask the handle). */
+const { gateState } = vi.hoisted(() => ({ gateState: { disabled: new Set<bigint>(), consoles: new Set<bigint>() } }));
+
+// WM_CHAR delivery: supported, with a focused receiver — the background road is the one that delivers.
+vi.mock(import("../../src/engine/bg-input.js"), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    canInjectViaPostMessage: vi.fn(() => ({ supported: true })),
+    threadHasNoFocus: vi.fn(() => false),
+    postCharsToHwnd: vi.fn(() => ({ sent: 4, full: true })),
+    postKeyComboToHwnd: vi.fn(() => true),
+  };
+});
+
 // Partial mock — keep constants live so transitive imports through
 // bg-input.ts continue to resolve.
 vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
@@ -18,8 +33,10 @@ vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
     ...actual,
     enumWindowsInZOrder: vi.fn(),
     restoreAndFocusWindow: vi.fn(),
-    getWindowClassName: vi.fn(() => ""),
-    postCharsToHwnd: vi.fn(() => ({ sent: 4, full: true })),
+    getWindowClassName: vi.fn((h: bigint) => (gateState.consoles.has(h) ? "ConsoleWindowClass" : "Notepad")),
+    getWindowRoot: vi.fn((h: bigint) => h),
+    isWindowEnabled: vi.fn((h: bigint) => !gateState.disabled.has(h)),
+    getWindowTitleW: vi.fn((h: bigint) => (h === 100n ? "無題 - メモ帳" : "")),
   };
 });
 
@@ -52,6 +69,7 @@ vi.mock("../../src/engine/perception/registry.js", () => ({
 
 vi.mock("../../src/engine/uia-bridge.js", () => ({
   getTextViaTextPattern: vi.fn(() => Promise.resolve("")),
+  getTextViaValuePattern: vi.fn(() => Promise.resolve(null)),
   // internal #221: the desktop manager says the fixture's cloaked windows are on another desktop.
   getVirtualDesktopStatus: vi.fn(async (hs: string[]) => Object.fromEntries(hs.map((h) => [h, false]))),
 }));
@@ -79,13 +97,15 @@ vi.mock("../../src/tools/_resolve-window.js", () => ({
 }));
 
 import { keyboardPressHandler, keyboardTypeHandler, keyboardSequenceHandler } from "../../src/tools/keyboard.js";
+import { beforePost } from "../../src/tools/_blocked-by-dialog.js";
 import * as win32 from "../../src/engine/win32.js";
+import * as bgInput from "../../src/engine/bg-input.js";
 import * as guard from "../../src/tools/_action-guard.js";
 import * as resolver from "../../src/tools/_resolve-window.js";
 
 const mockEnum = vi.mocked(win32.enumWindowsInZOrder);
 const mockRestore = vi.mocked(win32.restoreAndFocusWindow);
-const mockPost = vi.mocked(win32.postCharsToHwnd);
+const mockPost = vi.mocked(bgInput.postCharsToHwnd);
 
 function fakeWindow(title: string, isActive: boolean, hwnd = 100n) {
   return {
@@ -112,7 +132,10 @@ beforeEach(() => {
 
 const NOTEPAD = 100n;
 const DIALOG = 555n;
-const disabled = (isActive = false) => ({ ...fakeWindow("無題 - メモ帳", isActive, NOTEPAD), isEnabled: false });
+const disabled = (isActive = false) => {
+  gateState.disabled.add(NOTEPAD);
+  return { ...fakeWindow("無題 - メモ帳", isActive, NOTEPAD), isEnabled: false };
+};
 const enabled = (isActive = false) => ({ ...fakeWindow("無題 - メモ帳", isActive, NOTEPAD), isEnabled: true });
 
 function withDialog() {
@@ -120,6 +143,9 @@ function withDialog() {
 }
 beforeEach(() => {
   blocker.answer = null;
+  gateState.disabled.clear();
+  gateState.consoles.clear();
+  flashChannel.kind = "wm_char";
   vi.mocked(resolver.resolveWindowTarget).mockImplementation((async ({ windowTitle }: { windowTitle?: string }) => ({ title: windowTitle, warnings: [] })) as never);
 });
 
@@ -260,3 +286,72 @@ describe("internal #380 — keyboard and a window its dialog has disabled", () =
   });
 
 });
+
+describe("internal #380 — what the gates leave alone, and how they name", () => {
+  it("a console disabled by its Properties dialog is not refused on the foreground road (win2 T1b: keys reach its input line)", async () => {
+    withDialog();
+    gateState.consoles.add(NOTEPAD);
+    mockEnum
+      .mockReturnValueOnce([disabled()])
+      .mockReturnValueOnce([disabled(true)]);
+    const r = parseResult(await keyboardPressHandler({ keys: "a", windowTitle: "無題 - メモ帳", method: "foreground", trackFocus: false, settleMs: 0 }));
+    expect(r.code).not.toBe("WindowBlockedByDialog");
+    expect(mockRestore).toHaveBeenCalled();
+  });
+
+  it("nor on the WM_CHAR road", async () => {
+    withDialog();
+    gateState.consoles.add(NOTEPAD);
+    mockEnum.mockReturnValue([disabled()]);
+    const r = parseResult(await keyboardTypeHandler({ text: "kb1", windowTitle: "無題 - メモ帳", method: "background", trackFocus: false, settleMs: 0 } as never));
+    expect(r.code).not.toBe("WindowBlockedByDialog");
+    expect(mockPost).toHaveBeenCalled();
+  });
+
+  it("the post gate asks the top-level window, not the handle posted to (win2 K3b: a disabled form's child Edit is enabled)", () => {
+    const CHILD = 777n;
+    vi.mocked(win32.getWindowRoot).mockImplementation((h: unknown) => (h === CHILD ? NOTEPAD : (h as bigint)));
+    gateState.disabled.add(NOTEPAD);
+    withDialog();
+    expect(beforePost(CHILD)).toMatchObject({ hwnd: NOTEPAD, dialog: { hwnd: DIALOG } });
+    gateState.disabled.clear();
+    expect(beforePost(CHILD)).toBeNull();
+  });
+
+  it("the clipboard_flash channel (it takes the foreground) is refused by the foreground gate", async () => {
+    withDialog();
+    flashChannel.kind = "clipboard_flash";
+    mockEnum.mockReturnValue([disabled()]);
+    const r = parseResult(await keyboardTypeHandler({ text: "x", windowTitle: "無題 - メモ帳", method: "foreground_flash", trackFocus: false, settleMs: 0 } as never));
+    expect(r.code).toBe("WindowBlockedByDialog");
+    expect(r.context.method).toBe("foreground_flash");
+  });
+
+  it("a blocker read that throws says the dialog could not be read, not that none is showing", async () => {
+    blocker.answer = "throw";
+    mockEnum.mockReturnValue([disabled()]);
+    const r = parseResult(await keyboardPressHandler({ keys: "a", windowTitle: "無題 - メモ帳", method: "foreground", trackFocus: false, settleMs: 0 }));
+    expect(r.code).toBe("WindowBlockedByDialog");
+    expect(r.context.dialogUnread).toBe(true);
+    expect(r.error).toMatch(/could not be read/);
+    expect(r.error).not.toMatch(/no dialog of its is showing/);
+  });
+
+  it("the hwnd redirect names the dialog as the title road does, not the popup the resolver moved to (win2 K2)", async () => {
+    const PALETTE = 999n;
+    blocker.answer = { name: "名前を付けて保存", hwnd: DIALOG };
+    vi.mocked(resolver.resolveWindowTarget).mockImplementation((async () => ({ title: "FIND", hwnd: PALETTE, warnings: ["parent_disabled_prefer_popup"] })) as never);
+    mockEnum.mockReturnValue([enabled()]);
+    const r = parseResult(await keyboardTypeHandler({ text: "w", hwnd: "100", method: "foreground", trackFocus: false, settleMs: 0 } as never));
+    expect(r.context).toMatchObject({ hwnd: "100", dialogHwnd: "555", dialogTitle: "名前を付けて保存" });
+  });
+
+  it("…and falls back to that popup when the family walk names none", async () => {
+    blocker.answer = null;
+    vi.mocked(resolver.resolveWindowTarget).mockImplementation((async () => ({ title: "名前を付けて保存", hwnd: DIALOG, warnings: ["parent_disabled_prefer_popup"] })) as never);
+    mockEnum.mockReturnValue([enabled()]);
+    const r = parseResult(await keyboardTypeHandler({ text: "w", hwnd: "100", method: "foreground", trackFocus: false, settleMs: 0 } as never));
+    expect(r.context).toMatchObject({ hwnd: "100", dialogHwnd: "555" });
+  });
+});
+
