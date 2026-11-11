@@ -413,6 +413,38 @@ impl Task for UiaGetSelectedTabTask {
     }
 }
 
+/// internal #370 — `wt_focus_terminal_pane`'s task: the pane-focus step of the flash, on its own.
+#[cfg(windows)]
+pub struct WtFocusTerminalPaneTask {
+    hwnd: String,
+    timeout_ms: u32,
+    expected_tab: Option<String>,
+}
+
+#[cfg(windows)]
+impl Task for WtFocusTerminalPaneTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let raw: i64 = self
+            .hwnd
+            .parse()
+            .map_err(|e| napi::Error::from_reason(format!("wt_focus_terminal_pane: hwnd parse error: {e}")))?;
+        let outcome = win32::wt_focus::focus_terminal_pane(raw as isize, self.timeout_ms, self.expected_tab.clone());
+        Ok(match outcome {
+            win32::wt_focus::FocusOutcome::Focused => "focused",
+            win32::wt_focus::FocusOutcome::TabChanged => "tab_changed",
+            win32::wt_focus::FocusOutcome::NotFocused => "not_focused",
+        }
+        .to_string())
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
 #[cfg(windows)]
 pub struct UiaGetVirtualDesktopStatusTask(Vec<String>);
 
@@ -496,6 +528,20 @@ pub fn uia_read_scroll_percent_at_hwnd(
 #[napi]
 pub fn uia_get_selected_tab(hwnd: String) -> AsyncTask<UiaGetSelectedTabTask> {
     AsyncTask::new(UiaGetSelectedTabTask(hwnd))
+}
+
+/// internal #370 — put Windows Terminal's keyboard focus on the one pane of its selected tab, and wait
+/// until UIA reports it focused (`"focused"`), the selected tab is not `expected_tab`
+/// (`"tab_changed"`), or neither within `timeout_ms` (`"not_focused"`). Call it only while the window
+/// is in front: `SetFocus` activates it.
+#[cfg(windows)]
+#[napi]
+pub fn wt_focus_terminal_pane(
+    hwnd: String,
+    timeout_ms: u32,
+    expected_tab: Option<String>,
+) -> AsyncTask<WtFocusTerminalPaneTask> {
+    AsyncTask::new(WtFocusTerminalPaneTask { hwnd, timeout_ms, expected_tab })
 }
 
 /// Query which HWNDs are on the current virtual desktop.

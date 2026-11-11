@@ -3361,6 +3361,31 @@ export function selectedTabReadable(): boolean {
   return typeof nativeUia?.uiaGetSelectedTab === "function";
 }
 
+/** internal #370 — can this build put Windows Terminal's focus on its pane? */
+export function terminalPaneFocusable(): boolean {
+  return typeof nativeUia?.wtFocusTerminalPane === "function";
+}
+
+/**
+ * internal #370 — put the keyboard focus on the one pane of a Windows Terminal window's selected tab,
+ * which must still be `expectedTab` (its RuntimeId). Only while the window is in front: `SetFocus`
+ * activates it. Anything but a pane that took the focus — a missing export, a throw — is
+ * "not_focused", and the caller does not paste.
+ */
+export async function focusTerminalPane(
+  hwnd: bigint,
+  expectedTab: string,
+  timeoutMs = 1_000,
+): Promise<"focused" | "tab_changed" | "not_focused"> {
+  if (!nativeUia?.wtFocusTerminalPane) return "not_focused";
+  try {
+    const r = await nativeUia.wtFocusTerminalPane(String(hwnd), timeoutMs, expectedTab);
+    return r === "focused" || r === "tab_changed" ? r : "not_focused";
+  } catch {
+    return "not_focused";
+  }
+}
+
 /**
  * internal #227 — the selected tab of a Windows Terminal window: its name and UIA RuntimeId, `null`
  * when the window shows no selected tab, `undefined` when it could not be asked (no native engine,

@@ -10,7 +10,9 @@
  * - its selected tab can be read and has exactly one pane: a split tab's paste goes to whichever pane
  *   has the focus, and a tab with no pane (WT's Settings tab) is not a terminal;
  * - the tab is still the same one after the terminal was brought in front, read by RuntimeId: a tab
- *   switched in between would take a command meant for another.
+ *   switched in between would take a command meant for another;
+ * - the keyboard focus is on that tab's pane right before the paste (internal #370): with WT's find box
+ *   open, or the focus on a tab item, the paste and the Enter go there and nothing runs.
  *
  * Not made: the window-in-front refusal. On the `desktop_act` road the question is in front while the
  * user answers, so a terminal in front is the user's own. Without a question this server puts the
@@ -95,11 +97,11 @@ export async function checkWtTabInFront(
   hwnd: bigint,
   before: WtTab | null,
   deps: WtCheckDeps,
-): Promise<{ ok: true } | { ok: false; why: WtRefusal }> {
+): Promise<{ ok: true; tab: WtTab } | { ok: false; why: WtRefusal }> {
   const now = await readWtTab(hwnd, deps);
   if (!now.ok) return now;
-  if (before === null) return { ok: true };
-  return now.tab.runtimeId === before.runtimeId ? { ok: true } : { ok: false, why: "tab_changed" };
+  if (before === null) return now;
+  return now.tab.runtimeId === before.runtimeId ? now : { ok: false, why: "tab_changed" };
 }
 
 /**
@@ -136,6 +138,7 @@ export function wtRefusalSentence(why: WtRefusal, opts: { tabName?: string; left
         "after the terminal was brought in front, and the paste would have gone there. Send again.";
     case "pane_not_focused":
       return "Nothing was typed: the Windows Terminal pane did not take the keyboard focus in time (or UI Automation " +
-        "was busy), so the paste was not sent — it would have gone to another control (an open find box, a tab)." + tail;
+        "was busy, or this server's native addon is too old to move it), so the paste was not sent — it would have " +
+        "gone to another control (an open find box, a tab)." + tail;
   }
 }

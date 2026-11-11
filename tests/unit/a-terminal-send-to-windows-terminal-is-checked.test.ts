@@ -55,6 +55,8 @@ vi.mock("../../src/engine/uia-bridge.js", () => ({
   getVirtualDesktopStatus: vi.fn(async (hs: string[]) => Object.fromEntries(hs.map((h) => [h, false]))),
   getSelectedTab: vi.fn(),
   selectedTabReadable: vi.fn(() => true),
+  terminalPaneFocusable: vi.fn(() => true),
+  focusTerminalPane: vi.fn(),
 }));
 
 vi.mock("../../src/engine/ocr-bridge.js", () => ({
@@ -98,6 +100,8 @@ const mockPaste = vi.mocked(kb.typeViaClipboard);
 const mockFlash = vi.mocked(bg.injectViaForegroundFlash);
 const mockInject = vi.mocked(bg.canInjectViaPostMessage);
 const mockReadable = vi.mocked(uia.selectedTabReadable);
+const mockFocusable = vi.mocked(uia.terminalPaneFocusable);
+const mockPaneFocus = vi.mocked(uia.focusTerminalPane);
 
 const WT = 100n;
 const OTHER = 900n;
@@ -150,6 +154,8 @@ beforeEach(() => {
   });
   mockTab.mockResolvedValue(tab("rt-1"));
   mockReadable.mockReturnValue(true);
+  mockFocusable.mockReturnValue(true);
+  mockPaneFocus.mockResolvedValue("focused");
   mockFlash.mockReturnValue({ ok: true, result: {} } as never);
   delete process.env["DESKTOP_TOUCH_FORCE_FOCUS"];
 });
@@ -250,6 +256,80 @@ describe("internal #286 — terminal:send to Windows Terminal through the foregr
     const r = parseResult(await send());
     expect(r.context).toMatchObject({ detail: "tab_split" });
     expect(mockPaste).not.toHaveBeenCalled();
+  });
+
+  // internal #370: the paste and the Enter go to WT's focused control (an open find box, a tab item).
+  it("puts the focus on the tab's pane, with WT in front, after the second tab read and before the paste", async () => {
+    const order: string[] = [];
+    mockTab.mockImplementation(async () => { order.push("tab"); return tab("rt-1"); });
+    mockPaneFocus.mockImplementation(async () => { order.push(front === WT ? "pane(WT in front)" : "pane(WT behind)"); return "focused"; });
+    mockPaste.mockImplementation(async () => { order.push("paste"); return { backend: "native", clipboardRestored: true } as never; });
+    const r = parseResult(await send());
+    expect(r.ok).toBe(true);
+    expect(order).toEqual(["tab", "tab", "pane(WT in front)", "paste"]);
+    expect(mockPaneFocus).toHaveBeenCalledWith(WT, "rt-1");
+  });
+
+  it("names the tab read after the focus move when the window was minimized (no read before)", async () => {
+    wtMinimized = true;
+    mockTab.mockImplementation(async () => (wtMinimized ? undefined : tab("rt-9")));
+    const r = parseResult(await send());
+    expect(r.ok).toBe(true);
+    expect(mockPaneFocus).toHaveBeenCalledWith(WT, "rt-9");
+  });
+
+  it.each([
+    ["not_focused", "pane_not_focused"],
+    ["tab_changed", "tab_changed"],
+  ] as const)("refuses when the pane focus answers %s, and puts the user's window back", async (answer, detail) => {
+    mockPaneFocus.mockResolvedValue(answer);
+    const r = parseResult(await send());
+    expect(r.code).toBe("WindowsTerminalTargetUnsafe");
+    expect(r.context).toMatchObject({ detail, foregroundRestored: true });
+    expect(r.error).toContain("Nothing was typed");
+    expect(mockPaste).not.toHaveBeenCalled();
+    expect(mockRestore).toHaveBeenLastCalledWith(OTHER);
+  });
+
+  it("says so when the pane did not take the focus and the user's window could not be put back", async () => {
+    mockPaneFocus.mockResolvedValue("not_focused");
+    otherRefusesFront = true;
+    const r = parseResult(await send());
+    expect(r.context).toMatchObject({ detail: "pane_not_focused", foregroundRestored: false });
+    expect(r.error).toContain("could not be put back");
+  });
+
+  it("refuses before anything moves when this build cannot focus the pane (an older addon)", async () => {
+    mockFocusable.mockReturnValue(false);
+    const r = parseResult(await send());
+    expect(r.context).toMatchObject({ detail: "pane_not_focused" });
+    expect(r.error).not.toContain("could not be put back");
+    expect(mockRestore).not.toHaveBeenCalled();
+    expect(mockTab).not.toHaveBeenCalled();
+    expect(mockPaste).not.toHaveBeenCalled();
+  });
+
+  it("refuses when another window came in front during the pane focus", async () => {
+    mockPaneFocus.mockImplementation(async () => { front = OTHER; return "focused"; });
+    const r = parseResult(await send());
+    expect(r.context).toMatchObject({ detail: "foreground_moved" });
+    expect(mockPaste).not.toHaveBeenCalled();
+  });
+
+  it("does not focus the pane when the window in front moved during the tab read (SetFocus would take it back)", async () => {
+    mockTab.mockResolvedValueOnce(tab("rt-1")).mockImplementationOnce(async () => { front = OTHER; return tab("rt-1"); });
+    const r = parseResult(await send());
+    expect(r.context).toMatchObject({ detail: "foreground_moved" });
+    expect(mockPaneFocus).not.toHaveBeenCalled();
+  });
+
+  it("does not focus the pane with focusFirst:false (the key locker's exit probe) or for a window that is not WT", async () => {
+    front = WT;
+    expect(parseResult(await send({ focusFirst: false })).ok).toBe(true);
+    mockClass.mockReturnValue("ConsoleWindowClass");
+    expect(parseResult(await send({ method: "foreground" })).ok).toBe(true);
+    expect(mockPaneFocus).not.toHaveBeenCalled();
+    expect(mockFocusable).not.toHaveBeenCalled();
   });
 
   it("checks the same way on method:'foreground' (which a run's exit-mode send forces)", async () => {
