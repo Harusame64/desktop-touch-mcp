@@ -212,7 +212,7 @@ describe("buildExitCommand — PowerShell on one line in Windows Terminal (inter
     const buffer = [...wrapped, "hi386", `${TOKEN}|0|True`, "PS C:\\>"].join("\n");
     expect(parseExitSentinel(buffer, NONCE, "powershell")).toEqual({ matched: true, exitCode: 0 });
     const out = stripExitArtifacts(buffer, NONCE);
-    expect(out).toBe("hi386\nPS C:\\>");
+    expect(out).toBe("hi386");
   });
 
   it.each([
@@ -227,7 +227,7 @@ describe("buildExitCommand — PowerShell on one line in Windows Terminal (inter
     for (const injected of ["LASTEXITCODE", "dtmcp", "try {", "Out-Host", "__DTMCP", "_EXIT_", "<#"]) {
       expect(out).not.toContain(injected);
     }
-    expect(out.endsWith("hi386\nPS C:\\>")).toBe(true);
+    expect(out.endsWith("hi386")).toBe(true);
   });
 
   it("strips the rest of the echo when a read cut to its last rows starts past the start marker (PR codex on #942)", () => {
@@ -235,7 +235,7 @@ describe("buildExitCommand — PowerShell on one line in Windows Terminal (inter
     const rows = `PS C:\\> ${cmd}`.match(/.{1,80}/g)!;
     const buffer = [...rows.slice(3), "x-out", `${TOKEN}|0|True`, "PS C:\\>"].join("\n");
     expect(buffer).not.toContain(`<#S${NONCE}`);
-    expect(stripExitArtifacts(buffer, NONCE)).toBe("x-out\nPS C:\\>");
+    expect(stripExitArtifacts(buffer, NONCE)).toBe("x-out");
   });
 
   it("keeps the output between the multi-line form's injected lines (no marker span there)", () => {
@@ -499,6 +499,38 @@ describe("stripExitArtifacts — cosmetic removal of injected epilogue + sentine
     expect(out).not.toContain("__DTMCP");
     expect(out).not.toContain("_EXIT_");
     expect(out).toContain("$ true"); // command echo kept
+  });
+
+  // internal #377 item 1 (2.4.1 dogfood, win2): the next prompt, padded to the width in Windows Terminal,
+  // came back as the end of `output` — the whole of it for a command that prints nothing.
+  it.each(["\n", "\r\n"])("drops the next prompt after the sentinel (rows ended by %j)", (eol) => {
+    const pad = (t: string) => t.padEnd(120, " ");
+    const cmd = buildExitCommand("echo Y1-1", "powershell", NONCE, { oneLine: true });
+    const buffer = [pad(`PS C:\\Users\\harus> ${cmd}`), pad("Y1-1"), pad(`${TOKEN}|0|True`), pad("PS C:\\Users\\harus> ")].join(eol);
+    expect(stripExitArtifacts(buffer, NONCE).replace(/\s+$/, "")).toBe("Y1-1");
+  });
+
+  it("answers nothing for a command that printed nothing, not the prompt", () => {
+    const epilogueEcho = buildExitCommand("true", "bash", NONCE).split("\n")[1]!;
+    const buffer = ["$ true", `$ ${epilogueEcho}`, `${TOKEN}|0|`, "$ "].join("\n");
+    expect(stripExitArtifacts(buffer, NONCE)).toBe("$ true");
+    const one = buildExitCommand("$null", "powershell", NONCE, { oneLine: true });
+    expect(stripExitArtifacts([`PS C:\\> ${one}`, `${TOKEN}||True`, "PS C:\\> "].join("\n"), NONCE)).toBe("");
+  });
+
+  it("keeps output that ended without a newline, on the sentinel's row (bash printf)", () => {
+    const epilogueEcho = buildExitCommand("printf 'X'", "bash", NONCE).split("\n")[1]!;
+    const buffer = ["$ printf 'X'", `$ ${epilogueEcho}`, `X${TOKEN}|0|`, "$ "].join("\n");
+    expect(stripExitArtifacts(buffer, NONCE)).toBe("$ printf 'X'\nX");
+  });
+
+  it("finds a sentinel that a narrow window wrapped, and drops what follows it", () => {
+    const nonce = generateExitNonce();
+    const token = `__DTMCP_EXIT_${nonce}`;
+    const sentinelRows = `${token}|0|True`.match(/.{1,30}/g)!;
+    expect(sentinelRows.length).toBeGreaterThan(1);
+    const buffer = ["out-1", ...sentinelRows, "PS C:\\> "].join("\n");
+    expect(stripExitArtifacts(buffer, nonce)).toBe("out-1");
   });
 
   it("a different-nonce sentinel from a prior run is left intact (per-invocation isolation)", () => {
