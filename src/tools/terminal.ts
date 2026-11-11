@@ -2003,7 +2003,9 @@ export const terminalSendHandler = async ({
     // flash does with its own input.
     let sendText = input;
     let enterAfter = pressEnter;
-    if (isWt) {
+    // Only for a paste: typed keys deliver each line break as a real Enter (typeWithPlainEnter), and a
+    // REPL's closing blank line must stay (PR codex on #944).
+    if (isWt && preferClipboard) {
       // Any run of trailing line-break characters, a lone \r included (gate 2 on #944).
       const trimmed = input.replace(/[\r\n]+$/, "");
       if (trimmed !== input) {

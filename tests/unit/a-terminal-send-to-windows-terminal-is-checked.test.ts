@@ -474,6 +474,14 @@ describe("internal #286 — terminal:send to Windows Terminal through the foregr
     expect(JSON.stringify(r.hints ?? {})).not.toMatch(/last line may stay/);
   });
 
+  it("does not change typed text (preferClipboard:false): each line break there is a real Enter (PR codex on #944)", async () => {
+    const r = parseResult(await send({ input: "def f():\n  return 1\n\n", pressEnter: false, preferClipboard: false }));
+    expect(mockPaste).not.toHaveBeenCalled();
+    expect(vi.mocked(nut.keyboard.type).mock.calls[0]![0]).toBe("def f():\n  return 1\n\n");
+    expect(vi.mocked(nut.keyboard.pressKey)).not.toHaveBeenCalled();
+    expect(JSON.stringify(r.hints ?? {})).not.toMatch(/last line may stay/);
+  });
+
   it("does not change the text for a window that is not WT", async () => {
     mockClass.mockReturnValue("ConsoleWindowClass");
     front = WT;
