@@ -382,6 +382,17 @@ describe("internal #286 — terminal:send to Windows Terminal through the foregr
     expect(mockPaste).not.toHaveBeenCalled();
   });
 
+  it("refuses the client's tab found only after a minimized WT is restored, and puts the user's window back", async () => {
+    wtMinimized = true;
+    mockTab.mockImplementation(async () => (wtMinimized ? undefined : tab("rt-1")));
+    vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "title", title: "PowerShell" });
+    const r = parseResult(await send());
+    expect(r.context).toMatchObject({ detail: "own_tab", foregroundRestored: true });
+    expect(r.error).toContain('("PowerShell")');
+    expect(mockPaste).not.toHaveBeenCalled();
+    expect(mockRestore).toHaveBeenLastCalledWith(OTHER);
+  });
+
   it("pastes, and says the check could not run, when the client's tab cannot be read", async () => {
     vi.mocked(ownTab.ownTabTitle).mockResolvedValue({ state: "unknown", why: "the helper failed (ETIMEDOUT)" });
     const r = parseResult(await send());

@@ -3,8 +3,16 @@
  * (ancestor walk, helper output, name comparison) and `readWtTab`'s rule: refuse only when the tab is
  * known to be the client's; when that cannot be read, paste and say so (the maintainer's rule).
  */
-import { describe, expect, it } from "vitest";
-import { ancestorsBelowWt, helperScript, normalizeTabName, parseHelperOutput, type OwnTabTitle } from "../../src/engine/wt-own-tab.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  buildProcessParentMap: vi.fn(() => new Map<number, number>()),
+  getProcessIdentityByPid: vi.fn(() => ({ pid: 0, processName: "", processStartTimeMs: 0 })),
+}));
+
+import { _resetOwnTabTitleCache, ancestorsBelowWt, helperScript, normalizeTabName, ownTabTitle, parseHelperOutput, type OwnTabTitle } from "../../src/engine/wt-own-tab.js";
+import * as win32 from "../../src/engine/win32.js";
 import { readWtTab, wtRefusalSentence, type WtCheckDeps } from "../../src/tools/_wt-terminal-checks.js";
 
 describe("normalizeTabName", () => {
@@ -111,5 +119,40 @@ describe("readWtTab and the client's own tab", () => {
     });
     expect(r).toEqual({ ok: false, why: "tab_split" });
     expect(asked).toBe(false);
+  });
+});
+
+describe("ownTabTitle", () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  afterEach(() => {
+    Object.defineProperty(process, "platform", platform);
+    _resetOwnTabTitleCache();
+  });
+  const asWindows = () => Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+
+  it("is unknown, not 'not inside WT', when the process list cannot be read (agy on #941)", async () => {
+    asWindows();
+    vi.mocked(win32.buildProcessParentMap).mockReturnValue(new Map());
+    expect((await ownTabTitle()).state).toBe("unknown");
+  });
+
+  it("is 'not inside WT' when the ancestors end without Windows Terminal", async () => {
+    asWindows();
+    vi.mocked(win32.buildProcessParentMap).mockReturnValue(new Map([[process.pid, 4242]]));
+    vi.mocked(win32.getProcessIdentityByPid).mockReturnValue({ pid: 0, processName: "explorer", processStartTimeMs: 0 });
+    expect(await ownTabTitle()).toEqual({ state: "not_in_wt" });
+  });
+
+  it("keeps an answer for a while (one walk for two calls)", async () => {
+    asWindows();
+    vi.mocked(win32.buildProcessParentMap).mockClear().mockReturnValue(new Map([[process.pid, 4242]]));
+    let t = 1_000;
+    await ownTabTitle(() => t);
+    t += 5_000;
+    await ownTabTitle(() => t);
+    expect(win32.buildProcessParentMap).toHaveBeenCalledTimes(1);
+    t += 20_000;
+    await ownTabTitle(() => t);
+    expect(win32.buildProcessParentMap).toHaveBeenCalledTimes(2);
   });
 });

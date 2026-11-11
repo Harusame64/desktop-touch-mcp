@@ -135,6 +135,9 @@ export async function ownTabTitle(now: () => number = Date.now): Promise<OwnTabT
     let value: OwnTabTitle;
     try {
       const parents = buildProcessParentMap();
+      // An empty map is a failed process snapshot, not "no ancestors": unknown, so the send says so
+      // (agy on #941). A chain that ends at a process with no listed parent is the top of the tree.
+      if (parents.size === 0) throw new Error("the process list could not be read");
       const chain = ancestorsBelowWt(process.pid, (p) => parents.get(p), (p) => getProcessIdentityByPid(p).processName);
       // Farthest first: the process right under Windows Terminal is attached to the tab's console by
       // construction; nearer ones may own consoles of their own (gate 2 on #941).
