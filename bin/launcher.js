@@ -63,6 +63,24 @@ function fail(message) {
 }
 
 /**
+ * `fail()` for a failure after this process has used `fetch`: exits 1 by letting the event loop end
+ * rather than by `process.exit`. On Windows, Node 24.19.0 aborts in libuv
+ * (`!(handle->flags & UV_HANDLE_CLOSING)`, async.c) when `process.exit` runs after a fetch — the user saw
+ * a native assertion and an exit code that was not 1 (internal #290: 5/5, also with the response body
+ * cancelled first; exitCode instead: 5/5 exit 1, no assertion; 24.20.0 does not abort). A handle that
+ * keeps the loop alive (stdin piped to a child) must not keep the launcher up, so `process.exit` still
+ * runs after `graceMs`, on a timer that does not itself hold the loop.
+ *
+ * @internal Exported for tests.
+ */
+export function failAfterFetch(message, { proc = process, graceMs = 3000 } = {}) {
+  console.error(`[desktop-touch-mcp] ${message}`);
+  dropRunningMark();
+  proc.exitCode = 1;
+  setTimeout(() => proc.exit(1), graceMs).unref();
+}
+
+/**
  * Opt-in escape hatch for running the launcher from a source tree whose
  * RELEASE_MANIFEST.sha256 entry for this machine's zip is still the "PENDING" placeholder (i.e. the
  * release workflow has not finalized the manifest). Published npm packages
@@ -1076,7 +1094,7 @@ function launchServer(releaseDir) {
   }
 
   child.on("error", (error) => {
-    fail(`Failed to start release runtime: ${error.message}`);
+    failAfterFetch(`Failed to start release runtime: ${error.message}`);
   });
 
   child.on("exit", (code, signal) => {
@@ -1140,6 +1158,6 @@ const launchedAsScript = isLaunchedAsScript(process.argv[1], import.meta.url);
 
 if (launchedAsScript) {
   main().catch((error) => {
-    fail(error instanceof Error ? error.message : String(error));
+    failAfterFetch(error instanceof Error ? error.message : String(error));
   });
 }
