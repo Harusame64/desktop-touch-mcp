@@ -609,7 +609,9 @@ export function buildExitCommand(
   // joining `;`): those keep the multi-line form below. A parse error in the input times out on this
   // form, as every command did in Windows Terminal before.
   const body = input.replace(/[\s;]+$/, "");
-  if (opts.oneLine && !/[\r\n#]/.test(input) && !body.endsWith("`") && body !== "") {
+  // The stop-parsing token `--%` passes the rest of the line to the native command, `;` included, so the
+  // epilogue would become its arguments and change the command (PR codex on #942): multi-line form.
+  if (opts.oneLine && !/[\r\n#]/.test(input) && !input.includes("--%") && !body.endsWith("`") && body !== "") {
     return (
       `<#S${nonce}#> $global:LASTEXITCODE = $null; $dtmcp_ok = $true; ` +
       `try { ${body}; $dtmcp_ok = $? } catch { $dtmcp_ok = $false; $_ | Out-Host } ` +

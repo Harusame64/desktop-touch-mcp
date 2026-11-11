@@ -80,7 +80,7 @@
   out after 30 s with `BaselineMarkerLost`, with its last line left on the prompt: after a multi-line paste,
   PowerShell's line editor drops the first Enter. In Windows Terminal a one-line command is now sent as one line,
   and a command that throws still reports its exit code. Its echoed line is no longer part of `output`. A command
-  with a line break or a `#`, or one that does not parse, can still time out there. A classic console is
+  with a line break, a `#` or the stop-parsing token `--%`, or one that does not parse, can still time out there. A classic console is
   unchanged (internal #374).
 - **`desktop_act` with a lease from a replaced view says to discover again, not that the element is gone.** A
   later `desktop_discover` of the same window replaces the view its earlier leases came from. Acting with such a

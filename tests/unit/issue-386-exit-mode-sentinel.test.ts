@@ -192,8 +192,8 @@ describe("buildExitCommand — PowerShell on one line in Windows Terminal (inter
     expect(one("Get-Item x ;  ")).toContain("try { Get-Item x; $dtmcp_ok = $? }");
   });
 
-  it.each(["a\nb", "a\r\nb", "Get-Item x # note", "echo '#1'", "echo a`;", "echo a`", ";"])(
-    "keeps the multi-line form for %j (a line break, a #, a trailing backtick, nothing left)",
+  it.each(["a\nb", "a\r\nb", "Get-Item x # note", "echo '#1'", "echo a`;", "echo a`", ";", "icacls X:\\VMS --% /grant Dom\\HV:(CI)(OI)F"])(
+    "keeps the multi-line form for %j (a line break, a #, a trailing backtick, nothing left, stop-parsing)",
     (input) => {
       expect(one(input).split("\n").length).toBeGreaterThanOrEqual(3);
     },
