@@ -1060,16 +1060,19 @@ export function stripExitArtifacts(slice: string, nonce: string): string {
   // printed before any output, so the rows from the first to the second are echo only (gate 2 on #942).
   // The markers are found in the rows joined without breaks, so a marker that a wrap split is still
   // found, and the match is mapped back to the rows it spans (PR codex on #942).
+  // Each row's trailing \r (a CRLF read) is left out of the search, or it would sit inside a wrapped
+  // marker (PR codex on #942); the rows themselves are kept as read.
   const rows = slice.split("\n");
-  const joined = rows.join("");
+  const bare = rows.map((r) => r.replace(/\r$/, ""));
+  const joined = bare.join("");
   const sAt = joined.indexOf(`<#S${nonce}#>`);
   const eMark = `<#E${nonce}#>`;
   const eAt = sAt < 0 ? -1 : joined.indexOf(eMark, sAt);
   if (sAt >= 0 && eAt >= 0) {
     const rowOf = (offset: number): number => {
       let acc = 0;
-      for (let i = 0; i < rows.length; i++) {
-        acc += rows[i]!.length;
+      for (let i = 0; i < bare.length; i++) {
+        acc += bare[i]!.length;
         if (offset < acc) return i;
       }
       return rows.length - 1;
