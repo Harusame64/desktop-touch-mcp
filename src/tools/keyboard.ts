@@ -93,6 +93,8 @@ export function pinnedHandle(
 import { resolveWindowTarget } from "./_resolve-window.js";
 import { parseWindowHandle } from "../engine/aim.js";
 import { offDesktopTarget, offDesktopFailure, type OffDesktopTarget } from "./_off-desktop.js";
+import { activeHwnd, wtAfterFocus, wtBeforeFocus, wtCheckDeps, type WtGuardRefusal } from "./_wt-foreground-paste.js";
+import { readWtTab, wtRefusalSentence, type WtTab } from "./_wt-terminal-checks.js";
 import {
   makeCommitWrapper,
   withEnvelopeIncludeForUnion,
@@ -1238,6 +1240,19 @@ interface FocusForKeyboardResult {
   offDesktop?: OffDesktopTarget;
 }
 
+/** internal #372 — a refused type into Windows Terminal: nothing was typed. */
+function keyboardWtFailure(r: WtGuardRefusal, windowTitle: string | undefined, extra: Record<string, unknown> = {}): ToolResult {
+  return failWith(
+    new Error(`WindowsTerminalTargetUnsafe: ${wtRefusalSentence(r.why, { tabName: r.tabName, leftInFront: r.leftInFront })}`),
+    "keyboard:type",
+    {
+      windowTitle, detail: r.why,
+      ...(r.foregroundRestored !== undefined && { foregroundRestored: r.foregroundRestored }),
+      ...extra,
+    },
+  );
+}
+
 async function focusWindowForKeyboard(
   windowTitle: string,
   force: boolean,
@@ -1249,6 +1264,12 @@ async function focusWindowForKeyboard(
    * (existing keyboardTypeHandler / keyboardPressHandler behaviour).
    */
   explicitHwnd?: bigint,
+  /**
+   * internal #372 — called with the window picked, before it is brought forward (or, when it is
+   * already in front, before anything else). `false` stops here: nothing is focused, and the caller
+   * says why.
+   */
+  beforeMove?: (target: { hwnd: bigint; isMinimized: boolean }) => Promise<boolean>,
 ): Promise<FocusForKeyboardResult> {
   const warnings: string[] = [];
   const homingNotes: string[] = [];
@@ -1287,6 +1308,9 @@ async function focusWindowForKeyboard(
     appendTopologyWarnings(warnings);
     if (active && matches(active)) {
       // Target is already in the foreground — nothing to do.
+      if (beforeMove && !(await beforeMove(active))) {
+        return { warnings, homingNotes, foregroundVerified, forceRefused, targetHwnd };
+      }
       foregroundVerified = true;
       targetHwnd = active.hwnd;
     } else {
@@ -1296,6 +1320,8 @@ async function focusWindowForKeyboard(
       const away = target ? await offDesktopTarget(target, windows, explicitHwnd === undefined ? windowTitle : undefined) : null;
       if (away) {
         offDesktop = away;
+      } else if (target && beforeMove && !(await beforeMove(target))) {
+        return { warnings, homingNotes, foregroundVerified, forceRefused, targetHwnd };
       } else if (target) {
         // Always verify foreground after focus so the auto-guard does not block
         // on a stale/foreground-steal-prevented SetForegroundWindow. If the first
@@ -1877,6 +1903,17 @@ export const keyboardTypeHandler = async ({
       // without taking the foreground), as terminal's twin is (gate 2 on #763).
       const ffAway = await offDesktopTarget(target, wins, explicitHwnd === undefined ? effectiveWindowTitle : undefined);
       if (ffAway) return offDesktopFailure("keyboard:type", ffAway, { lensId, extra: { method: "foreground_flash" } });
+      // internal #372: into Windows Terminal, the flash pasted into a split tab's focused pane, an open
+      // find box, or nowhere (the Settings tab), and answered ok (win2 spike). The tab checks terminal's
+      // flash makes (internal #286) are made here too: not minimized (the flash does not restore it), one
+      // terminal pane, and the flash itself puts the focus on that tab's pane and checks it is still the
+      // tab read here.
+      const ffIsWt = canInjectViaPostMessage(channel.hwnd).reason === "wt_xaml_pipeline";
+      if (ffIsWt && target.isMinimized) {
+        return keyboardWtFailure({ why: "minimized" }, effectiveWindowTitle, { method: "foreground_flash" });
+      }
+      const ffTab = ffIsWt ? await readWtTab(channel.hwnd, wtCheckDeps()) : null;
+      if (ffTab && !ffTab.ok) return keyboardWtFailure({ why: ffTab.why }, effectiveWindowTitle, { method: "foreground_flash" });
       const ffWarnings = [...warnings];
       if (replaceAll) {
         ffWarnings.push("ReplaceAllNotSupportedOnClipboardFlash");
@@ -1895,12 +1932,31 @@ export const keyboardTypeHandler = async ({
         byHandle: explicitHwnd !== undefined,
         receiver: null, noReceiverWhy: "rung_has_no_receiver",
       });
+      // The window the flash is to put back, read so its failures can say whether it did (as terminal).
+      const ffPrev = ffTab?.ok ? activeHwnd() : undefined;
       const flashResult = injectViaForegroundFlash(
         channel.hwnd,
         channel.pid,
         effectiveText,
-        { pressEnter: false }, // keyboard:type は Enter 自動押下しない
+        {
+          pressEnter: false, // keyboard:type は Enter 自動押下しない
+          ...(ffTab?.ok && { focusTerminalPane: true, expectedTabRuntimeId: ffTab.tab.runtimeId }),
+        },
       );
+      if (!flashResult.ok && ffTab?.ok &&
+        (flashResult.reason === "terminal_tab_changed" || flashResult.reason === "terminal_focus_failed")) {
+        // Raised after the flash tried to put the foreground back; whether it did is read here. A read
+        // that fails, either side, is "not back" (as terminal, internal #286).
+        const now = activeHwnd();
+        const leftInFront = ffPrev === undefined || now === undefined || now !== ffPrev;
+        return keyboardWtFailure(
+          flashResult.reason === "terminal_tab_changed"
+            ? { why: "tab_changed", tabName: ffTab.tab.name, leftInFront }
+            : { why: "pane_not_focused", leftInFront },
+          effectiveWindowTitle,
+          { method: "foreground_flash", foregroundRestored: !leftInFront },
+        );
+      }
       if (!flashResult.ok) {
         // Flat context (`failWith` auto-wraps non-hoisted keys into
         // `context` — see `ROOT_HOISTED_KEYS` + the splitter at
@@ -2456,13 +2512,46 @@ export const keyboardTypeHandler = async ({
       }
     }
 
+    // internal #372: Windows Terminal takes the text through the foreground into whichever control has
+    // its focus — a split tab's other pane, an open find box — and answered ok. The checks terminal
+    // makes (`_wt-foreground-paste.ts`) are made here too, on the window focusWindowForKeyboard picks:
+    // before it is brought forward, and again right before the text (below).
+    let wtTarget: { hwnd: bigint; before: WtTab | null; prevFgHwnd: bigint | null } | undefined;
+    let wtRefusal: WtGuardRefusal | undefined;
+    const wtBeforeMove = async (w: { hwnd: bigint; isMinimized: boolean }): Promise<boolean> => {
+      // Only a window read as Windows Terminal (`wt_xaml_pipeline`: its class or its process). terminal
+      // also checks a window whose class cannot be read, since it types only into terminals; keyboard
+      // types into every kind of window, and refusing all of them on a failed read would stop it.
+      let isWt: boolean;
+      try {
+        isWt = canInjectViaPostMessage(w.hwnd).reason === "wt_xaml_pipeline";
+      } catch {
+        return true; // a failed class read is not read as WT here (above), as on every other road
+      }
+      if (!isWt) return true;
+      // focusWindowForKeyboard swallows a throw as "best effort", which would type unchecked: a throw
+      // here is a refusal instead.
+      let pre: Awaited<ReturnType<typeof wtBeforeFocus>>;
+      try {
+        pre = await wtBeforeFocus(w);
+      } catch {
+        wtRefusal = { why: "tab_unreadable" };
+        return false;
+      }
+      if (!pre.ok) { wtRefusal = pre.refusal; return false; }
+      // The window to put back is the one in front now, after the tab read (the user may have moved).
+      wtTarget = { hwnd: w.hwnd, before: pre.before, prevFgHwnd: activeHwnd() ?? null };
+      return true;
+    };
+
     // Step 1: Focus first (guard needs foreground state to be correct).
     if (effectiveWindowTitle) {
       // ADR-036 I-3: focus matches on the pinned handle when there is one.
       // Without it this step brought a same-titled SIBLING to the front, and
       // the keys landed there no matter how carefully the guard then verified
       // the window the caller actually named.
-      const fw = await focusWindowForKeyboard(effectiveWindowTitle, force, explicitHwnd);
+      const fw = await focusWindowForKeyboard(effectiveWindowTitle, force, explicitHwnd, wtBeforeMove);
+      if (wtRefusal) return keyboardWtFailure(wtRefusal, effectiveWindowTitle);
       warnings.push(...fw.warnings);
       homingNotes.push(...fw.homingNotes);
       foregroundVerified = fw.foregroundVerified;
@@ -2501,6 +2590,8 @@ export const keyboardTypeHandler = async ({
           }
         );
       }
+      // internal #372: the window this call aimed at must be the one in front (checked again below).
+      if (wtTarget && !fw.foregroundVerified) return keyboardWtFailure({ why: "foreground_moved" }, effectiveWindowTitle);
     }
 
     // Step 2: Guard evaluation (on already-focused window).
@@ -2594,6 +2685,14 @@ export const keyboardTypeHandler = async ({
     // else goes, and the reply says the focus takes no text. A paste pressed nothing. Asked once the
     // window is in front and the guard has passed, before Ctrl+A or any character. A read that fails or
     // finds no focus decides nothing.
+    // internal #372: Windows Terminal — the tab is the same, WT is still in front, and the focus is on
+    // its pane. Here, after the guard and right before the text: the pane focus is the last thing that
+    // moves, so as little as possible runs between it and the typing.
+    if (wtTarget) {
+      const post = await wtAfterFocus(wtTarget.hwnd, wtTarget.before, wtTarget.prevFgHwnd);
+      if (!post.ok) return keyboardWtFailure(post.refusal, effectiveWindowTitle);
+    }
+
     const focusedType = await focusedControlThatTakesNoText();
     if (focusedType !== null && !effectiveClipboard && /[ \r\n]/.test(effectiveText)) {
       return failWith(new Error("FocusedControlTakesNoText"), "keyboard:type", {

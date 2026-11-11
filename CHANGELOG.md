@@ -43,6 +43,12 @@
   the focus does not arrive, nothing is typed (`pane_not_focused`) (internal #370). `method:'foreground_flash'`
   makes the same checks and refuses a minimized window (it does not restore one). With `focusFirst:false` nothing
   is checked. `run` names the check in its `send_failed` warning (internal #286).
+
+  `keyboard(action:'type')` into Windows Terminal now makes the same checks, on its default road and with
+  `method:'foreground_flash'`. Before, it typed into a split tab's focused pane or an open find box and answered
+  `ok:true`, and the flash into the Settings tab lost the text with `ok:true`. Only a window read as Windows
+  Terminal is checked: unlike `terminal`, a window whose class cannot be read is typed into as before (internal
+  #372).
 - **The key locker says in the diagnostic log how each watch for a password prompt ended.** After a command such as
   `ssh`, the locker watches the pane for a password prompt. A watch that ended without filling anything left no
   trace. Now every end writes one line to the diagnostic log (`kind: "key_locker_poll"`):
