@@ -7,6 +7,14 @@
   tool (internal #377).
 
 ### Fixed — Windows
+- **`browser_click` hits the element with DevTools or a side bar open.** The click point was computed from the page's
+  own `window.screenX` and the frame width, split evenly left and right, so with DevTools docked it landed half the
+  panel off (+278 px docked right, into DevTools), and with Edge's vertical tabs 122 px off, answering `ok: true`.
+  The point now comes from the window the page is drawn in, measured exact in every layout tried (DevTools docked
+  right, left or bottom, maximized, zoomed, Edge's vertical tabs). `desktop_act` on a browser element and
+  `browser_locate`'s `clickAt` use the same point. A click whose point would land on DevTools or another pane of the
+  browser window is refused, saying so. When that window cannot be read, the point is computed as before
+  (internal #306, ADR-040).
 - **A wheel sent to one browser's window no longer scrolls another browser's page.** `scroll` on a Chrome or Edge
   window went through CDP to the page of the browser on the CDP port, whichever browser the window was: with Edge on
   the port, a Chrome window's scroll moved Edge's page and answered `delivered_via_cdp`. A window of another browser

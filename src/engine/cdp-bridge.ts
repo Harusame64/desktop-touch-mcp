@@ -78,6 +78,13 @@ export interface ElementCoords {
    * the click handler runs a modal probe to decide if it is a modal blocker.
    */
   occluded: boolean;
+  /**
+   * ADR-040 — the element's position inside the viewport in physical px (rect × devicePixelRatio), and the
+   * viewport's size (innerWidth/innerHeight × devicePixelRatio). With the page surface's origin they give
+   * the screen point without `window.screenX` (`alignToPageSurface` in browser.ts). Absent from an older
+   * evaluate.
+   */
+  viewport?: { left: number; top: number; width: number; height: number; innerWidth: number; innerHeight: number };
 }
 
 /**
@@ -686,6 +693,10 @@ ${viewportOriginJs(zoom)}
     // OS click that the OS would clamp to (0,0). See isOffscreenMinimized.
     screenX: sx,
     screenY: sy,
+    viewport: {
+      left: rect.left * dpr, top: rect.top * dpr, width: rect.width * dpr, height: rect.height * dpr,
+      innerWidth: Math.round(window.innerWidth * dpr), innerHeight: Math.round(window.innerHeight * dpr),
+    },
     inViewport: (function() {
       var cx = rect.left + rect.width / 2;
       var cy = rect.top  + rect.height / 2;

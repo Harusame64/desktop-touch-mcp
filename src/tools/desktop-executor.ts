@@ -3860,12 +3860,18 @@ function getSharedRealDeps(): ExecutorDeps {
       if ((coords as { error?: string }).error) {
         throw new Error((coords as { error?: string }).error ?? "CDP getElementScreenCoords failed");
       }
+      // ADR-040 — the point on the page surface (the frame's page RWH), as browser_click takes it, not the
+      // page-side formula (#306). When the surface cannot be read, the formula's point, as before.
+      const { findTabFrame, alignToPageSurface, aimFromCoords } = await import("../engine/page-aim.js");
+      const port = portForTab(tabId);
+      const frame = await findTabFrame(port, tabId ?? null).catch(() => undefined);
+      const { x, y } = alignToPageSurface(frame, aimFromCoords(coords), { x: coords.x, y: coords.y }).point;
       // ADR-029: coordinates only become known inside this dep, so the
       // reachability check lives here rather than in the executor core.
-      assertCoordinateReachable(coords.x, coords.y);
+      assertCoordinateReachable(x, y);
       const { mouse, Button } = await import("../engine/nutjs.js");
       const { moveCursorTo } = await import("../engine/cursor.js");
-      await moveCursorTo(coords.x, coords.y);
+      await moveCursorTo(x, y);
       await mouse.click(Button.LEFT);
     },
 

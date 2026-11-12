@@ -1,9 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { mouse, Button } from "../engine/nutjs.js";
+import { framesAtWindowBounds, framesOfBrowserProcess } from "../engine/browser-frames.js";
+import { findTabFrame, alignToPageSurface, aimFromCoords, aimFromViewportRect, type PageAim } from "../engine/page-aim.js";
+import { PAGE_RWH_CLASS } from "../engine/page-surface.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 import { moveCursorTo } from "../engine/cursor.js";
-import { enumWindowsInZOrder, getWindowDpi, getWindowProcessId, restoreAndFocusWindow, type WindowZInfo } from "../engine/win32.js";
+import { enumWindowsInZOrder, getWindowDpi, getWindowProcessId, restoreAndFocusWindow, windowFromPoint, getWindowClassName, type WindowZInfo } from "../engine/win32.js";
 import { updateWindowCache } from "../engine/window-cache.js";
 import { whoIsUnderPoint, type PointOwner } from "../engine/point-owner.js";
 import { ok, buildDesc } from "./_types.js";
@@ -434,61 +437,7 @@ async function ensureWindowFocused(titleHint: string, windows: readonly WindowZI
   return undefined;
 }
 
-/** Physical px a frame's rect may differ from the tab's window bounds × scale and still be that window. */
-const FRAME_BOUNDS_TOLERANCE_PX = 3;
-
-/**
- * internal #305 — the Chromium frame whose rect is the tab's window, or undefined unless exactly one is.
- *
- * `bounds` is `Browser.getWindowForTarget` in DIPs; the enumeration's region is GetWindowRect in
- * physical px, so each frame is compared at its own monitor's scale (`scaleOf`, DPI / 96). Not the
- * tab's devicePixelRatio: that includes the page zoom, and at 125 % zoom a window at 800×600 DIPs
- * would match another frame at 1000×750 (codex on #837). win2 measured bounds × scale equal to the
- * rect for a normal window and within 2 px for a maximized one at 150 % (−10.5 against −11), so the
- * tolerance is 3. Two frames at the same rect cannot be told apart this way, and neither can by
- * title; that answers undefined too.
- */
-export function framesAtWindowBounds<T extends { region: { x: number; y: number; width: number; height: number } }>(
-  frames: readonly T[],
-  bounds: { left: number; top: number; width: number; height: number },
-  scaleOf: (frame: T) => number,
-): T[] {
-  const near = (a: number, b: number) => Math.abs(a - b) <= FRAME_BOUNDS_TOLERANCE_PX;
-  return frames.filter((w) => {
-    const s = scaleOf(w);
-    return near(w.region.x, bounds.left * s) &&
-      near(w.region.y, bounds.top * s) &&
-      near(w.region.width, bounds.width * s) &&
-      near(w.region.height, bounds.height * s);
-  });
-}
-
-/** The one frame at the tab's window bounds, or undefined when none or several are (see above). */
-export function frameForWindowBounds<T extends { region: { x: number; y: number; width: number; height: number } }>(
-  frames: readonly T[],
-  bounds: { left: number; top: number; width: number; height: number },
-  scaleOf: (frame: T) => number,
-): T | undefined {
-  const hits = framesAtWindowBounds(frames, bounds, scaleOf);
-  return hits.length === 1 ? hits[0] : undefined;
-}
-
-/**
- * internal #305 — the frames of the CDP browser itself, when its process is known and owns any.
- *
- * Another Chromium browser (or a Chromium app) can show a window with the same title at the same
- * rect: win2 saw a click for an Edge tab go into a Chrome page that way. Without a process id, or
- * when none of the frames carries it, the frames stay as they were.
- */
-export function framesOfBrowserProcess<T extends { hwnd: bigint }>(
-  frames: readonly T[],
-  browserPid: number | undefined,
-  pidOf: (hwnd: bigint) => number,
-): readonly T[] {
-  if (browserPid === undefined) return frames;
-  const own = frames.filter((w) => pidOf(w.hwnd) === browserPid);
-  return own.length > 0 ? own : frames;
-}
+export { framesAtWindowBounds, frameForWindowBounds, framesOfBrowserProcess } from "../engine/browser-frames.js";
 
 /**
  * Ensure a browser window is focused before sending mouse events.
@@ -790,7 +739,9 @@ export type BrowserPointCover =
   | { covered: "other" | "owned"; hwnd: bigint; title: string }
   | { covered: "excluded" }
   // internal #318 — the tab is not the one showing; another page of the browser is.
-  | { covered: "tab"; target: TabSummary; showing: TabSummary[] };
+  | { covered: "tab"; target: TabSummary; showing: TabSummary[] }
+  // ADR-040 — another page window of the same frame (DevTools docked, a side panel) is under the point.
+  | { covered: "panel"; hwnd: bigint };
 
 /** internal #318 — a tab as the refusal names it. */
 export interface TabSummary { tabId: string; title: string; url: string }
@@ -834,6 +785,19 @@ export function browserPointCoveredFailure(
           "To read or change the hidden tab without clicking, browser_eval and browser_fill work on a hidden tab through the page.",
         ],
         context: { ...ctx, at: { x, y }, coveredBy: cover.covered, target: cover.target, showing: cover.showing },
+      },
+    );
+  }
+  if (cover.covered === "panel") {
+    return failCode(
+      "BrowserPointCovered",
+      `browser_click: Nothing was clicked: the element's point (${x}, ${y}) is over another pane of the browser window (DevTools or a side panel, hwnd ${cover.hwnd}), not over the page.`,
+      {
+        suggest: [
+          "Close the pane (DevTools: F12; a side panel: its close button), then retry browser_click.",
+          "To act without an OS click, browser_fill sets a field's value and browser_eval runs script in the page.",
+        ],
+        context: { ...ctx, at: { x, y }, coveredBy: "panel", paneHwnd: String(cover.hwnd) },
       },
     );
   }
@@ -964,6 +928,18 @@ export async function osClickAndVerify(
   port: number,
   pointOwner: (aim: bigint, x: number, y: number) => PointOwner = whoIsUnderPoint,
   force = false,
+  /**
+   * ADR-040 — the element's place inside the page. With it, the point is taken from the page surface (the
+   * frame's page RWH), before and again after the window is brought forward, instead of the page-side
+   * formula the caller computed `x`/`y` with (#306). Without it, the caller's point is used, as before.
+   */
+  aim?: PageAim,
+  surfaceDeps: { findFrame: typeof findTabFrame; align: typeof alignToPageSurface; childAt: (x: number, y: number) => bigint | undefined; classOf: (hwnd: bigint) => string } = {
+    findFrame: findTabFrame,
+    align: alignToPageSurface,
+    childAt: (px, py) => windowFromPoint(px, py)?.child,
+    classOf: getWindowClassName,
+  },
 ): Promise<VerifyDeliveryHint | BrowserPointCover> {
   // ADR-029: every browser_click path (selector, by-axis, actionability rescue)
   // funnels here, and this is an OS cursor click — CDP only resolves the
@@ -974,9 +950,37 @@ export async function osClickAndVerify(
   // and before focusing the browser, so a refused click has no side effect. (The
   // covered-point refusal below comes after the focus, so the browser may have
   // been brought forward; the cursor has still not moved.)
+  // ADR-040 — the point on the page surface, found without side effects, so the reachability check below
+  // still runs before anything is focused (ADR-029). A covered window has no surface yet; the formula's
+  // point is checked now and the surface is read again once the window is in front.
+  if (aim !== undefined) {
+    const frame = await surfaceDeps.findFrame(port, tabId).catch(() => undefined);
+    ({ x, y } = surfaceDeps.align(frame, aim, { x, y }).point);
+  }
   assertCoordinateReachable(x, y);
 
   const browserHwnd = await ensureBrowserFocused(port, tabId, force);
+
+  if (aim !== undefined && browserHwnd !== undefined) {
+    let after = surfaceDeps.align(browserHwnd, aim, { x, y });
+    // A window just brought forward gets its page window shortly after (OQ-40-4): up to 300 ms.
+    for (let i = 0; i < 6 && after.surface?.kind === "not_shown" && after.surface.why === "no_page_window"; i++) {
+      await new Promise<void>((r) => setTimeout(r, 50));
+      after = surfaceDeps.align(browserHwnd, aim, { x, y });
+    }
+    if (Math.abs(after.point.x - x) > 2 || Math.abs(after.point.y - y) > 2) {
+      ({ x, y } = after.point);
+      assertCoordinateReachable(x, y);
+    }
+    // Another page window of this frame under the point (DevTools docked, a side panel): the press would
+    // land there. Only that is refused: another child class says nothing either way.
+    if (after.surface?.kind === "surface") {
+      const child = surfaceDeps.childAt(x, y);
+      if (child !== undefined && child !== after.surface.rwh && surfaceDeps.classOf(child) === PAGE_RWH_CLASS) {
+        return { covered: "panel", hwnd: child };
+      }
+    }
+  }
 
   // internal #274 — after the browser is brought forward and before the cursor moves: who would take a
   // press at the point. win2 (2.3.0 dogfood) saw Edge's first-run panel, a window Edge owns, cover the
@@ -1497,11 +1501,16 @@ export const browserFindElementHandler = async ({
   includeContext: boolean;
 }): Promise<ToolResult> => {
   try {
-    const coords = await getElementScreenCoords(
+    const raw = await getElementScreenCoords(
       selector,
       tabId ?? null,
       port
     );
+    // ADR-040 — the screen point on the page surface (the frame's page RWH), as browser_click clicks it,
+    // not the page-side formula (#306). The rest of the box moves with the centre.
+    const frame = await findTabFrame(port, tabId ?? null).catch(() => undefined);
+    const centre = alignToPageSurface(frame, aimFromCoords(raw), { x: raw.x, y: raw.y }).point;
+    const coords = { ...raw, x: centre.x, y: centre.y, left: raw.left + (centre.x - raw.x), top: raw.top + (centre.y - raw.y) };
     const lines = [
       `Element found: ${selector}`,
       JSON.stringify({
@@ -1792,7 +1801,7 @@ async function handleBrowserClickByAxis(args: {
 
   // Resolved: OS-click at the physical point (probe with null selector — the
   // resolver located the element by coords; document-level mutation probe).
-  const clicked = await osClickAndVerify(outcome.physical.x, outcome.physical.y, null, tabId ?? null, port, whoIsUnderPoint, force);
+  const clicked = await osClickAndVerify(outcome.physical.x, outcome.physical.y, null, tabId ?? null, port, whoIsUnderPoint, force, aimFromViewportRect(outcome.rect, outcome.viewport));
   if (isCover(clicked)) return browserPointCoveredFailure(clicked, outcome.physical.x, outcome.physical.y, ctx, force);
   const verifyDelivery = clicked;
   const tabCtx = await getTabContext(tabId ?? null, port);
@@ -1942,7 +1951,7 @@ async function attemptSelectorActionabilityRescue(args: {
     return browserMinimizedFailure(ctx);
   }
 
-  const clicked = await osClickAndVerify(outcome.physical.x, outcome.physical.y, null, tabId ?? null, port, whoIsUnderPoint, force);
+  const clicked = await osClickAndVerify(outcome.physical.x, outcome.physical.y, null, tabId ?? null, port, whoIsUnderPoint, force, aimFromViewportRect(outcome.rect, outcome.viewport));
   if (isCover(clicked)) return browserPointCoveredFailure(clicked, outcome.physical.x, outcome.physical.y, ctx, force);
   const verifyDelivery = clicked;
   const tabCtx = await getTabContext(tabId ?? null, port);
@@ -2174,7 +2183,7 @@ export const browserClickElementHandler = async ({
     }
     // OS click + CDP delivery verification (Issue #181, shared with the by-axis
     // path). Focus → move → probe → click → settle → read → verifyDelivery.
-    const clicked = await osClickAndVerify(coords.x, coords.y, effectiveSelector, effectiveTabId ?? null, port, whoIsUnderPoint, force);
+    const clicked = await osClickAndVerify(coords.x, coords.y, effectiveSelector, effectiveTabId ?? null, port, whoIsUnderPoint, force, aimFromCoords(coords));
     if (isCover(clicked)) return browserPointCoveredFailure(clicked, coords.x, coords.y, { selector: effectiveSelector }, force);
     const verifyDelivery = clicked;
 
