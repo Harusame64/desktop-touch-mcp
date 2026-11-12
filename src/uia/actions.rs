@@ -1015,12 +1015,15 @@ fn find_value_target(
         if skipped && !found.is_empty() {
             return Err(napi::Error::from_reason(ELEMENT_AMBIGUOUS_TEXT));
         }
+        // `true`, as for the exact-name match above: the element is the one discovered (its id, and its
+        // rect when the id repeats), so the focus check after a failed write runs for it too and the
+        // keyboard rung does not type into a neighbour that holds the focus (codex on #964).
         if found.len() == 1 {
-            return Ok((found.into_iter().next().unwrap(), false));
+            return Ok((found.into_iter().next().unwrap(), true));
         }
         if !found.is_empty() {
             return one_at_rect(found, Some(rect))
-                .map(|e| (e, false))
+                .map(|e| (e, true))
                 .ok_or_else(|| napi::Error::from_reason(ELEMENT_AMBIGUOUS_TEXT));
         }
     }
