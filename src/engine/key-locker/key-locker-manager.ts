@@ -184,6 +184,7 @@ export class KeyLockerManager {
   private inFlight = 0;        // secret ops currently running through withHost (idle-dispose never runs mid-op)
   private lastActivityMs = 0;  // clock stamp of the last withHost completion (idle-dispose dormancy timer)
   private lastDeadHostMs = Number.NEGATIVE_INFINITY; // internal #329: when a stopped helper was last dropped
+  private respawnRefusedUntilMs = Number.NEGATIVE_INFINITY; // no new helper before this (a quick second death)
   private closed = false;      // set by close() at shutdown: no host (or consent dialog) is ever started again
   /** internal #281: true while the live helper holds secrets that must outlive the idle window (kept
    *  fill_once tags). Set by the wiring; idle-dispose skips a LIVE host while it says so. */
@@ -632,17 +633,19 @@ export class KeyLockerManager {
     if (this.host !== null && this.host.alive === false) {
       // The host already ended its process when the pipe closed (only while it was still our child), so it
       // is only dropped here. A helper that stops again within RESPAWN_COOLDOWN_MS is not started at once:
-      // one that keeps crashing would otherwise make every caller spawn it (gate 2 on #959).
+      // one that keeps crashing would otherwise make every caller spawn it (gate 2 on #959). The refusal holds
+      // for every call until the cooldown has passed, not only the call that found the dead host (agy on #959).
       this.host = null;
       const now = this.now();
-      if (now - this.lastDeadHostMs < RESPAWN_COOLDOWN_MS) {
-        this.lastDeadHostMs = now;
-        throw new KeyLockerError("KeyLockerPipeUnavailable", "locker helper stopped again soon after it started");
-      }
+      if (now - this.lastDeadHostMs < RESPAWN_COOLDOWN_MS) this.respawnRefusedUntilMs = now + RESPAWN_COOLDOWN_MS;
       this.lastDeadHostMs = now;
     }
     if (this.host !== null) return this.host;
     if (this.starting !== null) return this.starting;
+    if (this.now() < this.respawnRefusedUntilMs) {
+      throw new KeyLockerError("KeyLockerPipeUnavailable",
+        "locker helper stopped again soon after it started; a new one starts after about 30 seconds");
+    }
     this.starting = this.startHost()
       .then((h) => { this.host = h; this.starting = null; return h; })
       .catch((e) => { this.starting = null; throw e; });

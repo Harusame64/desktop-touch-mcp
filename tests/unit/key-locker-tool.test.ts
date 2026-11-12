@@ -386,10 +386,13 @@ describe("fill_once fill_aborted hints", () => {
     expect(fillAbortedHint("fill_once_error:pipe closed")).toMatch(/A new helper starts/);
   });
   it("an inject that timed out is not told nothing was typed (gate 2 on #959)", () => {
-    expect(fillAbortedHint("fill_once_error:request 'inject' timed out")).not.toMatch(/open longer than this server waits/);
+    const h = fillAbortedHint("fill_once_error:request 'inject' timed out");
+    expect(h).not.toMatch(/open longer than this server waits/);
+    expect(h).not.toMatch(/nothing was typed/i);
+    expect(h).toMatch(/read the terminal before sending anything/);
   });
-  it("anything else keeps the refused-write hint (control)", () => {
-    expect(fillAbortedHint("fill_once_error:something else")).toMatch(/pane changed or could not be verified/);
+  it("a locker refusal keeps the refused-write hint (control)", () => {
+    expect(fillAbortedHint("NoInjectorForBinding")).toMatch(/pane changed or could not be verified/);
     expect(fillAbortedHint("echo_on")).toMatch(/showing what is typed/);
   });
 });

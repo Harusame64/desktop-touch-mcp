@@ -53,12 +53,14 @@
   brought in front of the dialog any more (`WindowBlockedByDialog`), as for capture above (internal #382, #381).
 - **`key_locker` `fill_once` works again after the locker helper is killed.** Every later call answered
   `fill_aborted` `locker disposed` with `cleanupFailed: true` until the server restarted. A helper that stopped is now
-  replaced on the next call (one that stops again within 30 seconds is not restarted at once), a helper whose
+  replaced on the next call (after one that stops again within 30 seconds, calls are refused until 30 seconds have
+  passed), a helper whose
   connection dropped while it still ran is ended, and a secret that went with a stopped helper is not reported as left
   behind (internal #329).
 - **`fill_once`'s hints say what happened.** A capture dialog open longer than the server waits, and a helper that
   stopped during the call (read the terminal first: it may have stopped while typing), no longer get "the pane
-  changed or could not be verified" (internal #330). A protocol mismatch's advice now says to reinstall first, as its
+  changed or could not be verified" (internal #330). Any other error, which may have come while typing, is no longer
+  told that nothing was typed. A protocol mismatch's advice now says to reinstall first, as its
   message does (internal #343).
 
 ### Fixed — macOS (preview)

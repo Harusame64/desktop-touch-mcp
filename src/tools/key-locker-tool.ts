@@ -501,6 +501,12 @@ export function fillAbortedHint(code: string): string {
     return "The locker helper stopped during the call. Read the terminal before sending anything: if it stopped " +
       "while typing, part of the password may be on the prompt. A new helper starts on the next fill_once.";
   }
+  // Any other thrown error (a timeout while typing, for one) may have come after some keys went in, so the
+  // reply does not say nothing was typed (agy on #959). The locker's own refusals carry no prefix.
+  if (code.startsWith("fill_once_error:")) {
+    return "The call failed with an error, not a refusal. If it failed while typing, part of the password may " +
+      "be on the prompt: read the terminal before sending anything, then call fill_once again.";
+  }
   return "The locker refused the write (the pane changed or could not be verified). Nothing was typed or saved.";
 }
 

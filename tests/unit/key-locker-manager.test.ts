@@ -511,7 +511,10 @@ describe("KeyLockerManager — a helper that died on its own is replaced (intern
     mgr.hosts[1]!.alive = false; // dies again soon after
     await expect(mgr.withHost(async () => "z")).rejects.toMatchObject({ code: "KeyLockerPipeUnavailable" });
     expect(mgr.starts).toBe(2);
-    clock.t += 31_000; // after the cooldown
+    clock.t += 1_000; // a retry inside the cooldown is refused too, not started (agy on #959)
+    await expect(mgr.withHost(async () => "z2")).rejects.toMatchObject({ code: "KeyLockerPipeUnavailable" });
+    expect(mgr.starts).toBe(2);
+    clock.t += 30_000; // after the cooldown
     await mgr.withHost(async () => "w");
     expect(mgr.starts).toBe(3);
   });
