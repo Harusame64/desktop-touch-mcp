@@ -62,9 +62,9 @@ describe("tabOfFrame — a frame with no page surface is not on the CDP road (AD
     expect(await tabOfFrame(FRAME, tabs, d)).toEqual({ kind: "none", why: "not_shown" });
     expect(d.visibility).not.toHaveBeenCalled();
   });
-  it("the surface cannot be read: none (the window road keeps its own point)", async () => {
-    const d = deps({ surface: "unreadable", windows, visible: ["A"] });
-    expect(await tabOfFrame(FRAME, tabs, d)).toEqual({ kind: "none", why: "unreadable" });
+  it("the surface cannot be read: the rect and the visibility still decide (invariant 3, never refuse on it)", async () => {
+    expect(await tabOfFrame(FRAME, tabs, deps({ surface: "unreadable", windows, visible: ["A"] }))).toEqual({ kind: "tab", tabId: "A" });
+    expect(await tabOfFrame(FRAME, tabs, deps({ surface: "unreadable", windows, visible: [] }))).toEqual({ kind: "none", why: "no_visible_tab" });
   });
   it("the control: the same window with its surface is on the CDP road", async () => {
     expect(await tabOfFrame(FRAME, tabs, deps({ windows, visible: ["A"], title: "A - Google Chrome" })))
@@ -92,7 +92,7 @@ describe("tabOfFrame — the tab is in the window at the frame's rect (internal 
     expect(d.visibility).not.toHaveBeenCalled();
   });
   it("a tab whose window gave no bounds is not at the frame", async () => {
-    const d = deps({ windows: { R: { windowId: 2, bounds: RIGHT.bounds }, L: { windowId: 1 } }, visible: ["L"] });
+    const d = deps({ windows: { R: { windowId: 2, bounds: bounds(1300, 100, 900, 600) }, L: { windowId: 1 } }, visible: ["L"] });
     expect(await tabOfFrame(FRAME, tabs, d)).toEqual({ kind: "none", why: "no_window" });
   });
   it("bounds are DIPs: at 150 % the frame's rect is the bounds × 1.5 (3 px tolerance)", async () => {
@@ -100,6 +100,15 @@ describe("tabOfFrame — the tab is in the window at the frame's rect (internal 
     expect(await tabOfFrame(FRAME, [page("L", "Left page")], d)).toEqual({ kind: "tab", tabId: "L" });
     const off = deps({ scale: 1.5, frameRect: rect(150, 150, 1804, 1200), windows: { L: { windowId: 1, bounds: LEFT.bounds } }, visible: ["L"] });
     expect(await tabOfFrame(FRAME, [page("L", "Left page")], off)).toEqual({ kind: "none", why: "no_window" });
+  });
+  it("a scaled secondary monitor (DIP origin ≠ physical / scale): a window of the frame's size is taken", async () => {
+    // Physical x 2000 on a 150 % monitor right of a 1920 px one; Chrome puts its DIP left near 1973.
+    const d = deps({ scale: 1.5, frameRect: rect(2000, 150, 1800, 1200), windows: { L: { windowId: 1, bounds: bounds(1973, 100, 1200, 800) } }, visible: ["L"] });
+    expect(await tabOfFrame(FRAME, [page("L", "Left page")], d)).toEqual({ kind: "tab", tabId: "L" });
+  });
+  it("a window at the frame's place wins over another only of its size", async () => {
+    const w = { R: { windowId: 2, bounds: RIGHT.bounds }, L: { windowId: 1, bounds: LEFT.bounds } };
+    expect(await tabOfFrame(FRAME, tabs, deps({ windows: w, visible: ["R", "L"], title: "" }))).toEqual({ kind: "tab", tabId: "L" });
   });
   it("the browser endpoint cannot be reached: none", async () => {
     expect(await tabOfFrame(FRAME, tabs, deps({ windowsThrow: true, visible: ["L"] }))).toEqual({ kind: "none", why: "unreadable" });
@@ -123,8 +132,17 @@ describe("tabOfFrame — the tab the window shows (ADR-040 invariant 1)", () => 
     expect(await tabOfFrame(FRAME, tabs, d)).toEqual({ kind: "tab", tabId: "BG" });
     expect(d.visibility.mock.calls).toEqual([["FG"], ["BG"]]);
   });
-  it("no tab answers visible (the display off, every page hidden): none", async () => {
+  it("every page hidden (the display off, OQ-40-1), one window: the tab the frame's title shows, as the old road reached", async () => {
     expect(await tabOfFrame(FRAME, tabs, deps({ windows, visible: [], title: "Front - Google Chrome" })))
+      .toEqual({ kind: "tab", tabId: "FG" });
+  });
+  it("every page hidden and the frame's title shows none of them: none", async () => {
+    expect(await tabOfFrame(FRAME, tabs, deps({ windows, visible: [], title: "Other - Google Chrome" })))
+      .toEqual({ kind: "none", why: "no_visible_tab" });
+  });
+  it("every page hidden at a rect two windows share: none, even with a title (it could be the other window's)", async () => {
+    const two = { BG: { windowId: 1, bounds: LEFT.bounds }, FG: { windowId: 2, bounds: LEFT.bounds } };
+    expect(await tabOfFrame(FRAME, tabs, deps({ windows: two, visible: [], title: "Front - Google Chrome" })))
       .toEqual({ kind: "none", why: "no_visible_tab" });
   });
   it("DevTools' front end docked in the window answers visible too, and is not the tab", async () => {
@@ -143,9 +161,21 @@ describe("tabOfFrame — the tab the window shows (ADR-040 invariant 1)", () => 
 describe("tabOfFrame — two maximized windows at one rect (spike S4)", () => {
   const tabs = [page("A", "Alpha"), page("B", "Beta")];
   const windows = { A: { windowId: 1, bounds: MAX.bounds }, B: { windowId: 2, bounds: MAX.bounds } };
-  it("only the front one is drawn (the one behind is hidden): that one, whatever the title", async () => {
-    expect(await tabOfFrame(FRAME, tabs, deps({ frameRect: MAX.rect, windows, visible: ["B"], title: "" })))
+  it("only the front one is drawn (the one behind is hidden): that one, when the frame's title shows it", async () => {
+    expect(await tabOfFrame(FRAME, tabs, deps({ frameRect: MAX.rect, windows, visible: ["B"], title: "Beta - Google Chrome" })))
       .toEqual({ kind: "tab", tabId: "B" });
+  });
+  it("this frame's own tab gives no answer and the other window's is the one visible: none, not the other's (agy)", async () => {
+    // The back frame (title Alpha) whose surface could not be read: its tab reads hidden, the front's visible.
+    expect(await tabOfFrame(FRAME, tabs, deps({ surface: "unreadable", frameRect: MAX.rect, windows, visible: ["B"], title: "Alpha - Google Chrome" })))
+      .toEqual({ kind: "none", why: "ambiguous" });
+    expect(await tabOfFrame(FRAME, tabs, deps({ frameRect: MAX.rect, windows, visible: ["B"], title: "" })))
+      .toEqual({ kind: "none", why: "ambiguous" });
+  });
+  it("two same-title windows, only the front drawn (#965 W4c): the front's tab", async () => {
+    const same = [page("A", "Same"), page("B", "Same")];
+    expect(await tabOfFrame(FRAME, same, deps({ frameRect: MAX.rect, windows, visible: ["A"], title: "Same - Google Chrome" })))
+      .toEqual({ kind: "tab", tabId: "A" });
   });
   it("both drawn, different titles: the one the frame's title shows", async () => {
     expect(await tabOfFrame(FRAME, tabs, deps({ frameRect: MAX.rect, windows, visible: ["A", "B"], title: "Beta - Google Chrome" })))
@@ -166,6 +196,24 @@ describe("tabOfFrame — two maximized windows at one rect (spike S4)", () => {
     const untitled = [page("A", ""), page("B", "Beta")];
     expect(await tabOfFrame(FRAME, untitled, deps({ frameRect: MAX.rect, windows, visible: ["A", "B"], title: "" })))
       .toEqual({ kind: "none", why: "ambiguous" });
+  });
+  it("both drawn, the frame's title names one, and the other window's tab has a shorter title it starts with", async () => {
+    // Window A's frame reads "Foo Bar - …"; window B shows "Foo". B is not this frame's (gate 2).
+    const foo = [page("A", "Foo Bar"), page("B", "Foo")];
+    expect(await tabOfFrame(FRAME, foo, deps({ frameRect: MAX.rect, windows, visible: ["A", "B"], title: "Foo Bar - Google Chrome" })))
+      .toEqual({ kind: "tab", tabId: "A" });
+  });
+  it("both drawn, two windows at the rect: every tab is asked, not only a titled one (gate 2)", async () => {
+    // A's frame still reads "Foo Bar - …" while A shows "Baz"; B shows "Foo Bar". Asking the titled tab alone
+    // would find B visible and take it; asked together, the title decides only between visible tabs.
+    const lag = [page("A", "Baz"), page("B", "Foo Bar")];
+    const d = deps({ frameRect: MAX.rect, windows, visible: ["A", "B"], title: "Foo Bar - Google Chrome" });
+    await tabOfFrame(FRAME, lag, d);
+    expect(d.visibility.mock.calls.flat().sort()).toEqual(["A", "B"]);
+  });
+  it("Edge's title with more pages ('<title> and 2 more pages - …') shows that tab", async () => {
+    expect(await tabOfFrame(FRAME, tabs, deps({ frameRect: MAX.rect, windows, visible: ["A", "B"], title: "Beta and 2 more pages - Profile 1 - Microsoft\u200b Edge" })))
+      .toEqual({ kind: "tab", tabId: "B" });
   });
   it("a title is a whole title: 'Alpha' does not show 'Alp'", async () => {
     const near = [page("A", "Alp"), page("B", "Beta")];

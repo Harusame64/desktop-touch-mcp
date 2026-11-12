@@ -11,11 +11,19 @@
  * - the tab answers `document.visibilityState` "visible" (one per window: the front tab's).
  * When two windows share the frame's rect (two maximized), the frame's title decides; when it cannot, no tab.
  *
+ * Kept from the old road, so this takes nothing away that cannot be shown to go elsewhere:
+ * - a surface that cannot be read (a renamed class, a walk that failed) does not stop the promotion; the
+ *   rect and the visibility still decide (ADR-040 invariant 3: never refuse on "unreadable");
+ * - when no window is at the frame's rect × its scale (a scaled secondary monitor, whose DIP origin is not
+ *   its physical origin / scale), windows of the frame's size are taken instead;
+ * - when every tab at the rect reads hidden (the display off, the session locked: OQ-40-1) and one window is
+ *   there, the one tab whose title the frame shows is still taken — it is this frame's own tab.
+ *
  * Any other answer is `none`, and the caller takes the window road, which since ADR-040 PR ② points the
  * wheel at the frame's own visible page or sends none. Nothing here focuses, raises or moves anything.
  */
 import { resolvePageSurface, type PageSurfaceDeps } from "./page-surface.js";
-import { framesAtWindowBounds } from "./browser-frames.js";
+import { FRAME_BOUNDS_TOLERANCE_PX } from "./browser-frames.js";
 import { isBrowserUiPage } from "./cdp-default-tab.js";
 import type { Rect } from "./vision-gpu/types.js";
 
@@ -45,10 +53,12 @@ export type TabOfFrame =
 
 /**
  * Whether a frame title shows this tab's title: Chrome's "<title> - Google Chrome", Edge's
- * "<title> - Profile 1 - Microsoft Edge" and "<title> and 2 more pages - …". An empty title shows nothing.
+ * "<title> - Profile 1 - Microsoft Edge" and "<title> and 2 more pages - …". The title is followed by one of
+ * those joins, so "Foo" is not shown by "Foo Bar - Google Chrome" (gate 2). An empty title shows nothing.
  */
 function titleShows(frameTitle: string, tabTitle: string): boolean {
-  return tabTitle !== "" && (frameTitle === tabTitle || frameTitle.startsWith(`${tabTitle} `));
+  return tabTitle !== "" &&
+    (frameTitle === tabTitle || frameTitle.startsWith(`${tabTitle} - `) || frameTitle.startsWith(`${tabTitle} and `));
 }
 
 /** ADR-040 PR ③ — the tab `frame` shows, of the CDP browser's `tabs`. */
@@ -59,7 +69,6 @@ export async function tabOfFrame(
 ): Promise<TabOfFrame> {
   const surface = resolvePageSurface(frame, deps.surface);
   if (surface.kind === "not_shown") return { kind: "none", why: "not_shown" };
-  if (surface.kind === "unreadable") return { kind: "none", why: "unreadable" };
   try {
     const rect = deps.frameRect(frame);
     if (rect === null) return { kind: "none", why: "unreadable" };
@@ -68,26 +77,44 @@ export async function tabOfFrame(
     const pages = tabs.filter((t) => t.type === "page" && !isBrowserUiPage(t.url));
     if (pages.length === 0) return { kind: "none", why: "no_window" };
     const windows = await deps.windowsOf(pages.map((t) => t.id));
-    const atFrame = pages.filter((t) => {
+    const near = (a: number, b: number) => Math.abs(a - b) <= FRAME_BOUNDS_TOLERANCE_PX;
+    const sized = pages.filter((t) => {
       const b = windows.get(t.id)?.bounds;
-      return b !== undefined && framesAtWindowBounds([{ region: rect }], b, () => scale).length === 1;
+      return b !== undefined && near(rect.width, b.width * scale) && near(rect.height, b.height * scale);
     });
+    const placed = sized.filter((t) => {
+      const b = windows.get(t.id)!.bounds!;
+      return near(rect.x, b.left * scale) && near(rect.y, b.top * scale);
+    });
+    const atFrame = placed.length > 0 ? placed : sized;
     if (atFrame.length === 0) return { kind: "none", why: "no_window" };
+    const oneWindow = new Set(atFrame.map((t) => windows.get(t.id)!.windowId)).size === 1;
 
-    // The tabs the frame's title shows are asked first: usually one, so one tab is asked, not every tab
-    // of the window. When none of them answers visible (a title that changed, an Edge title), the rest are.
     const title = deps.frameTitle(frame);
     const titled = atFrame.filter((t) => titleShows(title, t.title));
     const visibleOf = async (list: typeof atFrame) => {
       const states = await Promise.all(list.map((t) => deps.visibility(t.id)));
       return list.filter((_, n) => states[n] === "visible");
     };
-    let visible = titled.length > 0 ? await visibleOf(titled) : [];
-    if (visible.length === 0) visible = await visibleOf(atFrame.filter((t) => !titled.includes(t)));
-    if (visible.length === 0) return { kind: "none", why: "no_visible_tab" };
-    if (visible.length === 1) return { kind: "tab", tabId: visible[0]!.id };
-    // Two windows at the frame's rect each showing a tab (two maximized, both drawn): only the title can
-    // tell which is this frame's, and it did not.
+    // In one window, the tabs the frame's title shows are asked first: usually one, so one tab is asked,
+    // not every tab of the window; the rest only when none of them answers visible (a title that changed).
+    // With two windows at the rect every tab is asked, since a visible tab of the other window would
+    // otherwise go unseen beside a titled one (gate 2).
+    let visible: typeof atFrame;
+    if (oneWindow && titled.length > 0) {
+      visible = await visibleOf(titled);
+      if (visible.length === 0) visible = await visibleOf(atFrame.filter((t) => !titled.includes(t)));
+    } else {
+      visible = await visibleOf(atFrame);
+    }
+    if (visible.length === 0) {
+      if (oneWindow && titled.length === 1) return { kind: "tab", tabId: titled[0]!.id };
+      return { kind: "none", why: "no_visible_tab" };
+    }
+    // In one window, its one visible tab. With two windows at the rect, a visible tab may be the other
+    // window's — this frame's own can read hidden or give no answer in time while the other's is drawn — so
+    // only a tab the frame's title shows is taken (agy on #971).
+    if (oneWindow && visible.length === 1) return { kind: "tab", tabId: visible[0]!.id };
     const byTitle = visible.filter((t) => titleShows(title, t.title));
     if (byTitle.length === 1) return { kind: "tab", tabId: byTitle[0]!.id };
     return { kind: "none", why: "ambiguous" };

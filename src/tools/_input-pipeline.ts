@@ -109,7 +109,8 @@ import type { Rect } from "../engine/vision-gpu/types.js";
  * internal #319 item 2, `resolveCdpDestinationForHwnd` then compares the
  * HWND's process with the CDP browser's (`SystemInfo.getProcessInfo`), so a
  * window of another app or browser is not promoted to the CDP browser's page.
- * When the browser's process cannot be read the promotion stays as it was.
+ * When the browser's process cannot be read that check is skipped; ADR-040 PR ③ then promotes only to the
+ * tab the window itself shows (`tabOfFrame`).
  *
  * Future: if Edge's top-level class diverges in a Windows update, extend
  * this to a `new Set([...])` lookup. As of 2026-05 both Chrome and Edge
@@ -825,8 +826,9 @@ export async function resolveInputDestination(
 /**
  * ADR §2.1 D1 Tier 2 — auto-promote a Chrome/Edge HWND to a CDP destination
  * when a CDP session is reachable on the configured port. Returns `null` when
- * the gate fails (non-Chromium-top-level class) OR when the CDP probe fails
- * (browser not running with `--remote-debugging-port`, no tabs, network error)
+ * the gate fails (non-Chromium-top-level class), when the CDP probe fails
+ * (browser not running with `--remote-debugging-port`, no tabs, network error),
+ * or when the tab the window shows cannot be named (ADR-040 PR ③, below)
  * — caller then falls back to `{kind:'hwnd'}` and tries Tier 1 UIA.
  *
  * **The class name is passed in by the caller** (already known from
@@ -862,9 +864,8 @@ export async function resolveCdpDestinationForHwnd(
   try {
     const port = getCdpPort();
     const tabs = await listTabsLight(port);
-    // The tab every other call without a tabId uses, not whatever target is listed first (#308).
-    // internal #398 — the default tab skips DevTools' front end, so a wheel aimed at an undocked DevTools
-    // window would go to the page it inspects. That window takes the wheel itself (gate 2 on #968).
+    // internal #398 — an undocked DevTools window shows DevTools' front end, which is not a tab, so the
+    // wheel must not go to the page it inspects. That window takes the wheel itself (gate 2 on #968).
     if (isUndockedDevToolsTitle(getWindowTitleW(hwnd))) return null;
     // Another browser's window is not this browser's tab (internal #319 item 2).
     const windowPid = getWindowProcessId(hwnd);
