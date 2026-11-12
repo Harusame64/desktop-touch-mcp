@@ -1339,13 +1339,16 @@ function buildObservationChain(
 export async function postWheelToHwnd(
   hwnd: bigint,
   params: WheelParams,
+  /** A point read earlier (before Tier 1), used only when this call's own read keeps the caller's point. */
+  earlierPagePoint?: WheelPagePoint,
 ): Promise<DispatchOutcome | null> {
   const postMessage = nativeWin32?.win32PostMessage;
   const getScrollInfo = nativeWin32?.win32GetScrollInfo;
   if (typeof postMessage !== "function") return null;
   // ADR-040 PR ② (internal #396) — a Chromium window takes a posted wheel at its point, not at the
   // window it is posted to: every post carries a point where this window's page is visible, or none is sent.
-  const pagePoint = pagePointOrKeep(hwnd);
+  const readNow = pagePointOrKeep(hwnd);
+  const pagePoint = readNow.kind === "keep" && earlierPagePoint?.kind === "point" ? earlierPagePoint : readNow;
   if (pagePoint.kind === "not_visible") {
     return {
       scrolled: false,
@@ -2017,7 +2020,8 @@ export async function dispatchScrollWheel(
     // dispatcher null → emits `target_unreachable` per ADR §2.6.2 path-(b)
     // and does NOT fall through to Tier 4 SendInput.
     // The point is read again there: the window can move or be covered while Tier 1 is awaited (gate 2).
-    return await postWheelToHwnd(dest.hwnd, params);
+    // When that read cannot be taken, the point found before Tier 1 stands (gate 2 on #971).
+    return await postWheelToHwnd(dest.hwnd, params, pagePoint);
   }
   if (dest.kind === "cdp") {
     // ADR-018 Phase 3 — Tier 2 CDP wheel dispatch. Pre/post observation via

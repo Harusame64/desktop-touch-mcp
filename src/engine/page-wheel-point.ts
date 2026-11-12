@@ -56,20 +56,12 @@ export function wheelPointOnPage(hwnd: bigint, deps: WheelPointDeps): WheelPageP
     if (surface.why !== "no_page_window") return { kind: "not_visible", frame, why: surface.why };
     // No page window does not by itself prove the window is covered: a window just brought forward, or a
     // Chromium window that draws no page (Task Manager), has none either, and a wheel at its centre worked
-    // before (gate 2 on #969; the same reading as browser_click's, PR #967 P12). Its centre is kept when the
-    // frame is there; otherwise the frame's own grid is tried, so a window that draws no page and shows only
-    // part of itself is wheeled where it shows (gate 2 on #971). Refuse only when another window is at every
-    // point tried, as when it covers all of it (win2 OQ-40-8 Q3). A covered Chromium page has a page window
-    // whenever any of its frame shows (Chromium marks a window occluded only when all of it is covered).
+    // before (gate 2 on #969; the same reading as browser_click's, PR #967 P12). Refuse only when another
+    // window is what Windows finds at that centre, as when it covers all of it (win2 OQ-40-8 Q3).
     const r = deps.rectOf(frame);
     if (r === null) return { kind: "keep" };
-    const centre = deps.pointAt(Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2));
-    if (centre === undefined || (centre !== null && centre.root === frame)) return { kind: "keep" };
-    for (const [fx, fy] of WHEEL_POINT_FRACTIONS.slice(1)) {
-      const point = { x: Math.round(r.x + r.width * fx), y: Math.round(r.y + r.height * fy) };
-      const at = deps.pointAt(point.x, point.y);
-      if (at !== undefined && at !== null && at.root === frame) return { kind: "point", frame, point };
-    }
+    const at = deps.pointAt(Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2));
+    if (at === undefined || (at !== null && at.root === frame)) return { kind: "keep" };
     return { kind: "not_visible", frame, why: "no_page_window" };
   }
   const { x, y, width, height } = surface.rect;

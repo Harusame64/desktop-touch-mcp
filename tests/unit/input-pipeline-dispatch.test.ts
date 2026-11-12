@@ -2289,16 +2289,6 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
     expect(r?.pageNotVisible?.why).toBe("no_page_window");
   });
 
-  it("no page window, its centre covered but part of the frame shown (a window that draws no page): wheeled where it shows (gate 2 on #971)", async () => {
-    shape(1100);
-    wheelPointDeps.surface = { ...wheelPointDeps.surface, descendants: () => [{ hwnd: 7n, className: "Intermediate D3D Window", visible: true, rect: PAGE_RECT }] };
-    const r = await postWheelToHwnd(FRAME, { direction: "down", notch: 3 });
-    expect(r?.pageNotVisible).toBeUndefined();
-    // The frame's grid (500,150 800×600): the first point at x ≥ 1100 is 0.9 of the width on the 0.02 line.
-    for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(Math.round(500 + 800 * 0.9), Math.round(150 + 600 * 0.02)));
-    expect(win32PostMessageMock).toHaveBeenCalled();
-  });
-
   it("not a Chromium window (Excel): the point is the window's centre, as before", async () => {
     shape(null, "XLMAIN");
     await postWheelToHwnd(FRAME, { direction: "down", notch: 3 });
@@ -2359,6 +2349,16 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
       await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 3 });
       expect(win32PostMessageMock).toHaveBeenCalled();
       for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(Math.round(508 + 784 * 0.98), Math.round(237 + 505 * 0.02)));
+    });
+    it("the read after Tier 1 cannot be taken: the point found before Tier 1 stands, not the frame's centre (gate 2 on #971)", async () => {
+      shape(1100);
+      uiaScrollByWheelAtHwndMock.mockImplementation(async () => {
+        wheelPointDeps.pointAt = () => undefined; // WindowFromPoint can no longer be asked
+        return { ok: true, scrolled: false };
+      });
+      await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 3 });
+      expect(win32PostMessageMock).toHaveBeenCalled();
+      for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(Math.round(508 + 784 * 0.9), Math.round(237 + 505 * 0.02)));
     });
     it("the control: not a Chromium window (a covered Excel), UIA is tried as before", async () => {
       shape(null, "XLMAIN");

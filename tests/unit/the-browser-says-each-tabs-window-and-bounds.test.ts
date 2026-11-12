@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { WebSocketServer } from "ws";
-import { getWindowsForTargets, getWindowIdsForTargets } from "../../src/engine/cdp-bridge.js";
+import { getWindowsForTargets, getWindowIdsForTargets, disconnectAll } from "../../src/engine/cdp-bridge.js";
 
 const ANSWERS: Record<string, unknown> = {
   WITH: { windowId: 7, bounds: { left: 100, top: 50, width: 1200, height: 800, windowState: "normal" } },
@@ -38,9 +38,11 @@ beforeAll(async () => {
   })));
 });
 
-afterAll(() => {
+afterAll(async () => {
   vi.unstubAllGlobals();
-  server.close();
+  disconnectAll(39001);
+  for (const c of server.clients) c.terminate();
+  await new Promise<void>((r) => server.close(() => r()));
 });
 
 describe("getWindowsForTargets (ADR-040 PR ③)", () => {

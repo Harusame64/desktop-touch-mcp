@@ -85,7 +85,7 @@ describe("tabOfFrame — the tab is in the window at the frame's rect (internal 
     expect(await tabOfFrame(FRAME, tabs, deps({ frameRect: RIGHT.rect, windows, visible: ["R", "L"], title: "Right page - Google Chrome" })))
       .toEqual({ kind: "tab", tabId: "R" });
   });
-  it("a tab of another window whose title the frame shows is not taken: the rect comes first", async () => {
+  it("a tab of another window whose title the frame shows is not taken: it is not at the frame's rect", async () => {
     const same = [page("R", "Same"), page("L", "Other")];
     const d = deps({ windows, visible: ["R", "L"], title: "Same - Google Chrome" });
     expect(await tabOfFrame(FRAME, same, d)).toEqual({ kind: "none", why: "no_window" });
