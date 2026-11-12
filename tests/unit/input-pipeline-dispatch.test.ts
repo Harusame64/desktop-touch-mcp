@@ -580,6 +580,14 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
     expect(await resolveCdpDestinationForHwnd(0x778n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
   });
 
+  it("a browser window showing a page titled 'DevTools …' is still promoted (agy on #968)", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "PAGE", title: "DevTools Architecture", url: "https://example.com/", type: "page" }]);
+    getWindowTitleWMock.mockReturnValueOnce("DevTools Architecture - Google Chrome");
+    expect(await resolveCdpDestinationForHwnd(0x791n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "PAGE" });
+    getWindowTitleWMock.mockReturnValueOnce("DevTools - Chrome for Developers - Personal - Microsoft\u200b Edge");
+    expect(await resolveCdpDestinationForHwnd(0x792n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "PAGE" });
+  });
+
   it("an undocked DevTools window is not promoted to the page it inspects (gate 2 on #968)", async () => {
     listTabsLightMock.mockResolvedValue([
       { id: "DT", title: "DevTools", url: "devtools://devtools/bundled/devtools_app.html", type: "page" },

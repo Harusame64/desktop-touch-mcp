@@ -1461,7 +1461,8 @@ export const browserConnectHandler = async ({
       id: t.id,
       title: t.title,
       url: t.url,
-      active: focusMap.get(t.id) ?? false,
+      // A focused DevTools is not an active tab to act on (agy on #968).
+      active: !isDevToolsFrontEnd(t.url) && (focusMap.get(t.id) ?? false),
       // internal #398 — DevTools' own front end is listed by CDP as a page; it is not a tab to act on.
       ...(isDevToolsFrontEnd(t.url) && { devtools: true }),
     }));
