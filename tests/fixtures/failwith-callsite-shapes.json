@@ -461,21 +461,21 @@
     },
     {
       "file": "src/tools/screenshot.ts",
-      "line": 1064,
+      "line": 1084,
       "tool": "screenshot",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/screenshot.ts",
-      "line": 1150,
+      "line": 1170,
       "tool": "screenshot",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/screenshot.ts",
-      "line": 1394,
+      "line": 1414,
       "tool": "get_screen_info",
       "errKind": "identifier",
       "contextShape": "none"
