@@ -75,6 +75,7 @@ vi.mock("../../src/engine/image.js", () => ({
 
 // internal #363: OCR by handle is the seam; everything else in ocr-bridge is real.
 import { WindowExcludedError } from "../../src/engine/tool-exclusion.js";
+import { WindowFrozenError } from "../../src/engine/window-frozen.js";
 const { mockRecognizeWindowByHwnd, mockRecognizeWindow } = vi.hoisted(() => ({ mockRecognizeWindowByHwnd: vi.fn(), mockRecognizeWindow: vi.fn() }));
 vi.mock("../../src/engine/ocr-bridge.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/ocr-bridge.js")>();
@@ -166,6 +167,40 @@ describe("screenshot(detail:'text') reads a mintty window with OCR (internal #36
     const result = await screenshotHandler({ ...baseArgs, windowTitle: "MINGW64", detail: "text" });
     const body = JSON.parse((result.content[0] as { text: string }).text);
     expect(body.ok).toBe(false);
+  });
+
+  it("refuses a frozen window rather than read around it", async () => {
+    wire("mintty");
+    mockRecognizeWindowByHwnd.mockReset().mockRejectedValue(new WindowFrozenError("screenshot"));
+    const result = await screenshotHandler({ ...baseArgs, windowTitle: "MINGW64", detail: "text" });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.ok).toBe(false);
+  });
+
+  it("keeps a mintty named by hwnd as the target when it falls back, with a same-titled window in front (agy on #962)", async () => {
+    const front = { ...mintty, hwnd: 9999n, zOrder: 0 };
+    const named = { ...mintty, hwnd: 7373n, zOrder: 1, isActive: false };
+    wire((h: bigint) => (h === 7373n ? "mintty" : "Notepad"));
+    mockResolveWindowTarget.mockResolvedValue({ title: mintty.title, hwnd: 7373n, warnings: [] });
+    mockEnumWindowsInZOrder.mockReturnValue([front, named]);
+    mockRecognizeWindowByHwnd.mockReset().mockResolvedValue({ words: [], origin: { x: 0, y: 0 } });
+    const result = await screenshotHandler({ ...baseArgs, hwnd: "7373", detail: "text" });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.hints?.target?.hwnd).toBe("7373");
+    expect(mockIsWindowProcessFrozen).toHaveBeenCalledWith(7373n);
+  });
+
+  it("reads an untitled mintty named by hwnd, not a console listed first (codex on #962)", async () => {
+    const conWin = { ...mintty, hwnd: 4242n, title: "cmd", zOrder: 0 };
+    wire((h: bigint) => (h === 4242n ? "ConsoleWindowClass" : "mintty"));
+    mockResolveWindowTarget.mockResolvedValue({ title: "", hwnd: 7474n, warnings: [] });
+    mockEnumWindowsInZOrder.mockReturnValue([conWin]);
+    mockGetWindowRectByHwnd.mockReturnValue({ x: 5, y: 5, width: 300, height: 200 });
+    const result = await screenshotHandler({ ...baseArgs, hwnd: "7474", detail: "text" });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(mockGetTextViaTextPattern).not.toHaveBeenCalled();
+    expect(body.hints?.textSource).toBe("ocr");
+    expect(mockRecognizeWindowByHwnd).toHaveBeenCalledWith(7474n, { x: 5, y: 5, width: 300, height: 200 }, "ja");
   });
 
   it("reads the mintty named by hwnd, untitled included (the window list leaves it out)", async () => {

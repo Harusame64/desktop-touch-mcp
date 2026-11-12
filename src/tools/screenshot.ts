@@ -616,11 +616,14 @@ export const screenshotHandler = async (args: {
       if (effectiveTitle || handleIsTerminal || handleIsOcrTerminal) {
         const wins = enumWindowsInZOrder();
         updateWindowCache(wins);
-        const byHandle = handleIsTerminal ? wins.find((w) => w.hwnd === handleWin!.hwnd) : undefined;
+        // Either kind of terminal named by its handle stays on that handle below, the frozen check and a
+        // fallback to its controls included (agy on #962).
+        const handlePinned = handleIsTerminal || handleIsOcrTerminal;
+        const byHandle = handlePinned ? wins.find((w) => w.hwnd === handleWin!.hwnd) : undefined;
 
         // Save screenshot-time snapshot for homing — survives external cache
         // mutations from focus_window / window_dock between screenshot and click.
-        const snapWin = handleIsTerminal
+        const snapWin = handlePinned
           ? byHandle
           : wins.find((w) => w.title.toLowerCase().includes(effectiveTitle!.toLowerCase()));
         if (snapWin && effectiveTitle) saveSnapshot(effectiveTitle, snapWin.region);
@@ -628,13 +631,13 @@ export const screenshotHandler = async (args: {
         // Resolve the full window title from the partial match, then test the
         // Chromium regex against the resolved title — not the user-supplied
         // substring (which typically won't contain the "- Google Chrome" suffix).
-        const resolvedWin2 = handleIsTerminal
+        const resolvedWin2 = handlePinned
           ? byHandle
           : resolvedWin
             ? wins.find((w) => w.title === resolvedWin.title) ?? wins.find((w) => w.title.toLowerCase().includes(effectiveTitle!.toLowerCase()))
             : wins.find((w) => w.title.toLowerCase().includes(effectiveTitle!.toLowerCase()));
         const resolvedTitle = resolvedWin2?.title ?? effectiveTitle ?? "";
-        const targetHwnd = handleIsTerminal ? handleWin!.hwnd : (resolvedWin2?.hwnd ?? null);
+        const targetHwnd = handlePinned ? handleWin!.hwnd : (resolvedWin2?.hwnd ?? null);
         // Internal #247 (codex on 45cf57d1): before any UIA read — the 90 s UIA cache would serve a
         // tree read while the app was shown as its contents now, and with actionable elements in it
         // no OCR (where the other refusals sit) runs at all.
