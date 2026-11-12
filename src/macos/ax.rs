@@ -983,8 +983,9 @@ pub struct MacActResult {
     pub role: Option<String>,
     /// For `modal_blocking`: `sheet:<title>` or `modal_window:<title>`.
     pub blocker: Option<String>,
-    /// `perform`: the action was sent to the app (internal #259). A failure with this set happened
-    /// after the app was asked, so it may have acted; without it nothing was asked.
+    /// The action or write was sent to the app: `perform` (internal #259), and `set_value` /
+    /// `insert_text` when the write itself answered an error (internal #366). A failure with this set
+    /// happened after the app was asked, so it may have acted; without it nothing was asked.
     pub performed: Option<bool>,
 }
 
@@ -1525,7 +1526,8 @@ pub(crate) fn set_value(t: &MacAxTarget, value: &str) -> MacActResult {
         // The press happened: from here a failed write is "not applied", never "nothing was done" —
         // and it must not pass for a success when the read-back is gone too (codex on #913).
         if write() != AXError::Success {
-            return refused("not_applied_after_press");
+            // The press and both writes were sent (internal #366); the reason keeps its own sentence.
+            return MacActResult { performed: Some(true), ..refused("not_applied_after_press") };
         }
         return MacActResult { ok: true, value_after: value_text(&e), ..Default::default() };
     }

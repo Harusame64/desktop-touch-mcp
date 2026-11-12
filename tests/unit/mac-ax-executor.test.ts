@@ -247,6 +247,11 @@ describe("append (codex #782: never replace with a cut value)", () => {
       const exec = createMacAxExecutor({ perform, setValue, insertText, appendMode: () => true, noteOpen: () => {} } as never);
       await expect(exec(entity, "type", "abc")).rejects.toMatchObject({ name: "ActMayHaveHappenedError" });
     });
+    it("an error that says the app was never reached (api_disabled) is not 'may have happened'", async () => {
+      const { perform, exec } = setup();
+      perform.mockResolvedValue({ ok: false, reason: "api_disabled", performed: true });
+      await expect(exec(entity, "click")).rejects.toMatchObject({ name: "MacAxActError", callerDetail: expect.stringContaining("api_disabled") });
+    });
     it("not_applied_after_press keeps its own sentence (control)", async () => {
       const { setValue, exec } = setup();
       setValue.mockResolvedValue({ ok: false, reason: "not_applied_after_press", performed: true });

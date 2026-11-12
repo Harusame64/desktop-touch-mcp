@@ -61,6 +61,9 @@ export class ModalBlockingError extends Error {
   }
 }
 
+/** Errors that say the app was never reached, so nothing was done even after the act was sent. */
+const NEVER_REACHED = new Set(["api_disabled", "illegal_argument"]);
+
 function refuse(r: NativeMacActResult, what: string): never {
   const reason = r.reason ?? "unknown";
   if (reason === "modal_blocking") throw new ModalBlockingError(r.blocker);
@@ -71,6 +74,11 @@ function refuse(r: NativeMacActResult, what: string): never {
       undefined,
       "The field did not take the write, so it was pressed to focus it, and the write after that failed (the page may have replaced the field). Discover again and check the field before typing."
     );
+  }
+  // internal #366: sent, then answered with an error — the app may have acted (a button that closes its
+  // window answers invalid_ui_element after it acted). Decided here, once, for every act that refuses.
+  if (r.performed === true && !NEVER_REACHED.has(reason)) {
+    throw new ActMayHaveHappenedError(what === "press" ? "press" : "write", reason);
   }
   if (GONE.has(reason)) {
     throw new TargetGoneError(
@@ -121,7 +129,7 @@ export class OpenMayHaveHappenedError extends Error {
 export class ActMayHaveHappenedError extends Error {
   readonly callerDetail: string;
   constructor(what: "press" | "write", reason: string) {
-    super(`${what}: ${reason} after the ${what === "press" ? "press" : "write"} was sent`);
+    super(`${what}: ${reason} after the ${what} was sent`);
     this.name = "ActMayHaveHappenedError";
     this.callerDetail = what === "press"
       ? `The press was sent and the app answered ${reason}: it may have been carried out (a button that closes its window answers so). desktop_discover (or desktop_state) before pressing again, so it does not run twice.`
@@ -197,10 +205,7 @@ export function createMacAxExecutor(deps: MacAxExecutorDeps): ExecutorFn {
         // document at the read cap and delete the rest (codex, #782).
         if (deps.insertText === undefined) throw new MacAxActError("append: not available", "append_unavailable");
         const r = await deps.insertText(target, text, -1);
-        if (!r.ok) {
-          if (r.performed === true) throw new ActMayHaveHappenedError("write", r.reason ?? "unknown");
-          refuse(r, "append");
-        }
+        if (!r.ok) refuse(r, "append");
         // The read-back is capped, so the end can be checked only when the whole text came back.
         const after = r.valueAfter;
         if (after !== undefined && Array.from(after).length < VALUE_CHAR_CAP && !after.endsWith(text)) {
@@ -213,11 +218,7 @@ export function createMacAxExecutor(deps: MacAxExecutorDeps): ExecutorFn {
         return "ax";
       }
       const r = await deps.setValue(target, text);
-      if (!r.ok) {
-        // not_applied_after_press keeps its own sentence (the field was pressed to focus it).
-        if (r.performed === true && r.reason !== "not_applied_after_press") throw new ActMayHaveHappenedError("write", r.reason ?? "unknown");
-        refuse(r, "setValue");
-      }
+      if (!r.ok) refuse(r, "setValue");
       // The native read-back is capped at VALUE_CHAR_CAP characters (src/macos/ax.rs).
       if (r.valueAfter !== undefined && r.valueAfter !== Array.from(text).slice(0, VALUE_CHAR_CAP).join("")) {
         throw new ValueNotAppliedError(
@@ -231,10 +232,7 @@ export function createMacAxExecutor(deps: MacAxExecutorDeps): ExecutorFn {
 
     // click / invoke / auto: the native call presses only what the element advertises.
     const r = await deps.perform(target, "AXPress");
-    if (!r.ok) {
-      if (r.performed === true) throw new ActMayHaveHappenedError("press", r.reason ?? "unknown");
-      refuse(r, "press");
-    }
+    if (!r.ok) refuse(r, "press");
     return "ax";
   };
 }
