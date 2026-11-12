@@ -2266,4 +2266,41 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
     await postWheelToHwnd(FRAME, { direction: "down", notch: 3 });
     expect(win32PostMessageMock.mock.calls[0]![3]).toBe(lp(900, 450));
   });
+
+  // ADR-040 PR ③ — win2 (dev/adr-040-pr3): a hidden page keeps its last shown ScrollPercent and jumps to that
+  // + one step, answering "unchanged", the same as a page at its end; the refusal then said nothing moved.
+  describe("Tier 1 UIA is not tried on a Chromium window whose page is not visible", () => {
+    beforeEach(() => {
+      uiaScrollByWheelAtHwndMock.mockReset();
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: false, error: "SetScrollPercent returned Ok but pre/post percent unchanged" });
+    });
+    it("covered: no UIA call, no post, the outcome says why", async () => {
+      shape(null);
+      const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 5 });
+      expect(uiaScrollByWheelAtHwndMock).not.toHaveBeenCalled();
+      expect(win32PostMessageMock).not.toHaveBeenCalled();
+      expect(r).toEqual({ scrolled: false, channel: "postmessage", reason: "target_unreachable", pageNotVisible: { frame: FRAME, why: "covered" } });
+    });
+    it("minimized: no UIA call", async () => {
+      shape(1100);
+      wheelPointDeps.surface = { ...wheelPointDeps.surface, isIconic: () => true };
+      const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 5 });
+      expect(uiaScrollByWheelAtHwndMock).not.toHaveBeenCalled();
+      expect(r).toMatchObject({ pageNotVisible: { frame: FRAME, why: "minimized" } });
+    });
+    it("the control: its page visible somewhere, UIA is tried first as before", async () => {
+      shape(1100);
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+      const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 5 });
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledTimes(1);
+      expect(r).toEqual({ scrolled: true, channel: "uia", reason: "delivered_via_uia" });
+    });
+    it("the control: not a Chromium window (a covered Excel), UIA is tried as before", async () => {
+      shape(null, "XLMAIN");
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+      const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 5 });
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledTimes(1);
+      expect(r).toEqual({ scrolled: true, channel: "uia", reason: "delivered_via_uia" });
+    });
+  });
 });

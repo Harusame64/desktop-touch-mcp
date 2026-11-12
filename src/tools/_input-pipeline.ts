@@ -1942,6 +1942,22 @@ export async function dispatchScrollWheel(
     // If a future design wants `'uia'` to be UIA-only (no Tier 3 fall-back),
     // split this branch. As of Phase 4 the dormant branch matches `'hwnd'`
     // semantics. (Opus PR #305 Round 1 P2-3.)
+    //
+    // ADR-040 PR ③ — a Chromium window whose page is not visible gets no Tier 1 either. Its page keeps the
+    // UIA ScrollPercent it had when last shown, and applies SetScrollPercent(that + one step) as an absolute
+    // position: win2 (dev/adr-040-pr3) saw a covered page jump from the bottom to 521 on a down, from 0 to 173
+    // on an up, and a minimized one from 0 to 15645, each answered "pre/post percent unchanged" — the same as a
+    // page already at its end — so the refusal below said nothing was scrolled while the page had moved.
+    // The same reading as Tier 3's, so a page visible anywhere still gets Tier 1 as before.
+    const pagePoint = wheelPointOnPage(dest.hwnd, wheelPointDeps);
+    if (pagePoint.kind === "not_visible") {
+      return {
+        scrolled: false,
+        channel: "postmessage",
+        reason: "target_unreachable",
+        pageNotVisible: { frame: pagePoint.frame, why: pagePoint.why },
+      };
+    }
     try {
       // Resolve the Tier 1 native call through the tolerant `native-engine.ts`
       // loader — NOT a direct `import from "../../index.js"`, which `throw`s at
