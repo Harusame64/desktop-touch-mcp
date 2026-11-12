@@ -31,8 +31,9 @@ import {
   type ResolvedWindow,
 } from "./_resolve-window.js";
 import { logDispatchSink } from "./_resolve-log.js";
-import { getWindowRectByHwnd, getWindowProcessId, getWindowTitleW, getWindowRoot, getWindowClassName, windowFromPoint, pageSurfaceDeps } from "../engine/win32.js";
+import { getWindowRectByHwnd, getWindowProcessId, getWindowTitleW, getWindowRoot, getWindowClassName, windowFromPoint, getWindowDpi, pageSurfaceDeps } from "../engine/win32.js";
 import { wheelPointOnPage, type WheelPointDeps } from "../engine/page-wheel-point.js";
+import { tabOfFrame, type TabOfFrameDeps } from "../engine/cdp-tab-of-frame.js";
 
 /** Exported so tests can replace the window reads (ADR-040 PR ②). */
 export const wheelPointDeps: WheelPointDeps = {
@@ -47,6 +48,34 @@ export const wheelPointDeps: WheelPointDeps = {
     descendants: (h) => pageSurfaceDeps.descendants(h),
   },
 };
+
+/** ms a tab is given to answer its visibilityState before it counts as no answer (ADR-040 PR ③). */
+const TAB_VISIBILITY_TIMEOUT_MS = 500;
+
+/**
+ * ADR-040 PR ③ — the reads `tabOfFrame` makes for the CDP road, on the configured port. Exported so tests
+ * can replace them; each is wrapped so a test's partial mock fails inside the guarded call, not at import.
+ */
+export const tabOfFrameDeps: TabOfFrameDeps = {
+  surface: wheelPointDeps.surface,
+  frameRect: (h) => getWindowRectByHwnd(h),
+  frameScale: (h) => getWindowDpi(h) / 96,
+  frameTitle: (h) => getWindowTitleW(h),
+  windowsOf: (ids) => getWindowsForTargets(ids, getCdpPort()),
+  visibility: async (id) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        evaluateInTab("document.visibilityState", id, getCdpPort()),
+        new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), TAB_VISIBILITY_TIMEOUT_MS); }),
+      ]);
+    } catch {
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  },
+};
 import { nativeUia, nativeWin32, nativeL1 } from "../engine/native-engine.js";
 import {
   captureFrame,
@@ -55,12 +84,13 @@ import {
   computeStripChangedFractions,
   type RawFrame,
 } from "../engine/layer-buffer.js";
-import { defaultPageTab } from "../engine/cdp-default-tab.js";
 import {
   listTabsLight,
   dispatchWheelInTab,
   readScrollPositionInTab,
   getBrowserProcessId,
+  getWindowsForTargets,
+  evaluateInTab,
 } from "../engine/cdp-bridge.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import type { Rect } from "../engine/vision-gpu/types.js";
@@ -807,18 +837,18 @@ export async function resolveInputDestination(
  * shape redundantly called `enumWindowsInZOrder` here, doubling the syscall
  * cost per scroll.)
  *
- * Phase 3 picks the tab `defaultPageTab` picks — the same one `resolveTab(null, port)` in
- * `cdp-bridge.ts` uses (internal #308). A future phase may
- * thread a focused-tab hint via the foreground HWND → tab mapping (ADR §7
- * OQ-Electron carry-over).
+ * ADR-040 PR ③ (internal #319 item 2, the rest) — the tab is the one this frame shows (`tabOfFrame`): the
+ * frame has a page surface, the tab is in the browser window at the frame's rect, and it is visible. Before,
+ * the port's default tab was taken whatever window was asked, and a wheel for the window behind scrolled
+ * the one in front and answered delivered_via_cdp (win2, #965 W2/W4). When no such tab can be named —
+ * covered, minimized, two maximized windows with the same title, a read that failed — this answers null and
+ * the wheel takes the window road, which points at the frame's own visible page or sends none (PR ②).
  *
- * internal #319 item 2 — only for a window of the browser on the CDP port. The tab came from that
- * browser whatever hwnd was asked: win2 scrolled Edge's page (Edge on 9222) with `hwnd:<a Chrome
- * window>`. So a window whose process is known not to be that browser's is not promoted. When either
- * process cannot be read (the browser's, or the window's: 0), the promotion stays as it was. Which
- * of one browser's windows holds the tab is not settled here (internal #396). Cost on the gate-hit
- * path: `/json/list` beside the browser's process id, which is cached per port and read again only
- * when the window's process differs from it.
+ * internal #319 item 2 — only for a window of the browser on the CDP port: win2 scrolled Edge's page (Edge
+ * on 9222) with `hwnd:<a Chrome window>`. A window whose process is known not to be that browser's is not
+ * promoted. Cost on the gate-hit path: `/json/list`, the browser's process id (cached per port, read again
+ * when the window's process differs from it), one browser-endpoint call per page tab for its window, and
+ * the visibilityState of the tabs at the frame's rect whose title the frame shows (usually one).
  *
  * Exported for unit testing.
  */
@@ -836,15 +866,14 @@ export async function resolveCdpDestinationForHwnd(
     // internal #398 — the default tab skips DevTools' front end, so a wheel aimed at an undocked DevTools
     // window would go to the page it inspects. That window takes the wheel itself (gate 2 on #968).
     if (isUndockedDevToolsTitle(getWindowTitleW(hwnd))) return null;
-    const firstPage = defaultPageTab(tabs);
-    if (!firstPage) return null;
     // Another browser's window is not this browser's tab (internal #319 item 2).
     const windowPid = getWindowProcessId(hwnd);
     if (windowPid !== 0) {
       const browserPid = await browserPidFor(port, windowPid);
       if (browserPid !== undefined && windowPid !== browserPid) return null;
     }
-    return { kind: "cdp", tabId: firstPage.id };
+    const shown = await tabOfFrame(hwnd, tabs, tabOfFrameDeps);
+    return shown.kind === "tab" ? { kind: "cdp", tabId: shown.tabId } : null;
   } catch {
     return null;
   }

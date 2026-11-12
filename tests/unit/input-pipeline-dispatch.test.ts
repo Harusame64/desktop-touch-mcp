@@ -196,7 +196,34 @@ const {
   assertTier4Reachable,
   postWheelToHwnd,
   wheelPointDeps,
+  tabOfFrameDeps,
 } = await import("../../src/tools/_input-pipeline.js");
+
+// ADR-040 PR ③ — the CDP road takes the tab the frame shows. These cells stub what `tabOfFrame` reads: the
+// frame has its page surface, every page tab is in one window at the frame's rect, and `shownTab` is the
+// one visible. `a-cdp-wheel-goes-to-the-tab-the-frame-shows.test.ts` covers the rule itself.
+let shownTab = "TAB-A";
+const FRAME_RECT = { x: 100, y: 100, width: 1200, height: 800 };
+const tabOfFrameVisibility = vi.fn(async (id: string) => (id === shownTab ? "visible" : "hidden"));
+function frameShows(id: string, surface: "surface" | "covered" = "surface"): void {
+  shownTab = id;
+  tabOfFrameVisibility.mockClear();
+  Object.assign(tabOfFrameDeps, {
+    surface: {
+      isIconic: () => false,
+      isCloaked: () => false,
+      descendants: () => [surface === "surface"
+        ? { hwnd: 0x9001n, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: { x: 110, y: 180, width: 1180, height: 710 } }
+        : { hwnd: 0x9002n, className: "Intermediate D3D Window", visible: true, rect: { x: 0, y: 0, width: 10, height: 10 } }],
+    },
+    frameRect: () => FRAME_RECT,
+    frameScale: () => 1,
+    frameTitle: () => "",
+    windowsOf: async (ids: readonly string[]) =>
+      new Map(ids.map((t) => [t, { windowId: 1, bounds: { left: 100, top: 100, width: 1200, height: 800 } }])),
+    visibility: tabOfFrameVisibility,
+  });
+}
 
 describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWindowTarget)", () => {
   beforeEach(() => {
@@ -542,6 +569,7 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
     getWindowProcessIdMock.mockReset().mockReturnValue(4242);
     getBrowserProcessIdMock.mockReset().mockResolvedValue(4242);
     _resetBrowserPidCacheForTest();
+    frameShows("TAB-A");
   });
 
   it("asks the configured port for the browser's process, and reads it once per port (gate 2 on #966)", async () => {
@@ -582,6 +610,7 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
   });
 
   it("a browser window showing a page titled 'DevTools …' is still promoted (agy on #968)", async () => {
+    frameShows("PAGE");
     listTabsLightMock.mockResolvedValue([{ id: "PAGE", title: "DevTools Architecture", url: "https://example.com/", type: "page" }]);
     getWindowTitleWMock.mockReturnValueOnce("DevTools Architecture - Google Chrome");
     expect(await resolveCdpDestinationForHwnd(0x791n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "PAGE" });
@@ -604,22 +633,39 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
     expect(listTabsLightMock).not.toHaveBeenCalled();
   });
 
-  it("Chromium top-level class + listTabsLight returns tabs: {kind:'cdp', tabId}", async () => {
+  it("Chromium top-level class + listTabsLight returns tabs: the tab the frame shows, not the first listed (ADR-040 PR ③)", async () => {
     listTabsLightMock.mockResolvedValue([
       { id: "TAB-AAA", title: "Google", url: "https://google.com/", type: "page" },
       { id: "TAB-BBB", title: "Bing", url: "https://bing.com/", type: "page" },
     ]);
+    frameShows("TAB-BBB");
     const dest = await resolveCdpDestinationForHwnd(0x222n, "Chrome_WidgetWin_1");
-    expect(dest).toEqual({ kind: "cdp", tabId: "TAB-AAA" });
+    expect(dest).toEqual({ kind: "cdp", tabId: "TAB-BBB" });
   });
 
-  it("Chromium top-level class: the wheel goes to the first page that is not the browser's own (internal #308)", async () => {
+  it("a covered frame (no page surface): null, the wheel takes the window road (ADR-040 PR ③, #965 W2/W4)", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    frameShows("TAB-A", "covered");
+    expect(await resolveCdpDestinationForHwnd(0x223n, "Chrome_WidgetWin_1")).toBeNull();
+    expect(tabOfFrameVisibility).not.toHaveBeenCalledWith("TAB-A");
+  });
+
+  it("a frame whose shown tab cannot be named (no tab answers visible): null", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    frameShows("NONE");
+    expect(await resolveCdpDestinationForHwnd(0x224n, "Chrome_WidgetWin_1")).toBeNull();
+  });
+
+  it("Chromium top-level class: a sign-in dialog listed first is not the tab, even when it answers visible (internal #308)", async () => {
     listTabsLightMock.mockResolvedValue([
       { id: "SW", title: "", url: "https://google.com/sw.js", type: "service_worker" },
       { id: "DLG", title: "Sync", url: "edge://sync-confirmation-dialog/", type: "page" },
       { id: "PAGE", title: "Google", url: "https://google.com/", type: "page" },
     ]);
+    frameShows("PAGE");
+    tabOfFrameVisibility.mockImplementation(async (id: string) => (id === "PAGE" || id === "DLG" ? "visible" : "hidden"));
     const dest = await resolveCdpDestinationForHwnd(0x225n, "Chrome_WidgetWin_1");
+    tabOfFrameVisibility.mockImplementation(async (id: string) => (id === shownTab ? "visible" : "hidden"));
     expect(dest).toEqual({ kind: "cdp", tabId: "PAGE" });
   });
 
@@ -665,6 +711,7 @@ describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration"
     enumWindowsInZOrderMock.mockReturnValue([]);
     listTabsLightMock.mockReset();
     getCdpPortMock.mockReturnValue(9222);
+    frameShows("TAB-X");
   });
 
   it("resolveWindowTarget succeeds + Chromium HWND + CDP reachable: promotes to {kind:'cdp'} (G3 path)", async () => {
@@ -691,8 +738,19 @@ describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration"
     listTabsLightMock.mockResolvedValue([
       { id: "TAB-Y", title: "X", url: "https://x.com/", type: "page" },
     ]);
+    frameShows("TAB-Y");
     const dest = await resolveInputDestination({ windowTitle: "Chrome" });
     expect(dest).toEqual({ kind: "cdp", tabId: "TAB-Y" });
+  });
+
+  it("a covered Chromium window: {kind:'hwnd'}, not the CDP browser's front tab (ADR-040 PR ③, #965 W2/W4)", async () => {
+    resolveWindowTargetMock.mockResolvedValue({ title: "Back - Chrome", hwnd: 0xEEEn, warnings: [], className: "Chrome_WidgetWin_1" });
+    listTabsLightMock.mockResolvedValue([
+      { id: "FRONT", title: "Front", url: "https://front.example/", type: "page" },
+      { id: "BACK", title: "Back", url: "https://back.example/", type: "page" },
+    ]);
+    frameShows("FRONT", "covered");
+    expect(await resolveInputDestination({ hwnd: "0xEEE" })).toEqual({ kind: "hwnd", hwnd: 0xEEEn });
   });
 
   it("Case 3 recovery on another browser's window: {kind:'hwnd'}, not the CDP browser's page (internal #319)", async () => {
