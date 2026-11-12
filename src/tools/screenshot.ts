@@ -603,23 +603,34 @@ export const screenshotHandler = async (args: {
 
     // ── detail=text: UIA element tree as JSON ────────────────────────────────
     if (effectiveDetail === "text") {
-      if (effectiveTitle) {
+      // internal #362: a console with no title (conhost started directly) reached by its handle takes the
+      // terminal road too. Only a terminal: the rest of this branch still finds its window by title.
+      const untitledTerminal = !effectiveTitle && resolvedWin?.hwnd != null &&
+        isTerminalWindow(getWindowClassName(resolvedWin.hwnd));
+      if (effectiveTitle || untitledTerminal) {
         const wins = enumWindowsInZOrder();
         updateWindowCache(wins);
 
         // Save screenshot-time snapshot for homing — survives external cache
         // mutations from focus_window / window_dock between screenshot and click.
-        const snapWin = wins.find((w) => w.title.toLowerCase().includes(effectiveTitle.toLowerCase()));
-        if (snapWin) saveSnapshot(effectiveTitle, snapWin.region);
+        const snapWin = effectiveTitle
+          ? wins.find((w) => w.title.toLowerCase().includes(effectiveTitle.toLowerCase()))
+          : undefined;
+        if (snapWin) saveSnapshot(effectiveTitle!, snapWin.region);
 
         // Resolve the full window title from the partial match, then test the
         // Chromium regex against the resolved title — not the user-supplied
         // substring (which typically won't contain the "- Google Chrome" suffix).
-        const resolvedWin2 = resolvedWin
-          ? wins.find((w) => w.title === resolvedWin.title) ?? wins.find((w) => w.title.toLowerCase().includes(effectiveTitle.toLowerCase()))
-          : wins.find((w) => w.title.toLowerCase().includes(effectiveTitle.toLowerCase()));
-        const resolvedTitle = resolvedWin2?.title ?? effectiveTitle;
-        const targetHwnd = resolvedWin2?.hwnd ?? null;
+        // A resolved window is found by its handle first: of two same-titled windows the title finds the
+        // first, and "" (an untitled console) is a substring of every title (internal #362).
+        const byHandle = resolvedWin?.hwnd != null ? wins.find((w) => w.hwnd === resolvedWin.hwnd) : undefined;
+        const resolvedWin2 = untitledTerminal
+          ? byHandle
+          : resolvedWin
+            ? byHandle ?? wins.find((w) => w.title === resolvedWin.title) ?? wins.find((w) => w.title.toLowerCase().includes(effectiveTitle!.toLowerCase()))
+            : wins.find((w) => w.title.toLowerCase().includes(effectiveTitle!.toLowerCase()));
+        const resolvedTitle = resolvedWin2?.title ?? effectiveTitle ?? "";
+        const targetHwnd = resolvedWin2?.hwnd ?? (untitledTerminal ? resolvedWin!.hwnd : null);
         // Internal #247 (codex on 45cf57d1): before any UIA read — the 90 s UIA cache would serve a
         // tree read while the app was shown as its contents now, and with actionable elements in it
         // no OCR (where the other refusals sit) runs at all.
@@ -631,12 +642,15 @@ export const screenshotHandler = async (args: {
         // getWindowClassName answers "" for a window it cannot read.
         const isTerminal = targetHwnd !== null && isTerminalWindow(getWindowClassName(targetHwnd));
         if (isTerminal) {
-          const obs = observeTarget(effectiveTitle, targetHwnd!, resolvedTitle);
+          // Untitled consoles are keyed by handle, so two of them are not taken for one window.
+          const obs = observeTarget(effectiveTitle || `hwnd:${String(targetHwnd)}`, targetHwnd!, resolvedTitle);
           const identityHints = toTargetHints(obs.identity);
           const invalidation = obs.invalidatedBy
             ? { reason: obs.invalidatedBy, previousTarget: obs.previousTarget }
             : takeLastInvalidation();
-          const raw = (await getTextViaTextPattern(resolvedTitle).catch(() => null)) ?? "";
+          // Read the window resolved above, not the first one with this title (a same-titled twin, or an
+          // untitled console whose "" title names every window).
+          const raw = (await getTextViaTextPattern(resolvedTitle, undefined, { pinnedHwnd: targetHwnd! }).catch(() => null)) ?? "";
           const cleaned = stripAnsi(raw);
           const text = tailLines(cleaned, 80);
           const cacheStateHints = buildCacheStateHints(targetHwnd, invalidation);
@@ -658,11 +672,18 @@ export const screenshotHandler = async (args: {
           };
         }
 
+        // Only a terminal comes here untitled; should its class change under us, nothing below can find
+        // the window by an empty title, so it is refused rather than read from another window.
+        if (!effectiveTitle) {
+          return failWith(`Window ${String(targetHwnd)} has no title and is no longer a terminal window; capture it with detail='image'.`, "screenshot");
+        }
+        const titleKey: string = effectiveTitle;
+
         // Identity tracking — fires invalidation if pid/startTime changed.
         let identityHints: ReturnType<typeof toTargetHints> | null = null;
         let invalidation: ReturnType<typeof takeLastInvalidation> = null;
         if (targetHwnd !== null) {
-          const obs = observeTarget(effectiveTitle, targetHwnd, resolvedTitle);
+          const obs = observeTarget(titleKey, targetHwnd, resolvedTitle);
           identityHints = toTargetHints(obs.identity);
           if (obs.invalidatedBy) {
             invalidation = { reason: obs.invalidatedBy, previousTarget: obs.previousTarget };
@@ -678,11 +699,11 @@ export const screenshotHandler = async (args: {
         if (isChromium) {
           // Skip UIA entirely for Chromium — it's slow and returns almost nothing useful.
           // Go directly to OCR fallback below.
-          result = { window: effectiveTitle, actionable: [], texts: [] };
+          result = { window: titleKey, actionable: [], texts: [] };
           raw = null;
         } else {
           // Try cache first — large UI trees benefit from skipping PowerShell startup
-          ({ result, raw, cacheHit } = await buildUiaData(effectiveTitle, targetHwnd ?? undefined, true));
+          ({ result, raw, cacheHit } = await buildUiaData(titleKey, targetHwnd ?? undefined, true));
         }
 
         // Compute hints from raw UIA output
@@ -732,7 +753,7 @@ export const screenshotHandler = async (args: {
         let frozen = false;
         if (shouldOcr && uiaBlind.blind) {
           try {
-            const somResult = await runSomPipeline(effectiveTitle, targetHwnd, ocrLanguage, 2, preprocessPolicy, preprocessAdaptive, uiaDict);
+            const somResult = await runSomPipeline(titleKey, targetHwnd, ocrLanguage, 2, preprocessPolicy, preprocessAdaptive, uiaDict);
             hints.ocrFallbackFired = true;
             (hints as Record<string, unknown>).somMode = true;
             (hints as Record<string, unknown>).uiaBlindReason = uiaBlind.reason;
@@ -790,7 +811,7 @@ export const screenshotHandler = async (args: {
 
         if (shouldOcr && !frozen) {
           try {
-            const { words, origin } = await recognizeWindow(effectiveTitle, ocrLanguage);
+            const { words, origin } = await recognizeWindow(titleKey, ocrLanguage);
             // Convert words to screen-absolute coords so snapToDictionary locality
             // filter aligns with UIA boundingRect (also screen-absolute).
             const screenAbsWords = words.map((w) => ({

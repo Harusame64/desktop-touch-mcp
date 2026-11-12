@@ -627,4 +627,39 @@ describe("screenshot(detail:'text') terminal guard by window class (internal #22
     expect(mockGetTextViaTextPattern).not.toHaveBeenCalled();
     expect(JSON.stringify(body.actionable)).toContain("Submit");
   });
+  // internal #362: an untitled console (conhost started directly) reached by its handle.
+  const other = { ...con, hwnd: 7000n, title: "Notepad", zOrder: 0 };
+  const untitled = { ...con, hwnd: 5151n, title: "", zOrder: 1, isActive: false };
+  it("takes an untitled console reached by hwnd down the terminal road, reading that window (internal #362)", async () => {
+    mockResolveWindowTarget.mockResolvedValue({ title: "", hwnd: 5151n, warnings: [] });
+    mockEnumWindowsInZOrder.mockReturnValue([other, untitled]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    mockGetWindowClassName.mockImplementation((h: bigint) => (h === 5151n ? "ConsoleWindowClass" : "Notepad"));
+    mockGetTextViaTextPattern.mockReset().mockResolvedValue("C:\\> dir");
+    const result = await screenshotHandler({ ...baseArgs, hwnd: "5151", detail: "text" });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.hints?.terminalGuard).toBe(true);
+    expect(body.textContent).toContain("dir");
+    expect(body.windows).toBeUndefined();
+    expect(mockGetTextViaTextPattern).toHaveBeenCalledWith("", undefined, { pinnedHwnd: 5151n });
+  });
+  it("reads the resolved one of two same-titled consoles (internal #362)", async () => {
+    const twin = { ...con, hwnd: 4343n, zOrder: 1, isActive: false };
+    mockResolveWindowTarget.mockResolvedValue({ title: "k918-con", hwnd: 4343n, warnings: [] });
+    mockEnumWindowsInZOrder.mockReturnValue([con, twin]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    mockGetWindowClassName.mockReturnValue("ConsoleWindowClass");
+    mockGetTextViaTextPattern.mockReset().mockResolvedValue("C:\\> dir");
+    await screenshotHandler({ ...baseArgs, hwnd: "4343", detail: "text" });
+    expect(mockGetTextViaTextPattern).toHaveBeenCalledWith("k918-con", undefined, { pinnedHwnd: 4343n });
+  });
+  it("leaves an untitled window that is not a terminal on its old road (control, internal #362)", async () => {
+    mockResolveWindowTarget.mockResolvedValue({ title: "", hwnd: 5151n, warnings: [] });
+    mockEnumWindowsInZOrder.mockReturnValue([other, untitled]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    mockGetWindowClassName.mockReturnValue("Notepad");
+    mockGetTextViaTextPattern.mockReset();
+    await screenshotHandler({ ...baseArgs, hwnd: "5151", detail: "text" });
+    expect(mockGetTextViaTextPattern).not.toHaveBeenCalled();
+  });
 });
