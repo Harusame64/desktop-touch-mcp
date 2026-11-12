@@ -170,6 +170,11 @@ describe("discover's reply says the label was inferred, and the act still goes (
       const result = await facade.touch({ lease: field.lease, action });
       expect(result.ok).toBe(false);
     }
+    // auto (or type) without text would reach the executor's click road (codex on #964).
+    for (const action of ["auto", "type"] as const) {
+      const result = await facade.touch({ lease: field.lease, action });
+      expect(result.ok).toBe(false);
+    }
     expect(execute).not.toHaveBeenCalled();
   });
 });

@@ -797,6 +797,17 @@ export class GuardedTouchLoop {
 
     let checked = this.checkBeforeTouch(lease, action);
     if (!checked.ok) return checked.refused;
+    // internal #293 (codex on #964) — a box named only by the text beside it takes text, and nothing else:
+    // without text the executor's UIA road is the click, which finds the box by its AutomationId's first
+    // match. So `auto` (or `type`) with no text is refused here, as an explicit click is in `offersAction`.
+    if (checked.entity.labelInferred === true && text === undefined) {
+      return {
+        ok: false,
+        reason: "action_not_offered",
+        diff: [],
+        detail: "this target offers: type, with text",
+      };
+    }
 
     // 3b. **G1 — a `stale` target is read again before it is pressed** (ADR-036 §10, the user's
     // decision of 2026-09-23, "Re-read, then refuse"). `stale` means no lane looked at this entity in
