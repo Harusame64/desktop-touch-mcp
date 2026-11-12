@@ -24,6 +24,52 @@ import { WEB_AREA_AUTOMATION_ID } from "../_advisory.js";
 import type { UiElement } from "../../engine/uia-bridge.js";
 import { isCollectionItemControlType } from "../../engine/collection-item.js";
 
+/** Editable controls whose UIA Name can be empty while a visible label beside them names them (internal #293). */
+const LABEL_INFERRED_CONTROL_TYPES: ReadonlySet<string> = new Set(["Edit", "ComboBox"]);
+/** How far a label may sit from its field: a WPF `Label` and its `TextBox` touch, a form's gap is a few pixels. */
+const LABEL_GAP_PX = 24;
+
+/**
+ * internal #293 — a label for an editable element whose UIA Name is empty, from the visible text beside it.
+ *
+ * WPF's `Label.Target` sets no `LabeledBy` (win2, 2026-11-12: null on the TextBox), so the box reads with
+ * Name "" and the lane dropped it. The only link left is the layout: the label is a Text in the same parent,
+ * directly left of the field (overlapping it vertically) or directly above it (overlapping horizontally).
+ * Only for an element with an AutomationId: the inferred text is a label to show and to match a query on, and
+ * never the element's UIA Name, so the act road addresses it by the AutomationId (an element with neither
+ * would be looked up by an empty name). The access-key underscore and a trailing colon are dropped.
+ *
+ * Returns index → label for the elements it names. Exported for tests.
+ */
+export function inferLabelsFromLayout(elements: ReadonlyArray<UiElement>): Map<number, string> {
+  const out = new Map<number, string>();
+  const parentOf = (path: string): string => path.slice(0, path.lastIndexOf("/"));
+  elements.forEach((el, i) => {
+    if (el.name || !el.isEnabled || !el.automationId || !LABEL_INFERRED_CONTROL_TYPES.has(el.controlType)) return;
+    const r = el.boundingRect;
+    if (!r || r.width <= 0 || r.height <= 0 || el.path === undefined) return;
+    const parent = parentOf(el.path);
+    let best: { text: string; gap: number } | null = null;
+    for (const t of elements) {
+      if (t === el || t.controlType !== "Text" || !t.name || t.path === undefined || parentOf(t.path) !== parent) continue;
+      const q = t.boundingRect;
+      if (!q || q.width <= 0 || q.height <= 0) continue;
+      const vOverlap = Math.min(r.y + r.height, q.y + q.height) - Math.max(r.y, q.y);
+      const hOverlap = Math.min(r.x + r.width, q.x + q.width) - Math.max(r.x, q.x);
+      const leftGap = r.x - (q.x + q.width);
+      const aboveGap = r.y - (q.y + q.height);
+      let gap: number | null = null;
+      if (leftGap >= -2 && leftGap <= LABEL_GAP_PX && vOverlap >= Math.min(r.height, q.height) / 2) gap = Math.max(0, leftGap);
+      else if (aboveGap >= -2 && aboveGap <= LABEL_GAP_PX && hOverlap > 0) gap = Math.max(0, aboveGap);
+      if (gap !== null && (best === null || gap < best.gap)) best = { text: t.name, gap };
+    }
+    if (best === null) return;
+    const label = best.text.replace(/_(?=\S)/u, "").replace(/[:：]\s*$/u, "").trim();
+    if (label !== "") out.set(i, label);
+  });
+  return out;
+}
+
 export function uiaRoleFromControlType(ct: string): string {
   const map: Record<string, string> = {
     Button: "button", CheckBox: "button", RadioButton: "button",
@@ -165,9 +211,12 @@ export async function fetchUiaCandidates(
       windowHwnd: result.windowHwnd ?? null,
     };
 
+    // internal #293: a nameless field named by the text beside it is kept, with that text as its label only.
+    const inferred = inferLabelsFromLayout(result.elements);
     const candidates: UiEntityCandidate[] = result.elements
-      .filter((el) => el.isEnabled && el.name)
-      .map((el): UiEntityCandidate => ({
+      .map((el, i) => ({ el, inferredLabel: inferred.get(i) }))
+      .filter(({ el, inferredLabel }) => el.isEnabled && (el.name || inferredLabel !== undefined))
+      .map(({ el, inferredLabel }): UiEntityCandidate => ({
         source: "uia",
         target: { kind: "window", id: targetId },
         // `via` — which client read it, so a click's "not found" can be weighed (ADR-036 item 16).
@@ -208,7 +257,8 @@ export async function fetchUiaCandidates(
         // Absent stays absent: a build whose read cannot report a handle keeps exactly the
         // behaviour it had, which is the ladder declining to run rather than running on a guess.
         ...(result.windowHwnd !== undefined && result.windowHwnd !== null && { originHwnd: result.windowHwnd }),
-        label: el.name,
+        label: el.name || inferredLabel,
+        ...(inferredLabel !== undefined && { labelInferred: true }),
         value: el.value,
         rect: el.boundingRect ?? undefined,
         actionability: uiaActionability(el.controlType, normalizeUiaPatternNames(el.patterns)),

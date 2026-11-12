@@ -42,6 +42,8 @@ export interface DesktopSeeInput {
 export interface EntityView {
   entityId: string;
   label?: string;
+  /** internal #293 — the label is the text beside a field whose own name is empty, not its name. */
+  labelInferred?: true;
   role: string;
   confidence: number;
   sources: string[];
@@ -798,6 +800,7 @@ export class DesktopFacade {
       const view: EntityView = {
         entityId: e.entityId,
         label: e.label,
+        ...(e.labelInferred === true && { labelInferred: true as const }),
         role: e.role,
         confidence: e.confidence,
         sources: [...e.sources],

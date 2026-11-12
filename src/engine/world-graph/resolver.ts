@@ -270,6 +270,7 @@ export function resolveCandidates(
       entityId: stableEntityId(key),
       role: normalizeRole(primary.role),
       label: primary.label,
+      ...(primary.labelInferred === true && { labelInferred: true }),
       value: primary.value,
       rect: primary.rect,
       confidence,

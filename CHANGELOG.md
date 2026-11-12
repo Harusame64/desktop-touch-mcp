@@ -7,6 +7,11 @@
   tool (internal #377).
 
 ### Fixed — Windows
+- **`desktop_discover` lists a text box named only by the label beside it.** A WPF `TextBox` labelled through
+  `Label.Target` has an empty UI Automation name and no `LabeledBy`, so discover left it out. A nameless text box or
+  combo box with an AutomationId is now listed under the text laid out directly left of or above it, in the same
+  parent, with `labelInferred: true`. The label is for reading and `query`; the box is still addressed by its
+  AutomationId (internal #293).
 - **`screenshot(detail:'text')` reads Git Bash.** mintty exposes no text to UI Automation, so the call returned only
   the window's scroll buttons and no text. Its text is now read with OCR and returned as `textContent`, with
   `hints.textSource: "ocr"`. When OCR cannot run, or with `ocrFallback:'never'`, the window's controls are listed as

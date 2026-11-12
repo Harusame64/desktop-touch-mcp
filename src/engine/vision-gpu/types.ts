@@ -79,6 +79,12 @@ export interface UiEntityCandidate {
   /** Observed role; resolver normalises to "button"|"textbox"|"link"|"menuitem"|"listitem"|"label"|"unknown". */
   role?: string;
   label?: string;
+  /**
+   * internal #293 — `label` was not the element's own name: its UIA Name is empty and the label is the text
+   * laid out beside it (a WPF `Label.Target`). It names the field for a reader and a `query`; the element is
+   * still addressed by its AutomationId.
+   */
+  labelInferred?: boolean;
   value?: string;
   rect?: Rect;
   /**

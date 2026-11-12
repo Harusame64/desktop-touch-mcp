@@ -2127,6 +2127,9 @@ export function registerDesktopTools(server: McpServer): void {
         "here is to be read as 'unavailable'. If ageMs is missing while observedAtMs is not, the two " +
         "clocks disagreed and the reply cannot be dated. It is NOT attention: that one is the UIA " +
         "cache's TTL and says 'ok' for a hung window.",
+      // internal #293 — said beside the field, so a reader does not take the label for the field's name.
+      "labelInferred:true on an entity: its own name is empty and the label is the text laid out beside it " +
+        "(a WPF Label for its TextBox); act on it by its lease as usual.",
       // Internal #158 — the per-entity answer to what freshness says per call. from='read' is about
       // the call, and a lane can still hand back something it did not look at; that is only visible
       // here.
