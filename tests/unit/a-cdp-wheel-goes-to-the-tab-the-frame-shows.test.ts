@@ -88,7 +88,7 @@ describe("tabOfFrame — the tab is in the window at the frame's rect (internal 
   it("a tab of another window whose title the frame shows is not taken: the rect comes first", async () => {
     const same = [page("R", "Same"), page("L", "Other")];
     const d = deps({ windows, visible: ["R", "L"], title: "Same - Google Chrome" });
-    expect(await tabOfFrame(FRAME, same, d)).toEqual({ kind: "none", why: "no_titled_tab" });
+    expect(await tabOfFrame(FRAME, same, d)).toEqual({ kind: "none", why: "no_window" });
     expect(d.visibility).not.toHaveBeenCalled();
   });
   it("no window at the frame's rect: none", async () => {
@@ -120,10 +120,12 @@ describe("tabOfFrame — the tab is in the window at the frame's rect (internal 
 describe("tabOfFrame — the tab the frame's title shows, and visible (ADR-040 invariant 1)", () => {
   const tabs = [page("BG", "Background"), page("FG", "Front")];
   const windows = { BG: { windowId: 1, bounds: LEFT.bounds }, FG: { windowId: 1, bounds: LEFT.bounds } };
-  it("of two tabs of one window, the one the title shows; only it is asked", async () => {
+  it("of two tabs of one window, the one the title shows; only it is asked, and only its window is looked up", async () => {
     const d = deps({ windows, visible: ["FG"], title: "Front - Google Chrome" });
+    const windowsOf = vi.spyOn(d, "windowsOf");
     expect(await tabOfFrame(FRAME, tabs, d)).toEqual({ kind: "tab", tabId: "FG" });
     expect(d.visibility.mock.calls).toEqual([["FG"]]);
+    expect(windowsOf.mock.calls).toEqual([[["FG"]]]);
   });
   it("the titled tab reads hidden (a title that lags): none, not another tab of the window", async () => {
     expect(await tabOfFrame(FRAME, tabs, deps({ windows, visible: ["BG"], title: "Front - Google Chrome" })))
@@ -151,7 +153,7 @@ describe("tabOfFrame — the tab the frame's title shows, and visible (ADR-040 i
   it("targets that are not pages are not tabs", async () => {
     const d = deps({ windows: { SW: { windowId: 1, bounds: LEFT.bounds } }, visible: ["SW"], title: "SW - Google Chrome" });
     expect(await tabOfFrame(FRAME, [{ id: "SW", title: "SW", url: "https://x/sw.js", type: "service_worker" }], d))
-      .toEqual({ kind: "none", why: "no_window" });
+      .toEqual({ kind: "none", why: "no_titled_tab" });
   });
 });
 

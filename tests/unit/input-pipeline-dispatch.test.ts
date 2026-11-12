@@ -2251,11 +2251,21 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
   });
 
   it("fully covered (no page window, Q3): nothing is posted", async () => {
-    shape(1100);
+    shape(null);
     wheelPointDeps.surface = { ...wheelPointDeps.surface, descendants: () => [{ hwnd: 7n, className: "Intermediate D3D Window", visible: true, rect: PAGE_RECT }] };
     const r = await postWheelToHwnd(FRAME, { direction: "down", notch: 3 });
     expect(win32PostMessageMock).not.toHaveBeenCalled();
     expect(r?.pageNotVisible?.why).toBe("no_page_window");
+  });
+
+  it("no page window, its centre covered but part of the frame shown (a window that draws no page): wheeled where it shows (gate 2 on #971)", async () => {
+    shape(1100);
+    wheelPointDeps.surface = { ...wheelPointDeps.surface, descendants: () => [{ hwnd: 7n, className: "Intermediate D3D Window", visible: true, rect: PAGE_RECT }] };
+    const r = await postWheelToHwnd(FRAME, { direction: "down", notch: 3 });
+    expect(r?.pageNotVisible).toBeUndefined();
+    // The frame's grid (500,150 800×600): the first point at x ≥ 1100 is 0.9 of the width on the 0.02 line.
+    for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(Math.round(500 + 800 * 0.9), Math.round(150 + 600 * 0.02)));
+    expect(win32PostMessageMock).toHaveBeenCalled();
   });
 
   it("not a Chromium window (Excel): the point is the window's centre, as before", async () => {
@@ -2307,6 +2317,17 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
       const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 5 });
       expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledTimes(1);
       expect(r).toEqual({ scrolled: true, channel: "uia", reason: "delivered_via_uia" });
+    });
+    it("the point is read again after Tier 1: a window covered further while UIA was awaited gets the new point (gate 2 on #971)", async () => {
+      shape(1100);
+      uiaScrollByWheelAtHwndMock.mockImplementation(async () => {
+        // While UIA runs, the front window moves over x < 1250 too.
+        wheelPointDeps.pointAt = (x) => (x >= 1250 ? { child: PAGE, root: FRAME } : { child: FRONT_PAGE, root: 0x600n });
+        return { ok: true, scrolled: false };
+      });
+      await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 3 });
+      expect(win32PostMessageMock).toHaveBeenCalled();
+      for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(Math.round(508 + 784 * 0.98), Math.round(237 + 505 * 0.02)));
     });
     it("the control: not a Chromium window (a covered Excel), UIA is tried as before", async () => {
       shape(null, "XLMAIN");

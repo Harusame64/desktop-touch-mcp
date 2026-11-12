@@ -71,23 +71,22 @@ export async function tabOfFrame(
     const rect = deps.frameRect(frame);
     if (rect === null) return { kind: "none", why: "unreadable" };
     const scale = deps.frameScale(frame);
-    // The browser's own UI (DevTools' front end docked in the window, a sign-in dialog) is not a tab.
-    const pages = tabs.filter((t) => t.type === "page" && !isBrowserUiPage(t.url));
-    if (pages.length === 0) return { kind: "none", why: "no_window" };
-    const windows = await deps.windowsOf(pages.map((t) => t.id));
-    const atFrame = pages.filter((t) => {
+    // The browser's own UI (DevTools' front end docked in the window, a sign-in dialog) is not a tab. The
+    // title is read first, so the browser is asked for the windows of the titled tabs only, not every tab.
+    const title = deps.frameTitle(frame);
+    const shown = tabs.filter((t) => t.type === "page" && !isBrowserUiPage(t.url) && titleShows(title, t.title));
+    if (shown.length === 0) return { kind: "none", why: "no_titled_tab" };
+    const windows = await deps.windowsOf(shown.map((t) => t.id));
+    const atFrame = shown.filter((t) => {
       const b = windows.get(t.id)?.bounds;
       return b !== undefined && framesAtWindowBounds([{ region: rect }], b, () => scale).length === 1;
     });
     if (atFrame.length === 0) return { kind: "none", why: "no_window" };
 
-    // The tabs the frame's title shows, the longest title only: a page titled "Docs - Project" is shown as
-    // "Docs - Project - Google Chrome", which "Docs" would match too.
-    const title = deps.frameTitle(frame);
-    const shown = atFrame.filter((t) => titleShows(title, t.title));
-    const longest = Math.max(0, ...shown.map((t) => t.title.length));
-    const titled = shown.filter((t) => t.title.length === longest);
-    if (titled.length === 0) return { kind: "none", why: "no_titled_tab" };
+    // The longest title only: a page titled "Docs - Project" is shown as "Docs - Project - Google Chrome",
+    // which "Docs" would match too.
+    const longest = Math.max(...atFrame.map((t) => t.title.length));
+    const titled = atFrame.filter((t) => t.title.length === longest);
 
     // Usually one tab; two when two windows at the rect show the same title, and then only the drawn one
     // answers visible. A tab that gives no answer could be the one drawn, so nothing is chosen.
