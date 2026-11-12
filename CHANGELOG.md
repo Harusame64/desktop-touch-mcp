@@ -7,6 +7,9 @@
   tool (internal #377).
 
 ### Fixed — Windows
+- **`browser_click`'s refusal for a minimized browser window suggests a `focus_window` call that works.** It named
+  the window by `hwnd`, which `focus_window` does not take, so following it failed. It now names the window's
+  title (internal #401).
 - **`scroll` with `hwnd` on a Chrome or Edge window behind another scrolls that window, or says it cannot, instead of
   scrolling the one in front.** Chromium sends a posted wheel to the window under its point, and the point was the
   window's centre, so with the centre covered the front window scrolled and the reply said `ok`. The point is now

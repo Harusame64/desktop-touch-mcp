@@ -41,6 +41,7 @@ vi.mock("../../src/engine/win32.js", async (orig) => ({
   ...(await orig<typeof import("../../src/engine/win32.js")>()),
   enumWindowsInZOrder: () => mocks.windows,
   restoreAndFocusWindow: () => {},
+  getWindowTitleW: (h: unknown) => (h === 7001n ? "Shop - Google Chrome" : ""),
 }));
 
 const { osClickAndVerify } = await import("../../src/tools/browser.js");
@@ -187,11 +188,16 @@ describe("the refusals say what to do next (ADR-040 invariant 8)", () => {
     for (const why of ["minimized", "no_page_window"] as const) {
       const b = read({ covered: "page_not_shown", why, hwnd: 7001n });
       expect(b.error).toContain("Nothing was clicked");
-      expect(b.suggest[0]).toContain('hwnd: "7001"');
+      // internal #401 — focus_window takes a title; it has no hwnd.
+      expect(b.suggest[0]).toContain('focus_window({ title: "Shop - Google Chrome"');
+      expect(b.suggest.join(" ")).not.toMatch(/focus_window\(\{ hwnd/);
       expect(b.suggest.at(-1)).toMatch(/browser_fill|browser_eval/);
       expect(new Set(b.suggest).size).toBe(b.suggest.length);
       expect(b.context).toMatchObject({ coveredBy: "page_not_shown", why, hwnd: "7001", at: { x: 488, y: 207 } });
     }
+    // No title read: say where to find it rather than invent an argument.
+    const untitled = read({ covered: "page_not_shown", why: "minimized", hwnd: 7002n });
+    expect(untitled.suggest[0]).toContain("with the window's title, as desktop_state lists it");
     const cloaked = read({ covered: "page_not_shown", why: "cloaked", hwnd: 7001n });
     expect(cloaked.error).toContain("another virtual desktop");
     expect(cloaked.suggest.at(-1)).toMatch(/browser_fill|browser_eval/);
