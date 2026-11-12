@@ -49,7 +49,7 @@ import {
   wtRefusalSentence,
   type WtRefusal,
 } from "./_wt-terminal-checks.js";
-import { recognizeWindow, ocrWordsToLines, detectOcrLanguage } from "../engine/ocr-bridge.js";
+import { recognizeWindow, ocrWordsToLines, detectOcrLanguage, ocrLanguageWarning } from "../engine/ocr-bridge.js";
 import { stripAnsi, tailLines } from "../engine/ansi.js";
 import {
   observeTarget,
@@ -1245,6 +1245,8 @@ export const terminalReadHandler = async ({
 
     const cacheStateHints = buildCacheStateHints(win.hwnd, obs.invalidatedBy ? { reason: obs.invalidatedBy, previousTarget: obs.previousTarget } : null);
 
+    // internal #357: an OCR read with another language's engine (no pack installed for the one asked) says so.
+    const ocrLangWarning = usedSource === "ocr" ? ocrLanguageWarning(ocrLanguage) : null;
     const payload = {
       ok: true,
       text: returnText,
@@ -1261,6 +1263,7 @@ export const terminalReadHandler = async ({
         },
         ...(Object.keys(cacheStateHints).length > 0 ? { caches: cacheStateHints } : {}),
         ...(usedSource === "ocr" ? { ocrFallbackFired: true } : {}),
+        ...(ocrLangWarning !== null ? { warnings: [ocrLangWarning] } : {}),
       },
     };
 

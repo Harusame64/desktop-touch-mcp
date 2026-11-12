@@ -19,6 +19,8 @@ import type { UiEntityCandidate } from "../../src/engine/vision-gpu/types.js";
 vi.mock("../../src/engine/ocr-bridge.js", () => ({
   runSomPipeline: vi.fn(),
   detectOcrLanguage: () => "en",
+  ocrLanguageUsed: () => undefined,
+  ocrLanguageWarning: () => null,
 }));
 
 // Import after mock is registered.

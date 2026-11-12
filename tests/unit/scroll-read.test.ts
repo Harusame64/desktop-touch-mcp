@@ -240,6 +240,8 @@ describe("scrollReadHandler (mocked)", () => {
       ocrWordsToLines: (words: Array<{ text: string; bbox: { x: number; y: number; width: number; height: number } }>) =>
         words.map((w) => w.text).join("\n"),
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     
     vi.doMock("../../src/engine/nutjs.js", () => ({
@@ -292,6 +294,48 @@ describe("scrollReadHandler (mocked)", () => {
     expect(data.dedupedLines).toBe(4); // 2 from page2 + 2 from page3
   });
 
+  // internal #357: 'en' asked for, read by the 'ja' engine (no English OCR pack installed).
+  it("names the language that read, and warns, when the one asked for had no OCR pack (internal #357)", async () => {
+    const used = vi.fn((_req: string) => "ja" as string | undefined);
+    const warning = vi.fn((_req: string) => "ocr_language_fallback: no pack for 'en'" as string | null);
+    vi.doMock("../../src/engine/ocr-bridge.js", () => ({
+      recognizeWindowByHwnd: vi.fn().mockResolvedValue({ words: makeWords(["A"]), origin: { x: 0, y: 0 } }),
+      ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
+      detectOcrLanguage: () => "ja",
+      ocrLanguageUsed: used,
+      ocrLanguageWarning: warning,
+    }));
+    vi.doMock("../../src/engine/nutjs.js", () => ({
+      keyboard: { pressKey: vi.fn().mockResolvedValue(undefined), releaseKey: vi.fn().mockResolvedValue(undefined) },
+    }));
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({ title: "TestWindow", hwnd: 0xCAFEn, warnings: [] }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
+    }));
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: vi.fn().mockReturnValue(true),
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: true }),
+    }));
+    vi.doMock("../../src/engine/win32.js", () => ({
+      enumWindowsInZOrder: vi.fn().mockReturnValue([]),
+      getWindowTitleW: vi.fn().mockReturnValue(""),
+      getWindowRectByHwnd: vi.fn().mockReturnValue(null),
+      getForegroundHwnd: vi.fn().mockReturnValue(0xCAFEn),
+      getWindowRoot: vi.fn((h: bigint) => h),
+      restoreAndFocusWindow: vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 }),
+    }));
+    const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
+    const result = await scrollReadHandler({
+      action: "read", windowTitle: "Test", maxPages: 1, scrollKey: "PageDown", scrollDelayMs: 0,
+      stopWhenNoChange: true, language: "en",
+    });
+    const data = JSON.parse((result.content[0] as { text: string }).text);
+    expect(used).toHaveBeenCalledWith("en");
+    expect(data.language).toBe("ja");
+    expect(data.requestedLanguage).toBe("en");
+    expect(data.warnings).toEqual(["ocr_language_fallback: no pack for 'en'"]);
+  });
+
   it("stops with stoppedReason=no_change after 2 consecutive no-new-line pages", async () => {
     // Page 1: lines A, B, C
     // Pages 2,3,4: same lines A, B, C (no new content)
@@ -301,6 +345,8 @@ describe("scrollReadHandler (mocked)", () => {
       recognizeWindowByHwnd: vi.fn().mockResolvedValue({ words, origin: { x: 0, y: 0 } }),
       ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     
     vi.doMock("../../src/engine/nutjs.js", () => ({
@@ -363,6 +409,8 @@ describe("scrollReadHandler (mocked)", () => {
       }),
       ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     
     vi.doMock("../../src/engine/nutjs.js", () => ({
@@ -418,6 +466,8 @@ describe("scrollReadHandler (mocked)", () => {
       recognizeWindowByHwnd: vi.fn().mockResolvedValue({ words: [], origin: { x: 0, y: 0 } }),
       ocrWordsToLines: () => "",
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     
     vi.doMock("../../src/engine/nutjs.js", () => ({
@@ -476,6 +526,8 @@ describe("scrollReadHandler (mocked)", () => {
       recognizeWindowByHwnd: vi.fn().mockRejectedValue(new Error("must not be called")),
       ocrWordsToLines: () => "",
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     
     vi.doMock("../../src/engine/nutjs.js", () => ({
@@ -537,6 +589,8 @@ describe("scrollReadHandler (mocked)", () => {
         .mockResolvedValueOnce({ words: page2, origin: { x: 0, y: 0 } }),
       ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
 
     const pressKeyMock = vi.fn().mockResolvedValue(undefined);
@@ -604,6 +658,8 @@ describe("scrollReadHandler (mocked)", () => {
         .mockResolvedValueOnce({ words: page2, origin: { x: 0, y: 0 } }),
       ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     
     vi.doMock("../../src/engine/nutjs.js", () => ({
@@ -662,6 +718,8 @@ describe("scrollReadHandler (mocked)", () => {
         .mockResolvedValueOnce({ words: makeWords(["B"]), origin: { x: 0, y: 0 } }),
       ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     vi.doMock("../../src/engine/nutjs.js", () => ({ keyboard: { pressKey: pressKeyMock, releaseKey: vi.fn() } }));
     vi.doMock("../../src/tools/_resolve-window.js", () => ({
@@ -699,6 +757,8 @@ describe("scrollReadHandler (mocked)", () => {
       recognizeWindowByHwnd: vi.fn().mockResolvedValue({ words: makeWords(["A"]), origin: { x: 0, y: 0 } }),
       ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     vi.doMock("../../src/engine/nutjs.js", () => ({ keyboard: { pressKey: pressKeyMock, releaseKey: vi.fn() } }));
     vi.doMock("../../src/tools/_resolve-window.js", () => ({
@@ -737,6 +797,8 @@ describe("scrollReadHandler (mocked)", () => {
       recognizeWindowByHwnd: vi.fn().mockResolvedValue({ words: makeWords(["A"]), origin: { x: 0, y: 0 } }),
       ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     vi.doMock("../../src/engine/nutjs.js", () => ({ keyboard: { pressKey: pressKeyMock, releaseKey: vi.fn() } }));
     vi.doMock("../../src/tools/_resolve-window.js", () => ({
@@ -781,6 +843,8 @@ describe("scrollReadHandler (mocked)", () => {
       recognizeWindowByHwnd: vi.fn().mockResolvedValue({ words: makeWords(["A"]), origin: { x: 0, y: 0 } }),
       ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     vi.doMock("../../src/engine/nutjs.js", () => ({ keyboard: { pressKey: pressKeyMock, releaseKey: vi.fn() } }));
     vi.doMock("../../src/tools/_resolve-window.js", () => ({
@@ -824,6 +888,8 @@ describe("scrollReadHandler (mocked)", () => {
       recognizeWindowByHwnd: vi.fn().mockResolvedValue({ words: makeWords(["A"]), origin: { x: 0, y: 0 } }),
       ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     vi.doMock("../../src/engine/nutjs.js", () => ({ keyboard: { pressKey: vi.fn(), releaseKey: vi.fn() } }));
     vi.doMock("../../src/tools/_resolve-window.js", () => ({
@@ -858,6 +924,8 @@ describe("scrollReadHandler (mocked)", () => {
       recognizeWindowByHwnd: vi.fn().mockImplementation(async () => ({ words: makeWords([`L${++page}`]), origin: { x: 0, y: 0 } })),
       ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     vi.doMock("../../src/engine/nutjs.js", () => ({ keyboard: { pressKey: pressKeyMock, releaseKey: vi.fn() } }));
     vi.doMock("../../src/tools/_resolve-window.js", () => ({
@@ -898,6 +966,8 @@ describe("scrollReadHandler (mocked)", () => {
       recognizeWindowByHwnd: vi.fn().mockResolvedValue({ words: makeWords(["A"]), origin: { x: 0, y: 0 } }),
       ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     vi.doMock("../../src/engine/nutjs.js", () => ({ keyboard: { pressKey: pressKeyMock, releaseKey: vi.fn() } }));
     vi.doMock("../../src/tools/_resolve-window.js", () => ({
@@ -939,6 +1009,8 @@ describe("scrollReadHandler (mocked)", () => {
         .mockResolvedValue({ words: makeWords(["C"]), origin: { x: 0, y: 0 } }),
       ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     const pressKeyMock = vi.fn().mockResolvedValue(undefined);
     vi.doMock("../../src/engine/nutjs.js", () => ({ keyboard: { pressKey: pressKeyMock, releaseKey: vi.fn() } }));
@@ -995,6 +1067,8 @@ describe("scrollReadHandler (mocked)", () => {
         .mockResolvedValueOnce({ words: page2, origin: { x: 0, y: 0 } }),
       ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     
     vi.doMock("../../src/engine/nutjs.js", () => ({
@@ -1062,6 +1136,8 @@ describe("scrollReadHandler (mocked)", () => {
         .mockResolvedValueOnce({ words: page2, origin: { x: 0, y: 0 } }),
       ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     
     vi.doMock("../../src/engine/nutjs.js", () => ({
@@ -1125,6 +1201,8 @@ describe("scrollReadHandler (mocked)", () => {
       recognizeWindowByHwnd: vi.fn().mockRejectedValue(new Error("PrintWindow failed: window closed")),
       ocrWordsToLines: () => "",
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     
     vi.doMock("../../src/engine/nutjs.js", () => ({
@@ -1189,6 +1267,8 @@ describe("scrollReadHandler (mocked)", () => {
         .mockRejectedValueOnce(new Error("OCR subprocess crashed")),
       ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
       detectOcrLanguage: () => "en",
+      ocrLanguageUsed: () => undefined,
+      ocrLanguageWarning: () => null,
     }));
     
     vi.doMock("../../src/engine/nutjs.js", () => ({

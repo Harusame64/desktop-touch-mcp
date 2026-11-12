@@ -8,7 +8,7 @@ import { getWindows } from "../engine/nutjs.js";
 import { enumMonitors, getVirtualScreen, getWindowTitleW, getWindowRectByHwnd, enumWindowsInZOrder } from "../engine/win32.js";
 import { getUiElements, extractActionableElements, WINUI3_CLASS_RE, detectUiaBlind } from "../engine/uia-bridge.js";
 import type { UiElementsResult } from "../engine/uia-bridge.js";
-import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords, runSomPipeline, snapToDictionary, detectOcrLanguage } from "../engine/ocr-bridge.js";
+import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords, runSomPipeline, snapToDictionary, detectOcrLanguage, ocrLanguageWarning } from "../engine/ocr-bridge.js";
 import type { OcrDictionaryEntry } from "../engine/ocr-bridge.js";
 import { refuseIfFrozen, WindowFrozenError } from "../engine/window-frozen.js";
 import { updateWindowCache, saveSnapshot } from "../engine/window-cache.js";
@@ -734,6 +734,8 @@ export const screenshotHandler = async (args: {
           try {
             const somResult = await runSomPipeline(effectiveTitle, targetHwnd, ocrLanguage, 2, preprocessPolicy, preprocessAdaptive, uiaDict);
             hints.ocrFallbackFired = true;
+            const somLanguageWarning = ocrLanguageWarning(ocrLanguage); // internal #357
+            if (somLanguageWarning !== null) hints.warnings = [...(hints.warnings ?? []), somLanguageWarning];
             (hints as Record<string, unknown>).somMode = true;
             (hints as Record<string, unknown>).uiaBlindReason = uiaBlind.reason;
 
@@ -815,6 +817,8 @@ export const screenshotHandler = async (args: {
               a.region.y !== b.region.y ? a.region.y - b.region.y : a.region.x - b.region.x
             );
             hints.ocrFallbackFired = true;
+            const ocrLangWarning = ocrLanguageWarning(ocrLanguage); // internal #357
+            if (ocrLangWarning !== null) hints.warnings = [...(hints.warnings ?? []), ocrLangWarning];
           } catch (ocrErr) {
             if (ocrErr instanceof WindowFrozenError) {
               // Internal #247: the same reason on this road, which is reached without the SoM step
@@ -1320,6 +1324,8 @@ export const screenshotOcrHandler = async ({
       : null;
 
     const rawWords = await runOcr(captured.base64, language);
+    const languageWarning = ocrLanguageWarning(language); // internal #357
+    if (languageWarning !== null) ocrWarnings.push(languageWarning);
 
     // Scale image-local bboxes → screen coords, then merge adjacent characters
     const scaledWords = rawWords.map((w) => ({

@@ -84,6 +84,15 @@ vi.mock("../../src/engine/image.js", () => ({
   capturedFrameRect: (_hwnd: unknown, source: string, rect: unknown) => (source === "wgc" ? mockVisibleFrame() : rect),
 }));
 
+// internal #357: runOcr and the language warning are seams; by default the real ones run.
+const { mockRunOcr, mockOcrLanguageWarning } = vi.hoisted(() => ({ mockRunOcr: vi.fn(), mockOcrLanguageWarning: vi.fn() }));
+vi.mock("../../src/engine/ocr-bridge.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/engine/ocr-bridge.js")>();
+  mockRunOcr.mockImplementation(actual.runOcr);
+  mockOcrLanguageWarning.mockImplementation(actual.ocrLanguageWarning);
+  return { ...actual, runOcr: mockRunOcr, ocrLanguageWarning: mockOcrLanguageWarning };
+});
+
 const { screenshotHandler, screenshotBgHandler, screenshotOcrHandler } = await import("../../src/tools/screenshot.js");
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 5, 6, 7, 8]);
@@ -547,6 +556,33 @@ describe("full-screen dot-by-dot disclosure (ADR-031)", () => {
 // Internal #247 (gate 2 on #769): screenshot(detail='ocr') captured and OCRed the window itself,
 // without the OCR entries that refuse a frozen app — so hidden, suspended Settings returned its last
 // frame's words, the account name among them, as the window now.
+describe("detail='ocr' — the language that read (internal #357)", () => {
+  const notepad = { hwnd: 6060n, title: "Notes", zOrder: 0, region: { x: 0, y: 0, width: 300, height: 200 }, isActive: true, isMinimized: false, isMaximized: false, isCloaked: false };
+  it("warns when the language asked for was read by another engine", async () => {
+    mockResolveWindowTarget.mockResolvedValue(null);
+    mockEnumWindowsInZOrder.mockReturnValue([notepad]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    mockCaptureWindowBackground.mockReset().mockResolvedValue({ base64: B64, mimeType: "image/png", width: 300, height: 200 });
+    mockRunOcr.mockResolvedValueOnce([]);
+    mockOcrLanguageWarning.mockReturnValueOnce("ocr_language_fallback: no pack for 'en'");
+    const result = await screenshotOcrHandler({ windowTitle: "Notes", language: "en" });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(mockOcrLanguageWarning).toHaveBeenCalledWith("en");
+    expect(body.hints?.warnings).toContain("ocr_language_fallback: no pack for 'en'");
+  });
+  it("adds no warning when the engine was the one asked for (control)", async () => {
+    mockResolveWindowTarget.mockResolvedValue(null);
+    mockEnumWindowsInZOrder.mockReturnValue([notepad]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    mockCaptureWindowBackground.mockReset().mockResolvedValue({ base64: B64, mimeType: "image/png", width: 300, height: 200 });
+    mockRunOcr.mockResolvedValueOnce([]);
+    mockOcrLanguageWarning.mockReturnValueOnce(null);
+    const result = await screenshotOcrHandler({ windowTitle: "Notes", language: "ja" });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.hints).toBeUndefined();
+  });
+});
+
 describe("detail='ocr' — a frozen window is not captured (internal #247)", () => {
   const settings = { hwnd: 527016n, title: "Settings", zOrder: 0, region: { x: 0, y: 1, width: 884, height: 591 }, isActive: false, isMinimized: false, isMaximized: false, isCloaked: true };
 
