@@ -52,6 +52,12 @@
   window in front kept the foreground; it now answers `WindowOnOtherDesktop`. A window its dialog has disabled is not
   brought in front of the dialog any more (`WindowBlockedByDialog`), as for capture above (internal #382, #381).
 
+### Fixed — macOS (preview)
+- **`desktop_act` no longer says "nothing was done" when a press or a write failed after it was sent.** A button that
+  closes its own window (Delete, Send) is gone before the app answers, and the act answered "the element is no longer
+  there. Nothing was done", inviting a second press. An error after the press or write was sent now says it may have
+  happened and to discover before acting again; refusals before anything was sent are unchanged (internal #366).
+
 ## [2.4.1] - 2026-11-11 — Pastes into Windows Terminal are checked, and more replies say when nothing happened
 
 Some calls that answered `ok: true` now refuse, with nothing typed: `terminal` `send` / `run` and `keyboard` `type`

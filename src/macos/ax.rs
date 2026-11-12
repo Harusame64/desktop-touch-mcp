@@ -1516,7 +1516,8 @@ pub(crate) fn set_value(t: &MacAxTarget, value: &str) -> MacActResult {
     let before = value_text_marked(&e);
     let err = write();
     if err != AXError::Success {
-        return refused(&ax_error_name(err));
+        // The write was sent: the app may hold the text even though it answered an error (internal #366).
+        return MacActResult { performed: Some(true), ..refused(&ax_error_name(err)) };
     }
     let after = value_text_marked(&e);
     let ignored = write_was_ignored(before.as_ref(), after.as_ref(), value);
@@ -1626,7 +1627,8 @@ pub(crate) fn insert_text(t: &MacAxTarget, text: &str, at: Option<i64>) -> MacAc
     }
     let err = unsafe { e.set_attribute_value(&cfstr("AXSelectedText"), &CFString::from_str(text)) };
     if err != AXError::Success {
-        return refused(&ax_error_name(err));
+        // The insertion was sent (internal #366).
+        return MacActResult { performed: Some(true), ..refused(&ax_error_name(err)) };
     }
     MacActResult { ok: true, value_after: value_text(&e), ..Default::default() }
 }

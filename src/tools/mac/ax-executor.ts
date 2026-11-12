@@ -7,8 +7,10 @@
  * here takes the foreground: AXPress and AXValue reach a background app.
  *
  * Refusals map onto the touch loop's existing reasons (guarded-touch.ts):
- * - the element is gone or no longer what was read → `TargetGoneError`
+ * - the element is gone or no longer what was read, before anything was sent → `TargetGoneError`
  *   (`entity_not_found`: nothing was done; discover again);
+ * - an error after the press or write was sent (`performed`) → `ActMayHaveHappenedError`
+ *   (`executor_failed`, saying it may have been done; internal #366);
  * - a write the app accepted but whose value did not become the text →
  *   `ValueNotAppliedError` (`value_not_applied`);
  * - anything else → a plain error (`executor_failed`).
@@ -110,6 +112,24 @@ export class OpenMayHaveHappenedError extends Error {
 }
 
 /**
+ * internal #366 — a press or a write that was SENT and then answered with an error. The app may have
+ * acted: a button that closes its own window (Delete, Send) is destroyed before the reply, and the
+ * answer is `invalid_ui_element`. Told "the element is gone, nothing was done", the caller discovers
+ * again and presses twice. So once the native act says it sent the action (`performed`), the refusal
+ * says it may have happened, whatever the reason.
+ */
+export class ActMayHaveHappenedError extends Error {
+  readonly callerDetail: string;
+  constructor(what: "press" | "write", reason: string) {
+    super(`${what}: ${reason} after the ${what === "press" ? "press" : "write"} was sent`);
+    this.name = "ActMayHaveHappenedError";
+    this.callerDetail = what === "press"
+      ? `The press was sent and the app answered ${reason}: it may have been carried out (a button that closes its window answers so). desktop_discover (or desktop_state) before pressing again, so it does not run twice.`
+      : `The write was sent and the app answered ${reason}: the field may hold the text now. desktop_discover and check the field before writing again.`;
+  }
+}
+
+/**
  * internal #259 — open a list item (a Finder sidebar entry) with AXOpen, as a click on it does: the
  * window moves to that place.
  *
@@ -177,7 +197,10 @@ export function createMacAxExecutor(deps: MacAxExecutorDeps): ExecutorFn {
         // document at the read cap and delete the rest (codex, #782).
         if (deps.insertText === undefined) throw new MacAxActError("append: not available", "append_unavailable");
         const r = await deps.insertText(target, text, -1);
-        if (!r.ok) refuse(r, "append");
+        if (!r.ok) {
+          if (r.performed === true) throw new ActMayHaveHappenedError("write", r.reason ?? "unknown");
+          refuse(r, "append");
+        }
         // The read-back is capped, so the end can be checked only when the whole text came back.
         const after = r.valueAfter;
         if (after !== undefined && Array.from(after).length < VALUE_CHAR_CAP && !after.endsWith(text)) {
@@ -190,7 +213,11 @@ export function createMacAxExecutor(deps: MacAxExecutorDeps): ExecutorFn {
         return "ax";
       }
       const r = await deps.setValue(target, text);
-      if (!r.ok) refuse(r, "setValue");
+      if (!r.ok) {
+        // not_applied_after_press keeps its own sentence (the field was pressed to focus it).
+        if (r.performed === true && r.reason !== "not_applied_after_press") throw new ActMayHaveHappenedError("write", r.reason ?? "unknown");
+        refuse(r, "setValue");
+      }
       // The native read-back is capped at VALUE_CHAR_CAP characters (src/macos/ax.rs).
       if (r.valueAfter !== undefined && r.valueAfter !== Array.from(text).slice(0, VALUE_CHAR_CAP).join("")) {
         throw new ValueNotAppliedError(
@@ -204,7 +231,10 @@ export function createMacAxExecutor(deps: MacAxExecutorDeps): ExecutorFn {
 
     // click / invoke / auto: the native call presses only what the element advertises.
     const r = await deps.perform(target, "AXPress");
-    if (!r.ok) refuse(r, "press");
+    if (!r.ok) {
+      if (r.performed === true) throw new ActMayHaveHappenedError("press", r.reason ?? "unknown");
+      refuse(r, "press");
+    }
     return "ax";
   };
 }
