@@ -343,8 +343,9 @@ export class KeyLockerHost {
       // ANY startup failure must un-exclude + kill the child — including the alive-but-slow
       // timeout path (helper still running), which would otherwise orphan a key-locker.exe
       // holding its pipe (e.g. first-run AV scan of the exe).
+      // Not once Node saw it exit: its PID may already be another process's (gate 2 on #959).
       unregisterExcludedPid(child.pid);
-      killTree(killPid);
+      if (!state.helperDied) killTree(killPid);
       throw e;
     }
   }
