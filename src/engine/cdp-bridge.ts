@@ -463,6 +463,19 @@ export async function getWindowIdsForTargets(
   targetIds: readonly string[],
   port = DEFAULT_CDP_PORT,
 ): Promise<Map<string, number>> {
+  const windows = await getWindowsForTargets(targetIds, port);
+  return new Map([...windows].map(([id, w]) => [id, w.windowId]));
+}
+
+/**
+ * ADR-040 PR ③ — as getWindowIdsForTargets, with the window's bounds (screen DIPs) when the answer
+ * carries them: the call returns both, so a wheel aimed at a frame finds that frame's tabs with no
+ * session on any tab.
+ */
+export async function getWindowsForTargets(
+  targetIds: readonly string[],
+  port = DEFAULT_CDP_PORT,
+): Promise<Map<string, { windowId: number; bounds?: { left: number; top: number; width: number; height: number } }>> {
   const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(CONNECT_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`CDP /json/version returned HTTP ${res.status}`);
   const version = (await res.json()) as { webSocketDebuggerUrl?: string };
@@ -471,16 +484,25 @@ export async function getWindowIdsForTargets(
     { id: "__browser__", title: "", url: "", type: "browser", webSocketDebuggerUrl: version.webSocketDebuggerUrl },
     port,
   );
-  const ids = new Map<string, number>();
+  const windows = new Map<string, { windowId: number; bounds?: { left: number; top: number; width: number; height: number } }>();
   await Promise.all(targetIds.map(async (targetId) => {
     try {
-      const win = (await session.send("Browser.getWindowForTarget", { targetId })) as { windowId?: unknown };
-      if (typeof win.windowId === "number") ids.set(targetId, win.windowId);
+      const win = (await session.send("Browser.getWindowForTarget", { targetId })) as {
+        windowId?: unknown;
+        bounds?: { left?: unknown; top?: unknown; width?: unknown; height?: unknown };
+      };
+      if (typeof win.windowId !== "number") return;
+      const b = win.bounds ?? {};
+      const bounds = typeof b.left === "number" && typeof b.top === "number" && typeof b.width === "number" &&
+        typeof b.height === "number"
+        ? { left: b.left, top: b.top, width: b.width, height: b.height }
+        : undefined;
+      windows.set(targetId, bounds === undefined ? { windowId: win.windowId } : { windowId: win.windowId, bounds });
     } catch {
       // left out
     }
   }));
-  return ids;
+  return windows;
 }
 
 /**

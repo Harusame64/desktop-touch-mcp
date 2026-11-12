@@ -31,8 +31,9 @@ import {
   type ResolvedWindow,
 } from "./_resolve-window.js";
 import { logDispatchSink } from "./_resolve-log.js";
-import { getWindowRectByHwnd, getWindowProcessId, getWindowTitleW, getWindowRoot, getWindowClassName, windowFromPoint, pageSurfaceDeps } from "../engine/win32.js";
-import { wheelPointOnPage, type WheelPointDeps } from "../engine/page-wheel-point.js";
+import { getWindowRectByHwnd, getWindowProcessId, getWindowTitleW, getWindowRoot, getWindowClassName, windowFromPoint, getWindowDpi, pageSurfaceDeps } from "../engine/win32.js";
+import { wheelPointOnPage, type WheelPointDeps, type WheelPagePoint } from "../engine/page-wheel-point.js";
+import { tabOfFrame, type TabOfFrameDeps } from "../engine/cdp-tab-of-frame.js";
 
 /** Exported so tests can replace the window reads (ADR-040 PR ②). */
 export const wheelPointDeps: WheelPointDeps = {
@@ -47,6 +48,46 @@ export const wheelPointDeps: WheelPointDeps = {
     descendants: (h) => pageSurfaceDeps.descendants(h),
   },
 };
+
+/**
+ * `wheelPointOnPage`, or `keep` when a read throws (a rect or WindowFromPoint read the deps do not guard):
+ * a missing instrument keeps the caller's point, as invariant 3 asks, and never throws out of the dispatch.
+ */
+function pagePointOrKeep(hwnd: bigint): WheelPagePoint {
+  try {
+    return wheelPointOnPage(hwnd, wheelPointDeps);
+  } catch {
+    return { kind: "keep" };
+  }
+}
+
+/** ms a tab is given to answer its visibilityState before it counts as no answer (ADR-040 PR ③). */
+const TAB_VISIBILITY_TIMEOUT_MS = 500;
+
+/**
+ * ADR-040 PR ③ — the reads `tabOfFrame` makes for the CDP road, on the configured port. Exported so tests
+ * can replace them; each is wrapped so a test's partial mock fails inside the guarded call, not at import.
+ */
+export const tabOfFrameDeps: TabOfFrameDeps = {
+  surface: wheelPointDeps.surface,
+  frameRect: (h) => getWindowRectByHwnd(h),
+  frameScale: (h) => getWindowDpi(h) / 96,
+  frameTitle: (h) => getWindowTitleW(h),
+  windowsOf: (ids) => getWindowsForTargets(ids, getCdpPort()),
+  visibility: async (id) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        evaluateInTab("document.visibilityState", id, getCdpPort()),
+        new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), TAB_VISIBILITY_TIMEOUT_MS); }),
+      ]);
+    } catch {
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  },
+};
 import { nativeUia, nativeWin32, nativeL1 } from "../engine/native-engine.js";
 import {
   captureFrame,
@@ -55,12 +96,13 @@ import {
   computeStripChangedFractions,
   type RawFrame,
 } from "../engine/layer-buffer.js";
-import { defaultPageTab } from "../engine/cdp-default-tab.js";
 import {
   listTabsLight,
   dispatchWheelInTab,
   readScrollPositionInTab,
   getBrowserProcessId,
+  getWindowsForTargets,
+  evaluateInTab,
 } from "../engine/cdp-bridge.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import type { Rect } from "../engine/vision-gpu/types.js";
@@ -79,7 +121,8 @@ import type { Rect } from "../engine/vision-gpu/types.js";
  * internal #319 item 2, `resolveCdpDestinationForHwnd` then compares the
  * HWND's process with the CDP browser's (`SystemInfo.getProcessInfo`), so a
  * window of another app or browser is not promoted to the CDP browser's page.
- * When the browser's process cannot be read the promotion stays as it was.
+ * When the browser's process cannot be read that check is skipped; ADR-040 PR ③ then promotes only to the
+ * tab the window itself shows (`tabOfFrame`).
  *
  * Future: if Edge's top-level class diverges in a Windows update, extend
  * this to a `new Set([...])` lookup. As of 2026-05 both Chrome and Edge
@@ -795,8 +838,9 @@ export async function resolveInputDestination(
 /**
  * ADR §2.1 D1 Tier 2 — auto-promote a Chrome/Edge HWND to a CDP destination
  * when a CDP session is reachable on the configured port. Returns `null` when
- * the gate fails (non-Chromium-top-level class) OR when the CDP probe fails
- * (browser not running with `--remote-debugging-port`, no tabs, network error)
+ * the gate fails (non-Chromium-top-level class), when the CDP probe fails
+ * (browser not running with `--remote-debugging-port`, no tabs, network error),
+ * or when the tab the window shows cannot be named (ADR-040 PR ③, below)
  * — caller then falls back to `{kind:'hwnd'}` and tries Tier 1 UIA.
  *
  * **The class name is passed in by the caller** (already known from
@@ -807,18 +851,19 @@ export async function resolveInputDestination(
  * shape redundantly called `enumWindowsInZOrder` here, doubling the syscall
  * cost per scroll.)
  *
- * Phase 3 picks the tab `defaultPageTab` picks — the same one `resolveTab(null, port)` in
- * `cdp-bridge.ts` uses (internal #308). A future phase may
- * thread a focused-tab hint via the foreground HWND → tab mapping (ADR §7
- * OQ-Electron carry-over).
+ * ADR-040 PR ③ (internal #319 item 2, the rest) — the tab is the one this frame shows (`tabOfFrame`): the
+ * frame has a page surface, the tab is in the browser window at the frame's rect, and it is visible. Before,
+ * the port's default tab was taken whatever window was asked, and a wheel for the window behind scrolled
+ * the one in front and answered delivered_via_cdp (win2, #965 W2/W4). When no such tab can be named —
+ * covered, minimized, two maximized windows with the same title, a read that failed — this answers null and
+ * the wheel takes the window road, which points at the frame's own visible page or sends none (PR ②).
  *
- * internal #319 item 2 — only for a window of the browser on the CDP port. The tab came from that
- * browser whatever hwnd was asked: win2 scrolled Edge's page (Edge on 9222) with `hwnd:<a Chrome
- * window>`. So a window whose process is known not to be that browser's is not promoted. When either
- * process cannot be read (the browser's, or the window's: 0), the promotion stays as it was. Which
- * of one browser's windows holds the tab is not settled here (internal #396). Cost on the gate-hit
- * path: `/json/list` beside the browser's process id, which is cached per port and read again only
- * when the window's process differs from it.
+ * internal #319 item 2 — only for a window of the browser on the CDP port: win2 scrolled Edge's page (Edge
+ * on 9222) with `hwnd:<a Chrome window>`. A window whose process is known not to be that browser's is not
+ * promoted. Cost on the gate-hit path: `/json/list`, the browser's process id (cached per port, read again
+ * when the window's process differs from it), one browser-endpoint call per page tab for its window, and
+ * the visibilityState of the tabs at the frame's rect whose title the frame shows (one, or two when two
+ * windows there show the same title).
  *
  * Exported for unit testing.
  */
@@ -832,19 +877,17 @@ export async function resolveCdpDestinationForHwnd(
   try {
     const port = getCdpPort();
     const tabs = await listTabsLight(port);
-    // The tab every other call without a tabId uses, not whatever target is listed first (#308).
-    // internal #398 — the default tab skips DevTools' front end, so a wheel aimed at an undocked DevTools
-    // window would go to the page it inspects. That window takes the wheel itself (gate 2 on #968).
+    // internal #398 — an undocked DevTools window shows DevTools' front end, which is not a tab, so the
+    // wheel must not go to the page it inspects. That window takes the wheel itself (gate 2 on #968).
     if (isUndockedDevToolsTitle(getWindowTitleW(hwnd))) return null;
-    const firstPage = defaultPageTab(tabs);
-    if (!firstPage) return null;
     // Another browser's window is not this browser's tab (internal #319 item 2).
     const windowPid = getWindowProcessId(hwnd);
     if (windowPid !== 0) {
       const browserPid = await browserPidFor(port, windowPid);
       if (browserPid !== undefined && windowPid !== browserPid) return null;
     }
-    return { kind: "cdp", tabId: firstPage.id };
+    const shown = await tabOfFrame(hwnd, tabs, tabOfFrameDeps);
+    return shown.kind === "tab" ? { kind: "cdp", tabId: shown.tabId } : null;
   } catch {
     return null;
   }
@@ -1296,13 +1339,16 @@ function buildObservationChain(
 export async function postWheelToHwnd(
   hwnd: bigint,
   params: WheelParams,
+  /** A point read earlier (before Tier 1), used only when this call's own read keeps the caller's point. */
+  earlierPagePoint?: WheelPagePoint,
 ): Promise<DispatchOutcome | null> {
   const postMessage = nativeWin32?.win32PostMessage;
   const getScrollInfo = nativeWin32?.win32GetScrollInfo;
   if (typeof postMessage !== "function") return null;
   // ADR-040 PR ② (internal #396) — a Chromium window takes a posted wheel at its point, not at the
   // window it is posted to: every post carries a point where this window's page is visible, or none is sent.
-  const pagePoint = wheelPointOnPage(hwnd, wheelPointDeps);
+  const readNow = pagePointOrKeep(hwnd);
+  const pagePoint = readNow.kind === "keep" && earlierPagePoint?.kind === "point" ? earlierPagePoint : readNow;
   if (pagePoint.kind === "not_visible") {
     return {
       scrolled: false,
@@ -1912,6 +1958,22 @@ export async function dispatchScrollWheel(
     // If a future design wants `'uia'` to be UIA-only (no Tier 3 fall-back),
     // split this branch. As of Phase 4 the dormant branch matches `'hwnd'`
     // semantics. (Opus PR #305 Round 1 P2-3.)
+    //
+    // ADR-040 PR ③ — a Chromium window whose page is not visible gets no Tier 1 either. Its page keeps the
+    // UIA ScrollPercent it had when last shown, and applies SetScrollPercent(that + one step) as an absolute
+    // position: win2 (dev/adr-040-pr3) saw a covered page jump from the bottom to 521 on a down, from 0 to 173
+    // on an up, and a minimized one from 0 to 15645, each answered "pre/post percent unchanged" — the same as a
+    // page already at its end — so the refusal below said nothing was scrolled while the page had moved.
+    // The same reading as Tier 3's, so a page visible anywhere still gets Tier 1 as before.
+    const pagePoint = pagePointOrKeep(dest.hwnd);
+    if (pagePoint.kind === "not_visible") {
+      return {
+        scrolled: false,
+        channel: "postmessage",
+        reason: "target_unreachable",
+        pageNotVisible: { frame: pagePoint.frame, why: pagePoint.why },
+      };
+    }
     try {
       // Resolve the Tier 1 native call through the tolerant `native-engine.ts`
       // loader — NOT a direct `import from "../../index.js"`, which `throw`s at
@@ -1957,7 +2019,9 @@ export async function dispatchScrollWheel(
     // caller (`mouse.ts:scrollHandler`) reads `dest.kind === 'hwnd'` AND
     // dispatcher null → emits `target_unreachable` per ADR §2.6.2 path-(b)
     // and does NOT fall through to Tier 4 SendInput.
-    return await postWheelToHwnd(dest.hwnd, params);
+    // The point is read again there: the window can move or be covered while Tier 1 is awaited (gate 2).
+    // When that read cannot be taken, the point found before Tier 1 stands (gate 2 on #971).
+    return await postWheelToHwnd(dest.hwnd, params, pagePoint);
   }
   if (dest.kind === "cdp") {
     // ADR-018 Phase 3 — Tier 2 CDP wheel dispatch. Pre/post observation via

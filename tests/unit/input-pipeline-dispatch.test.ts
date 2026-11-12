@@ -162,7 +162,9 @@ const listTabsLightMock = vi.fn();
 const dispatchWheelInTabMock = vi.fn();
 const readScrollPositionInTabMock = vi.fn();
 const getBrowserProcessIdMock = vi.fn(async (_port?: number) => 4242);
+const evaluateInTabMock = vi.fn();
 vi.mock("../../src/engine/cdp-bridge.js", () => ({
+  evaluateInTab: (...a: unknown[]) => evaluateInTabMock(...a),
   listTabsLight: listTabsLightMock,
   dispatchWheelInTab: dispatchWheelInTabMock,
   readScrollPositionInTab: readScrollPositionInTabMock,
@@ -196,7 +198,66 @@ const {
   assertTier4Reachable,
   postWheelToHwnd,
   wheelPointDeps,
+  tabOfFrameDeps,
 } = await import("../../src/tools/_input-pipeline.js");
+
+// The real visibility read, kept before `frameShows` replaces it (agy on #971: it had no test of its own).
+const realTabVisibility = tabOfFrameDeps.visibility;
+describe("ADR-040 PR ③ — tabOfFrameDeps.visibility: a tab's visibilityState, or undefined when it gives no answer", () => {
+  afterEach(() => { vi.useRealTimers(); evaluateInTabMock.mockReset(); });
+  it("asks the tab on the configured port and gives its answer", async () => {
+    getCdpPortMock.mockReturnValue(9333);
+    evaluateInTabMock.mockResolvedValue("visible");
+    expect(await realTabVisibility("T1")).toBe("visible");
+    expect(evaluateInTabMock).toHaveBeenCalledWith("document.visibilityState", "T1", 9333);
+    getCdpPortMock.mockReturnValue(9222);
+  });
+  it("the evaluate throws: undefined", async () => {
+    evaluateInTabMock.mockRejectedValue(new Error("Tab not found"));
+    expect(await realTabVisibility("T2")).toBeUndefined();
+  });
+  it("no answer within 500 ms: undefined, not 'hidden'", async () => {
+    vi.useFakeTimers();
+    evaluateInTabMock.mockReturnValue(new Promise(() => {}));
+    const p = realTabVisibility("T3");
+    await vi.advanceTimersByTimeAsync(499);
+    let settled = false;
+    void p.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(await p).toBeUndefined();
+  });
+});
+
+// ADR-040 PR ③ — the CDP road takes the tab the frame shows. These cells stub what `tabOfFrame` reads: the
+// frame has its page surface, every page tab is in one window at the frame's rect, its title shows
+// `shownTab`'s title, and `shownTab` is the one visible. `a-cdp-wheel-goes-to-the-tab-the-frame-shows.test.ts` covers the rule itself.
+let shownTab = "TAB-A";
+let shownTitle = "";
+const TAB_TITLES: Record<string, string> = { "TAB-A": "A", PAGE: "Google", "TAB-BBB": "Bing", "TAB-X": "X", "TAB-Y": "X", FRONT: "Front" };
+const FRAME_RECT = { x: 100, y: 100, width: 1200, height: 800 };
+const tabOfFrameVisibility = vi.fn(async (id: string) => (id === shownTab ? "visible" : "hidden"));
+function frameShows(id: string, surface: "surface" | "covered" = "surface", frameTitle?: string): void {
+  shownTab = id;
+  shownTitle = frameTitle ?? `${TAB_TITLES[id] ?? id} - Google Chrome`;
+  tabOfFrameVisibility.mockClear();
+  Object.assign(tabOfFrameDeps, {
+    surface: {
+      isIconic: () => false,
+      isCloaked: () => false,
+      descendants: () => [surface === "surface"
+        ? { hwnd: 0x9001n, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: { x: 110, y: 180, width: 1180, height: 710 } }
+        : { hwnd: 0x9002n, className: "Intermediate D3D Window", visible: true, rect: { x: 0, y: 0, width: 10, height: 10 } }],
+    },
+    frameRect: () => FRAME_RECT,
+    frameScale: () => 1,
+    frameTitle: () => shownTitle,
+    windowsOf: async (ids: readonly string[]) =>
+      new Map(ids.map((t) => [t, { windowId: 1, bounds: { left: 100, top: 100, width: 1200, height: 800 } }])),
+    visibility: tabOfFrameVisibility,
+  });
+}
 
 describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWindowTarget)", () => {
   beforeEach(() => {
@@ -542,6 +603,7 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
     getWindowProcessIdMock.mockReset().mockReturnValue(4242);
     getBrowserProcessIdMock.mockReset().mockResolvedValue(4242);
     _resetBrowserPidCacheForTest();
+    frameShows("TAB-A");
   });
 
   it("asks the configured port for the browser's process, and reads it once per port (gate 2 on #966)", async () => {
@@ -582,9 +644,11 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
   });
 
   it("a browser window showing a page titled 'DevTools …' is still promoted (agy on #968)", async () => {
-    listTabsLightMock.mockResolvedValue([{ id: "PAGE", title: "DevTools Architecture", url: "https://example.com/", type: "page" }]);
-    getWindowTitleWMock.mockReturnValueOnce("DevTools Architecture - Google Chrome");
+    listTabsLightMock.mockResolvedValue([{ id: "PAGE", title: "DevTools - Chrome for Developers", url: "https://example.com/", type: "page" }]);
+    frameShows("PAGE", "surface", "DevTools - Chrome for Developers - Google Chrome");
+    getWindowTitleWMock.mockReturnValueOnce("DevTools - Chrome for Developers - Google Chrome");
     expect(await resolveCdpDestinationForHwnd(0x791n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "PAGE" });
+    frameShows("PAGE", "surface", "DevTools - Chrome for Developers - Personal - Microsoft\u200b Edge");
     getWindowTitleWMock.mockReturnValueOnce("DevTools - Chrome for Developers - Personal - Microsoft\u200b Edge");
     expect(await resolveCdpDestinationForHwnd(0x792n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "PAGE" });
   });
@@ -604,22 +668,39 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
     expect(listTabsLightMock).not.toHaveBeenCalled();
   });
 
-  it("Chromium top-level class + listTabsLight returns tabs: {kind:'cdp', tabId}", async () => {
+  it("Chromium top-level class + listTabsLight returns tabs: the tab the frame shows, not the first listed (ADR-040 PR ③)", async () => {
     listTabsLightMock.mockResolvedValue([
       { id: "TAB-AAA", title: "Google", url: "https://google.com/", type: "page" },
       { id: "TAB-BBB", title: "Bing", url: "https://bing.com/", type: "page" },
     ]);
+    frameShows("TAB-BBB");
     const dest = await resolveCdpDestinationForHwnd(0x222n, "Chrome_WidgetWin_1");
-    expect(dest).toEqual({ kind: "cdp", tabId: "TAB-AAA" });
+    expect(dest).toEqual({ kind: "cdp", tabId: "TAB-BBB" });
   });
 
-  it("Chromium top-level class: the wheel goes to the first page that is not the browser's own (internal #308)", async () => {
+  it("a covered frame (no page surface): null, the wheel takes the window road (ADR-040 PR ③, #965 W2/W4)", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    frameShows("TAB-A", "covered");
+    expect(await resolveCdpDestinationForHwnd(0x223n, "Chrome_WidgetWin_1")).toBeNull();
+    expect(tabOfFrameVisibility).not.toHaveBeenCalledWith("TAB-A");
+  });
+
+  it("a frame whose shown tab cannot be named (no tab answers visible): null", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    frameShows("NONE");
+    expect(await resolveCdpDestinationForHwnd(0x224n, "Chrome_WidgetWin_1")).toBeNull();
+  });
+
+  it("Chromium top-level class: a sign-in dialog listed first is not the tab, even when it answers visible (internal #308)", async () => {
     listTabsLightMock.mockResolvedValue([
       { id: "SW", title: "", url: "https://google.com/sw.js", type: "service_worker" },
       { id: "DLG", title: "Sync", url: "edge://sync-confirmation-dialog/", type: "page" },
       { id: "PAGE", title: "Google", url: "https://google.com/", type: "page" },
     ]);
+    frameShows("PAGE");
+    tabOfFrameVisibility.mockImplementation(async (id: string) => (id === "PAGE" || id === "DLG" ? "visible" : "hidden"));
     const dest = await resolveCdpDestinationForHwnd(0x225n, "Chrome_WidgetWin_1");
+    tabOfFrameVisibility.mockImplementation(async (id: string) => (id === shownTab ? "visible" : "hidden"));
     expect(dest).toEqual({ kind: "cdp", tabId: "PAGE" });
   });
 
@@ -665,6 +746,7 @@ describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration"
     enumWindowsInZOrderMock.mockReturnValue([]);
     listTabsLightMock.mockReset();
     getCdpPortMock.mockReturnValue(9222);
+    frameShows("TAB-X");
   });
 
   it("resolveWindowTarget succeeds + Chromium HWND + CDP reachable: promotes to {kind:'cdp'} (G3 path)", async () => {
@@ -691,8 +773,19 @@ describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration"
     listTabsLightMock.mockResolvedValue([
       { id: "TAB-Y", title: "X", url: "https://x.com/", type: "page" },
     ]);
+    frameShows("TAB-Y");
     const dest = await resolveInputDestination({ windowTitle: "Chrome" });
     expect(dest).toEqual({ kind: "cdp", tabId: "TAB-Y" });
+  });
+
+  it("a covered Chromium window: {kind:'hwnd'}, not the CDP browser's front tab (ADR-040 PR ③, #965 W2/W4)", async () => {
+    resolveWindowTargetMock.mockResolvedValue({ title: "Back - Chrome", hwnd: 0xEEEn, warnings: [], className: "Chrome_WidgetWin_1" });
+    listTabsLightMock.mockResolvedValue([
+      { id: "FRONT", title: "Front", url: "https://front.example/", type: "page" },
+      { id: "BACK", title: "Back", url: "https://back.example/", type: "page" },
+    ]);
+    frameShows("FRONT", "covered");
+    expect(await resolveInputDestination({ hwnd: "0xEEE" })).toEqual({ kind: "hwnd", hwnd: 0xEEEn });
   });
 
   it("Case 3 recovery on another browser's window: {kind:'hwnd'}, not the CDP browser's page (internal #319)", async () => {
@@ -2189,7 +2282,7 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
   });
 
   it("fully covered (no page window, Q3): nothing is posted", async () => {
-    shape(1100);
+    shape(null);
     wheelPointDeps.surface = { ...wheelPointDeps.surface, descendants: () => [{ hwnd: 7n, className: "Intermediate D3D Window", visible: true, rect: PAGE_RECT }] };
     const r = await postWheelToHwnd(FRAME, { direction: "down", notch: 3 });
     expect(win32PostMessageMock).not.toHaveBeenCalled();
@@ -2207,5 +2300,72 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
     wheelPointDeps.pointAt = () => undefined;
     await postWheelToHwnd(FRAME, { direction: "down", notch: 3 });
     expect(win32PostMessageMock.mock.calls[0]![3]).toBe(lp(900, 450));
+  });
+
+  // ADR-040 PR ③ — win2 (dev/adr-040-pr3): a hidden page keeps its last shown ScrollPercent and jumps to that
+  // + one step, answering "unchanged", the same as a page at its end; the refusal then said nothing moved.
+  describe("Tier 1 UIA is not tried on a Chromium window whose page is not visible", () => {
+    beforeEach(() => {
+      uiaScrollByWheelAtHwndMock.mockReset();
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: false, error: "SetScrollPercent returned Ok but pre/post percent unchanged" });
+    });
+    it("covered: no UIA call, no post, the outcome says why", async () => {
+      shape(null);
+      const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 5 });
+      expect(uiaScrollByWheelAtHwndMock).not.toHaveBeenCalled();
+      expect(win32PostMessageMock).not.toHaveBeenCalled();
+      expect(r).toEqual({ scrolled: false, channel: "postmessage", reason: "target_unreachable", pageNotVisible: { frame: FRAME, why: "covered" } });
+    });
+    it("minimized: no UIA call", async () => {
+      shape(1100);
+      wheelPointDeps.surface = { ...wheelPointDeps.surface, isIconic: () => true };
+      const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 5 });
+      expect(uiaScrollByWheelAtHwndMock).not.toHaveBeenCalled();
+      expect(r).toMatchObject({ pageNotVisible: { frame: FRAME, why: "minimized" } });
+    });
+    it("the control: its page visible somewhere, UIA is tried first as before", async () => {
+      shape(1100);
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+      const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 5 });
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledTimes(1);
+      expect(r).toEqual({ scrolled: true, channel: "uia", reason: "delivered_via_uia" });
+    });
+    it("a read that throws (the window's rect) keeps the caller's point: UIA is tried, nothing throws (gate 2 on #971)", async () => {
+      shape(null);
+      wheelPointDeps.surface = { isIconic: () => false, isCloaked: () => false, descendants: () => [{ hwnd: 0x9n, className: "Intermediate D3D Window", visible: true, rect: { x: 0, y: 0, width: 1, height: 1 } }] };
+      wheelPointDeps.rectOf = () => { throw new Error("GetWindowRect failed"); };
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+      const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 5 });
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledTimes(1);
+      expect(r).toEqual({ scrolled: true, channel: "uia", reason: "delivered_via_uia" });
+    });
+    it("the point is read again after Tier 1: a window covered further while UIA was awaited gets the new point (gate 2 on #971)", async () => {
+      shape(1100);
+      uiaScrollByWheelAtHwndMock.mockImplementation(async () => {
+        // While UIA runs, the front window moves over x < 1250 too.
+        wheelPointDeps.pointAt = (x) => (x >= 1250 ? { child: PAGE, root: FRAME } : { child: FRONT_PAGE, root: 0x600n });
+        return { ok: true, scrolled: false };
+      });
+      await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 3 });
+      expect(win32PostMessageMock).toHaveBeenCalled();
+      for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(Math.round(508 + 784 * 0.98), Math.round(237 + 505 * 0.02)));
+    });
+    it("the read after Tier 1 cannot be taken: the point found before Tier 1 stands, not the frame's centre (gate 2 on #971)", async () => {
+      shape(1100);
+      uiaScrollByWheelAtHwndMock.mockImplementation(async () => {
+        wheelPointDeps.pointAt = () => undefined; // WindowFromPoint can no longer be asked
+        return { ok: true, scrolled: false };
+      });
+      await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 3 });
+      expect(win32PostMessageMock).toHaveBeenCalled();
+      for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(Math.round(508 + 784 * 0.9), Math.round(237 + 505 * 0.02)));
+    });
+    it("the control: not a Chromium window (a covered Excel), UIA is tried as before", async () => {
+      shape(null, "XLMAIN");
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+      const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 5 });
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledTimes(1);
+      expect(r).toEqual({ scrolled: true, channel: "uia", reason: "delivered_via_uia" });
+    });
   });
 });

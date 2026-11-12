@@ -2157,7 +2157,8 @@ export function pageNotVisibleScrollFailure(
     : page.why === "cloaked"
       ? "the window is on another virtual desktop"
       : page.why === "no_page_window"
-        ? "another window covers all of it"
+        // Only the centre was asked: the frame has no page window, and another window is there (win2 W14 on #971).
+        ? "it draws no page window, and another window covers its centre"
         : "other windows cover every point of its page that was tried";
   // browser_open is the tool that connects and lists tabs (browser_connect was its old name); tabId is a
   // placeholder the caller fills from that listing (agy on #969).

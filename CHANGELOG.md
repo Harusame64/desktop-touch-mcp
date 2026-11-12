@@ -36,11 +36,15 @@
   `browser_open`'s tab listings mark it `devtools: true` and do not report it as the active tab, and a scroll
   aimed at an undocked DevTools window goes to that window, not through CDP to the page. This applies wherever CDP
   is used, macOS included (internal #398).
-- **A wheel sent to one browser's window no longer scrolls another browser's page.** `scroll` on a Chrome or Edge
-  window went through CDP to the page of the browser on the CDP port, whichever browser the window was: with Edge on
-  the port, a Chrome window's scroll moved Edge's page and answered `delivered_via_cdp`. A window of another browser
-  now gets the wheel itself. When the browser's process cannot be read the wheel goes through CDP as before, and
-  two windows of the browser on the port are not told apart yet (internal #319, #396).
+- **A wheel sent to one browser window no longer scrolls another window's page.** `scroll` on a Chrome or Edge
+  window went through CDP to the most recently used page of the browser on the CDP port, whichever window it was:
+  with Edge on the port, a Chrome window's scroll moved Edge's page, and a scroll for a window behind another moved
+  the one in front, answering `delivered_via_cdp`. It now goes through CDP only to the tab that window itself shows.
+  A covered or minimized window is refused as above, with nothing sent; a window of another browser, or one whose
+  tab cannot be named (its title names no tab, two maximized windows showing the same title), gets the wheel by
+  the window. UI Automation is no longer tried on a covered or minimized Chrome or Edge window either: its hidden
+  page keeps the scroll position it had when last shown, so UI Automation moved it to an unrelated place while
+  the reply said nothing had moved (internal #319, #396).
 - **`desktop_discover` lists a text box named only by the label beside it.** A WPF `TextBox` labelled through
   `Label.Target` has an empty UI Automation name and no `LabeledBy`, so discover left it out. Such a text box is now
   listed under the text laid out directly left of it on its row, or directly above it at its left edge, with
