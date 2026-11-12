@@ -2143,7 +2143,8 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
       isCloaked: () => false,
       descendants: () => [{ hwnd: PAGE, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: PAGE_RECT }],
     };
-    wheelPointDeps.pointAt = (x) => ({ child: visibleFromX !== null && x >= visibleFromX ? PAGE : FRONT_PAGE });
+    wheelPointDeps.pointAt = (x) => (visibleFromX !== null && x >= visibleFromX ? { child: PAGE, root: FRAME } : { child: FRONT_PAGE, root: 0x600n });
+    wheelPointDeps.rectOf = () => ({ x: 500, y: 150, width: 800, height: 600 });
   };
   beforeEach(() => {
     win32PostMessageMock.mockReset();
@@ -2164,8 +2165,8 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
     expect(win32PostMessageMock).toHaveBeenCalled();
     // Today's point was the frame's centre, 900,450, under the front window.
     for (const c of win32PostMessageMock.mock.calls) expect(c[3]).not.toBe(lp(900, 450));
-    // The first grid point at x ≥ 1100: 0.9 of the width, 0.1 of the height.
-    for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(Math.round(508 + 784 * 0.9), Math.round(237 + 505 * 0.1)));
+    // The first grid point at x ≥ 1100: 0.9 of the width, on the top line (0.02 of the height).
+    for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(Math.round(508 + 784 * 0.9), Math.round(237 + 505 * 0.02)));
   });
 
   it("the retry to the frame after a leaf post carries the page's point too", async () => {
@@ -2177,14 +2178,14 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
     const targets = win32PostMessageMock.mock.calls.map((c) => c[0]);
     expect(targets).toContain(PAGE);
     expect(targets).toContain(FRAME);
-    for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(Math.round(508 + 784 * 0.9), Math.round(237 + 505 * 0.1)));
+    for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(Math.round(508 + 784 * 0.9), Math.round(237 + 505 * 0.02)));
   });
 
   it("its page visible nowhere: nothing is posted, and the outcome says why", async () => {
     shape(null);
     const r = await postWheelToHwnd(FRAME, { direction: "down", notch: 3 });
     expect(win32PostMessageMock).not.toHaveBeenCalled();
-    expect(r).toEqual({ scrolled: false, channel: "postmessage", reason: "target_unreachable", pageNotVisible: { frame: FRAME, why: "covered" } });
+    expect(r).toEqual({ scrolled: false, channel: "postmessage", reason: "target_unreachable", pageNotVisible: { frame: FRAME, why: "covered", title: "" } });
   });
 
   it("fully covered (no page window, Q3): nothing is posted", async () => {

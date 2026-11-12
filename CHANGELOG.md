@@ -11,7 +11,8 @@
   scrolling the one in front.** Chromium sends a posted wheel to the window under its point, and the point was the
   window's centre, so with the centre covered the front window scrolled and the reply said `ok`. The point is now
   where the target's own page shows; when its page shows nowhere (covered, minimized, on another desktop) nothing
-  is sent and the reply says so, with `focus_window` and `browser_eval` as the roads on (internal #396).
+  is sent and the reply says so, with `focus_window` by the window's title and `browser_eval` as the roads on.
+  A window with no page drawn yet, with nothing in front of it, is still scrolled as before (internal #396).
 - **`browser_click` hits the element with DevTools or a side bar open.** The click point was computed from the page's
   own `window.screenX` and the frame width, split evenly left and right, so with DevTools docked it landed half the
   panel off (+278 px docked right, into DevTools), and with Edge's vertical tabs 122 px off, answering `ok: true`.

@@ -1584,7 +1584,7 @@ export const scrollHandler = async ({
     // ADR-040 PR ② (internal #396) — a Chromium window whose page is visible nowhere: posting would have
     // scrolled the window in front, so nothing was posted. Say so, and give the road on (invariant 8).
     if (tier1?.pageNotVisible !== undefined) {
-      return pageNotVisibleScrollFailure(tier1.pageNotVisible, direction, amount);
+      return pageNotVisibleScrollFailure(tier1.pageNotVisible, direction, amount, scrollWarnings);
     }
 
     if (tier1 === null) {
@@ -2142,11 +2142,15 @@ export function registerMouseTools(server: McpServer): void {
  * Exported for tests.
  */
 export function pageNotVisibleScrollFailure(
-  page: { frame: bigint; why: "covered" | "minimized" | "cloaked" | "no_page_window" },
+  page: { frame: bigint; why: "covered" | "minimized" | "cloaked" | "no_page_window"; title: string },
   direction: "up" | "down" | "left" | "right",
   amount: number,
+  warnings: string[] = [],
 ): ToolResult {
   const hwnd = String(page.frame);
+  // The same direction and about the same distance (100 css px a notch) as the wheel asked for.
+  const px = 100 * amount;
+  const [dx, dy] = direction === "up" ? [0, -px] : direction === "down" ? [0, px] : direction === "left" ? [-px, 0] : [px, 0];
   const retry = `scroll({ action: "raw", hwnd: "${hwnd}", direction: "${direction}", amount: ${amount} })`;
   const what = page.why === "minimized"
     ? "the window is minimized"
@@ -2154,15 +2158,18 @@ export function pageNotVisibleScrollFailure(
       ? "the window is on another virtual desktop"
       : page.why === "no_page_window"
         ? "another window covers all of it"
-        : "other windows cover every part of its page";
-  const byScript = "If this browser is connected over CDP (browser_connect lists its tabs), browser_eval({ tabId, expression: \"window.scrollBy(0, 600)\" }) scrolls the page without moving any window.";
+        : "other windows cover every point of its page that was tried";
+  const byScript = `If this browser is connected over CDP (browser_connect lists its tabs), browser_eval({ action: "js", tabId, expression: "window.scrollBy(${dx}, ${dy})" }) scrolls the page without moving any window.`;
   const suggest = page.why === "cloaked"
     ? [
       "Bringing the window here would switch the user's desktop: ask the user to switch to it or move the window here, then retry: " + retry + ".",
       byScript,
     ]
     : [
-      `Bring the window forward, then retry: focus_window({ hwnd: "${hwnd}" }), then ${retry}. This moves the window in front of the others.`,
+      // focus_window finds a window by title; it takes no hwnd (codex on #969).
+      page.title !== ""
+        ? `Bring the window forward, then retry: focus_window({ title: ${JSON.stringify(page.title)} }), then ${retry}. This moves the window in front of the others.`
+        : `Bring the window forward (focus_window({ title }) with its title, as desktop_state lists it), then retry: ${retry}. This moves the window in front of the others.`,
       byScript,
     ];
   return failCode(
@@ -2170,7 +2177,11 @@ export function pageNotVisibleScrollFailure(
     `scroll: Nothing was scrolled: the browser window's page is not visible (hwnd ${hwnd}: ${what}). A wheel posted to it goes to the window under its point, which would have scrolled the window in front.`,
     {
       suggest,
-      context: { hwnd, why: page.why, direction, verifyDelivery: { status: "not_delivered", channel: "postmessage", reason: "target_unreachable" } },
+      context: {
+        hwnd, why: page.why, direction,
+        verifyDelivery: { status: "not_delivered", channel: "postmessage", reason: "target_unreachable" },
+        ...(warnings.length > 0 && { hints: { warnings } }),
+      },
     },
   );
 }

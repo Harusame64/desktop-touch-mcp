@@ -39,6 +39,8 @@ export const wheelPointDeps: WheelPointDeps = {
   rootOf: (h) => getWindowRoot(h),
   classOf: (h) => getWindowClassName(h),
   pointAt: (x, y) => windowFromPoint(x, y),
+  rectOf: (h) => getWindowRectByHwnd(h),
+  // Each read is wrapped so a test's partial mock of win32.js fails inside the guarded call, not at import.
   surface: {
     isIconic: (h) => pageSurfaceDeps.isIconic(h),
     isCloaked: (h) => pageSurfaceDeps.isCloaked(h),
@@ -430,7 +432,7 @@ export interface DispatchOutcome {
    * whose page is visible nowhere a posted wheel could reach: Chromium sends the wheel to the window under
    * its point, so posting would scroll the window in front. Nothing was posted.
    */
-  pageNotVisible?: { frame: bigint; why: "covered" | "minimized" | "cloaked" | "no_page_window" };
+  pageNotVisible?: { frame: bigint; why: "covered" | "minimized" | "cloaked" | "no_page_window"; title: string };
 }
 
 /**
@@ -1306,7 +1308,7 @@ export async function postWheelToHwnd(
       scrolled: false,
       channel: "postmessage",
       reason: "target_unreachable",
-      pageNotVisible: { frame: pagePoint.frame, why: pagePoint.why },
+      pageNotVisible: { frame: pagePoint.frame, why: pagePoint.why, title: (() => { try { return getWindowTitleW(pagePoint.frame); } catch { return ""; } })() },
     };
   }
   const pageLParam = pagePoint.kind === "point" ? makeScreenLParam(pagePoint.point.x, pagePoint.point.y) : undefined;

@@ -24,15 +24,21 @@ export type WheelPagePoint =
 export interface WheelPointDeps {
   rootOf: (hwnd: bigint) => bigint | null;
   classOf: (hwnd: bigint) => string;
-  /** WindowFromPoint's child under the point; undefined when it cannot be asked, null when nothing is there. */
-  pointAt: (x: number, y: number) => { child: bigint } | null | undefined;
+  /** WindowFromPoint's child and its root; undefined when it cannot be asked, null when nothing is there. */
+  pointAt: (x: number, y: number) => { child: bigint; root: bigint } | null | undefined;
+  /** The frame's own rect, for the one point a frame without a page window is asked at. */
+  rectOf: (hwnd: bigint) => { x: number; y: number; width: number; height: number } | null;
   surface: PageSurfaceDeps;
 }
 
-/** Fractions of the page's width and height tried, centre first, then a 5×5 grid. Exported for tests. */
+/**
+ * Fractions of the page's width and height tried: the centre first, then a 7×7 grid whose outer lines lie
+ * 2 % in from the edges, so a strip left showing along an edge is found (gate 2 on #969). Exported for tests.
+ */
+const GRID = [0.02, 0.1, 0.3, 0.5, 0.7, 0.9, 0.98];
 export const WHEEL_POINT_FRACTIONS: ReadonlyArray<readonly [number, number]> = [
   [0.5, 0.5],
-  ...[0.1, 0.3, 0.5, 0.7, 0.9].flatMap((fy) => [0.1, 0.3, 0.5, 0.7, 0.9].map((fx) => [fx, fy] as const)),
+  ...GRID.flatMap((fy) => GRID.map((fx) => [fx, fy] as const)).filter(([fx, fy]) => !(fx === 0.5 && fy === 0.5)),
 ];
 
 /** ADR-040 PR ② — where to point a posted wheel for `hwnd` (a frame or one of its children). */
@@ -46,16 +52,36 @@ export function wheelPointOnPage(hwnd: bigint, deps: WheelPointDeps): WheelPageP
   }
   const surface = resolvePageSurface(frame, deps.surface);
   if (surface.kind === "unreadable") return { kind: "keep" };
-  if (surface.kind === "not_shown") return { kind: "not_visible", frame, why: surface.why };
+  if (surface.kind === "not_shown") {
+    if (surface.why !== "no_page_window") return { kind: "not_visible", frame, why: surface.why };
+    // No page window does not by itself prove the window is covered: a window just brought forward, or a
+    // Chromium window that draws no page (Task Manager), has none either, and a wheel at its centre worked
+    // before (gate 2 on #969; the same reading as browser_click's, PR #967 P12). Refuse only when another
+    // window is what Windows finds at that centre, as when it covers all of it (win2 OQ-40-8 Q3).
+    const r = deps.rectOf(frame);
+    if (r === null) return { kind: "keep" };
+    const at = deps.pointAt(Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2));
+    if (at === undefined || (at !== null && at.root === frame)) return { kind: "keep" };
+    return { kind: "not_visible", frame, why: "no_page_window" };
+  }
   const { x, y, width, height } = surface.rect;
+  let asked = 0;
   for (const [fx, fy] of WHEEL_POINT_FRACTIONS) {
     const point = { x: Math.round(x + width * fx), y: Math.round(y + height * fy) };
     const at = deps.pointAt(point.x, point.y);
-    // Could not ask Windows who is there: keep the caller's point rather than refuse on a missing instrument.
-    if (at === undefined) return { kind: "keep" };
-    if (at !== null && surface.rwhs.includes(at.child)) return { kind: "point", frame, point };
+    // Could not ask at this point. When the centre could not be asked either, keep the caller's point rather
+    // than refuse on a missing instrument; once the centre was read as covered, falling back to it would
+    // post at a point known to be another window's (gate 2 on #969), so try the next one.
+    if (at === undefined) {
+      if (asked === 0) return { kind: "keep" };
+      continue;
+    }
+    asked += 1;
+    // Visible when this frame is the window there and the child is not another page window (DevTools' own,
+    // which Chromium would hand the wheel). A child inside the page window counts as the page (gate 2).
+    if (at !== null && at.root === frame && (surface.rwhs.includes(at.child) || deps.classOf(at.child) !== PAGE_RWH_CLASS)) {
+      return { kind: "point", frame, point };
+    }
   }
   return { kind: "not_visible", frame, why: "covered" };
 }
-
-export { PAGE_RWH_CLASS };
