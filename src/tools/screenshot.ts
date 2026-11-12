@@ -30,6 +30,7 @@ import {
   buildCacheStateHints,
   toTargetHints,
   takeLastInvalidation,
+  handleObservationKey,
 } from "../engine/identity-tracker.js";
 import { getTextViaTextPattern } from "../engine/uia-bridge.js";
 import { stripAnsi, tailLines } from "../engine/ansi.js";
@@ -603,34 +604,33 @@ export const screenshotHandler = async (args: {
 
     // ── detail=text: UIA element tree as JSON ────────────────────────────────
     if (effectiveDetail === "text") {
-      // internal #362: a console with no title (conhost started directly) reached by its handle takes the
-      // terminal road too. Only a terminal: the rest of this branch still finds its window by title.
-      const untitledTerminal = !effectiveTitle && resolvedWin?.hwnd != null &&
-        isTerminalWindow(getWindowClassName(resolvedWin.hwnd));
-      if (effectiveTitle || untitledTerminal) {
+      // internal #362: a window given by its handle (hwnd, @active) is judged a terminal by that handle's class,
+      // and a terminal is read from that handle — an untitled console (conhost started directly) included.
+      // Any other window still takes the road below, which finds its window by title, as before.
+      const handleWin = resolvedWin?.hwnd != null ? resolvedWin : null;
+      const handleIsTerminal = handleWin !== null && isTerminalWindow(getWindowClassName(handleWin.hwnd));
+      if (effectiveTitle || handleIsTerminal) {
         const wins = enumWindowsInZOrder();
         updateWindowCache(wins);
+        const byHandle = handleIsTerminal ? wins.find((w) => w.hwnd === handleWin!.hwnd) : undefined;
 
         // Save screenshot-time snapshot for homing — survives external cache
         // mutations from focus_window / window_dock between screenshot and click.
-        const snapWin = effectiveTitle
-          ? wins.find((w) => w.title.toLowerCase().includes(effectiveTitle.toLowerCase()))
-          : undefined;
-        if (snapWin) saveSnapshot(effectiveTitle!, snapWin.region);
+        const snapWin = handleIsTerminal
+          ? byHandle
+          : wins.find((w) => w.title.toLowerCase().includes(effectiveTitle!.toLowerCase()));
+        if (snapWin && effectiveTitle) saveSnapshot(effectiveTitle, snapWin.region);
 
         // Resolve the full window title from the partial match, then test the
         // Chromium regex against the resolved title — not the user-supplied
         // substring (which typically won't contain the "- Google Chrome" suffix).
-        // A resolved window is found by its handle first: of two same-titled windows the title finds the
-        // first, and "" (an untitled console) is a substring of every title (internal #362).
-        const byHandle = resolvedWin?.hwnd != null ? wins.find((w) => w.hwnd === resolvedWin.hwnd) : undefined;
-        const resolvedWin2 = untitledTerminal
+        const resolvedWin2 = handleIsTerminal
           ? byHandle
           : resolvedWin
-            ? byHandle ?? wins.find((w) => w.title === resolvedWin.title) ?? wins.find((w) => w.title.toLowerCase().includes(effectiveTitle!.toLowerCase()))
+            ? wins.find((w) => w.title === resolvedWin.title) ?? wins.find((w) => w.title.toLowerCase().includes(effectiveTitle!.toLowerCase()))
             : wins.find((w) => w.title.toLowerCase().includes(effectiveTitle!.toLowerCase()));
         const resolvedTitle = resolvedWin2?.title ?? effectiveTitle ?? "";
-        const targetHwnd = resolvedWin2?.hwnd ?? (untitledTerminal ? resolvedWin!.hwnd : null);
+        const targetHwnd = handleIsTerminal ? handleWin!.hwnd : (resolvedWin2?.hwnd ?? null);
         // Internal #247 (codex on 45cf57d1): before any UIA read — the 90 s UIA cache would serve a
         // tree read while the app was shown as its contents now, and with actionable elements in it
         // no OCR (where the other refusals sit) runs at all.
@@ -640,10 +640,11 @@ export const screenshotHandler = async (args: {
         // terminalGuard — for terminal hosts, UIA actionable is meaningless; use TextPattern.
         // Decided by the window's class, not by the process that owns it (internal #229).
         // getWindowClassName answers "" for a window it cannot read.
-        const isTerminal = targetHwnd !== null && isTerminalWindow(getWindowClassName(targetHwnd));
+        const isTerminal = handleIsTerminal || (targetHwnd !== null && isTerminalWindow(getWindowClassName(targetHwnd)));
         if (isTerminal) {
-          // Untitled consoles are keyed by handle, so two of them are not taken for one window.
-          const obs = observeTarget(effectiveTitle || `hwnd:${String(targetHwnd)}`, targetHwnd!, resolvedTitle);
+          // A window named by its handle is observed under that handle, so two same-titled (or untitled)
+          // consoles are not taken for one window that restarted (internal #362).
+          const obs = observeTarget(handleWin !== null ? handleObservationKey(targetHwnd!) : effectiveTitle!, targetHwnd!, resolvedTitle);
           const identityHints = toTargetHints(obs.identity);
           const invalidation = obs.invalidatedBy
             ? { reason: obs.invalidatedBy, previousTarget: obs.previousTarget }
@@ -672,12 +673,8 @@ export const screenshotHandler = async (args: {
           };
         }
 
-        // Only a terminal comes here untitled; should its class change under us, nothing below can find
-        // the window by an empty title, so it is refused rather than read from another window.
-        if (!effectiveTitle) {
-          return failWith(`Window ${String(targetHwnd)} has no title and is no longer a terminal window; capture it with detail='image'.`, "screenshot");
-        }
-        const titleKey: string = effectiveTitle;
+        // Only a terminal enters this branch untitled, and it returned above.
+        const titleKey = effectiveTitle as string;
 
         // Identity tracking — fires invalidation if pid/startTime changed.
         let identityHints: ReturnType<typeof toTargetHints> | null = null;

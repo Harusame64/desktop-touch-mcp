@@ -653,6 +653,49 @@ describe("screenshot(detail:'text') terminal guard by window class (internal #22
     await screenshotHandler({ ...baseArgs, hwnd: "4343", detail: "text" });
     expect(mockGetTextViaTextPattern).toHaveBeenCalledWith("k918-con", undefined, { pinnedHwnd: 4343n });
   });
+  it("observes a console named by hwnd under its handle, so a same-titled twin is not a restart (internal #362)", async () => {
+    const a = { ...con, hwnd: 8101n, title: "k960-twin", zOrder: 0 };
+    const b = { ...con, hwnd: 8102n, title: "k960-twin", zOrder: 1, isActive: false };
+    mockEnumWindowsInZOrder.mockReturnValue([a, b]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    mockGetWindowClassName.mockReturnValue("ConsoleWindowClass");
+    mockGetWindowProcessId.mockImplementation((h: bigint) => (h === 8101n ? 5001 : 5002));
+    mockGetProcessIdentityByPid.mockImplementation((pid: number) => ({ pid, processName: "cmd", processStartTimeMs: pid }));
+    mockGetTextViaTextPattern.mockReset().mockResolvedValue("x");
+    try {
+      mockResolveWindowTarget.mockResolvedValue({ title: "k960-twin", hwnd: 8101n, warnings: [] });
+      await screenshotHandler({ ...baseArgs, hwnd: "8101", detail: "text" });
+      mockEnumWindowsInZOrder.mockReturnValue([b]); // A closed in between
+      mockResolveWindowTarget.mockResolvedValue({ title: "k960-twin", hwnd: 8102n, warnings: [] });
+      const result = await screenshotHandler({ ...baseArgs, hwnd: "8102", detail: "text" });
+      const body = JSON.parse((result.content[0] as { text: string }).text);
+      expect(JSON.stringify(body.hints)).not.toContain("process_restarted");
+      expect(body.hints?.target?.pid).toBe(5002);
+    } finally {
+      mockGetWindowProcessId.mockReset().mockReturnValue(1234);
+      mockGetProcessIdentityByPid.mockReset().mockReturnValue({ pid: 1234, processName: "pwsh", processStartTimeMs: 100 });
+    }
+  });
+  it("keeps a non-terminal window given by hwnd on the title road, its identity and its tree from one window (internal #362)", async () => {
+    // The by-handle read is for terminals only: the UIA tree below is still read by title, so the identity
+    // must come from the same (first same-titled) window, not from the handle (gate 2 on #960).
+    const a = { ...con, hwnd: 9101n, title: "notes.txt", zOrder: 0 };
+    const b = { ...con, hwnd: 9102n, title: "notes.txt", zOrder: 1, isActive: false };
+    mockResolveWindowTarget.mockResolvedValue({ title: "notes.txt", hwnd: 9102n, warnings: [] });
+    mockEnumWindowsInZOrder.mockReturnValue([a, b]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    mockGetWindowClassName.mockReturnValue("Notepad");
+    mockGetTextViaTextPattern.mockClear();
+    mockGetUiElements.mockResolvedValue({
+      windowTitle: "notes.txt", windowClassName: "Notepad", windowRect: { x: 0, y: 0, width: 400, height: 300 }, elementCount: 1,
+      elements: [{ name: "Save", controlType: "Button", automationId: "save", isEnabled: true, boundingRect: { x: 20, y: 40, width: 80, height: 24 }, patterns: ["InvokePattern"], depth: 1 }],
+    });
+    const result = await screenshotHandler({ ...baseArgs, hwnd: "9102", detail: "text", ocrFallback: "never" });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.hints?.terminalGuard).toBeUndefined();
+    expect(mockGetTextViaTextPattern).not.toHaveBeenCalled();
+    expect(body.hints?.target?.hwnd).toBe("9101");
+  });
   it("leaves an untitled window that is not a terminal on its old road (control, internal #362)", async () => {
     mockResolveWindowTarget.mockResolvedValue({ title: "", hwnd: 5151n, warnings: [] });
     mockEnumWindowsInZOrder.mockReturnValue([other, untitled]);

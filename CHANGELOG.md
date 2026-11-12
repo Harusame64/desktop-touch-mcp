@@ -8,8 +8,9 @@
 
 ### Fixed — Windows
 - **`screenshot(detail:'text')` reads an untitled console by `hwnd`.** A console with no title (conhost started
-  directly) answered the window list instead of its text. Given a handle, the text is now read from that window, also
-  when two windows share a title; before, the first same-titled window was read (internal #362).
+  directly) answered the window list instead of its text. A terminal given by its handle is now read from that window,
+  also when two consoles share a title; before, the first same-titled one was read. Other windows still find their
+  window by title (internal #362).
 - **`terminal run` that times out says the command may still be running.** It answers `ok: true` (the output was read,
   and a failure would invite sending the command again), with nothing saying what the timeout meant. `warnings` now
   says to read the terminal before sending anything else (internal #377).
