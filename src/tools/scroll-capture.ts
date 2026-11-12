@@ -7,6 +7,7 @@ import {
   LOST_FRONT_BEFORE_ANY_KEY_HINT, LOST_FRONT_BEFORE_FIRST_FRAME_HINT,
 } from "./_bring-forward.js";
 import { offDesktopFailure } from "./_off-desktop.js";
+import { blockedByDialogFailure } from "./_blocked-by-dialog.js";
 import { nativeUia } from "../engine/native-engine.js";
 import { grabScreenRegionValidated } from "../engine/image.js";
 import { failWith, failCode } from "./_errors.js";
@@ -476,6 +477,7 @@ export const scrollCaptureHandler = async ({
       // internal #326: keys and frames are only the target's while it is in front.
       const brought = await bringForward(targetHwnd, { force: true, named: windowTitle });
       if (brought.offDesktop) return offDesktopFailure("scroll", brought.offDesktop);
+      if (brought.blockedByDialog) return blockedByDialogFailure("scroll", brought.blockedByDialog, { extra: { action: "capture" } });
       if (!brought.ok) {
         return failWith(new Error("ForegroundRestricted"), "scroll", {
           windowTitle, hint: NOT_IN_FRONT_HINT, attemptedForce: brought.forced, inFront: brought.inFrontTitle,

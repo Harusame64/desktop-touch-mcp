@@ -16,7 +16,7 @@ import { failWith, failCode } from "./_errors.js";
 import { WindowFrozenError } from "../engine/window-frozen.js";
 import { keyboard } from "../engine/nutjs.js";
 import {
-  bringForward, stillInFront, LOST_FRONT_NOTE, NEVER_IN_FRONT_READ_NOTE, OTHER_DESKTOP_READ_NOTE,
+  bringForward, stillInFront, LOST_FRONT_NOTE, NEVER_IN_FRONT_READ_NOTE, OTHER_DESKTOP_READ_NOTE, BLOCKED_BY_DIALOG_READ_NOTE,
 } from "./_bring-forward.js";
 import { getWindowRectByHwnd } from "../engine/win32.js";
 import { canInjectAtTarget, postKeyComboToHwnd } from "../engine/bg-input.js";
@@ -98,6 +98,9 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
   let focusedHwnd: bigint | null = null;
   let everInFront = false;
   let onOtherDesktop = false;
+  // internal #381: disabled by its dialog — not brought forward, and no page key is sent (it would
+  // reach the dialog); what the window shows is read and the read stops there.
+  let blockedByItsDialog = false;
   let focusedRegion: { x: number; y: number; width: number; height: number } | null = null;
 
   {
@@ -128,7 +131,8 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
       });
       everInFront = brought.ok;
       onOtherDesktop = brought.offDesktop !== undefined;
-      const focusResult = brought.offDesktop ? (getWindowRectByHwnd(focusedHwnd) ?? brought.rect) : brought.rect;
+      blockedByItsDialog = brought.blockedByDialog !== undefined;
+      const focusResult = brought.offDesktop || brought.blockedByDialog ? (getWindowRectByHwnd(focusedHwnd) ?? brought.rect) : brought.rect;
       if (focusResult.width >= 10 && focusResult.height >= 10) {
         focusedRegion = {
           x: focusResult.x,
@@ -212,6 +216,10 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
       // Either gate failing routes the keystroke through the foreground
       // fallback so the page actually scrolls.
       const combo = SCROLL_KEY_COMBO[args.scrollKey]!;
+      if (blockedByItsDialog) {
+        stoppedReason = "foreground_refused";
+        break;
+      }
       const canBg = canInjectAtTarget(focusedHwnd);
       // ADR-035 Phase 1 — two channels, two events, each at its own boundary:
       // the background post is addressed to the handle, the foreground fallback
@@ -271,7 +279,7 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
         perPage,
         ...(ocrError !== null ? { error: ocrError } : {}),
         ...(stoppedReason === "foreground_refused"
-          ? { note: onOtherDesktop ? OTHER_DESKTOP_READ_NOTE : everInFront ? LOST_FRONT_NOTE : NEVER_IN_FRONT_READ_NOTE }
+          ? { note: blockedByItsDialog ? BLOCKED_BY_DIALOG_READ_NOTE : onOtherDesktop ? OTHER_DESKTOP_READ_NOTE : everInFront ? LOST_FRONT_NOTE : NEVER_IN_FRONT_READ_NOTE }
           : {}),
       }, null, 2),
     }],

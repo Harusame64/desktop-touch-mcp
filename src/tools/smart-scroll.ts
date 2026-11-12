@@ -13,6 +13,7 @@ import {
   scrollElementIntoView,
 } from "../engine/uia-bridge.js";
 import { readScrollInfo, enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
+import { offDesktopTarget, offDesktopFailure } from "./_off-desktop.js";
 import { logResolve, logDispatchSink } from "./_resolve-log.js";
 import {
   dHashFromRaw,
@@ -367,6 +368,11 @@ async function tryImage(params: {
   if (!win) {
     return failWith(`Window not found: "${windowTitle}"`, "scroll(action='smart')", { windowTitle });
   }
+
+  // internal #382 / #221: bringing a window on another virtual desktop forward switches the user's
+  // desktop. Refused before anything is focused or scrolled.
+  const away = await offDesktopTarget(win, matches, windowTitle);
+  if (away) return offDesktopFailure("scroll(action='smart')", away);
 
   // Focus the window before sending scroll input
   try { restoreAndFocusWindow(win.hwnd); } catch { /* best effort */ }

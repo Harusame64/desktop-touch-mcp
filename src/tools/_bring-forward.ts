@@ -17,6 +17,7 @@
  */
 import { restoreAndFocusWindow, getForegroundHwnd, getWindowRoot, enumWindowsInZOrder, getWindowTitleW } from "../engine/win32.js";
 import { offDesktopTarget, type OffDesktopTarget } from "./_off-desktop.js";
+import { disabledByDialog, type BlockedByDialogTarget } from "./_blocked-by-dialog.js";
 
 export interface BroughtForward {
   /** The target's top-level window is the foreground window. */
@@ -25,6 +26,12 @@ export interface BroughtForward {
   forced: boolean;
   /** The target is on another virtual desktop: nothing was focused. */
   offDesktop?: OffDesktopTarget;
+  /**
+   * internal #381: the target is disabled by its own dialog: nothing was focused. Brought forward, it
+   * stayed disabled in front of its dialog, took the dialog's focus, and the capture got one frame
+   * (win2 S1/S2, dev/380-design-spike b7a8bbee).
+   */
+  blockedByDialog?: BlockedByDialogTarget;
   /** The title of the window in front when `ok` is false. */
   inFrontTitle?: string;
   rect: { x: number; y: number; width: number; height: number };
@@ -60,6 +67,8 @@ export async function bringForward(
   const listed = windows.find((w) => w.hwnd === hwnd);
   const away = listed ? await offDesktopTarget(listed, windows, opts.named) : null;
   if (away) return { ok: false, forced: false, offDesktop: away, rect: { x: 0, y: 0, width: 0, height: 0 } };
+  const blocked = listed ? disabledByDialog(listed) : null;
+  if (blocked) return { ok: false, forced: false, blockedByDialog: blocked, rect: { x: 0, y: 0, width: 0, height: 0 } };
 
   let r = restoreAndFocusWindow(hwnd);
   await new Promise<void>((done) => setTimeout(done, settle));
@@ -84,6 +93,11 @@ export const NEVER_IN_FRONT_READ_NOTE =
   "the target window (or close the window in front), then call again for the rest.";
 
 /** Said when read stopped because the window, which takes page keys only in front, is on another virtual desktop. */
+export const BLOCKED_BY_DIALOG_READ_NOTE =
+  "The window is disabled while a dialog it opened is in front, and keys sent to it would reach the dialog. It was " +
+  "not brought forward and no page keys were sent, so reading stopped after what it showed. Finish or close the " +
+  "dialog, then call again for the rest.";
+
 export const OTHER_DESKTOP_READ_NOTE =
   "The window is on another virtual desktop and takes page keys only while it is in front. Bringing it forward " +
   "would switch the user's desktop, so reading stopped after what could be read without keys. Move the window to " +

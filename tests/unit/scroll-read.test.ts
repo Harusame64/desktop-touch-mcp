@@ -770,6 +770,51 @@ describe("scrollReadHandler (mocked)", () => {
     expect(pressKeyMock).not.toHaveBeenCalled();
   });
 
+  // internal #381 (win2 S2, dev/380-design-spike b7a8bbee): with Save As open, read brought the disabled
+  // Notepad in front of its dialog (the dialog lost its focus). Now: not brought forward, no page key —
+  // not even by PostMessage, which would reach the dialog — and the first page is what is read.
+  it("reads a window its dialog has disabled without bringing it forward or sending a page key", async () => {
+    const pressKeyMock = vi.fn().mockResolvedValue(undefined);
+    const postMock = vi.fn().mockReturnValue(true);
+    vi.doMock("../../src/engine/ocr-bridge.js", () => ({
+      recognizeWindowByHwnd: vi.fn().mockResolvedValue({ words: makeWords(["A"]), origin: { x: 0, y: 0 } }),
+      ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
+      detectOcrLanguage: () => "en",
+    }));
+    vi.doMock("../../src/engine/nutjs.js", () => ({ keyboard: { pressKey: pressKeyMock, releaseKey: vi.fn() } }));
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({ title: "TestWindow", hwnd: 0xCAFEn, warnings: [] }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
+    }));
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: postMock,
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: true }),
+    }));
+    vi.doMock("../../src/tools/_off-desktop.js", () => ({ offDesktopTarget: vi.fn().mockResolvedValue(null) }));
+    vi.doMock("../../src/tools/_blocked-by-dialog.js", () => ({
+      disabledByDialog: vi.fn().mockReturnValue({ hwnd: 0xCAFEn, title: "TestWindow", dialog: { hwnd: 0xD1A1n, name: "Save As" } }),
+    }));
+    const restoreMock = vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
+    vi.doMock("../../src/engine/win32.js", () => ({
+      getForegroundHwnd: vi.fn().mockReturnValue(0xD1A1n),
+      enumWindowsInZOrder: vi.fn().mockReturnValue([{ hwnd: 0xCAFEn, title: "TestWindow", isEnabled: false }]),
+      getWindowTitleW: vi.fn().mockReturnValue("Save As"),
+      getWindowRectByHwnd: vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 }),
+      getWindowRoot: vi.fn((h: bigint) => h),
+      restoreAndFocusWindow: restoreMock,
+    }));
+    const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
+    const result = await scrollReadHandler({ action: "read", windowTitle: "Test", maxPages: 3, scrollKey: "PageDown", scrollDelayMs: 0, stopWhenNoChange: true });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.ok).toBe(true);
+    expect(body.pages).toBe(1);
+    expect(body.stoppedReason).toBe("foreground_refused");
+    expect(body.note).toContain("disabled while a dialog it opened is in front");
+    expect(restoreMock).not.toHaveBeenCalled();
+    expect(postMock).not.toHaveBeenCalled();
+    expect(pressKeyMock).not.toHaveBeenCalled();
+  });
+
   // win2 2026-11-10: Chrome takes page keys only in front. With another window holding the front from
   // the start, read asks with force once, reads what it can without keys, and says it never got there.
   it("asks with force at the start for a window that takes keys only in front, and says it never came forward", async () => {
