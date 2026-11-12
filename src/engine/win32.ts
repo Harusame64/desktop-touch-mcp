@@ -877,6 +877,27 @@ export async function captureWindowWgc(
  * Return the HWND of the currently active (foreground) window.
  * Cheaper than enumWindowsInZOrder() when only foreground identity is needed.
  */
+/**
+ * The foreground window, with "none" and "could not ask" kept apart: `null` when the OS answers that
+ * no window is in front (a locked workstation, the secure desktop, an activation in flight);
+ * `undefined` when it could not be asked (no addon, no binding, a throw). `getForegroundHwnd` folds
+ * both into null (internal #387, gate 2 on #956).
+ */
+export function readForegroundHwnd(): bigint | null | undefined {
+  let w32: ReturnType<typeof requireNativeWin32>;
+  try {
+    w32 = requireNativeWin32();
+  } catch {
+    return undefined;
+  }
+  if (!w32.win32GetForegroundWindow) return undefined;
+  try {
+    return w32.win32GetForegroundWindow() ?? null;
+  } catch {
+    return undefined;
+  }
+}
+
 export function getForegroundHwnd(): bigint | null {
   try {
     return requireNativeWin32().win32GetForegroundWindow!();

@@ -41,7 +41,8 @@
 - **`terminal send` with `focusFirst: false` no longer pastes into whatever app is in front.** With a Notepad in front,
   a send naming a console answered `ok: true`, named the console in `hints.target`, and put the text into the Notepad.
   `focusFirst: false` still sends to the window already in front, but only when that window is the terminal; otherwise
-  it answers `TerminalNotInFront` with `context.inFront`, and nothing is sent (internal #387).
+  — another app, the terminal's own dialog, or no window at all (a locked session) — it answers `TerminalNotInFront`
+  with `context.inFront`, and nothing is sent (internal #387).
 
 ## [2.4.1] - 2026-11-11 — Pastes into Windows Terminal are checked, and more replies say when nothing happened
 

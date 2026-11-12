@@ -4,7 +4,8 @@ import { z } from "zod";
 import { createHash, randomBytes } from "node:crypto";
 import { ok, buildDesc } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { failWith, failCode } from "./_errors.js";
+import { failWith, failCode, getSuggestsForCode } from "./_errors.js";
+import { hwnd32, sameHwnd } from "../engine/receiver-facts.js";
 import { coercedBoolean, coercedBooleanWithDefault } from "./_coerce.js";
 import {
   enumWindowsInZOrder,
@@ -12,9 +13,9 @@ import {
   getProcessIdentityByPid,
   getWindowProcessId,
   getWindowClassName,
-  getForegroundHwnd,
-  getWindowRoot,
+  readForegroundHwnd,
   getWindowTitleW,
+  isExcludedWindowHandle,
   type WindowZInfo,
 } from "../engine/win32.js";
 import { logResolve, logDispatchSink, appendTopologyWarnings } from "./_resolve-log.js";
@@ -1920,21 +1921,22 @@ export const terminalSendHandler = async ({
     if (away) return offDesktopFailure("terminal:send", away);
     // internal #387: with focusFirst:false the paste goes to whatever window is in front. win2 measured a
     // Notepad in front taking it 3/3 while the reply named the console (internal dev/380-design-spike).
-    // So the window in front must be this terminal; when it is another one, nothing is sent. When the
-    // window in front cannot be read, the send goes on as before.
+    // So the window in front must be this terminal: another window — an owned dialog of its included,
+    // which would take the keys — or no window at all (locked, secure desktop) is refused and nothing is
+    // sent. When the OS cannot be asked, the send goes on as before. The key locker's secure dialog is not
+    // named (it is excluded from every road that could address it).
     if (!focusFirst) {
-      const front = getForegroundHwnd();
-      const rootOf = (h: bigint): bigint => { try { return getWindowRoot(h) ?? h; } catch { return h; } };
-      if (front !== null && BigInt.asUintN(32, rootOf(front)) !== BigInt.asUintN(32, rootOf(win.hwnd))) {
-        let frontTitle = "";
-        try { frontTitle = getWindowTitleW(rootOf(front)); } catch { /* untitled */ }
-        return failWith(
-          new Error(
-            "TerminalNotInFront: focusFirst:false sends to the window in front, and the window in front is not " +
-              "this terminal. Nothing was sent.",
-          ),
-          "terminal:send",
-          { windowTitle: win.title, hwnd: String(win.hwnd), inFront: { hwnd: String(rootOf(front)), title: frontTitle } },
+      const front = readForegroundHwnd();
+      if (front !== undefined && (front === null || !sameHwnd(front, win.hwnd))) {
+        const inFront = front === null
+          ? null
+          : isExcludedWindowHandle(front)
+            ? { excluded: true }
+            : { hwnd: hwnd32(front), title: (() => { try { return getWindowTitleW(front); } catch { return ""; } })() };
+        return failCode(
+          "TerminalNotInFront",
+          "focusFirst:false sends to the window in front, and the window in front is not this terminal. Nothing was sent.",
+          { suggest: getSuggestsForCode("TerminalNotInFront"), context: { windowTitle: win.title, hwnd: hwnd32(win.hwnd), inFront } },
         );
       }
     }

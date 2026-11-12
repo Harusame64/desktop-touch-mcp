@@ -369,7 +369,7 @@ const SUGGESTS: Record<string, string[]> = {
   ],
   // internal #387: terminal send with focusFirst:false found another window in front; nothing was sent.
   TerminalNotInFront: [
-    "Nothing was sent: with focusFirst:false the text goes to the window in front, and context.inFront is not this terminal.",
+    "Nothing was sent: with focusFirst:false the text goes to the window in front, and context.inFront is not this terminal (null: no window is in front — the session may be locked).",
     "Send again without focusFirst:false (the default brings the terminal in front first), or use method:'background' for a classic console.",
   ],
   // internal #221: the window the call would bring forward is on another virtual desktop. Refused

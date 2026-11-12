@@ -10,8 +10,8 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-/** What GetForegroundWindow answers (null: it could not be read). */
-const { front } = vi.hoisted(() => ({ front: { hwnd: 100n as bigint | null } }));
+/** What the foreground read answers: a handle, null (no window in front), undefined (could not ask). */
+const { front } = vi.hoisted(() => ({ front: { hwnd: 100n as bigint | null | undefined } }));
 
 vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
   const actual = await importOriginal();
@@ -29,9 +29,9 @@ vi.mock(import("../../src/engine/win32.js"), async (importOriginal) => {
     // mocks will need to be re-added explicitly.
     // internal #286: a readable class that is not Windows Terminal ("" is a failed read, checked as WT).
     getWindowClassName: vi.fn(() => "TestTerminalClass"),
-    getForegroundHwnd: vi.fn(() => front.hwnd),
-    getWindowRoot: vi.fn((h: bigint) => h),
-    getWindowTitleW: vi.fn((h: bigint) => (h === 200n ? "無題 - メモ帳" : "PowerShell")),
+    readForegroundHwnd: vi.fn(() => front.hwnd),
+    isExcludedWindowHandle: vi.fn((h: unknown) => h === 666n),
+    getWindowTitleW: vi.fn((h: bigint) => (h === 200n ? "無題 - メモ帳" : h === 666n ? "SECRET LOCKER" : "PowerShell")),
   };
 });
 
@@ -126,6 +126,8 @@ const send = () => terminalSendHandler({
   restoreFocus: false, preferClipboard: false, pasteKey: "auto", trackFocus: false, settleMs: 0,
 });
 
+const typed = () => vi.mocked(nut.keyboard.type);
+
 describe("internal #387 — focusFirst:false and the window in front", () => {
   beforeEach(() => { front.hwnd = 100n; });
 
@@ -136,31 +138,58 @@ describe("internal #387 — focusFirst:false and the window in front", () => {
     expect(r.ok).toBe(false);
     expect(r.code).toBe("TerminalNotInFront");
     expect(r.context).toMatchObject({ hwnd: "100", inFront: { hwnd: "200", title: "無題 - メモ帳" } });
-    expect(vi.mocked(nut.keyboard.type)).not.toHaveBeenCalled();
+    expect(typed()).not.toHaveBeenCalled();
     expect(mockRestore).not.toHaveBeenCalled();
   });
 
-  it("the terminal in front: sent as before (control)", async () => {
-    front.hwnd = 100n;
-    mockEnum.mockReturnValue([terminal(true)]);
+  it("the terminal's own dialog in front (it would take the keys): refused", async () => {
+    front.hwnd = 300n;
+    mockEnum.mockReturnValue([terminal(false)]);
     const r = parseResult(await send());
-    expect(r.code).not.toBe("TerminalNotInFront");
-    expect(vi.mocked(nut.keyboard.type)).toHaveBeenCalled();
+    expect(r.code).toBe("TerminalNotInFront");
+    expect(typed()).not.toHaveBeenCalled();
   });
 
-  it("the window in front cannot be read: sent as before (it may be the terminal)", async () => {
+  it("no window in front (locked, secure desktop): refused, inFront null", async () => {
     front.hwnd = null;
-    mockEnum.mockReturnValue([terminal(true)]);
+    mockEnum.mockReturnValue([terminal(false)]);
     const r = parseResult(await send());
-    expect(r.code).not.toBe("TerminalNotInFront");
+    expect(r.code).toBe("TerminalNotInFront");
+    expect(r.context.inFront).toBeNull();
+    expect(typed()).not.toHaveBeenCalled();
   });
 
-  it("a child of the terminal in front counts as the terminal (compared by top-level window)", async () => {
-    front.hwnd = 101n;
-    vi.mocked(win32.getWindowRoot).mockImplementation((h: unknown) => (h === 101n ? 100n : (h as bigint)));
+  it("the key locker's secure dialog in front: refused without naming it", async () => {
+    front.hwnd = 666n;
+    mockEnum.mockReturnValue([terminal(false)]);
+    const r = parseResult(await send());
+    expect(r.code).toBe("TerminalNotInFront");
+    expect(r.context.inFront).toEqual({ excluded: true });
+    expect(JSON.stringify(r)).not.toContain("SECRET LOCKER");
+    expect(JSON.stringify(r)).not.toContain("666");
+  });
+
+  it("the terminal in front: sent as before (control)", async () => {
     mockEnum.mockReturnValue([terminal(true)]);
     const r = parseResult(await send());
     expect(r.code).not.toBe("TerminalNotInFront");
+    expect(typed()).toHaveBeenCalled();
+  });
+
+  it("the OS cannot be asked: sent as before (it may be the terminal)", async () => {
+    front.hwnd = undefined;
+    mockEnum.mockReturnValue([terminal(true)]);
+    const r = parseResult(await send());
+    expect(r.code).not.toBe("TerminalNotInFront");
+    expect(typed()).toHaveBeenCalled();
+  });
+
+  it("a sign-extended handle of the terminal counts as the terminal", async () => {
+    front.hwnd = 0xffffffff00000064n; // the upper half set, low 32 bits = 100
+    mockEnum.mockReturnValue([terminal(true)]);
+    const r = parseResult(await send());
+    expect(r.code).not.toBe("TerminalNotInFront");
+    expect(typed()).toHaveBeenCalled();
   });
 
   it("focusFirst:true is not asked (it brings the terminal in front itself)", async () => {
@@ -173,5 +202,6 @@ describe("internal #387 — focusFirst:false and the window in front", () => {
       restoreFocus: false, preferClipboard: false, pasteKey: "auto", trackFocus: false, settleMs: 0,
     }));
     expect(r.code).not.toBe("TerminalNotInFront");
+    expect(typed()).toHaveBeenCalled();
   });
 });
