@@ -432,7 +432,7 @@ export interface DispatchOutcome {
    * whose page is visible nowhere a posted wheel could reach: Chromium sends the wheel to the window under
    * its point, so posting would scroll the window in front. Nothing was posted.
    */
-  pageNotVisible?: { frame: bigint; why: "covered" | "minimized" | "cloaked" | "no_page_window"; title: string };
+  pageNotVisible?: { frame: bigint; why: "covered" | "minimized" | "cloaked" | "no_page_window" };
 }
 
 /**
@@ -1308,7 +1308,7 @@ export async function postWheelToHwnd(
       scrolled: false,
       channel: "postmessage",
       reason: "target_unreachable",
-      pageNotVisible: { frame: pagePoint.frame, why: pagePoint.why, title: (() => { try { return getWindowTitleW(pagePoint.frame); } catch { return ""; } })() },
+      pageNotVisible: { frame: pagePoint.frame, why: pagePoint.why },
     };
   }
   const pageLParam = pagePoint.kind === "point" ? makeScreenLParam(pagePoint.point.x, pagePoint.point.y) : undefined;

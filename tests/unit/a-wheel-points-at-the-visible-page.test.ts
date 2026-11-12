@@ -73,12 +73,11 @@ describe("the refusal gives a road on (ADR-040 invariant 8)", () => {
     return [j.error, ...(j.suggest ?? [])].join("\n");
   };
   it("covered: nothing was scrolled, why, the next calls with their values, and a road that moves no window", () => {
-    const t = text(pageNotVisibleScrollFailure({ frame: 0x500n, why: "covered", title: "Back - Google Chrome" }, "down", 3) as never);
+    const t = text(pageNotVisibleScrollFailure({ frame: 0x500n, why: "covered" }, "down", 3) as never);
     expect(t).toMatch(/Nothing was scrolled/);
     expect(t).toMatch(/cover every point of its page that was tried/);
-    // focus_window takes a title; it has no hwnd (codex on #969).
-    expect(t).toContain('focus_window({ title: "Back - Google Chrome" })');
-    expect(t).not.toMatch(/focus_window\(\{ hwnd/);
+    // focus_window by hwnd names exactly this window (internal #401).
+    expect(t).toContain('focus_window({ hwnd: "1280" })');
     expect(t).toContain('scroll({ action: "raw", hwnd: "1280", direction: "down", amount: 3 })');
     // browser_eval's union needs action:"js" (codex on #969).
     expect(t).toContain('browser_eval({ action: "js", tabId: "<its tabId from browser_open>", expression: "window.scrollBy(0, 300)" })');
@@ -87,19 +86,15 @@ describe("the refusal gives a road on (ADR-040 invariant 8)", () => {
     expect(t).not.toContain("browser_connect");
   });
   it("the script road scrolls the way and about the distance asked (gate 2 on #969)", () => {
-    expect(text(pageNotVisibleScrollFailure({ frame: 1n, why: "covered", title: "" }, "up", 5) as never)).toContain("window.scrollBy(0, -500)");
-    expect(text(pageNotVisibleScrollFailure({ frame: 1n, why: "covered", title: "" }, "left", 2) as never)).toContain("window.scrollBy(-200, 0)");
-  });
-  it("without a title, it says where to find one rather than inventing an argument", () => {
-    const t = text(pageNotVisibleScrollFailure({ frame: 1n, why: "minimized", title: "" }, "down", 1) as never);
-    expect(t).toContain("focus_window({ title }) with its title, as desktop_state lists it");
+    expect(text(pageNotVisibleScrollFailure({ frame: 1n, why: "covered" }, "up", 5) as never)).toContain("window.scrollBy(0, -500)");
+    expect(text(pageNotVisibleScrollFailure({ frame: 1n, why: "covered" }, "left", 2) as never)).toContain("window.scrollBy(-200, 0)");
   });
   it("carries the call's warnings (an ambiguous title)", () => {
-    const r = pageNotVisibleScrollFailure({ frame: 1n, why: "covered", title: "" }, "down", 1, ["2 windows match"]) as { content: Array<{ text: string }> };
+    const r = pageNotVisibleScrollFailure({ frame: 1n, why: "covered" }, "down", 1, ["2 windows match"]) as { content: Array<{ text: string }> };
     expect(r.content[0]!.text).toContain("2 windows match");
   });
   it("on another desktop: asks for the user rather than switching it", () => {
-    const t = text(pageNotVisibleScrollFailure({ frame: 0x500n, why: "cloaked", title: "Back - Google Chrome" }, "up", 1) as never);
+    const t = text(pageNotVisibleScrollFailure({ frame: 0x500n, why: "cloaked" }, "up", 1) as never);
     expect(t).toMatch(/another virtual desktop/);
     expect(t).not.toContain("focus_window");
   });

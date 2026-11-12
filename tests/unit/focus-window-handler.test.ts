@@ -195,3 +195,45 @@ describe("focus_window takes a shown window before a hidden one with the same ti
     expect(mockRestore.mock.calls[0]?.[0]).toBe(77n);
   });
 });
+
+describe("focus_window by hwnd (internal #401)", () => {
+  it("brings forward the window the hwnd names, not the first with the same title", async () => {
+    // Two browser windows show the same title; the one named is lower in z-order.
+    const front = fakeWindow("Shop - Google Chrome", false, 100n);
+    const named = fakeWindow("Shop - Google Chrome", false, 200n);
+    mockEnum.mockReturnValueOnce([front, named]).mockReturnValue([front, { ...named, isActive: true }]);
+    const r = parseResult(await focusWindowHandler({ hwnd: "200", cdpPort: 9222 }) as never);
+    expect(r.ok).toBe(true);
+    expect(mockRestore).toHaveBeenCalledTimes(1);
+    expect(mockRestore.mock.calls[0]![0]).toBe(200n);
+  });
+  it("an hwnd that names no window: not found, naming the hwnd and where to read current ones", async () => {
+    mockEnum.mockReturnValue([fakeWindow("Shop - Google Chrome", false, 100n)]);
+    const r = parseResult(await focusWindowHandler({ hwnd: "999", cdpPort: 9222 }) as never);
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/hwnd 999 names no window/);
+    expect(r.error).toMatch(/desktop_discover/);
+    expect(mockRestore).not.toHaveBeenCalled();
+  });
+  it("hwnd wins over title", async () => {
+    const a = fakeWindow("Alpha", false, 100n);
+    const b = fakeWindow("Beta", false, 200n);
+    mockEnum.mockReturnValueOnce([a, b]).mockReturnValue([a, { ...b, isActive: true }]);
+    await focusWindowHandler({ title: "Alpha", hwnd: "200", cdpPort: 9222 });
+    expect(mockRestore.mock.calls[0]![0]).toBe(200n);
+  });
+  it("neither title nor hwnd: refused, naming both, and nothing is focused", async () => {
+    mockEnum.mockReturnValue([fakeWindow("Alpha", false, 100n)]);
+    const r = parseResult(await focusWindowHandler({ cdpPort: 9222 }) as never);
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/title .* or hwnd/);
+    expect(mockRestore).not.toHaveBeenCalled();
+  });
+  it("by title, as before", async () => {
+    const a = fakeWindow("Alpha", false, 100n);
+    mockEnum.mockReturnValueOnce([a]).mockReturnValue([{ ...a, isActive: true }]);
+    const r = parseResult(await focusWindowHandler({ title: "alp", cdpPort: 9222 }) as never);
+    expect(r.ok).toBe(true);
+    expect(mockRestore.mock.calls[0]![0]).toBe(100n);
+  });
+});

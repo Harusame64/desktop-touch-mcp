@@ -2142,7 +2142,7 @@ export function registerMouseTools(server: McpServer): void {
  * Exported for tests.
  */
 export function pageNotVisibleScrollFailure(
-  page: { frame: bigint; why: "covered" | "minimized" | "cloaked" | "no_page_window"; title: string },
+  page: { frame: bigint; why: "covered" | "minimized" | "cloaked" | "no_page_window" },
   direction: "up" | "down" | "left" | "right",
   amount: number,
   warnings: string[] = [],
@@ -2168,10 +2168,8 @@ export function pageNotVisibleScrollFailure(
       byScript,
     ]
     : [
-      // focus_window finds a window by title; it takes no hwnd (codex on #969).
-      page.title !== ""
-        ? `Bring the window forward, then retry: focus_window({ title: ${JSON.stringify(page.title)} }), then ${retry}. This moves the window in front of the others.`
-        : `Bring the window forward (focus_window({ title }) with its title, as desktop_state lists it), then retry: ${retry}. This moves the window in front of the others.`,
+      // By hwnd: exactly this window; a title can name another window that shows the same one (internal #401).
+      `Bring the window forward, then retry: focus_window({ hwnd: "${hwnd}" }), then ${retry}. This moves the window in front of the others.`,
       byScript,
     ];
   return failCode(

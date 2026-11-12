@@ -21,8 +21,14 @@ export const getWindowsSchema = {};
 export const getActiveWindowSchema = {};
 
 export const focusWindowSchema = {
-  title: z.string().describe(
-    "Partial window title to search for (case-insensitive). A shown window (a minimised one counts) is taken before a hidden one with the same text; a hidden one — on another virtual desktop — only when nothing shown matches."
+  title: z.string().optional().describe(
+    "Partial window title to search for (case-insensitive). A shown window (a minimised one counts) is taken before a hidden one with the same text; a hidden one — on another virtual desktop — only when nothing shown matches. Pass title or hwnd."
+  ),
+  // internal #401 — the one window a refusal or desktop_discover named, exactly: two browser windows can
+  // show the same title, and a title match takes the first in z-order.
+  hwnd: z.string().optional().describe(
+    "Direct window handle ID (takes precedence over title): that window and no other. " +
+    "Obtain from desktop_discover response (windows[].hwnd) or a refusal's suggest. String type to avoid 64-bit precision issues."
   ),
   chromeTabUrlContains: z.string().optional().describe(
     "When set, activate the Chrome/Edge tab whose URL contains this substring before focusing the window. " +
@@ -106,16 +112,22 @@ export const getActiveWindowHandler = async (): Promise<ToolResult> => {
 };
 
 export const focusWindowHandler = async ({
-  title,
+  title: titleArg,
+  hwnd: hwndArg,
   chromeTabUrlContains,
   cdpPort,
   forceFocus,
 }: {
-  title: string;
+  title?: string;
+  hwnd?: string;
   chromeTabUrlContains?: string;
   cdpPort: number;
   forceFocus?: boolean;
 }): Promise<ToolResult> => {
+  if (hwndArg === undefined && (titleArg === undefined || titleArg === "")) {
+    return failWith(new Error("Pass title (part of the window's title) or hwnd (from desktop_discover's windows[].hwnd)."), "focus_window", {});
+  }
+  const title = titleArg ?? "";
   // Issue #197: caller-explicit forceFocus wins; otherwise honor the env
   // override (same convention as keyboard / mouse_click / terminal_send).
   const force = forceFocus ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
@@ -155,9 +167,12 @@ export const focusWindowHandler = async ({
     // content is listed above its frame, and bringing it forward fails (`_title-pick.ts`).
     // Internal #320 — then a window the title named before the activation, now showing the activated
     // tab. Only one showing it: with two browser windows, the other one is not where the tab is.
-    const matched = titleMatchesShownFirst(windows, query);
+    // An hwnd names one window exactly; a title names every window whose title contains it.
+    const matched = hwndArg !== undefined
+      ? windows.filter((w) => String(w.hwnd) === hwndArg)
+      : titleMatchesShownFirst(windows, query);
     // An untitled tab names no window, so it follows none.
-    const followed = !activatedTab ? [] : windows.filter(
+    const followed = !activatedTab || hwndArg !== undefined ? [] : windows.filter(
       (w) => namedBefore.has(w.hwnd) && !matched.includes(w) && w.title.includes(activatedTab!),
     );
     for (const win of [...matched, ...followed]) {
@@ -205,7 +220,7 @@ export const focusWindowHandler = async ({
           new Error("ForegroundRestricted"),
           "focus_window",
           {
-            title,
+            ...(hwndArg !== undefined ? { hwnd: hwndArg } : { title }),
             hint: "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation",
             attemptedForce: force,
             autoEscalated: escalated,
@@ -234,6 +249,9 @@ export const focusWindowHandler = async ({
     }
 
     // The tab may have been switched all the same; say which, so a retry by its title can follow.
+    if (hwndArg !== undefined) {
+      return failWith(`Window not found: hwnd ${hwndArg} names no window (it may have closed). Call desktop_discover for the current windows[].hwnd.`, "focus_window", { hwnd: hwndArg });
+    }
     return failWith(`Window not found: "${title}"`, "focus_window", { title, ...(activatedTab !== undefined && { activatedTab }) });
   } catch (err) {
     return failWith(err, "focus_window", { title });
@@ -273,7 +291,7 @@ export const focusWindowHandler = async ({
 export const focusWindowRegistrationSchema = withEnvelopeIncludeSchema(focusWindowSchema);
 
 export const focusWindowRegistrationHandler = makeCommitWrapper(
-  withRichNarration("focus_window", focusWindowHandler, { windowTitleKey: "title" }) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  withRichNarration("focus_window", focusWindowHandler, { windowTitleKey: "title", hwndKey: "hwnd" }) as (args: Record<string, unknown>) => Promise<ToolResult>,
   "focus_window",
   {
     // leaseValidator omitted = lease-less commit variant
@@ -290,7 +308,7 @@ export function registerWindowTools(server: McpServer): void {
 
   server.tool(
     "focus_window",
-    "Bring a window to the foreground by partial title match (case-insensitive). Use when a tool does not accept a windowTitle param, or when you need to switch focus before a sequence of actions. Use chromeTabUrlContains to activate a specific Chrome/Edge tab by URL substring before focusing — only the active tab's title appears in the windows list. If CDP is unavailable, chromeTabUrlContains is silently skipped — check response.hints.warnings. Returns WindowNotFound if no match exists; call desktop_discover to see available titles. Caveats: On some apps focus may be immediately stolen back (modal dialogs, UAC prompts) — verify with desktop_state after focusing. Win11 foreground refusal (UIPI cross-elevation / admin-only target / call from a background process or service) returns code:'ForegroundRestricted' ok:false instead of silently failing — recover by switching to a tool that does not require foreground transfer: desktop_act / click_element use UIA InvokePattern (no foreground needed); keyboard BG path bypasses foreground for terminal-class targets only (Windows Terminal / cmd / PowerShell — keyboard with windowTitle on non-terminal apps still hits the same ForegroundRestricted refusal). browser_* tools target by tabId/selector, not windowTitle.",
+    "Bring a window to the foreground by partial title match (case-insensitive), or exactly by hwnd (from desktop_discover's windows[].hwnd, or a refusal's suggest). Use when a tool does not accept a windowTitle param, or when you need to switch focus before a sequence of actions. Use chromeTabUrlContains to activate a specific Chrome/Edge tab by URL substring before focusing — only the active tab's title appears in the windows list. If CDP is unavailable, chromeTabUrlContains is silently skipped — check response.hints.warnings. Returns WindowNotFound if no match exists; call desktop_discover to see available titles. Caveats: On some apps focus may be immediately stolen back (modal dialogs, UAC prompts) — verify with desktop_state after focusing. Win11 foreground refusal (UIPI cross-elevation / admin-only target / call from a background process or service) returns code:'ForegroundRestricted' ok:false instead of silently failing — recover by switching to a tool that does not require foreground transfer: desktop_act / click_element use UIA InvokePattern (no foreground needed); keyboard BG path bypasses foreground for terminal-class targets only (Windows Terminal / cmd / PowerShell — keyboard with windowTitle on non-terminal apps still hits the same ForegroundRestricted refusal). browser_* tools target by tabId/selector, not windowTitle.",
     focusWindowRegistrationSchema,
     focusWindowRegistrationHandler as typeof focusWindowHandler
   );

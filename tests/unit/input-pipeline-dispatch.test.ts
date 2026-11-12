@@ -2185,7 +2185,7 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
     shape(null);
     const r = await postWheelToHwnd(FRAME, { direction: "down", notch: 3 });
     expect(win32PostMessageMock).not.toHaveBeenCalled();
-    expect(r).toEqual({ scrolled: false, channel: "postmessage", reason: "target_unreachable", pageNotVisible: { frame: FRAME, why: "covered", title: "" } });
+    expect(r).toEqual({ scrolled: false, channel: "postmessage", reason: "target_unreachable", pageNotVisible: { frame: FRAME, why: "covered" } });
   });
 
   it("fully covered (no page window, Q3): nothing is posted", async () => {

@@ -6,7 +6,7 @@ import { findTabFrame, alignToPageSurface, aimFromCoords, aimFromViewportRect, t
 import { PAGE_RWH_CLASS } from "../engine/page-surface.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 import { moveCursorTo } from "../engine/cursor.js";
-import { enumWindowsInZOrder, getWindowDpi, getWindowProcessId, restoreAndFocusWindow, windowFromPoint, getWindowClassName, getWindowTitleW, type WindowZInfo } from "../engine/win32.js";
+import { enumWindowsInZOrder, getWindowDpi, getWindowProcessId, restoreAndFocusWindow, windowFromPoint, getWindowClassName, type WindowZInfo } from "../engine/win32.js";
 import { updateWindowCache } from "../engine/window-cache.js";
 import { whoIsUnderPoint, type PointOwner } from "../engine/point-owner.js";
 import { ok, buildDesc } from "./_types.js";
@@ -793,12 +793,6 @@ export function browserPointCoveredFailure(
   }
   if (cover.covered === "page_not_shown") {
     const hwnd = String(cover.hwnd);
-    // internal #401 — focus_window finds a window by title; it takes no hwnd. Name the window's title, or
-    // where to read it when it has none.
-    const title = (() => { try { return getWindowTitleW(cover.hwnd); } catch { return ""; } })();
-    const focusCall = (force: boolean) => title !== ""
-      ? `focus_window({ title: ${JSON.stringify(title)}${force ? ", forceFocus: true" : ""} })`
-      : `focus_window({ title${force ? ", forceFocus: true" : ""} }) with the window's title, as desktop_state lists it`;
     const suggest = cover.why === "cloaked"
       ? [
         "The browser window is on another virtual desktop, and bringing it here would switch the user's desktop: ask the user to switch to it or move the window here, then retry browser_click.",
@@ -806,11 +800,11 @@ export function browserPointCoveredFailure(
       ]
       : cover.why === "minimized"
         ? [
-          `Restore the window, then retry browser_click: ${focusCall(false)}.`,
+          `Restore the window, then retry browser_click: focus_window({ hwnd: "${hwnd}" }).`,
           "To act without an OS click, browser_fill sets a field's value and browser_eval runs script in the page.",
         ]
         : [
-          `Retry browser_click once: the window was brought forward but its page had not been drawn yet. If it says the same again, bring it forward with ${focusCall(true)} and retry.`,
+          `Retry browser_click once: the window was brought forward but its page had not been drawn yet. If it says the same again, bring it forward with focus_window({ hwnd: "${hwnd}", forceFocus: true }) and retry.`,
           "To act without an OS click, browser_fill sets a field's value and browser_eval runs script in the page.",
         ];
     return failCode(
@@ -1745,13 +1739,17 @@ function browserResolveStopToFailure(
  * BrowserAmbiguousTarget / ElementNotInViewport precedent) — no SUGGESTS entry,
  * so no catalog-drift cascade.
  */
-function browserMinimizedFailure(ctx: Record<string, unknown>): ToolResult {
+/** Exported for tests. */
+export function browserMinimizedFailure(ctx: Record<string, unknown>): ToolResult {
   return failCode(
     "BrowserTargetMinimized",
     "browser_click: the target Chrome/Edge window is minimized, so its element coordinates resolve off-screen — clicking would mis-fire at the screen corner. Restore the window and retry.",
     {
       suggest: [
-        "Restore / bring the browser window to the foreground (click its taskbar icon, or focus_window by its title), then retry browser_click.",
+        // internal #401 — focus_window takes the hwnd, which names exactly this window; its title can name
+        // another browser window showing the same page. The hwnd is not known here (the page reported the
+        // minimized position), so say where to read it.
+        "Restore the browser window, then retry browser_click: desktop_discover lists windows[] with each window's title and hwnd; pass this window's to focus_window({ hwnd: \"<its hwnd>\" }). focus_window({ title }) also works when no other window shows the same title.",
         "If you only need to enter text, browser_fill works on a minimized window — it sets the value via the page without an OS click.",
       ],
       context: ctx,
