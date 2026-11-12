@@ -83,7 +83,7 @@ describe("internal #318: the last look before the click", () => {
   it("refuses when the tab is hidden and another page is showing, names both, and switches nothing", async () => {
     mocks.visibility = { t2: "hidden", t1: "visible" };
     expect(await osClickAndVerify(392, 360, "#btn", "t2", 9222, () => aim)).toEqual({
-      covered: "tab", target: CART, showing: [SHOP],
+      covered: "tab", target: CART, showing: [SHOP], at: { x: 392, y: 360 },
     });
     expect(mocks.move).not.toHaveBeenCalled();
     expect(mocks.click).not.toHaveBeenCalled();
@@ -106,7 +106,7 @@ describe("internal #318: the last look before the click", () => {
   it("a window on top is still named as a window (with its own advice), not as a hidden tab", async () => {
     mocks.visibility = { t2: "hidden", t1: "visible" };
     expect(await osClickAndVerify(392, 360, "#btn", "t2", 9222, () => other)).toEqual({
-      covered: "other", hwnd: 888n, title: "Notepad",
+      covered: "other", hwnd: 888n, title: "Notepad", at: { x: 392, y: 360 },
     });
   });
 
