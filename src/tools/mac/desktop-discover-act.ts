@@ -104,7 +104,7 @@ export const macActDescription = buildDesc({
     "the discover still refuses. invoke on a listitem (a Finder sidebar entry) opens it; auto and click never do — ask for invoke. " +
     "Just before opening, the entry is checked to be the one named; another is refused (entity_not_found, nothing was done). An open answers " +
     "open: { confirmed } and next: refresh_view, and diff does not show it — the window is retitled, so discover again by its windowId (desktop_state windows[]), without a target or " +
-    "by the new title. Finder answers an error even when it opened: the act then answers ok with open.confirmed: false. Any other error after the open was sent says it may have opened.",
+    "by the new title. Finder answers an error even when it opened: the act then answers ok with open.confirmed: false. Any other error after the open, a press or a write was sent says it may have happened (a button that closes its window answers an error after it acted): discover before acting again.",
   prefer:
     "Send acts one at a time: each act can change the view, so acts sent together can refuse each other (entity_not_found; nothing was done). " +
     "Call desktop_state or desktop_discover afterwards to confirm. A write changes the field, not the file: saving is not done or reported.",

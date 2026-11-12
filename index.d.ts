@@ -1036,7 +1036,7 @@ export interface NativeMacActResult {
   role?: string
   /** For `modal_blocking`: `sheet:<title>` or `modal_window:<title>`. */
   blocker?: string
-  /** `perform`: the action was sent to the app. A failure with this set may have acted; without it nothing was asked. */
+  /** The action (`perform`) or the write (`set_value` / `insert_text`) was sent to the app. A failure with this set may have acted; without it nothing was asked. */
   performed?: boolean
 }
 

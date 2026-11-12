@@ -983,8 +983,9 @@ pub struct MacActResult {
     pub role: Option<String>,
     /// For `modal_blocking`: `sheet:<title>` or `modal_window:<title>`.
     pub blocker: Option<String>,
-    /// `perform`: the action was sent to the app (internal #259). A failure with this set happened
-    /// after the app was asked, so it may have acted; without it nothing was asked.
+    /// The action or write was sent to the app: `perform` (internal #259), and `set_value` /
+    /// `insert_text` when the write itself answered an error (internal #366). A failure with this set
+    /// happened after the app was asked, so it may have acted; without it nothing was asked.
     pub performed: Option<bool>,
 }
 
@@ -1516,7 +1517,8 @@ pub(crate) fn set_value(t: &MacAxTarget, value: &str) -> MacActResult {
     let before = value_text_marked(&e);
     let err = write();
     if err != AXError::Success {
-        return refused(&ax_error_name(err));
+        // The write was sent: the app may hold the text even though it answered an error (internal #366).
+        return MacActResult { performed: Some(true), ..refused(&ax_error_name(err)) };
     }
     let after = value_text_marked(&e);
     let ignored = write_was_ignored(before.as_ref(), after.as_ref(), value);
@@ -1524,7 +1526,8 @@ pub(crate) fn set_value(t: &MacAxTarget, value: &str) -> MacActResult {
         // The press happened: from here a failed write is "not applied", never "nothing was done" —
         // and it must not pass for a success when the read-back is gone too (codex on #913).
         if write() != AXError::Success {
-            return refused("not_applied_after_press");
+            // The press and both writes were sent (internal #366); the reason keeps its own sentence.
+            return MacActResult { performed: Some(true), ..refused("not_applied_after_press") };
         }
         return MacActResult { ok: true, value_after: value_text(&e), ..Default::default() };
     }
@@ -1626,7 +1629,8 @@ pub(crate) fn insert_text(t: &MacAxTarget, text: &str, at: Option<i64>) -> MacAc
     }
     let err = unsafe { e.set_attribute_value(&cfstr("AXSelectedText"), &CFString::from_str(text)) };
     if err != AXError::Success {
-        return refused(&ax_error_name(err));
+        // The insertion was sent (internal #366).
+        return MacActResult { performed: Some(true), ..refused(&ax_error_name(err)) };
     }
     MacActResult { ok: true, value_after: value_text(&e), ..Default::default() }
 }

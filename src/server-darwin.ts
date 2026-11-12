@@ -71,7 +71,7 @@ if (!nativeMac) {
         "4. desktop_state / desktop_discover — confirm",
         "screenshot(windowTitle? | windowId?) — one window as PNG, when pixels are needed (Screen Recording permission)",
         "A window can be targeted by its windowId (desktop_state windows[]) instead of its title: the id stays the same when the app retitles the window.",
-        "Discover right before each act, and act with a lease from the latest discover of that window: an older one answers lease_generation_mismatch. entity_not_found from desktop_act means the window changed since the discover, or the element is gone or no longer what was read: nothing was done; discover again.",
+        "Discover right before each act, and act with a lease from the latest discover of that window: an older one answers lease_generation_mismatch. entity_not_found from desktop_act means the window changed since the discover, or the element is gone or no longer what was read: nothing was done; discover again. executor_failed whose detail says the press or write may have happened (it was sent, then the app answered an error — a button that closes its window does): discover or desktop_state first, and do not press it again.",
       ].join("\n"),
     }
   );

@@ -7,8 +7,10 @@
  * here takes the foreground: AXPress and AXValue reach a background app.
  *
  * Refusals map onto the touch loop's existing reasons (guarded-touch.ts):
- * - the element is gone or no longer what was read → `TargetGoneError`
+ * - the element is gone or no longer what was read, before anything was sent → `TargetGoneError`
  *   (`entity_not_found`: nothing was done; discover again);
+ * - an error after the press or write was sent (`performed`) → `ActMayHaveHappenedError`
+ *   (`executor_failed`, saying it may have been done; internal #366);
  * - a write the app accepted but whose value did not become the text →
  *   `ValueNotAppliedError` (`value_not_applied`);
  * - anything else → a plain error (`executor_failed`).
@@ -59,6 +61,9 @@ export class ModalBlockingError extends Error {
   }
 }
 
+/** Errors that say the app was never reached, so nothing was done even after the act was sent. */
+const NEVER_REACHED = new Set(["api_disabled", "illegal_argument"]);
+
 function refuse(r: NativeMacActResult, what: string): never {
   const reason = r.reason ?? "unknown";
   if (reason === "modal_blocking") throw new ModalBlockingError(r.blocker);
@@ -69,6 +74,11 @@ function refuse(r: NativeMacActResult, what: string): never {
       undefined,
       "The field did not take the write, so it was pressed to focus it, and the write after that failed (the page may have replaced the field). Discover again and check the field before typing."
     );
+  }
+  // internal #366: sent, then answered with an error — the app may have acted (a button that closes its
+  // window answers invalid_ui_element after it acted). Decided here, once, for every act that refuses.
+  if (r.performed === true && !NEVER_REACHED.has(reason)) {
+    throw new ActMayHaveHappenedError(what === "press" ? "press" : "write", reason);
   }
   if (GONE.has(reason)) {
     throw new TargetGoneError(
@@ -106,6 +116,24 @@ export class OpenMayHaveHappenedError extends Error {
     this.name = "OpenMayHaveHappenedError";
     this.callerDetail =
       `The open was sent and the app answered ${reason}: the item may have opened. desktop_discover (or desktop_state) before trying again, so it is not opened twice.`;
+  }
+}
+
+/**
+ * internal #366 — a press or a write that was SENT and then answered with an error. The app may have
+ * acted: a button that closes its own window (Delete, Send) is destroyed before the reply, and the
+ * answer is `invalid_ui_element`. Told "the element is gone, nothing was done", the caller discovers
+ * again and presses twice. So once the native act says it sent the action (`performed`), the refusal
+ * says it may have happened, whatever the reason.
+ */
+export class ActMayHaveHappenedError extends Error {
+  readonly callerDetail: string;
+  constructor(what: "press" | "write", reason: string) {
+    super(`${what}: ${reason} after the ${what} was sent`);
+    this.name = "ActMayHaveHappenedError";
+    this.callerDetail = what === "press"
+      ? `The press was sent and the app answered ${reason}: it may have been carried out (a button that closes its window answers so). desktop_discover (or desktop_state) before pressing again, so it does not run twice.`
+      : `The write was sent and the app answered ${reason}: the field may hold the text now. desktop_discover and check the field before writing again.`;
   }
 }
 

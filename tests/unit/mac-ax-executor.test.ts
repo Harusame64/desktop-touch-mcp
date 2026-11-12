@@ -210,4 +210,61 @@ describe("append (codex #782: never replace with a cut value)", () => {
     const exec = createMacAxExecutor({ perform: vi.fn(), setValue: vi.fn(), insertText: vi.fn(async () => ({ ok: true, valueAfter: "x".repeat(2000) })), appendMode: () => true } as any);
     expect(await exec(entity, "type", "new")).toBe("ax");
   });
+
+  // internal #366: a button that closes its own window (Delete, Send) is destroyed before the reply, and
+  // AXPress answers invalid_ui_element after the app acted. "Nothing was done" made the caller press twice.
+  describe("an error after the act was sent says it may have happened (internal #366)", () => {
+    it("a press sent and answered invalid_ui_element is not TargetGoneError", async () => {
+      const { perform, exec } = setup();
+      perform.mockResolvedValue({ ok: false, reason: "invalid_ui_element", performed: true });
+      const e = await exec(entity, "click").then(() => null, (x: unknown) => x as { name: string; callerDetail: string });
+      expect(e?.name).toBe("ActMayHaveHappenedError");
+      expect(e?.callerDetail).toMatch(/may have been carried out/);
+      expect(e?.callerDetail).not.toMatch(/Nothing was done/);
+    });
+    it("…any reason after the press was sent (cannot_complete)", async () => {
+      const { perform, exec } = setup();
+      perform.mockResolvedValue({ ok: false, reason: "cannot_complete", performed: true });
+      await expect(exec(entity, "click")).rejects.toMatchObject({ name: "ActMayHaveHappenedError" });
+    });
+    it("the same reason before anything was sent is still 'nothing was done' (control)", async () => {
+      const { perform, exec } = setup();
+      perform.mockResolvedValue({ ok: false, reason: "invalid_ui_element" });
+      await expect(exec(entity, "click")).rejects.toMatchObject({ name: "TargetGoneError", callerDetail: expect.stringContaining("Nothing was done") });
+    });
+    it("a write sent and answered with an error says the field may hold the text", async () => {
+      const { setValue, exec } = setup();
+      setValue.mockResolvedValue({ ok: false, reason: "invalid_ui_element", performed: true });
+      await expect(exec(entity, "type", "abc")).rejects.toMatchObject({
+        name: "ActMayHaveHappenedError",
+        callerDetail: expect.stringContaining("may hold the text"),
+      });
+    });
+    it("an append sent and answered with an error says the same", async () => {
+      const perform = vi.fn();
+      const setValue = vi.fn();
+      const insertText = vi.fn().mockResolvedValue({ ok: false, reason: "cannot_complete", performed: true });
+      const exec = createMacAxExecutor({ perform, setValue, insertText, appendMode: () => true, noteOpen: () => {} } as never);
+      await expect(exec(entity, "type", "abc")).rejects.toMatchObject({
+        name: "ActMayHaveHappenedError",
+        callerDetail: expect.stringContaining("may hold the text"),
+      });
+    });
+    it("an error that says the app was never reached (api_disabled) is not 'may have happened'", async () => {
+      const { perform, exec } = setup();
+      perform.mockResolvedValue({ ok: false, reason: "api_disabled", performed: true });
+      await expect(exec(entity, "click")).rejects.toMatchObject({ name: "MacAxActError", callerDetail: expect.stringContaining("api_disabled") });
+    });
+    it("illegal_argument after sending is not 'may have happened' either (agy on #958)", async () => {
+      const { setValue, exec } = setup();
+      setValue.mockResolvedValue({ ok: false, reason: "illegal_argument", performed: true });
+      await expect(exec(entity, "type", "abc")).rejects.toMatchObject({ name: "MacAxActError" });
+    });
+    it("not_applied_after_press keeps its own sentence (control)", async () => {
+      const { setValue, exec } = setup();
+      setValue.mockResolvedValue({ ok: false, reason: "not_applied_after_press", performed: true });
+      await expect(exec(entity, "type", "abc")).rejects.toMatchObject({ name: "ValueNotAppliedError" });
+    });
+  });
 });
+
