@@ -167,6 +167,10 @@ describe("tabOfFrame — how a title is shown", () => {
     expect(await tabOfFrame(FRAME, [page("A", "Alpha"), page("B", "Beta")], deps({ windows, visible: ["A"], title: "Alpha - Profile 1 - Microsoft​ Edge" })))
       .toEqual({ kind: "tab", tabId: "A" });
   });
+  it("a frame title that is the tab's title alone (an app window, a PWA) shows it", async () => {
+    expect(await tabOfFrame(FRAME, [page("A", "Alpha"), page("B", "Beta")], deps({ windows, visible: ["A"], title: "Alpha" })))
+      .toEqual({ kind: "tab", tabId: "A" });
+  });
   it("a title is a whole title: 'Alp' is not shown by 'Alpha - …'", async () => {
     expect(await tabOfFrame(FRAME, [page("A", "Alp")], deps({ windows, visible: ["A"], title: "Alpha - Google Chrome" })))
       .toEqual({ kind: "none", why: "no_titled_tab" });

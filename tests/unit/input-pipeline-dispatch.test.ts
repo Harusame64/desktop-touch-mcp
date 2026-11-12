@@ -162,7 +162,9 @@ const listTabsLightMock = vi.fn();
 const dispatchWheelInTabMock = vi.fn();
 const readScrollPositionInTabMock = vi.fn();
 const getBrowserProcessIdMock = vi.fn(async (_port?: number) => 4242);
+const evaluateInTabMock = vi.fn();
 vi.mock("../../src/engine/cdp-bridge.js", () => ({
+  evaluateInTab: (...a: unknown[]) => evaluateInTabMock(...a),
   listTabsLight: listTabsLightMock,
   dispatchWheelInTab: dispatchWheelInTabMock,
   readScrollPositionInTab: readScrollPositionInTabMock,
@@ -198,6 +200,35 @@ const {
   wheelPointDeps,
   tabOfFrameDeps,
 } = await import("../../src/tools/_input-pipeline.js");
+
+// The real visibility read, kept before `frameShows` replaces it (agy on #971: it had no test of its own).
+const realTabVisibility = tabOfFrameDeps.visibility;
+describe("ADR-040 PR ③ — tabOfFrameDeps.visibility: a tab's visibilityState, or undefined when it gives no answer", () => {
+  afterEach(() => { vi.useRealTimers(); evaluateInTabMock.mockReset(); });
+  it("asks the tab on the configured port and gives its answer", async () => {
+    getCdpPortMock.mockReturnValue(9333);
+    evaluateInTabMock.mockResolvedValue("visible");
+    expect(await realTabVisibility("T1")).toBe("visible");
+    expect(evaluateInTabMock).toHaveBeenCalledWith("document.visibilityState", "T1", 9333);
+    getCdpPortMock.mockReturnValue(9222);
+  });
+  it("the evaluate throws: undefined", async () => {
+    evaluateInTabMock.mockRejectedValue(new Error("Tab not found"));
+    expect(await realTabVisibility("T2")).toBeUndefined();
+  });
+  it("no answer within 500 ms: undefined, not 'hidden'", async () => {
+    vi.useFakeTimers();
+    evaluateInTabMock.mockReturnValue(new Promise(() => {}));
+    const p = realTabVisibility("T3");
+    await vi.advanceTimersByTimeAsync(499);
+    let settled = false;
+    void p.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(await p).toBeUndefined();
+  });
+});
 
 // ADR-040 PR ③ — the CDP road takes the tab the frame shows. These cells stub what `tabOfFrame` reads: the
 // frame has its page surface, every page tab is in one window at the frame's rect, its title shows
