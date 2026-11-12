@@ -3856,16 +3856,33 @@ function getSharedRealDeps(): ExecutorDeps {
 
     async cdpClick(selector, tabId) {
       const { getElementScreenCoords, portForTab } = await import("../engine/cdp-bridge.js");
-      const coords = await getElementScreenCoords(selector, tabId ?? null, portForTab(tabId));
+      const { resolveTabId } = await import("../engine/cdp-bridge.js");
+      // ADR-040 — one tab for the coordinates and the window they are placed on (codex on #967).
+      const tab = tabId ?? await resolveTabId(null, portForTab(tabId)).catch(() => null);
+      const coords = await getElementScreenCoords(selector, tab, portForTab(tabId));
       if ((coords as { error?: string }).error) {
         throw new Error((coords as { error?: string }).error ?? "CDP getElementScreenCoords failed");
       }
+      // ADR-040 — the point on the page surface (the frame's page RWH), as browser_click takes it, not the
+      // page-side formula (#306). When the surface cannot be read, the formula's point, as before.
+      const { findTabFrame, alignToPageSurface, aimFromCoords } = await import("../engine/page-aim.js");
+      const port = portForTab(tabId);
+      const frame = await findTabFrame(port, tab).catch(() => undefined);
+      const aligned = alignToPageSurface(frame, aimFromCoords(coords), { x: coords.x, y: coords.y });
+      // The page's window cannot be told from another pane: the point is not known (ADR-040, agy on #967).
+      if (aligned.surface?.kind === "unreadable" && aligned.surface.why === "ambiguous") {
+        throw new Error(
+          `Nothing was clicked: the browser window (hwnd ${String(aligned.surface.frame)}) shows more than one pane (DevTools or a side panel), and which one is the page could not be told. ` +
+          `Close DevTools with keyboard({ action: "press", keys: "f12", hwnd: "${String(aligned.surface.frame)}" }) or the side panel, then retry; or use browser_click with tabId, or browser_fill / browser_eval.`,
+        );
+      }
+      const { x, y } = aligned.point;
       // ADR-029: coordinates only become known inside this dep, so the
       // reachability check lives here rather than in the executor core.
-      assertCoordinateReachable(coords.x, coords.y);
+      assertCoordinateReachable(x, y);
       const { mouse, Button } = await import("../engine/nutjs.js");
       const { moveCursorTo } = await import("../engine/cursor.js");
-      await moveCursorTo(coords.x, coords.y);
+      await moveCursorTo(x, y);
       await mouse.click(Button.LEFT);
     },
 
