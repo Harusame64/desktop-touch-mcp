@@ -237,14 +237,15 @@ function deriveGuards(actionKind: ActionKind): GuardKind[] {
       // unusable end-to-end. The server still delegates foreground best-effort
       // to focusWindowForKeyboard (which now returns ok:false code:"ForegroundRestricted"
       // when refused — issue #202 unified shape), and target.identityStable
-      // keeps us from typing into the wrong process.
-      return ["target.identityStable", "modal.notBlocking" as GuardKind];
+      // keeps us from typing into the wrong process. There is no modal guard: a window its own
+      // dialog has disabled is refused where the keys would be delivered (internal #380 / #383).
+      return ["target.identityStable"];
     case "mouseClick":
     case "mouseDrag":
       return ["target.identityStable", "safe.clickCoordinates"];
     case "uiaInvoke":
     case "uiaSetValue":
-      return ["target.identityStable", "modal.notBlocking" as GuardKind];
+      return ["target.identityStable"];
     case "browserCdp":
       return ["browser.ready", "target.identityStable"];
   }
