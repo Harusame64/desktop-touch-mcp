@@ -67,8 +67,8 @@ export interface RunActionGuardParams {
    * Set by keyboard tools after focusWindowForKeyboard successfully drove the target
    * to the foreground. Passed through to safe.keyboardTarget to bypass the
    * foreground==true fluent check (which can race with foreground-stealing protection
-   * between the post-focus EnumWindows and the guard's own snapshot). Other gates
-   * (identity, modal, dirty watermark, focused element) still run.
+   * between the post-focus EnumWindows and the guard's own snapshot). Only a lens that carries
+   * safe.keyboardTarget reads it (a lensId's lens); the auto lens for keyboard has identity only.
    */
   foregroundVerified?: boolean;
   /** Phase F: browser readiness policy (v3 §4.2, §12.3). Forwarded to evalBrowserReady. */

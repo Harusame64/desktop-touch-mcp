@@ -1444,8 +1444,9 @@ export function getLeashChunkSize(): number {
  * Used by both the foreground path (after focus, with foregroundVerified=true)
  * and the BG path (Focus Leash Phase A, with foregroundVerified=true since
  * HWND-targeted WM_CHAR delivery is foreground-independent — see
- * _action-guard.ts:51-53: foregroundVerified=true only skips the foreground
- * gate, while identity/modal/dirty/focusedElement gates still run).
+ * `RunActionGuardParams.foregroundVerified`: it is read only by safe.keyboardTarget, which a lensId's
+ * lens can carry; the auto lens for keyboard has identity only, so there it changes nothing.
+ * A window its own dialog has disabled is handled where the keys are delivered (internal #380).
  *
  * Returns either a perception envelope (caller attaches to response) or a
  * pre-built failure ToolResult (caller returns directly).
@@ -1822,7 +1823,7 @@ export const keyboardTypeHandler = async ({
       spendFix();
       // Lens / auto-guard: foregroundVerified=false because flash will steal
       // foreground, but it returns to original within ~80ms; downstream guards
-      // (modal/identity/dirty/focusedElement) still run.
+      // (identity; see evaluateKeyboardGuards) still run.
       const ffGuard = await evaluateKeyboardGuards({
         toolName: "keyboard:type",
         lensId,
@@ -2095,7 +2096,7 @@ export const keyboardTypeHandler = async ({
           // would have run (PR #64 Codex P1). foregroundVerified=true is the
           // semantically correct value for BG mode — HWND-targeted delivery is
           // foreground-independent, and that flag only skips the foreground
-          // gate while modal/identity/dirty/focusedElement gates still run.
+          // gate while the identity gate still runs (see evaluateKeyboardGuards).
           const bgGuard = await evaluateKeyboardGuards({
             toolName: "keyboard:type",
             lensId,
@@ -3981,7 +3982,7 @@ export function registerKeyboardTools(server: McpServer): void {
     {
       description: buildDesc({
         purpose: "Send keyboard input to a window: 'type' for text, 'press' for key combos, 'sequence' for atomic multi-step chords.",
-        details: "action='type' inserts text (auto-clipboard for non-ASCII, bypassing IME conversion). action='press' sends key combos like 'ctrl+c'/'alt+tab'. action='sequence' runs ordered steps in one keyboard lock — use for Alt+letter, letter mnemonic chains where intermediate tool calls would close the menu. windowTitle or hwnd is REQUIRED (blank/whitespace counts as neither) — the server focuses and auto-guards that window (identity, foreground, modal) first, and a call with neither stops with DestinationRequired before any key is sent. Use windowTitle:'@active' to aim at the foreground window on purpose; an hwnd naming a titleless window works only while that window is already foreground. DESKTOP_TOUCH_REQUIRE_DESTINATION=0 downgrades the stop to a warning.",
+        details: "action='type' inserts text (auto-clipboard for non-ASCII, bypassing IME conversion). action='press' sends key combos like 'ctrl+c'/'alt+tab'. action='sequence' runs ordered steps in one keyboard lock — use for Alt+letter, letter mnemonic chains where intermediate tool calls would close the menu. windowTitle or hwnd is REQUIRED (blank/whitespace counts as neither) — the server focuses that window first, and a call with neither stops with DestinationRequired before any key is sent. Use windowTitle:'@active' to aim at the foreground window on purpose; an hwnd naming a titleless window works only while that window is already foreground. DESKTOP_TOUCH_REQUIRE_DESTINATION=0 downgrades the stop to a warning.",
         prefer: "Set lensId for perception guards. Use desktop_act({action:'setValue'}) for UIA ValuePattern text fields.",
         caveats: "win+r/win+x/win+s/win+l blocked. action='type' does not handle CJK IME composition — use use_clipboard=true or desktop_act({action:'setValue'}); neither lands while an IME composition is pending — commit or cancel it first. hints.clipboard says the backend and if the clipboard was restored. Non-ASCII text (CJK, emoji, diacritics, smart quotes) auto-clipboards, as keystrokes drop it or trigger Chrome accelerators; pass forceKeystrokes:true to disable. Background (PostMessage/WM_CHAR) auto-engages for classic console windows (cmd / PowerShell in conhost); DTM_BG_AUTO=1 enables globally. Windows Terminal: foreground, checked as terminal is (WindowsTerminalTargetUnsafe). Foreground non-terminal type runs a per-chunk leash; user focus-steal mid-stream aborts with FocusLostDuringType + context.typed/remaining; pass abortOnFocusLoss:false to disable. BG type verifies WM_CHAR via UIA TextPattern read-back; mismatch returns BackgroundInputNotDelivered. BG press read-back is scoped to terminal-class + enter/tab/arrow; other combos return verifyDelivery:'unverifiable', failure returns BackgroundKeyNotDelivered. action='sequence' is FG-only (BG/foreground_flash schema-rejected); emits verifyDelivery:'focus_only'; mid-loop focus theft returns MenuFocusLostMidSequence + context.remaining: Step[]. Win11 FG refusal returns ForegroundRestricted — terminal-class targets auto-engage BG (except a combo with ctrl/shift/alt and type with replaceAll, which go through FG and can return ForegroundRestricted too); non-terminal switch to desktop_act / click_element. Off-desktop target → WindowOnOtherDesktop. Window disabled by its dialog → WindowBlockedByDialog.",
         examples: [

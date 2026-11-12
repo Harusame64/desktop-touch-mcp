@@ -34,6 +34,10 @@
   dialog is not showing (minimized with it) is refused too. Unchanged: an `hwnd` naming the window still goes to its
   dialog and says so (`parent_disabled_prefer_popup`), as for `click_element`; a console window is not refused, since
   a console disabled by its Properties dialog still takes the keys into its input line (internal #380).
+- **The `keyboard` and `click_element` descriptions no longer say the auto-guard checks for a modal.** It checks only
+  that the window is still the same one. `keyboard` refuses a window its dialog has disabled where the keys are
+  delivered (above); `click_element` does not look for a modal dialog, and its description now says that an `hwnd`
+  whose window is disabled by its dialog acts on the dialog (internal #383).
 
 ## [2.4.1] - 2026-11-11 — Pastes into Windows Terminal are checked, and more replies say when nothing happened
 
