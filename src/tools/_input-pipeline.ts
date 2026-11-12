@@ -58,20 +58,13 @@ import type { Rect } from "../engine/vision-gpu/types.js";
  * **sub-windows** — popup menus, dropdowns) which can never be a scroll
  * destination, so the gate is now an equality on the top-level class only.
  *
- * **Known carry-over (Electron / multi-Chromium-app desktops)**: Chrome /
- * Edge / Slack / VS Code / Discord / Teams all use the same class name for
- * their top-level windows because they share the Chromium frame. When the
- * user has Chrome running with `--remote-debugging-port=9222` AND scrolls a
- * different Chromium-shell app (Slack, VS Code), the gate matches and the
- * `listTabsLight` probe succeeds — the wheel then mis-routes to Chrome.
- * Phase 3 accepts this risk because:
- *   1. Other Chromium-shell apps rarely run with a public CDP port (they
- *      don't expose `--remote-debugging-port` by default).
- *   2. When they do, the user has opted into CDP control and the
- *      destination ambiguity is theirs to manage (e.g. distinct ports).
- *   3. Phase 5 will tighten by cross-checking the HWND's PID against the
- *      `Target.getTargets()` window-owner PID via CDP — out of scope for
- *      Phase 3 to avoid scope creep. ADR §7 OQ3 / OQ6 carry-over.
+ * **Electron / multi-Chromium-app desktops**: Chrome / Edge / Slack / VS Code /
+ * Discord / Teams all use the same class name for their top-level windows
+ * because they share the Chromium frame. The gate matches all of them; since
+ * internal #319 item 2, `resolveCdpDestinationForHwnd` then compares the
+ * HWND's process with the CDP browser's (`SystemInfo.getProcessInfo`), so a
+ * window of another app or browser is not promoted to the CDP browser's page.
+ * When the browser's process cannot be read the promotion stays as it was.
  *
  * Future: if Edge's top-level class diverges in a Windows update, extend
  * this to a `new Set([...])` lookup. As of 2026-05 both Chrome and Edge
@@ -787,10 +780,11 @@ export async function resolveInputDestination(
  *
  * **The class name is passed in by the caller** (already known from
  * `ResolvedWindow.className` or `enumWindowsInZOrder()`'s record) so this
- * function does NOT re-enumerate windows. Total syscall budget per call is
- * **zero on the gate-miss path** and **one HTTP round-trip** on the gate-hit
- * path. (Opus Round 1 P2 — earlier shape redundantly called
- * `enumWindowsInZOrder` here, doubling the syscall cost per scroll.)
+ * function does NOT re-enumerate windows. Total budget per call is **zero on
+ * the gate-miss path**; on the gate-hit path, one HTTP round-trip plus the
+ * browser's process id the first time (see below). (Opus Round 1 P2 — earlier
+ * shape redundantly called `enumWindowsInZOrder` here, doubling the syscall
+ * cost per scroll.)
  *
  * Phase 3 picks the tab `defaultPageTab` picks — the same one `resolveTab(null, port)` in
  * `cdp-bridge.ts` uses (internal #308). A future phase may
@@ -799,9 +793,11 @@ export async function resolveInputDestination(
  *
  * internal #319 item 2 — only for a window of the browser on the CDP port. The tab came from that
  * browser whatever hwnd was asked: win2 scrolled Edge's page (Edge on 9222) with `hwnd:<a Chrome
- * window>`. So a window whose process is known not to be that browser's is not promoted; when the
- * browser's process cannot be read, the promotion stays as it was. Which of one browser's windows
- * holds the tab is not settled here (internal #396).
+ * window>`. So a window whose process is known not to be that browser's is not promoted. When either
+ * process cannot be read (the browser's, or the window's: 0), the promotion stays as it was. Which
+ * of one browser's windows holds the tab is not settled here (internal #396). Cost on the gate-hit
+ * path: `/json/list` beside the browser's process id, which is cached per port and read again only
+ * when the window's process differs from it.
  *
  * Exported for unit testing.
  */
@@ -819,12 +815,38 @@ export async function resolveCdpDestinationForHwnd(
     const firstPage = defaultPageTab(tabs);
     if (!firstPage) return null;
     // Another browser's window is not this browser's tab (internal #319 item 2).
-    const browserPid = await getBrowserProcessId(port).catch(() => undefined);
-    if (browserPid !== undefined && getWindowProcessId(hwnd) !== browserPid) return null;
+    const windowPid = getWindowProcessId(hwnd);
+    if (windowPid !== 0) {
+      const browserPid = await browserPidFor(port, windowPid);
+      if (browserPid !== undefined && windowPid !== browserPid) return null;
+    }
     return { kind: "cdp", tabId: firstPage.id };
   } catch {
     return null;
   }
+}
+
+/**
+ * The CDP browser's process id on `port`, or undefined when it cannot be read. Cached per port: the
+ * browser's process does not change while it serves the port, and it is read again when a window's
+ * process differs from the cached one (the browser may have been restarted, or it is another app).
+ */
+const browserPidByPort = new Map<number, number>();
+async function browserPidFor(port: number, windowPid: number): Promise<number | undefined> {
+  const cached = browserPidByPort.get(port);
+  if (cached !== undefined && cached === windowPid) return cached;
+  try {
+    const pid = await getBrowserProcessId(port);
+    browserPidByPort.set(port, pid);
+    return pid;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Test seam: forget the cached browser process ids. */
+export function _resetBrowserPidCacheForTest(): void {
+  browserPidByPort.clear();
 }
 
 // ─── Runtime guard (ADR §4 Phase 1 deliverable) ──────────────────────────────

@@ -190,6 +190,7 @@ vi.mock("../../src/utils/desktop-config.js", () => ({
 const {
   resolveInputDestination,
   resolveCdpDestinationForHwnd,
+  _resetBrowserPidCacheForTest,
   dispatchScrollWheel,
   assertTier4Reachable,
   postWheelToHwnd,
@@ -538,6 +539,31 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
     getCdpPortMock.mockReturnValue(9222);
     getWindowProcessIdMock.mockReset().mockReturnValue(4242);
     getBrowserProcessIdMock.mockReset().mockResolvedValue(4242);
+    _resetBrowserPidCacheForTest();
+  });
+
+  it("asks the configured port for the browser's process, and reads it once per port (gate 2 on #966)", async () => {
+    getCdpPortMock.mockReturnValue(9333);
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    expect(await resolveCdpDestinationForHwnd(0x780n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
+    expect(await resolveCdpDestinationForHwnd(0x780n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
+    expect(getBrowserProcessIdMock).toHaveBeenCalledTimes(1);
+    expect(getBrowserProcessIdMock).toHaveBeenCalledWith(9333);
+  });
+
+  it("reads the browser's process again when a window's process differs from the cached one", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    await resolveCdpDestinationForHwnd(0x781n, "Chrome_WidgetWin_1"); // caches 4242
+    getBrowserProcessIdMock.mockResolvedValue(5555); // the browser restarted
+    getWindowProcessIdMock.mockReturnValue(5555);
+    expect(await resolveCdpDestinationForHwnd(0x782n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
+    expect(getBrowserProcessIdMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("a window whose process cannot be read (0): promoted as before (gate 2 on #966)", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    getWindowProcessIdMock.mockReturnValue(0);
+    expect(await resolveCdpDestinationForHwnd(0x783n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
   });
 
   it("another browser's window (its process is not the CDP browser's): null, the wheel goes by the window (internal #319)", async () => {
@@ -608,6 +634,9 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
 
 describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration", () => {
   beforeEach(() => {
+    getWindowProcessIdMock.mockReset().mockReturnValue(4242);
+    getBrowserProcessIdMock.mockReset().mockResolvedValue(4242);
+    _resetBrowserPidCacheForTest();
     resolveWindowTargetMock.mockReset();
     findPlainTopLevelWindowByTitleMock.mockReset();
     findPlainTopLevelWindowByTitleMock.mockReturnValue(null);
@@ -645,6 +674,17 @@ describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration"
     ]);
     const dest = await resolveInputDestination({ windowTitle: "Chrome" });
     expect(dest).toEqual({ kind: "cdp", tabId: "TAB-Y" });
+  });
+
+  it("Case 3 recovery on another browser's window: {kind:'hwnd'}, not the CDP browser's page (internal #319)", async () => {
+    resolveWindowTargetMock.mockResolvedValue(null);
+    findPlainTopLevelWindowsByTitleMock.mockReturnValue([{
+      hwnd: 0xDDDn, title: "Google Chrome", className: "Chrome_WidgetWin_1", ownerHwnd: null, isMinimized: false,
+    }]);
+    listTabsLightMock.mockResolvedValue([{ id: "EDGE", title: "E", url: "https://e.com/", type: "page" }]);
+    getWindowProcessIdMock.mockReturnValue(9999);
+    const dest = await resolveInputDestination({ windowTitle: "Chrome" });
+    expect(dest).toEqual({ kind: "hwnd", hwnd: 0xDDDn });
   });
 
   it("Chromium HWND + CDP unreachable: falls back to {kind:'hwnd'} (Tier 1 UIA path remains available)", async () => {
