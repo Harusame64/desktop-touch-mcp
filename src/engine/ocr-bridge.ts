@@ -255,7 +255,9 @@ export async function runOcr(pngBase64: string, language = detectOcrLanguage()):
   const output = await runOcrExe(pngBytes, language, 20000);
   const parsed = JSON.parse(output) as { words?: OcrWord[]; error?: string; language?: unknown };
   if (parsed.error) throw new Error(parsed.error);
-  if (typeof parsed.language === "string" && parsed.language !== "") ocrEngineLanguage.set(language, parsed.language);
+  // Keyed case-blind; an exe that does not say clears the entry rather than leave another read's answer (agy on #961).
+  if (typeof parsed.language === "string" && parsed.language !== "") ocrEngineLanguage.set(language.toLowerCase(), parsed.language);
+  else ocrEngineLanguage.delete(language.toLowerCase());
   return parsed.words ?? [];
 }
 
@@ -269,16 +271,20 @@ const ocrEngineLanguage = new Map<string, string>();
 
 /** The engine language the last OCR for `requested` used, or undefined when win-ocr did not say. */
 export function ocrLanguageUsed(requested: string): string | undefined {
-  return ocrEngineLanguage.get(requested);
+  return ocrEngineLanguage.get(requested.toLowerCase());
 }
 
 /**
- * The same language when one tag extends the other ('en' and 'en-US', 'zh' and 'zh-Hans-CN'). A script or
- * region the engine does not cover is not ('zh-TW' read by 'zh-Hans-CN'): that text is misread (gate 2 on #961).
+ * The same language when one tag extends the other ('en' and 'en-US', 'zh' and 'zh-Hans-CN'). Script subtags
+ * are set aside first, since Windows names its engines with them and callers mostly do not: 'zh-CN' read by
+ * 'zh-Hans-CN' is the same (agy on #961). A region the engine does not cover is not ('zh-TW' read by
+ * 'zh-Hans-CN'): that text is misread (gate 2 on #961).
  */
 function sameOcrLanguage(requested: string, used: string): boolean {
-  const r = requested.toLowerCase();
-  const u = used.toLowerCase();
+  const norm = (tag: string): string =>
+    tag.toLowerCase().split("-").filter((part, i) => i === 0 || !/^[a-z]{4}$/.test(part)).join("-");
+  const r = norm(requested);
+  const u = norm(used);
   return r === u || u.startsWith(r + "-") || r.startsWith(u + "-");
 }
 
@@ -287,7 +293,7 @@ function sameOcrLanguage(requested: string, used: string): boolean {
  * only after an OCR in the same call, so it describes that read.
  */
 export function ocrLanguageWarning(requested: string): string | null {
-  const used = ocrEngineLanguage.get(requested);
+  const used = ocrEngineLanguage.get(requested.toLowerCase());
   if (used === undefined || sameOcrLanguage(requested, used)) return null;
   return `ocr_language_fallback: no Windows OCR pack is installed for '${requested}', so the text was read ` +
     `with the '${used}' engine and may be misread. The user can add the pack in Settings > Time & language > ` +

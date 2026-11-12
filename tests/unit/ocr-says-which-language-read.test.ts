@@ -70,6 +70,30 @@ describe("OCR names the language that read (internal #357)", () => {
     expect(ocrLanguageWarning("zh")).toBeNull();
   });
 
+  it("takes a script subtag as the same language (zh-CN read by zh-Hans-CN), and a longer request too (en-US by en)", async () => {
+    exeOutput.value = '{"language":"zh-Hans-CN","words":[]}';
+    await runOcr(PNG, "zh-CN");
+    expect(ocrLanguageWarning("zh-CN")).toBeNull();
+    exeOutput.value = '{"language":"en","words":[]}';
+    await runOcr(PNG, "en-US");
+    expect(ocrLanguageWarning("en-US")).toBeNull();
+  });
+
+  it("looks the request up case-blind", async () => {
+    exeOutput.value = '{"language":"ja","words":[]}';
+    await runOcr(PNG, "en-US");
+    expect(ocrLanguageWarning("en-us")).toMatch(/^ocr_language_fallback: /);
+    expect(ocrLanguageUsed("EN-us")).toBe("ja");
+  });
+
+  it("forgets an earlier answer when a later exe does not say", async () => {
+    exeOutput.value = '{"language":"ja","words":[]}';
+    await runOcr(PNG, "en");
+    exeOutput.value = '{"words":[]}';
+    await runOcr(PNG, "en");
+    expect(ocrLanguageWarning("en")).toBeNull();
+  });
+
   it("claims nothing when an older win-ocr.exe does not say (control)", async () => {
     exeOutput.value = '{"words":[]}';
     await runOcr(PNG, "en");
