@@ -7,6 +7,10 @@
   tool (internal #377).
 
 ### Fixed — Windows
+- **A wheel sent to one browser's window no longer scrolls another browser's page.** `scroll` on a Chrome or Edge
+  window went through CDP to the page of the browser on the CDP port, whichever browser the window was: with Edge on
+  the port, a Chrome window's scroll moved Edge's page and answered `delivered_via_cdp`. A window of another browser
+  now gets the wheel itself. Two windows of the browser on the port are not told apart yet (internal #319, #396).
 - **`desktop_discover` lists a text box named only by the label beside it.** A WPF `TextBox` labelled through
   `Label.Target` has an empty UI Automation name and no `LabeledBy`, so discover left it out. Such a text box is now
   listed under the text laid out directly left of it on its row, or directly above it at its left edge, with

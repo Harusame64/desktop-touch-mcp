@@ -31,7 +31,7 @@ import {
   type ResolvedWindow,
 } from "./_resolve-window.js";
 import { logDispatchSink } from "./_resolve-log.js";
-import { getWindowRectByHwnd } from "../engine/win32.js";
+import { getWindowRectByHwnd, getWindowProcessId } from "../engine/win32.js";
 import { nativeUia, nativeWin32, nativeL1 } from "../engine/native-engine.js";
 import {
   captureFrame,
@@ -45,6 +45,7 @@ import {
   listTabsLight,
   dispatchWheelInTab,
   readScrollPositionInTab,
+  getBrowserProcessId,
 } from "../engine/cdp-bridge.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import type { Rect } from "../engine/vision-gpu/types.js";
@@ -796,10 +797,16 @@ export async function resolveInputDestination(
  * thread a focused-tab hint via the foreground HWND → tab mapping (ADR §7
  * OQ-Electron carry-over).
  *
+ * internal #319 item 2 — only for a window of the browser on the CDP port. The tab came from that
+ * browser whatever hwnd was asked: win2 scrolled Edge's page (Edge on 9222) with `hwnd:<a Chrome
+ * window>`. So a window whose process is known not to be that browser's is not promoted; when the
+ * browser's process cannot be read, the promotion stays as it was. Which of one browser's windows
+ * holds the tab is not settled here (internal #396).
+ *
  * Exported for unit testing.
  */
 export async function resolveCdpDestinationForHwnd(
-  _hwnd: bigint,
+  hwnd: bigint,
   className: string | null,
 ): Promise<{ kind: "cdp"; tabId: string } | null> {
   if (className !== CHROMIUM_TOP_LEVEL_CLASS) {
@@ -811,6 +818,9 @@ export async function resolveCdpDestinationForHwnd(
     // The tab every other call without a tabId uses, not whatever target is listed first (#308).
     const firstPage = defaultPageTab(tabs);
     if (!firstPage) return null;
+    // Another browser's window is not this browser's tab (internal #319 item 2).
+    const browserPid = await getBrowserProcessId(port).catch(() => undefined);
+    if (browserPid !== undefined && getWindowProcessId(hwnd) !== browserPid) return null;
     return { kind: "cdp", tabId: firstPage.id };
   } catch {
     return null;
