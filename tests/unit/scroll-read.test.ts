@@ -209,6 +209,7 @@ describe("scrollReadHandler (mocked)", () => {
     vi.restoreAllMocks();
     // resetModules does not drop a doMock registration; the off-desktop test's must not reach the next test.
     vi.doUnmock("../../src/tools/_off-desktop.js");
+    vi.doUnmock("../../src/tools/_blocked-by-dialog.js");
   });
 
   /**
@@ -768,6 +769,125 @@ describe("scrollReadHandler (mocked)", () => {
     expect(body.note).not.toContain("click the target window");
     expect(restoreMock).not.toHaveBeenCalled();
     expect(pressKeyMock).not.toHaveBeenCalled();
+  });
+
+  // internal #381 (win2 S2, dev/380-design-spike b7a8bbee): with Save As open, read brought the disabled
+  // Notepad in front of its dialog (the dialog lost its focus). Now: not brought forward, no page key —
+  // not even by PostMessage, which would reach the dialog — and the first page is what is read.
+  it("reads a window its dialog has disabled without bringing it forward or sending a page key", async () => {
+    const pressKeyMock = vi.fn().mockResolvedValue(undefined);
+    const postMock = vi.fn().mockReturnValue(true);
+    vi.doMock("../../src/engine/ocr-bridge.js", () => ({
+      recognizeWindowByHwnd: vi.fn().mockResolvedValue({ words: makeWords(["A"]), origin: { x: 0, y: 0 } }),
+      ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
+      detectOcrLanguage: () => "en",
+    }));
+    vi.doMock("../../src/engine/nutjs.js", () => ({ keyboard: { pressKey: pressKeyMock, releaseKey: vi.fn() } }));
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({ title: "TestWindow", hwnd: 0xCAFEn, warnings: [] }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
+    }));
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: postMock,
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: true }),
+    }));
+    vi.doMock("../../src/tools/_off-desktop.js", () => ({ offDesktopTarget: vi.fn().mockResolvedValue(null) }));
+    vi.doMock("../../src/tools/_blocked-by-dialog.js", () => ({
+      beforeForeground: vi.fn().mockResolvedValue({ blockedByDialog: { hwnd: 0xCAFEn, title: "TestWindow", dialog: { hwnd: 0xD1A1n, name: "Save As" } } }),
+    }));
+    const restoreMock = vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
+    vi.doMock("../../src/engine/win32.js", () => ({
+      getForegroundHwnd: vi.fn().mockReturnValue(0xD1A1n),
+      enumWindowsInZOrder: vi.fn().mockReturnValue([{ hwnd: 0xCAFEn, title: "TestWindow", isEnabled: false }]),
+      getWindowTitleW: vi.fn().mockReturnValue("Save As"),
+      getWindowRectByHwnd: vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 }),
+      getWindowRoot: vi.fn((h: bigint) => h),
+      restoreAndFocusWindow: restoreMock,
+    }));
+    const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
+    const result = await scrollReadHandler({ action: "read", windowTitle: "Test", maxPages: 3, scrollKey: "PageDown", scrollDelayMs: 0, stopWhenNoChange: true });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.ok).toBe(true);
+    expect(body.pages).toBe(1);
+    expect(body.stoppedReason).toBe("foreground_refused");
+    expect(body.note).toContain("disabled while a dialog it opened is in front");
+    expect(restoreMock).not.toHaveBeenCalled();
+    expect(postMock).not.toHaveBeenCalled();
+    expect(pressKeyMock).not.toHaveBeenCalled();
+  });
+
+  // agy on #957: when the dialog could not be looked for, the window is still disabled and a key may reach a
+  // dialog — no page key, as when one is seen.
+  it("sends no page key when the dialog could not be read (dialogUnread)", async () => {
+    const postMock = vi.fn().mockReturnValue(true);
+    vi.doMock("../../src/engine/ocr-bridge.js", () => ({
+      recognizeWindowByHwnd: vi.fn().mockResolvedValue({ words: makeWords(["A"]), origin: { x: 0, y: 0 } }),
+      ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
+      detectOcrLanguage: () => "en",
+    }));
+    vi.doMock("../../src/engine/nutjs.js", () => ({ keyboard: { pressKey: vi.fn(), releaseKey: vi.fn() } }));
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({ title: "TestWindow", hwnd: 0xCAFEn, warnings: [] }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
+    }));
+    vi.doMock("../../src/engine/bg-input.js", () => ({ postKeyComboToHwnd: postMock, canInjectAtTarget: vi.fn().mockReturnValue({ supported: true }) }));
+    vi.doMock("../../src/tools/_blocked-by-dialog.js", () => ({
+      beforeForeground: vi.fn().mockResolvedValue({ blockedByDialog: { hwnd: 0xCAFEn, title: "TestWindow", dialog: null, dialogUnread: true } }),
+    }));
+    vi.doMock("../../src/engine/win32.js", () => ({
+      getForegroundHwnd: vi.fn().mockReturnValue(2n),
+      enumWindowsInZOrder: vi.fn().mockReturnValue([{ hwnd: 0xCAFEn, title: "TestWindow", isEnabled: false }]),
+      getWindowTitleW: vi.fn().mockReturnValue("Other"),
+      getWindowRectByHwnd: vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 }),
+      getWindowRoot: vi.fn((h: bigint) => h),
+      restoreAndFocusWindow: vi.fn(),
+    }));
+    const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
+    const body = JSON.parse(((await scrollReadHandler({ action: "read", windowTitle: "Test", maxPages: 3, scrollKey: "PageDown", scrollDelayMs: 0, stopWhenNoChange: true })).content[0] as { text: string }).text);
+    expect(body.pages).toBe(1);
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
+  // gate 2 on #957: a window disabled with no dialog of its seen keeps its PostMessage page keys (they
+  // reach its enabled child, K3b) — refusing them would take away a road that works.
+  it("pages a disabled window with no dialog seen by PostMessage, and says it was not brought forward", async () => {
+    const pressKeyMock = vi.fn().mockResolvedValue(undefined);
+    const postMock = vi.fn().mockReturnValue(true);
+    let page = 0;
+    vi.doMock("../../src/engine/ocr-bridge.js", () => ({
+      recognizeWindowByHwnd: vi.fn().mockImplementation(async () => ({ words: makeWords([`L${++page}`]), origin: { x: 0, y: 0 } })),
+      ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
+      detectOcrLanguage: () => "en",
+    }));
+    vi.doMock("../../src/engine/nutjs.js", () => ({ keyboard: { pressKey: pressKeyMock, releaseKey: vi.fn() } }));
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({ title: "TestWindow", hwnd: 0xCAFEn, warnings: [] }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
+    }));
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: postMock,
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: true }),
+    }));
+    vi.doMock("../../src/tools/_blocked-by-dialog.js", () => ({
+      beforeForeground: vi.fn().mockResolvedValue({ blockedByDialog: { hwnd: 0xCAFEn, title: "TestWindow", dialog: null } }),
+    }));
+    const restoreMock = vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
+    vi.doMock("../../src/engine/win32.js", () => ({
+      getForegroundHwnd: vi.fn().mockReturnValue(2n),
+      enumWindowsInZOrder: vi.fn().mockReturnValue([{ hwnd: 0xCAFEn, title: "TestWindow", isEnabled: false }]),
+      getWindowTitleW: vi.fn().mockReturnValue("Other"),
+      getWindowRectByHwnd: vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 }),
+      getWindowRoot: vi.fn((h: bigint) => h),
+      restoreAndFocusWindow: restoreMock,
+    }));
+    const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
+    const result = await scrollReadHandler({ action: "read", windowTitle: "Test", maxPages: 3, scrollKey: "PageDown", scrollDelayMs: 0, stopWhenNoChange: true });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.ok).toBe(true);
+    expect(body.pages).toBe(3);
+    expect(postMock).toHaveBeenCalled();
+    expect(restoreMock).not.toHaveBeenCalled();
+    expect(body.note).toContain("no dialog of its was seen");
   });
 
   // win2 2026-11-10: Chrome takes page keys only in front. With another window holding the front from

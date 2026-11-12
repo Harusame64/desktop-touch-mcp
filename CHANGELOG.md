@@ -43,6 +43,14 @@
   `focusFirst: false` still sends to the window already in front, but only when that window is the terminal; otherwise
   — another app, the terminal's own dialog, or no window at all (a locked session) — it answers `TerminalNotInFront`
   with `context.inFront`, and nothing is sent (internal #387).
+- **`scroll` capture and read no longer bring a window in front of its own dialog.** With Notepad's Save As open,
+  capture and read brought the disabled Notepad forward, the dialog lost its focus, and capture answered `ok: true`
+  with one frame. Capture now answers `WindowBlockedByDialog`; read does not bring the window forward or send a page
+  key (it would reach the dialog), returns what the window shows, and says why it stopped (internal #381).
+- **`scroll(action:'smart')` on the image road refuses a window on another virtual desktop, or one its dialog has
+  disabled.** On another desktop it answered `ok: true, scrolled: true` while the window stayed where it was and the
+  window in front kept the foreground; it now answers `WindowOnOtherDesktop`. A window its dialog has disabled is not
+  brought in front of the dialog any more (`WindowBlockedByDialog`), as for capture above (internal #382, #381).
 
 ## [2.4.1] - 2026-11-11 — Pastes into Windows Terminal are checked, and more replies say when nothing happened
 

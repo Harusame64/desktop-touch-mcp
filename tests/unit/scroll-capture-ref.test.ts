@@ -23,10 +23,11 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 
-const { mockReadPercent, mockCapture, mockGrabRegion, mockRestoreAndFocus, mockResolveWindowTarget, mockFindPlain, mockForeground, mockPressKey, mockOffDesktop } = vi.hoisted(() => ({
+const { mockReadPercent, mockCapture, mockGrabRegion, mockRestoreAndFocus, mockResolveWindowTarget, mockFindPlain, mockForeground, mockPressKey, mockOffDesktop, mockDisabled } = vi.hoisted(() => ({
   mockReadPercent: vi.fn(),
   mockCapture: vi.fn(),
   mockOffDesktop: vi.fn(),
+  mockDisabled: vi.fn(),
   mockForeground: vi.fn(),
   mockPressKey: vi.fn(async () => {}),
   mockGrabRegion: vi.fn(),
@@ -51,7 +52,7 @@ vi.mock("../../src/engine/nutjs.js", () => ({
 vi.mock("../../src/utils/key-map.js", () => ({ parseKeys: () => [] }));
 vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
-  return { ...actual, restoreAndFocusWindow: mockRestoreAndFocus, getForegroundHwnd: mockForeground, getWindowRoot: (h: bigint) => h, enumWindowsInZOrder: () => [{ hwnd: 1n, title: "W", isCloaked: false }], getWindowTitleW: () => "Other" };
+  return { ...actual, restoreAndFocusWindow: mockRestoreAndFocus, getForegroundHwnd: mockForeground, getWindowRoot: (h: bigint) => h, enumWindowsInZOrder: () => [{ hwnd: 1n, title: "W", isCloaked: false, ...(mockDisabled() ?? {}) }], getWindowTitleW: () => "Other", getWindowClassName: () => "Notepad" };
 });
 vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_resolve-window.js")>();
@@ -73,6 +74,12 @@ vi.mock("../../src/tools/_off-desktop.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_off-desktop.js")>();
   return { ...actual, offDesktopTarget: mockOffDesktop };
 });
+vi.mock("../../src/tools/_blocked-by-dialog.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/tools/_blocked-by-dialog.js")>();
+  // beforeForeground runs for real (the wiring from the enumeration's isEnabled is what is tested);
+  // `mockDisabled`, when set, stands in for the window list's answer.
+  return { ...actual };
+});
 const { scrollCaptureHandler, scrollPositionReader } = await import("../../src/tools/scroll-capture.js");
 
 /** A uniform-gray RGBA frame; identical reads trigger the page-end break. */
@@ -93,6 +100,7 @@ beforeEach(() => {
   mockCapture.mockResolvedValue({ data: Buffer.alloc(200 * 200 * 4, 128), width: 200, height: 200, channels: 4 });
   mockForeground.mockReturnValue(1n);
   mockOffDesktop.mockResolvedValue(null);
+  mockDisabled.mockReturnValue(null);
   mockReadPercent.mockResolvedValue(null);
 });
 afterEach(() => {
@@ -184,6 +192,20 @@ describe("scroll(action='capture') checks the front before every key and frame (
     expect(body.note).toContain("stopped being in front");
     expect(mockPressKey).toHaveBeenCalledTimes(1); // Ctrl+Home only
     expect(mockRestoreAndFocus).toHaveBeenCalledTimes(1);
+  });
+
+  // internal #381 (win2 S1, dev/380-design-spike b7a8bbee): with Save As open, capture left the disabled
+  // Notepad in front of its dialog with the dialog's focus taken, and answered ok:true with one frame.
+  it("refuses a window its dialog has disabled without bringing it forward (internal #381)", async () => {
+    // The enumeration reads the window as disabled; the real gate refuses (the dialog read itself needs the
+    // native walk, so here it is unread — the refusal holds either way).
+    mockDisabled.mockReturnValue({ isEnabled: false });
+    const r = await scrollCaptureHandler({ ...(args as object), windowTitle: "W" } as never);
+    const body = JSON.parse((r.content[0] as { text: string }).text);
+    expect(body.code).toBe("WindowBlockedByDialog");
+    expect(body.context).toMatchObject({ hwnd: "1", action: "capture" });
+    expect(mockRestoreAndFocus).not.toHaveBeenCalled();
+    expect(mockPressKey).not.toHaveBeenCalled();
   });
 
   it("refuses a window on another virtual desktop without bringing it forward (internal #221)", async () => {
