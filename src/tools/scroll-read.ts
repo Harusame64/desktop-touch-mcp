@@ -134,7 +134,9 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
       everInFront = brought.ok;
       onOtherDesktop = brought.offDesktop !== undefined;
       disabledWindow = brought.blockedByDialog !== undefined;
-      blockedByItsDialog = brought.blockedByDialog?.dialog != null;
+      // A dialog seen, or one that could not be looked for (the window is disabled either way): no page key
+      // (agy on #957). Only "looked, and none is showing" keeps the PostMessage page keys.
+      blockedByItsDialog = brought.blockedByDialog !== undefined && (brought.blockedByDialog.dialog !== null || brought.blockedByDialog.dialogUnread === true);
       const focusResult = brought.offDesktop || brought.blockedByDialog ? (getWindowRectByHwnd(focusedHwnd) ?? brought.rect) : brought.rect;
       if (focusResult.width >= 10 && focusResult.height >= 10) {
         focusedRegion = {

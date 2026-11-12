@@ -64,7 +64,12 @@ export async function bringForward(
 ): Promise<BroughtForward> {
   const settle = opts.settleMs ?? SETTLE_MS;
   const windows = enumWindowsInZOrder();
-  const listed = windows.find((w) => w.hwnd === hwnd);
+  // A handle that is not in the top-level list (a child) is gated by its top-level window (agy on #957).
+  const listed = windows.find((w) => w.hwnd === hwnd) ?? (() => {
+    let root: bigint | null = null;
+    try { root = getWindowRoot(hwnd); } catch { /* none */ }
+    return root === null ? undefined : windows.find((w) => w.hwnd === root);
+  })();
   // The foreground gate shared with keyboard (`_blocked-by-dialog.ts`): another virtual desktop first,
   // then disabled by its own dialog (gate 2 on #957: one source for the order).
   const gate = listed ? await beforeForeground(listed, windows, opts.named) : null;

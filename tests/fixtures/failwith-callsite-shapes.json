@@ -482,7 +482,7 @@
     },
     {
       "file": "src/tools/scroll-read.ts",
-      "line": 260,
+      "line": 262,
       "tool": "scroll",
       "errKind": "identifier",
       "contextShape": "none"
