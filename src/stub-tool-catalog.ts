@@ -1981,7 +1981,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "default": true
         },
         "focusFirst": {
-          "description": "Focus the terminal before sending (default true).",
+          "description": "Focus the terminal before sending (default true). false sends to the window already in front, and only when that window is this terminal (else TerminalNotInFront).",
           "type": "boolean",
           "default": true
         },

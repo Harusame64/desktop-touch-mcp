@@ -38,6 +38,11 @@
   that the window is still the same one. `keyboard` refuses a window its dialog has disabled where the keys are
   delivered (above); `click_element` does not look for a modal dialog, and its description now says that an `hwnd`
   whose window is disabled by its dialog acts on the dialog (internal #383).
+- **`terminal send` with `focusFirst: false` no longer pastes into whatever app is in front.** With a Notepad in front,
+  a send naming a console answered `ok: true`, named the console in `hints.target`, and put the text into the Notepad.
+  `focusFirst: false` still sends to the window already in front, but only when that window is the terminal; otherwise
+  — another app, the terminal's own dialog, or no window at all (a locked session) — it answers `TerminalNotInFront`
+  with `context.inFront`, and nothing is sent (internal #387).
 
 ## [2.4.1] - 2026-11-11 — Pastes into Windows Terminal are checked, and more replies say when nothing happened
 

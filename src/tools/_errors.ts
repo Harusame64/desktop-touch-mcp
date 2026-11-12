@@ -367,6 +367,11 @@ const SUGGESTS: Record<string, string[]> = {
     "minimized: restore the window (focus_window), or send without method:'foreground_flash'.",
     "tab_unreadable / tab_changed / pane_not_focused: read the terminal (terminal action:'read') and send again once its tab is settled. When context.foregroundRestored is false, tell the user first that the terminal was left in front.",
   ],
+  // internal #387: terminal send with focusFirst:false found another window in front; nothing was sent.
+  TerminalNotInFront: [
+    "Nothing was sent: with focusFirst:false the text goes to the window in front, and context.inFront is not this terminal (null: no window is in front — the session may be locked).",
+    "Send again without focusFirst:false (the default brings the terminal in front first), or use method:'background' for a classic console.",
+  ],
   // internal #221: the window the call would bring forward is on another virtual desktop. Refused
   // by `_off-desktop.ts` so the user's desktop is not switched; the message carries this code.
   WindowOnOtherDesktop: [
