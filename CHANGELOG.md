@@ -14,8 +14,8 @@
   right, left or bottom, maximized, zoomed, Edge's vertical tabs). `desktop_act` on a browser element and
   `browser_locate`'s `clickAt` use the same point; `browser_locate` says when it could only estimate it.
   `browser_click` refuses, saying what to do next, when its point would land on DevTools or another pane of the
-  browser window, when the page is not shown after the window was brought forward, or when the page cannot be told
-  from another pane. When that window cannot be read at all, the point is computed as before (internal #306,
+  browser window, when the window is minimized or on another desktop after it was brought forward, or when the page
+  cannot be told from another pane. When that window cannot be read at all, the point is computed as before (internal #306,
   ADR-040).
 - **A wheel sent to one browser's window no longer scrolls another browser's page.** `scroll` on a Chrome or Edge
   window went through CDP to the page of the browser on the CDP port, whichever browser the window was: with Edge on

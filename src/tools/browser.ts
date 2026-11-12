@@ -1014,12 +1014,16 @@ export async function osClickAndVerify(
   // window would move the point there. Any other case keeps the point checked above.
   if (aim !== undefined && tabFrame !== undefined && browserHwnd === tabFrame) {
     let after = surfaceDeps.align(tabFrame, aim, { x, y });
-    // A window just brought forward gets its page window shortly after (OQ-40-4): up to 1 s.
-    for (let i = 0; i < 20 && after.surface?.kind === "not_shown" && after.surface.why === "no_page_window"; i++) {
+    // A window just brought forward may get its page window shortly after (OQ-40-4): up to 500 ms.
+    for (let i = 0; i < 10 && after.surface?.kind === "not_shown" && after.surface.why === "no_page_window"; i++) {
       await new Promise<void>((r) => setTimeout(r, 50));
       after = surfaceDeps.align(tabFrame, aim, { x, y });
     }
-    if (after.surface?.kind === "not_shown") {
+    // Minimized or on another desktop: the press cannot reach the page. A page window that has not come
+    // back after the raise is different: win2 (PR #967, P12) saw it stay away while main pressed the
+    // formula's point and hit, so that case presses at the point checked above, as before (ADR-040 §4.4:
+    // do not remove what works).
+    if (after.surface?.kind === "not_shown" && after.surface.why !== "no_page_window") {
       return { covered: "page_not_shown", why: after.surface.why, hwnd: tabFrame, at: { x, y } };
     }
     if (after.surface?.kind === "unreadable" && after.surface.why === "ambiguous") {

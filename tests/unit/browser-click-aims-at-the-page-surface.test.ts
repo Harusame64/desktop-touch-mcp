@@ -109,13 +109,23 @@ describe("osClickAndVerify places the point on the page surface (ADR-040 PR ①)
     expect(mocks.moved).toEqual([{ x: 488, y: 207 }]);
   });
 
-  it("refuses when the page is still not drawn after the raise, with the window to bring forward", async () => {
+  it("a page window that does not come back after the raise: presses at the point checked, as main does (win2 P12 on #967)", async () => {
     const notShown: PageSurface = { kind: "not_shown", frame: FRAME, why: "no_page_window" };
     const d = deps([{ point: { x: 766, y: 207 }, surface: notShown }]);
     const r = await osClickAndVerify(766, 207, null, "TAB", 9222, () => AIM, false, PAGE_AIM, d as never);
-    expect(r).toMatchObject({ covered: "page_not_shown", why: "no_page_window", hwnd: FRAME });
-    expect(mocks.moved).toEqual([]);
+    expect((r as { covered?: string }).covered).toBeUndefined();
+    expect(mocks.moved).toEqual([{ x: 766, y: 207 }]);
   }, 5000);
+
+  it("a frame minimized or on another desktop after the raise is refused, naming why", async () => {
+    for (const why of ["minimized", "cloaked"] as const) {
+      mocks.moved.length = 0;
+      const d = deps([{ point: { x: 766, y: 207 }, surface: SURFACE }, { point: { x: 766, y: 207 }, surface: { kind: "not_shown", frame: FRAME, why } }]);
+      const r = await osClickAndVerify(766, 207, null, "TAB", 9222, () => AIM, false, PAGE_AIM, d as never);
+      expect(r).toMatchObject({ covered: "page_not_shown", why, hwnd: FRAME });
+      expect(mocks.moved).toEqual([]);
+    }
+  });
 
   it("refuses a page whose window cannot be told from another pane, before anything is focused", async () => {
     const d = deps([{ point: { x: 766, y: 207 }, surface: { kind: "unreadable", frame: FRAME, why: "ambiguous" } }]);
