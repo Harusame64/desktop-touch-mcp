@@ -281,8 +281,14 @@ export function ocrLanguageUsed(requested: string): string | undefined {
  * 'zh-Hans-CN'): that text is misread (gate 2 on #961).
  */
 function sameOcrLanguage(requested: string, used: string): boolean {
+  const isScript = (part: string, i: number): boolean => i > 0 && /^[a-z]{4}$/.test(part);
+  const scriptOf = (tag: string): string | undefined => tag.toLowerCase().split("-").find(isScript);
+  // A script both name and that differs is another engine: 'zh-Hant' read by 'zh-Hans-CN' (codex on #961).
+  const rs = scriptOf(requested);
+  const us = scriptOf(used);
+  if (rs !== undefined && us !== undefined && rs !== us) return false;
   const norm = (tag: string): string =>
-    tag.toLowerCase().split("-").filter((part, i) => i === 0 || !/^[a-z]{4}$/.test(part)).join("-");
+    tag.toLowerCase().split("-").filter((part, i) => !isScript(part, i)).join("-");
   const r = norm(requested);
   const u = norm(used);
   return r === u || u.startsWith(r + "-") || r.startsWith(u + "-");

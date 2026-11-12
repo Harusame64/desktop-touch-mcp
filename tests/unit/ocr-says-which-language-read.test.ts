@@ -74,6 +74,9 @@ describe("OCR names the language that read (internal #357)", () => {
     exeOutput.value = '{"language":"zh-Hans-CN","words":[]}';
     await runOcr(PNG, "zh-CN");
     expect(ocrLanguageWarning("zh-CN")).toBeNull();
+    exeOutput.value = '{"language":"zh-Hans-CN","words":[]}';
+    await runOcr(PNG, "zh-Hant");
+    expect(ocrLanguageWarning("zh-Hant")).toMatch(/^ocr_language_fallback: /);
     exeOutput.value = '{"language":"en","words":[]}';
     await runOcr(PNG, "en-US");
     expect(ocrLanguageWarning("en-US")).toBeNull();
