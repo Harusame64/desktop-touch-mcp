@@ -1002,6 +1002,28 @@ fn find_value_target(
                 .ok_or_else(|| napi::Error::from_reason(ELEMENT_AMBIGUOUS_TEXT));
         }
     }
+    // internal #293 (codex on #964): a nameless box discovered by the text beside it is addressed by its
+    // AutomationId alone. Discover's walk prunes offscreen subtrees and this search does not, so an id
+    // unique in the read can repeat here (a template's offscreen row first): every match is collected,
+    // and the one at the discovered rect is written; when the rect does not pick one, nothing is.
+    if let (None, Some(automation_id), Some(rect)) = (name, automation_id, opts.rect.as_ref()) {
+        // The same comparison the first-match search makes (`matches_with_ct`), every match collected.
+        let ct_lower = control_type.map(|c| c.to_lowercase());
+        let Collected { found, skipped } = collect_among_descendants(ctx, window, usize::MAX, |elem| {
+            matches_with_ct(elem, &None, Some(automation_id), &ct_lower)
+        })?;
+        if skipped && !found.is_empty() {
+            return Err(napi::Error::from_reason(ELEMENT_AMBIGUOUS_TEXT));
+        }
+        if found.len() == 1 {
+            return Ok((found.into_iter().next().unwrap(), false));
+        }
+        if !found.is_empty() {
+            return one_at_rect(found, Some(rect))
+                .map(|e| (e, false))
+                .ok_or_else(|| napi::Error::from_reason(ELEMENT_AMBIGUOUS_TEXT));
+        }
+    }
     find_element_in_window(ctx, window, opts.name.as_deref(), opts.automation_id.as_deref(), None).map(|e| (e, false))
 }
 

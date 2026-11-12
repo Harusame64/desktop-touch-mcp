@@ -11,7 +11,9 @@
   `Label.Target` has an empty UI Automation name and no `LabeledBy`, so discover left it out. Such a text box is now
   listed under the text laid out directly left of it on its row, or directly above it at its left edge, with
   `labelInferred: true`. That needs an AutomationId no other element in the window carries, since the box is
-  addressed by it; boxes without one are left out as before. The label is for reading and `query` (internal #293).
+  addressed by it; boxes without one are left out as before. Such a box is offered to type into and read, not to
+  click, and a write that finds its AutomationId more than once (an offscreen row of the same template) goes to the
+  one at the discovered position or is refused. The label is for reading and `query` (internal #293).
 - **`screenshot(detail:'text')` reads Git Bash.** mintty exposes no text to UI Automation, so the call returned only
   the window's scroll buttons and no text. Its text is now read with OCR and returned as `textContent`, with
   `hints.textSource: "ocr"`. When OCR cannot run, or with `ocrFallback:'never'`, the window's controls are listed as

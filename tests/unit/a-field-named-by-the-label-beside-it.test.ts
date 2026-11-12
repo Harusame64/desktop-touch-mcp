@@ -126,6 +126,10 @@ describe("discover's UIA lane keeps the named box (internal #293)", () => {
     expect(tb!.label).toBe("Name");
     expect(tb!.labelInferred).toBe(true);
     expect(tb!.locator?.uia?.name).toBe("");
+    // Offered to type into and read only: a click would go by the id's first match (codex on #964).
+    expect(tb!.actionability).toContain("type");
+    expect(tb!.actionability).not.toContain("click");
+    expect(tb!.actionability).not.toContain("invoke");
     const ok = candidates.find((c) => c.label === "OK");
     expect(ok?.labelInferred).toBeUndefined();
   });

@@ -303,7 +303,12 @@ export async function fetchUiaCandidates(
         ...(inferredLabel !== undefined && { labelInferred: true }),
         value: el.value,
         rect: el.boundingRect ?? undefined,
-        actionability: uiaActionability(el.controlType, normalizeUiaPatternNames(el.patterns)),
+        // A box named only by the text beside it is offered to type into and read, not to click (codex on
+        // #964): the click and select roads find a nameless element by its AutomationId's first match, with
+        // no rect to tell a repeated id apart; the value write checks the rect.
+        actionability: inferredLabel !== undefined
+          ? uiaActionability(el.controlType, normalizeUiaPatternNames(el.patterns)).filter((a) => a === "type" || a === "read")
+          : uiaActionability(el.controlType, normalizeUiaPatternNames(el.patterns)),
         // Issue #296: carry the UIA-side `controlType` and `patterns` through
         // so `CapabilityRegistry.lookup` can advertise executor preferences
         // at discover time (no extra UIA round-trip — `getUiElements` already
