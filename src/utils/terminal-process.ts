@@ -74,3 +74,15 @@ export const TERMINAL_WINDOW_CLASSES: ReadonlySet<string> = new Set(["ConsoleWin
 export function isTerminalWindow(className: string): boolean {
   return TERMINAL_WINDOW_CLASSES.has(className);
 }
+
+/**
+ * Terminal windows that expose no text to UI Automation (no TextPattern, and only the window chrome as
+ * elements), so their text can only be read from pixels. internal #363 (win2, 2026-11-10): Git Bash's
+ * `mintty` answered 0 characters on the terminal road, and on the ordinary road 6 chrome elements, not
+ * judged UIA-blind, so no OCR ran.
+ */
+export const OCR_ONLY_TERMINAL_WINDOW_CLASSES: ReadonlySet<string> = new Set(["mintty"]);
+
+export function isOcrOnlyTerminalWindow(className: string): boolean {
+  return OCR_ONLY_TERMINAL_WINDOW_CLASSES.has(className);
+}

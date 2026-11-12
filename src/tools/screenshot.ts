@@ -8,8 +8,9 @@ import { getWindows } from "../engine/nutjs.js";
 import { enumMonitors, getVirtualScreen, getWindowTitleW, getWindowRectByHwnd, enumWindowsInZOrder } from "../engine/win32.js";
 import { getUiElements, extractActionableElements, WINUI3_CLASS_RE, detectUiaBlind } from "../engine/uia-bridge.js";
 import type { UiElementsResult } from "../engine/uia-bridge.js";
-import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords, runSomPipeline, snapToDictionary, detectOcrLanguage, ocrLanguageWarning } from "../engine/ocr-bridge.js";
-import type { OcrDictionaryEntry } from "../engine/ocr-bridge.js";
+import { recognizeWindow, recognizeWindowByHwnd, ocrWordsToLines, ocrWordsToActionable, runOcr, mergeNearbyWords, runSomPipeline, snapToDictionary, detectOcrLanguage, ocrLanguageWarning } from "../engine/ocr-bridge.js";
+import type { OcrDictionaryEntry, OcrWord } from "../engine/ocr-bridge.js";
+import { WindowExcludedError } from "../engine/tool-exclusion.js";
 import { refuseIfFrozen, WindowFrozenError } from "../engine/window-frozen.js";
 import { updateWindowCache, saveSnapshot } from "../engine/window-cache.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
@@ -35,7 +36,7 @@ import {
 import { getTextViaTextPattern } from "../engine/uia-bridge.js";
 import { stripAnsi, tailLines } from "../engine/ansi.js";
 import { getWindowClassName } from "../engine/win32.js";
-import { isTerminalWindow } from "../utils/terminal-process.js";
+import { isTerminalWindow, isOcrOnlyTerminalWindow } from "../utils/terminal-process.js";
 import { resolveWindowTarget, findPlainTopLevelWindowsByTitle } from "./_resolve-window.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -610,15 +611,21 @@ export const screenshotHandler = async (args: {
       // and a terminal is read from that handle — an untitled console (conhost started directly) included.
       // Any other window still takes the road below, which finds its window by title, as before.
       const handleWin = resolvedWin?.hwnd != null ? resolvedWin : null;
-      const handleIsTerminal = handleWin !== null && isTerminalWindow(getWindowClassName(handleWin.hwnd));
-      if (effectiveTitle || handleIsTerminal) {
+      const handleClass = handleWin !== null ? getWindowClassName(handleWin.hwnd) : "";
+      const handleIsTerminal = handleWin !== null && isTerminalWindow(handleClass);
+      // internal #363: a terminal UI Automation cannot read (mintty) named by its handle, untitled included.
+      const handleIsOcrTerminal = handleWin !== null && isOcrOnlyTerminalWindow(handleClass);
+      if (effectiveTitle || handleIsTerminal || handleIsOcrTerminal) {
         const wins = enumWindowsInZOrder();
         updateWindowCache(wins);
-        const byHandle = handleIsTerminal ? wins.find((w) => w.hwnd === handleWin!.hwnd) : undefined;
+        // Either kind of terminal named by its handle stays on that handle below, the frozen check and a
+        // fallback to its controls included (agy on #962).
+        const handlePinned = handleIsTerminal || handleIsOcrTerminal;
+        const byHandle = handlePinned ? wins.find((w) => w.hwnd === handleWin!.hwnd) : undefined;
 
         // Save screenshot-time snapshot for homing — survives external cache
         // mutations from focus_window / window_dock between screenshot and click.
-        const snapWin = handleIsTerminal
+        const snapWin = handlePinned
           ? byHandle
           : wins.find((w) => w.title.toLowerCase().includes(effectiveTitle!.toLowerCase()));
         if (snapWin && effectiveTitle) saveSnapshot(effectiveTitle, snapWin.region);
@@ -626,13 +633,13 @@ export const screenshotHandler = async (args: {
         // Resolve the full window title from the partial match, then test the
         // Chromium regex against the resolved title — not the user-supplied
         // substring (which typically won't contain the "- Google Chrome" suffix).
-        const resolvedWin2 = handleIsTerminal
+        const resolvedWin2 = handlePinned
           ? byHandle
           : resolvedWin
             ? wins.find((w) => w.title === resolvedWin.title) ?? wins.find((w) => w.title.toLowerCase().includes(effectiveTitle!.toLowerCase()))
             : wins.find((w) => w.title.toLowerCase().includes(effectiveTitle!.toLowerCase()));
         const resolvedTitle = resolvedWin2?.title ?? effectiveTitle ?? "";
-        const targetHwnd = handleIsTerminal ? handleWin!.hwnd : (resolvedWin2?.hwnd ?? null);
+        const targetHwnd = handlePinned ? handleWin!.hwnd : (resolvedWin2?.hwnd ?? null);
         // Internal #247 (codex on 45cf57d1): before any UIA read — the 90 s UIA cache would serve a
         // tree read while the app was shown as its contents now, and with actionable elements in it
         // no OCR (where the other refusals sit) runs at all.
@@ -675,6 +682,77 @@ export const screenshotHandler = async (args: {
               }, null, 2),
             }],
           };
+        }
+
+        // internal #363: a terminal whose text UI Automation does not expose (Git Bash's mintty) is read
+        // from its pixels, as text, in the terminal's shape: the handle named, or with none named, the window
+        // found by title (a named handle is never swapped for a same-titled window, gate 2 on #962).
+        const ocrTerminalHwnd = handleIsOcrTerminal
+          ? handleWin!.hwnd
+          : handleWin === null && targetHwnd !== null && isOcrOnlyTerminalWindow(getWindowClassName(targetHwnd)) ? targetHwnd : null;
+        // The window list leaves out untitled windows, so a named handle that is not in it is measured directly.
+        const ocrTerminalRect = ocrTerminalHwnd !== null && !wins.some((w) => w.hwnd === ocrTerminalHwnd)
+          ? getWindowRectByHwnd(ocrTerminalHwnd)
+          : null;
+        const ocrTerminalWin: { title: string; region: { x: number; y: number; width: number; height: number } } | undefined =
+          ocrTerminalHwnd === null ? undefined
+            : wins.find((w) => w.hwnd === ocrTerminalHwnd) ?? (ocrTerminalRect !== null ? { title: "", region: ocrTerminalRect } : undefined);
+        // Set when the OCR road was tried and gave nothing: the road below lists the controls and does not OCR
+        // again (by title, after a by-handle read failed).
+        let ocrTerminalTried = false;
+        if (ocrTerminalHwnd !== null && ocrTerminalWin !== undefined && ocrFallback !== "never") {
+          // An OCR that cannot run (no win-ocr.exe, a failed capture) or reads nothing leaves the window on the
+          // road below, which still lists its controls, with a warning saying so. A refusal (an excluded or
+          // frozen window) is not read around.
+          let words: OcrWord[] | null = null;
+          try {
+            ({ words } = await recognizeWindowByHwnd(ocrTerminalHwnd, ocrTerminalWin.region, ocrLanguage));
+            const ocrLangWarning = ocrLanguageWarning(ocrLanguage); // internal #357
+            if (ocrLangWarning !== null) screenshotWarnings.push(ocrLangWarning);
+          } catch (e) {
+            if (e instanceof WindowExcludedError || e instanceof WindowFrozenError) throw e;
+            screenshotWarnings.push(`ocr_failed: this terminal exposes no text to UI Automation and OCR could not read it (${e instanceof Error ? e.message : String(e)}); its controls are listed instead`);
+          }
+          if (words !== null && words.length === 0) {
+            screenshotWarnings.push("ocr_read_nothing: this terminal exposes no text to UI Automation and OCR found no text in it (minimized, or blank); its controls are listed instead");
+            words = null;
+          }
+          ocrTerminalTried = words === null;
+          if (words !== null) {
+            const byHandleKey = hwndParam !== undefined || !effectiveTitle;
+            const obs = observeTarget(byHandleKey ? handleObservationKey(ocrTerminalHwnd) : effectiveTitle, ocrTerminalHwnd, ocrTerminalWin.title);
+            const invalidation = obs.invalidatedBy
+              ? { reason: obs.invalidatedBy, previousTarget: obs.previousTarget }
+              : takeLastInvalidation();
+            const cacheStateHints = buildCacheStateHints(ocrTerminalHwnd, invalidation);
+            return {
+              content: [{
+                type: "text" as const,
+                text: JSON.stringify({
+                  window: ocrTerminalWin.title,
+                  actionable: [],
+                  textContent: tailLines(ocrWordsToLines(words), 80),
+                  hints: {
+                    terminalGuard: true,
+                    textSource: "ocr",
+                    ocrFallbackFired: true,
+                    target: toTargetHints(obs.identity),
+                    ...(Object.keys(cacheStateHints).length > 0 ? { caches: cacheStateHints } : {}),
+                    ...(screenshotWarnings.length > 0 ? { warnings: screenshotWarnings } : {}),
+                  },
+                }, null, 2),
+              }],
+            };
+          }
+        }
+        // An untitled window comes this far only as a terminal UI Automation cannot read; the road below finds
+        // its window by title, so it stops here and says why.
+        if (!effectiveTitle) {
+          return failWith(
+            `Window ${String(handleWin?.hwnd)} is a terminal that exposes no text to UI Automation, and OCR could not read it. ` +
+            screenshotWarnings.join(" "),
+            "screenshot",
+          );
         }
 
         // Only a terminal enters this branch untitled, and it returned above.
@@ -737,8 +815,8 @@ export const screenshotHandler = async (args: {
         //   - auto + UIA has no actionable elements, OR
         //   - auto + UIA is sparse (< 5 elements, typical for Chrome)
         const shouldOcr =
-          ocrFallback === "always" ||
-          (ocrFallback === "auto" && (result.actionable.length === 0 || uiaSparse || isChromium));
+          !ocrTerminalTried && (ocrFallback === "always" ||
+          (ocrFallback === "auto" && (result.actionable.length === 0 || uiaSparse || isChromium)));
 
         // UIA dictionary for snap-correction (commit 2-4).
         // Built from enabled elements with screen-absolute boundingRect.
