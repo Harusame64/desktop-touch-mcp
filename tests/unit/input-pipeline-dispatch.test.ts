@@ -145,9 +145,12 @@ const getWindowRectByHwndMock = vi.fn<
 // the ADR-035 Phase 1 dispatch-sink observer, which runs on every tier dispatch.
 // Stubbed to fixed values — the observer is write-only, so nothing below
 // depends on what they return.
+// internal #319 item 2 — the wheel's CDP promotion checks the hwnd is the CDP browser's.
+const getWindowProcessIdMock = vi.fn((_h: bigint) => 4242);
 vi.mock("../../src/engine/win32.js", () => ({
   enumWindowsInZOrder: enumWindowsInZOrderMock,
   getWindowRectByHwnd: getWindowRectByHwndMock,
+  getWindowProcessId: getWindowProcessIdMock,
   getForegroundHwnd: () => null,
   getWindowTitleW: () => "",
   getWindowIdentity: () => ({ pid: 0, processName: "", processStartTimeMs: 0 }),
@@ -157,10 +160,12 @@ vi.mock("../../src/engine/win32.js", () => ({
 const listTabsLightMock = vi.fn();
 const dispatchWheelInTabMock = vi.fn();
 const readScrollPositionInTabMock = vi.fn();
+const getBrowserProcessIdMock = vi.fn(async (_port?: number) => 4242);
 vi.mock("../../src/engine/cdp-bridge.js", () => ({
   listTabsLight: listTabsLightMock,
   dispatchWheelInTab: dispatchWheelInTabMock,
   readScrollPositionInTab: readScrollPositionInTabMock,
+  getBrowserProcessId: getBrowserProcessIdMock,
 }));
 
 // Mock CDP port lookup — keeps `resolveCdpDestinationForHwnd` deterministic.
@@ -185,6 +190,7 @@ vi.mock("../../src/utils/desktop-config.js", () => ({
 const {
   resolveInputDestination,
   resolveCdpDestinationForHwnd,
+  _resetBrowserPidCacheForTest,
   dispatchScrollWheel,
   assertTier4Reachable,
   postWheelToHwnd,
@@ -531,6 +537,46 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
   beforeEach(() => {
     listTabsLightMock.mockReset();
     getCdpPortMock.mockReturnValue(9222);
+    getWindowProcessIdMock.mockReset().mockReturnValue(4242);
+    getBrowserProcessIdMock.mockReset().mockResolvedValue(4242);
+    _resetBrowserPidCacheForTest();
+  });
+
+  it("asks the configured port for the browser's process, and reads it once per port (gate 2 on #966)", async () => {
+    getCdpPortMock.mockReturnValue(9333);
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    expect(await resolveCdpDestinationForHwnd(0x780n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
+    expect(await resolveCdpDestinationForHwnd(0x780n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
+    expect(getBrowserProcessIdMock).toHaveBeenCalledTimes(1);
+    expect(getBrowserProcessIdMock).toHaveBeenCalledWith(9333);
+  });
+
+  it("reads the browser's process again when a window's process differs from the cached one", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    await resolveCdpDestinationForHwnd(0x781n, "Chrome_WidgetWin_1"); // caches 4242
+    getBrowserProcessIdMock.mockResolvedValue(5555); // the browser restarted
+    getWindowProcessIdMock.mockReturnValue(5555);
+    expect(await resolveCdpDestinationForHwnd(0x782n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
+    expect(getBrowserProcessIdMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("a window whose process cannot be read (0): promoted as before (gate 2 on #966)", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    getWindowProcessIdMock.mockReturnValue(0);
+    expect(await resolveCdpDestinationForHwnd(0x783n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
+  });
+
+  it("another browser's window (its process is not the CDP browser's): null, the wheel goes by the window (internal #319)", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "EDGE-TAB", title: "Edge", url: "https://e.com/", type: "page" }]);
+    getWindowProcessIdMock.mockReturnValue(9999); // a Chrome window while CDP is Edge's
+    expect(await resolveCdpDestinationForHwnd(0x777n, "Chrome_WidgetWin_1")).toBeNull();
+  });
+
+  it("the browser's process cannot be read: promoted as before (internal #319)", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    getBrowserProcessIdMock.mockRejectedValue(new Error("SystemInfo not supported"));
+    getWindowProcessIdMock.mockReturnValue(9999);
+    expect(await resolveCdpDestinationForHwnd(0x778n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
   });
 
   it("non-Chromium className ('Notepad'): null (gate misses, listTabsLight NOT called — zero CDP latency for native windows)", async () => {
@@ -588,6 +634,9 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
 
 describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration", () => {
   beforeEach(() => {
+    getWindowProcessIdMock.mockReset().mockReturnValue(4242);
+    getBrowserProcessIdMock.mockReset().mockResolvedValue(4242);
+    _resetBrowserPidCacheForTest();
     resolveWindowTargetMock.mockReset();
     findPlainTopLevelWindowByTitleMock.mockReset();
     findPlainTopLevelWindowByTitleMock.mockReturnValue(null);
@@ -625,6 +674,17 @@ describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration"
     ]);
     const dest = await resolveInputDestination({ windowTitle: "Chrome" });
     expect(dest).toEqual({ kind: "cdp", tabId: "TAB-Y" });
+  });
+
+  it("Case 3 recovery on another browser's window: {kind:'hwnd'}, not the CDP browser's page (internal #319)", async () => {
+    resolveWindowTargetMock.mockResolvedValue(null);
+    findPlainTopLevelWindowsByTitleMock.mockReturnValue([{
+      hwnd: 0xDDDn, title: "Google Chrome", className: "Chrome_WidgetWin_1", ownerHwnd: null, isMinimized: false,
+    }]);
+    listTabsLightMock.mockResolvedValue([{ id: "EDGE", title: "E", url: "https://e.com/", type: "page" }]);
+    getWindowProcessIdMock.mockReturnValue(9999);
+    const dest = await resolveInputDestination({ windowTitle: "Chrome" });
+    expect(dest).toEqual({ kind: "hwnd", hwnd: 0xDDDn });
   });
 
   it("Chromium HWND + CDP unreachable: falls back to {kind:'hwnd'} (Tier 1 UIA path remains available)", async () => {
