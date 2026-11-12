@@ -8,7 +8,7 @@ import { getWindows } from "../engine/nutjs.js";
 import { enumMonitors, getVirtualScreen, getWindowTitleW, getWindowRectByHwnd, enumWindowsInZOrder } from "../engine/win32.js";
 import { getUiElements, extractActionableElements, WINUI3_CLASS_RE, detectUiaBlind } from "../engine/uia-bridge.js";
 import type { UiElementsResult } from "../engine/uia-bridge.js";
-import { recognizeWindow, recognizeWindowByHwnd, ocrWordsToLines, ocrWordsToActionable, runOcr, mergeNearbyWords, runSomPipeline, snapToDictionary, detectOcrLanguage } from "../engine/ocr-bridge.js";
+import { recognizeWindow, recognizeWindowByHwnd, ocrWordsToLines, ocrWordsToActionable, runOcr, mergeNearbyWords, runSomPipeline, snapToDictionary, detectOcrLanguage, ocrLanguageWarning } from "../engine/ocr-bridge.js";
 import type { OcrDictionaryEntry, OcrWord } from "../engine/ocr-bridge.js";
 import { WindowExcludedError } from "../engine/tool-exclusion.js";
 import { refuseIfFrozen, WindowFrozenError } from "../engine/window-frozen.js";
@@ -165,7 +165,7 @@ export const screenshotSchema = {
   ocrLanguage: z
     .string()
     .optional()
-    .describe("BCP-47 language tag for the OCR engine (e.g. 'ja', 'en-US'). Auto-detects from system locale when omitted. Used when detail='text' (OCR fallback) or detail='ocr' (direct OCR)."),
+    .describe("BCP-47 language tag for the OCR engine (e.g. 'ja', 'en-US'). Auto-detects from system locale when omitted. Used when detail='text' (OCR fallback), 'som' or 'ocr'. With no OCR pack installed for it, Windows reads with another installed language and hints.warnings says so (ocr_language_fallback)."),
   preprocessPolicy: z
     .enum(["auto", "aggressive", "minimal"])
     .default("auto")
@@ -470,6 +470,8 @@ export const screenshotHandler = async (args: {
       const targetHwnd = resolvedWin?.hwnd ?? null;
 
       const somResult = await runSomPipeline(resolvedTitle, targetHwnd, ocrLanguage, 2, preprocessPolicy, preprocessAdaptive);
+      const somLangWarning = ocrLanguageWarning(ocrLanguage); // internal #357 (gate 2 on #961)
+      if (somLangWarning !== null) screenshotWarnings.push(somLangWarning);
       const content: ToolResult["content"] = [
         {
           type: "text" as const,
@@ -705,6 +707,8 @@ export const screenshotHandler = async (args: {
           let words: OcrWord[] | null = null;
           try {
             ({ words } = await recognizeWindowByHwnd(ocrTerminalHwnd, ocrTerminalWin.region, ocrLanguage));
+            const ocrLangWarning = ocrLanguageWarning(ocrLanguage); // internal #357
+            if (ocrLangWarning !== null) screenshotWarnings.push(ocrLangWarning);
           } catch (e) {
             if (e instanceof WindowExcludedError || e instanceof WindowFrozenError) throw e;
             screenshotWarnings.push(`ocr_failed: this terminal exposes no text to UI Automation and OCR could not read it (${e instanceof Error ? e.message : String(e)}); its controls are listed instead`);
@@ -830,6 +834,8 @@ export const screenshotHandler = async (args: {
           try {
             const somResult = await runSomPipeline(titleKey, targetHwnd, ocrLanguage, 2, preprocessPolicy, preprocessAdaptive, uiaDict);
             hints.ocrFallbackFired = true;
+            const somLanguageWarning = ocrLanguageWarning(ocrLanguage); // internal #357
+            if (somLanguageWarning !== null) hints.warnings = [...(hints.warnings ?? []), somLanguageWarning];
             (hints as Record<string, unknown>).somMode = true;
             (hints as Record<string, unknown>).uiaBlindReason = uiaBlind.reason;
 
@@ -911,6 +917,8 @@ export const screenshotHandler = async (args: {
               a.region.y !== b.region.y ? a.region.y - b.region.y : a.region.x - b.region.x
             );
             hints.ocrFallbackFired = true;
+            const ocrLangWarning = ocrLanguageWarning(ocrLanguage); // internal #357
+            if (ocrLangWarning !== null) hints.warnings = [...(hints.warnings ?? []), ocrLangWarning];
           } catch (ocrErr) {
             if (ocrErr instanceof WindowFrozenError) {
               // Internal #247: the same reason on this road, which is reached without the SoM step
@@ -1416,6 +1424,8 @@ export const screenshotOcrHandler = async ({
       : null;
 
     const rawWords = await runOcr(captured.base64, language);
+    const languageWarning = ocrLanguageWarning(language); // internal #357
+    if (languageWarning !== null) ocrWarnings.push(languageWarning);
 
     // Scale image-local bboxes → screen coords, then merge adjacent characters
     const scaledWords = rawWords.map((w) => ({
@@ -1566,7 +1576,7 @@ export function registerScreenshotTools(server: McpServer): void {
         "Foreground detail='image' returns a by-ref resource_link by default; pass confirmImage=true to also receive inline pixels. " +
         "diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot) — calling diffMode cold returns a full frame, not a diff. " +
         "mode='background' requires windowTitle or hwnd, and only composes with detail in {'image','meta'} — detail='text'/'som'/'ocr' run only against foreground capture (the dispatcher rejects the conflicting combination). Passing mode='background' is itself the acknowledgement that image pixels are wanted, so confirmImage is NOT required for it (matches the former screenshot_background contract). fullContent=false enables legacy mode (faster but GPU windows may be black). " +
-        "detail='ocr' requires windowTitle or hwnd; first call may take ~1s (WinRT cold-start) and the matching OCR language pack must be installed.",
+        "detail='ocr' requires windowTitle or hwnd; first call may take ~1s (WinRT cold-start). Without an OCR pack for the language, another installed one reads and hints.warnings says so.",
       examples: [
         "screenshot() → meta orientation of all windows",
         "screenshot({detail:'text', windowTitle:'Notepad'}) → clickable elements with coords",

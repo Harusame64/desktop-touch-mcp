@@ -76,10 +76,10 @@ vi.mock("../../src/engine/image.js", () => ({
 // internal #363: OCR by handle is the seam; everything else in ocr-bridge is real.
 import { WindowExcludedError } from "../../src/engine/tool-exclusion.js";
 import { WindowFrozenError } from "../../src/engine/window-frozen.js";
-const { mockRecognizeWindowByHwnd, mockRecognizeWindow } = vi.hoisted(() => ({ mockRecognizeWindowByHwnd: vi.fn(), mockRecognizeWindow: vi.fn() }));
+const { mockRecognizeWindowByHwnd, mockRecognizeWindow, mockOcrLanguageWarning } = vi.hoisted(() => ({ mockRecognizeWindowByHwnd: vi.fn(), mockRecognizeWindow: vi.fn(), mockOcrLanguageWarning: vi.fn(() => null as string | null) }));
 vi.mock("../../src/engine/ocr-bridge.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/ocr-bridge.js")>();
-  return { ...actual, recognizeWindowByHwnd: mockRecognizeWindowByHwnd, recognizeWindow: mockRecognizeWindow };
+  return { ...actual, recognizeWindowByHwnd: mockRecognizeWindowByHwnd, recognizeWindow: mockRecognizeWindow, ocrLanguageWarning: mockOcrLanguageWarning };
 });
 
 const { screenshotHandler } = await import("../../src/tools/screenshot.js");
@@ -130,6 +130,15 @@ describe("screenshot(detail:'text') reads a mintty window with OCR (internal #36
     expect(body.actionable).toEqual([]);
     expect(mockRecognizeWindowByHwnd).toHaveBeenCalledWith(7373n, mintty.region, "ja");
     expect(mockGetTextViaTextPattern).not.toHaveBeenCalled();
+  });
+
+  it("carries the OCR language fallback warning (internal #357)", async () => {
+    wire("mintty");
+    mockOcrLanguageWarning.mockReturnValueOnce("ocr_language_fallback: no pack for 'ja'");
+    const result = await screenshotHandler({ ...baseArgs, windowTitle: "MINGW64", detail: "text" });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.hints?.textSource).toBe("ocr");
+    expect(body.hints?.warnings).toContain("ocr_language_fallback: no pack for 'ja'");
   });
 
   it("falls back to the window's controls when OCR cannot run, and says so", async () => {

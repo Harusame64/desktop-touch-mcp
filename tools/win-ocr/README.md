@@ -5,7 +5,7 @@ C# console application wrapping Windows.Media.Ocr (WinRT).
 ## Input / Output
 
 **Input**: PNG bytes on stdin.  
-**Output**: JSON on stdout — `{"words": [...]}` or `{"error": "..."}`.
+**Output**: JSON on stdout — `{"language": "<tag of the engine that read>", "words": [...]}` or `{"error": "..."}`. With no OCR pack for the language asked, the engine of a user profile language reads, and `language` names it.
 
 Each word object:
 ```json

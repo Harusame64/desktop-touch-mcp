@@ -269,7 +269,7 @@ describe("every lane says what it did with the read (14a)", () => {
 
   describe("ocr", () => {
     async function ocrCapturing(run: () => Promise<unknown>) {
-      vi.doMock("../../src/engine/ocr-bridge.js", () => ({ runSomPipeline: vi.fn(run), detectOcrLanguage: () => "en" }));
+      vi.doMock("../../src/engine/ocr-bridge.js", () => ({ runSomPipeline: vi.fn(run), detectOcrLanguage: () => "en", ocrLanguageUsed: () => undefined, ocrLanguageWarning: () => null }));
       vi.doMock("../../src/engine/vision-gpu/ocr-adapter-registry.js", () => ({
         getOcrVisualAdapter: () => ({ pollOnce: vi.fn(async () => {}) }),
       }));

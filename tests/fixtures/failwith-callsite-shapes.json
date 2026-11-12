@@ -468,21 +468,21 @@
     },
     {
       "file": "src/tools/screenshot.ts",
-      "line": 1157,
+      "line": 1168,
       "tool": "screenshot",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/screenshot.ts",
-      "line": 1243,
+      "line": 1254,
       "tool": "screenshot",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/screenshot.ts",
-      "line": 1487,
+      "line": 1500,
       "tool": "get_screen_info",
       "errKind": "identifier",
       "contextShape": "none"
@@ -538,14 +538,14 @@
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 1366,
+      "line": 1369,
       "tool": "terminal:send",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 1857,
+      "line": 1860,
       "tool": "terminal:send",
       "errKind": "new-error",
       "contextShape": "object-plain"
