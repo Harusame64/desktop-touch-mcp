@@ -10,8 +10,9 @@
 - **A wheel sent to a browser window scrolls that window.** `scroll` on a Chrome or Edge window went through CDP to
   the page the browser on the CDP port showed last, whichever window was named: with Edge on the port, a Chrome
   window's scroll moved Edge's page, and with two windows of one browser it moved the other one, answering
-  `delivered_via_cdp`. CDP is now used only when the window is that browser's and holds that tab; otherwise the wheel
-  goes to the window itself (internal #319).
+  `delivered_via_cdp`. CDP is now used only when the window is that browser's own and the one window holding that
+  tab; otherwise the wheel goes to the window itself. Two maximized windows of one browser share a rect and cannot be
+  told apart, so they get the window road too (internal #319).
 - **`screenshot(detail:'text')` reads Git Bash.** mintty exposes no text to UI Automation, so the call returned only
   the window's scroll buttons and no text. Its text is now read with OCR and returned as `textContent`, with
   `hints.textSource: "ocr"`. When OCR cannot run, or with `ocrFallback:'never'`, the window's controls are listed as

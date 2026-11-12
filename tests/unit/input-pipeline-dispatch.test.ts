@@ -194,6 +194,7 @@ vi.mock("../../src/utils/desktop-config.js", () => ({
 const {
   resolveInputDestination,
   resolveCdpDestinationForHwnd,
+  _resetBrowserPidCacheForTest,
   dispatchScrollWheel,
   assertTier4Reachable,
   postWheelToHwnd,
@@ -530,6 +531,10 @@ describe("ADR-018 §2.6 — dispatchScrollWheel (Tier 1 UIA path)", () => {
 // ADR-018 Phase 3 — Tier 2 CDP path + auto-promotion
 // ─────────────────────────────────────────────────────────────────────────────
 
+// internal #319 item 2 — a Chromium frame as the enumeration lists it.
+const chromeFrame = (hwnd: bigint, region = { x: 0, y: 0, width: 800, height: 600 }, isMinimized = false) =>
+  ({ hwnd, title: "X - Google Chrome", region, zOrder: 0, isMinimized, isMaximized: false, isActive: false, className: "Chrome_WidgetWin_1" });
+
 describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate + listTabsLight probe)", () => {
   // Phase 3 R1 (Opus P2): the gate is now a strict class equality on
   // `Chrome_WidgetWin_1` (the top-level class shared by Chrome and Edge),
@@ -546,32 +551,66 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
     getTabWindowBoundsMock.mockReset().mockResolvedValue({ left: 0, top: 0, width: 800, height: 600 });
     getWindowRectByHwndMock.mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
     getWindowDpiMock.mockReset().mockReturnValue(96);
+    _resetBrowserPidCacheForTest();
+    // Each cell's hwnd is the one frame of the browser at the tab's bounds unless it says otherwise.
+    enumWindowsInZOrderMock.mockReset().mockImplementation(() => [chromeFrame(currentHwnd)]);
   });
+  let currentHwnd = 0n;
+  const ask = (hwnd: bigint) => { currentHwnd = hwnd; return resolveCdpDestinationForHwnd(hwnd, "Chrome_WidgetWin_1"); };
 
   it("another browser's window (its process is not the CDP browser's): null, the wheel goes by the window (internal #319)", async () => {
     listTabsLightMock.mockResolvedValue([{ id: "EDGE-TAB", title: "Edge", url: "https://e.com/", type: "page" }]);
-    getWindowProcessIdMock.mockReturnValue(9999); // a Chrome window while CDP is Edge's
-    expect(await resolveCdpDestinationForHwnd(0x777n, "Chrome_WidgetWin_1")).toBeNull();
+    getWindowProcessIdMock.mockImplementation((h: bigint) => (h === 0x777n ? 9999 : 4242)); // a Chrome window while CDP is Edge's
+    expect(await ask(0x777n)).toBeNull();
   });
 
   it("another window of the same browser (not at the tab's window bounds): null (internal #319)", async () => {
     listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
-    getWindowRectByHwndMock.mockReturnValue({ x: 900, y: 0, width: 800, height: 600 });
-    expect(await resolveCdpDestinationForHwnd(0x778n, "Chrome_WidgetWin_1")).toBeNull();
+    enumWindowsInZOrderMock.mockImplementation(() => [chromeFrame(0x700n), chromeFrame(0x778n, { x: 900, y: 0, width: 800, height: 600 })]);
+    expect(await ask(0x778n)).toBeNull();
+  });
+
+  it("two maximized windows of one browser at the same rect: null, they cannot be told apart (gate 2 on #965)", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    enumWindowsInZOrderMock.mockImplementation(() => [chromeFrame(0x700n), chromeFrame(0x77bn)]);
+    expect(await ask(0x77bn)).toBeNull();
+    expect(await ask(0x700n)).toBeNull();
+  });
+
+  it("another browser's window at the same rect is not a second candidate (gate 2 on #965)", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    getWindowProcessIdMock.mockImplementation((h: bigint) => (h === 0x701n ? 9999 : 4242));
+    enumWindowsInZOrderMock.mockImplementation(() => [chromeFrame(0x701n), chromeFrame(0x77en)]);
+    expect(await ask(0x77en)).toEqual({ kind: "cdp", tabId: "TAB-A" });
+  });
+
+  it("a minimized window holding the tab: the browser's one minimized frame keeps CDP (gate 2 on #965)", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    getTabWindowBoundsMock.mockResolvedValue({ left: 100, top: 50, width: 800, height: 600, windowState: "minimized" });
+    enumWindowsInZOrderMock.mockImplementation(() => [chromeFrame(0x700n), chromeFrame(0x77cn, { x: -32000, y: -32000, width: 160, height: 28 }, true)]);
+    expect(await ask(0x77cn)).toEqual({ kind: "cdp", tabId: "TAB-A" });
+    enumWindowsInZOrderMock.mockImplementation(() => [chromeFrame(0x700n, undefined, true), chromeFrame(0x77cn, { x: -32000, y: -32000, width: 160, height: 28 }, true)]);
+    expect(await ask(0x77cn)).toBeNull();
   });
 
   it("the tab's window at 150 %: bounds in DIPs times the window's scale match (internal #319)", async () => {
     listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
     getWindowDpiMock.mockReturnValue(144);
-    getWindowRectByHwndMock.mockReturnValue({ x: 150, y: 75, width: 1200, height: 900 });
     getTabWindowBoundsMock.mockResolvedValue({ left: 100, top: 50, width: 800, height: 600 });
-    expect(await resolveCdpDestinationForHwnd(0x779n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
+    enumWindowsInZOrderMock.mockImplementation(() => [chromeFrame(0x779n, { x: 150, y: 75, width: 1200, height: 900 })]);
+    expect(await ask(0x779n)).toEqual({ kind: "cdp", tabId: "TAB-A" });
   });
 
   it("the browser's process cannot be read: null, not a guess (internal #319)", async () => {
     listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
     getBrowserProcessIdMock.mockRejectedValue(new Error("no /json/version"));
-    expect(await resolveCdpDestinationForHwnd(0x77an, "Chrome_WidgetWin_1")).toBeNull();
+    expect(await ask(0x77an)).toBeNull();
+  });
+
+  it("the tab's window bounds cannot be read: null (gate 2 on #965)", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    getTabWindowBoundsMock.mockRejectedValue(new Error("no window"));
+    expect(await ask(0x77dn)).toBeNull();
   });
 
   it("non-Chromium className ('Notepad'): null (gate misses, listTabsLight NOT called — zero CDP latency for native windows)", async () => {
@@ -585,7 +624,7 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
       { id: "TAB-AAA", title: "Google", url: "https://google.com/", type: "page" },
       { id: "TAB-BBB", title: "Bing", url: "https://bing.com/", type: "page" },
     ]);
-    const dest = await resolveCdpDestinationForHwnd(0x222n, "Chrome_WidgetWin_1");
+    const dest = await ask(0x222n);
     expect(dest).toEqual({ kind: "cdp", tabId: "TAB-AAA" });
   });
 
@@ -595,7 +634,7 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
       { id: "DLG", title: "Sync", url: "edge://sync-confirmation-dialog/", type: "page" },
       { id: "PAGE", title: "Google", url: "https://google.com/", type: "page" },
     ]);
-    const dest = await resolveCdpDestinationForHwnd(0x225n, "Chrome_WidgetWin_1");
+    const dest = await ask(0x225n);
     expect(dest).toEqual({ kind: "cdp", tabId: "PAGE" });
   });
 
@@ -657,6 +696,7 @@ describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration"
     listTabsLightMock.mockResolvedValue([
       { id: "TAB-X", title: "X", url: "https://x.com/", type: "page" },
     ]);
+    enumWindowsInZOrderMock.mockReturnValue([chromeFrame(0xAAAn)]);
     const dest = await resolveInputDestination({ windowTitle: "Chrome" });
     expect(dest).toEqual({ kind: "cdp", tabId: "TAB-X" });
   });
@@ -669,6 +709,7 @@ describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration"
     listTabsLightMock.mockResolvedValue([
       { id: "TAB-Y", title: "X", url: "https://x.com/", type: "page" },
     ]);
+    enumWindowsInZOrderMock.mockReturnValue([chromeFrame(0xBBBn)]);
     const dest = await resolveInputDestination({ windowTitle: "Chrome" });
     expect(dest).toEqual({ kind: "cdp", tabId: "TAB-Y" });
   });

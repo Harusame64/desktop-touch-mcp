@@ -31,7 +31,8 @@ import {
   type ResolvedWindow,
 } from "./_resolve-window.js";
 import { logDispatchSink } from "./_resolve-log.js";
-import { getWindowRectByHwnd, getWindowProcessId, getWindowDpi } from "../engine/win32.js";
+import { getWindowRectByHwnd, getWindowProcessId, getWindowDpi, enumWindowsInZOrder } from "../engine/win32.js";
+import { frameForWindowBounds } from "../engine/browser-frames.js";
 import { nativeUia, nativeWin32, nativeL1 } from "../engine/native-engine.js";
 import {
   captureFrame,
@@ -798,9 +799,17 @@ export async function resolveInputDestination(
  * #319 item 2). The tab came from the browser on the configured port and the browser's most recent
  * window, whatever hwnd was asked: win2 scrolled Edge's page (9222) with `hwnd:<a Chrome window>`, and
  * with two windows of one browser it scrolled the other window, both answering `delivered_via_cdp`.
- * So the hwnd must belong to that browser's process and sit at that tab's window bounds (the check
- * `browser_click` makes, internal #305). When either cannot be shown, this answers null and the wheel
- * goes by the window, as for a browser without CDP.
+ *
+ * So the hwnd must be the browser's own frame (its process, `getBrowserProcessId`) and the ONE frame of
+ * that browser at the tab's window bounds (`frameForWindowBounds`, the rule `browser_click` uses,
+ * internal #305): two maximized windows share a rect and cannot be told apart. A minimized window's
+ * bounds are its restored ones, so a minimized tab window matches the browser's one minimized frame.
+ * When any of it cannot be shown this answers null and the wheel goes by the window, as for a browser
+ * without CDP. Not done: finding the tab that IS in an older window (the wheel goes by that window), and
+ * a second monitor at another scale, whose DIP origin is not the first monitor's times its scale.
+ *
+ * Cost on the gate-hit path: `/json/list`, then the browser's process id (cached per port, read again
+ * when the hwnd's process differs) and the tab's window bounds in parallel, then one enumeration.
  *
  * Exported for unit testing.
  */
@@ -817,20 +826,38 @@ export async function resolveCdpDestinationForHwnd(
     // The tab every other call without a tabId uses, not whatever target is listed first (#308).
     const firstPage = defaultPageTab(tabs);
     if (!firstPage) return null;
-    // The window asked for is this browser's, and the tab is in it (internal #319 item 2).
-    if (getWindowProcessId(hwnd) !== await getBrowserProcessId(port)) return null;
-    const bounds = await getTabWindowBounds(firstPage.id, port);
-    const rect = getWindowRectByHwnd(hwnd);
-    const scale = getWindowDpi(hwnd) / 96;
-    const near = (a: number, b: number): boolean => Math.abs(a - b) <= 3;
-    if (rect === null || !(near(rect.x, bounds.left * scale) && near(rect.y, bounds.top * scale) &&
-        near(rect.width, bounds.width * scale) && near(rect.height, bounds.height * scale))) {
-      return null;
-    }
+    // The window asked for is this browser's, and the one frame holding the tab (internal #319 item 2).
+    const [browserPid, bounds] = await Promise.all([
+      browserPidFor(port, getWindowProcessId(hwnd)),
+      getTabWindowBounds(firstPage.id, port),
+    ]);
+    // Only this browser's frames: another browser's window at the same rect is not a second candidate, and
+    // a hwnd in another process is never among them.
+    const frames = enumWindowsInZOrder().filter((w) =>
+      w.className === CHROMIUM_TOP_LEVEL_CLASS && getWindowProcessId(w.hwnd) === browserPid);
+    const holder = bounds.windowState === "minimized"
+      ? (() => { const m = frames.filter((w) => w.isMinimized); return m.length === 1 ? m[0] : undefined; })()
+      : frameForWindowBounds(frames.filter((w) => !w.isMinimized), bounds, (w) => getWindowDpi(w.hwnd) / 96);
+    if (holder?.hwnd !== hwnd) return null;
     return { kind: "cdp", tabId: firstPage.id };
   } catch {
     return null;
   }
+}
+
+/** The CDP browser's process id by port, read again when the window asked for is in another process. */
+const browserPidByPort = new Map<number, number>();
+async function browserPidFor(port: number, windowPid: number): Promise<number> {
+  const cached = browserPidByPort.get(port);
+  if (cached !== undefined && cached === windowPid) return cached;
+  const pid = await getBrowserProcessId(port);
+  browserPidByPort.set(port, pid);
+  return pid;
+}
+
+/** Test seam: forget the cached browser process ids. */
+export function _resetBrowserPidCacheForTest(): void {
+  browserPidByPort.clear();
 }
 
 // ─── Runtime guard (ADR §4 Phase 1 deliverable) ──────────────────────────────
