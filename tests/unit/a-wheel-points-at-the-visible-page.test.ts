@@ -81,7 +81,10 @@ describe("the refusal gives a road on (ADR-040 invariant 8)", () => {
     expect(t).not.toMatch(/focus_window\(\{ hwnd/);
     expect(t).toContain('scroll({ action: "raw", hwnd: "1280", direction: "down", amount: 3 })');
     // browser_eval's union needs action:"js" (codex on #969).
-    expect(t).toContain('browser_eval({ action: "js", tabId, expression: "window.scrollBy(0, 300)" })');
+    expect(t).toContain('browser_eval({ action: "js", tabId: "<its tabId from browser_open>", expression: "window.scrollBy(0, 300)" })');
+    // The tool that lists tabs is browser_open; browser_connect is no longer registered (agy on #969).
+    expect(t).toContain("browser_open lists its tabs");
+    expect(t).not.toContain("browser_connect");
   });
   it("the script road scrolls the way and about the distance asked (gate 2 on #969)", () => {
     expect(text(pageNotVisibleScrollFailure({ frame: 1n, why: "covered", title: "" }, "up", 5) as never)).toContain("window.scrollBy(0, -500)");

@@ -2159,7 +2159,9 @@ export function pageNotVisibleScrollFailure(
       : page.why === "no_page_window"
         ? "another window covers all of it"
         : "other windows cover every point of its page that was tried";
-  const byScript = `If this browser is connected over CDP (browser_connect lists its tabs), browser_eval({ action: "js", tabId, expression: "window.scrollBy(${dx}, ${dy})" }) scrolls the page without moving any window.`;
+  // browser_open is the tool that connects and lists tabs (browser_connect was its old name); tabId is a
+  // placeholder the caller fills from that listing (agy on #969).
+  const byScript = `If this browser is open over CDP (browser_open lists its tabs), browser_eval({ action: "js", tabId: "<its tabId from browser_open>", expression: "window.scrollBy(${dx}, ${dy})" }) scrolls the page without moving any window.`;
   const suggest = page.why === "cloaked"
     ? [
       "Bringing the window here would switch the user's desktop: ask the user to switch to it or move the window here, then retry: " + retry + ".",
