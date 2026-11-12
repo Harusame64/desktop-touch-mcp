@@ -30,7 +30,7 @@ import {
   CMD_TIMEOUT_MS,
   type TabContext,
 } from "../engine/cdp-bridge.js";
-import { defaultPageTab } from "../engine/cdp-default-tab.js";
+import { defaultPageTab, isDevToolsFrontEnd } from "../engine/cdp-default-tab.js";
 import { resolveWellKnownPath, spawnDetached, killProcessesByName } from "../utils/launch.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import { setBrowserSearchHook } from "./wait-until.js";
@@ -1462,9 +1462,12 @@ export const browserConnectHandler = async ({
       title: t.title,
       url: t.url,
       active: focusMap.get(t.id) ?? false,
+      // internal #398 — DevTools' own front end is listed by CDP as a page; it is not a tab to act on.
+      ...(isDevToolsFrontEnd(t.url) && { devtools: true }),
     }));
 
-    const activeTab = summary.find((t) => t.active)?.id ?? null;
+    // A focused DevTools is not the active tab: a call with its id would read DevTools, not the page.
+    const activeTab = summary.find((t) => t.active && !isDevToolsFrontEnd(t.url))?.id ?? null;
 
     return {
       content: [
@@ -1475,7 +1478,7 @@ export const browserConnectHandler = async ({
             `${pageTabs.length} page tab(s) found:`,
             JSON.stringify({ port, active: activeTab, tabs: summary }, null, 2),
             "",
-            "Pass a tab's id to other browser_* tools to target it, or omit to use the most recently used page tab (a sign-in or sync dialog is skipped).",
+            "Pass a tab's id to other browser_* tools to target it, or omit to use the most recently used page tab (a sign-in or sync dialog, and DevTools' own window marked devtools:true, are skipped).",
           ].join("\n"),
         },
       ],
@@ -2844,7 +2847,7 @@ export const browserLaunchHandler = async ({
             alreadyRunning: true,
             launched: null,
             killed: [],
-            tabs: pageTabs.map((t) => ({ id: t.id, title: t.title, url: t.url })),
+            tabs: pageTabs.map((t) => ({ id: t.id, title: t.title, url: t.url, ...(isDevToolsFrontEnd(t.url) && { devtools: true }) })),
           }, null, 2),
         }],
       };
@@ -2950,7 +2953,7 @@ export const browserLaunchHandler = async ({
           alreadyRunning: false,
           launched: { browser: chosenKey, path: chosenPath, userDataDir },
           killed,
-          tabs: pageTabs.map((t) => ({ id: t.id, title: t.title, url: t.url })),
+          tabs: pageTabs.map((t) => ({ id: t.id, title: t.title, url: t.url, ...(isDevToolsFrontEnd(t.url) && { devtools: true }) })),
         }, null, 2),
       }],
     };

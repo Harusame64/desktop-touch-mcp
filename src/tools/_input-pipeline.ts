@@ -31,7 +31,7 @@ import {
   type ResolvedWindow,
 } from "./_resolve-window.js";
 import { logDispatchSink } from "./_resolve-log.js";
-import { getWindowRectByHwnd, getWindowProcessId } from "../engine/win32.js";
+import { getWindowRectByHwnd, getWindowProcessId, getWindowTitleW } from "../engine/win32.js";
 import { nativeUia, nativeWin32, nativeL1 } from "../engine/native-engine.js";
 import {
   captureFrame,
@@ -812,6 +812,9 @@ export async function resolveCdpDestinationForHwnd(
     const port = getCdpPort();
     const tabs = await listTabsLight(port);
     // The tab every other call without a tabId uses, not whatever target is listed first (#308).
+    // internal #398 — the default tab skips DevTools' front end, so a wheel aimed at an undocked DevTools
+    // window would go to the page it inspects. That window takes the wheel itself (gate 2 on #968).
+    if (/^DevTools\b/.test(getWindowTitleW(hwnd))) return null;
     const firstPage = defaultPageTab(tabs);
     if (!firstPage) return null;
     // Another browser's window is not this browser's tab (internal #319 item 2).

@@ -9,7 +9,10 @@
 ### Fixed — Windows
 - **With DevTools open, a browser call without `tabId` works on the page, not on DevTools.** DevTools' own front end
   is listed as a page and was taken as the default tab, so `browser_click` with a selector answered "Element not
-  found". It is now skipped, as the sign-in and sync dialogs are (internal #398).
+  found". It is now skipped, as the sign-in and sync dialogs are, and the next most recently used page is taken.
+  `browser_connect` and `browser_open` mark it `devtools: true` and do not report it as the active tab, and a scroll
+  aimed at an undocked DevTools window goes to that window, not through CDP to the page. This applies wherever CDP
+  is used, macOS included (internal #398).
 - **A wheel sent to one browser's window no longer scrolls another browser's page.** `scroll` on a Chrome or Edge
   window went through CDP to the page of the browser on the CDP port, whichever browser the window was: with Edge on
   the port, a Chrome window's scroll moved Edge's page and answered `delivered_via_cdp`. A window of another browser

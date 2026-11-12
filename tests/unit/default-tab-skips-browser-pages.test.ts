@@ -107,3 +107,18 @@ describe("defaultPageTab skips DevTools' own front end (internal #398)", () => {
     expect(defaultPageTab([mention, page])?.id).toBe("m");
   });
 });
+
+describe("DevTools' front end in its other spellings, beside a sign-in dialog, and in the guard lens (gate 2 on #968)", () => {
+  const spec = (match: { urlIncludes?: string } = {}) =>
+    ({ name: "__auto__", target: { kind: "browserTab", match } }) as unknown as LensSpec;
+  it("chrome-devtools:// and upper case are DevTools too", () => {
+    expect(defaultPageTab([tab("o", "chrome-devtools://devtools/bundled/inspector.html"), page])?.id).toBe("pg");
+    expect(defaultPageTab([tab("u", "DEVTOOLS://devtools/bundled/devtools_app.html"), page])?.id).toBe("pg");
+  });
+  it("DevTools and a sync dialog both ahead of the page: the page", () => {
+    expect(defaultPageTab([tab("dt", "devtools://devtools/x"), tab("dlg", "edge://sync-confirmation-dialog/"), page])?.id).toBe("pg");
+  });
+  it("the guard lens binds the same tab as the call", () => {
+    expect(resolveBrowserTabBindingFromTabs(spec(), [tab("dt", "devtools://devtools/x"), page])?.hwnd).toBe("pg");
+  });
+});
