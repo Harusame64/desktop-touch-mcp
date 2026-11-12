@@ -60,3 +60,8 @@ export function framesOfBrowserProcess<T extends { hwnd: bigint }>(
   return own.length > 0 ? own : frames;
 }
 
+
+/** A frame that can be the browser's: a Chromium top-level window, or one whose class could not be read. */
+export function isChromiumFrameOrUnknown(w: { className?: string }): boolean {
+  return w.className === undefined || w.className === "" || w.className === "Chrome_WidgetWin_1";
+}

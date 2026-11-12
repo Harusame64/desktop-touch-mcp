@@ -10,7 +10,7 @@
  */
 import { getBrowserProcessId, getTabWindowBounds } from "./cdp-bridge.js";
 import { enumWindowsInZOrder, getWindowDpi, getWindowProcessId, pageSurfaceDeps } from "./win32.js";
-import { frameForWindowBounds, framesOfBrowserProcess } from "./browser-frames.js";
+import { frameForWindowBounds, framesOfBrowserProcess, isChromiumFrameOrUnknown } from "./browser-frames.js";
 import { resolvePageSurface, pointOnSurface, type PageSurface, type PageSurfaceDeps } from "./page-surface.js";
 
 /** Where a click goes inside the page, independent of where the page sits on screen. */
@@ -61,8 +61,6 @@ const realDeps: PageAimDeps = {
   surface: pageSurfaceDeps,
 };
 
-const isChromiumFrame = (w: { className?: string }): boolean =>
-  w.className === undefined || w.className === "" || w.className === "Chrome_WidgetWin_1";
 
 /**
  * The browser frame the tab is in, without focusing anything: the CDP browser's own frames (its process,
@@ -75,7 +73,7 @@ export async function findTabFrame(port: number, tabId: string | null, deps: Pag
     deps.tabBounds(tabId, port).catch(() => undefined),
   ]);
   if (bounds === undefined) return undefined;
-  const frames = framesOfBrowserProcess(deps.frames().filter(isChromiumFrame), pid, deps.pidOf);
+  const frames = framesOfBrowserProcess(deps.frames().filter(isChromiumFrameOrUnknown), pid, deps.pidOf);
   return frameForWindowBounds(frames, bounds, (w) => deps.scaleOf(w.hwnd))?.hwnd;
 }
 

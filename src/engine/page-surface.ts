@@ -23,11 +23,12 @@ import type { Rect } from "./vision-gpu/types.js";
 
 export const PAGE_RWH_CLASS = "Chrome_RenderWidgetHostHWND";
 
-/** px two sizes may differ by and still be the page's (rounding of innerWidth × DPR). */
-const SIZE_TOLERANCE_PX = 2;
+/** px two sizes may differ by and still be the page's (rounding of innerWidth × DPR, up to 200 % × 150 %). */
+const SIZE_TOLERANCE_PX = 4;
 
 export type PageSurface =
-  | { kind: "surface"; frame: bigint; rwh: bigint; rect: Rect }
+  /** `rwhs`: every page window at that rect — undocked DevTools gives two of the same rect, either is the page. */
+  | { kind: "surface"; frame: bigint; rwh: bigint; rwhs: bigint[]; rect: Rect }
   | { kind: "not_shown"; frame: bigint; why: "minimized" | "cloaked" | "no_page_window" }
   | { kind: "unreadable"; frame: bigint; why: "no_children_read" | "ambiguous" };
 
@@ -90,8 +91,8 @@ export function resolvePageSurface(frame: bigint, deps: PageSurfaceDeps, hint?: 
   if (rwh.length === 0) return { kind: "not_shown", frame, why: "no_page_window" };
   const rect = selectPageRect(rwh.map((c) => c.rect!), hint);
   if (rect === null) return { kind: "unreadable", frame, why: "ambiguous" };
-  const owner = rwh.find((c) => sameRect(c.rect!, rect))!;
-  return { kind: "surface", frame, rwh: owner.hwnd, rect };
+  const at = rwh.filter((c) => sameRect(c.rect!, rect)).map((c) => c.hwnd);
+  return { kind: "surface", frame, rwh: at[0]!, rwhs: at, rect };
 }
 
 /**

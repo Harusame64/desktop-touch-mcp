@@ -3856,7 +3856,10 @@ function getSharedRealDeps(): ExecutorDeps {
 
     async cdpClick(selector, tabId) {
       const { getElementScreenCoords, portForTab } = await import("../engine/cdp-bridge.js");
-      const coords = await getElementScreenCoords(selector, tabId ?? null, portForTab(tabId));
+      const { resolveTabId } = await import("../engine/cdp-bridge.js");
+      // ADR-040 — one tab for the coordinates and the window they are placed on (codex on #967).
+      const tab = tabId ?? await resolveTabId(null, portForTab(tabId)).catch(() => null);
+      const coords = await getElementScreenCoords(selector, tab, portForTab(tabId));
       if ((coords as { error?: string }).error) {
         throw new Error((coords as { error?: string }).error ?? "CDP getElementScreenCoords failed");
       }
@@ -3864,7 +3867,7 @@ function getSharedRealDeps(): ExecutorDeps {
       // page-side formula (#306). When the surface cannot be read, the formula's point, as before.
       const { findTabFrame, alignToPageSurface, aimFromCoords } = await import("../engine/page-aim.js");
       const port = portForTab(tabId);
-      const frame = await findTabFrame(port, tabId ?? null).catch(() => undefined);
+      const frame = await findTabFrame(port, tab).catch(() => undefined);
       const { x, y } = alignToPageSurface(frame, aimFromCoords(coords), { x: coords.x, y: coords.y }).point;
       // ADR-029: coordinates only become known inside this dep, so the
       // reachability check lives here rather than in the executor core.
