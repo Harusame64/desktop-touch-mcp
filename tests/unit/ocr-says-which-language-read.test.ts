@@ -61,6 +61,15 @@ describe("OCR names the language that read (internal #357)", () => {
     expect(ocrLanguageWarning("en")).toBeNull();
   });
 
+  it("warns for a script the engine does not cover (zh-TW read by zh-Hans-CN)", async () => {
+    exeOutput.value = '{"language":"zh-Hans-CN","words":[]}';
+    await runOcr(PNG, "zh-TW");
+    expect(ocrLanguageWarning("zh-TW")).toMatch(/^ocr_language_fallback: /);
+    exeOutput.value = '{"language":"zh-Hans-CN","words":[]}';
+    await runOcr(PNG, "zh");
+    expect(ocrLanguageWarning("zh")).toBeNull();
+  });
+
   it("claims nothing when an older win-ocr.exe does not say (control)", async () => {
     exeOutput.value = '{"words":[]}';
     await runOcr(PNG, "en");

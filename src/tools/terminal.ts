@@ -3136,8 +3136,13 @@ export const terminalRunHandler = async ({
             previousMatched?: boolean;
             invalidatedBy?: string;
           };
+          warnings?: string[];
         };
       };
+      // internal #357: a read over OCR with another language's engine says so; run passes it on (gate 2 on #961).
+      for (const w of parsed.hints?.warnings ?? []) {
+        if (w.startsWith("ocr_language_fallback:")) warnings.push(w);
+      }
       if (parsed.ok === false) {
         // Surface read-handler failures (e.g. source:'uia' on a terminal
         // without TextPattern) instead of silently returning ok:true with

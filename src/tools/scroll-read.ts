@@ -284,7 +284,9 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
         ok: true,
         text: allLines.join("\n"),
         pages: perPage.length,
-        language: usedLanguage ?? language,
+        // The one asked for, unless another language read: then that one, with the one asked beside it
+        // (a plain 'en' read by 'en-US' still answers 'en'; gate 2 on #961).
+        language: languageWarning !== null && usedLanguage !== undefined ? usedLanguage : language,
         ...(languageWarning !== null ? { requestedLanguage: language, warnings: [languageWarning] } : {}),
         stoppedReason,
         dedupedLines: perPage.reduce((s, p) => s + p.duplicateLines, 0),

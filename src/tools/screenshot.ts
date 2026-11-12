@@ -163,7 +163,7 @@ export const screenshotSchema = {
   ocrLanguage: z
     .string()
     .optional()
-    .describe("BCP-47 language tag for the OCR engine (e.g. 'ja', 'en-US'). Auto-detects from system locale when omitted. Used when detail='text' (OCR fallback) or detail='ocr' (direct OCR)."),
+    .describe("BCP-47 language tag for the OCR engine (e.g. 'ja', 'en-US'). Auto-detects from system locale when omitted. Used when detail='text' (OCR fallback), 'som' or 'ocr'. With no OCR pack installed for it, Windows reads with another installed language and hints.warnings says so (ocr_language_fallback)."),
   preprocessPolicy: z
     .enum(["auto", "aggressive", "minimal"])
     .default("auto")
@@ -468,6 +468,8 @@ export const screenshotHandler = async (args: {
       const targetHwnd = resolvedWin?.hwnd ?? null;
 
       const somResult = await runSomPipeline(resolvedTitle, targetHwnd, ocrLanguage, 2, preprocessPolicy, preprocessAdaptive);
+      const somLangWarning = ocrLanguageWarning(ocrLanguage); // internal #357 (gate 2 on #961)
+      if (somLangWarning !== null) screenshotWarnings.push(somLangWarning);
       const content: ToolResult["content"] = [
         {
           type: "text" as const,
@@ -1476,7 +1478,7 @@ export function registerScreenshotTools(server: McpServer): void {
         "Foreground detail='image' returns a by-ref resource_link by default; pass confirmImage=true to also receive inline pixels. " +
         "diffMode requires a prior full-capture baseline (non-diff call or workspace_snapshot) — calling diffMode cold returns a full frame, not a diff. " +
         "mode='background' requires windowTitle or hwnd, and only composes with detail in {'image','meta'} — detail='text'/'som'/'ocr' run only against foreground capture (the dispatcher rejects the conflicting combination). Passing mode='background' is itself the acknowledgement that image pixels are wanted, so confirmImage is NOT required for it (matches the former screenshot_background contract). fullContent=false enables legacy mode (faster but GPU windows may be black). " +
-        "detail='ocr' requires windowTitle or hwnd; first call may take ~1s (WinRT cold-start) and the matching OCR language pack must be installed.",
+        "detail='ocr' requires windowTitle or hwnd; first call may take ~1s (WinRT cold-start). Without an OCR pack for the language, another installed one reads and hints.warnings says so.",
       examples: [
         "screenshot() → meta orientation of all windows",
         "screenshot({detail:'text', windowTitle:'Notepad'}) → clickable elements with coords",

@@ -336,6 +336,46 @@ describe("scrollReadHandler (mocked)", () => {
     expect(data.warnings).toEqual(["ocr_language_fallback: no pack for 'en'"]);
   });
 
+  it("keeps the language asked for when its own engine read it, as en-US for en (control, gate 2 on #961)", async () => {
+    const used = vi.fn((_req: string) => "en-US" as string | undefined);
+    const warning = vi.fn((_req: string) => null as string | null);
+    vi.doMock("../../src/engine/ocr-bridge.js", () => ({
+      recognizeWindowByHwnd: vi.fn().mockResolvedValue({ words: makeWords(["A"]), origin: { x: 0, y: 0 } }),
+      ocrWordsToLines: (ws: Array<{ text: string }>) => ws.map((w) => w.text).join("\n"),
+      detectOcrLanguage: () => "ja",
+      ocrLanguageUsed: used,
+      ocrLanguageWarning: warning,
+    }));
+    vi.doMock("../../src/engine/nutjs.js", () => ({
+      keyboard: { pressKey: vi.fn().mockResolvedValue(undefined), releaseKey: vi.fn().mockResolvedValue(undefined) },
+    }));
+    vi.doMock("../../src/tools/_resolve-window.js", () => ({
+      resolveWindowTarget: vi.fn().mockResolvedValue({ title: "TestWindow", hwnd: 0xCAFEn, warnings: [] }),
+      findPlainTopLevelWindowByTitle: vi.fn().mockReturnValue(null),
+    }));
+    vi.doMock("../../src/engine/bg-input.js", () => ({
+      postKeyComboToHwnd: vi.fn().mockReturnValue(true),
+      canInjectAtTarget: vi.fn().mockReturnValue({ supported: true }),
+    }));
+    vi.doMock("../../src/engine/win32.js", () => ({
+      enumWindowsInZOrder: vi.fn().mockReturnValue([]),
+      getWindowTitleW: vi.fn().mockReturnValue(""),
+      getWindowRectByHwnd: vi.fn().mockReturnValue(null),
+      getForegroundHwnd: vi.fn().mockReturnValue(0xCAFEn),
+      getWindowRoot: vi.fn((h: bigint) => h),
+      restoreAndFocusWindow: vi.fn().mockReturnValue({ x: 0, y: 0, width: 800, height: 600 }),
+    }));
+    const { scrollReadHandler } = await import("../../src/tools/scroll-read.js");
+    const result = await scrollReadHandler({
+      action: "read", windowTitle: "Test", maxPages: 1, scrollKey: "PageDown", scrollDelayMs: 0,
+      stopWhenNoChange: true, language: "en",
+    });
+    const data = JSON.parse((result.content[0] as { text: string }).text);
+    expect(data.language).toBe("en");
+    expect(data.requestedLanguage).toBeUndefined();
+    expect(data.warnings).toBeUndefined();
+  });
+
   it("stops with stoppedReason=no_change after 2 consecutive no-new-line pages", async () => {
     // Page 1: lines A, B, C
     // Pages 2,3,4: same lines A, B, C (no new content)

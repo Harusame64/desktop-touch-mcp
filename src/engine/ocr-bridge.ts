@@ -272,7 +272,15 @@ export function ocrLanguageUsed(requested: string): string | undefined {
   return ocrEngineLanguage.get(requested);
 }
 
-const primaryTag = (tag: string): string => tag.split("-")[0]!.toLowerCase();
+/**
+ * The same language when one tag extends the other ('en' and 'en-US', 'zh' and 'zh-Hans-CN'). A script or
+ * region the engine does not cover is not ('zh-TW' read by 'zh-Hans-CN'): that text is misread (gate 2 on #961).
+ */
+function sameOcrLanguage(requested: string, used: string): boolean {
+  const r = requested.toLowerCase();
+  const u = used.toLowerCase();
+  return r === u || u.startsWith(r + "-") || r.startsWith(u + "-");
+}
 
 /**
  * A warning when the last OCR for `requested` was read with another language's engine, else null. Call it
@@ -280,7 +288,7 @@ const primaryTag = (tag: string): string => tag.split("-")[0]!.toLowerCase();
  */
 export function ocrLanguageWarning(requested: string): string | null {
   const used = ocrEngineLanguage.get(requested);
-  if (used === undefined || primaryTag(used) === primaryTag(requested)) return null;
+  if (used === undefined || sameOcrLanguage(requested, used)) return null;
   return `ocr_language_fallback: no Windows OCR pack is installed for '${requested}', so the text was read ` +
     `with the '${used}' engine and may be misread. The user can add the pack in Settings > Time & language > ` +
     `Language & region > the language's options > Optical character recognition.`;
