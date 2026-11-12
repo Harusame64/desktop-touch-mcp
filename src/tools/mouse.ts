@@ -24,7 +24,7 @@ import { nativeWin32 } from "../engine/native-engine.js";
 import { coercedBoolean, coercedBooleanWithDefault } from "./_coerce.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { failWith } from "./_errors.js";
+import { failWith, failCode } from "./_errors.js";
 import { withRichNarration, narrateParam } from "./_narration.js";
 import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 import { detectFocusLoss } from "./_focus.js";
@@ -1581,6 +1581,12 @@ export const scrollHandler = async ({
     // null, fall through to the legacy nutjs SendInput path (Phase 1b lenient guard).
     const tier1 = await dispatchScrollWheel(dest, { direction, notch: amount });
 
+    // ADR-040 PR ② (internal #396) — a Chromium window whose page is visible nowhere: posting would have
+    // scrolled the window in front, so nothing was posted. Say so, and give the road on (invariant 8).
+    if (tier1?.pageNotVisible !== undefined) {
+      return pageNotVisibleScrollFailure(tier1.pageNotVisible, direction, amount, scrollWarnings);
+    }
+
     if (tier1 === null) {
       // ADR-018 Phase 3 — when destination resolved to a CDP tab but Tier 2
       // dispatch / observation failed, emit `target_unreachable` per §2.6.2
@@ -2129,3 +2135,55 @@ export function registerMouseTools(server: McpServer): void {
   // (memory: feedback_disable_via_entry_block.md)
 }
 
+
+/**
+ * ADR-040 PR ② (internal #396) — the refusal for a wheel to a Chromium window whose page is not visible:
+ * what was not shown, the road tried, and the next calls with their values (ADR-040 invariant 8).
+ * Exported for tests.
+ */
+export function pageNotVisibleScrollFailure(
+  page: { frame: bigint; why: "covered" | "minimized" | "cloaked" | "no_page_window"; title: string },
+  direction: "up" | "down" | "left" | "right",
+  amount: number,
+  warnings: string[] = [],
+): ToolResult {
+  const hwnd = String(page.frame);
+  // The same direction and about the same distance (100 css px a notch) as the wheel asked for.
+  const px = 100 * amount;
+  const [dx, dy] = direction === "up" ? [0, -px] : direction === "down" ? [0, px] : direction === "left" ? [-px, 0] : [px, 0];
+  const retry = `scroll({ action: "raw", hwnd: "${hwnd}", direction: "${direction}", amount: ${amount} })`;
+  const what = page.why === "minimized"
+    ? "the window is minimized"
+    : page.why === "cloaked"
+      ? "the window is on another virtual desktop"
+      : page.why === "no_page_window"
+        ? "another window covers all of it"
+        : "other windows cover every point of its page that was tried";
+  // browser_open is the tool that connects and lists tabs (browser_connect was its old name); tabId is a
+  // placeholder the caller fills from that listing (agy on #969).
+  const byScript = `If this browser is open over CDP (browser_open lists its tabs), browser_eval({ action: "js", tabId: "<its tabId from browser_open>", expression: "window.scrollBy(${dx}, ${dy})" }) scrolls the page without moving any window.`;
+  const suggest = page.why === "cloaked"
+    ? [
+      "Bringing the window here would switch the user's desktop: ask the user to switch to it or move the window here, then retry: " + retry + ".",
+      byScript,
+    ]
+    : [
+      // focus_window finds a window by title; it takes no hwnd (codex on #969).
+      page.title !== ""
+        ? `Bring the window forward, then retry: focus_window({ title: ${JSON.stringify(page.title)} }), then ${retry}. This moves the window in front of the others.`
+        : `Bring the window forward (focus_window({ title }) with its title, as desktop_state lists it), then retry: ${retry}. This moves the window in front of the others.`,
+      byScript,
+    ];
+  return failCode(
+    "ScrollNotDelivered",
+    `scroll: Nothing was scrolled: the browser window's page is not visible (hwnd ${hwnd}: ${what}). A wheel posted to it goes to the window under its point, which would have scrolled the window in front.`,
+    {
+      suggest,
+      context: {
+        hwnd, why: page.why, direction,
+        verifyDelivery: { status: "not_delivered", channel: "postmessage", reason: "target_unreachable" },
+        ...(warnings.length > 0 && { hints: { warnings } }),
+      },
+    },
+  );
+}

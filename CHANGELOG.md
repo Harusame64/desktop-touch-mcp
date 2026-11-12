@@ -7,6 +7,12 @@
   tool (internal #377).
 
 ### Fixed — Windows
+- **`scroll` with `hwnd` on a Chrome or Edge window behind another scrolls that window, or says it cannot, instead of
+  scrolling the one in front.** Chromium sends a posted wheel to the window under its point, and the point was the
+  window's centre, so with the centre covered the front window scrolled and the reply said `ok`. The point is now
+  where the target's own page shows; when its page shows nowhere (covered, minimized, on another desktop) nothing
+  is sent and the reply says so, with `focus_window` by the window's title and `browser_eval` as the roads on.
+  A window with no page drawn yet, with nothing in front of it, is still scrolled as before (internal #396).
 - **`browser_click` hits the element with DevTools or a side bar open.** The click point was computed from the page's
   own `window.screenX` and the frame width, split evenly left and right, so with DevTools docked it landed half the
   panel off (+278 px docked right, into DevTools), and with Edge's vertical tabs 122 px off, answering `ok: true`.
@@ -20,7 +26,7 @@
 - **With DevTools open, a browser call without `tabId` works on the page, not on DevTools.** DevTools' own front end
   is listed as a page and was taken as the default tab, so `browser_click` with a selector answered "Element not
   found". It is now skipped, as the sign-in and sync dialogs are, and the next most recently used page is taken.
-  `browser_connect` and `browser_open` mark it `devtools: true` and do not report it as the active tab, and a scroll
+  `browser_open`'s tab listings mark it `devtools: true` and do not report it as the active tab, and a scroll
   aimed at an undocked DevTools window goes to that window, not through CDP to the page. This applies wherever CDP
   is used, macOS included (internal #398).
 - **A wheel sent to one browser's window no longer scrolls another browser's page.** `scroll` on a Chrome or Edge

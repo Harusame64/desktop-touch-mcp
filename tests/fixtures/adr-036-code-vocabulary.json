@@ -136,6 +136,7 @@
     "NavigateFailed",
     "PermissionRequired",
     "ScopeNotFound",
+    "ScrollNotDelivered",
     "TerminalNotInFront",
     "TerminalTextPatternUnavailable",
     "TerminalWindowNotFound",

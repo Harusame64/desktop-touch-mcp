@@ -27,7 +27,7 @@
  * Phase 4 changes are described in `docs/adr-018-phase-4-subplan.md`.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock the native loader before importing the SUT. The dispatcher reads the
 // Tier 1 native call via the tolerant `native-engine.ts` loader (NOT a direct
@@ -195,6 +195,7 @@ const {
   dispatchScrollWheel,
   assertTier4Reachable,
   postWheelToHwnd,
+  wheelPointDeps,
 } = await import("../../src/tools/_input-pipeline.js");
 
 describe("ADR-018 §2.3 — resolveInputDestination (single SSOT via resolveWindowTarget)", () => {
@@ -2122,5 +2123,89 @@ describe("ADR-018 Phase 6 — postWheelToHwnd hit-test retarget (Tauri / Electro
     // Chain-trust still applies to table members with no readable scrollbar.
     expect(result).not.toBeNull();
     expect(result!.reason).toBe("delivered_via_postmessage");
+  });
+});
+
+describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium window points at its visible page", () => {
+  const FRAME = 0x500n;
+  const PAGE = 0x501n;
+  const FRONT_PAGE = 0x601n; // the front window's page window
+  // win2 OQ-40-8: C2 at 500,150; its page window 508,237 784×505.
+  const PAGE_RECT = { x: 508, y: 237, width: 784, height: 505 };
+  const lp = (x: number, y: number) => BigInt((y << 16) | x);
+  const saved = { ...wheelPointDeps };
+  // Visible only where x ≥ `visibleFromX` (the front window covers the left part).
+  const shape = (visibleFromX: number | null, cls = "Chrome_WidgetWin_1") => {
+    wheelPointDeps.rootOf = () => FRAME;
+    wheelPointDeps.classOf = () => cls;
+    wheelPointDeps.surface = {
+      isIconic: () => false,
+      isCloaked: () => false,
+      descendants: () => [{ hwnd: PAGE, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: PAGE_RECT }],
+    };
+    wheelPointDeps.pointAt = (x) => (visibleFromX !== null && x >= visibleFromX ? { child: PAGE, root: FRAME } : { child: FRONT_PAGE, root: 0x600n });
+    wheelPointDeps.rectOf = () => ({ x: 500, y: 150, width: 800, height: 600 });
+  };
+  beforeEach(() => {
+    win32PostMessageMock.mockReset();
+    win32PostMessageMock.mockReturnValue(true);
+    win32GetScrollInfoMock.mockReset();
+    win32GetScrollInfoMock.mockReturnValue(null);
+    win32FindScrollLeafForTopLevelMock.mockReturnValue(null);
+    win32FindWheelLeafByHittestMock.mockReturnValue(null);
+    nativeWin32Mock.win32PostMessage = win32PostMessageMock;
+    nativeWin32Mock.win32GetScrollInfo = win32GetScrollInfoMock;
+    getWindowRectByHwndMock.mockReturnValue({ x: 500, y: 150, width: 800, height: 600 });
+  });
+  afterEach(() => { Object.assign(wheelPointDeps, saved); });
+
+  it("the frame's centre is covered (Q2'): every post carries a point where its own page shows", async () => {
+    shape(1100);
+    await postWheelToHwnd(FRAME, { direction: "down", notch: 3 });
+    expect(win32PostMessageMock).toHaveBeenCalled();
+    // Today's point was the frame's centre, 900,450, under the front window.
+    for (const c of win32PostMessageMock.mock.calls) expect(c[3]).not.toBe(lp(900, 450));
+    // The first grid point at x ≥ 1100: 0.9 of the width, on the top line (0.02 of the height).
+    for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(Math.round(508 + 784 * 0.9), Math.round(237 + 505 * 0.02)));
+  });
+
+  it("the retry to the frame after a leaf post carries the page's point too", async () => {
+    shape(1100);
+    win32FindWheelLeafByHittestMock.mockReturnValue(PAGE);
+    // The frame's position is readable and does not move, so the retry fires.
+    win32GetScrollInfoMock.mockReturnValue({ nMin: 0, nMax: 1000, nPage: 100, nPos: 0, pageRatio: 0 });
+    await postWheelToHwnd(FRAME, { direction: "down", notch: 1 });
+    const targets = win32PostMessageMock.mock.calls.map((c) => c[0]);
+    expect(targets).toContain(PAGE);
+    expect(targets).toContain(FRAME);
+    for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(Math.round(508 + 784 * 0.9), Math.round(237 + 505 * 0.02)));
+  });
+
+  it("its page visible nowhere: nothing is posted, and the outcome says why", async () => {
+    shape(null);
+    const r = await postWheelToHwnd(FRAME, { direction: "down", notch: 3 });
+    expect(win32PostMessageMock).not.toHaveBeenCalled();
+    expect(r).toEqual({ scrolled: false, channel: "postmessage", reason: "target_unreachable", pageNotVisible: { frame: FRAME, why: "covered", title: "" } });
+  });
+
+  it("fully covered (no page window, Q3): nothing is posted", async () => {
+    shape(1100);
+    wheelPointDeps.surface = { ...wheelPointDeps.surface, descendants: () => [{ hwnd: 7n, className: "Intermediate D3D Window", visible: true, rect: PAGE_RECT }] };
+    const r = await postWheelToHwnd(FRAME, { direction: "down", notch: 3 });
+    expect(win32PostMessageMock).not.toHaveBeenCalled();
+    expect(r?.pageNotVisible?.why).toBe("no_page_window");
+  });
+
+  it("not a Chromium window (Excel): the point is the window's centre, as before", async () => {
+    shape(null, "XLMAIN");
+    await postWheelToHwnd(FRAME, { direction: "down", notch: 3 });
+    expect(win32PostMessageMock.mock.calls[0]![3]).toBe(lp(900, 450));
+  });
+
+  it("Windows cannot be asked who is at a point: the point is the window's centre, as before", async () => {
+    shape(1100);
+    wheelPointDeps.pointAt = () => undefined;
+    await postWheelToHwnd(FRAME, { direction: "down", notch: 3 });
+    expect(win32PostMessageMock.mock.calls[0]![3]).toBe(lp(900, 450));
   });
 });
