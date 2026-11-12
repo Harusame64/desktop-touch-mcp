@@ -42,9 +42,9 @@
   the one in front, answering `delivered_via_cdp`. It now goes through CDP only to the tab that window itself shows.
   A covered or minimized window is refused as above, with nothing sent; a window of another browser, or one whose
   tab cannot be named (its title names no tab, two maximized windows showing the same title), gets the wheel by
-  the window. UI Automation is no longer tried on a Chrome or Edge window whose page is not shown: such a page
-  keeps the scroll position it had when last shown, so UI Automation moved it to an unrelated place while the
-  reply said nothing had moved (internal #319, #396).
+  the window. UI Automation is no longer tried on a covered or minimized Chrome or Edge window either: its hidden
+  page keeps the scroll position it had when last shown, so UI Automation moved it to an unrelated place while
+  the reply said nothing had moved (internal #319, #396).
 - **`desktop_discover` lists a text box named only by the label beside it.** A WPF `TextBox` labelled through
   `Label.Target` has an empty UI Automation name and no `LabeledBy`, so discover left it out. Such a text box is now
   listed under the text laid out directly left of it on its row, or directly above it at its left edge, with

@@ -100,9 +100,9 @@ describe("tabOfFrame — the tab is in the window at the frame's rect (internal 
     const d = deps({ windows: { R: { windowId: 2, bounds: RIGHT.bounds } }, visible: ["R"], title: "Right page - Google Chrome" });
     expect(await tabOfFrame(FRAME, tabs, d)).toEqual({ kind: "none", why: "no_window" });
   });
-  it("a tab whose window gave no bounds is not at the frame", async () => {
+  it("a titled tab whose window gave no bounds: none, it could be this frame's own", async () => {
     const d = deps({ windows: { L: { windowId: 1 } }, visible: ["L"], title: "Left page - Google Chrome" });
-    expect(await tabOfFrame(FRAME, tabs, d)).toEqual({ kind: "none", why: "no_window" });
+    expect(await tabOfFrame(FRAME, tabs, d)).toEqual({ kind: "none", why: "unreadable" });
   });
   it("bounds are DIPs: at 150 % the frame's rect is the bounds × 1.5 (3 px tolerance)", async () => {
     const w = { L: { windowId: 1, bounds: LEFT.bounds } };
@@ -200,6 +200,12 @@ describe("tabOfFrame — two maximized windows at one rect (spike S4)", () => {
     const same = [page("A", "Same"), page("B", "Same")];
     expect(await tabOfFrame(FRAME, same, deps({ frameRect: MAX.rect, windows, visible: ["A", "B"], title: "Same - Google Chrome" })))
       .toEqual({ kind: "none", why: "ambiguous" });
+  });
+  it("the same title, this frame's own tab's window not read: none, not the other window's visible tab (codex on #971)", async () => {
+    const same = [page("A", "Same"), page("B", "Same")];
+    const d = deps({ frameRect: MAX.rect, windows: { B: { windowId: 2, bounds: MAX.bounds } }, visible: ["B"], title: "Same - Google Chrome" });
+    expect(await tabOfFrame(FRAME, same, d)).toEqual({ kind: "none", why: "unreadable" });
+    expect(d.visibility).not.toHaveBeenCalled();
   });
   it("the same title, one of them silent: none, the silent one could be the drawn one", async () => {
     const same = [page("A", "Same"), page("B", "Same")];

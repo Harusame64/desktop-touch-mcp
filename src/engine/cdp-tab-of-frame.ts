@@ -77,6 +77,9 @@ export async function tabOfFrame(
     const shown = tabs.filter((t) => t.type === "page" && !isBrowserUiPage(t.url) && titleShows(title, t.title));
     if (shown.length === 0) return { kind: "none", why: "no_titled_tab" };
     const windows = await deps.windowsOf(shown.map((t) => t.id));
+    // A titled tab whose window could not be read may be this frame's own: then another one at the rect
+    // could be the other window's, so nothing is chosen (codex on #971).
+    if (shown.some((t) => windows.get(t.id)?.bounds === undefined)) return { kind: "none", why: "unreadable" };
     const atFrame = shown.filter((t) => {
       const b = windows.get(t.id)?.bounds;
       return b !== undefined && framesAtWindowBounds([{ region: rect }], b, () => scale).length === 1;
