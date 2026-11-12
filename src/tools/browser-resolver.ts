@@ -979,6 +979,8 @@ export type ResolveActionOutcome =
       rect: RectXYWH;
       /** physical screen point (device px), ready for an OS mouse click */
       physical: { x: number; y: number };
+      /** ADR-040 — the tab the gather read (resolved once), when known. */
+      tabId?: string;
       /** 0 = matched element, 1..D = ancestor distance climbed */
       climbDepth: number;
       viewport: ViewportMetrics;
@@ -1098,6 +1100,8 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
       index: decision.target.index,
       rect: decision.target.rect,
       physical: physicalPoint(decision.target.rect, gathered.viewport),
+      // ADR-040 — the tab the gather read, so the click finds that tab's window, not one resolved again.
+      ...(tab !== null && { tabId: tab }),
       climbDepth: decision.target.climbDepth,
       viewport: gathered.viewport,
       matched: {

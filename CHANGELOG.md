@@ -7,6 +7,16 @@
   tool (internal #377).
 
 ### Fixed — Windows
+- **`browser_click` hits the element with DevTools or a side bar open.** The click point was computed from the page's
+  own `window.screenX` and the frame width, split evenly left and right, so with DevTools docked it landed half the
+  panel off (+278 px docked right, into DevTools), and with Edge's vertical tabs 122 px off, answering `ok: true`.
+  The point now comes from the window the page is drawn in, measured exact in every layout tried (DevTools docked
+  right, left or bottom, maximized, zoomed, Edge's vertical tabs). `desktop_act` on a browser element and
+  `browser_locate`'s `clickAt` use the same point; `browser_locate` says when it could only estimate it.
+  `browser_click` refuses, saying what to do next, when its point would land on DevTools or another pane of the
+  browser window, when the window is minimized or on another desktop after it was brought forward, or when the page
+  cannot be told from another pane. When that window cannot be read at all, the point is computed as before (internal #306,
+  ADR-040).
 - **With DevTools open, a browser call without `tabId` works on the page, not on DevTools.** DevTools' own front end
   is listed as a page and was taken as the default tab, so `browser_click` with a selector answered "Element not
   found". It is now skipped, as the sign-in and sync dialogs are, and the next most recently used page is taken.

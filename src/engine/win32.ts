@@ -1312,3 +1312,45 @@ export function getWindowDpi(hwnd: unknown): number {
     return 96;
   }
 }
+
+/**
+ * ADR-040 — a frame's descendant windows, breadth-first to depth 3 and at most 64, each with its class,
+ * visibility and screen rect. Enough for a Chromium frame, whose page RWH is a direct child (win2,
+ * dev/306-viewport); the bounds only keep a broken sibling chain from spinning. Throws when the addon
+ * cannot walk windows, so the caller can tell "could not read" from "nothing there".
+ */
+export function listDescendantWindows(
+  frame: bigint,
+): Array<{ hwnd: bigint; className: string; visible: boolean; rect: { x: number; y: number; width: number; height: number } | null }> {
+  const w32 = requireNativeWin32();
+  if (!w32.win32GetWindow || !w32.win32GetClassName || !w32.win32IsWindowVisible) {
+    throw new Error("listDescendantWindows: the native addon cannot walk child windows");
+  }
+  const out: Array<{ hwnd: bigint; className: string; visible: boolean; rect: { x: number; y: number; width: number; height: number } | null }> = [];
+  let level: bigint[] = [frame];
+  for (let depth = 0; depth < 3 && level.length > 0 && out.length < 64; depth++) {
+    const next: bigint[] = [];
+    for (const parent of level) {
+      let child = w32.win32GetWindow(parent, GW_CHILD) ?? null;
+      for (let n = 0; child !== null && n < 64 && out.length < 64; n++) {
+        out.push({
+          hwnd: child,
+          className: w32.win32GetClassName(child) ?? "",
+          visible: w32.win32IsWindowVisible(child),
+          rect: getWindowRectByHwnd(child),
+        });
+        next.push(child);
+        child = w32.win32GetWindow(child, GW_HWNDNEXT) ?? null;
+      }
+    }
+    level = next;
+  }
+  return out;
+}
+
+/** ADR-040 — the real dependencies of `resolvePageSurface` (engine/page-surface.ts). */
+export const pageSurfaceDeps = {
+  isIconic: (hwnd: bigint): boolean => requireNativeWin32().win32IsIconic?.(hwnd) ?? false,
+  isCloaked: (hwnd: bigint): boolean => isWindowCloaked(hwnd),
+  descendants: listDescendantWindows,
+};
