@@ -181,8 +181,9 @@ export const scrollSchema = z.discriminatedUnion("action", [
       .string()
       .optional()
       .describe(
-        "OCR language code (e.g. 'ja', 'en', 'zh'). Omit to auto-detect from Windows system " +
-        "locale via Intl.DateTimeFormat().resolvedOptions().locale. Default: auto."
+        "OCR language code (e.g. 'ja', 'en', 'zh'). Omit to use the Windows locale's language. Pass the page's " +
+        "language when it differs. Windows reads with an installed OCR pack only: when the one asked for has none, " +
+        "the reply's language names the one that read, with a warning."
       ),
   }),
 ]);

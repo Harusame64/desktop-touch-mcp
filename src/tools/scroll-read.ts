@@ -6,7 +6,7 @@
  * (scroll.ts). Phase 1: native apps only (browser/CDP in Phase 3).
  */
 
-import { recognizeWindowByHwnd, ocrWordsToLines, detectOcrLanguage } from "../engine/ocr-bridge.js";
+import { recognizeWindowByHwnd, ocrWordsToLines, detectOcrLanguage, ocrLanguageUsed, ocrLanguageWarning } from "../engine/ocr-bridge.js";
 import { logDispatchSink } from "./_resolve-log.js";
 
 // Re-export for backward compatibility (canonical definition now in ocr-bridge.ts)
@@ -160,6 +160,7 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
   let stoppedReason: "no_change" | "max_pages" | "ocr_empty" | "ocr_failed" | "foreground_refused" = "max_pages";
   let noChangeStreak = 0;
   let ocrError: string | null = null;
+  let ocrRead = false; // an OCR in this call answered, so the engine language below describes it
 
   for (let page = 1; page <= args.maxPages; page++) {
     // Wrap each iteration so OCR / capture / scroll-injection failures surface
@@ -171,6 +172,7 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
     try {
       // OCR bound to the hwnd resolved at focus time, not a fresh title lookup.
       const { words } = await recognizeWindowByHwnd(focusedHwnd, focusedRegion, language);
+      ocrRead = true;
       const lineText = ocrWordsToLines(words);
       const lines = lineText
         .split("\n")
@@ -271,6 +273,10 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
     }
   }
 
+  // internal #357: the language Windows read with, which is not the one asked for when that one has no
+  // OCR pack installed. Unknown (an older win-ocr.exe) keeps the one asked for.
+  const usedLanguage = ocrRead ? ocrLanguageUsed(language) : undefined;
+  const languageWarning = ocrRead ? ocrLanguageWarning(language) : null;
   return {
     content: [{
       type: "text" as const,
@@ -278,7 +284,10 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
         ok: true,
         text: allLines.join("\n"),
         pages: perPage.length,
-        language,
+        // The one asked for, unless another language read: then that one, with the one asked beside it
+        // (a plain 'en' read by 'en-US' still answers 'en'; gate 2 on #961).
+        language: languageWarning !== null && usedLanguage !== undefined ? usedLanguage : language,
+        ...(languageWarning !== null ? { requestedLanguage: language, warnings: [languageWarning] } : {}),
         stoppedReason,
         dedupedLines: perPage.reduce((s, p) => s + p.duplicateLines, 0),
         perPage,

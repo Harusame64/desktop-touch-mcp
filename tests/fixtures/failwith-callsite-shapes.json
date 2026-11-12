@@ -461,28 +461,28 @@
     },
     {
       "file": "src/tools/screenshot.ts",
-      "line": 1084,
+      "line": 1090,
       "tool": "screenshot",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/screenshot.ts",
-      "line": 1170,
+      "line": 1176,
       "tool": "screenshot",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/screenshot.ts",
-      "line": 1414,
+      "line": 1422,
       "tool": "get_screen_info",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/scroll-read.ts",
-      "line": 262,
+      "line": 264,
       "tool": "scroll",
       "errKind": "identifier",
       "contextShape": "none"
@@ -538,14 +538,14 @@
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 1356,
+      "line": 1359,
       "tool": "terminal:send",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/terminal.ts",
-      "line": 2142,
+      "line": 2145,
       "tool": "terminal:send",
       "errKind": "identifier",
       "contextShape": "object-plain"

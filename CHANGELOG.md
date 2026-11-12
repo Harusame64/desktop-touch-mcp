@@ -11,6 +11,12 @@
   directly) answered the window list instead of its text. A terminal given by its handle is now read from that window,
   also when two consoles share a title; before, the first same-titled one was read. Other windows still find their
   window by title (internal #362).
+- **OCR says which language read the text.** Windows reads with an installed OCR pack only. When the language asked
+  for has none (`'en'` on a Japanese machine without the English pack), it reads with another one, and `scroll read`
+  still answered `language: "en"`. It now names the language that read and keeps the one asked for in
+  `requestedLanguage`. `scroll read`, `screenshot` OCR (`detail:'ocr'`, `'som'` and the text fallback) and `terminal
+  read`/`run` over OCR add an `ocr_language_fallback` warning that says how the user adds the pack. `win-ocr.exe`'s
+  own "pack not installed" error was not valid JSON and now is (internal #357).
 - **`terminal run` that times out says the command may still be running.** It answers `ok: true` (the output was read,
   and a failure would invite sending the command again), with nothing saying what the timeout meant. `warnings` now
   says to read the terminal before sending anything else (internal #377).

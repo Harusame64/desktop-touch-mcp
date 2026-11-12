@@ -56,7 +56,7 @@ class Program
 
             if (engine == null)
             {
-                Console.Out.Write("{\"error\":\"OCR language pack not installed for: " + EscapeJson(lang) + "\"}");
+                Console.Out.Write("{\"error\":" + EscapeJson("OCR language pack not installed for: " + lang) + "}");
                 return 2;
             }
 
@@ -92,7 +92,10 @@ class Program
                 }
             }
 
-            Console.Out.Write("{\"words\":[" + string.Join(",", words) + "]}");
+            // internal #357: the engine falls back to a profile language when the one asked for has no pack
+            // installed; the caller is told which language actually read the image.
+            Console.Out.Write("{\"language\":" + EscapeJson(engine.RecognizerLanguage.LanguageTag) +
+                              ",\"words\":[" + string.Join(",", words) + "]}");
             return 0;
         }
         catch (Exception ex)

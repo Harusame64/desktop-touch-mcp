@@ -253,9 +253,62 @@ export async function runOcr(pngBase64: string, language = detectOcrLanguage()):
   }
   const pngBytes = Buffer.from(pngBase64, "base64");
   const output = await runOcrExe(pngBytes, language, 20000);
-  const parsed = JSON.parse(output) as { words?: OcrWord[]; error?: string };
+  const parsed = JSON.parse(output) as { words?: OcrWord[]; error?: string; language?: unknown };
   if (parsed.error) throw new Error(parsed.error);
+  // Keyed case-blind; an exe that does not say clears the entry rather than leave another read's answer (agy on #961).
+  if (typeof parsed.language === "string" && parsed.language !== "") ocrEngineLanguage.set(language.toLowerCase(), parsed.language);
+  else ocrEngineLanguage.delete(language.toLowerCase());
   return parsed.words ?? [];
+}
+
+/**
+ * internal #357: the language Windows actually read with, by the language asked for. Windows.Media.Ocr has
+ * one engine per installed OCR pack, and win-ocr falls back to a profile language when the one asked for
+ * has none — 'en' on a Japanese machine without the English pack reads with 'ja', which garbles Latin
+ * text in places. Unknown (an older win-ocr.exe that does not say) is left out, not guessed.
+ */
+const ocrEngineLanguage = new Map<string, string>();
+
+/** The engine language the last OCR for `requested` used, or undefined when win-ocr did not say. */
+export function ocrLanguageUsed(requested: string): string | undefined {
+  return ocrEngineLanguage.get(requested.toLowerCase());
+}
+
+/**
+ * The same language when one tag extends the other ('en' and 'en-US', 'zh' and 'zh-Hans-CN'). Script subtags
+ * are set aside first, since Windows names its engines with them and callers mostly do not: 'zh-CN' read by
+ * 'zh-Hans-CN' is the same (agy on #961). A region the engine does not cover is not ('zh-TW' read by
+ * 'zh-Hans-CN'): that text is misread (gate 2 on #961).
+ */
+function sameOcrLanguage(requested: string, used: string): boolean {
+  const isScript = (part: string, i: number): boolean => i > 0 && /^[a-z]{4}$/.test(part);
+  const scriptOf = (tag: string): string | undefined => tag.toLowerCase().split("-").find(isScript);
+  // A script both name and that differs is another engine: 'zh-Hant' read by 'zh-Hans-CN' (codex on #961).
+  const rs = scriptOf(requested);
+  const us = scriptOf(used);
+  if (rs !== undefined && us !== undefined && rs !== us) return false;
+  const norm = (tag: string): string =>
+    tag.toLowerCase().split("-").filter((part, i) => !isScript(part, i)).join("-");
+  const r = norm(requested);
+  const u = norm(used);
+  return r === u || u.startsWith(r + "-") || r.startsWith(u + "-");
+}
+
+/**
+ * A warning when the last OCR for `requested` was read with another language's engine, else null. Call it
+ * only after an OCR in the same call, so it describes that read.
+ */
+export function ocrLanguageWarning(requested: string): string | null {
+  const used = ocrEngineLanguage.get(requested.toLowerCase());
+  if (used === undefined || sameOcrLanguage(requested, used)) return null;
+  return `ocr_language_fallback: no Windows OCR pack is installed for '${requested}', so the text was read ` +
+    `with the '${used}' engine and may be misread. The user can add the pack in Settings > Time & language > ` +
+    `Language & region > the language's options > Optical character recognition.`;
+}
+
+/** Test seam: forget what win-ocr reported. */
+export function _resetOcrLanguageUsedForTest(): void {
+  ocrEngineLanguage.clear();
 }
 
 /**
