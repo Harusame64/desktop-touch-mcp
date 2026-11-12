@@ -24,6 +24,94 @@ import { WEB_AREA_AUTOMATION_ID } from "../_advisory.js";
 import type { UiElement } from "../../engine/uia-bridge.js";
 import { isCollectionItemControlType } from "../../engine/collection-item.js";
 
+/** How far a label may sit from its field: a WPF `Label` and its `TextBox` touch, a form's gap is a few pixels. */
+const LABEL_GAP_PX = 24;
+
+type Box = { x: number; y: number; width: number; height: number };
+const isRect = (r: Box | null | undefined): r is Box => !!r && r.width > 0 && r.height > 0;
+const vOverlap = (a: Box, b: Box): number => Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+/** `b` sits directly left of `a`, on its row: the gap, or null. */
+const leftOf = (a: Box, b: Box): number | null => {
+  const gap = a.x - (b.x + b.width);
+  return gap >= -2 && gap <= LABEL_GAP_PX && vOverlap(a, b) >= Math.min(a.height, b.height) / 2 ? Math.max(0, gap) : null;
+};
+/** `b` sits directly above `a`, starting at its left edge (a label over its field, not over the next row): the gap, or null. */
+const aboveOf = (a: Box, b: Box): number | null => {
+  const gap = a.y - (b.y + b.height);
+  return gap >= -2 && gap <= LABEL_GAP_PX && Math.abs(b.x - a.x) <= 8 ? Math.max(0, gap) : null;
+};
+
+/**
+ * internal #293 — a label for a text box whose UIA Name is empty, from the visible text beside it.
+ *
+ * WPF's `Label.Target` sets no `LabeledBy` (win2, 2026-11-12: null on the TextBox), so the box reads with
+ * Name "" and the lane dropped it. The only link left is the layout: a Text in the same parent, directly left
+ * of the box on its row, or directly above it starting at its left edge. Left wins over above.
+ *
+ * Kept narrow, because the label is a guess (gate 2 on #964):
+ * - only an `Edit` with ValuePattern, whose act roads are UIA and the keyboard (no blind mouse press), and
+ *   with an AutomationId no other element in the read carries — with name "" the act roads find it by that
+ *   id alone and take the first match, so a repeated template id would act on another row;
+ * - the Text's own nearest such box must be this one, so a label is not lent to the box below or beside
+ *   the one it names;
+ * - a Text with a box directly left of it is a separator (`[w] x [h]`, `From [a] to [b]`), not a label.
+ * The inferred text is a label to show and to match a query on, never the element's UIA Name. A leading
+ * access-key underscore and a trailing colon are dropped.
+ *
+ * Returns index → label for the elements it names. Exported for tests.
+ */
+export function inferLabelsFromLayout(elements: ReadonlyArray<UiElement>): Map<number, string> {
+  const out = new Map<number, string>();
+  const parentOf = (path: string): string => path.slice(0, path.lastIndexOf("/"));
+  const idCount = new Map<string, number>();
+  for (const el of elements) if (el.automationId) idCount.set(el.automationId, (idCount.get(el.automationId) ?? 0) + 1);
+  const isBox = (el: UiElement): boolean =>
+    el.controlType === "Edit" && el.isEnabled && normalizeUiaPatternNames(el.patterns).includes("ValuePattern");
+  // Siblings by parent, once (a 500-element read would otherwise rescan the whole read per box).
+  const byParent = new Map<string, number[]>();
+  elements.forEach((el, i) => {
+    if (el.path === undefined || !isRect(el.boundingRect)) return;
+    const k = parentOf(el.path);
+    byParent.set(k, [...(byParent.get(k) ?? []), i]);
+  });
+  // Rank: left before above, then the smaller gap.
+  const rank = (field: Box, text: Box): number | null => {
+    const l = leftOf(field, text);
+    if (l !== null) return l;
+    const a = aboveOf(field, text);
+    return a !== null ? 1000 + a : null;
+  };
+  for (const ids of byParent.values()) {
+    const boxes = ids.filter((i) => isBox(elements[i]!));
+    const texts = ids.filter((i) => elements[i]!.controlType === "Text" && elements[i]!.name)
+      .filter((t) => !boxes.some((b) => leftOf(elements[t]!.boundingRect!, elements[b]!.boundingRect!) !== null));
+    // Each text's nearest box, so the text is lent to that one only.
+    const nearestBoxOf = new Map<number, number>();
+    for (const t of texts) {
+      let best: { i: number; r: number } | null = null;
+      for (const b of boxes) {
+        const r = rank(elements[b]!.boundingRect!, elements[t]!.boundingRect!);
+        if (r !== null && (best === null || r < best.r)) best = { i: b, r };
+      }
+      if (best !== null) nearestBoxOf.set(t, best.i);
+    }
+    for (const b of boxes) {
+      const el = elements[b]!;
+      if (el.name || !el.automationId || idCount.get(el.automationId) !== 1) continue;
+      let best: { t: number; r: number } | null = null;
+      for (const t of texts) {
+        if (nearestBoxOf.get(t) !== b) continue;
+        const r = rank(el.boundingRect!, elements[t]!.boundingRect!);
+        if (r !== null && (best === null || r < best.r)) best = { t, r };
+      }
+      if (best === null) continue;
+      const label = elements[best.t]!.name.replace(/^_(?=\S)/u, "").replace(/[:：]\s*$/u, "").trim();
+      if (label !== "") out.set(b, label);
+    }
+  }
+  return out;
+}
+
 export function uiaRoleFromControlType(ct: string): string {
   const map: Record<string, string> = {
     Button: "button", CheckBox: "button", RadioButton: "button",
@@ -165,9 +253,12 @@ export async function fetchUiaCandidates(
       windowHwnd: result.windowHwnd ?? null,
     };
 
+    // internal #293: a nameless field named by the text beside it is kept, with that text as its label only.
+    const inferred = inferLabelsFromLayout(result.elements);
     const candidates: UiEntityCandidate[] = result.elements
-      .filter((el) => el.isEnabled && el.name)
-      .map((el): UiEntityCandidate => ({
+      .map((el, i) => ({ el, inferredLabel: inferred.get(i) }))
+      .filter(({ el, inferredLabel }) => el.isEnabled && (el.name || inferredLabel !== undefined))
+      .map(({ el, inferredLabel }): UiEntityCandidate => ({
         source: "uia",
         target: { kind: "window", id: targetId },
         // `via` — which client read it, so a click's "not found" can be weighed (ADR-036 item 16).
@@ -208,10 +299,16 @@ export async function fetchUiaCandidates(
         // Absent stays absent: a build whose read cannot report a handle keeps exactly the
         // behaviour it had, which is the ladder declining to run rather than running on a guess.
         ...(result.windowHwnd !== undefined && result.windowHwnd !== null && { originHwnd: result.windowHwnd }),
-        label: el.name,
+        label: el.name || inferredLabel,
+        ...(inferredLabel !== undefined && { labelInferred: true }),
         value: el.value,
         rect: el.boundingRect ?? undefined,
-        actionability: uiaActionability(el.controlType, normalizeUiaPatternNames(el.patterns)),
+        // A box named only by the text beside it is offered to type into and read, not to click (codex on
+        // #964): the click and select roads find a nameless element by its AutomationId's first match, with
+        // no rect to tell a repeated id apart; the value write checks the rect.
+        actionability: inferredLabel !== undefined
+          ? uiaActionability(el.controlType, normalizeUiaPatternNames(el.patterns)).filter((a) => a === "type" || a === "read")
+          : uiaActionability(el.controlType, normalizeUiaPatternNames(el.patterns)),
         // Issue #296: carry the UIA-side `controlType` and `patterns` through
         // so `CapabilityRegistry.lookup` can advertise executor preferences
         // at discover time (no extra UIA round-trip — `getUiElements` already

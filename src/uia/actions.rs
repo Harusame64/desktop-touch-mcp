@@ -1002,6 +1002,31 @@ fn find_value_target(
                 .ok_or_else(|| napi::Error::from_reason(ELEMENT_AMBIGUOUS_TEXT));
         }
     }
+    // internal #293 (codex on #964): a nameless box discovered by the text beside it is addressed by its
+    // AutomationId alone. Discover's walk prunes offscreen subtrees and this search does not, so an id
+    // unique in the read can repeat here (a template's offscreen row first): every match is collected,
+    // and the one at the discovered rect is written; when the rect does not pick one, nothing is.
+    if let (None, Some(automation_id), Some(rect)) = (name, automation_id, opts.rect.as_ref()) {
+        // The same comparison the first-match search makes (`matches_with_ct`), every match collected.
+        let ct_lower = control_type.map(|c| c.to_lowercase());
+        let Collected { found, skipped } = collect_among_descendants(ctx, window, usize::MAX, |elem| {
+            matches_with_ct(elem, &None, Some(automation_id), &ct_lower)
+        })?;
+        if skipped && !found.is_empty() {
+            return Err(napi::Error::from_reason(ELEMENT_AMBIGUOUS_TEXT));
+        }
+        // `true`, as for the exact-name match above: the element is the one discovered (its id, and its
+        // rect when the id repeats), so the focus check after a failed write runs for it too and the
+        // keyboard rung does not type into a neighbour that holds the focus (codex on #964).
+        if found.len() == 1 {
+            return Ok((found.into_iter().next().unwrap(), true));
+        }
+        if !found.is_empty() {
+            return one_at_rect(found, Some(rect))
+                .map(|e| (e, true))
+                .ok_or_else(|| napi::Error::from_reason(ELEMENT_AMBIGUOUS_TEXT));
+        }
+    }
     find_element_in_window(ctx, window, opts.name.as_deref(), opts.automation_id.as_deref(), None).map(|e| (e, false))
 }
 
@@ -1242,7 +1267,8 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
 /// PowerShell twins would take their first descendant (their filters become `$true`).
 ///
 /// **One entry could send an empty one, and no longer can** (gate 2): every other caller refuses it
-/// — discover drops nameless elements (`uia-provider.ts`), and the V1 tools ask for a name or an
+/// — discover lists a nameless element only with an AutomationId unique in its read (`uia-provider.ts`,
+/// internal #293), and the V1 tools ask for a name or an
 /// AutomationId — but `scroll`'s `target` was `z.string()` with no minimum, so
 /// `scroll(action='smart', target:'')` reached `get_scroll_ancestors`, where the two clients would
 /// now answer differently: nothing here, the window's first child there. `target` is `.min(1)` now,

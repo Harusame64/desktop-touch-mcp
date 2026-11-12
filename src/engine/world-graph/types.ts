@@ -164,6 +164,13 @@ export interface UiEntity {
   role: UiEntityRole;
   label?: string;
   /**
+   * internal #293 — `label` was not the element's own name: its UIA Name is empty and the label is the text
+   * laid out beside it (a WPF `Label.Target`). It names the field for a reader and a `query`; the element is
+   * still addressed by its AutomationId.
+   */
+  labelInferred?: boolean;
+
+  /**
    * Current value of the entity (UIA ValuePattern, CDP el.value, terminal prompt text).
    * Used by computeDiff to detect value_changed after a type/select action.
    * Absent for sources that don't expose values (visual_gpu, unknown roles).

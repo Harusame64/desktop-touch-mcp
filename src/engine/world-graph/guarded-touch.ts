@@ -559,9 +559,14 @@ function offersAction(entity: UiEntity, action: TouchAction): boolean {
     case "setValue":
       return !(entity.controlType !== undefined && (UIA_PRESS_ONLY_CONTROL_TYPES as readonly string[]).includes(entity.controlType));
     case "auto":
+      return true;
+    // internal #293 — a box named only by the text beside it is found by its AutomationId alone, and the
+    // click road takes that id's first match with no rect to tell a repeated id apart; discover offers it
+    // only to type into and read, and an explicit click is refused here too (win2 on #964, D3: a click on
+    // that lease answered ok:true).
     case "invoke":
     case "click":
-      return true;
+      return entity.labelInferred !== true;
     default: {
       // **A NEW VERB HAS TO BE DECIDED HERE, at compile time** (gate 2). The previous version was a
       // single `if (action !== "select")`, and adding a verb to `TouchAction` sailed past it into
@@ -792,6 +797,17 @@ export class GuardedTouchLoop {
 
     let checked = this.checkBeforeTouch(lease, action);
     if (!checked.ok) return checked.refused;
+    // internal #293 (codex on #964) — a box named only by the text beside it takes text, and nothing else:
+    // without text the executor's UIA road is the click, which finds the box by its AutomationId's first
+    // match. So `auto` (or `type`) with no text is refused here, as an explicit click is in `offersAction`.
+    if (checked.entity.labelInferred === true && text === undefined) {
+      return {
+        ok: false,
+        reason: "action_not_offered",
+        diff: [],
+        detail: "this target offers: type, with text",
+      };
+    }
 
     // 3b. **G1 — a `stale` target is read again before it is pressed** (ADR-036 §10, the user's
     // decision of 2026-09-23, "Re-read, then refuse"). `stale` means no lane looked at this entity in

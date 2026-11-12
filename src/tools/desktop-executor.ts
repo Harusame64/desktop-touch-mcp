@@ -3068,12 +3068,14 @@ export function createDesktopExecutor(
           // on the write side — engine work, its own PR, designed in the map.
           //
           // WHAT TODAY'S DISCOVER CANNOT PRODUCE is written here so a reader does not price these
-          // rows wrong: an entity on this road with NO name. The UIA lane drops nameless elements
-          // (`uia-provider.ts:117`, `.filter((el) => el.isEnabled && el.name)`), the merge keeps
+          // rows wrong: an entity on this road with NO name AND no AutomationId. The UIA lane drops a
+          // nameless element unless it is a ValuePattern Edit with an AutomationId unique in its read,
+          // which it lists under the text beside it (`inferLabelsFromLayout`, internal #293) — and
+          // that one carries `name: ""` with its id, so it is addressed by the id. The merge keeps
           // `locator.uia.name` whenever a UIA candidate is in the group (`resolver.ts:91`), and the
-          // executor falls back to `entity.label` above. So `"nothing"` on the element axis is a
-          // total function's last branch, not a case a shipped call reaches today — and the reason
-          // it is written at all is that the producer is one filter away from being able to.
+          // executor falls back to `entity.label` only when that name is absent. So `"nothing"` on
+          // the element axis is a total function's last branch, not a case a shipped call reaches
+          // today — and the reason it is written at all is that the producer is one filter away.
           //
           // WHAT SHUTS THAT DOOR IS A CONVENTION, NOT A TYPE (win2's read of the chain, 2026-09-16,
           // pinned in their own tree): `"uia"` is in `entity.sources` exactly when a candidate with
