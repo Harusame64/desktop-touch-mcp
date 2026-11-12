@@ -27,13 +27,20 @@ const SIGNIN_DIALOG = new RegExp(
 );
 
 /**
+ * internal #398 — DevTools' own front end. With DevTools open on a tab it is listed as a `page` target
+ * (`devtools://devtools/...`), most recently used, so a call without tabId worked on DevTools instead of
+ * the page (win2, PR #967 round: browser_click answered "Element not found"). It is not a tab either.
+ */
+const DEVTOOLS_FRONTEND = /^devtools:\/\//i;
+
+/**
  * The tab a call without tabId works on: the first page target (the most recently used) that is not
- * a sign-in or sync dialog, else the first page target, else undefined. It never returns a target
+ * a sign-in or sync dialog nor DevTools' own front end, else the first page target, else undefined. It never returns a target
  * that is not a page (a background page, service worker, browser UI or iframe); a caller that has
  * to act somewhere anyway falls back on its own (resolveTab and the guard lens take tabs[0]).
  * `type` is required so a listing that dropped it fails to compile instead of counting as pages.
  */
 export function defaultPageTab<T extends { type: string; url?: string }>(tabs: readonly T[]): T | undefined {
   const pages = tabs.filter((t) => t.type === "page");
-  return pages.find((t) => !SIGNIN_DIALOG.test(t.url ?? "")) ?? pages[0];
+  return pages.find((t) => !SIGNIN_DIALOG.test(t.url ?? "") && !DEVTOOLS_FRONTEND.test(t.url ?? "")) ?? pages[0];
 }

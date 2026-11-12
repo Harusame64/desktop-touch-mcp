@@ -93,3 +93,17 @@ describe("internal #308: the guard's browserTab lens picks the same tab", () => 
     expect(resolveBrowserTabBindingFromTabs(spec({ urlIncludes: "sync-confirmation" }), tabs)?.hwnd).toBe("dlg");
   });
 });
+
+describe("defaultPageTab skips DevTools' own front end (internal #398)", () => {
+  const devtools = tab("dt", "devtools://devtools/bundled/devtools_app.html?remoteBase=x&panel=elements");
+  it("with DevTools open and listed first, the page behind it", () => {
+    expect(defaultPageTab([devtools, page])?.id).toBe("pg");
+  });
+  it("DevTools alone: still the first page, as for the sign-in dialogs (control)", () => {
+    expect(defaultPageTab([devtools])?.id).toBe("dt");
+  });
+  it("an ordinary page whose URL only mentions devtools is a tab (control)", () => {
+    const mention = tab("m", "https://example.com/?ref=devtools://x");
+    expect(defaultPageTab([mention, page])?.id).toBe("m");
+  });
+});
