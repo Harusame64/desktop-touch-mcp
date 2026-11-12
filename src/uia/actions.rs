@@ -1242,7 +1242,8 @@ fn insert_text_impl(ctx: &UiaContext, opts: &InsertTextOptions) -> napi::Result<
 /// PowerShell twins would take their first descendant (their filters become `$true`).
 ///
 /// **One entry could send an empty one, and no longer can** (gate 2): every other caller refuses it
-/// — discover drops nameless elements (`uia-provider.ts`), and the V1 tools ask for a name or an
+/// — discover lists a nameless element only with an AutomationId unique in its read (`uia-provider.ts`,
+/// internal #293), and the V1 tools ask for a name or an
 /// AutomationId — but `scroll`'s `target` was `z.string()` with no minimum, so
 /// `scroll(action='smart', target:'')` reached `get_scroll_ancestors`, where the two clients would
 /// now answer differently: nothing here, the window's first child there. `target` is `.min(1)` now,

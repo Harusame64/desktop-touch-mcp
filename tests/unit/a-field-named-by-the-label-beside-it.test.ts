@@ -18,7 +18,7 @@ const el = (controlType: string, name: string, rect: R, path: string, extra: Par
 // The spike's window, as read.
 const label = el("Text", "Name:", { x: 920, y: 163, width: 44, height: 26 }, "/Text[0]");
 const inner = el("Text", "_Name:", { x: 925, y: 168, width: 34, height: 16 }, "/Text[0]/Text[0]");
-const box = el("Edit", "", { x: 964, y: 163, width: 220, height: 26 }, "/Edit[1]", { automationId: "tb" });
+const box = el("Edit", "", { x: 964, y: 163, width: 220, height: 26 }, "/Edit[1]", { automationId: "tb", patterns: ["Value"] });
 const button = el("Button", "OK", { x: 1190, y: 163, width: 60, height: 26 }, "/Button[2]");
 
 describe("inferLabelsFromLayout (internal #293)", () => {
@@ -28,14 +28,61 @@ describe("inferLabelsFromLayout (internal #293)", () => {
     expect(out.size).toBe(1);
   });
 
-  it("takes a label above the field too", () => {
+  it("takes a label above the field too, starting at its left edge", () => {
     const above = el("Text", "E-mail", { x: 964, y: 130, width: 60, height: 20 }, "/Text[0]");
     expect(inferLabelsFromLayout([above, box]).get(1)).toBe("E-mail");
+    const offset = el("Text", "E-mail", { x: 1100, y: 130, width: 60, height: 20 }, "/Text[0]");
+    expect(inferLabelsFromLayout([offset, box]).size).toBe(0);
   });
 
-  it("drops the access-key underscore when only the inner TextBlock is a sibling", () => {
+  it("drops a leading access-key underscore, and keeps one inside a word", () => {
     const only = el("Text", "_Name:", { x: 925, y: 163, width: 34, height: 26 }, "/Text[0]");
     expect(inferLabelsFromLayout([only, box]).get(1)).toBe("Name");
+    const id = el("Text", "user_id:", { x: 900, y: 163, width: 60, height: 26 }, "/Text[0]");
+    expect(inferLabelsFromLayout([id, box]).get(1)).toBe("user_id");
+  });
+
+  it("does not name a box whose AutomationId another element carries (gate 2 on #964)", () => {
+    const row2Label = el("Text", "Qty:", { x: 920, y: 200, width: 44, height: 26 }, "/Pane[1]/Text[0]");
+    const row2Box = el("Edit", "", { x: 964, y: 200, width: 220, height: 26 }, "/Pane[1]/Edit[1]", { automationId: "tb", patterns: ["Value"] });
+    expect(inferLabelsFromLayout([label, box, row2Label, row2Box]).size).toBe(0);
+  });
+
+  it("does not lend a row's left label to the box on the next row (gate 2 on #964)", () => {
+    // Rows touch; the Name label overlaps its box by 1 px.
+    const nameLabel = el("Text", "Name:", { x: 920, y: 163, width: 45, height: 26 }, "/Text[0]");
+    const nameBox = el("Edit", "", { x: 964, y: 163, width: 220, height: 26 }, "/Edit[1]", { automationId: "n", patterns: ["Value"] });
+    const mailLabel = el("Text", "Email:", { x: 920, y: 189, width: 45, height: 26 }, "/Text[2]");
+    const mailBox = el("Edit", "", { x: 964, y: 189, width: 220, height: 26 }, "/Edit[3]", { automationId: "m", patterns: ["Value"] });
+    const out = inferLabelsFromLayout([nameLabel, nameBox, mailLabel, mailBox]);
+    expect(out.get(1)).toBe("Name");
+    expect(out.get(3)).toBe("Email");
+  });
+
+  it("does not lend a label above to the second box below it (gate 2 on #964)", () => {
+    const addr = el("Text", "Address", { x: 964, y: 120, width: 60, height: 20 }, "/Text[0]");
+    const line1 = el("Edit", "", { x: 964, y: 142, width: 220, height: 20 }, "/Edit[1]", { automationId: "a1", patterns: ["Value"] });
+    const line2 = el("Edit", "", { x: 964, y: 164, width: 220, height: 20 }, "/Edit[2]", { automationId: "a2", patterns: ["Value"] });
+    const out = inferLabelsFromLayout([addr, line1, line2]);
+    expect(out.get(1)).toBe("Address");
+    expect(out.has(2)).toBe(false);
+  });
+
+  it("does not take a separator between two boxes as a label (gate 2 on #964)", () => {
+    const w = el("Edit", "", { x: 900, y: 163, width: 60, height: 26 }, "/Edit[0]", { automationId: "w", patterns: ["Value"] });
+    const x = el("Text", "x", { x: 964, y: 163, width: 10, height: 26 }, "/Text[1]");
+    const h = el("Edit", "", { x: 978, y: 163, width: 60, height: 26 }, "/Edit[2]", { automationId: "h", patterns: ["Value"] });
+    expect(inferLabelsFromLayout([w, x, h]).has(2)).toBe(false);
+  });
+
+  it("prefers the label on its row to a heading above it", () => {
+    const heading = el("Text", "Account", { x: 964, y: 151, width: 80, height: 12 }, "/Text[2]");
+    expect(inferLabelsFromLayout([heading, label, box]).get(2)).toBe("Name");
+  });
+
+  it("does not name an Edit without ValuePattern (gate 2 on #964)", () => {
+    const noValue = { ...box, patterns: [] } as UiElement;
+    expect(inferLabelsFromLayout([label, noValue]).size).toBe(0);
   });
 
   it("does not name a field with no AutomationId (it would be addressed by an empty name)", () => {
