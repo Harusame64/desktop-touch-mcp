@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 import sharp from "sharp";
 import { captureWindowBackground, capturedFrameRect } from "./image.js";
-import { enumWindowsInZOrder, getWindowDpi, printWindowToBuffer, isExcludedWindowHandle, type WindowZInfo } from "./win32.js";
+import { enumWindowsInZOrder, getWindowDpi, printWindowToBuffer, isExcludedWindowHandle, getWindowRectByHwnd, type WindowZInfo } from "./win32.js";
 import { WindowExcludedError } from "./tool-exclusion.js";
 import { refuseIfFrozen } from "./window-frozen.js";
 import { nativeEngine } from "./native-engine.js";
@@ -823,9 +823,13 @@ export async function runSomPipeline(
     // Resolve origin from enumWindowsInZOrder for the known hwnd
     const wins = enumWindowsInZOrder();
     const win  = wins.find((w) => w.hwnd === targetHwnd);
+    // The list leaves untitled windows out; the handle's own rect still places one (gate 2 on #963).
+    const rect = win ? null : getWindowRectByHwnd(targetHwnd);
     if (win) {
       origin = { x: win.region.x, y: win.region.y };
       resolvedWindowTitle = win.title;
+    } else if (rect !== null) {
+      origin = { x: rect.x, y: rect.y };
     } else {
       console.error(
         `[SoM] WARNING: hwnd provided but window not found in enumWindowsInZOrder ` +

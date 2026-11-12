@@ -823,13 +823,74 @@ describe("screenshot(detail:'text') terminal guard by window class (internal #22
     }
   });
 
-  it("still finds a window named by title by its title (control, internal #393)", async () => {
+  it("finds a window named by title by its title, and reads the one it found (internal #393)", async () => {
+    // The tree is scoped to the window the title found, so the cache is never keyed by an unscoped read
+    // that UIA may have resolved to a twin (gate 2 on #963).
+    const second = { ...other, hwnd: 7001n, zOrder: 1 };
     mockResolveWindowTarget.mockResolvedValue(null);
-    mockEnumWindowsInZOrder.mockReturnValue([other]);
+    mockEnumWindowsInZOrder.mockReturnValue([other, second]);
     mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
     mockGetWindowClassName.mockReturnValue("Notepad");
     mockGetUiElements.mockClear();
     await screenshotHandler({ ...baseArgs, windowTitle: "Notepad", detail: "text", ocrFallback: "never" });
-    expect(mockGetUiElements.mock.calls[0]?.[4]).not.toHaveProperty("pinnedHwnd");
+    expect(mockGetUiElements.mock.calls[0]?.[4]).toMatchObject({ pinnedHwnd: other.hwnd });
+  });
+
+  it("files no homing snapshot under a title for a same-titled twin named by hwnd (gate 2 on #963)", async () => {
+    const a = { ...con, hwnd: 9401n, title: "dup.txt", zOrder: 0, region: { x: 0, y: 0, width: 400, height: 300 } };
+    const b = { ...con, hwnd: 9402n, title: "dup.txt", zOrder: 1, isActive: false, region: { x: 500, y: 0, width: 400, height: 300 } };
+    mockResolveWindowTarget.mockResolvedValue({ title: "dup.txt", hwnd: 9402n, warnings: [] });
+    mockEnumWindowsInZOrder.mockReturnValue([a, b]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    mockGetWindowClassName.mockReturnValue("Notepad");
+    mockSaveSnapshot.mockClear();
+    await screenshotHandler({ ...baseArgs, hwnd: "9402", detail: "text", ocrFallback: "never" });
+    expect(mockSaveSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("does not OCR a window found by title when the named handle cannot be placed (gate 2 on #963)", async () => {
+    mockResolveWindowTarget.mockResolvedValue({ title: "gone.txt", hwnd: 9501n, warnings: [] });
+    mockEnumWindowsInZOrder.mockReturnValue([{ ...other, title: "gone.txt" }]);
+    mockGetWindowRectByHwnd.mockReturnValue(null);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    mockGetWindowClassName.mockReturnValue("SomeApp");
+    mockGetUiElements.mockClear().mockResolvedValue({ windowTitle: "gone.txt", windowClassName: "SomeApp", windowRect: other.region, elementCount: 6, elements: [] });
+    mockRecognizeWindow.mockReset();
+    mockRecognizeWindowByHwnd.mockReset();
+    const result = await screenshotHandler({ ...baseArgs, hwnd: "9501", detail: "text", ocrFallback: "always" });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(mockRecognizeWindow).not.toHaveBeenCalled();
+    expect(JSON.stringify(body.hints?.warnings)).toContain("target_rect_unreadable:");
+  });
+
+  it("answers WindowNotFound for an image of a named handle it cannot place, not a same-titled window (gate 2 on #963)", async () => {
+    mockResolveWindowTarget.mockResolvedValue({ title: "gone.txt", hwnd: 9501n, warnings: [] });
+    mockEnumWindowsInZOrder.mockReturnValue([{ ...other, title: "gone.txt" }]);
+    mockGetWindowRectByHwnd.mockReturnValue(null);
+    mockCaptureWindowWithFallback.mockReset();
+    const result = await screenshotHandler({ ...baseArgs, hwnd: "9501", detail: "image", confirmImage: false });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.ok).toBe(false);
+    expect(JSON.stringify(body)).toContain('no visible window with hwnd \\"9501\\"');
+    expect(mockCaptureWindowWithFallback).not.toHaveBeenCalled();
+  });
+
+  it("OCRs (detail:'ocr') the twin named by hwnd, not the first window with its title (gate 2 on #963)", async () => {
+    const a = { ...con, hwnd: 9601n, title: "same.txt", zOrder: 0 };
+    const b = { ...con, hwnd: 9602n, title: "same.txt", zOrder: 1, isActive: false };
+    mockResolveWindowTarget.mockResolvedValue({ title: "same.txt", hwnd: 9602n, warnings: [] });
+    mockEnumWindowsInZOrder.mockReturnValue([a, b]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    mockCaptureWindowBackground.mockReset().mockRejectedValue(new Error("stop: reached the capture"));
+    await screenshotOcrHandler({ windowTitle: "", hwnd: "9602", language: "ja" });
+    expect(mockCaptureWindowBackground).toHaveBeenCalledWith(9602n, expect.anything());
+  });
+
+  it("takes an untitled window named by hwnd on detail:'som' (gate 2 on #963)", async () => {
+    mockResolveWindowTarget.mockResolvedValue({ title: "", hwnd: 5151n, warnings: [] });
+    mockEnumWindowsInZOrder.mockReturnValue([other]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    const result = await screenshotHandler({ ...baseArgs, hwnd: "5151", detail: "som" });
+    expect((result.content[0] as { text: string }).text).not.toContain("requires windowTitle or hwnd");
   });
 });

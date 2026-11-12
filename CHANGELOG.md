@@ -13,9 +13,10 @@
   before (internal #363).
 - **`screenshot` reads the window `hwnd` names.** `detail:'text'` found its window by title, so given the handle
   of one of two same-titled windows it read the other, and an untitled window answered the window list. A console
-  with no title (conhost started directly) is one such window. Given a handle (or `@active`), the call now reads that
-  window: its terminal text, its UI Automation tree, its OCR and its identity. `detail:'image'` with an untitled
-  window's handle captured the whole screen and now captures that window (internal #362, #393).
+  with no title (conhost started directly) is one such window. Given a handle (or `@active`), `detail:'text'`, `'ocr'`,
+  `'som'` and `'image'` now read that window, untitled included. A handle that names no window it can place answers
+  `WindowNotFound` rather than a same-titled window. Before, `detail:'image'` with an untitled window's handle captured
+  the whole screen, and `'som'` refused it (internal #362, #393).
 - **OCR says which language read the text.** Windows reads with an installed OCR pack only. When the language asked
   for has none (`'en'` on a Japanese machine without the English pack), it reads with another one, and `scroll read`
   still answered `language: "en"`. It now names the language that read and keeps the one asked for in
