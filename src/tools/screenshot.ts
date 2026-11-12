@@ -8,8 +8,9 @@ import { getWindows } from "../engine/nutjs.js";
 import { enumMonitors, getVirtualScreen, getWindowTitleW, getWindowRectByHwnd, enumWindowsInZOrder } from "../engine/win32.js";
 import { getUiElements, extractActionableElements, WINUI3_CLASS_RE, detectUiaBlind } from "../engine/uia-bridge.js";
 import type { UiElementsResult } from "../engine/uia-bridge.js";
-import { recognizeWindow, ocrWordsToActionable, runOcr, mergeNearbyWords, runSomPipeline, snapToDictionary, detectOcrLanguage } from "../engine/ocr-bridge.js";
-import type { OcrDictionaryEntry } from "../engine/ocr-bridge.js";
+import { recognizeWindow, recognizeWindowByHwnd, ocrWordsToLines, ocrWordsToActionable, runOcr, mergeNearbyWords, runSomPipeline, snapToDictionary, detectOcrLanguage } from "../engine/ocr-bridge.js";
+import type { OcrDictionaryEntry, OcrWord } from "../engine/ocr-bridge.js";
+import { WindowExcludedError } from "../engine/tool-exclusion.js";
 import { refuseIfFrozen, WindowFrozenError } from "../engine/window-frozen.js";
 import { updateWindowCache, saveSnapshot } from "../engine/window-cache.js";
 import { CHROMIUM_TITLE_RE } from "./workspace.js";
@@ -35,7 +36,7 @@ import {
 import { getTextViaTextPattern } from "../engine/uia-bridge.js";
 import { stripAnsi, tailLines } from "../engine/ansi.js";
 import { getWindowClassName } from "../engine/win32.js";
-import { isTerminalWindow } from "../utils/terminal-process.js";
+import { isTerminalWindow, isOcrOnlyTerminalWindow } from "../utils/terminal-process.js";
 import { resolveWindowTarget, findPlainTopLevelWindowsByTitle } from "./_resolve-window.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -673,6 +674,50 @@ export const screenshotHandler = async (args: {
               }, null, 2),
             }],
           };
+        }
+
+        // internal #363: a terminal whose text UI Automation does not expose (Git Bash's mintty) is read
+        // from its pixels, as text, in the terminal's shape. The handle named, else the window found by title.
+        const ocrTerminalHwnd = handleWin !== null && isOcrOnlyTerminalWindow(getWindowClassName(handleWin.hwnd))
+          ? handleWin.hwnd
+          : targetHwnd !== null && isOcrOnlyTerminalWindow(getWindowClassName(targetHwnd)) ? targetHwnd : null;
+        const ocrTerminalWin = ocrTerminalHwnd !== null ? wins.find((w) => w.hwnd === ocrTerminalHwnd) : undefined;
+        if (ocrTerminalHwnd !== null && ocrTerminalWin !== undefined && ocrFallback !== "never") {
+          refuseIfFrozen(ocrTerminalHwnd, "screenshot");
+          // An OCR that cannot run (no win-ocr.exe, a failed capture) leaves the window on the road below,
+          // which still lists its controls. A refusal (an excluded or frozen window) is not read around.
+          let words: OcrWord[] | null = null;
+          try {
+            ({ words } = await recognizeWindowByHwnd(ocrTerminalHwnd, ocrTerminalWin.region, ocrLanguage));
+          } catch (e) {
+            if (e instanceof WindowExcludedError || e instanceof WindowFrozenError) throw e;
+          }
+          if (words !== null) {
+            const byHandleKey = hwndParam !== undefined || !effectiveTitle;
+            const obs = observeTarget(byHandleKey ? handleObservationKey(ocrTerminalHwnd) : effectiveTitle, ocrTerminalHwnd, ocrTerminalWin.title);
+            const invalidation = obs.invalidatedBy
+              ? { reason: obs.invalidatedBy, previousTarget: obs.previousTarget }
+              : takeLastInvalidation();
+            const cacheStateHints = buildCacheStateHints(ocrTerminalHwnd, invalidation);
+            return {
+              content: [{
+                type: "text" as const,
+                text: JSON.stringify({
+                  window: ocrTerminalWin.title,
+                  actionable: [],
+                  textContent: tailLines(ocrWordsToLines(words), 80),
+                  hints: {
+                    terminalGuard: true,
+                    textSource: "ocr",
+                    ocrFallbackFired: true,
+                    target: toTargetHints(obs.identity),
+                    ...(Object.keys(cacheStateHints).length > 0 ? { caches: cacheStateHints } : {}),
+                    ...(screenshotWarnings.length > 0 ? { warnings: screenshotWarnings } : {}),
+                  },
+                }, null, 2),
+              }],
+            };
+          }
         }
 
         // Only a terminal enters this branch untitled, and it returned above.

@@ -7,6 +7,10 @@
   tool (internal #377).
 
 ### Fixed — Windows
+- **`screenshot(detail:'text')` reads Git Bash.** mintty exposes no text to UI Automation, so the call returned only
+  the window's scroll buttons and no text. Its text is now read with OCR and returned as `textContent`, with
+  `hints.textSource: "ocr"`. When OCR cannot run, or with `ocrFallback:'never'`, the window's controls are listed as
+  before (internal #363).
 - **`screenshot(detail:'text')` reads an untitled console by `hwnd`.** A console with no title (conhost started
   directly) answered the window list instead of its text. A terminal given by its handle is now read from that window,
   also when two consoles share a title; before, the first same-titled one was read. Other windows still find their
