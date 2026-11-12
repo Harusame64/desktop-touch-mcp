@@ -475,6 +475,41 @@ const FILL_ONCE_HINTS: Record<string, string> = {
   tag_limit: `This pane already keeps ${MAX_KEPT_TAGS_PER_PANE} tags. Forget one with key_locker({action:'forget_tag', paneId, tag}) or reuse a kept tag. Nothing was typed.`,
 };
 
+/** The hint a fill_once `fill_aborted` reply carries, by its code. */
+export function fillAbortedHint(code: string): string {
+  if (code === "echo_on") {
+    return "The pane's console is showing what is typed, so this is not a real password prompt. Nothing was typed.";
+  }
+  if (code === "other_reader") {
+    return "No ssh / sudo / su / doas is running in front in the pane (a shell's Read-Host behind a background ssh, " +
+      "for example), so the prompt may not be the credential program's. Run the command in front, then retry. " +
+      "Nothing was typed.";
+  }
+  if (code === "console_selecting") {
+    return "The pane's console is in selection mode (Mark, or text selected with the mouse), and it holds input " +
+      "until the selection ends. Ask the user to press Esc in that window, then retry. Nothing was typed.";
+  }
+  // internal #330: the dialog was left open longer than this server waits for it — not a changed pane.
+  // Only the capture: an inject that timed out may already have typed (gate 2 on #959).
+  if (code === "fill_once_error:request 'capture' timed out") {
+    return "The dialog was open longer than this server waits for it, so nothing was typed into the pane. If the " +
+      "dialog is still on screen, cancel it; then call fill_once again when the user is ready to type.";
+  }
+  // internal #329: the helper stopped during the call; the next call starts a new one. It may have stopped
+  // while typing, so the pane is read before anything is sent again.
+  if (code === "fill_once_error:locker disposed" || code === "fill_once_error:pipe closed") {
+    return "The locker helper stopped during the call. Read the terminal before sending anything: if it stopped " +
+      "while typing, part of the password may be on the prompt. A new helper starts on the next fill_once.";
+  }
+  // Any other thrown error (a timeout while typing, for one) may have come after some keys went in, so the
+  // reply does not say nothing was typed (agy on #959). The locker's own refusals carry no prefix.
+  if (code.startsWith("fill_once_error:")) {
+    return "The call failed with an error, not a refusal. If it failed while typing, part of the password may " +
+      "be on the prompt: read the terminal before sending anything, then call fill_once again.";
+  }
+  return "The locker refused the write (the pane changed or could not be verified). Nothing was typed or saved.";
+}
+
 /**
  * The reason is display text in a security dialog: one plain line. Control characters, format characters
  * (bidi overrides / isolates, zero-width), and line / paragraph separators are replaced by a space, so the
@@ -525,16 +560,7 @@ async function handleFillOnce(
           filled: false,
           reason: "fill_aborted",
           code: outcome.code,
-          hint: outcome.code === "echo_on"
-            ? "The pane's console is showing what is typed, so this is not a real password prompt. Nothing was typed."
-            : outcome.code === "other_reader"
-              ? "No ssh / sudo / su / doas is running in front in the pane (a shell's Read-Host behind a background ssh, " +
-                "for example), so the prompt may not be the credential program's. Run the command in front, then retry. " +
-                "Nothing was typed."
-              : outcome.code === "console_selecting"
-                ? "The pane's console is in selection mode (Mark, or text selected with the mouse), and it holds input " +
-                  "until the selection ends. Ask the user to press Esc in that window, then retry. Nothing was typed."
-                : "The locker refused the write (the pane changed or could not be verified). Nothing was typed or saved.",
+          hint: fillAbortedHint(outcome.code),
           ...kept,
           ...cleanup,
         });

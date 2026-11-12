@@ -294,6 +294,9 @@ async function fillClaimed(
     outcome = await captureAndFill(deps, { ...gate, dialog: tag !== undefined ? { ...dialog, tag } : dialog, opaqueId }, held);
   } catch (err) {
     outcome = { kind: "fill_aborted", code: `fill_once_error:${err instanceof Error ? err.message : String(err)}` };
+    // internal #329: the helper is gone (its pipe closed), and any secret it held went with its process —
+    // there is nothing left to erase, so no cleanupFailed for it.
+    if (helperGone(err)) held.maybe = false;
   }
   if (tag !== undefined && outcome.kind === "filled" && deps.stillAnchored(paneId) &&
       deps.kept.keep(paneId, anchor, tag, opaqueId)) {
@@ -383,4 +386,10 @@ async function fillAfterDialog(deps: FillOnceDeps, r: AfterDialogGate): Promise<
 
   const w = await deps.injectAt(anchor, opaqueId, submit);
   return w.ok ? { kind: "filled", verified: w.verified } : { kind: "fill_aborted", code: w.code };
+}
+
+/** The locker helper's pipe closed: the process — and anything it held — is gone. */
+function helperGone(err: unknown): boolean {
+  const m = err instanceof Error ? err.message : "";
+  return (err as { code?: unknown } | null)?.code === "KeyLockerPipeUnavailable" && (m === "pipe closed" || m === "locker disposed");
 }

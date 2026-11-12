@@ -59,6 +59,7 @@ function fake(o: {
   confirmThrows?: boolean;
   anchoredSeq?: boolean[];
   opaqueId?: string;
+  captureHelperGone?: boolean;
 } = {}): Fake {
   const calls: string[] = [];
   const deleted: string[] = [];
@@ -79,6 +80,7 @@ function fake(o: {
     capture: async (id, dialog) => {
       calls.push(`capture:${id}:${dialog.label}:${dialog.note}${dialog.tag !== undefined ? `:tag=${dialog.tag}` : ""}`);
       if (o.captureThrows) throw new Error("pipe drop");
+      if (o.captureHelperGone) throw Object.assign(new Error("pipe closed"), { code: "KeyLockerPipeUnavailable" });
       if (o.captureTimedOut === true) return { captured: false, timedOut: true };
       return { captured: o.captured ?? true };
     },
@@ -498,6 +500,16 @@ describe("runFillOnce — a NEW tag: typed once, then kept", () => {
     expect(await runFillOnce(f.deps, TAGGED)).toEqual({ kind: "cancelled" });
     expect(f.calls.some((c) => c.startsWith("delete"))).toBe(false);
     expect(k.tags.hasAny()).toBe(false);
+  });
+
+  // internal #329: the helper's pipe closed during the capture — whatever it held died with its process,
+  // so there is nothing to erase and no cleanupFailed for a secret that cannot exist.
+  it("a capture whose helper is gone is not erased, and reports no cleanupFailed", async () => {
+    const f = fake({ captureHelperGone: true, deleteFails: 2 });
+    const r = await run(f);
+    expect(r).toMatchObject({ kind: "fill_aborted", code: "fill_once_error:pipe closed" });
+    expect(r).not.toHaveProperty("cleanupFailed");
+    expect(f.calls.some((c) => c.startsWith("delete:"))).toBe(false);
   });
 
   it("a capture that throws (may or may not have stored it) is still erased", async () => {

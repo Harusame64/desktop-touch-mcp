@@ -230,6 +230,12 @@ export class KeyLockerHost {
   private disposed = false;
   private disposing = false;
   private excludedPid = 0;
+  /**
+   * Whether the process we spawned has exited (Node saw its `exit`). Read before any kill: a PID of a
+   * process that exited may already belong to another one, and `taskkill /T /F` would take that tree
+   * down (gate 2 on #959). False in test seams (killPid 0 there anyway).
+   */
+  childExited: () => boolean = () => false;
 
   private constructor(
     private readonly socket: net.Socket,
@@ -256,6 +262,9 @@ export class KeyLockerHost {
     this.disposed = true;
     this.releaseExclusion();
     this.failAllPending(new KeyLockerError("KeyLockerPipeUnavailable", "pipe closed"));
+    // internal #329: the pipe can drop while the helper still runs (a socket error), holding whatever it
+    // captured. Nothing can reach it now, so it is ended here — only while it is still our child.
+    if (!this.disposing && this.killPid > 0 && !this.childExited()) killTree(this.killPid);
   }
 
   /** False once the pipe has closed or `dispose()` began: this helper process (and its memory) is gone. */
@@ -324,6 +333,7 @@ export class KeyLockerHost {
       try {
         const host = await KeyLockerHost.handshake(socket, killPid, deadline);
         host.excludedPid = child.pid;
+        host.childExited = () => state.helperDied;
         return host;
       } catch (e) {
         try { socket.destroy(); } catch { /* ignore */ }
@@ -333,8 +343,9 @@ export class KeyLockerHost {
       // ANY startup failure must un-exclude + kill the child — including the alive-but-slow
       // timeout path (helper still running), which would otherwise orphan a key-locker.exe
       // holding its pipe (e.g. first-run AV scan of the exe).
+      // Not once Node saw it exit: its PID may already be another process's (gate 2 on #959).
       unregisterExcludedPid(child.pid);
-      killTree(killPid);
+      if (!state.helperDied) killTree(killPid);
       throw e;
     }
   }
@@ -604,7 +615,7 @@ export class KeyLockerHost {
     this.releaseExclusion();
     try { this.socket.end(); this.socket.destroy(); } catch { /* ignore */ }
     this.failAllPending(new KeyLockerError("KeyLockerPipeUnavailable", "locker disposed"));
-    if (this.killPid > 0) killTree(this.killPid);
+    if (this.killPid > 0 && !this.childExited()) killTree(this.killPid);
   }
 
   private onData(d: Buffer | string): void {
