@@ -532,8 +532,8 @@ describe("ADR-018 §2.6 — dispatchScrollWheel (Tier 1 UIA path)", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // internal #319 item 2 — a Chromium frame as the enumeration lists it.
-const chromeFrame = (hwnd: bigint, region = { x: 0, y: 0, width: 800, height: 600 }, isMinimized = false) =>
-  ({ hwnd, title: "X - Google Chrome", region, zOrder: 0, isMinimized, isMaximized: false, isActive: false, className: "Chrome_WidgetWin_1" });
+const chromeFrame = (hwnd: bigint, region = { x: 0, y: 0, width: 800, height: 600 }, isMinimized = false, title = "X - Google Chrome") =>
+  ({ hwnd, title, region, zOrder: 0, isMinimized, isMaximized: false, isActive: false, className: "Chrome_WidgetWin_1" });
 
 describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate + listTabsLight probe)", () => {
   // Phase 3 R1 (Opus P2): the gate is now a strict class equality on
@@ -570,11 +570,43 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
     expect(await ask(0x778n)).toBeNull();
   });
 
-  it("two maximized windows of one browser at the same rect: null, they cannot be told apart (gate 2 on #965)", async () => {
-    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
-    enumWindowsInZOrderMock.mockImplementation(() => [chromeFrame(0x700n), chromeFrame(0x77bn)]);
+  it("two maximized windows of one browser at the same rect, different titles: each gets its own tab (win2 W4 on #965)", async () => {
+    listTabsLightMock.mockResolvedValue([
+      { id: "TAB-ONE", title: "one", url: "https://x/one", type: "page" },
+      { id: "TAB-TWO", title: "two", url: "https://x/two", type: "page" },
+    ]);
+    enumWindowsInZOrderMock.mockImplementation(() => [
+      chromeFrame(0x700n, undefined, false, "one - Google Chrome"),
+      chromeFrame(0x77bn, undefined, false, "two - Google Chrome"),
+    ]);
+    expect(await ask(0x77bn)).toEqual({ kind: "cdp", tabId: "TAB-TWO" });
+    expect(await ask(0x700n)).toEqual({ kind: "cdp", tabId: "TAB-ONE" });
+  });
+
+  it("two windows at the same rect showing tabs with the same title: null, they cannot be told apart", async () => {
+    listTabsLightMock.mockResolvedValue([
+      { id: "TAB-1", title: "same", url: "https://x/1", type: "page" },
+      { id: "TAB-2", title: "same", url: "https://x/2", type: "page" },
+    ]);
+    enumWindowsInZOrderMock.mockImplementation(() => [
+      chromeFrame(0x700n, undefined, false, "same - Google Chrome"),
+      chromeFrame(0x77bn, undefined, false, "same - Google Chrome"),
+    ]);
     expect(await ask(0x77bn)).toBeNull();
-    expect(await ask(0x700n)).toBeNull();
+  });
+
+  it("another window of the same browser, elsewhere: its own tab by title and bounds (win2 W2 on #965)", async () => {
+    listTabsLightMock.mockResolvedValue([
+      { id: "TAB-A", title: "A", url: "https://a/", type: "page" },
+      { id: "TAB-B", title: "B", url: "https://b/", type: "page" },
+    ]);
+    getTabWindowBoundsMock.mockImplementation(async (id: string | null) =>
+      id === "TAB-B" ? { left: 900, top: 0, width: 800, height: 600 } : { left: 0, top: 0, width: 800, height: 600 });
+    enumWindowsInZOrderMock.mockImplementation(() => [
+      chromeFrame(0x700n, undefined, false, "A - Google Chrome"),
+      chromeFrame(0x77fn, { x: 900, y: 0, width: 800, height: 600 }, false, "B - Google Chrome"),
+    ]);
+    expect(await ask(0x77fn)).toEqual({ kind: "cdp", tabId: "TAB-B" });
   });
 
   it("another browser's window at the same rect is not a second candidate (gate 2 on #965)", async () => {
@@ -584,12 +616,24 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
     expect(await ask(0x77en)).toEqual({ kind: "cdp", tabId: "TAB-A" });
   });
 
-  it("a minimized window holding the tab: the browser's one minimized frame keeps CDP (gate 2 on #965)", async () => {
-    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
-    getTabWindowBoundsMock.mockResolvedValue({ left: 100, top: 50, width: 800, height: 600, windowState: "minimized" });
-    enumWindowsInZOrderMock.mockImplementation(() => [chromeFrame(0x700n), chromeFrame(0x77cn, { x: -32000, y: -32000, width: 160, height: 28 }, true)]);
-    expect(await ask(0x77cn)).toEqual({ kind: "cdp", tabId: "TAB-A" });
-    enumWindowsInZOrderMock.mockImplementation(() => [chromeFrame(0x700n, undefined, true), chromeFrame(0x77cn, { x: -32000, y: -32000, width: 160, height: 28 }, true)]);
+  it("tabs with the frame's title in two windows: the one at this frame's rect (internal #319)", async () => {
+    listTabsLightMock.mockResolvedValue([
+      { id: "TAB-HOME", title: "Home", url: "https://x/1", type: "page" },
+      { id: "TAB-A1", title: "A", url: "https://a/1", type: "page" },
+      { id: "TAB-A2", title: "A", url: "https://a/2", type: "page" },
+    ]);
+    getTabWindowBoundsMock.mockImplementation(async (id: string | null) =>
+      id === "TAB-A2" ? { left: 900, top: 0, width: 800, height: 600 } : { left: 0, top: 0, width: 800, height: 600 });
+    enumWindowsInZOrderMock.mockImplementation(() => [
+      chromeFrame(0x700n, undefined, false, "Home - Google Chrome"),
+      chromeFrame(0x790n, { x: 900, y: 0, width: 800, height: 600 }, false, "A - Google Chrome"),
+    ]);
+    expect(await ask(0x790n)).toEqual({ kind: "cdp", tabId: "TAB-A2" });
+  });
+
+  it("a minimized window is not promoted: a CDP wheel does not move its page either (win2 W5 on #965)", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "X", url: "https://a.com/", type: "page" }]);
+    enumWindowsInZOrderMock.mockImplementation(() => [chromeFrame(0x77cn, { x: -32000, y: -32000, width: 160, height: 28 }, true)]);
     expect(await ask(0x77cn)).toBeNull();
   });
 

@@ -33,6 +33,11 @@ const SIGNIN_DIALOG = new RegExp(
  * to act somewhere anyway falls back on its own (resolveTab and the guard lens take tabs[0]).
  * `type` is required so a listing that dropped it fails to compile instead of counting as pages.
  */
+/** A page target that is a tab, not one of the sign-in or sync dialogs above (internal #319). */
+export function isTabPage(t: { type: string; url?: string }): boolean {
+  return t.type === "page" && !SIGNIN_DIALOG.test(t.url ?? "");
+}
+
 export function defaultPageTab<T extends { type: string; url?: string }>(tabs: readonly T[]): T | undefined {
   const pages = tabs.filter((t) => t.type === "page");
   return pages.find((t) => !SIGNIN_DIALOG.test(t.url ?? "")) ?? pages[0];

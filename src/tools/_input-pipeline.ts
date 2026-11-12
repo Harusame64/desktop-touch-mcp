@@ -41,7 +41,7 @@ import {
   computeStripChangedFractions,
   type RawFrame,
 } from "../engine/layer-buffer.js";
-import { defaultPageTab } from "../engine/cdp-default-tab.js";
+import { defaultPageTab, isTabPage } from "../engine/cdp-default-tab.js";
 import {
   listTabsLight,
   dispatchWheelInTab,
@@ -800,16 +800,22 @@ export async function resolveInputDestination(
  * window, whatever hwnd was asked: win2 scrolled Edge's page (9222) with `hwnd:<a Chrome window>`, and
  * with two windows of one browser it scrolled the other window, both answering `delivered_via_cdp`.
  *
- * So the hwnd must be the browser's own frame (its process, `getBrowserProcessId`) and the ONE frame of
- * that browser at the tab's window bounds (`frameForWindowBounds`, the rule `browser_click` uses,
- * internal #305): two maximized windows share a rect and cannot be told apart. A minimized window's
- * bounds are its restored ones, so a minimized tab window matches the browser's one minimized frame.
- * When any of it cannot be shown this answers null and the wheel goes by the window, as for a browser
- * without CDP. Not done: finding the tab that IS in an older window (the wheel goes by that window), and
- * a second monitor at another scale, whose DIP origin is not the first monitor's times its scale.
+ * So the hwnd must be the browser's own frame (its process, `getBrowserProcessId`), and the tab must be one
+ * that frame shows:
+ * - the default tab, when that frame is the ONE frame of the browser at the tab's window bounds
+ *   (`frameForWindowBounds`, the rule `browser_click` uses, internal #305); else
+ * - the one tab whose title begins the frame's title ("<tab title> - Google Chrome") and whose window
+ *   bounds are the frame's rect. Two maximized windows share a rect, so the title tells them apart.
  *
- * Cost on the gate-hit path: `/json/list`, then the browser's process id (cached per port, read again
- * when the hwnd's process differs) and the tab's window bounds in parallel, then one enumeration.
+ * When neither names exactly one tab this answers null, and the wheel goes by the window. win2 on #965:
+ * that road moves an occluded window's page AND the one in front of it, so a tab that can be shown is
+ * the better road. A minimized window is not promoted: a CDP wheel does not move its page either (win2,
+ * W5, main and the PR alike). Not handled: a second monitor at another scale, whose DIP origin is not
+ * the first monitor's times its scale.
+ *
+ * Cost on the gate-hit path: `/json/list`, the browser's process id (cached per port, read again when the
+ * hwnd's process differs) beside the default tab's bounds, one enumeration, and the bounds of at most
+ * eight title-matched tabs when the default tab is not this window's.
  *
  * Exported for unit testing.
  */
@@ -826,20 +832,30 @@ export async function resolveCdpDestinationForHwnd(
     // The tab every other call without a tabId uses, not whatever target is listed first (#308).
     const firstPage = defaultPageTab(tabs);
     if (!firstPage) return null;
-    // The window asked for is this browser's, and the one frame holding the tab (internal #319 item 2).
     const [browserPid, bounds] = await Promise.all([
       browserPidFor(port, getWindowProcessId(hwnd)),
-      getTabWindowBounds(firstPage.id, port),
+      getTabWindowBounds(firstPage.id, port).catch(() => null),
     ]);
     // Only this browser's frames: another browser's window at the same rect is not a second candidate, and
     // a hwnd in another process is never among them.
     const frames = enumWindowsInZOrder().filter((w) =>
-      w.className === CHROMIUM_TOP_LEVEL_CLASS && getWindowProcessId(w.hwnd) === browserPid);
-    const holder = bounds.windowState === "minimized"
-      ? (() => { const m = frames.filter((w) => w.isMinimized); return m.length === 1 ? m[0] : undefined; })()
-      : frameForWindowBounds(frames.filter((w) => !w.isMinimized), bounds, (w) => getWindowDpi(w.hwnd) / 96);
-    if (holder?.hwnd !== hwnd) return null;
-    return { kind: "cdp", tabId: firstPage.id };
+      w.className === CHROMIUM_TOP_LEVEL_CLASS && !w.isMinimized && getWindowProcessId(w.hwnd) === browserPid);
+    const frame = frames.find((w) => w.hwnd === hwnd);
+    if (frame === undefined) return null;
+    const scaleOf = (w: { hwnd: bigint }): number => getWindowDpi(w.hwnd) / 96;
+    if (bounds !== null && frameForWindowBounds(frames, bounds, scaleOf)?.hwnd === hwnd) {
+      return { kind: "cdp", tabId: firstPage.id };
+    }
+    // The tab this frame shows, by its title, at this frame's rect.
+    const named = tabs
+      .filter((t) => isTabPage(t) && t.title !== "" && frame.title.startsWith(`${t.title} - `))
+      .slice(0, 8);
+    const here = await Promise.all(named.map(async (t) => {
+      const b = await getTabWindowBounds(t.id, port).catch(() => null);
+      return b !== null && frameForWindowBounds([frame], b, scaleOf) !== undefined ? t : null;
+    }));
+    const hits = here.filter((t): t is NonNullable<typeof t> => t !== null);
+    return hits.length === 1 ? { kind: "cdp", tabId: hits[0]!.id } : null;
   } catch {
     return null;
   }

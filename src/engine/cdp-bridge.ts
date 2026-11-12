@@ -409,21 +409,18 @@ export async function evaluateInTab(
 export async function getTabWindowBounds(
   tabId: string | null,
   port = DEFAULT_CDP_PORT
-): Promise<{ left: number; top: number; width: number; height: number; windowState?: string }> {
+): Promise<{ left: number; top: number; width: number; height: number }> {
   const tab = await resolveTab(tabId, port);
   const session = await openSession(tab, port);
   const win = (await session.send("Browser.getWindowForTarget", {})) as {
-    bounds?: { left?: number; top?: number; width?: number; height?: number; windowState?: string };
+    bounds?: { left?: number; top?: number; width?: number; height?: number };
   };
   const b = win.bounds ?? {};
   if (typeof b.left !== "number" || typeof b.top !== "number" || typeof b.width !== "number" ||
       typeof b.height !== "number") {
     throw new Error("Browser.getWindowForTarget gave no usable bounds");
   }
-  // `windowState` ("normal" | "minimized" | "maximized" | "fullscreen"): a minimized window's bounds are
-  // its restored ones, which no frame rect matches (internal #319, gate 2 on #965).
-  return { left: b.left, top: b.top, width: b.width, height: b.height,
-    ...(typeof b.windowState === "string" && { windowState: b.windowState }) };
+  return { left: b.left, top: b.top, width: b.width, height: b.height };
 }
 
 /**
