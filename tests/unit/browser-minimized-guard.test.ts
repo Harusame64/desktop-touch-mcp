@@ -58,6 +58,10 @@ describe("the minimized refusal's road (internal #401)", () => {
     expect(j.code).toBe("BrowserTargetMinimized");
     expect(j.suggest[0]).toContain("desktop_discover lists windows[]");
     expect(j.suggest[0]).toContain('focus_window({ hwnd: "<its hwnd>" })');
+    // With the one minimized window known, its hwnd itself (gate 2 on #970).
+    const k = JSON.parse((browserMinimizedFailure({ selector: "#c" }, 4242n).content[0] as { text: string }).text) as { suggest: string[]; context: { hwnd?: string } };
+    expect(k.suggest[0]).toContain('focus_window({ hwnd: "4242" })');
+    expect(k.context.hwnd).toBe("4242");
     expect(j.suggest.at(-1)).toMatch(/browser_fill/);
   });
 });

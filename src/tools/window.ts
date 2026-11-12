@@ -1,12 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getActiveWindow } from "../engine/nutjs.js";
-import { getWindowTitleW, enumWindowsInZOrder, restoreAndFocusWindow, isExcludedWindowHandle } from "../engine/win32.js";
+import { getWindowTitleW, enumWindowsInZOrder, restoreAndFocusWindow, isExcludedWindowHandle, windowIsAlive, getForegroundHwnd } from "../engine/win32.js";
+import { parseWindowHandle } from "../engine/aim.js";
 import { getVirtualDesktopStatus } from "../engine/uia-bridge.js";
 import { updateWindowCache } from "../engine/window-cache.js";
 import { listTabs, activateTab, DEFAULT_CDP_PORT } from "../engine/cdp-bridge.js";
 import type { ToolResult } from "./_types.js";
-import { failWith } from "./_errors.js";
+import { failWith, failCode, failArgs } from "./_errors.js";
 import { titleMatchesShownFirst } from "./_title-pick.js";
 import { coercedBoolean } from "./_coerce.js";
 import { withRichNarration } from "./_narration.js";
@@ -124,13 +125,17 @@ export const focusWindowHandler = async ({
   cdpPort: number;
   forceFocus?: boolean;
 }): Promise<ToolResult> => {
-  if (hwndArg === undefined && (titleArg === undefined || titleArg === "")) {
-    return failWith(new Error("Pass title (part of the window's title) or hwnd (from desktop_discover's windows[].hwnd)."), "focus_window", {});
-  }
-  const title = titleArg ?? "";
   // Issue #197: caller-explicit forceFocus wins; otherwise honor the env
   // override (same convention as keyboard / mouse_click / terminal_send).
   const force = forceFocus ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
+  // internal #401 — an empty hwnd is no hwnd, as everywhere else (gate 2 on #970).
+  if (hwndArg !== undefined && hwndArg !== "") {
+    return focusByHwnd(hwndArg, chromeTabUrlContains, force);
+  }
+  if (titleArg === undefined) {
+    return failArgs("pass title (part of the window's title) or hwnd (desktop_discover's windows[].hwnd).", "focus_window");
+  }
+  const title = titleArg;
   try {
     // If chromeTabUrlContains is set, activate the matching Chrome tab first via CDP
     let activatedTab: string | undefined;
@@ -167,12 +172,9 @@ export const focusWindowHandler = async ({
     // content is listed above its frame, and bringing it forward fails (`_title-pick.ts`).
     // Internal #320 — then a window the title named before the activation, now showing the activated
     // tab. Only one showing it: with two browser windows, the other one is not where the tab is.
-    // An hwnd names one window exactly; a title names every window whose title contains it.
-    const matched = hwndArg !== undefined
-      ? windows.filter((w) => String(w.hwnd) === hwndArg)
-      : titleMatchesShownFirst(windows, query);
+    const matched = titleMatchesShownFirst(windows, query);
     // An untitled tab names no window, so it follows none.
-    const followed = !activatedTab || hwndArg !== undefined ? [] : windows.filter(
+    const followed = !activatedTab ? [] : windows.filter(
       (w) => namedBefore.has(w.hwnd) && !matched.includes(w) && w.title.includes(activatedTab!),
     );
     for (const win of [...matched, ...followed]) {
@@ -220,7 +222,7 @@ export const focusWindowHandler = async ({
           new Error("ForegroundRestricted"),
           "focus_window",
           {
-            ...(hwndArg !== undefined ? { hwnd: hwndArg } : { title }),
+            title,
             hint: "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation",
             attemptedForce: force,
             autoEscalated: escalated,
@@ -249,14 +251,82 @@ export const focusWindowHandler = async ({
     }
 
     // The tab may have been switched all the same; say which, so a retry by its title can follow.
-    if (hwndArg !== undefined) {
-      return failWith(`Window not found: hwnd ${hwndArg} names no window (it may have closed). Call desktop_discover for the current windows[].hwnd.`, "focus_window", { hwnd: hwndArg });
-    }
     return failWith(`Window not found: "${title}"`, "focus_window", { title, ...(activatedTab !== undefined && { activatedTab }) });
   } catch (err) {
     return failWith(err, "focus_window", { title });
   }
 };
+
+/**
+ * internal #401 — focus_window by hwnd: exactly that window. Probed directly, not looked up in
+ * `enumWindowsInZOrder`, which leaves out windows with no title — the ones a title cannot name
+ * (gate 2 on #970). Confirmed by the foreground handle for the same reason.
+ */
+async function focusByHwnd(raw: string, chromeTabUrlContains: string | undefined, force: boolean): Promise<ToolResult> {
+  if (chromeTabUrlContains !== undefined) {
+    // chromeTabUrlContains picks the window by its tab: it would switch a tab in whichever browser window
+    // has it, which need not be this one (gate 2 on #970).
+    return failArgs(
+      "pass hwnd or chromeTabUrlContains, not both: chromeTabUrlContains finds the window by its tab, which may be in another window. To show a tab of this window, focus it by hwnd, then use browser_open and browser_navigate.",
+      "focus_window",
+      { hwnd: raw },
+    );
+  }
+  const hwnd = parseWindowHandle(raw);
+  if (hwnd === undefined) {
+    return failArgs(`hwnd "${raw}" is not a window handle: pass it as desktop_discover's windows[].hwnd gives it (decimal, or hex with 0x).`, "focus_window", { hwnd: raw });
+  }
+  try {
+    if (isExcludedWindowHandle(hwnd)) {
+      return failWith(new Error("WindowExcluded: target window belongs to the desktop-touch key locker and is not addressable by automation tools (the secure credential dialog is excluded by design)"), "focus_window", { hwnd: raw });
+    }
+    // false only when Windows answered that it is not a window; undefined (could not ask) goes on.
+    if (windowIsAlive(hwnd) === false) {
+      return failCode("WindowNotFound", `focus_window: Window not found: hwnd ${raw} names no window (it may have closed). Nothing was focused.`, {
+        suggest: [
+          "Call desktop_discover: its windows[] lists each window's current hwnd and title. Retry with the hwnd of the window you meant: focus_window({ hwnd }).",
+          "If the app is still launching, use wait_until(condition='window_appears') first.",
+        ],
+        context: { hwnd: raw },
+      });
+    }
+    const title = (() => { try { return getWindowTitleW(hwnd); } catch { return ""; } })();
+    let region = restoreAndFocusWindow(hwnd, { force });
+    await new Promise<void>((r) => setTimeout(r, 100));
+    let reached = getForegroundHwnd() === hwnd;
+    let escalated = false;
+    if (!reached && !force) {
+      region = restoreAndFocusWindow(hwnd, { force: true });
+      await new Promise<void>((r) => setTimeout(r, 100));
+      reached = getForegroundHwnd() === hwnd;
+      escalated = true;
+    }
+    if (!reached) {
+      const front = getForegroundHwnd();
+      return failWith(new Error("ForegroundRestricted"), "focus_window", {
+        hwnd: raw,
+        hint: "Win11 refused both default SetForegroundWindow and the AttachThreadInput escalation",
+        attemptedForce: force,
+        autoEscalated: escalated,
+        ...(front !== null && { actualForeground: (() => { try { return getWindowTitleW(front); } catch { return ""; } })() }),
+      });
+    }
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          ok: true,
+          focused: title,
+          hwnd: raw,
+          region,
+          ...(escalated && { hints: { forceFocusEscalated: true } }),
+        }),
+      }],
+    };
+  } catch (err) {
+    return failWith(err, "focus_window", { hwnd: raw });
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Registration
@@ -291,7 +361,9 @@ export const focusWindowHandler = async ({
 export const focusWindowRegistrationSchema = withEnvelopeIncludeSchema(focusWindowSchema);
 
 export const focusWindowRegistrationHandler = makeCommitWrapper(
-  withRichNarration("focus_window", focusWindowHandler, { windowTitleKey: "title", hwndKey: "hwnd" }) as (args: Record<string, unknown>) => Promise<ToolResult>,
+  // internal #401 — hwnd decides the window instead of the title (the handler branches on it first), so a
+  // title passed beside it names nothing the call acted on.
+  withRichNarration("focus_window", focusWindowHandler, { windowTitleKey: "title", supersedingKeys: ["hwnd"] }) as (args: Record<string, unknown>) => Promise<ToolResult>,
   "focus_window",
   {
     // leaseValidator omitted = lease-less commit variant

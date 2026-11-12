@@ -417,8 +417,10 @@ export function withRichNarration<T extends Record<string, unknown>>(
     //     the TITLE found while the handler acted on the caller's handle: a
     //     confident diff of a window the action never touched, which is the
     //     exact thing this ADR exists to remove, newly created on tools it never
-    //     claimed. (Counted, not assumed: `focus_window`, `window_dock`,
-    //     `terminal` and the six browser tools declare no `hwnd` at all.)
+    //     claimed. (Counted, not assumed: `window_dock`, `terminal` and the six
+    //     browser tools declare no `hwnd` at all. `focus_window` took one later,
+    //     internal #401, and declares it in `supersedingKeys`: the handler branches
+    //     on it before reading the title.)
     //
     // Cost of putting the limit back, named because it is a real one: `@active`
     // on those sixteen returned a diff for one commit and now degrades again,
