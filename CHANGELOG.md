@@ -3,15 +3,22 @@
 ## [Unreleased]
 
 ### Added — Windows
+- **`focus_window` takes `hwnd`**, from `desktop_discover`'s `windows[].hwnd` or a refusal's suggestion: exactly
+  that window. A title can name another window showing the same one, and one with no title could not be named at
+  all. `title` works as before (internal #401).
 - **`server_status` says which version answered (`version`).** Telling the build apart took `--help` or another
   tool (internal #377).
 
 ### Fixed — Windows
+- **The `focus_window` call that `browser_click`'s and `scroll`'s refusals suggest now works.** They named the window
+  by `hwnd`, which `focus_window` did not take, so following them failed. `browser_click` on a minimized window says
+  where to read its `hwnd` (`desktop_discover`'s `windows[]`) instead of only "focus_window by its title"
+  (internal #401).
 - **`scroll` with `hwnd` on a Chrome or Edge window behind another scrolls that window, or says it cannot, instead of
   scrolling the one in front.** Chromium sends a posted wheel to the window under its point, and the point was the
   window's centre, so with the centre covered the front window scrolled and the reply said `ok`. The point is now
   where the target's own page shows; when its page shows nowhere (covered, minimized, on another desktop) nothing
-  is sent and the reply says so, with `focus_window` by the window's title and `browser_eval` as the roads on.
+  is sent and the reply says so, with `focus_window` and `browser_eval` as the roads on.
   A window with no page drawn yet, with nothing in front of it, is still scrolled as before (internal #396).
 - **`browser_click` hits the element with DevTools or a side bar open.** The click point was computed from the page's
   own `window.screenX` and the frame width, split evenly left and right, so with DevTools docked it landed half the

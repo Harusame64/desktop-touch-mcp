@@ -22,6 +22,9 @@ vi.mock("../../src/engine/win32.js", () => ({
   enumWindowsInZOrder: vi.fn(),
   restoreAndFocusWindow: vi.fn(),
   getWindowTitleW: vi.fn(),
+  isExcludedWindowHandle: vi.fn(() => false),
+  windowIsAlive: vi.fn(() => true),
+  getForegroundHwnd: vi.fn(() => null),
 }));
 
 vi.mock("../../src/engine/window-cache.js", () => ({
@@ -193,5 +196,101 @@ describe("focus_window takes a shown window before a hidden one with the same ti
     mockEnum.mockReturnValueOnce([other]).mockReturnValue([{ ...other, isActive: true }]);
     await focusWindowHandler({ title: "Remote" } as Parameters<typeof focusWindowHandler>[0]);
     expect(mockRestore.mock.calls[0]?.[0]).toBe(77n);
+  });
+});
+
+describe("focus_window by hwnd (internal #401)", () => {
+  const mockFront = vi.mocked(win32.getForegroundHwnd);
+  const mockAlive = vi.mocked(win32.windowIsAlive);
+  const mockExcluded = vi.mocked(win32.isExcludedWindowHandle);
+  const mockTitle = vi.mocked(win32.getWindowTitleW);
+  beforeEach(() => {
+    mockAlive.mockReturnValue(true);
+    mockExcluded.mockReturnValue(false);
+    mockTitle.mockReturnValue("Shop - Google Chrome");
+  });
+  it("brings forward the window the hwnd names, without looking it up by title", async () => {
+    // Two windows show the same title; the hwnd names the second. No enumeration is needed.
+    mockEnum.mockReturnValue([fakeWindow("Shop - Google Chrome", true, 100n), fakeWindow("Shop - Google Chrome", false, 200n)]);
+    mockFront.mockReturnValue(200n);
+    const r = parseResult(await focusWindowHandler({ hwnd: "200", cdpPort: 9222 }) as never);
+    expect(r).toMatchObject({ ok: true, hwnd: "200", focused: "Shop - Google Chrome" });
+    expect(mockRestore).toHaveBeenCalledTimes(1);
+    expect(mockRestore.mock.calls[0]![0]).toBe(200n);
+  });
+  it("a window with no title, which the window list leaves out, is reached by its hwnd", async () => {
+    mockEnum.mockReturnValue([]);
+    mockTitle.mockReturnValue("");
+    mockFront.mockReturnValue(300n);
+    const r = parseResult(await focusWindowHandler({ hwnd: "300", cdpPort: 9222 }) as never);
+    expect(r.ok).toBe(true);
+    expect(mockRestore.mock.calls[0]![0]).toBe(300n);
+  });
+  it("hex and decimal name the same window (the shared handle rule)", async () => {
+    mockFront.mockReturnValue(0x1a2bn);
+    expect(parseResult(await focusWindowHandler({ hwnd: "0x1A2B", cdpPort: 9222 }) as never).ok).toBe(true);
+    expect(mockRestore.mock.calls[0]![0]).toBe(0x1a2bn);
+  });
+  it("not a handle: InvalidArgs, and nothing is focused", async () => {
+    const r = parseResult(await focusWindowHandler({ hwnd: "abc", cdpPort: 9222 }) as never);
+    expect(r.code).toBe("InvalidArgs");
+    expect(mockRestore).not.toHaveBeenCalled();
+  });
+  it("an hwnd that names no window: not found, with the hwnd's own advice, and nothing is focused", async () => {
+    mockAlive.mockReturnValue(false);
+    const r = parseResult(await focusWindowHandler({ hwnd: "999", cdpPort: 9222 }) as never);
+    expect(r.code).toBe("WindowNotFound");
+    expect(r.error).toMatch(/hwnd 999 names no window/);
+    expect(r.suggest.join(" ")).toMatch(/desktop_discover/);
+    // Not the title lines of the catalogue (win2, H2).
+    expect(r.suggest.join(" ")).not.toMatch(/partial title/);
+    expect(mockRestore).not.toHaveBeenCalled();
+  });
+  it("Windows cannot be asked whether it is a window: it is tried", async () => {
+    mockAlive.mockReturnValue(undefined);
+    mockFront.mockReturnValue(400n);
+    expect(parseResult(await focusWindowHandler({ hwnd: "400", cdpPort: 9222 }) as never).ok).toBe(true);
+  });
+  it("the key locker's window is refused by hwnd as by title", async () => {
+    mockExcluded.mockReturnValue(true);
+    const r = parseResult(await focusWindowHandler({ hwnd: "500", cdpPort: 9222 }) as never);
+    expect(r.code).toBe("WindowExcluded");
+    expect(mockRestore).not.toHaveBeenCalled();
+  });
+  it("hwnd with chromeTabUrlContains is refused before any tab is switched", async () => {
+    const cdp = await import("../../src/engine/cdp-bridge.js");
+    const r = parseResult(await focusWindowHandler({ hwnd: "200", chromeTabUrlContains: "mail", cdpPort: 9222 }) as never);
+    expect(r.code).toBe("InvalidArgs");
+    expect(vi.mocked(cdp.activateTab)).not.toHaveBeenCalled();
+    expect(mockRestore).not.toHaveBeenCalled();
+  });
+  it("not brought forward: ForegroundRestricted, after the escalation", async () => {
+    mockFront.mockReturnValue(100n);
+    const r = parseResult(await focusWindowHandler({ hwnd: "200", cdpPort: 9222 }) as never);
+    expect(r.code).toBe("ForegroundRestricted");
+    expect(mockRestore).toHaveBeenCalledTimes(2);
+  });
+  it("hwnd wins over title, and an empty hwnd is no hwnd", async () => {
+    mockFront.mockReturnValue(200n);
+    await focusWindowHandler({ title: "Alpha", hwnd: "200", cdpPort: 9222 });
+    expect(mockRestore.mock.calls[0]![0]).toBe(200n);
+    mockRestore.mockClear();
+    const a = fakeWindow("Alpha", false, 100n);
+    mockEnum.mockReturnValueOnce([a]).mockReturnValue([{ ...a, isActive: true }]);
+    expect(parseResult(await focusWindowHandler({ title: "Alpha", hwnd: "", cdpPort: 9222 }) as never).ok).toBe(true);
+    expect(mockRestore.mock.calls[0]![0]).toBe(100n);
+  });
+  it("neither title nor hwnd: InvalidArgs, and nothing is focused", async () => {
+    const r = parseResult(await focusWindowHandler({ cdpPort: 9222 }) as never);
+    expect(r.code).toBe("InvalidArgs");
+    expect(r.error).toMatch(/title .* or hwnd/);
+    expect(mockRestore).not.toHaveBeenCalled();
+  });
+  it("by title, as before", async () => {
+    const a = fakeWindow("Alpha", false, 100n);
+    mockEnum.mockReturnValueOnce([a]).mockReturnValue([{ ...a, isActive: true }]);
+    const r = parseResult(await focusWindowHandler({ title: "alp", cdpPort: 9222 }) as never);
+    expect(r.ok).toBe(true);
+    expect(mockRestore.mock.calls[0]![0]).toBe(100n);
   });
 });

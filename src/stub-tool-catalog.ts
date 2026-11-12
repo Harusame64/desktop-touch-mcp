@@ -819,13 +819,17 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "focus_window",
-    "description": "Bring a window to the foreground by partial title match (case-insensitive). Use when a tool does not accept a windowTitle param, or when you need to switch focus before a sequence of actions. Use chromeTabUrlContains to activate a specific Chrome/Edge tab by URL substring before focusing — only the active tab's title appears in the windows list. If CDP is unavailable, chromeTabUrlContains is silently skipped — check response.hints.warnings. Returns WindowNotFound if no match exists; call desktop_discover to see available titles. Caveats: On some apps focus may be immediately stolen back (modal dialogs, UAC prompts) — verify with desktop_state after focusing. Win11 foreground refusal (UIPI cross-elevation / admin-only target / call from a background process or service) returns code:'ForegroundRestricted' ok:false instead of silently failing — recover by switching to a tool that does not require foreground transfer: desktop_act / click_element use UIA InvokePattern (no foreground needed); keyboard BG path bypasses foreground for terminal-class targets only (Windows Terminal / cmd / PowerShell — keyboard with windowTitle on non-terminal apps still hits the same ForegroundRestricted refusal). browser_* tools target by tabId/selector, not windowTitle.",
+    "description": "Bring a window to the foreground by partial title match (case-insensitive), or exactly by hwnd (from desktop_discover's windows[].hwnd, or a refusal's suggest). Use when a tool does not accept a windowTitle param, or when you need to switch focus before a sequence of actions. Use chromeTabUrlContains to activate a specific Chrome/Edge tab by URL substring before focusing — only the active tab's title appears in the windows list. If CDP is unavailable, chromeTabUrlContains is silently skipped — check response.hints.warnings. Returns WindowNotFound if no match exists; call desktop_discover to see available titles. Caveats: On some apps focus may be immediately stolen back (modal dialogs, UAC prompts) — verify with desktop_state after focusing. Win11 foreground refusal (UIPI cross-elevation / admin-only target / call from a background process or service) returns code:'ForegroundRestricted' ok:false instead of silently failing — recover by switching to a tool that does not require foreground transfer: desktop_act / click_element use UIA InvokePattern (no foreground needed); keyboard BG path bypasses foreground for terminal-class targets only (Windows Terminal / cmd / PowerShell — keyboard with windowTitle on non-terminal apps still hits the same ForegroundRestricted refusal). browser_* tools target by tabId/selector, not windowTitle.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "title": {
-          "type": "string",
-          "description": "Partial window title to search for (case-insensitive). A shown window (a minimised one counts) is taken before a hidden one with the same text; a hidden one — on another virtual desktop — only when nothing shown matches."
+          "description": "Partial window title to search for (case-insensitive). A shown window (a minimised one counts) is taken before a hidden one with the same text; a hidden one — on another virtual desktop — only when nothing shown matches. Pass title or hwnd.",
+          "type": "string"
+        },
+        "hwnd": {
+          "description": "Direct window handle ID (takes precedence over title): that window and no other. Obtain from desktop_discover response (windows[].hwnd) or a refusal's suggest. String type to avoid 64-bit precision issues.",
+          "type": "string"
         },
         "chromeTabUrlContains": {
           "description": "When set, activate the Chrome/Edge tab whose URL contains this substring before focusing the window. Requires Chrome/Edge running with --remote-debugging-port (default 9222). Use this when the target is a Chrome tab that is not currently active — the active tab title is the only one visible in the window title list.",
@@ -850,9 +854,6 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           }
         }
       },
-      "required": [
-        "title"
-      ],
       "$schema": "http://json-schema.org/draft-07/schema#"
     }
   },

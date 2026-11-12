@@ -14,7 +14,7 @@ vi.mock(import("../../src/tools/_input-pipeline.js"), async (orig) => ({
     scrolled: false,
     channel: "postmessage" as const,
     reason: "target_unreachable" as const,
-    pageNotVisible: { frame: 0x500n, why: "covered" as const, title: "Back - Google Chrome" },
+    pageNotVisible: { frame: 0x500n, why: "covered" as const },
   })),
 }));
 const nutjs = vi.hoisted(() => ({ scrollDown: vi.fn(), scrollUp: vi.fn() }));
@@ -32,7 +32,7 @@ describe("scroll to a Chromium window whose page is visible nowhere", () => {
     expect(j.ok).toBe(false);
     expect(j.code).toBe("ScrollNotDelivered");
     expect(j.error).toMatch(/Nothing was scrolled: the browser window's page is not visible \(hwnd 1280/);
-    expect(j.suggest.join(" ")).toContain('focus_window({ title: "Back - Google Chrome" })');
+    expect(j.suggest.join(" ")).toContain('focus_window({ hwnd: "1280" })');
     expect(nutjs.scrollDown).not.toHaveBeenCalled();
   });
 });

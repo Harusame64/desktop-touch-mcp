@@ -188,6 +188,8 @@ describe("the refusals say what to do next (ADR-040 invariant 8)", () => {
       const b = read({ covered: "page_not_shown", why, hwnd: 7001n });
       expect(b.error).toContain("Nothing was clicked");
       expect(b.suggest[0]).toContain('hwnd: "7001"');
+      // internal #401 — focus_window takes hwnd now; the force goes only after a raise that did not draw the page.
+      expect(b.suggest[0]).toContain(why === "minimized" ? 'focus_window({ hwnd: "7001" })' : 'focus_window({ hwnd: "7001", forceFocus: true })');
       expect(b.suggest.at(-1)).toMatch(/browser_fill|browser_eval/);
       expect(new Set(b.suggest).size).toBe(b.suggest.length);
       expect(b.context).toMatchObject({ coveredBy: "page_not_shown", why, hwnd: "7001", at: { x: 488, y: 207 } });

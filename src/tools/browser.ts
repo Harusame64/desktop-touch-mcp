@@ -1739,16 +1739,40 @@ function browserResolveStopToFailure(
  * BrowserAmbiguousTarget / ElementNotInViewport precedent) — no SUGGESTS entry,
  * so no catalog-drift cascade.
  */
-function browserMinimizedFailure(ctx: Record<string, unknown>): ToolResult {
+/**
+ * internal #401 — the hwnd of the CDP browser's minimized window when there is exactly one, so the refusal
+ * can name it: with two, desktop_discover's windows[] cannot tell which holds the tab when they show the
+ * same title (gate 2 on #970). Undefined when none, several, or the browser's process is not known.
+ */
+export async function minimizedBrowserFrame(port: number): Promise<bigint | undefined> {
+  try {
+    const pid = await getBrowserProcessId(port);
+    if (!pid) return undefined;
+    const mins = enumWindowsInZOrder().filter(
+      (w) => w.isMinimized && isChromiumFrameOrUnknown(w) && getWindowProcessId(w.hwnd) === pid,
+    );
+    return mins.length === 1 ? mins[0]!.hwnd : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Exported for tests. */
+export function browserMinimizedFailure(ctx: Record<string, unknown>, hwnd?: bigint): ToolResult {
   return failCode(
     "BrowserTargetMinimized",
     "browser_click: the target Chrome/Edge window is minimized, so its element coordinates resolve off-screen — clicking would mis-fire at the screen corner. Restore the window and retry.",
     {
       suggest: [
-        "Restore / bring the browser window to the foreground (click its taskbar icon, or focus_window by its title), then retry browser_click.",
+        // internal #401 — focus_window takes the hwnd, which names exactly this window; its title can name
+        // another browser window showing the same page. The hwnd is not known here (the page reported the
+        // minimized position), so say where to read it.
+        hwnd !== undefined
+          ? `Restore the browser window, then retry browser_click: focus_window({ hwnd: "${String(hwnd)}" }).`
+          : "Restore the browser window, then retry browser_click: desktop_discover lists windows[] with each window's title, hwnd and isMinimized; pass the minimized browser window's hwnd to focus_window({ hwnd: \"<its hwnd>\" }). Two windows can show the same title; the minimized one is this one, unless several browser windows are minimized.",
         "If you only need to enter text, browser_fill works on a minimized window — it sets the value via the page without an OS click.",
       ],
-      context: ctx,
+      context: { ...ctx, ...(hwnd !== undefined && { hwnd: String(hwnd) }) },
     },
   );
 }
@@ -1878,7 +1902,7 @@ async function handleBrowserClickByAxis(args: {
   // would clamp to (0,0). Stop before the OS click so we never trip the failsafe
   // (the resolve gather above is a pure CDP eval — no click happened yet).
   if (isOffscreenMinimized(outcome.viewport.screenX, outcome.viewport.screenY)) {
-    return browserMinimizedFailure(ctx);
+    return browserMinimizedFailure(ctx, await minimizedBrowserFrame(port));
   }
 
   // Resolved: OS-click at the physical point (probe with null selector — the
@@ -2032,7 +2056,7 @@ async function attemptSelectorActionabilityRescue(args: {
   if (outcome.kind !== "resolved") return browserResolveStopToFailure(outcome, "browser_click", ctx);
 
   if (isOffscreenMinimized(outcome.viewport.screenX, outcome.viewport.screenY)) {
-    return browserMinimizedFailure(ctx);
+    return browserMinimizedFailure(ctx, await minimizedBrowserFrame(port));
   }
 
   const clicked = await osClickAndVerify(outcome.physical.x, outcome.physical.y, null, outcome.tabId ?? tabId ?? null, port, whoIsUnderPoint, force, aimFromViewportRect(outcome.rect, outcome.viewport));
@@ -2238,7 +2262,7 @@ export const browserClickElementHandler = async ({
     // minimized window still reports its elements as in-viewport (the viewport
     // layout is intact) — so without this it falls through to the OS click.
     if (isOffscreenMinimized(coords.screenX, coords.screenY)) {
-      return browserMinimizedFailure({ selector: effectiveSelector });
+      return browserMinimizedFailure({ selector: effectiveSelector }, await minimizedBrowserFrame(port));
     }
     // ADR-023 Phase 2b: modal-blocking preflight (between minimized and inViewport,
     // per the #407 chokepoint order). Only when the target is occluded (cheap
