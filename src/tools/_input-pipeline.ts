@@ -31,7 +31,7 @@ import {
   type ResolvedWindow,
 } from "./_resolve-window.js";
 import { logDispatchSink } from "./_resolve-log.js";
-import { getWindowRectByHwnd } from "../engine/win32.js";
+import { getWindowRectByHwnd, getWindowProcessId, getWindowDpi } from "../engine/win32.js";
 import { nativeUia, nativeWin32, nativeL1 } from "../engine/native-engine.js";
 import {
   captureFrame,
@@ -45,6 +45,8 @@ import {
   listTabsLight,
   dispatchWheelInTab,
   readScrollPositionInTab,
+  getBrowserProcessId,
+  getTabWindowBounds,
 } from "../engine/cdp-bridge.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import type { Rect } from "../engine/vision-gpu/types.js";
@@ -792,14 +794,18 @@ export async function resolveInputDestination(
  * `enumWindowsInZOrder` here, doubling the syscall cost per scroll.)
  *
  * Phase 3 picks the tab `defaultPageTab` picks — the same one `resolveTab(null, port)` in
- * `cdp-bridge.ts` uses (internal #308). A future phase may
- * thread a focused-tab hint via the foreground HWND → tab mapping (ADR §7
- * OQ-Electron carry-over).
+ * `cdp-bridge.ts` uses (internal #308) — and promotes only when that tab is in THIS window (internal
+ * #319 item 2). The tab came from the browser on the configured port and the browser's most recent
+ * window, whatever hwnd was asked: win2 scrolled Edge's page (9222) with `hwnd:<a Chrome window>`, and
+ * with two windows of one browser it scrolled the other window, both answering `delivered_via_cdp`.
+ * So the hwnd must belong to that browser's process and sit at that tab's window bounds (the check
+ * `browser_click` makes, internal #305). When either cannot be shown, this answers null and the wheel
+ * goes by the window, as for a browser without CDP.
  *
  * Exported for unit testing.
  */
 export async function resolveCdpDestinationForHwnd(
-  _hwnd: bigint,
+  hwnd: bigint,
   className: string | null,
 ): Promise<{ kind: "cdp"; tabId: string } | null> {
   if (className !== CHROMIUM_TOP_LEVEL_CLASS) {
@@ -811,6 +817,16 @@ export async function resolveCdpDestinationForHwnd(
     // The tab every other call without a tabId uses, not whatever target is listed first (#308).
     const firstPage = defaultPageTab(tabs);
     if (!firstPage) return null;
+    // The window asked for is this browser's, and the tab is in it (internal #319 item 2).
+    if (getWindowProcessId(hwnd) !== await getBrowserProcessId(port)) return null;
+    const bounds = await getTabWindowBounds(firstPage.id, port);
+    const rect = getWindowRectByHwnd(hwnd);
+    const scale = getWindowDpi(hwnd) / 96;
+    const near = (a: number, b: number): boolean => Math.abs(a - b) <= 3;
+    if (rect === null || !(near(rect.x, bounds.left * scale) && near(rect.y, bounds.top * scale) &&
+        near(rect.width, bounds.width * scale) && near(rect.height, bounds.height * scale))) {
+      return null;
+    }
     return { kind: "cdp", tabId: firstPage.id };
   } catch {
     return null;

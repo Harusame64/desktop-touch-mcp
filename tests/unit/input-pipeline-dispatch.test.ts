@@ -145,9 +145,14 @@ const getWindowRectByHwndMock = vi.fn<
 // the ADR-035 Phase 1 dispatch-sink observer, which runs on every tier dispatch.
 // Stubbed to fixed values — the observer is write-only, so nothing below
 // depends on what they return.
+// internal #319 item 2 — the wheel's CDP promotion checks the hwnd is the browser's and the tab's window.
+const getWindowProcessIdMock = vi.fn((_h: bigint) => 4242);
+const getWindowDpiMock = vi.fn((_h: bigint) => 96);
 vi.mock("../../src/engine/win32.js", () => ({
   enumWindowsInZOrder: enumWindowsInZOrderMock,
   getWindowRectByHwnd: getWindowRectByHwndMock,
+  getWindowProcessId: getWindowProcessIdMock,
+  getWindowDpi: getWindowDpiMock,
   getForegroundHwnd: () => null,
   getWindowTitleW: () => "",
   getWindowIdentity: () => ({ pid: 0, processName: "", processStartTimeMs: 0 }),
@@ -157,10 +162,14 @@ vi.mock("../../src/engine/win32.js", () => ({
 const listTabsLightMock = vi.fn();
 const dispatchWheelInTabMock = vi.fn();
 const readScrollPositionInTabMock = vi.fn();
+const getBrowserProcessIdMock = vi.fn(async (_port?: number) => 4242);
+const getTabWindowBoundsMock = vi.fn(async (_tab: string | null, _port?: number) => ({ left: 0, top: 0, width: 800, height: 600 }));
 vi.mock("../../src/engine/cdp-bridge.js", () => ({
   listTabsLight: listTabsLightMock,
   dispatchWheelInTab: dispatchWheelInTabMock,
   readScrollPositionInTab: readScrollPositionInTabMock,
+  getBrowserProcessId: getBrowserProcessIdMock,
+  getTabWindowBounds: getTabWindowBoundsMock,
 }));
 
 // Mock CDP port lookup — keeps `resolveCdpDestinationForHwnd` deterministic.
@@ -531,6 +540,38 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
   beforeEach(() => {
     listTabsLightMock.mockReset();
     getCdpPortMock.mockReturnValue(9222);
+    // The hwnd is the CDP browser's window holding the tab (internal #319 item 2).
+    getWindowProcessIdMock.mockReset().mockReturnValue(4242);
+    getBrowserProcessIdMock.mockReset().mockResolvedValue(4242);
+    getTabWindowBoundsMock.mockReset().mockResolvedValue({ left: 0, top: 0, width: 800, height: 600 });
+    getWindowRectByHwndMock.mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
+    getWindowDpiMock.mockReset().mockReturnValue(96);
+  });
+
+  it("another browser's window (its process is not the CDP browser's): null, the wheel goes by the window (internal #319)", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "EDGE-TAB", title: "Edge", url: "https://e.com/", type: "page" }]);
+    getWindowProcessIdMock.mockReturnValue(9999); // a Chrome window while CDP is Edge's
+    expect(await resolveCdpDestinationForHwnd(0x777n, "Chrome_WidgetWin_1")).toBeNull();
+  });
+
+  it("another window of the same browser (not at the tab's window bounds): null (internal #319)", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    getWindowRectByHwndMock.mockReturnValue({ x: 900, y: 0, width: 800, height: 600 });
+    expect(await resolveCdpDestinationForHwnd(0x778n, "Chrome_WidgetWin_1")).toBeNull();
+  });
+
+  it("the tab's window at 150 %: bounds in DIPs times the window's scale match (internal #319)", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    getWindowDpiMock.mockReturnValue(144);
+    getWindowRectByHwndMock.mockReturnValue({ x: 150, y: 75, width: 1200, height: 900 });
+    getTabWindowBoundsMock.mockResolvedValue({ left: 100, top: 50, width: 800, height: 600 });
+    expect(await resolveCdpDestinationForHwnd(0x779n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
+  });
+
+  it("the browser's process cannot be read: null, not a guess (internal #319)", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
+    getBrowserProcessIdMock.mockRejectedValue(new Error("no /json/version"));
+    expect(await resolveCdpDestinationForHwnd(0x77an, "Chrome_WidgetWin_1")).toBeNull();
   });
 
   it("non-Chromium className ('Notepad'): null (gate misses, listTabsLight NOT called — zero CDP latency for native windows)", async () => {
@@ -588,6 +629,11 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
 
 describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration", () => {
   beforeEach(() => {
+    getWindowProcessIdMock.mockReset().mockReturnValue(4242);
+    getBrowserProcessIdMock.mockReset().mockResolvedValue(4242);
+    getTabWindowBoundsMock.mockReset().mockResolvedValue({ left: 0, top: 0, width: 800, height: 600 });
+    getWindowRectByHwndMock.mockReturnValue({ x: 0, y: 0, width: 800, height: 600 });
+    getWindowDpiMock.mockReset().mockReturnValue(96);
     resolveWindowTargetMock.mockReset();
     findPlainTopLevelWindowByTitleMock.mockReset();
     findPlainTopLevelWindowByTitleMock.mockReturnValue(null);
