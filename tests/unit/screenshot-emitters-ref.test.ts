@@ -676,6 +676,28 @@ describe("screenshot(detail:'text') terminal guard by window class (internal #22
       mockGetProcessIdentityByPid.mockReset().mockReturnValue({ pid: 1234, processName: "pwsh", processStartTimeMs: 100 });
     }
   });
+  it("keeps @active on the title's restart question (control, codex on #960)", async () => {
+    const r1 = { ...con, hwnd: 8201n, title: "k960-active", zOrder: 0 };
+    const r2 = { ...con, hwnd: 8202n, title: "k960-active", zOrder: 0 };
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    mockGetWindowClassName.mockReturnValue("ConsoleWindowClass");
+    mockGetWindowProcessId.mockImplementation((h: bigint) => (h === 8201n ? 6001 : 6002));
+    mockGetProcessIdentityByPid.mockImplementation((pid: number) => ({ pid, processName: "cmd", processStartTimeMs: pid }));
+    mockGetTextViaTextPattern.mockReset().mockResolvedValue("x");
+    try {
+      mockEnumWindowsInZOrder.mockReturnValue([r1]);
+      mockResolveWindowTarget.mockResolvedValue({ title: "k960-active", hwnd: 8201n, warnings: [] });
+      await screenshotHandler({ ...baseArgs, windowTitle: "@active", detail: "text" });
+      mockEnumWindowsInZOrder.mockReturnValue([r2]); // the terminal restarted: new window, new process
+      mockResolveWindowTarget.mockResolvedValue({ title: "k960-active", hwnd: 8202n, warnings: [] });
+      const result = await screenshotHandler({ ...baseArgs, windowTitle: "@active", detail: "text" });
+      const body = JSON.parse((result.content[0] as { text: string }).text);
+      expect(JSON.stringify(body.hints)).toContain("process_restarted");
+    } finally {
+      mockGetWindowProcessId.mockReset().mockReturnValue(1234);
+      mockGetProcessIdentityByPid.mockReset().mockReturnValue({ pid: 1234, processName: "pwsh", processStartTimeMs: 100 });
+    }
+  });
   it("keeps a non-terminal window given by hwnd on the title road, its identity and its tree from one window (internal #362)", async () => {
     // The by-handle read is for terminals only: the UIA tree below is still read by title, so the identity
     // must come from the same (first same-titled) window, not from the handle (gate 2 on #960).

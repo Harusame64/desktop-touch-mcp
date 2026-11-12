@@ -642,9 +642,11 @@ export const screenshotHandler = async (args: {
         // getWindowClassName answers "" for a window it cannot read.
         const isTerminal = handleIsTerminal || (targetHwnd !== null && isTerminalWindow(getWindowClassName(targetHwnd)));
         if (isTerminal) {
-          // A window named by its handle is observed under that handle, so two same-titled (or untitled)
-          // consoles are not taken for one window that restarted (internal #362).
-          const obs = observeTarget(handleWin !== null ? handleObservationKey(targetHwnd!) : effectiveTitle!, targetHwnd!, resolvedTitle);
+          // A console the CALLER named by hwnd is observed under that handle, so two same-titled consoles are
+          // not taken for one that restarted; so is an untitled one, whose "" would key every such window.
+          // @active named a title, and keeps the title's restart question (ADR-036, codex on #960).
+          const byHandleKey = hwndParam !== undefined || !effectiveTitle;
+          const obs = observeTarget(byHandleKey ? handleObservationKey(targetHwnd!) : effectiveTitle, targetHwnd!, resolvedTitle);
           const identityHints = toTargetHints(obs.identity);
           const invalidation = obs.invalidatedBy
             ? { reason: obs.invalidatedBy, previousTarget: obs.previousTarget }
