@@ -145,6 +145,7 @@ const getWindowRectByHwndMock = vi.fn<
 // the ADR-035 Phase 1 dispatch-sink observer, which runs on every tier dispatch.
 // Stubbed to fixed values — the observer is write-only, so nothing below
 // depends on what they return.
+const getWindowTitleWMock = vi.fn((..._a: unknown[]) => "");
 // internal #319 item 2 — the wheel's CDP promotion checks the hwnd is the CDP browser's.
 const getWindowProcessIdMock = vi.fn((_h: bigint) => 4242);
 vi.mock("../../src/engine/win32.js", () => ({
@@ -152,7 +153,7 @@ vi.mock("../../src/engine/win32.js", () => ({
   getWindowRectByHwnd: getWindowRectByHwndMock,
   getWindowProcessId: getWindowProcessIdMock,
   getForegroundHwnd: () => null,
-  getWindowTitleW: () => "",
+  getWindowTitleW: (...a: unknown[]) => getWindowTitleWMock(...(a as [])),
   getWindowIdentity: () => ({ pid: 0, processName: "", processStartTimeMs: 0 }),
 }));
 
@@ -577,6 +578,23 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
     getBrowserProcessIdMock.mockRejectedValue(new Error("SystemInfo not supported"));
     getWindowProcessIdMock.mockReturnValue(9999);
     expect(await resolveCdpDestinationForHwnd(0x778n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
+  });
+
+  it("a browser window showing a page titled 'DevTools …' is still promoted (agy on #968)", async () => {
+    listTabsLightMock.mockResolvedValue([{ id: "PAGE", title: "DevTools Architecture", url: "https://example.com/", type: "page" }]);
+    getWindowTitleWMock.mockReturnValueOnce("DevTools Architecture - Google Chrome");
+    expect(await resolveCdpDestinationForHwnd(0x791n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "PAGE" });
+    getWindowTitleWMock.mockReturnValueOnce("DevTools - Chrome for Developers - Personal - Microsoft\u200b Edge");
+    expect(await resolveCdpDestinationForHwnd(0x792n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "PAGE" });
+  });
+
+  it("an undocked DevTools window is not promoted to the page it inspects (gate 2 on #968)", async () => {
+    listTabsLightMock.mockResolvedValue([
+      { id: "DT", title: "DevTools", url: "devtools://devtools/bundled/devtools_app.html", type: "page" },
+      { id: "PAGE", title: "Page", url: "https://example.com/", type: "page" },
+    ]);
+    getWindowTitleWMock.mockReturnValueOnce("DevTools - example.com/");
+    expect(await resolveCdpDestinationForHwnd(0x790n, "Chrome_WidgetWin_1")).toBeNull();
   });
 
   it("non-Chromium className ('Notepad'): null (gate misses, listTabsLight NOT called — zero CDP latency for native windows)", async () => {

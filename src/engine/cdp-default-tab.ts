@@ -27,13 +27,35 @@ const SIGNIN_DIALOG = new RegExp(
 );
 
 /**
+ * internal #398 — DevTools' own front end. With DevTools open on a tab it is listed as a `page` target
+ * (`devtools://devtools/...`), most recently used, so a call without tabId worked on DevTools instead of
+ * the page (win2, PR #967 round: browser_click answered "Element not found"). It is not a tab either.
+ */
+const DEVTOOLS_FRONTEND = /^(chrome-)?devtools:\/\//i;
+
+/**
+ * A page target that is the browser's own UI, not a tab: a sign-in or sync dialog, or DevTools' front
+ * end. One place, so the default tab and the tab listings agree on what is not a tab (gate 2 on #968).
+ */
+export function isBrowserUiPage(url: string | undefined): boolean {
+  return SIGNIN_DIALOG.test(url ?? "") || DEVTOOLS_FRONTEND.test(url ?? "");
+}
+
+/** internal #398 — DevTools' front end, as the tab listings mark it. */
+export function isDevToolsFrontEnd(url: string | undefined): boolean {
+  return DEVTOOLS_FRONTEND.test(url ?? "");
+}
+
+/**
  * The tab a call without tabId works on: the first page target (the most recently used) that is not
- * a sign-in or sync dialog, else the first page target, else undefined. It never returns a target
+ * the browser's own UI (a sign-in or sync dialog, DevTools' front end), else the first page target, else
+ * undefined. With DevTools open that is the next most recently used page, which is usually, not always,
+ * the one DevTools inspects. It never returns a target
  * that is not a page (a background page, service worker, browser UI or iframe); a caller that has
  * to act somewhere anyway falls back on its own (resolveTab and the guard lens take tabs[0]).
  * `type` is required so a listing that dropped it fails to compile instead of counting as pages.
  */
 export function defaultPageTab<T extends { type: string; url?: string }>(tabs: readonly T[]): T | undefined {
   const pages = tabs.filter((t) => t.type === "page");
-  return pages.find((t) => !SIGNIN_DIALOG.test(t.url ?? "")) ?? pages[0];
+  return pages.find((t) => !isBrowserUiPage(t.url)) ?? pages[0];
 }

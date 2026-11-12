@@ -31,7 +31,7 @@ import {
   type ResolvedWindow,
 } from "./_resolve-window.js";
 import { logDispatchSink } from "./_resolve-log.js";
-import { getWindowRectByHwnd, getWindowProcessId } from "../engine/win32.js";
+import { getWindowRectByHwnd, getWindowProcessId, getWindowTitleW } from "../engine/win32.js";
 import { nativeUia, nativeWin32, nativeL1 } from "../engine/native-engine.js";
 import {
   captureFrame,
@@ -812,6 +812,9 @@ export async function resolveCdpDestinationForHwnd(
     const port = getCdpPort();
     const tabs = await listTabsLight(port);
     // The tab every other call without a tabId uses, not whatever target is listed first (#308).
+    // internal #398 — the default tab skips DevTools' front end, so a wheel aimed at an undocked DevTools
+    // window would go to the page it inspects. That window takes the wheel itself (gate 2 on #968).
+    if (isUndockedDevToolsTitle(getWindowTitleW(hwnd))) return null;
     const firstPage = defaultPageTab(tabs);
     if (!firstPage) return null;
     // Another browser's window is not this browser's tab (internal #319 item 2).
@@ -824,6 +827,15 @@ export async function resolveCdpDestinationForHwnd(
   } catch {
     return null;
   }
+}
+
+/**
+ * internal #398 — an undocked DevTools window's title: "DevTools - <inspected url>", with no browser name at
+ * the end. A browser window showing a page titled "DevTools …" ends with its browser's name ("- Google Chrome",
+ * "- Microsoft Edge") and is not one (agy on #968). Exported for tests.
+ */
+export function isUndockedDevToolsTitle(title: string): boolean {
+  return /^DevTools - /.test(title) && !/ - (Google Chrome|Microsoft[\u200b\s]*Edge|Chromium)$/u.test(title);
 }
 
 /**
