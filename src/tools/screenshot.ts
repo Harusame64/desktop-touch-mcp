@@ -674,7 +674,8 @@ export const screenshotHandler = async (args: {
           : resolvedWin
             ? wins.find((w) => w.title === resolvedWin.title) ?? wins.find((w) => w.title.toLowerCase().includes(effectiveTitle!.toLowerCase()))
             : wins.find((w) => w.title.toLowerCase().includes(effectiveTitle!.toLowerCase()));
-        const resolvedTitle = resolvedWin2?.title ?? effectiveTitle ?? "";
+        // || not ??: a handle placed by its rect carries title "", and the caller's own title then stands (agy on #963).
+        const resolvedTitle = resolvedWin2?.title || effectiveTitle || "";
         const targetHwnd = handlePinned ? handleWin!.hwnd : (resolvedWin2?.hwnd ?? null);
         // Internal #247 (codex on 45cf57d1): before any UIA read — the 90 s UIA cache would serve a
         // tree read while the app was shown as its contents now, and with actionable elements in it
@@ -912,8 +913,9 @@ export const screenshotHandler = async (args: {
         if (shouldOcr && !frozen) {
           try {
             // A named handle is OCR'd by that handle; a title finds its window as before (internal #393).
-            // A named handle that cannot be placed now is not swapped for a window found by title.
-            const pinnedRegion = handlePinned ? resolvedWin2?.region ?? null : null;
+            // The window resolved above, on either road: the tree was read from it, so the OCR is too (agy on
+            // #963). A named handle that cannot be placed now is not swapped for a window found by title.
+            const pinnedRegion = targetHwnd !== null ? resolvedWin2?.region ?? null : null;
             if (handlePinned && pinnedRegion === null) {
               throw new Error("target_rect_unreadable: the named window could not be placed, so it was not OCR'd");
             }

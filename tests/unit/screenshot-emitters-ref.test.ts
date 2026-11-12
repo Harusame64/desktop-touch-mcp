@@ -836,6 +836,19 @@ describe("screenshot(detail:'text') terminal guard by window class (internal #22
     expect(mockGetUiElements.mock.calls[0]?.[4]).toMatchObject({ pinnedHwnd: other.hwnd });
   });
 
+  it("OCRs the window a title found by its handle, as its tree was read (agy on #963)", async () => {
+    mockResolveWindowTarget.mockResolvedValue(null);
+    mockEnumWindowsInZOrder.mockReturnValue([other]);
+    mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
+    mockGetWindowClassName.mockReturnValue("SomeApp");
+    mockGetUiElements.mockClear().mockResolvedValue({ windowTitle: "Notepad", windowClassName: "SomeApp", windowRect: other.region, elementCount: 6, elements: [] });
+    mockRecognizeWindowByHwnd.mockReset().mockResolvedValue({ words: [], origin: { x: 0, y: 0 } });
+    mockRecognizeWindow.mockReset();
+    await screenshotHandler({ ...baseArgs, windowTitle: "Notepad", detail: "text", ocrFallback: "always" });
+    expect(mockRecognizeWindowByHwnd).toHaveBeenCalledWith(other.hwnd, other.region, "ja");
+    expect(mockRecognizeWindow).not.toHaveBeenCalled();
+  });
+
   it("files no homing snapshot under a title for a same-titled twin named by hwnd (gate 2 on #963)", async () => {
     const a = { ...con, hwnd: 9401n, title: "dup.txt", zOrder: 0, region: { x: 0, y: 0, width: 400, height: 300 } };
     const b = { ...con, hwnd: 9402n, title: "dup.txt", zOrder: 1, isActive: false, region: { x: 500, y: 0, width: 400, height: 300 } };
