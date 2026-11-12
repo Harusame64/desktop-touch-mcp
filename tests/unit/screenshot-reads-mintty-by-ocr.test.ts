@@ -74,10 +74,11 @@ vi.mock("../../src/engine/image.js", () => ({
 }));
 
 // internal #363: OCR by handle is the seam; everything else in ocr-bridge is real.
-const { mockRecognizeWindowByHwnd } = vi.hoisted(() => ({ mockRecognizeWindowByHwnd: vi.fn() }));
+import { WindowExcludedError } from "../../src/engine/tool-exclusion.js";
+const { mockRecognizeWindowByHwnd, mockRecognizeWindow } = vi.hoisted(() => ({ mockRecognizeWindowByHwnd: vi.fn(), mockRecognizeWindow: vi.fn() }));
 vi.mock("../../src/engine/ocr-bridge.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/ocr-bridge.js")>();
-  return { ...actual, recognizeWindowByHwnd: mockRecognizeWindowByHwnd };
+  return { ...actual, recognizeWindowByHwnd: mockRecognizeWindowByHwnd, recognizeWindow: mockRecognizeWindow };
 });
 
 const { screenshotHandler } = await import("../../src/tools/screenshot.js");
@@ -104,14 +105,15 @@ const baseArgs = {
 describe("screenshot(detail:'text') reads a mintty window with OCR (internal #363)", () => {
   const mintty = { hwnd: 7373n, title: "MINGW64:/c/work", region: { x: 10, y: 20, width: 600, height: 400 }, zOrder: 0, isActive: true, isMinimized: false, isMaximized: false, isCloaked: false };
   const word = (text: string, x: number, y: number) => ({ text, bbox: { x, y, width: 40, height: 16 } });
-  function wire(cls: string) {
+  function wire(cls: string | ((h: bigint) => string)) {
     mockResolveWindowTarget.mockResolvedValue(null);
     mockEnumWindowsInZOrder.mockReturnValue([mintty]);
     mockIsWindowProcessFrozen.mockReset().mockReturnValue(false);
-    mockGetWindowClassName.mockReturnValue(cls);
+    if (typeof cls === "string") mockGetWindowClassName.mockReturnValue(cls);
+    else mockGetWindowClassName.mockImplementation(cls);
     mockGetTextViaTextPattern.mockReset();
     mockGetUiElements.mockResolvedValue({
-      windowTitle: mintty.title, windowClassName: cls, windowRect: mintty.region, elementCount: 6,
+      windowTitle: mintty.title, windowClassName: typeof cls === "string" ? cls : "mintty", windowRect: mintty.region, elementCount: 6,
       elements: [{ name: "Line up", controlType: "Button", automationId: "", isEnabled: true, boundingRect: { x: 590, y: 30, width: 16, height: 16 }, patterns: ["InvokePattern"], depth: 2 }],
     });
     mockRecognizeWindowByHwnd.mockReset().mockResolvedValue({ words: [word("$", 0, 0), word("ls", 20, 0), word("README.md", 0, 20)], origin: { x: 10, y: 20 } });
@@ -129,13 +131,14 @@ describe("screenshot(detail:'text') reads a mintty window with OCR (internal #36
     expect(mockGetTextViaTextPattern).not.toHaveBeenCalled();
   });
 
-  it("falls back to the window's controls when OCR cannot run", async () => {
+  it("falls back to the window's controls when OCR cannot run, and says so", async () => {
     wire("mintty");
     mockRecognizeWindowByHwnd.mockReset().mockRejectedValue(new Error("win-ocr.exe not found"));
     const result = await screenshotHandler({ ...baseArgs, windowTitle: "MINGW64", detail: "text" });
     const body = JSON.parse((result.content[0] as { text: string }).text);
     expect(mockRecognizeWindowByHwnd).toHaveBeenCalled();
     expect(body.hints?.terminalGuard).toBeUndefined();
+    expect(JSON.stringify(body.hints?.warnings)).toContain("ocr_failed:");
     expect(JSON.stringify(body.actionable)).toContain("Line up");
   });
 
@@ -145,9 +148,49 @@ describe("screenshot(detail:'text') reads a mintty window with OCR (internal #36
     expect(mockRecognizeWindowByHwnd).not.toHaveBeenCalled();
   });
 
+  it("falls back to the controls when OCR reads nothing, and does not OCR again (gate 2 on #962)", async () => {
+    wire("mintty");
+    mockRecognizeWindowByHwnd.mockReset().mockResolvedValue({ words: [], origin: { x: 10, y: 20 } });
+    const result = await screenshotHandler({ ...baseArgs, windowTitle: "MINGW64", detail: "text", ocrFallback: "always" });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.hints?.terminalGuard).toBeUndefined();
+    expect(JSON.stringify(body.hints?.warnings)).toContain("ocr_read_nothing:");
+    expect(body.hints?.ocrFallbackFired).toBeFalsy();
+    expect(mockRecognizeWindow).not.toHaveBeenCalled();
+    expect(JSON.stringify(body.actionable)).toContain("Line up");
+  });
+
+  it("refuses rather than read around an excluded window", async () => {
+    wire("mintty");
+    mockRecognizeWindowByHwnd.mockReset().mockRejectedValue(new WindowExcludedError("WindowExcluded: not this one"));
+    const result = await screenshotHandler({ ...baseArgs, windowTitle: "MINGW64", detail: "text" });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.ok).toBe(false);
+  });
+
+  it("reads the mintty named by hwnd, untitled included (the window list leaves it out)", async () => {
+    wire("mintty");
+    mockResolveWindowTarget.mockResolvedValue({ title: "", hwnd: 7474n, warnings: [] });
+    mockEnumWindowsInZOrder.mockReturnValue([]);
+    mockGetWindowRectByHwnd.mockReturnValue({ x: 5, y: 5, width: 300, height: 200 });
+    const result = await screenshotHandler({ ...baseArgs, hwnd: "7474", detail: "text" });
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.hints?.textSource).toBe("ocr");
+    expect(mockRecognizeWindowByHwnd).toHaveBeenCalledWith(7474n, { x: 5, y: 5, width: 300, height: 200 }, "ja");
+  });
+
+  it("does not swap a window named by hwnd for a same-titled mintty (gate 2 on #962)", async () => {
+    const notepad = { ...mintty, hwnd: 8888n, zOrder: 1, isActive: false };
+    wire((h: bigint) => (h === 7373n ? "mintty" : "Notepad"));
+    mockResolveWindowTarget.mockResolvedValue({ title: mintty.title, hwnd: 8888n, warnings: [] });
+    mockEnumWindowsInZOrder.mockReturnValue([mintty, notepad]);
+    await screenshotHandler({ ...baseArgs, hwnd: "8888", detail: "text" });
+    expect(mockRecognizeWindowByHwnd).not.toHaveBeenCalled();
+  });
+
   it("keeps a window of another class on its road (control)", async () => {
     wire("Notepad");
-    const result = await screenshotHandler({ ...baseArgs, windowTitle: "MINGW64", detail: "text", ocrFallback: "never" });
+    const result = await screenshotHandler({ ...baseArgs, windowTitle: "MINGW64", detail: "text" });
     const body = JSON.parse((result.content[0] as { text: string }).text);
     expect(body.hints?.terminalGuard).toBeUndefined();
     expect(mockRecognizeWindowByHwnd).not.toHaveBeenCalled();

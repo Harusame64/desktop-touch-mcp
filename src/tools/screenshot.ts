@@ -609,8 +609,11 @@ export const screenshotHandler = async (args: {
       // and a terminal is read from that handle — an untitled console (conhost started directly) included.
       // Any other window still takes the road below, which finds its window by title, as before.
       const handleWin = resolvedWin?.hwnd != null ? resolvedWin : null;
-      const handleIsTerminal = handleWin !== null && isTerminalWindow(getWindowClassName(handleWin.hwnd));
-      if (effectiveTitle || handleIsTerminal) {
+      const handleClass = handleWin !== null ? getWindowClassName(handleWin.hwnd) : "";
+      const handleIsTerminal = handleWin !== null && isTerminalWindow(handleClass);
+      // internal #363: a terminal UI Automation cannot read (mintty) named by its handle, untitled included.
+      const handleIsOcrTerminal = handleWin !== null && isOcrOnlyTerminalWindow(handleClass);
+      if (effectiveTitle || handleIsTerminal || handleIsOcrTerminal) {
         const wins = enumWindowsInZOrder();
         updateWindowCache(wins);
         const byHandle = handleIsTerminal ? wins.find((w) => w.hwnd === handleWin!.hwnd) : undefined;
@@ -677,21 +680,37 @@ export const screenshotHandler = async (args: {
         }
 
         // internal #363: a terminal whose text UI Automation does not expose (Git Bash's mintty) is read
-        // from its pixels, as text, in the terminal's shape. The handle named, else the window found by title.
-        const ocrTerminalHwnd = handleWin !== null && isOcrOnlyTerminalWindow(getWindowClassName(handleWin.hwnd))
-          ? handleWin.hwnd
-          : targetHwnd !== null && isOcrOnlyTerminalWindow(getWindowClassName(targetHwnd)) ? targetHwnd : null;
-        const ocrTerminalWin = ocrTerminalHwnd !== null ? wins.find((w) => w.hwnd === ocrTerminalHwnd) : undefined;
+        // from its pixels, as text, in the terminal's shape: the handle named, or with none named, the window
+        // found by title (a named handle is never swapped for a same-titled window, gate 2 on #962).
+        const ocrTerminalHwnd = handleIsOcrTerminal
+          ? handleWin!.hwnd
+          : handleWin === null && targetHwnd !== null && isOcrOnlyTerminalWindow(getWindowClassName(targetHwnd)) ? targetHwnd : null;
+        // The window list leaves out untitled windows, so a named handle that is not in it is measured directly.
+        const ocrTerminalRect = ocrTerminalHwnd !== null && !wins.some((w) => w.hwnd === ocrTerminalHwnd)
+          ? getWindowRectByHwnd(ocrTerminalHwnd)
+          : null;
+        const ocrTerminalWin: { title: string; region: { x: number; y: number; width: number; height: number } } | undefined =
+          ocrTerminalHwnd === null ? undefined
+            : wins.find((w) => w.hwnd === ocrTerminalHwnd) ?? (ocrTerminalRect !== null ? { title: "", region: ocrTerminalRect } : undefined);
+        // Set when the OCR road was tried and gave nothing: the road below lists the controls and does not OCR
+        // again (by title, after a by-handle read failed).
+        let ocrTerminalTried = false;
         if (ocrTerminalHwnd !== null && ocrTerminalWin !== undefined && ocrFallback !== "never") {
-          refuseIfFrozen(ocrTerminalHwnd, "screenshot");
-          // An OCR that cannot run (no win-ocr.exe, a failed capture) leaves the window on the road below,
-          // which still lists its controls. A refusal (an excluded or frozen window) is not read around.
+          // An OCR that cannot run (no win-ocr.exe, a failed capture) or reads nothing leaves the window on the
+          // road below, which still lists its controls, with a warning saying so. A refusal (an excluded or
+          // frozen window) is not read around.
           let words: OcrWord[] | null = null;
           try {
             ({ words } = await recognizeWindowByHwnd(ocrTerminalHwnd, ocrTerminalWin.region, ocrLanguage));
           } catch (e) {
             if (e instanceof WindowExcludedError || e instanceof WindowFrozenError) throw e;
+            screenshotWarnings.push(`ocr_failed: this terminal exposes no text to UI Automation and OCR could not read it (${e instanceof Error ? e.message : String(e)}); its controls are listed instead`);
           }
+          if (words !== null && words.length === 0) {
+            screenshotWarnings.push("ocr_read_nothing: this terminal exposes no text to UI Automation and OCR found no text in it (minimized, or blank); its controls are listed instead");
+            words = null;
+          }
+          ocrTerminalTried = words === null;
           if (words !== null) {
             const byHandleKey = hwndParam !== undefined || !effectiveTitle;
             const obs = observeTarget(byHandleKey ? handleObservationKey(ocrTerminalHwnd) : effectiveTitle, ocrTerminalHwnd, ocrTerminalWin.title);
@@ -718,6 +737,15 @@ export const screenshotHandler = async (args: {
               }],
             };
           }
+        }
+        // An untitled window comes this far only as a terminal UI Automation cannot read; the road below finds
+        // its window by title, so it stops here and says why.
+        if (!effectiveTitle) {
+          return failWith(
+            `Window ${String(handleWin?.hwnd)} is a terminal that exposes no text to UI Automation, and OCR could not read it. ` +
+            screenshotWarnings.join(" "),
+            "screenshot",
+          );
         }
 
         // Only a terminal enters this branch untitled, and it returned above.
@@ -780,8 +808,8 @@ export const screenshotHandler = async (args: {
         //   - auto + UIA has no actionable elements, OR
         //   - auto + UIA is sparse (< 5 elements, typical for Chrome)
         const shouldOcr =
-          ocrFallback === "always" ||
-          (ocrFallback === "auto" && (result.actionable.length === 0 || uiaSparse || isChromium));
+          !ocrTerminalTried && (ocrFallback === "always" ||
+          (ocrFallback === "auto" && (result.actionable.length === 0 || uiaSparse || isChromium)));
 
         // UIA dictionary for snap-correction (commit 2-4).
         // Built from enabled elements with screen-absolute boundingRect.
