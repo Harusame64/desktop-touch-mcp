@@ -32,7 +32,7 @@ import {
 } from "./_resolve-window.js";
 import { logDispatchSink } from "./_resolve-log.js";
 import { getWindowRectByHwnd, getWindowProcessId, getWindowTitleW, getWindowRoot, getWindowClassName, windowFromPoint, getWindowDpi, pageSurfaceDeps } from "../engine/win32.js";
-import { wheelPointOnPage, type WheelPointDeps } from "../engine/page-wheel-point.js";
+import { wheelPointOnPage, type WheelPointDeps, type WheelPagePoint } from "../engine/page-wheel-point.js";
 import { tabOfFrame, type TabOfFrameDeps } from "../engine/cdp-tab-of-frame.js";
 
 /** Exported so tests can replace the window reads (ADR-040 PR ②). */
@@ -48,6 +48,18 @@ export const wheelPointDeps: WheelPointDeps = {
     descendants: (h) => pageSurfaceDeps.descendants(h),
   },
 };
+
+/**
+ * `wheelPointOnPage`, or `keep` when a read throws (a rect or WindowFromPoint read the deps do not guard):
+ * a missing instrument keeps the caller's point, as invariant 3 asks, and never throws out of the dispatch.
+ */
+function pagePointOrKeep(hwnd: bigint): WheelPagePoint {
+  try {
+    return wheelPointOnPage(hwnd, wheelPointDeps);
+  } catch {
+    return { kind: "keep" };
+  }
+}
 
 /** ms a tab is given to answer its visibilityState before it counts as no answer (ADR-040 PR ③). */
 const TAB_VISIBILITY_TIMEOUT_MS = 500;
@@ -850,7 +862,8 @@ export async function resolveInputDestination(
  * on 9222) with `hwnd:<a Chrome window>`. A window whose process is known not to be that browser's is not
  * promoted. Cost on the gate-hit path: `/json/list`, the browser's process id (cached per port, read again
  * when the window's process differs from it), one browser-endpoint call per page tab for its window, and
- * the visibilityState of the tabs at the frame's rect whose title the frame shows (usually one).
+ * the visibilityState of the tabs at the frame's rect whose title the frame shows (one, or two when two
+ * windows there show the same title).
  *
  * Exported for unit testing.
  */
@@ -1326,13 +1339,15 @@ function buildObservationChain(
 export async function postWheelToHwnd(
   hwnd: bigint,
   params: WheelParams,
+  /** ADR-040 PR ③ — the point `dispatchScrollWheel` already read before Tier 1, so it is read once. */
+  knownPagePoint?: WheelPagePoint,
 ): Promise<DispatchOutcome | null> {
   const postMessage = nativeWin32?.win32PostMessage;
   const getScrollInfo = nativeWin32?.win32GetScrollInfo;
   if (typeof postMessage !== "function") return null;
   // ADR-040 PR ② (internal #396) — a Chromium window takes a posted wheel at its point, not at the
   // window it is posted to: every post carries a point where this window's page is visible, or none is sent.
-  const pagePoint = wheelPointOnPage(hwnd, wheelPointDeps);
+  const pagePoint = knownPagePoint ?? pagePointOrKeep(hwnd);
   if (pagePoint.kind === "not_visible") {
     return {
       scrolled: false,
@@ -1949,7 +1964,7 @@ export async function dispatchScrollWheel(
     // on an up, and a minimized one from 0 to 15645, each answered "pre/post percent unchanged" — the same as a
     // page already at its end — so the refusal below said nothing was scrolled while the page had moved.
     // The same reading as Tier 3's, so a page visible anywhere still gets Tier 1 as before.
-    const pagePoint = wheelPointOnPage(dest.hwnd, wheelPointDeps);
+    const pagePoint = pagePointOrKeep(dest.hwnd);
     if (pagePoint.kind === "not_visible") {
       return {
         scrolled: false,
@@ -2003,7 +2018,7 @@ export async function dispatchScrollWheel(
     // caller (`mouse.ts:scrollHandler`) reads `dest.kind === 'hwnd'` AND
     // dispatcher null → emits `target_unreachable` per ADR §2.6.2 path-(b)
     // and does NOT fall through to Tier 4 SendInput.
-    return await postWheelToHwnd(dest.hwnd, params);
+    return await postWheelToHwnd(dest.hwnd, params, pagePoint);
   }
   if (dest.kind === "cdp") {
     // ADR-018 Phase 3 — Tier 2 CDP wheel dispatch. Pre/post observation via

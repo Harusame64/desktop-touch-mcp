@@ -200,13 +200,16 @@ const {
 } = await import("../../src/tools/_input-pipeline.js");
 
 // ADR-040 PR ③ — the CDP road takes the tab the frame shows. These cells stub what `tabOfFrame` reads: the
-// frame has its page surface, every page tab is in one window at the frame's rect, and `shownTab` is the
-// one visible. `a-cdp-wheel-goes-to-the-tab-the-frame-shows.test.ts` covers the rule itself.
+// frame has its page surface, every page tab is in one window at the frame's rect, its title shows
+// `shownTab`'s title, and `shownTab` is the one visible. `a-cdp-wheel-goes-to-the-tab-the-frame-shows.test.ts` covers the rule itself.
 let shownTab = "TAB-A";
+let shownTitle = "";
+const TAB_TITLES: Record<string, string> = { "TAB-A": "A", PAGE: "Google", "TAB-BBB": "Bing", "TAB-X": "X", "TAB-Y": "X", FRONT: "Front" };
 const FRAME_RECT = { x: 100, y: 100, width: 1200, height: 800 };
 const tabOfFrameVisibility = vi.fn(async (id: string) => (id === shownTab ? "visible" : "hidden"));
-function frameShows(id: string, surface: "surface" | "covered" = "surface"): void {
+function frameShows(id: string, surface: "surface" | "covered" = "surface", frameTitle?: string): void {
   shownTab = id;
+  shownTitle = frameTitle ?? `${TAB_TITLES[id] ?? id} - Google Chrome`;
   tabOfFrameVisibility.mockClear();
   Object.assign(tabOfFrameDeps, {
     surface: {
@@ -218,7 +221,7 @@ function frameShows(id: string, surface: "surface" | "covered" = "surface"): voi
     },
     frameRect: () => FRAME_RECT,
     frameScale: () => 1,
-    frameTitle: () => "",
+    frameTitle: () => shownTitle,
     windowsOf: async (ids: readonly string[]) =>
       new Map(ids.map((t) => [t, { windowId: 1, bounds: { left: 100, top: 100, width: 1200, height: 800 } }])),
     visibility: tabOfFrameVisibility,
@@ -610,10 +613,11 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
   });
 
   it("a browser window showing a page titled 'DevTools …' is still promoted (agy on #968)", async () => {
-    frameShows("PAGE");
-    listTabsLightMock.mockResolvedValue([{ id: "PAGE", title: "DevTools Architecture", url: "https://example.com/", type: "page" }]);
-    getWindowTitleWMock.mockReturnValueOnce("DevTools Architecture - Google Chrome");
+    listTabsLightMock.mockResolvedValue([{ id: "PAGE", title: "DevTools - Chrome for Developers", url: "https://example.com/", type: "page" }]);
+    frameShows("PAGE", "surface", "DevTools - Chrome for Developers - Google Chrome");
+    getWindowTitleWMock.mockReturnValueOnce("DevTools - Chrome for Developers - Google Chrome");
     expect(await resolveCdpDestinationForHwnd(0x791n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "PAGE" });
+    frameShows("PAGE", "surface", "DevTools - Chrome for Developers - Personal - Microsoft\u200b Edge");
     getWindowTitleWMock.mockReturnValueOnce("DevTools - Chrome for Developers - Personal - Microsoft\u200b Edge");
     expect(await resolveCdpDestinationForHwnd(0x792n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "PAGE" });
   });
@@ -2290,6 +2294,15 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
     });
     it("the control: its page visible somewhere, UIA is tried first as before", async () => {
       shape(1100);
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+      const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 5 });
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledTimes(1);
+      expect(r).toEqual({ scrolled: true, channel: "uia", reason: "delivered_via_uia" });
+    });
+    it("a read that throws (the window's rect) keeps the caller's point: UIA is tried, nothing throws (gate 2 on #971)", async () => {
+      shape(null);
+      wheelPointDeps.surface = { isIconic: () => false, isCloaked: () => false, descendants: () => [{ hwnd: 0x9n, className: "Intermediate D3D Window", visible: true, rect: { x: 0, y: 0, width: 1, height: 1 } }] };
+      wheelPointDeps.rectOf = () => { throw new Error("GetWindowRect failed"); };
       uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
       const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 5 });
       expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledTimes(1);
