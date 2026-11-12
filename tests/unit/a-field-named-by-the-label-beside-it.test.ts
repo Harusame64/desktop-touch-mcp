@@ -154,4 +154,22 @@ describe("discover's reply says the label was inferred, and the act still goes (
     expect(result.ok).toBe(true);
     expect(execute).toHaveBeenCalledTimes(1);
   });
+
+  it("refuses an explicit click or invoke on it before anything is sent (win2 on #964, D3)", async () => {
+    const { DesktopFacade } = await import("../../src/tools/desktop.js");
+    const tb = {
+      source: "uia", target: { kind: "window", id: "FX293" }, label: "Name", labelInferred: true, role: "textbox",
+      controlType: "Edit", rect: { x: 964, y: 163, width: 220, height: 26 }, actionability: ["type"],
+      confidence: 1, observedAtMs: 0, provisional: false, locator: { uia: { automationId: "tb", name: "" } },
+    } as unknown as import("../../src/engine/vision-gpu/types.js").UiEntityCandidate;
+    const execute = vi.fn(async () => "uia" as const);
+    const facade = new DesktopFacade(async () => [tb], { executorFn: execute });
+    const view = await facade.see({ target: { windowTitle: "FX293" } });
+    const field = view.entities.find((e) => e.label === "Name")!;
+    for (const action of ["click", "invoke"] as const) {
+      const result = await facade.touch({ lease: field.lease, action });
+      expect(result.ok).toBe(false);
+    }
+    expect(execute).not.toHaveBeenCalled();
+  });
 });

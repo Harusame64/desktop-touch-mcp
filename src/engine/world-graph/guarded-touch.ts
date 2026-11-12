@@ -559,9 +559,14 @@ function offersAction(entity: UiEntity, action: TouchAction): boolean {
     case "setValue":
       return !(entity.controlType !== undefined && (UIA_PRESS_ONLY_CONTROL_TYPES as readonly string[]).includes(entity.controlType));
     case "auto":
+      return true;
+    // internal #293 — a box named only by the text beside it is found by its AutomationId alone, and the
+    // click road takes that id's first match with no rect to tell a repeated id apart; discover offers it
+    // only to type into and read, and an explicit click is refused here too (win2 on #964, D3: a click on
+    // that lease answered ok:true).
     case "invoke":
     case "click":
-      return true;
+      return entity.labelInferred !== true;
     default: {
       // **A NEW VERB HAS TO BE DECIDED HERE, at compile time** (gate 2). The previous version was a
       // single `if (action !== "select")`, and adding a verb to `TouchAction` sailed past it into
