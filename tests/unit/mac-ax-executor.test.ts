@@ -245,12 +245,20 @@ describe("append (codex #782: never replace with a cut value)", () => {
       const setValue = vi.fn();
       const insertText = vi.fn().mockResolvedValue({ ok: false, reason: "cannot_complete", performed: true });
       const exec = createMacAxExecutor({ perform, setValue, insertText, appendMode: () => true, noteOpen: () => {} } as never);
-      await expect(exec(entity, "type", "abc")).rejects.toMatchObject({ name: "ActMayHaveHappenedError" });
+      await expect(exec(entity, "type", "abc")).rejects.toMatchObject({
+        name: "ActMayHaveHappenedError",
+        callerDetail: expect.stringContaining("may hold the text"),
+      });
     });
     it("an error that says the app was never reached (api_disabled) is not 'may have happened'", async () => {
       const { perform, exec } = setup();
       perform.mockResolvedValue({ ok: false, reason: "api_disabled", performed: true });
       await expect(exec(entity, "click")).rejects.toMatchObject({ name: "MacAxActError", callerDetail: expect.stringContaining("api_disabled") });
+    });
+    it("illegal_argument after sending is not 'may have happened' either (agy on #958)", async () => {
+      const { setValue, exec } = setup();
+      setValue.mockResolvedValue({ ok: false, reason: "illegal_argument", performed: true });
+      await expect(exec(entity, "type", "abc")).rejects.toMatchObject({ name: "MacAxActError" });
     });
     it("not_applied_after_press keeps its own sentence (control)", async () => {
       const { setValue, exec } = setup();
