@@ -24,7 +24,7 @@ import { nativeWin32 } from "../engine/native-engine.js";
 import { coercedBoolean, coercedBooleanWithDefault } from "./_coerce.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { failWith } from "./_errors.js";
+import { failWith, failCode } from "./_errors.js";
 import { withRichNarration, narrateParam } from "./_narration.js";
 import { makeCommitWrapper, withEnvelopeIncludeSchema } from "./_envelope.js";
 import { detectFocusLoss } from "./_focus.js";
@@ -1581,6 +1581,12 @@ export const scrollHandler = async ({
     // null, fall through to the legacy nutjs SendInput path (Phase 1b lenient guard).
     const tier1 = await dispatchScrollWheel(dest, { direction, notch: amount });
 
+    // ADR-040 PR ② (internal #396) — a Chromium window whose page is visible nowhere: posting would have
+    // scrolled the window in front, so nothing was posted. Say so, and give the road on (invariant 8).
+    if (tier1?.pageNotVisible !== undefined) {
+      return pageNotVisibleScrollFailure(tier1.pageNotVisible, direction, amount);
+    }
+
     if (tier1 === null) {
       // ADR-018 Phase 3 — when destination resolved to a CDP tab but Tier 2
       // dispatch / observation failed, emit `target_unreachable` per §2.6.2
@@ -2129,3 +2135,42 @@ export function registerMouseTools(server: McpServer): void {
   // (memory: feedback_disable_via_entry_block.md)
 }
 
+
+/**
+ * ADR-040 PR ② (internal #396) — the refusal for a wheel to a Chromium window whose page is not visible:
+ * what was not shown, the road tried, and the next calls with their values (ADR-040 invariant 8).
+ * Exported for tests.
+ */
+export function pageNotVisibleScrollFailure(
+  page: { frame: bigint; why: "covered" | "minimized" | "cloaked" | "no_page_window" },
+  direction: "up" | "down" | "left" | "right",
+  amount: number,
+): ToolResult {
+  const hwnd = String(page.frame);
+  const retry = `scroll({ action: "raw", hwnd: "${hwnd}", direction: "${direction}", amount: ${amount} })`;
+  const what = page.why === "minimized"
+    ? "the window is minimized"
+    : page.why === "cloaked"
+      ? "the window is on another virtual desktop"
+      : page.why === "no_page_window"
+        ? "another window covers all of it"
+        : "other windows cover every part of its page";
+  const byScript = "If this browser is connected over CDP (browser_connect lists its tabs), browser_eval({ tabId, expression: \"window.scrollBy(0, 600)\" }) scrolls the page without moving any window.";
+  const suggest = page.why === "cloaked"
+    ? [
+      "Bringing the window here would switch the user's desktop: ask the user to switch to it or move the window here, then retry: " + retry + ".",
+      byScript,
+    ]
+    : [
+      `Bring the window forward, then retry: focus_window({ hwnd: "${hwnd}" }), then ${retry}. This moves the window in front of the others.`,
+      byScript,
+    ];
+  return failCode(
+    "ScrollNotDelivered",
+    `scroll: Nothing was scrolled: the browser window's page is not visible (hwnd ${hwnd}: ${what}). A wheel posted to it goes to the window under its point, which would have scrolled the window in front.`,
+    {
+      suggest,
+      context: { hwnd, why: page.why, direction, verifyDelivery: { status: "not_delivered", channel: "postmessage", reason: "target_unreachable" } },
+    },
+  );
+}

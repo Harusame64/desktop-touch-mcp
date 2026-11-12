@@ -31,7 +31,20 @@ import {
   type ResolvedWindow,
 } from "./_resolve-window.js";
 import { logDispatchSink } from "./_resolve-log.js";
-import { getWindowRectByHwnd, getWindowProcessId, getWindowTitleW } from "../engine/win32.js";
+import { getWindowRectByHwnd, getWindowProcessId, getWindowTitleW, getWindowRoot, getWindowClassName, windowFromPoint, pageSurfaceDeps } from "../engine/win32.js";
+import { wheelPointOnPage, type WheelPointDeps } from "../engine/page-wheel-point.js";
+
+/** Exported so tests can replace the window reads (ADR-040 PR ②). */
+export const wheelPointDeps: WheelPointDeps = {
+  rootOf: (h) => getWindowRoot(h),
+  classOf: (h) => getWindowClassName(h),
+  pointAt: (x, y) => windowFromPoint(x, y),
+  surface: {
+    isIconic: (h) => pageSurfaceDeps.isIconic(h),
+    isCloaked: (h) => pageSurfaceDeps.isCloaked(h),
+    descendants: (h) => pageSurfaceDeps.descendants(h),
+  },
+};
 import { nativeUia, nativeWin32, nativeL1 } from "../engine/native-engine.js";
 import {
   captureFrame,
@@ -412,6 +425,12 @@ export interface DispatchOutcome {
    * the envelope hint, ADR-018 §2.6 reference, ADR-019 §2.1) bit-equal.
    */
   observation?: VisualMotionObservation;
+  /**
+   * ADR-040 PR ② (internal #396) — set with `scrolled: false` when the destination is a Chromium window
+   * whose page is visible nowhere a posted wheel could reach: Chromium sends the wheel to the window under
+   * its point, so posting would scroll the window in front. Nothing was posted.
+   */
+  pageNotVisible?: { frame: bigint; why: "covered" | "minimized" | "cloaked" | "no_page_window" };
 }
 
 /**
@@ -1279,6 +1298,18 @@ export async function postWheelToHwnd(
   const postMessage = nativeWin32?.win32PostMessage;
   const getScrollInfo = nativeWin32?.win32GetScrollInfo;
   if (typeof postMessage !== "function") return null;
+  // ADR-040 PR ② (internal #396) — a Chromium window takes a posted wheel at its point, not at the
+  // window it is posted to: every post carries a point where this window's page is visible, or none is sent.
+  const pagePoint = wheelPointOnPage(hwnd, wheelPointDeps);
+  if (pagePoint.kind === "not_visible") {
+    return {
+      scrolled: false,
+      channel: "postmessage",
+      reason: "target_unreachable",
+      pageNotVisible: { frame: pagePoint.frame, why: pagePoint.why },
+    };
+  }
+  const pageLParam = pagePoint.kind === "point" ? makeScreenLParam(pagePoint.point.x, pagePoint.point.y) : undefined;
   try {
     // ADR-018 Phase 5+N — WM_MOUSEWHEEL propagation is upward-only (Microsoft
     // Learn / DefWindowProc). For MDI / OLE apps that host the scrollable
@@ -1342,7 +1373,9 @@ export async function postWheelToHwnd(
     // versions reject wheels whose lParam falls outside the recipient's
     // client area (web research, 2026-05-15).
     const rect = getWindowRectByHwnd(effectiveHwnd);
-    const lParam = rect !== null
+    const lParam = pageLParam !== undefined
+      ? pageLParam
+      : rect !== null
       ? makeScreenLParam(
           Math.round(rect.x + rect.width / 2),
           Math.round(rect.y + rect.height / 2),
@@ -1773,7 +1806,9 @@ export async function postWheelToHwnd(
     if (!moved && retryCouldFire && !leafActed) {
       const inputRect = getWindowRectByHwnd(hwnd);
       const inputLParam =
-        inputRect !== null
+        pageLParam !== undefined
+          ? pageLParam
+          : inputRect !== null
           ? makeScreenLParam(
               Math.round(inputRect.x + inputRect.width / 2),
               Math.round(inputRect.y + inputRect.height / 2),
