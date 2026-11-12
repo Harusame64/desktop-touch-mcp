@@ -495,7 +495,25 @@ describe("KeyLockerManager — a helper that died on its own is replaced (intern
     const second = await mgr.withHost(async (h) => h);
     expect(mgr.starts).toBe(2);
     expect(second).not.toBe(first);
-    expect(mgr.disposed).toBe(1); // the dead one is tidied up
+    // The dead host ended its own process when its pipe closed; the manager only drops it.
+    expect(mgr.disposed).toBe(0);
+  });
+  it("a helper that stops again within the cooldown is not respawned at once (gate 2 on #959)", async () => {
+    const d = freshDir();
+    writeConsent(d, { version: 1, acceptedAt: "2026-07-06T00:00:00.000Z" });
+    const clock = { t: 1_000_000 };
+    const mgr = new RestartingManager({ storeDir: d, now: () => clock.t });
+    await mgr.withHost(async () => "x");
+    mgr.hosts[0]!.alive = false;
+    await mgr.withHost(async () => "y"); // the first death: respawned
+    expect(mgr.starts).toBe(2);
+    clock.t += 5_000;
+    mgr.hosts[1]!.alive = false; // dies again soon after
+    await expect(mgr.withHost(async () => "z")).rejects.toMatchObject({ code: "KeyLockerPipeUnavailable" });
+    expect(mgr.starts).toBe(2);
+    clock.t += 31_000; // after the cooldown
+    await mgr.withHost(async () => "w");
+    expect(mgr.starts).toBe(3);
   });
   it("a live helper is reused (control)", async () => {
     const d = freshDir();

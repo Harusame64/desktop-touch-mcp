@@ -475,12 +475,7 @@ const FILL_ONCE_HINTS: Record<string, string> = {
   tag_limit: `This pane already keeps ${MAX_KEPT_TAGS_PER_PANE} tags. Forget one with key_locker({action:'forget_tag', paneId, tag}) or reuse a kept tag. Nothing was typed.`,
 };
 
-/**
- * The reason is display text in a security dialog: one plain line. Control characters, format characters
- * (bidi overrides / isolates, zero-width), and line / paragraph separators are replaced by a space, so the
- * assistant's words cannot fake extra lines or reorder the dialog's text (PR #806 Opus P3). Exported for tests.
- */
-/** The hint a fill_once `fill_aborted` reply carries, by its code. Nothing was typed in any of them. */
+/** The hint a fill_once `fill_aborted` reply carries, by its code. */
 export function fillAbortedHint(code: string): string {
   if (code === "echo_on") {
     return "The pane's console is showing what is typed, so this is not a real password prompt. Nothing was typed.";
@@ -494,18 +489,26 @@ export function fillAbortedHint(code: string): string {
     return "The pane's console is in selection mode (Mark, or text selected with the mouse), and it holds input " +
       "until the selection ends. Ask the user to press Esc in that window, then retry. Nothing was typed.";
   }
-  // internal #330: a dialog left open past the locker's limit is not a changed pane.
-  if (/^fill_once_error:request '[a-z_]+' timed out$/.test(code)) {
-    return "The dialog was left open past the locker's time limit and was closed. Nothing was typed or saved; " +
-      "call fill_once again when the user is ready to type.";
+  // internal #330: the dialog was left open longer than this server waits for it — not a changed pane.
+  // Only the capture: an inject that timed out may already have typed (gate 2 on #959).
+  if (code === "fill_once_error:request 'capture' timed out") {
+    return "The dialog was open longer than this server waits for it, so nothing was typed into the pane. If the " +
+      "dialog is still on screen, cancel it; then call fill_once again when the user is ready to type.";
   }
-  // internal #329: the helper stopped during the call; the next call starts a new one.
+  // internal #329: the helper stopped during the call; the next call starts a new one. It may have stopped
+  // while typing, so the pane is read before anything is sent again.
   if (code === "fill_once_error:locker disposed" || code === "fill_once_error:pipe closed") {
-    return "The locker helper stopped during the call. Nothing was typed; call fill_once again (a new helper starts).";
+    return "The locker helper stopped during the call. Read the terminal before sending anything: if it stopped " +
+      "while typing, part of the password may be on the prompt. A new helper starts on the next fill_once.";
   }
   return "The locker refused the write (the pane changed or could not be verified). Nothing was typed or saved.";
 }
 
+/**
+ * The reason is display text in a security dialog: one plain line. Control characters, format characters
+ * (bidi overrides / isolates, zero-width), and line / paragraph separators are replaced by a space, so the
+ * assistant's words cannot fake extra lines or reorder the dialog's text (PR #806 Opus P3). Exported for tests.
+ */
 export function sanitizeFillOnceReason(reason: string): string {
   return reason.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s{2,}/g, " ").trim();
 }

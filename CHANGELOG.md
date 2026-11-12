@@ -53,11 +53,13 @@
   brought in front of the dialog any more (`WindowBlockedByDialog`), as for capture above (internal #382, #381).
 - **`key_locker` `fill_once` works again after the locker helper is killed.** Every later call answered
   `fill_aborted` `locker disposed` with `cleanupFailed: true` until the server restarted. A helper that stopped is now
-  replaced on the next call, and a secret that went with the stopped helper is not reported as left behind
-  (internal #329).
-- **`fill_once`'s hints say what happened.** A dialog left open past the locker's time limit, and a helper that
-  stopped during the call, no longer get "the pane changed or could not be verified" (internal #330). A protocol
-  mismatch's advice now says to reinstall first, as its message does (internal #343).
+  replaced on the next call (one that stops again within 30 seconds is not restarted at once), a helper whose
+  connection dropped while it still ran is ended, and a secret that went with a stopped helper is not reported as left
+  behind (internal #329).
+- **`fill_once`'s hints say what happened.** A capture dialog open longer than the server waits, and a helper that
+  stopped during the call (read the terminal first: it may have stopped while typing), no longer get "the pane
+  changed or could not be verified" (internal #330). A protocol mismatch's advice now says to reinstall first, as its
+  message does (internal #343).
 
 ### Fixed — macOS (preview)
 - **`desktop_act` no longer says "nothing was done" when a press or a write failed after it was sent.** A button that

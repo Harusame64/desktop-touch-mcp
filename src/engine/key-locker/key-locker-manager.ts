@@ -174,12 +174,16 @@ export interface KeyLockerManagerOptions extends KeyLockerStartOptions {
  * BEFORE any host spawn — so no locker process starts for a secret op until the user has opted in.
  * (The secret-free `-Consent` dialog spawn is a separate path, not gated here.)
  */
+/** internal #329: a helper that stops again this soon after the last one is not respawned at once. */
+const RESPAWN_COOLDOWN_MS = 30_000;
+
 export class KeyLockerManager {
   private host: KeyLockerHost | null = null;
   private starting: Promise<KeyLockerHost> | null = null;
   private consenting: Promise<void> | null = null; // in-flight `-Consent` dialog (dedupes concurrent prompts)
   private inFlight = 0;        // secret ops currently running through withHost (idle-dispose never runs mid-op)
   private lastActivityMs = 0;  // clock stamp of the last withHost completion (idle-dispose dormancy timer)
+  private lastDeadHostMs = Number.NEGATIVE_INFINITY; // internal #329: when a stopped helper was last dropped
   private closed = false;      // set by close() at shutdown: no host (or consent dialog) is ever started again
   /** internal #281: true while the live helper holds secrets that must outlive the idle window (kept
    *  fill_once tags). Set by the wiring; idle-dispose skips a LIVE host while it says so. */
@@ -626,9 +630,16 @@ export class KeyLockerManager {
     // answered "locker disposed" to every call until the server restarted. It is dropped and the next
     // helper started, as after an idle dispose. Its memory (kept tags included) died with it.
     if (this.host !== null && this.host.alive === false) {
-      const dead = this.host;
+      // The host already ended its process when the pipe closed (only while it was still our child), so it
+      // is only dropped here. A helper that stops again within RESPAWN_COOLDOWN_MS is not started at once:
+      // one that keeps crashing would otherwise make every caller spawn it (gate 2 on #959).
       this.host = null;
-      void dead.dispose().catch(() => { /* already gone */ });
+      const now = this.now();
+      if (now - this.lastDeadHostMs < RESPAWN_COOLDOWN_MS) {
+        this.lastDeadHostMs = now;
+        throw new KeyLockerError("KeyLockerPipeUnavailable", "locker helper stopped again soon after it started");
+      }
+      this.lastDeadHostMs = now;
     }
     if (this.host !== null) return this.host;
     if (this.starting !== null) return this.starting;

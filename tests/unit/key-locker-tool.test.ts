@@ -379,11 +379,14 @@ describe("key_locker — kept fill_once tags (internal #281)", () => {
 // internal #330 / #329: a fill_aborted reply's hint names what happened, not "the pane changed".
 describe("fill_once fill_aborted hints", () => {
   it("a dialog left open too long says so (internal #330)", () => {
-    expect(fillAbortedHint("fill_once_error:request 'capture' timed out")).toMatch(/left open past the locker's time limit/);
+    expect(fillAbortedHint("fill_once_error:request 'capture' timed out")).toMatch(/open longer than this server waits/);
   });
-  it("a helper that stopped says a new one starts (internal #329)", () => {
-    expect(fillAbortedHint("fill_once_error:locker disposed")).toMatch(/helper stopped/);
-    expect(fillAbortedHint("fill_once_error:pipe closed")).toMatch(/helper stopped/);
+  it("a helper that stopped says to read the pane first, and that a new one starts (internal #329)", () => {
+    expect(fillAbortedHint("fill_once_error:locker disposed")).toMatch(/Read the terminal before sending anything/);
+    expect(fillAbortedHint("fill_once_error:pipe closed")).toMatch(/A new helper starts/);
+  });
+  it("an inject that timed out is not told nothing was typed (gate 2 on #959)", () => {
+    expect(fillAbortedHint("fill_once_error:request 'inject' timed out")).not.toMatch(/open longer than this server waits/);
   });
   it("anything else keeps the refused-write hint (control)", () => {
     expect(fillAbortedHint("fill_once_error:something else")).toMatch(/pane changed or could not be verified/);
