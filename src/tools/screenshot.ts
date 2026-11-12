@@ -267,13 +267,14 @@ export const getScreenInfoSchema = {};
  * Build action-oriented UIA data for a window.
  * Returns the structured result and the raw UIA output (needed for hints).
  */
-async function buildUiaData(title: string, hwnd?: bigint, cached?: boolean): Promise<{
+async function buildUiaData(title: string, hwnd?: bigint, cached?: boolean, pinned = false): Promise<{
   result: ReturnType<typeof extractActionableElements>;
   raw: UiElementsResult | null;
   cacheHit: boolean;
 }> {
   try {
-    const raw = await getUiElements(title, 6, 120, 8000, { hwnd, cached });
+    // pinned: read the window `hwnd` names (internal #393); otherwise `hwnd` only keys the cache.
+    const raw = await getUiElements(title, 6, 120, 8000, pinned && hwnd !== undefined ? { pinnedHwnd: hwnd, cached } : { hwnd, cached });
     const cacheHit = !!(raw as { _cacheHit?: boolean })._cacheHit;
     return { result: extractActionableElements(raw), raw, cacheHit };
   } catch {
@@ -607,20 +608,20 @@ export const screenshotHandler = async (args: {
 
     // ── detail=text: UIA element tree as JSON ────────────────────────────────
     if (effectiveDetail === "text") {
-      // internal #362: a window given by its handle (hwnd, @active) is judged a terminal by that handle's class,
-      // and a terminal is read from that handle — an untitled console (conhost started directly) included.
-      // Any other window still takes the road below, which finds its window by title, as before.
+      // internal #362 / #393: a window given by its handle (hwnd, @active, a dialog preferred over its owner)
+      // is read from that handle on every road below — its class, its tree, its OCR, its snapshot and its
+      // identity — untitled included. Only a window named by title is found by title.
       const handleWin = resolvedWin?.hwnd != null ? resolvedWin : null;
       const handleClass = handleWin !== null ? getWindowClassName(handleWin.hwnd) : "";
       const handleIsTerminal = handleWin !== null && isTerminalWindow(handleClass);
       // internal #363: a terminal UI Automation cannot read (mintty) named by its handle, untitled included.
       const handleIsOcrTerminal = handleWin !== null && isOcrOnlyTerminalWindow(handleClass);
-      if (effectiveTitle || handleIsTerminal || handleIsOcrTerminal) {
+      if (effectiveTitle || handleWin !== null) {
         const wins = enumWindowsInZOrder();
         updateWindowCache(wins);
-        // Either kind of terminal named by its handle stays on that handle below, the frozen check and a
-        // fallback to its controls included (agy on #962).
-        const handlePinned = handleIsTerminal || handleIsOcrTerminal;
+        // A window named by its handle stays on that handle below, the frozen check and every read included
+        // (agy on #962, internal #393: a same-titled window's tree came back from the cache).
+        const handlePinned = handleWin !== null;
         const byHandle = handlePinned ? wins.find((w) => w.hwnd === handleWin!.hwnd) : undefined;
 
         // Save screenshot-time snapshot for homing — survives external cache
@@ -745,24 +746,19 @@ export const screenshotHandler = async (args: {
             };
           }
         }
-        // An untitled window comes this far only as a terminal UI Automation cannot read; the road below finds
-        // its window by title, so it stops here and says why.
-        if (!effectiveTitle) {
-          return failWith(
-            `Window ${String(handleWin?.hwnd)} is a terminal that exposes no text to UI Automation, and OCR could not read it. ` +
-            screenshotWarnings.join(" "),
-            "screenshot",
-          );
-        }
-
-        // Only a terminal enters this branch untitled, and it returned above.
-        const titleKey = effectiveTitle as string;
+        // An untitled window comes this far only by its handle, and every read below is scoped by it.
+        const titleKey = effectiveTitle || resolvedTitle;
 
         // Identity tracking — fires invalidation if pid/startTime changed.
         let identityHints: ReturnType<typeof toTargetHints> | null = null;
         let invalidation: ReturnType<typeof takeLastInvalidation> = null;
         if (targetHwnd !== null) {
-          const obs = observeTarget(titleKey, targetHwnd, resolvedTitle);
+          // Keyed as on the terminal road: by handle when the caller named one, or the window is untitled.
+          const obs = observeTarget(
+            hwndParam !== undefined || !effectiveTitle ? handleObservationKey(targetHwnd) : titleKey,
+            targetHwnd,
+            resolvedTitle,
+          );
           identityHints = toTargetHints(obs.identity);
           if (obs.invalidatedBy) {
             invalidation = { reason: obs.invalidatedBy, previousTarget: obs.previousTarget };
@@ -782,7 +778,7 @@ export const screenshotHandler = async (args: {
           raw = null;
         } else {
           // Try cache first — large UI trees benefit from skipping PowerShell startup
-          ({ result, raw, cacheHit } = await buildUiaData(titleKey, targetHwnd ?? undefined, true));
+          ({ result, raw, cacheHit } = await buildUiaData(titleKey, targetHwnd ?? undefined, true, handlePinned));
         }
 
         // Compute hints from raw UIA output
@@ -892,7 +888,13 @@ export const screenshotHandler = async (args: {
 
         if (shouldOcr && !frozen) {
           try {
-            const { words, origin } = await recognizeWindow(titleKey, ocrLanguage);
+            // A named handle is OCR'd by that handle; a title finds its window as before (internal #393).
+            const pinnedRegion = handlePinned && targetHwnd !== null
+              ? resolvedWin2?.region ?? getWindowRectByHwnd(targetHwnd)
+              : null;
+            const { words, origin } = pinnedRegion !== null
+              ? await recognizeWindowByHwnd(targetHwnd!, pinnedRegion, ocrLanguage)
+              : await recognizeWindow(titleKey, ocrLanguage);
             // Convert words to screen-absolute coords so snapToDictionary locality
             // filter aligns with UIA boundingRect (also screen-absolute).
             const screenAbsWords = words.map((w) => ({
@@ -954,7 +956,9 @@ export const screenshotHandler = async (args: {
       ? { format: "webp" as const, webpQuality, grayscale, dotByDotMaxDimension }
       : { maxDimension, grayscale };
 
-    if (effectiveTitle) {
+    // internal #393: a window named by its handle is captured as itself, untitled included; before, an
+    // untitled one fell through to a capture of the whole screen.
+    if (effectiveTitle || resolvedWin?.hwnd != null) {
       // hwnd-first resolution: prefer resolvedWin.hwnd (from resolveWindowTarget,
       // case 1 hwnd / case 2 @active / case 4 dialog-via-owner), else find the
       // window by title via enumWindowsInZOrder so we get a real bigint hwnd
@@ -969,9 +973,12 @@ export const screenshotHandler = async (args: {
         const match = wins.find((w) => w.hwnd === targetHwnd);
         if (match) {
           windowRegion = { x: match.region.x, y: match.region.y, width: match.region.width, height: match.region.height };
+        } else {
+          // The window list leaves untitled windows out; the handle's own rect still names the window.
+          windowRegion = getWindowRectByHwnd(targetHwnd) ?? undefined;
         }
       }
-      if (!windowRegion) {
+      if (!windowRegion && effectiveTitle) {
         const wins = enumWindowsInZOrder();
         const q = effectiveTitle.toLowerCase();
         const match = wins.find((w) => w.title.toLowerCase().includes(q));
@@ -981,7 +988,9 @@ export const screenshotHandler = async (args: {
         }
       }
       if (!windowRegion || targetHwnd === null) {
-        return failWith(`Window not found: "${effectiveTitle}"`, "screenshot", { windowTitle: effectiveTitle });
+        return effectiveTitle
+          ? failWith(`Window not found: "${effectiveTitle}"`, "screenshot", { windowTitle: effectiveTitle })
+          : failWith(`WindowNotFound: no visible window with hwnd "${String(resolvedWin?.hwnd)}"`, "screenshot");
       }
 
       // Populate caches for homing. This is the primary coordinate-copy path
@@ -993,7 +1002,7 @@ export const screenshotHandler = async (args: {
       //     delta survives focus_window / window_dock mutating the main cache
       //     between this capture and the follow-up mouse_click.
       updateWindowCache(enumWindowsInZOrder());
-      saveSnapshot(effectiveTitle, windowRegion);
+      if (effectiveTitle) saveSnapshot(effectiveTitle, windowRegion);
 
       let originX = windowRegion.x;
       let originY = windowRegion.y;

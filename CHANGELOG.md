@@ -11,10 +11,11 @@
   the window's scroll buttons and no text. Its text is now read with OCR and returned as `textContent`, with
   `hints.textSource: "ocr"`. When OCR cannot run, or with `ocrFallback:'never'`, the window's controls are listed as
   before (internal #363).
-- **`screenshot(detail:'text')` reads an untitled console by `hwnd`.** A console with no title (conhost started
-  directly) answered the window list instead of its text. A terminal given by its handle is now read from that window,
-  also when two consoles share a title; before, the first same-titled one was read. Other windows still find their
-  window by title (internal #362).
+- **`screenshot` reads the window `hwnd` names.** `detail:'text'` found its window by title, so given the handle
+  of one of two same-titled windows it read the other, and an untitled window answered the window list. A console
+  with no title (conhost started directly) is one such window. Given a handle (or `@active`), the call now reads that
+  window: its terminal text, its UI Automation tree, its OCR and its identity. `detail:'image'` with an untitled
+  window's handle captured the whole screen and now captures that window (internal #362, #393).
 - **OCR says which language read the text.** Windows reads with an installed OCR pack only. When the language asked
   for has none (`'en'` on a Japanese machine without the English pack), it reads with another one, and `scroll read`
   still answered `language: "en"`. It now names the language that read and keeps the one asked for in
