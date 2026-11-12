@@ -15,7 +15,8 @@
  * - a surface that cannot be read (a renamed class, a walk that failed) does not stop the promotion; the
  *   rect and the visibility still decide (ADR-040 invariant 3: never refuse on "unreadable");
  * - when no window is at the frame's rect × its scale (a scaled secondary monitor, whose DIP origin is not
- *   its physical origin / scale), windows of the frame's size are taken instead;
+ *   its physical origin / scale), a window of the frame's size is taken instead, when it holds a tab the
+ *   frame's title shows;
  * - when every tab at the rect reads hidden (the display off, the session locked: OQ-40-1) and one window is
  *   there, the one tab whose title the frame shows is still taken — it is this frame's own tab.
  *
@@ -86,11 +87,14 @@ export async function tabOfFrame(
       const b = windows.get(t.id)!.bounds!;
       return near(rect.x, b.left * scale) && near(rect.y, b.top * scale);
     });
-    const atFrame = placed.length > 0 ? placed : sized;
+    const title = deps.frameTitle(frame);
+    // By size alone, a window is this frame's only when it holds a tab the frame's title shows: another window
+    // of the same size elsewhere, with this frame's own tabs left out of the answer, is not (codex on #971).
+    const owned = new Set(sized.filter((t) => titleShows(title, t.title)).map((t) => windows.get(t.id)!.windowId));
+    const atFrame = placed.length > 0 ? placed : sized.filter((t) => owned.has(windows.get(t.id)!.windowId));
     if (atFrame.length === 0) return { kind: "none", why: "no_window" };
     const oneWindow = new Set(atFrame.map((t) => windows.get(t.id)!.windowId)).size === 1;
 
-    const title = deps.frameTitle(frame);
     const titled = atFrame.filter((t) => titleShows(title, t.title));
     const visibleOf = async (list: typeof atFrame) => {
       const states = await Promise.all(list.map((t) => deps.visibility(t.id)));

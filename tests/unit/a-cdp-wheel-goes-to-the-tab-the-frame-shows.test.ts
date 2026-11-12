@@ -103,8 +103,14 @@ describe("tabOfFrame — the tab is in the window at the frame's rect (internal 
   });
   it("a scaled secondary monitor (DIP origin ≠ physical / scale): a window of the frame's size is taken", async () => {
     // Physical x 2000 on a 150 % monitor right of a 1920 px one; Chrome puts its DIP left near 1973.
-    const d = deps({ scale: 1.5, frameRect: rect(2000, 150, 1800, 1200), windows: { L: { windowId: 1, bounds: bounds(1973, 100, 1200, 800) } }, visible: ["L"] });
+    const d = deps({ scale: 1.5, frameRect: rect(2000, 150, 1800, 1200), windows: { L: { windowId: 1, bounds: bounds(1973, 100, 1200, 800) } }, visible: ["L"], title: "Left page - Google Chrome" });
     expect(await tabOfFrame(FRAME, [page("L", "Left page")], d)).toEqual({ kind: "tab", tabId: "L" });
+  });
+  it("by size alone, a window holding no tab the frame's title shows is not this frame's (codex on #971)", async () => {
+    // Frame A at LEFT, its tabs left out of the answer; B at RIGHT, same size, visible.
+    const d = deps({ windows: { B: { windowId: 2, bounds: RIGHT.bounds } }, visible: ["B"], title: "Alpha - Google Chrome" });
+    expect(await tabOfFrame(FRAME, [page("A", "Alpha"), page("B", "Beta")], d)).toEqual({ kind: "none", why: "no_window" });
+    expect(d.visibility).not.toHaveBeenCalled();
   });
   it("a window at the frame's place wins over another only of its size", async () => {
     const w = { R: { windowId: 2, bounds: RIGHT.bounds }, L: { windowId: 1, bounds: LEFT.bounds } };
