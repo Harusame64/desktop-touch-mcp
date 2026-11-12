@@ -103,6 +103,7 @@
     "MissingComponent",
     "ProceduralMemoryKUpperBoundExceeded",
     "SemanticMemoryKUpperBoundExceeded",
+    "TerminalNotInFront",
     "Unknown",
     "UnknownScheme",
     "ValueNotApplied",

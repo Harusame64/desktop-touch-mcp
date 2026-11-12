@@ -12,6 +12,9 @@ import {
   getProcessIdentityByPid,
   getWindowProcessId,
   getWindowClassName,
+  getForegroundHwnd,
+  getWindowRoot,
+  getWindowTitleW,
   type WindowZInfo,
 } from "../engine/win32.js";
 import { logResolve, logDispatchSink, appendTopologyWarnings } from "./_resolve-log.js";
@@ -157,7 +160,7 @@ export const terminalSendSchema = {
     "terminal input queue saturation. Default 100. Only applies when method results in background."
   ),
   pressEnter: coercedBooleanWithDefault(true).describe("Press Enter after typing (default true). When pasted into Windows Terminal, a trailing newline is sent as this Enter."),
-  focusFirst: coercedBooleanWithDefault(true).describe("Focus the terminal before sending (default true)."),
+  focusFirst: coercedBooleanWithDefault(true).describe("Focus the terminal before sending (default true). false sends to the window already in front, and only when that window is this terminal (else TerminalNotInFront)."),
   restoreFocus: coercedBooleanWithDefault(true).describe("Restore the previously-focused window after sending (default true)."),
   preferClipboard: coercedBooleanWithDefault(true).describe("Paste the input from the clipboard instead of typing it — safe for long text and not run through IME conversion (does not help while an IME composition is already in progress: the paste keystroke is consumed by the IME and nothing arrives, though the call still answers ok; hints.clipboard.imeOpen says when the IME was on at the paste). Your clipboard is replaced for the duration of the call and put back afterwards, but the restore is skipped when another process wrote to the clipboard first, when its contents are too large for an addon-less build to carry back, or when saving it failed; hints.clipboard reports which backend served the paste and whether the restore ran. Default true."),
   pasteKey: z.enum(["auto", "ctrl+v", "ctrl+shift+v"]).default("auto").describe("Paste key combo. 'auto' picks ctrl+shift+v for WSL/bash/mintty/wezterm/alacritty, ctrl+v elsewhere. Only used when preferClipboard=true."),
@@ -1915,6 +1918,26 @@ export const terminalSendHandler = async ({
     // desktop. Refused before anything is focused or pasted.
     const away = focusFirst ? await offDesktopTarget(win, allBefore, paneId === undefined ? windowTitle : undefined) : null;
     if (away) return offDesktopFailure("terminal:send", away);
+    // internal #387: with focusFirst:false the paste goes to whatever window is in front. win2 measured a
+    // Notepad in front taking it 3/3 while the reply named the console (internal dev/380-design-spike).
+    // So the window in front must be this terminal; when it is another one, nothing is sent. When the
+    // window in front cannot be read, the send goes on as before.
+    if (!focusFirst) {
+      const front = getForegroundHwnd();
+      const rootOf = (h: bigint): bigint => { try { return getWindowRoot(h) ?? h; } catch { return h; } };
+      if (front !== null && BigInt.asUintN(32, rootOf(front)) !== BigInt.asUintN(32, rootOf(win.hwnd))) {
+        let frontTitle = "";
+        try { frontTitle = getWindowTitleW(rootOf(front)); } catch { /* untitled */ }
+        return failWith(
+          new Error(
+            "TerminalNotInFront: focusFirst:false sends to the window in front, and the window in front is not " +
+              "this terminal. Nothing was sent.",
+          ),
+          "terminal:send",
+          { windowTitle: win.title, hwnd: String(win.hwnd), inFront: { hwnd: String(rootOf(front)), title: frontTitle } },
+        );
+      }
+    }
     // internal #286: Windows Terminal is brought in front and pasted into without asking (the
     // user's decision), so its selected tab is checked the way `desktop_act` checks it around its
     // question. Only when this call takes the foreground: with focusFirst:false the caller types
