@@ -4,6 +4,7 @@
  * management actions (list / status / set_policy), save/forget through a faked capture/delete, and the
  * no-secret-in-output invariant.
  */
+import { fillAbortedHint } from "../../src/tools/key-locker-tool.js";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { STUB_TOOL_CATALOG } from "../../src/stub-tool-catalog.js";
 import { tmpdir } from "node:os";
@@ -374,3 +375,19 @@ describe("key_locker — kept fill_once tags (internal #281)", () => {
     expect(keptReply("jump", { kind: "declined", reason: "not_anchored" })).toEqual({ tag: "jump" });
   });
 });
+
+// internal #330 / #329: a fill_aborted reply's hint names what happened, not "the pane changed".
+describe("fill_once fill_aborted hints", () => {
+  it("a dialog left open too long says so (internal #330)", () => {
+    expect(fillAbortedHint("fill_once_error:request 'capture' timed out")).toMatch(/left open past the locker's time limit/);
+  });
+  it("a helper that stopped says a new one starts (internal #329)", () => {
+    expect(fillAbortedHint("fill_once_error:locker disposed")).toMatch(/helper stopped/);
+    expect(fillAbortedHint("fill_once_error:pipe closed")).toMatch(/helper stopped/);
+  });
+  it("anything else keeps the refused-write hint (control)", () => {
+    expect(fillAbortedHint("fill_once_error:something else")).toMatch(/pane changed or could not be verified/);
+    expect(fillAbortedHint("echo_on")).toMatch(/showing what is typed/);
+  });
+});
+

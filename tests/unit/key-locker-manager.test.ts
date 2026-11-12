@@ -470,3 +470,40 @@ describe("aliasExists (the wt.exe app-execution alias check)", () => {
     }
   });
 });
+
+// internal #329 (win2, PR #883 K7 and main 328124df): after key-locker.exe was killed, every later fill_once
+// answered "locker disposed" until the server restarted. A dead helper is dropped and the next one started.
+describe("KeyLockerManager — a helper that died on its own is replaced (internal #329)", () => {
+  class RestartingManager extends KeyLockerManager {
+    starts = 0;
+    disposed = 0;
+    hosts: Array<{ alive: boolean }> = [];
+    protected override startHost(): Promise<KeyLockerHost> {
+      this.starts++;
+      const h = { alive: true, dispose: async () => { this.disposed++; } };
+      this.hosts.push(h);
+      return Promise.resolve(h as unknown as KeyLockerHost);
+    }
+  }
+  it("the next op starts a new helper instead of using the dead one", async () => {
+    const d = freshDir();
+    writeConsent(d, { version: 1, acceptedAt: "2026-07-06T00:00:00.000Z" });
+    const mgr = new RestartingManager({ storeDir: d });
+    const first = await mgr.withHost(async (h) => h);
+    expect(mgr.starts).toBe(1);
+    mgr.hosts[0]!.alive = false; // killed underneath (the pipe closed)
+    const second = await mgr.withHost(async (h) => h);
+    expect(mgr.starts).toBe(2);
+    expect(second).not.toBe(first);
+    expect(mgr.disposed).toBe(1); // the dead one is tidied up
+  });
+  it("a live helper is reused (control)", async () => {
+    const d = freshDir();
+    writeConsent(d, { version: 1, acceptedAt: "2026-07-06T00:00:00.000Z" });
+    const mgr = new RestartingManager({ storeDir: d });
+    await mgr.withHost(async () => "x");
+    await mgr.withHost(async () => "y");
+    expect(mgr.starts).toBe(1);
+  });
+});
+

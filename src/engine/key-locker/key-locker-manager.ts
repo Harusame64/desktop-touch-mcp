@@ -622,6 +622,14 @@ export class KeyLockerManager {
   }
 
   private async ensureHost(): Promise<KeyLockerHost> {
+    // internal #329: a helper that died on its own (killed, crashed) leaves its host closed; reusing it
+    // answered "locker disposed" to every call until the server restarted. It is dropped and the next
+    // helper started, as after an idle dispose. Its memory (kept tags included) died with it.
+    if (this.host !== null && this.host.alive === false) {
+      const dead = this.host;
+      this.host = null;
+      void dead.dispose().catch(() => { /* already gone */ });
+    }
     if (this.host !== null) return this.host;
     if (this.starting !== null) return this.starting;
     this.starting = this.startHost()

@@ -51,6 +51,13 @@
   disabled.** On another desktop it answered `ok: true, scrolled: true` while the window stayed where it was and the
   window in front kept the foreground; it now answers `WindowOnOtherDesktop`. A window its dialog has disabled is not
   brought in front of the dialog any more (`WindowBlockedByDialog`), as for capture above (internal #382, #381).
+- **`key_locker` `fill_once` works again after the locker helper is killed.** Every later call answered
+  `fill_aborted` `locker disposed` with `cleanupFailed: true` until the server restarted. A helper that stopped is now
+  replaced on the next call, and a secret that went with the stopped helper is not reported as left behind
+  (internal #329).
+- **`fill_once`'s hints say what happened.** A dialog left open past the locker's time limit, and a helper that
+  stopped during the call, no longer get "the pane changed or could not be verified" (internal #330). A protocol
+  mismatch's advice now says to reinstall first, as its message does (internal #343).
 
 ### Fixed — macOS (preview)
 - **`desktop_act` no longer says "nothing was done" when a press or a write failed after it was sent.** A button that

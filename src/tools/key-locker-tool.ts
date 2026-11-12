@@ -480,6 +480,32 @@ const FILL_ONCE_HINTS: Record<string, string> = {
  * (bidi overrides / isolates, zero-width), and line / paragraph separators are replaced by a space, so the
  * assistant's words cannot fake extra lines or reorder the dialog's text (PR #806 Opus P3). Exported for tests.
  */
+/** The hint a fill_once `fill_aborted` reply carries, by its code. Nothing was typed in any of them. */
+export function fillAbortedHint(code: string): string {
+  if (code === "echo_on") {
+    return "The pane's console is showing what is typed, so this is not a real password prompt. Nothing was typed.";
+  }
+  if (code === "other_reader") {
+    return "No ssh / sudo / su / doas is running in front in the pane (a shell's Read-Host behind a background ssh, " +
+      "for example), so the prompt may not be the credential program's. Run the command in front, then retry. " +
+      "Nothing was typed.";
+  }
+  if (code === "console_selecting") {
+    return "The pane's console is in selection mode (Mark, or text selected with the mouse), and it holds input " +
+      "until the selection ends. Ask the user to press Esc in that window, then retry. Nothing was typed.";
+  }
+  // internal #330: a dialog left open past the locker's limit is not a changed pane.
+  if (/^fill_once_error:request '[a-z_]+' timed out$/.test(code)) {
+    return "The dialog was left open past the locker's time limit and was closed. Nothing was typed or saved; " +
+      "call fill_once again when the user is ready to type.";
+  }
+  // internal #329: the helper stopped during the call; the next call starts a new one.
+  if (code === "fill_once_error:locker disposed" || code === "fill_once_error:pipe closed") {
+    return "The locker helper stopped during the call. Nothing was typed; call fill_once again (a new helper starts).";
+  }
+  return "The locker refused the write (the pane changed or could not be verified). Nothing was typed or saved.";
+}
+
 export function sanitizeFillOnceReason(reason: string): string {
   return reason.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s{2,}/g, " ").trim();
 }
@@ -525,16 +551,7 @@ async function handleFillOnce(
           filled: false,
           reason: "fill_aborted",
           code: outcome.code,
-          hint: outcome.code === "echo_on"
-            ? "The pane's console is showing what is typed, so this is not a real password prompt. Nothing was typed."
-            : outcome.code === "other_reader"
-              ? "No ssh / sudo / su / doas is running in front in the pane (a shell's Read-Host behind a background ssh, " +
-                "for example), so the prompt may not be the credential program's. Run the command in front, then retry. " +
-                "Nothing was typed."
-              : outcome.code === "console_selecting"
-                ? "The pane's console is in selection mode (Mark, or text selected with the mouse), and it holds input " +
-                  "until the selection ends. Ask the user to press Esc in that window, then retry. Nothing was typed."
-                : "The locker refused the write (the pane changed or could not be verified). Nothing was typed or saved.",
+          hint: fillAbortedHint(outcome.code),
           ...kept,
           ...cleanup,
         });
