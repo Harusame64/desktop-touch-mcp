@@ -91,7 +91,7 @@ describe("osClickAndVerify places the point on the page surface (ADR-040 PR ①)
   it("refuses when another page window of the frame (DevTools) is under the point, and does not move the cursor", async () => {
     const d = deps([{ point: { x: 488, y: 207 }, surface: SURFACE }], 1641660n);
     const r = await osClickAndVerify(766, 207, null, "TAB", 9222, () => AIM, false, PAGE_AIM, d as never);
-    expect(r).toEqual({ covered: "panel", hwnd: 1641660n, at: { x: 488, y: 207 } });
+    expect(r).toEqual({ covered: "panel", hwnd: 1641660n, frame: FRAME, at: { x: 488, y: 207 } });
     expect(mocks.moved).toEqual([]);
   });
 
@@ -194,11 +194,17 @@ describe("the refusals say what to do next (ADR-040 invariant 8)", () => {
     }
     const cloaked = read({ covered: "page_not_shown", why: "cloaked", hwnd: 7001n });
     expect(cloaked.error).toContain("another virtual desktop");
+    expect(cloaked.suggest.at(-1)).toMatch(/browser_fill|browser_eval/);
+    expect(new Set(cloaked.suggest).size).toBe(cloaked.suggest.length);
     const amb = read({ covered: "surface_ambiguous", hwnd: 7001n });
-    expect(amb.suggest[0]).toMatch(/Close DevTools/);
+    expect(amb.suggest[0]).toContain('keys: "f12", hwnd: "7001"');
     expect(amb.suggest.at(-1)).toMatch(/browser_fill|browser_eval/);
-    const pane = read({ covered: "panel", hwnd: 1641660n });
+    expect(new Set(amb.suggest).size).toBe(amb.suggest.length);
+    const pane = read({ covered: "panel", hwnd: 1641660n, frame: 7001n });
     expect(pane.error).toContain("another pane of the browser window");
-    expect(pane.context).toMatchObject({ coveredBy: "panel", paneHwnd: "1641660" });
+    expect(pane.suggest[0]).toContain('keys: "f12", hwnd: "7001"');
+    expect(pane.suggest.at(-1)).toMatch(/browser_fill|browser_eval/);
+    expect(new Set(pane.suggest).size).toBe(pane.suggest.length);
+    expect(pane.context).toMatchObject({ coveredBy: "panel", paneHwnd: "1641660", hwnd: "7001" });
   });
 });

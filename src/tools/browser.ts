@@ -740,7 +740,7 @@ export type BrowserPointCover = ({ at?: { x: number; y: number } }) & (
   // internal #318 — the tab is not the one showing; another page of the browser is.
   | { covered: "tab"; target: TabSummary; showing: TabSummary[] }
   // ADR-040 — another page window of the same frame (DevTools docked, a side panel) is under the point.
-  | { covered: "panel"; hwnd: bigint; at?: { x: number; y: number } }
+  | { covered: "panel"; hwnd: bigint; frame?: bigint; at?: { x: number; y: number } }
   // ADR-040 — the page is not shown after the window was brought forward (minimized, on another desktop,
   // or its page window did not appear), or its page window cannot be told from another pane.
   | { covered: "page_not_shown"; why: "minimized" | "cloaked" | "no_page_window"; hwnd: bigint; at?: { x: number; y: number } }
@@ -819,7 +819,8 @@ export function browserPointCoveredFailure(
       `browser_click: Nothing was clicked: the browser window (hwnd ${String(cover.hwnd)}) shows more than one pane (DevTools or a side panel), and which one is the page could not be told, so the click point is not known.`,
       {
         suggest: [
-          "Close DevTools (F12) or the side panel, then retry browser_click.",
+          `If DevTools is open, close it: keyboard({ action: "press", keys: "f12", hwnd: "${String(cover.hwnd)}" }), then retry browser_click.`,
+          `If a side panel is open, close it: desktop_discover({ target: { hwnd: "${String(cover.hwnd)}" }, query: "Close" }) and desktop_act on the panel's close button, then retry browser_click.`,
           "To act without an OS click, browser_fill sets a field's value and browser_eval runs script in the page.",
         ],
         context: { ...ctx, at: { x, y }, coveredBy: "surface_ambiguous", hwnd: String(cover.hwnd) },
@@ -832,10 +833,15 @@ export function browserPointCoveredFailure(
       `browser_click: Nothing was clicked: the element's point (${x}, ${y}) is over another pane of the browser window (DevTools or a side panel, hwnd ${cover.hwnd}), not over the page.`,
       {
         suggest: [
-          "Close the pane (DevTools: F12; a side panel: its close button), then retry browser_click.",
+          ...(cover.frame !== undefined
+            ? [
+              `If the pane is DevTools, close it: keyboard({ action: "press", keys: "f12", hwnd: "${String(cover.frame)}" }), then retry browser_click.`,
+              `If it is a side panel, close it: desktop_discover({ target: { hwnd: "${String(cover.frame)}" }, query: "Close" }) and desktop_act on the panel's close button, then retry browser_click.`,
+            ]
+            : ["Close the pane (DevTools: F12; a side panel: its close button), then retry browser_click."]),
           "To act without an OS click, browser_fill sets a field's value and browser_eval runs script in the page.",
         ],
-        context: { ...ctx, at: { x, y }, coveredBy: "panel", paneHwnd: String(cover.hwnd) },
+        context: { ...ctx, at: { x, y }, coveredBy: "panel", paneHwnd: String(cover.hwnd), ...(cover.frame !== undefined && { hwnd: String(cover.frame) }) },
       },
     );
   }
@@ -1040,7 +1046,7 @@ export async function osClickAndVerify(
       const at = surfaceDeps.pointAt(x, y);
       if (at !== undefined && at.root === tabFrame && !after.surface.rwhs.includes(at.child) &&
           surfaceDeps.classOf(at.child) === PAGE_RWH_CLASS) {
-        return { covered: "panel", hwnd: at.child, at: { x, y } };
+        return { covered: "panel", hwnd: at.child, frame: tabFrame, at: { x, y } };
       }
     }
   }

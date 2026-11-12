@@ -3868,7 +3868,15 @@ function getSharedRealDeps(): ExecutorDeps {
       const { findTabFrame, alignToPageSurface, aimFromCoords } = await import("../engine/page-aim.js");
       const port = portForTab(tabId);
       const frame = await findTabFrame(port, tab).catch(() => undefined);
-      const { x, y } = alignToPageSurface(frame, aimFromCoords(coords), { x: coords.x, y: coords.y }).point;
+      const aligned = alignToPageSurface(frame, aimFromCoords(coords), { x: coords.x, y: coords.y });
+      // The page's window cannot be told from another pane: the point is not known (ADR-040, agy on #967).
+      if (aligned.surface?.kind === "unreadable" && aligned.surface.why === "ambiguous") {
+        throw new Error(
+          `Nothing was clicked: the browser window (hwnd ${String(aligned.surface.frame)}) shows more than one pane (DevTools or a side panel), and which one is the page could not be told. ` +
+          `Close DevTools with keyboard({ action: "press", keys: "f12", hwnd: "${String(aligned.surface.frame)}" }) or the side panel, then retry; or use browser_click with tabId, or browser_fill / browser_eval.`,
+        );
+      }
+      const { x, y } = aligned.point;
       // ADR-029: coordinates only become known inside this dep, so the
       // reachability check lives here rather than in the executor core.
       assertCoordinateReachable(x, y);
