@@ -16,7 +16,7 @@ import { failWith, failCode } from "./_errors.js";
 import { WindowFrozenError } from "../engine/window-frozen.js";
 import { keyboard } from "../engine/nutjs.js";
 import {
-  bringForward, stillInFront, LOST_FRONT_NOTE, NEVER_IN_FRONT_READ_NOTE, OTHER_DESKTOP_READ_NOTE, BLOCKED_BY_DIALOG_READ_NOTE,
+  bringForward, stillInFront, LOST_FRONT_NOTE, NEVER_IN_FRONT_READ_NOTE, OTHER_DESKTOP_READ_NOTE, BLOCKED_BY_DIALOG_READ_NOTE, DISABLED_READ_NOTE,
 } from "./_bring-forward.js";
 import { getWindowRectByHwnd } from "../engine/win32.js";
 import { canInjectAtTarget, postKeyComboToHwnd } from "../engine/bg-input.js";
@@ -98,8 +98,10 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
   let focusedHwnd: bigint | null = null;
   let everInFront = false;
   let onOtherDesktop = false;
-  // internal #381: disabled by its dialog — not brought forward, and no page key is sent (it would
-  // reach the dialog); what the window shows is read and the read stops there.
+  // internal #381: disabled — not brought forward. With a dialog of its in front no page key is sent
+  // (it would reach the dialog) and the read stops at what the window shows; with none seen, the
+  // PostMessage page keys go on as for a window on another desktop (they reach the enabled child, K3b).
+  let disabledWindow = false;
   let blockedByItsDialog = false;
   let focusedRegion: { x: number; y: number; width: number; height: number } | null = null;
 
@@ -131,7 +133,8 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
       });
       everInFront = brought.ok;
       onOtherDesktop = brought.offDesktop !== undefined;
-      blockedByItsDialog = brought.blockedByDialog !== undefined;
+      disabledWindow = brought.blockedByDialog !== undefined;
+      blockedByItsDialog = brought.blockedByDialog?.dialog != null;
       const focusResult = brought.offDesktop || brought.blockedByDialog ? (getWindowRectByHwnd(focusedHwnd) ?? brought.rect) : brought.rect;
       if (focusResult.width >= 10 && focusResult.height >= 10) {
         focusedRegion = {
@@ -279,8 +282,8 @@ export async function scrollReadHandler(args: ScrollReadArgs): Promise<ToolResul
         perPage,
         ...(ocrError !== null ? { error: ocrError } : {}),
         ...(stoppedReason === "foreground_refused"
-          ? { note: blockedByItsDialog ? BLOCKED_BY_DIALOG_READ_NOTE : onOtherDesktop ? OTHER_DESKTOP_READ_NOTE : everInFront ? LOST_FRONT_NOTE : NEVER_IN_FRONT_READ_NOTE }
-          : {}),
+          ? { note: blockedByItsDialog ? BLOCKED_BY_DIALOG_READ_NOTE : disabledWindow ? DISABLED_READ_NOTE : onOtherDesktop ? OTHER_DESKTOP_READ_NOTE : everInFront ? LOST_FRONT_NOTE : NEVER_IN_FRONT_READ_NOTE }
+          : disabledWindow ? { note: blockedByItsDialog ? BLOCKED_BY_DIALOG_READ_NOTE : DISABLED_READ_NOTE } : {}),
       }, null, 2),
     }],
   };

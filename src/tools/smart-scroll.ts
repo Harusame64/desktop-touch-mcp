@@ -12,8 +12,10 @@ import {
   scrollByPercent,
   scrollElementIntoView,
 } from "../engine/uia-bridge.js";
-import { readScrollInfo, enumWindowsInZOrder, restoreAndFocusWindow } from "../engine/win32.js";
-import { offDesktopTarget, offDesktopFailure } from "./_off-desktop.js";
+import { readScrollInfo, enumWindowsInZOrder } from "../engine/win32.js";
+import { offDesktopFailure } from "./_off-desktop.js";
+import { bringForward } from "./_bring-forward.js";
+import { blockedByDialogFailure } from "./_blocked-by-dialog.js";
 import { logResolve, logDispatchSink } from "./_resolve-log.js";
 import {
   dHashFromRaw,
@@ -369,14 +371,15 @@ async function tryImage(params: {
     return failWith(`Window not found: "${windowTitle}"`, "scroll(action='smart')", { windowTitle });
   }
 
-  // internal #382 / #221: bringing a window on another virtual desktop forward switches the user's
-  // desktop. Refused before anything is focused or scrolled.
-  const away = await offDesktopTarget(win, matches, windowTitle);
-  if (away) return offDesktopFailure("scroll(action='smart')", away);
-
-  // Focus the window before sending scroll input
-  try { restoreAndFocusWindow(win.hwnd); } catch { /* best effort */ }
-  await new Promise(r => setTimeout(r, 80));
+  // Focus the window before sending scroll input, through the shared bring-forward (gate 2 on #957):
+  // a window on another virtual desktop is not brought forward (it would switch the user's desktop,
+  // internal #382 / #221), nor one its own dialog has disabled (it took the dialog's focus, #381).
+  // A window Windows did not bring to the front is scrolled as before (best effort).
+  const brought = await bringForward(win.hwnd, { force: false, named: windowTitle, settleMs: 80 });
+  if (brought.offDesktop) return offDesktopFailure("scroll(action='smart')", brought.offDesktop);
+  if (brought.blockedByDialog) {
+    return blockedByDialogFailure("scroll(action='smart')", brought.blockedByDialog, { extra: { strategy: "image" } });
+  }
 
   // Get initial scroll position
   const scrollInfo = readScrollInfo(win.hwnd, "vertical");

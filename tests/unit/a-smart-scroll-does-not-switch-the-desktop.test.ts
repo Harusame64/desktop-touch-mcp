@@ -4,7 +4,11 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockRestore, mockAway } = vi.hoisted(() => ({ mockRestore: vi.fn(), mockAway: vi.fn() }));
+const { mockRestore, mockAway, listed } = vi.hoisted(() => ({
+  mockRestore: vi.fn(() => ({ x: 0, y: 0, width: 800, height: 600 })),
+  mockAway: vi.fn(),
+  listed: { isEnabled: true as boolean },
+}));
 
 vi.mock("../../src/engine/cdp-bridge.js", () => ({
   evaluateInTab: vi.fn(), getScrollAncestorsCdp: vi.fn(), detectStickyHeaderCdp: vi.fn(),
@@ -13,12 +17,18 @@ vi.mock("../../src/engine/cdp-bridge.js", () => ({
 vi.mock("../../src/engine/uia-bridge.js", () => ({
   getScrollAncestors: vi.fn().mockResolvedValue([]), scrollByPercent: vi.fn(), scrollElementIntoView: vi.fn(),
 }));
-vi.mock("../../src/engine/win32.js", () => ({
+vi.mock("../../src/engine/win32.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/engine/win32.js")>()),
   readScrollInfo: vi.fn().mockReturnValue(null),
-  enumWindowsInZOrder: vi.fn().mockReturnValue([
-    { hwnd: 100n, title: "Docs - Editor", isCloaked: true, region: { x: 0, y: 0, width: 800, height: 600 } },
+  enumWindowsInZOrder: vi.fn(() => [
+    { hwnd: 100n, title: "Docs - Editor", isCloaked: true, isEnabled: listed.isEnabled, region: { x: 0, y: 0, width: 800, height: 600 } },
   ]),
   restoreAndFocusWindow: mockRestore,
+  getForegroundHwnd: vi.fn(() => 100n),
+  getWindowRoot: vi.fn((h: bigint) => h),
+  getWindowTitleW: vi.fn(() => "Docs - Editor"),
+  getWindowClassName: vi.fn(() => "Notepad"),
+  isWindowEnabled: vi.fn(() => true),
 }));
 vi.mock("../../src/engine/image.js", () => ({
   dHashFromRaw: vi.fn(), hammingDistance: vi.fn(), extractStripRaw: vi.fn(), detectScrollThumbFromStrip: vi.fn(),
@@ -41,7 +51,7 @@ const params = {
   virtualTotal: undefined, expandHidden: false, port: 9222,
 } as never;
 
-beforeEach(() => { vi.clearAllMocks(); });
+beforeEach(() => { vi.clearAllMocks(); listed.isEnabled = true; });
 
 describe("internal #382 — smart scroll's image road and another virtual desktop", () => {
   it("refuses, and does not bring the window forward", async () => {
@@ -56,5 +66,14 @@ describe("internal #382 — smart scroll's image road and another virtual deskto
     mockAway.mockResolvedValue(null);
     await smartScrollHandler(params).catch(() => undefined);
     expect(mockRestore).toHaveBeenCalledWith(100n);
+  });
+
+  it("a window its dialog has disabled is not brought forward (internal #381: it took the dialog's focus)", async () => {
+    mockAway.mockResolvedValue(null);
+    listed.isEnabled = false;
+    const r = await smartScrollHandler(params);
+    const body = JSON.parse((r.content[0] as { text: string }).text);
+    expect(body.code).toBe("WindowBlockedByDialog");
+    expect(mockRestore).not.toHaveBeenCalled();
   });
 });

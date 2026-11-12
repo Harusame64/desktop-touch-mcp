@@ -482,7 +482,7 @@
     },
     {
       "file": "src/tools/scroll-read.ts",
-      "line": 257,
+      "line": 260,
       "tool": "scroll",
       "errKind": "identifier",
       "contextShape": "none"
@@ -510,14 +510,14 @@
     },
     {
       "file": "src/tools/smart-scroll.ts",
-      "line": 125,
+      "line": 127,
       "tool": "scroll(action='smart')",
       "errKind": "string-literal",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/smart-scroll.ts",
-      "line": 448,
+      "line": 451,
       "tool": "scroll(action='smart')",
       "errKind": "string-literal",
       "contextShape": "object-plain"

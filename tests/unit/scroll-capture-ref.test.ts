@@ -52,7 +52,7 @@ vi.mock("../../src/engine/nutjs.js", () => ({
 vi.mock("../../src/utils/key-map.js", () => ({ parseKeys: () => [] }));
 vi.mock("../../src/engine/win32.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/engine/win32.js")>();
-  return { ...actual, restoreAndFocusWindow: mockRestoreAndFocus, getForegroundHwnd: mockForeground, getWindowRoot: (h: bigint) => h, enumWindowsInZOrder: () => [{ hwnd: 1n, title: "W", isCloaked: false }], getWindowTitleW: () => "Other" };
+  return { ...actual, restoreAndFocusWindow: mockRestoreAndFocus, getForegroundHwnd: mockForeground, getWindowRoot: (h: bigint) => h, enumWindowsInZOrder: () => [{ hwnd: 1n, title: "W", isCloaked: false, ...(mockDisabled() ?? {}) }], getWindowTitleW: () => "Other", getWindowClassName: () => "Notepad" };
 });
 vi.mock("../../src/tools/_resolve-window.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_resolve-window.js")>();
@@ -76,7 +76,9 @@ vi.mock("../../src/tools/_off-desktop.js", async (importOriginal) => {
 });
 vi.mock("../../src/tools/_blocked-by-dialog.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/_blocked-by-dialog.js")>();
-  return { ...actual, disabledByDialog: mockDisabled };
+  // beforeForeground runs for real (the wiring from the enumeration's isEnabled is what is tested);
+  // `mockDisabled`, when set, stands in for the window list's answer.
+  return { ...actual };
 });
 const { scrollCaptureHandler, scrollPositionReader } = await import("../../src/tools/scroll-capture.js");
 
@@ -195,11 +197,13 @@ describe("scroll(action='capture') checks the front before every key and frame (
   // internal #381 (win2 S1, dev/380-design-spike b7a8bbee): with Save As open, capture left the disabled
   // Notepad in front of its dialog with the dialog's focus taken, and answered ok:true with one frame.
   it("refuses a window its dialog has disabled without bringing it forward (internal #381)", async () => {
-    mockDisabled.mockReturnValue({ hwnd: 1n, title: "W", dialog: { hwnd: 77n, name: "Save As" } });
+    // The enumeration reads the window as disabled; the real gate refuses (the dialog read itself needs the
+    // native walk, so here it is unread — the refusal holds either way).
+    mockDisabled.mockReturnValue({ isEnabled: false });
     const r = await scrollCaptureHandler({ ...(args as object), windowTitle: "W" } as never);
     const body = JSON.parse((r.content[0] as { text: string }).text);
     expect(body.code).toBe("WindowBlockedByDialog");
-    expect(body.context).toMatchObject({ dialogHwnd: "77", dialogTitle: "Save As", action: "capture" });
+    expect(body.context).toMatchObject({ hwnd: "1", action: "capture" });
     expect(mockRestoreAndFocus).not.toHaveBeenCalled();
     expect(mockPressKey).not.toHaveBeenCalled();
   });

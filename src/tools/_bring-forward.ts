@@ -16,8 +16,8 @@
  * dialog — the refusal names what is in front instead.
  */
 import { restoreAndFocusWindow, getForegroundHwnd, getWindowRoot, enumWindowsInZOrder, getWindowTitleW } from "../engine/win32.js";
-import { offDesktopTarget, type OffDesktopTarget } from "./_off-desktop.js";
-import { disabledByDialog, type BlockedByDialogTarget } from "./_blocked-by-dialog.js";
+import { type OffDesktopTarget } from "./_off-desktop.js";
+import { beforeForeground, type BlockedByDialogTarget } from "./_blocked-by-dialog.js";
 
 export interface BroughtForward {
   /** The target's top-level window is the foreground window. */
@@ -65,10 +65,11 @@ export async function bringForward(
   const settle = opts.settleMs ?? SETTLE_MS;
   const windows = enumWindowsInZOrder();
   const listed = windows.find((w) => w.hwnd === hwnd);
-  const away = listed ? await offDesktopTarget(listed, windows, opts.named) : null;
-  if (away) return { ok: false, forced: false, offDesktop: away, rect: { x: 0, y: 0, width: 0, height: 0 } };
-  const blocked = listed ? disabledByDialog(listed) : null;
-  if (blocked) return { ok: false, forced: false, blockedByDialog: blocked, rect: { x: 0, y: 0, width: 0, height: 0 } };
+  // The foreground gate shared with keyboard (`_blocked-by-dialog.ts`): another virtual desktop first,
+  // then disabled by its own dialog (gate 2 on #957: one source for the order).
+  const gate = listed ? await beforeForeground(listed, windows, opts.named) : null;
+  if (gate && "offDesktop" in gate) return { ok: false, forced: false, offDesktop: gate.offDesktop, rect: { x: 0, y: 0, width: 0, height: 0 } };
+  if (gate && "blockedByDialog" in gate) return { ok: false, forced: false, blockedByDialog: gate.blockedByDialog, rect: { x: 0, y: 0, width: 0, height: 0 } };
 
   let r = restoreAndFocusWindow(hwnd);
   await new Promise<void>((done) => setTimeout(done, settle));
@@ -92,12 +93,18 @@ export const NEVER_IN_FRONT_READ_NOTE =
   "reading stopped there instead of sending keys to another window. What was read is complete; click " +
   "the target window (or close the window in front), then call again for the rest.";
 
-/** Said when read stopped because the window, which takes page keys only in front, is on another virtual desktop. */
+/** internal #381: read stopped at what a window its dialog has disabled showed (keys would reach the dialog). */
 export const BLOCKED_BY_DIALOG_READ_NOTE =
   "The window is disabled while a dialog it opened is in front, and keys sent to it would reach the dialog. It was " +
   "not brought forward and no page keys were sent, so reading stopped after what it showed. Finish or close the " +
   "dialog, then call again for the rest.";
 
+/** internal #381: the window is disabled and was not brought forward; no dialog of its was seen. */
+export const DISABLED_READ_NOTE =
+  "The window is disabled (no dialog of its was seen — it may be minimized with the window, or busy), so it was not " +
+  "brought forward. What it showed was read; pages it could not be moved to were not.";
+
+/** Said when read stopped because the window, which takes page keys only in front, is on another virtual desktop. */
 export const OTHER_DESKTOP_READ_NOTE =
   "The window is on another virtual desktop and takes page keys only while it is in front. Bringing it forward " +
   "would switch the user's desktop, so reading stopped after what could be read without keys. Move the window to " +
