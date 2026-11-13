@@ -54,7 +54,7 @@ const rwh = (hwnd: bigint, rect: ReturnType<typeof r>, visible = true) => ({ hwn
 describe("resolvePageSurface (ADR-040 invariant 3: surface / not shown / unreadable)", () => {
   it("a frame with its page window: the surface", () => {
     const s = resolvePageSurface(1n, deps({ children: [rwh(855176n, RIGHT), rwh(1641660n, DEVTOOLS)] }), { width: 629, height: 705 });
-    expect(s).toEqual({ kind: "surface", frame: 1n, rwh: 855176n, rwhs: [855176n], rect: RIGHT, others: 1 });
+    expect(s).toEqual({ kind: "surface", frame: 1n, rwh: 855176n, rwhs: [855176n], rect: RIGHT });
   });
   it("two page windows at one rect (DevTools undocked): both are the page's", () => {
     const s = resolvePageSurface(1n, deps({ children: [rwh(10n, RIGHT), rwh(11n, { ...RIGHT })] }));

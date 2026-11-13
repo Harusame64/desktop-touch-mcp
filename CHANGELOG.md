@@ -18,9 +18,8 @@
   (another site's frame, a closed component), the answer is `unverifiable` with the road on, not a failure. When the
   wheel could not be sent at all, the reply says nothing was sent (internal #403).
 - **`scroll` on a Chrome or Edge window with DevTools docked, reached without CDP, scrolls the page, not DevTools.**
-  UIA, tried first, scrolled DevTools' Elements tree and answered `delivered` while the page stayed still. When the
-  window draws another page area beside the page (docked DevTools, a side panel), the wheel now goes to a point on
-  the page itself, as it does with `x`/`y` (internal #407).
+  UIA's search for something to scroll reached DevTools' Elements tree before the page and scrolled it, answering
+  `delivered` while the page stayed still. DevTools' part of the window is now passed over (internal #407).
 - **`scroll` with `x`/`y` on a Chrome or Edge window reached without CDP also scrolls what is at that point.** The
   wheel posted to the window carried the page's centre (or another visible point), and UIA, tried first, moved only
   the document. With two panes side by side, the one at the centre scrolled; with a box pointed at, the document

@@ -27,11 +27,8 @@ export const PAGE_RWH_CLASS = "Chrome_RenderWidgetHostHWND";
 const SIZE_TOLERANCE_PX = 4;
 
 export type PageSurface =
-  /**
-   * `rwhs`: every page window at that rect — undocked DevTools gives two of the same rect, either is the page.
-   * `others`: the frame's other visible page windows, at other rects — docked DevTools, a side panel (internal #407).
-   */
-  | { kind: "surface"; frame: bigint; rwh: bigint; rwhs: bigint[]; rect: Rect; others: number }
+  /** `rwhs`: every page window at that rect — undocked DevTools gives two of the same rect, either is the page. */
+  | { kind: "surface"; frame: bigint; rwh: bigint; rwhs: bigint[]; rect: Rect }
   | { kind: "not_shown"; frame: bigint; why: "minimized" | "cloaked" | "no_page_window" }
   | { kind: "unreadable"; frame: bigint; why: "no_children_read" | "ambiguous" };
 
@@ -95,7 +92,7 @@ export function resolvePageSurface(frame: bigint, deps: PageSurfaceDeps, hint?: 
   const rect = selectPageRect(rwh.map((c) => c.rect!), hint);
   if (rect === null) return { kind: "unreadable", frame, why: "ambiguous" };
   const at = rwh.filter((c) => sameRect(c.rect!, rect)).map((c) => c.hwnd);
-  return { kind: "surface", frame, rwh: at[0]!, rwhs: at, rect, others: rwh.length - at.length };
+  return { kind: "surface", frame, rwh: at[0]!, rwhs: at, rect };
 }
 
 /**

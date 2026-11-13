@@ -728,6 +728,20 @@ fn apply_scroll_with_pattern(
 /// Used by `scroll_by_wheel_at_hwnd_impl` Phase B (Issue #291): when the
 /// upward ancestor walk finds nothing, the ScrollPattern is likely on a child
 /// (e.g. the text editor inside Windows 11 Notepad's WinUI3 root HWND).
+/// internal #407 — whether `elem` is the Document of a browser's DevTools (its value, the URL, is `devtools://…`).
+/// Any read that fails answers false, so the search goes on as before.
+fn is_devtools_document(elem: &IUIAutomationElement) -> bool {
+    unsafe {
+        let Ok(ct) = elem.CurrentControlType() else { return false };
+        if ct.0 != UIA_DocumentControlTypeId.0 {
+            return false;
+        }
+        let Ok(pat) = elem.GetCurrentPattern(UIA_ValuePatternId) else { return false };
+        let Ok(vp) = pat.cast::<IUIAutomationValuePattern>() else { return false };
+        vp.CurrentValue().map(|b| b.to_string().starts_with("devtools://")).unwrap_or(false)
+    }
+}
+
 fn find_scroll_pattern_in_subtree(
     ctx: &UiaContext,
     elem: &IUIAutomationElement,
@@ -742,6 +756,13 @@ fn find_scroll_pattern_in_subtree(
     }
     *node_budget = node_budget.saturating_sub(1);
     unsafe {
+        // internal #407 — a docked DevTools sits in the browser frame's own tree, ahead of the page's Document, and
+        // its Elements tree carries a ScrollPattern: the search scrolled it and answered scrolled while the page
+        // stayed still (win2, dev/407-uia-devtools U1/U2). Its Document reads devtools:// (U4), so its whole
+        // subtree is passed over and the search goes on to the page.
+        if is_devtools_document(elem) {
+            return None;
+        }
         // Check elem itself (P2-2: only accept if scrollable on needed axes).
         if let Ok(pat) = elem.GetCurrentPattern(UIA_ScrollPatternId)
             && let Ok(scroll) = pat.cast::<IUIAutomationScrollPattern>()
