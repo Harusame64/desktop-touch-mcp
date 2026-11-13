@@ -164,6 +164,11 @@ jobs:
         # function, so it runs anywhere; without this step no CI job compiles the test at all.
         run: cargo test -p desktop-touch-engine --lib uia::actions
 
+      - name: Rust unit tests (UIA scroll predicates)
+        # internal #407 — the DevTools front-end URL test that the ScrollPattern search passes over, and the wheel
+        # step. Pure functions; without this step no CI job runs them.
+        run: cargo test -p desktop-touch-engine --lib uia::scroll
+
       - name: Build native addon (Rust → .node, debug profile for CI speed)
         run: npm run build:rs:debug
 

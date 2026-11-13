@@ -737,11 +737,95 @@ fn find_scroll_pattern_in_subtree(
     need_horizontal: bool,
     node_budget: &mut u32,
 ) -> Option<IUIAutomationScrollPattern> {
+    // internal #407 — a docked DevTools sits in the browser frame's own tree, ahead of the page's Document, and its
+    // Elements tree carries a ScrollPattern: the search scrolled it and answered scrolled while the page stayed still
+    // (win2, dev/407-uia-devtools U1/U2). Its Document reads devtools:// (U4), so the first pass passes over its
+    // subtree. When that pass found nothing, passed over a DevTools Document, and met no other Document, the window
+    // is DevTools itself (undocked, named by the caller): the search runs again without passing over it, as before.
+    let mut seen = DevToolsSeen::default();
+    if let Some(found) = find_scroll_pattern_dfs(
+        ctx, elem, depth, target_hwnd, need_vertical, need_horizontal, node_budget, true, &mut seen,
+    ) {
+        return Some(found);
+    }
+    // Not when the first pass ran out of budget: the page's Document may lie past where it stopped.
+    if seen.devtools && !seen.other_document && *node_budget > 0 {
+        let mut budget = MAX_SCROLL_DFS_NODES;
+        return find_scroll_pattern_dfs(
+            ctx, elem, depth, target_hwnd, need_vertical, need_horizontal, &mut budget, false, &mut seen,
+        );
+    }
+    None
+}
+
+/// internal #407 — what the DFS has met so far.
+#[derive(Default)]
+struct DevToolsSeen {
+    devtools: bool,
+    other_document: bool,
+}
+
+enum DocumentKind {
+    NotDocument,
+    DevTools,
+    Other,
+}
+
+/// internal #407 — whether a DevTools front-end URL: `devtools://` or `chrome-devtools://`, in any case (the same set
+/// as `DEVTOOLS_FRONTEND` in cdp-default-tab.ts).
+fn is_devtools_url(url: &str) -> bool {
+    let l = url.trim_start().to_ascii_lowercase();
+    l.starts_with("devtools://") || l.starts_with("chrome-devtools://")
+}
+
+/// internal #407 — `elem` as a Document: DevTools' (its value, the URL, is a DevTools front end), another, or not a
+/// Document. A value that cannot be read counts as another Document, so the search goes on as before.
+fn document_kind(elem: &IUIAutomationElement) -> DocumentKind {
+    unsafe {
+        let Ok(ct) = elem.CurrentControlType() else { return DocumentKind::NotDocument };
+        if ct.0 != UIA_DocumentControlTypeId.0 {
+            return DocumentKind::NotDocument;
+        }
+        let url = elem
+            .GetCurrentPattern(UIA_ValuePatternId)
+            .ok()
+            .and_then(|p| p.cast::<IUIAutomationValuePattern>().ok())
+            .and_then(|vp| vp.CurrentValue().ok())
+            .map(|b| b.to_string());
+        match url {
+            Some(u) if is_devtools_url(&u) => DocumentKind::DevTools,
+            _ => DocumentKind::Other,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn find_scroll_pattern_dfs(
+    ctx: &UiaContext,
+    elem: &IUIAutomationElement,
+    depth: u32,
+    target_hwnd: isize,
+    need_vertical: bool,
+    need_horizontal: bool,
+    node_budget: &mut u32,
+    skip_devtools: bool,
+    seen: &mut DevToolsSeen,
+) -> Option<IUIAutomationScrollPattern> {
     if depth == 0 || *node_budget == 0 {
         return None;
     }
     *node_budget = node_budget.saturating_sub(1);
     unsafe {
+        // internal #407 — see `find_scroll_pattern_in_subtree`: a DevTools Document's subtree is passed over on the
+        // first pass, and any other Document is noted.
+        match document_kind(elem) {
+            DocumentKind::DevTools if skip_devtools => {
+                seen.devtools = true;
+                return None;
+            }
+            DocumentKind::Other => seen.other_document = true,
+            _ => {}
+        }
         // Check elem itself (P2-2: only accept if scrollable on needed axes).
         if let Ok(pat) = elem.GetCurrentPattern(UIA_ScrollPatternId)
             && let Ok(scroll) = pat.cast::<IUIAutomationScrollPattern>()
@@ -789,9 +873,9 @@ fn find_scroll_pattern_in_subtree(
                 child = ctx.walker.GetNextSiblingElement(&c).ok();
                 continue;
             }
-            if let Some(found) = find_scroll_pattern_in_subtree(
+            if let Some(found) = find_scroll_pattern_dfs(
                 ctx, &c, depth - 1, target_hwnd, need_vertical, need_horizontal,
-                node_budget,
+                node_budget, skip_devtools, seen,
             ) {
                 return Some(found);
             }
@@ -883,6 +967,18 @@ fn walk_scroll_ancestors(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn devtools_urls_are_told_from_pages() {
+        use super::is_devtools_url;
+        assert!(is_devtools_url("devtools://devtools/bundled/devtools_app.html"));
+        assert!(is_devtools_url("chrome-devtools://devtools/bundled/inspector.html"));
+        assert!(is_devtools_url("DevTools://devtools/bundled/devtools_app.html"));
+        assert!(!is_devtools_url("https://example.com/devtools://"));
+        assert!(!is_devtools_url("http://127.0.0.1:8080/wheel-hit-path.html#panes"));
+        assert!(!is_devtools_url(""));
+        assert!(!is_devtools_url("chrome://settings"));
+    }
+
     use super::wheel_step_percent;
 
     /// Regression guard for PR #288 Round 2 P1 (Codex + Opus consensus): the
