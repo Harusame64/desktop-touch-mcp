@@ -2476,6 +2476,70 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
     expect(win32PostMessageMock.mock.calls[0]![3]).toBe(lp(900, 450));
   });
 
+  // internal #404 — win2 dev/404-window-road-point: a posted wheel is hit-tested inside the page at its point (W3);
+  // UIA moves only the document, whatever is under the point (W4), and with DevTools docked claimed delivered while
+  // nothing in the page moved (W5).
+  describe("the caller's point on the window road (internal #404)", () => {
+    const at = (x: number, y: number) => ({ screenX: x, screenY: y, frame: FRAME });
+    beforeEach(() => {
+      uiaScrollByWheelAtHwndMock.mockReset();
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+    });
+    it("a point on the visible page: Tier 1 is skipped and every post carries that point", async () => {
+      shape(500);
+      const told = vi.fn();
+      await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 3, at: at(600, 400), onPointNotUsed: told });
+      expect(uiaScrollByWheelAtHwndMock).not.toHaveBeenCalled();
+      expect(win32PostMessageMock).toHaveBeenCalled();
+      for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(600, 400));
+      expect(told).not.toHaveBeenCalled();
+    });
+    it("postWheelToHwnd on its own carries the point too", async () => {
+      shape(500);
+      await postWheelToHwnd(FRAME, { direction: "down", notch: 1, at: at(1200, 700) });
+      for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(1200, 700));
+    });
+    it("a point off the page: Tier 1 is tried as before, the caller is told, and Tier 3 posts at the page's own point", async () => {
+      shape(500);
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: false, scrolled: false });
+      const told = vi.fn();
+      await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1, at: at(600, 180), onPointNotUsed: told });
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledTimes(1);
+      expect(told).toHaveBeenCalledWith("off");
+      for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(Math.round(508 + 784 / 2), Math.round(237 + 505 / 2)));
+    });
+    it("a point covered by another window while the page shows elsewhere: told 'covered', and the post goes where it shows", async () => {
+      shape(1100);
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: false, scrolled: false });
+      const told = vi.fn();
+      await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1, at: at(600, 400), onPointNotUsed: told });
+      expect(told).toHaveBeenCalledWith("covered");
+      for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(Math.round(508 + 784 * 0.9), Math.round(237 + 505 * 0.02)));
+    });
+    it("Tier 1 answers for a point off the page: the caller is still told", async () => {
+      shape(500);
+      const told = vi.fn();
+      const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1, at: at(600, 180), onPointNotUsed: told });
+      expect(r).toEqual({ scrolled: true, channel: "uia", reason: "delivered_via_uia" });
+      expect(told).toHaveBeenCalledWith("off");
+    });
+    it("not a Chromium window: the point changes nothing (Tier 1 first, the window's centre)", async () => {
+      shape(null, "XLMAIN");
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: false, scrolled: false });
+      const told = vi.fn();
+      await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1, at: at(600, 400), onPointNotUsed: told });
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledTimes(1);
+      expect(win32PostMessageMock.mock.calls[0]![3]).toBe(lp(900, 450));
+      expect(told).not.toHaveBeenCalled();
+    });
+    it("no point: Tier 1 first, as before", async () => {
+      shape(500);
+      const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1 });
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledTimes(1);
+      expect(r).toEqual({ scrolled: true, channel: "uia", reason: "delivered_via_uia" });
+    });
+  });
+
   // ADR-040 PR ③ — win2 (dev/adr-040-pr3): a hidden page keeps its last shown ScrollPercent and jumps to that
   // + one step, answering "unchanged", the same as a page at its end; the refusal then said nothing moved.
   describe("Tier 1 UIA is not tried on a Chromium window whose page is not visible", () => {

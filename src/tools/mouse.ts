@@ -1600,16 +1600,30 @@ export const scrollHandler = async ({
     // internal #403 — on the CDP road the wheel goes where the caller pointed: Chromium scrolls the scroller
     // under the wheel's point (dev/403-cdp-wheel-spike M1), and before this the point was dropped and the
     // wheel always went to the page's centre. The dispatcher maps it onto the page and says when it could not.
-    const cdpFrame = dest.kind === "cdp" ? dest.frame : undefined;
-    const at = cdpFrame !== undefined && tx !== undefined && ty !== undefined ? { screenX: tx, screenY: ty, frame: cdpFrame } : undefined;
-    const tier1 = await dispatchScrollWheel(dest, { direction, notch: amount, ...(at !== undefined && { at }) });
+    // internal #404 — the window road takes it too: a wheel posted to a Chromium window is hit-tested inside the
+    // page at its point (dev/404-window-road-point W3), and it used to go to the page's centre or a grid point.
+    const pointFrame = dest.kind === "cdp" ? dest.frame : dest.kind === "hwnd" ? dest.hwnd : undefined;
+    const at = pointFrame !== undefined && tx !== undefined && ty !== undefined ? { screenX: tx, screenY: ty, frame: pointFrame } : undefined;
+    let windowRoadPointNotUsed: "off" | "covered" | "unreadable" | undefined;
+    const tier1 = await dispatchScrollWheel(dest, {
+      direction,
+      notch: amount,
+      ...(at !== undefined && { at }),
+      ...(at !== undefined && dest.kind === "hwnd" && { onPointNotUsed: (why: "off" | "covered" | "unreadable") => { windowRoadPointNotUsed = why; } }),
+    });
 
-    // internal #403 — said only when the wheel was sent, at the centre instead of the caller's point.
-    if (tier1?.pointNotUsed !== undefined && tx !== undefined && ty !== undefined) {
+    // internal #403 / #404 — said only when the wheel was sent, elsewhere on the page than the caller's point.
+    const pointNotUsed = tier1?.pointNotUsed ?? (tier1?.pageNotVisible === undefined ? windowRoadPointNotUsed : undefined);
+    if (pointNotUsed !== undefined && tx !== undefined && ty !== undefined) {
+      const elsewhere = dest.kind === "cdp" ? "at the middle of the page" : "where the page shows (its middle when that is visible)";
       scrollWarnings.push(
-        tier1.pointNotUsed === "off"
-          ? `The point (${tx}, ${ty}) is not on the page in that window (it is over the tab strip, the address bar, a DevTools pane, or outside the window), so the wheel was sent at the middle of the page. To scroll one part of the page, pass x/y inside that part.`
-          : `The point (${tx}, ${ty}) could not be placed on the page (the page area could not be read, or the page is pinch-zoomed or shown in device emulation), so the wheel was sent at the middle of the page. To scroll a particular element, scroll({ action: "to_element" }) or scroll({ action: "smart" }) reach it through the page.`,
+        pointNotUsed === "off"
+          ? `The point (${tx}, ${ty}) is not on the page in that window (it is over the tab strip, the address bar, a DevTools pane, or outside the window), so the wheel was sent ${elsewhere}. To scroll one part of the page, pass x/y inside that part.`
+          : pointNotUsed === "covered"
+          ? `The point (${tx}, ${ty}) is covered by another window, so the wheel was sent ${elsewhere}. To scroll that part, bring the window forward first (focus_window), or pass x/y on a part of the page that shows.`
+          : dest.kind !== "cdp"
+          ? `The point (${tx}, ${ty}) could not be checked (Windows did not say what is at that point), so the wheel was sent ${elsewhere}. To scroll a particular element, scroll({ action: "to_element" }) or scroll({ action: "smart" }) reach it through the page.`
+          : `The point (${tx}, ${ty}) could not be placed on the page (the page area could not be read, or the page is pinch-zoomed or shown in device emulation), so the wheel was sent ${elsewhere}. To scroll a particular element, scroll({ action: "to_element" }) or scroll({ action: "smart" }) reach it through the page.`,
       );
     }
 

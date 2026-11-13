@@ -54,9 +54,9 @@ export const wheelPointDeps: WheelPointDeps = {
  * `wheelPointOnPage`, or `keep` when a read throws (a rect or WindowFromPoint read the deps do not guard):
  * a missing instrument keeps the caller's point, as invariant 3 asks, and never throws out of the dispatch.
  */
-function pagePointOrKeep(hwnd: bigint): WheelPagePoint {
+function pagePointOrKeep(hwnd: bigint, preferred?: { x: number; y: number }): WheelPagePoint {
   try {
-    return wheelPointOnPage(hwnd, wheelPointDeps);
+    return wheelPointOnPage(hwnd, wheelPointDeps, preferred);
   } catch {
     return { kind: "keep" };
   }
@@ -419,6 +419,12 @@ export interface WheelParams {
    * the centre and the outcome's `pointNotUsed` says why. Takes precedence over `x`/`y`.
    */
   at?: { screenX: number; screenY: number; frame: bigint };
+  /**
+   * internal #404 — told when the window road was given the caller's point (`at`) and posted the wheel elsewhere
+   * on the page (`wheelPointOnPage`'s `pointNotUsed`). A callback rather than an outcome field because that road
+   * also ends in `null` (nothing observed), and the caller still has to say where the wheel went.
+   */
+  onPointNotUsed?: (why: "off" | "covered" | "unreadable") => void;
 }
 
 /**
@@ -472,7 +478,7 @@ export interface DispatchOutcome {
    * internal #403 — the CDP road was given the caller's point (`WheelParams.at`) and sent the wheel at the
    * page's centre instead: "off" the page surface, or "unreadable". Absent when the point was used or none given.
    */
-  pointNotUsed?: "off" | "unreadable";
+  pointNotUsed?: "off" | "covered" | "unreadable";
   /**
    * ADR §2.6.2 reason value. Phase 1b emits `'delivered_via_uia'`, Phase 3
    * adds `'delivered_via_cdp'`, Phase 4 adds `'delivered_via_postmessage'`;
@@ -1412,8 +1418,10 @@ export async function postWheelToHwnd(
   if (typeof postMessage !== "function") return null;
   // ADR-040 PR ② (internal #396) — a Chromium window takes a posted wheel at its point, not at the
   // window it is posted to: every post carries a point where this window's page is visible, or none is sent.
-  const readNow = pagePointOrKeep(hwnd);
+  const preferred = params.at !== undefined ? { x: params.at.screenX, y: params.at.screenY } : undefined;
+  const readNow = pagePointOrKeep(hwnd, preferred);
   const pagePoint = readNow.kind === "keep" && earlierPagePoint?.kind === "point" ? earlierPagePoint : readNow;
+  if (pagePoint.kind === "point" && pagePoint.pointNotUsed !== undefined) params.onPointNotUsed?.(pagePoint.pointNotUsed);
   if (pagePoint.kind === "not_visible") {
     return {
       scrolled: false,
@@ -2030,7 +2038,7 @@ export async function dispatchScrollWheel(
     // on an up, and a minimized one from 0 to 15645, each answered "pre/post percent unchanged" — the same as a
     // page already at its end — so the refusal below said nothing was scrolled while the page had moved.
     // The same reading as Tier 3's, so a page visible anywhere still gets Tier 1 as before.
-    const pagePoint = pagePointOrKeep(dest.hwnd);
+    const pagePoint = pagePointOrKeep(dest.hwnd, params.at !== undefined ? { x: params.at.screenX, y: params.at.screenY } : undefined);
     if (pagePoint.kind === "not_visible") {
       return {
         scrolled: false,
@@ -2039,6 +2047,14 @@ export async function dispatchScrollWheel(
         pageNotVisible: { frame: pagePoint.frame, why: pagePoint.why },
       };
     }
+    // internal #404 — the caller pointed at a visible part of a Chromium page: post the wheel there and skip Tier 1.
+    // UIA's ScrollPattern moves only the document, whatever is under the point (win2, dev/404-window-road-point W4:
+    // a box pointed at stayed still while the document moved, and with DevTools docked it answered delivered while
+    // nothing in the page moved, W5). A posted wheel is hit-tested at its point inside the page (W3).
+    const pointedOnPage = params.at !== undefined && pagePoint.kind === "point" && pagePoint.pointNotUsed === undefined;
+    // Told here too, since Tier 1 may answer before Tier 3 reads the point again.
+    if (pagePoint.kind === "point" && pagePoint.pointNotUsed !== undefined) params.onPointNotUsed?.(pagePoint.pointNotUsed);
+    if (!pointedOnPage) {
     try {
       // Resolve the Tier 1 native call through the tolerant `native-engine.ts`
       // loader — NOT a direct `import from "../../index.js"`, which `throw`s at
@@ -2076,6 +2092,7 @@ export async function dispatchScrollWheel(
       }
     } catch {
       // Tier 1 native crash → fall through to Tier 3 (best-effort).
+    }
     }
     // ADR-018 Phase 4 — Tier 3 PostMessage fall-through. Covers Word `_WwG`,
     // Excel cell area, Explorer ListView, and other destinations that have a
