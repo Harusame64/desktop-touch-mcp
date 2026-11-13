@@ -10,6 +10,13 @@
   tool (internal #377).
 
 ### Fixed — Windows
+- **`scroll` on a Chrome or Edge page reached through CDP answers by what the browser actually scrolled.** It used
+  to read only the page's own position, so a page that scrolls a pane inside it (Gmail, Slack, Notion) answered
+  `ScrollNotDelivered` while the pane moved, and a page already at its end answered the same. Now the wheel counts as
+  delivered when something the browser hit under the point moved the way the wheel turns, or when all of it is
+  already at its end. When the page cancels the wheel itself, or nothing that scrolls can be seen where it landed
+  (another site's frame, a closed component), the answer is `unverifiable` with the road on, not a failure. When the
+  wheel could not be sent at all, the reply says nothing was sent (internal #403).
 - **`scroll` with `x`/`y` on a Chrome or Edge page reached through CDP scrolls what is at that point.** The point
   was dropped on that road and the wheel always went to the middle of the page, so with two panes side by side (a
   mail list and a reading pane, a sidebar) the one at the middle scrolled instead of the one pointed at. A point off

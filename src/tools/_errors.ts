@@ -927,7 +927,7 @@ const SUGGESTS: Record<string, string[]> = {
     "Use scroll({action:'to_element', name|selector}) when you know the target — bypasses the wheel channel entirely via UIA ScrollItemPattern or CDP scrollIntoView (the same Tier 1 / Tier 2 destination-explicit channels ADR-018 Phase 1b/3 wire into action='raw')",
     "Verify the target is actually scrollable: run desktop_state or screenshot(detail='text') first to confirm the focused element under the cursor accepts wheel input — transparent layered overlays (Dell DDPM, Logitech Options+, etc.) intercept wheel events and produce reason='wheel_overlay_intercepted' once ADR-018 Phase 4 detection ships",
     "If the target runs elevated (admin) and the caller does not, wheel events are blocked by UIPI — re-run the caller with matching integrity level",
-    "If the target uses overlay/Chromium scrollbars (no Win32 scrollbar), pass coords inside the actual scrollable region — the cursor must be over a scroll-receiving element. For Chrome/Edge tabs prefer scroll(action:'smart') which uses CDP (the same path ADR-018 Phase 3 wires into action='raw' as Tier 2)",
+    "If the target uses overlay/Chromium scrollbars (no Win32 scrollbar), pass coords inside the actual scrollable region — the wheel goes to the element under (x,y), on the CDP road for Chrome/Edge tabs too. If that part cannot scroll further, scroll(action:'smart') or scroll(action:'to_element') reach an element without the wheel",
   ],
   SetValueAllChannelsFailed: [
     "Verify the element supports text input",
