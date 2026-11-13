@@ -16,9 +16,22 @@ import { PAGE_RWH_CLASS, resolvePageSurface, type PageSurfaceDeps } from "./page
 /** The top-level class of Chrome, Edge and Electron windows. */
 export const CHROMIUM_FRAME_CLASS = "Chrome_WidgetWin_1";
 
+/**
+ * internal #404 — why the caller's point is not the one a wheel carries: "off" the page surface (the tab strip, a
+ * DevTools pane, outside the window), "covered" by another window there, or "unreadable" (Windows could not be
+ * asked at it, or the page could not be read).
+ */
+export type PointNotUsed = "off" | "covered" | "unreadable";
+
 export type WheelPagePoint =
-  | { kind: "keep" }
-  | { kind: "point"; frame: bigint; point: { x: number; y: number } }
+  | { kind: "keep"; pointNotUsed?: PointNotUsed }
+  | {
+      kind: "point";
+      frame: bigint;
+      point: { x: number; y: number };
+      /** internal #404 — the caller's point was given and this is not it. Absent when it is, or none was given. */
+      pointNotUsed?: PointNotUsed;
+    }
   | { kind: "not_visible"; frame: bigint; why: "covered" | "minimized" | "cloaked" | "no_page_window" };
 
 export interface WheelPointDeps {
@@ -41,8 +54,15 @@ export const WHEEL_POINT_FRACTIONS: ReadonlyArray<readonly [number, number]> = [
   ...GRID.flatMap((fy) => GRID.map((fx) => [fx, fy] as const)).filter(([fx, fy]) => !(fx === 0.5 && fy === 0.5)),
 ];
 
-/** ADR-040 PR ② — where to point a posted wheel for `hwnd` (a frame or one of its children). */
-export function wheelPointOnPage(hwnd: bigint, deps: WheelPointDeps): WheelPagePoint {
+/**
+ * ADR-040 PR ② — where to point a posted wheel for `hwnd` (a frame or one of its children).
+ *
+ * internal #404 — `preferred` is the caller's point in screen px. Chromium hit-tests a posted wheel inside the
+ * page at its lParam, so it scrolls the element under that point (win2, dev/404-window-road-point W3, also with
+ * DevTools docked and page zoom 125 %). It is tried first, by the same visibility test as the grid's; when it is
+ * not on the visible page, the grid is tried as before and `pointNotUsed` says why.
+ */
+export function wheelPointOnPage(hwnd: bigint, deps: WheelPointDeps, preferred?: { x: number; y: number }): WheelPagePoint {
   let frame: bigint;
   try {
     frame = deps.rootOf(hwnd) ?? hwnd;
@@ -50,8 +70,10 @@ export function wheelPointOnPage(hwnd: bigint, deps: WheelPointDeps): WheelPageP
   } catch {
     return { kind: "keep" };
   }
+  // A Chromium window whose page cannot be placed: the post keeps its old point, and a caller's point was not used.
+  const keep: WheelPagePoint = preferred !== undefined ? { kind: "keep", pointNotUsed: "unreadable" } : { kind: "keep" };
   const surface = resolvePageSurface(frame, deps.surface);
-  if (surface.kind === "unreadable") return { kind: "keep" };
+  if (surface.kind === "unreadable") return keep;
   if (surface.kind === "not_shown") {
     if (surface.why !== "no_page_window") return { kind: "not_visible", frame, why: surface.why };
     // No page window does not by itself prove the window is covered: a window just brought forward, or a
@@ -59,12 +81,28 @@ export function wheelPointOnPage(hwnd: bigint, deps: WheelPointDeps): WheelPageP
     // before (gate 2 on #969; the same reading as browser_click's, PR #967 P12). Refuse only when another
     // window is what Windows finds at that centre, as when it covers all of it (win2 OQ-40-8 Q3).
     const r = deps.rectOf(frame);
-    if (r === null) return { kind: "keep" };
+    if (r === null) return keep;
     const at = deps.pointAt(Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2));
-    if (at === undefined || (at !== null && at.root === frame)) return { kind: "keep" };
+    if (at === undefined || (at !== null && at.root === frame)) return keep;
     return { kind: "not_visible", frame, why: "no_page_window" };
   }
   const { x, y, width, height } = surface.rect;
+  const shows = (at: { child: bigint; root: bigint } | null): boolean =>
+    at !== null && at.root === frame && (surface.rwhs.includes(at.child) || deps.classOf(at.child) !== PAGE_RWH_CLASS);
+  let pointNotUsed: PointNotUsed | undefined;
+  if (preferred !== undefined) {
+    const px = Math.round(preferred.x), py = Math.round(preferred.y);
+    if (px < x || py < y || px >= x + width || py >= y + height) pointNotUsed = "off";
+    else {
+      const at = deps.pointAt(px, py);
+      if (at === undefined) pointNotUsed = "unreadable";
+      else if (shows(at)) return { kind: "point", frame, point: { x: px, y: py } };
+      // Over this window but not its page (a DevTools pane drawn in its own page window), or another window.
+      else pointNotUsed = at !== null && at.root === frame ? "off" : "covered";
+    }
+  }
+  const withWhy = (point: { x: number; y: number }): WheelPagePoint =>
+    ({ kind: "point", frame, point, ...(pointNotUsed !== undefined && { pointNotUsed }) });
   let asked = 0;
   for (const [fx, fy] of WHEEL_POINT_FRACTIONS) {
     const point = { x: Math.round(x + width * fx), y: Math.round(y + height * fy) };
@@ -73,15 +111,13 @@ export function wheelPointOnPage(hwnd: bigint, deps: WheelPointDeps): WheelPageP
     // than refuse on a missing instrument; once the centre was read as covered, falling back to it would
     // post at a point known to be another window's (gate 2 on #969), so try the next one.
     if (at === undefined) {
-      if (asked === 0) return { kind: "keep" };
+      if (asked === 0) return pointNotUsed !== undefined ? { kind: "keep", pointNotUsed } : { kind: "keep" };
       continue;
     }
     asked += 1;
     // Visible when this frame is the window there and the child is not another page window (DevTools' own,
     // which Chromium would hand the wheel). A child inside the page window counts as the page (gate 2).
-    if (at !== null && at.root === frame && (surface.rwhs.includes(at.child) || deps.classOf(at.child) !== PAGE_RWH_CLASS)) {
-      return { kind: "point", frame, point };
-    }
+    if (shows(at)) return withWhy(point);
   }
   return { kind: "not_visible", frame, why: "covered" };
 }

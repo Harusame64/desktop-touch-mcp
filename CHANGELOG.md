@@ -17,6 +17,11 @@
   already at its end. When the page cancels the wheel itself, or nothing that scrolls can be seen where it landed
   (another site's frame, a closed component), the answer is `unverifiable` with the road on, not a failure. When the
   wheel could not be sent at all, the reply says nothing was sent (internal #403).
+- **`scroll` with `x`/`y` on a Chrome or Edge window reached without CDP also scrolls what is at that point.** The
+  wheel posted to the window carried the page's centre (or another visible point), and UIA, tried first, moved only
+  the document. With two panes side by side, the one at the centre scrolled; with a box pointed at, the document
+  scrolled. Now a point on the visible page is where the wheel goes, and UIA is not tried for it. A point off the
+  page, or covered there by another window, keeps the old point, and the reply says so (internal #404).
 - **`scroll` with `x`/`y` on a Chrome or Edge page reached through CDP scrolls what is at that point.** The point
   was dropped on that road and the wheel always went to the middle of the page, so with two panes side by side (a
   mail list and a reading pane, a sidebar) the one at the middle scrolled instead of the one pointed at. A point off

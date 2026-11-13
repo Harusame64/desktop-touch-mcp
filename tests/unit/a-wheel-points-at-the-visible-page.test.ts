@@ -67,6 +67,52 @@ describe("wheelPointOnPage", () => {
   });
 });
 
+describe("wheelPointOnPage with the caller's point (internal #404)", () => {
+  // The page's RECT: x 100..1099, y 200..699.
+  it("on the visible page: that point, nothing else asked", () => {
+    const asked: Array<[number, number]> = [];
+    const d = deps({ pointAt: (x, y) => { asked.push([x, y]); return { child: PAGE, root: FRAME }; } });
+    expect(wheelPointOnPage(FRAME, d, { x: 250, y: 600 })).toEqual({ kind: "point", frame: FRAME, point: { x: 250, y: 600 } });
+    expect(asked).toEqual([[250, 600]]);
+  });
+  it("on the page's edges: the first row and column count, the ones past them do not", () => {
+    expect(wheelPointOnPage(FRAME, deps(), { x: 100, y: 200 })).toEqual({ kind: "point", frame: FRAME, point: { x: 100, y: 200 } });
+    expect(wheelPointOnPage(FRAME, deps(), { x: 1100, y: 450 })).toMatchObject({ point: { x: 600, y: 450 }, pointNotUsed: "off" });
+    expect(wheelPointOnPage(FRAME, deps(), { x: 600, y: 700 })).toMatchObject({ point: { x: 600, y: 450 }, pointNotUsed: "off" });
+  });
+  it("off the page (the tab strip): the page's own point, and why", () => {
+    expect(wheelPointOnPage(FRAME, deps(), { x: 400, y: 150 })).toEqual({ kind: "point", frame: FRAME, point: { x: 600, y: 450 }, pointNotUsed: "off" });
+  });
+  it("covered there by another window, visible elsewhere: a visible point, and why", () => {
+    expect(wheelPointOnPage(FRAME, deps({ visibleFromX: 900 }), { x: 300, y: 450 })).toEqual({ kind: "point", frame: FRAME, point: { x: 1000, y: 210 }, pointNotUsed: "covered" });
+  });
+  it("over a DevTools pane of this window (its own page window): off, not covered", () => {
+    const d = deps({ pointAt: (x) => (x < 500 ? { child: 4n, root: FRAME } : { child: PAGE, root: FRAME }), classOf: (h) => (h === 4n ? "Chrome_RenderWidgetHostHWND" : "Chrome_WidgetWin_1") });
+    expect(wheelPointOnPage(FRAME, d, { x: 300, y: 450 })).toMatchObject({ kind: "point", point: { x: 600, y: 450 }, pointNotUsed: "off" });
+  });
+  it("Windows cannot be asked at it: unreadable, and the rest goes as before", () => {
+    let n = 0;
+    const d = deps({ pointAt: () => { n += 1; return n === 1 ? undefined : { child: PAGE, root: FRAME }; } });
+    expect(wheelPointOnPage(FRAME, d, { x: 300, y: 450 })).toMatchObject({ kind: "point", point: { x: 600, y: 450 }, pointNotUsed: "unreadable" });
+  });
+  it("Windows cannot be asked anywhere, or the page cannot be read: keep, saying the point was not used", () => {
+    expect(wheelPointOnPage(FRAME, deps({ pointAt: () => undefined }), { x: 300, y: 450 })).toEqual({ kind: "keep", pointNotUsed: "unreadable" });
+    expect(wheelPointOnPage(FRAME, deps({ surface: { isIconic: () => false, isCloaked: () => false, descendants: () => [] } }), { x: 300, y: 450 })).toEqual({ kind: "keep", pointNotUsed: "unreadable" });
+    // No point given: keep as before, with nothing to say.
+    expect(wheelPointOnPage(FRAME, deps({ pointAt: () => undefined }))).toEqual({ kind: "keep" });
+  });
+  it("the page visible nowhere: still refused, the point changes nothing", () => {
+    expect(wheelPointOnPage(FRAME, deps({ visibleFromX: null }), { x: 300, y: 450 })).toEqual({ kind: "not_visible", frame: FRAME, why: "covered" });
+    expect(wheelPointOnPage(FRAME, deps({ iconic: true }), { x: 300, y: 450 })).toMatchObject({ kind: "not_visible", why: "minimized" });
+  });
+  it("not a Chromium window: keep, as before", () => {
+    expect(wheelPointOnPage(FRAME, deps({ classOf: () => "XLMAIN" }), { x: 300, y: 450 })).toEqual({ kind: "keep" });
+  });
+  it("fractions are rounded to the pixel asked", () => {
+    expect(wheelPointOnPage(FRAME, deps(), { x: 250.4, y: 600.6 })).toEqual({ kind: "point", frame: FRAME, point: { x: 250, y: 601 } });
+  });
+});
+
 describe("the refusal gives a road on (ADR-040 invariant 8)", () => {
   const text = (r: { content: Array<{ type: string; text?: string }> }) => {
     const j = JSON.parse(r.content[0]!.text!) as { error: string; suggest?: string[] };
