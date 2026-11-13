@@ -574,6 +574,9 @@ export async function readScrollPositionInTab(
   /** The viewport in CSS px (window.innerWidth/innerHeight, scrollbars included): maps a screen point onto it. */
   innerWidth?: number;
   innerHeight?: number;
+  /** window.devicePixelRatio (monitor scale × page zoom) and visualViewport.scale (pinch zoom). */
+  devicePixelRatio?: number;
+  pinchScale?: number;
 } | null> {
   const expr = `
 (function() {
@@ -588,6 +591,8 @@ export async function readScrollPositionInTab(
     clientWidth: el.clientWidth,
     innerWidth: window.innerWidth,
     innerHeight: window.innerHeight,
+    devicePixelRatio: window.devicePixelRatio,
+    pinchScale: window.visualViewport ? window.visualViewport.scale : 1,
   };
 })()`;
   try {
@@ -600,6 +605,8 @@ export async function readScrollPositionInTab(
       clientWidth: number;
       innerWidth?: number;
       innerHeight?: number;
+      devicePixelRatio?: number;
+      pinchScale?: number;
     } | null;
     return result;
   } catch {

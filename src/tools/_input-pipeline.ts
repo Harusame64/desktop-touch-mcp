@@ -350,7 +350,8 @@ export const WHEEL_DELTA_PER_NOTCH = 120;
  */
 export type InputDestination =
   | { kind: "uia"; hwnd: bigint }
-  | { kind: "cdp"; tabId: string; nodeId?: number }
+  /** `frame`: the Chromium window the tab was found in (internal #403: where a caller's point is mapped from). */
+  | { kind: "cdp"; tabId: string; nodeId?: number; frame?: bigint }
   | { kind: "hwnd"; hwnd: bigint }
   | { kind: "unresolved"; reason: string };
 
@@ -397,48 +398,40 @@ export interface WheelParams {
   x?: number;
   y?: number;
   /**
-   * internal #403 — the caller's point, in screen px, on the page surface of `frame` (the caller checked
-   * that with `pointOnPageSurface`). The CDP road maps it into the viewport and sends the wheel there,
-   * instead of the viewport's centre. Takes precedence over `x`/`y`.
+   * internal #403 — the caller's point, in screen px, and the Chromium window it was given for. The CDP road
+   * maps it into the viewport and sends the wheel there (`viewportPointOf`); when it cannot, the wheel goes to
+   * the centre and the outcome's `pointNotUsed` says why. Takes precedence over `x`/`y`.
    */
   at?: { screenX: number; screenY: number; frame: bigint };
 }
 
 /**
- * internal #403 — whether screen point (`x`, `y`) lies on `frame`'s page surface (the window the page is drawn
- * in): "on", "off" (the tab strip, the address bar, a docked DevTools pane, outside the window), or
- * "unreadable" when the surface cannot be read.
- */
-export function pointOnPageSurface(frame: bigint, x: number, y: number): "on" | "off" | "unreadable" {
-  try {
-    const surface = resolvePageSurface(frame, wheelPointDeps.surface);
-    if (surface.kind !== "surface") return "unreadable";
-    const r = surface.rect;
-    return x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height ? "on" : "off";
-  } catch {
-    return "unreadable";
-  }
-}
-
-/**
- * internal #403 — `at` mapped into the viewport's CSS px: (screen − the page surface's origin) × the viewport's
- * CSS width over the surface's physical width, which carries the monitor's scale and the page zoom alike.
- * Undefined when the surface or the viewport's size cannot be read, or the point is off the surface now.
+ * internal #403 — the caller's point mapped into the viewport's CSS px, or why it was not: "off" when it is not on
+ * the frame's page surface now (the tab strip, the address bar, a DevTools pane, outside the window), "unreadable"
+ * when the surface or the viewport cannot be read or do not agree. The mapping is (screen − the surface's origin)
+ * × the viewport's CSS width over the surface's physical width, which carries the monitor's scale and the page
+ * zoom alike. The surface is picked with the viewport's physical size as the hint, as the click road does, so a
+ * side panel with its own page window is not taken for the page. A pinch-zoomed page, or one whose viewport does
+ * not fill the surface (DevTools' device emulation), is "unreadable": the mapping would land elsewhere.
  */
 function viewportPointOf(
   at: NonNullable<WheelParams["at"]>,
-  innerWidth: number | undefined,
-  innerHeight: number | undefined,
-): { x: number; y: number } | undefined {
-  if (!innerWidth || !innerHeight) return undefined;
+  view: { innerWidth?: number; innerHeight?: number; devicePixelRatio?: number; pinchScale?: number },
+): { x: number; y: number } | { why: "off" | "unreadable" } {
+  const { innerWidth: w, innerHeight: h, devicePixelRatio: dpr } = view;
+  if (!w || !h || !dpr) return { why: "unreadable" };
+  if (view.pinchScale !== undefined && Math.abs(view.pinchScale - 1) > 0.001) return { why: "unreadable" };
   let surface;
-  try { surface = resolvePageSurface(at.frame, wheelPointDeps.surface); } catch { return undefined; }
-  if (surface.kind !== "surface" || surface.rect.width <= 0 || surface.rect.height <= 0) return undefined;
+  try {
+    surface = resolvePageSurface(at.frame, wheelPointDeps.surface, { width: Math.round(w * dpr), height: Math.round(h * dpr) });
+  } catch {
+    return { why: "unreadable" };
+  }
+  if (surface.kind !== "surface") return { why: "unreadable" };
   const r = surface.rect;
-  const x = (at.screenX - r.x) * innerWidth / r.width;
-  const y = (at.screenY - r.y) * innerHeight / r.height;
-  if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return undefined;
-  return { x: Math.floor(x), y: Math.floor(y) };
+  if (r.width <= 0 || r.height <= 0 || Math.abs(r.width - w * dpr) > 2 || Math.abs(r.height - h * dpr) > 2) return { why: "unreadable" };
+  if (at.screenX < r.x || at.screenY < r.y || at.screenX >= r.x + r.width || at.screenY >= r.y + r.height) return { why: "off" };
+  return { x: Math.floor((at.screenX - r.x) * w / r.width), y: Math.floor((at.screenY - r.y) * h / r.height) };
 }
 
 /**
@@ -459,6 +452,11 @@ function viewportPointOf(
 export interface DispatchOutcome {
   scrolled: boolean;
   channel: Channel;
+  /**
+   * internal #403 — the CDP road was given the caller's point (`WheelParams.at`) and sent the wheel at the
+   * page's centre instead: "off" the page surface, or "unreadable". Absent when the point was used or none given.
+   */
+  pointNotUsed?: "off" | "unreadable";
   /**
    * ADR §2.6.2 reason value. Phase 1b emits `'delivered_via_uia'`, Phase 3
    * adds `'delivered_via_cdp'`, Phase 4 adds `'delivered_via_postmessage'`;
@@ -910,7 +908,7 @@ export async function resolveInputDestination(
 export async function resolveCdpDestinationForHwnd(
   hwnd: bigint,
   className: string | null,
-): Promise<{ kind: "cdp"; tabId: string } | null> {
+): Promise<{ kind: "cdp"; tabId: string; frame: bigint } | null> {
   if (className !== CHROMIUM_TOP_LEVEL_CLASS) {
     return null;
   }
@@ -927,7 +925,7 @@ export async function resolveCdpDestinationForHwnd(
       if (browserPid !== undefined && windowPid !== browserPid) return null;
     }
     const shown = await tabOfFrame(hwnd, tabs, tabOfFrameDeps);
-    return shown.kind === "tab" ? { kind: "cdp", tabId: shown.tabId } : null;
+    return shown.kind === "tab" ? { kind: "cdp", tabId: shown.tabId, frame: hwnd } : null;
   } catch {
     return null;
   }
@@ -2077,11 +2075,12 @@ export async function dispatchScrollWheel(
       const pre = await readScrollPositionInTab(dest.tabId, port);
       if (pre === null) return null;
       const wheelDelta = wheelDeltaForNotch(params);
-      // CDP dispatchMouseEvent requires viewport coordinates. Phase 3 sends
-      // wheels at the viewport center; per-element coords (ADR §7 OQ6) are a
-      // future phase. The tab is the destination, not the point.
-      // internal #403 — at the caller's point when one was given on the page, else as before.
-      const atPoint = params.at !== undefined ? viewportPointOf(params.at, pre.innerWidth, pre.innerHeight) : undefined;
+      // CDP dispatchMouseEvent takes viewport CSS px, and Chromium scrolls the scroller under that point
+      // (internal dev/403-cdp-wheel-spike M1). internal #403 — the caller's point when one was given and it
+      // maps onto the page; otherwise the viewport's centre, as before, and the outcome says why.
+      const mapped = params.at !== undefined ? viewportPointOf(params.at, pre) : undefined;
+      const atPoint = mapped !== undefined && "x" in mapped ? mapped : undefined;
+      const pointNotUsed = mapped !== undefined && "why" in mapped ? mapped.why : undefined;
       const cx = atPoint?.x ?? params.x ?? Math.floor(pre.clientWidth / 2);
       const cy = atPoint?.y ?? params.y ?? Math.floor(pre.clientHeight / 2);
       // Recorded AFTER the await for the same reason as Tier 1: the helper
@@ -2116,6 +2115,7 @@ export async function dispatchScrollWheel(
         scrolled: true,
         channel: "cdp",
         reason: "delivered_via_cdp",
+        ...(pointNotUsed !== undefined && { pointNotUsed }),
       };
     } catch {
       return null;

@@ -198,7 +198,6 @@ const {
   assertTier4Reachable,
   postWheelToHwnd,
   wheelPointDeps,
-  pointOnPageSurface,
   tabOfFrameDeps,
 } = await import("../../src/tools/_input-pipeline.js");
 
@@ -610,8 +609,8 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
   it("asks the configured port for the browser's process, and reads it once per port (gate 2 on #966)", async () => {
     getCdpPortMock.mockReturnValue(9333);
     listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
-    expect(await resolveCdpDestinationForHwnd(0x780n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
-    expect(await resolveCdpDestinationForHwnd(0x780n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
+    expect(await resolveCdpDestinationForHwnd(0x780n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A", frame: 0x780n });
+    expect(await resolveCdpDestinationForHwnd(0x780n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A", frame: 0x780n });
     expect(getBrowserProcessIdMock).toHaveBeenCalledTimes(1);
     expect(getBrowserProcessIdMock).toHaveBeenCalledWith(9333);
   });
@@ -621,14 +620,14 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
     await resolveCdpDestinationForHwnd(0x781n, "Chrome_WidgetWin_1"); // caches 4242
     getBrowserProcessIdMock.mockResolvedValue(5555); // the browser restarted
     getWindowProcessIdMock.mockReturnValue(5555);
-    expect(await resolveCdpDestinationForHwnd(0x782n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
+    expect(await resolveCdpDestinationForHwnd(0x782n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A", frame: 0x782n });
     expect(getBrowserProcessIdMock).toHaveBeenCalledTimes(2);
   });
 
   it("a window whose process cannot be read (0): promoted as before (gate 2 on #966)", async () => {
     listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
     getWindowProcessIdMock.mockReturnValue(0);
-    expect(await resolveCdpDestinationForHwnd(0x783n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
+    expect(await resolveCdpDestinationForHwnd(0x783n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A", frame: 0x783n });
   });
 
   it("another browser's window (its process is not the CDP browser's): null, the wheel goes by the window (internal #319)", async () => {
@@ -641,17 +640,17 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
     listTabsLightMock.mockResolvedValue([{ id: "TAB-A", title: "A", url: "https://a.com/", type: "page" }]);
     getBrowserProcessIdMock.mockRejectedValue(new Error("SystemInfo not supported"));
     getWindowProcessIdMock.mockReturnValue(9999);
-    expect(await resolveCdpDestinationForHwnd(0x778n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A" });
+    expect(await resolveCdpDestinationForHwnd(0x778n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "TAB-A", frame: 0x778n });
   });
 
   it("a browser window showing a page titled 'DevTools …' is still promoted (agy on #968)", async () => {
     listTabsLightMock.mockResolvedValue([{ id: "PAGE", title: "DevTools - Chrome for Developers", url: "https://example.com/", type: "page" }]);
     frameShows("PAGE", "surface", "DevTools - Chrome for Developers - Google Chrome");
     getWindowTitleWMock.mockReturnValueOnce("DevTools - Chrome for Developers - Google Chrome");
-    expect(await resolveCdpDestinationForHwnd(0x791n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "PAGE" });
+    expect(await resolveCdpDestinationForHwnd(0x791n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "PAGE", frame: 0x791n });
     frameShows("PAGE", "surface", "DevTools - Chrome for Developers - Personal - Microsoft\u200b Edge");
     getWindowTitleWMock.mockReturnValueOnce("DevTools - Chrome for Developers - Personal - Microsoft\u200b Edge");
-    expect(await resolveCdpDestinationForHwnd(0x792n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "PAGE" });
+    expect(await resolveCdpDestinationForHwnd(0x792n, "Chrome_WidgetWin_1")).toEqual({ kind: "cdp", tabId: "PAGE", frame: 0x792n });
   });
 
   it("an undocked DevTools window is not promoted to the page it inspects (gate 2 on #968)", async () => {
@@ -676,7 +675,7 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
     ]);
     frameShows("TAB-BBB");
     const dest = await resolveCdpDestinationForHwnd(0x222n, "Chrome_WidgetWin_1");
-    expect(dest).toEqual({ kind: "cdp", tabId: "TAB-BBB" });
+    expect(dest).toEqual({ kind: "cdp", tabId: "TAB-BBB", frame: 0x222n });
   });
 
   it("a covered frame (no page surface): null, the wheel takes the window road (ADR-040 PR ③, #965 W2/W4)", async () => {
@@ -702,7 +701,7 @@ describe("ADR-018 Phase 3 — resolveCdpDestinationForHwnd (top-level class gate
     tabOfFrameVisibility.mockImplementation(async (id: string) => (id === "PAGE" || id === "DLG" ? "visible" : "hidden"));
     const dest = await resolveCdpDestinationForHwnd(0x225n, "Chrome_WidgetWin_1");
     tabOfFrameVisibility.mockImplementation(async (id: string) => (id === shownTab ? "visible" : "hidden"));
-    expect(dest).toEqual({ kind: "cdp", tabId: "PAGE" });
+    expect(dest).toEqual({ kind: "cdp", tabId: "PAGE", frame: 0x225n });
   });
 
   it("Chromium top-level class + listTabsLight rejects (CDP unreachable): null (graceful fallback to Tier 1)", async () => {
@@ -763,7 +762,7 @@ describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration"
       { id: "TAB-X", title: "X", url: "https://x.com/", type: "page" },
     ]);
     const dest = await resolveInputDestination({ windowTitle: "Chrome" });
-    expect(dest).toEqual({ kind: "cdp", tabId: "TAB-X" });
+    expect(dest).toEqual({ kind: "cdp", tabId: "TAB-X", frame: 0xAAAn });
   });
 
   it("Case 3 recovery for Chromium HWND also promotes to {kind:'cdp'} (plain windowTitle on Chrome)", async () => {
@@ -776,7 +775,7 @@ describe("ADR-018 Phase 3 — resolveInputDestination CDP promotion integration"
     ]);
     frameShows("TAB-Y");
     const dest = await resolveInputDestination({ windowTitle: "Chrome" });
-    expect(dest).toEqual({ kind: "cdp", tabId: "TAB-Y" });
+    expect(dest).toEqual({ kind: "cdp", tabId: "TAB-Y", frame: 0xBBBn });
   });
 
   it("a covered Chromium window: {kind:'hwnd'}, not the CDP browser's front tab (ADR-040 PR ③, #965 W2/W4)", async () => {
@@ -912,49 +911,85 @@ describe("ADR-018 Phase 3 — dispatchScrollWheel (Tier 2 CDP path)", () => {
       };
     };
     afterEach(() => { Object.assign(wheelPointDeps, saved); });
-    const page = (inner: { innerWidth?: number; innerHeight?: number }) => ({ ...snap(0, 0), ...inner });
+    const page = (inner: { innerWidth?: number; innerHeight?: number; devicePixelRatio?: number; pinchScale?: number }) => ({ ...snap(0, 0), ...inner });
 
     it("maps screen px into CSS px by the surface's origin and the viewport's scale (150 % monitor)", async () => {
       // A 1200×800 CSS viewport drawn 1800×1200 physical at (110, 180): a screen point (1010, 780) is CSS (600, 400).
       surfaceAt({ x: 110, y: 180, width: 1800, height: 1200 });
-      readScrollPositionInTabMock.mockResolvedValueOnce(page({ innerWidth: 1200, innerHeight: 800 })).mockResolvedValueOnce(page({}));
+      readScrollPositionInTabMock.mockResolvedValueOnce(page({ innerWidth: 1200, innerHeight: 800, devicePixelRatio: 1.5 })).mockResolvedValueOnce(snap(100, 0));
       dispatchWheelInTabMock.mockResolvedValue(undefined);
-      await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1, at: { screenX: 1010, screenY: 780, frame: 0x500n } });
+      const r = await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1, at: { screenX: 1010, screenY: 780, frame: 0x500n } });
       expect(dispatchWheelInTabMock).toHaveBeenCalledWith(0, 120, 600, 400, "TAB-X", 9222);
+      expect(r).toEqual({ scrolled: true, channel: "cdp", reason: "delivered_via_cdp" });
     });
 
     it("a zoomed page: the viewport's CSS width carries the zoom (125 % zoom on a 100 % monitor)", async () => {
       // 1000 physical px wide shows 800 CSS px: screen x 110+500 is CSS 400.
       surfaceAt({ x: 110, y: 180, width: 1000, height: 600 });
-      readScrollPositionInTabMock.mockResolvedValueOnce(page({ innerWidth: 800, innerHeight: 480 })).mockResolvedValueOnce(page({}));
+      readScrollPositionInTabMock.mockResolvedValueOnce(page({ innerWidth: 800, innerHeight: 480, devicePixelRatio: 1.25 })).mockResolvedValueOnce(page({}));
       dispatchWheelInTabMock.mockResolvedValue(undefined);
       await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1, at: { screenX: 610, screenY: 480, frame: 0x500n } });
       expect(dispatchWheelInTabMock).toHaveBeenCalledWith(0, 120, 400, 240, "TAB-X", 9222);
     });
 
-    it("the viewport's size or the surface cannot be read, or the point left the surface: the centre, as before", async () => {
-      for (const [rect, inner, at] of [
-        [{ x: 0, y: 0, width: 1280, height: 800 }, {}, { screenX: 10, screenY: 10 }],
-        [null, { innerWidth: 1280, innerHeight: 800 }, { screenX: 10, screenY: 10 }],
-        [{ x: 100, y: 100, width: 1280, height: 800 }, { innerWidth: 1280, innerHeight: 800 }, { screenX: 50, screenY: 50 }],
-      ] as const) {
+    it("a point that maps between CSS px is floored, and the edges of the surface are on it (agy on #979)", async () => {
+      // 1.5 scale: screen 110+1 → CSS 0.67 → 0; the last physical px (110+1799) → CSS 1199.33 → 1199.
+      surfaceAt({ x: 110, y: 180, width: 1800, height: 1200 });
+      for (const [sx, sy, cx, cy] of [[111, 181, 0, 0], [110, 180, 0, 0], [1909, 1379, 1199, 799]] as const) {
         dispatchWheelInTabMock.mockClear();
-        surfaceAt(rect);
-        readScrollPositionInTabMock.mockResolvedValueOnce(page(inner)).mockResolvedValueOnce(page({}));
+        readScrollPositionInTabMock.mockResolvedValueOnce(page({ innerWidth: 1200, innerHeight: 800, devicePixelRatio: 1.5 })).mockResolvedValueOnce(snap(100, 0));
         dispatchWheelInTabMock.mockResolvedValue(undefined);
-        await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1, at: { ...at, frame: 0x500n } });
-        expect(dispatchWheelInTabMock).toHaveBeenCalledWith(0, 120, 640, 400, "TAB-X", 9222);
+        const r = await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1, at: { screenX: sx, screenY: sy, frame: 0x500n } });
+        expect(dispatchWheelInTabMock).toHaveBeenCalledWith(0, 120, cx, cy, "TAB-X", 9222);
+        expect(r).not.toHaveProperty("pointNotUsed");
+      }
+      // One past the right or bottom edge is off.
+      for (const [sx, sy] of [[1910, 500], [500, 1380], [109, 500], [500, 179]] as const) {
+        readScrollPositionInTabMock.mockResolvedValueOnce(page({ innerWidth: 1200, innerHeight: 800, devicePixelRatio: 1.5 })).mockResolvedValueOnce(snap(100, 0));
+        const r = await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1, at: { screenX: sx, screenY: sy, frame: 0x500n } });
+        expect(r).toHaveProperty("pointNotUsed", "off");
       }
     });
 
-    it("pointOnPageSurface: on, off (the tab strip above the page), unreadable", () => {
-      surfaceAt({ x: 110, y: 180, width: 1180, height: 710 });
-      expect(pointOnPageSurface(0x500n, 500, 500)).toBe("on");
-      expect(pointOnPageSurface(0x500n, 500, 150)).toBe("off");
-      expect(pointOnPageSurface(0x500n, 110 + 1180, 500)).toBe("off");
-      surfaceAt(null);
-      expect(pointOnPageSurface(0x500n, 500, 500)).toBe("unreadable");
+    it("the caller's point takes precedence over x/y", async () => {
+      surfaceAt({ x: 0, y: 0, width: 1280, height: 800 });
+      readScrollPositionInTabMock.mockResolvedValueOnce(page({ innerWidth: 1280, innerHeight: 800, devicePixelRatio: 1 })).mockResolvedValueOnce(snap(100, 0));
+      dispatchWheelInTabMock.mockResolvedValue(undefined);
+      await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1, x: 5, y: 5, at: { screenX: 300, screenY: 200, frame: 0x500n } });
+      expect(dispatchWheelInTabMock).toHaveBeenCalledWith(0, 120, 300, 200, "TAB-X", 9222);
     });
+
+    it("the surface is picked by the viewport's physical size: a side panel's page window is not the page (gate 2 on #979)", async () => {
+      wheelPointDeps.surface = {
+        isIconic: () => false,
+        isCloaked: () => false,
+        descendants: () => [
+          { hwnd: 0x9001n, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: { x: 0, y: 100, width: 300, height: 700 } },
+          { hwnd: 0x9002n, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: { x: 300, y: 100, width: 900, height: 700 } },
+        ],
+      };
+      readScrollPositionInTabMock.mockResolvedValueOnce(page({ innerWidth: 900, innerHeight: 700, devicePixelRatio: 1 })).mockResolvedValueOnce(snap(100, 0));
+      dispatchWheelInTabMock.mockResolvedValue(undefined);
+      await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1, at: { screenX: 400, screenY: 200, frame: 0x500n } });
+      expect(dispatchWheelInTabMock).toHaveBeenCalledWith(0, 120, 100, 100, "TAB-X", 9222);
+    });
+
+    for (const [name, rect, inner, at, why] of [
+      ["the point is off the page (the tab strip above it)", { x: 100, y: 100, width: 1280, height: 800 }, { innerWidth: 1280, innerHeight: 800, devicePixelRatio: 1 }, { screenX: 500, screenY: 50 }, "off"],
+      ["the viewport's size was not read", { x: 0, y: 0, width: 1280, height: 800 }, {}, { screenX: 10, screenY: 10 }, "unreadable"],
+      ["the surface cannot be read", null, { innerWidth: 1280, innerHeight: 800, devicePixelRatio: 1 }, { screenX: 10, screenY: 10 }, "unreadable"],
+      ["the viewport does not fill the surface (device emulation)", { x: 0, y: 0, width: 1280, height: 800 }, { innerWidth: 390, innerHeight: 800, devicePixelRatio: 1 }, { screenX: 10, screenY: 10 }, "unreadable"],
+      ["the page is pinch-zoomed", { x: 0, y: 0, width: 1280, height: 800 }, { innerWidth: 1280, innerHeight: 800, devicePixelRatio: 1, pinchScale: 2 }, { screenX: 10, screenY: 10 }, "unreadable"],
+    ] as const) {
+      it(`${name}: the wheel goes to the centre, as before, and the outcome says why (${why})`, async () => {
+        surfaceAt(rect);
+        readScrollPositionInTabMock.mockResolvedValueOnce(page(inner)).mockResolvedValueOnce(snap(100, 0));
+        dispatchWheelInTabMock.mockResolvedValue(undefined);
+        const r = await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1, at: { ...at, frame: 0x500n } });
+        expect(dispatchWheelInTabMock).toHaveBeenCalledWith(0, 120, 640, 400, "TAB-X", 9222);
+        expect(r).toEqual({ scrolled: true, channel: "cdp", reason: "delivered_via_cdp", pointNotUsed: why });
+      });
+    }
   });
 
   it("vertical up: deltaY negative (UIA-internal sign convention — CDP/CSS positive-down matches)", async () => {
