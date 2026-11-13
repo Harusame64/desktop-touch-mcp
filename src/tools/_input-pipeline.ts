@@ -100,6 +100,8 @@ import {
   listTabsLight,
   dispatchWheelInTab,
   readScrollPositionInTab,
+  markScrollersAtPoint,
+  readMarkedScrollers,
   getBrowserProcessId,
   getWindowsForTargets,
   evaluateInTab,
@@ -2025,10 +2027,10 @@ export async function dispatchScrollWheel(
   }
   if (dest.kind === "cdp") {
     // ADR-018 Phase 3 — Tier 2 CDP wheel dispatch. Pre/post observation via
-    // `readScrollPositionInTab` (document.scrollingElement); we declare
-    // `delivered_via_cdp` only when both endpoints succeed AND scrollTop /
-    // scrollLeft moved by at least CDP_SCROLL_DELIVERY_EPSILON_PX on the
-    // axis of interest. Any failure (no session, JS exception, no observable
+    // `readScrollPositionInTab` (document.scrollingElement) and, since internal
+    // #403 item 2, the inner scroll containers under the point; we declare
+    // `delivered_via_cdp` only when one of them moved by at least
+    // CDP_SCROLL_DELIVERY_EPSILON_PX on the axis of interest. Any failure (no session, JS exception, no observable
     // delta) returns null — caller emits `target_unreachable` per §2.6.2
     // path-(b) because Tier 4 SendInput must not be reached for a resolved
     // CDP destination (assertTier4Reachable throws on kind:'cdp').
@@ -2042,6 +2044,10 @@ export async function dispatchScrollWheel(
       // future phase. The tab is the destination, not the point.
       const cx = params.x ?? Math.floor(pre.clientWidth / 2);
       const cy = params.y ?? Math.floor(pre.clientHeight / 2);
+      // internal #403 item 2 — the inner containers under the point, read too: a page that scrolls a
+      // container (Gmail, Slack web, Notion) leaves the document still. Not readable → the document alone,
+      // as before.
+      const innerPre = await markScrollersAtPoint(cx, cy, dest.tabId, port).catch(() => null);
       // Recorded AFTER the await for the same reason as Tier 1: the helper
       // resolves the tab and opens a session first, and either can fail — the
       // surrounding catch turns that into a plain `null` outcome, so an event
@@ -2061,13 +2067,17 @@ export async function dispatchScrollWheel(
       // to land on the post-frame state without burning latency.
       await new Promise((r) => setTimeout(r, 16));
       const post = await readScrollPositionInTab(dest.tabId, port);
-      if (post === null) return null;
+      const innerPost = innerPre !== null && innerPre.length > 0
+        ? await readMarkedScrollers(dest.tabId, port).catch(() => null)
+        : null;
       const axisIsVertical =
         params.direction === "up" || params.direction === "down";
-      const observedDelta = axisIsVertical
-        ? Math.abs(post.scrollTop - pre.scrollTop)
-        : Math.abs(post.scrollLeft - pre.scrollLeft);
-      if (observedDelta < CDP_SCROLL_DELIVERY_EPSILON_PX) {
+      const moved = (a: number, b: number) => Math.abs(b - a) >= CDP_SCROLL_DELIVERY_EPSILON_PX;
+      const documentMoved = post !== null &&
+        (axisIsVertical ? moved(pre.scrollTop, post.scrollTop) : moved(pre.scrollLeft, post.scrollLeft));
+      const innerMoved = innerPre !== null && innerPost !== null && innerPost.length === innerPre.length &&
+        innerPre.some((p, i) => axisIsVertical ? moved(p.top, innerPost[i]!.top) : moved(p.left, innerPost[i]!.left));
+      if (!documentMoved && !innerMoved) {
         return null;
       }
       return {

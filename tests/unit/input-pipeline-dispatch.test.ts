@@ -163,7 +163,12 @@ const dispatchWheelInTabMock = vi.fn();
 const readScrollPositionInTabMock = vi.fn();
 const getBrowserProcessIdMock = vi.fn(async (_port?: number) => 4242);
 const evaluateInTabMock = vi.fn();
+// internal #403 item 2 — the inner scroll containers under the point. Default: none under the point.
+const markScrollersAtPointMock = vi.fn(async (..._a: unknown[]) => [] as Array<{ top: number; left: number }> | null);
+const readMarkedScrollersMock = vi.fn(async (..._a: unknown[]) => null as Array<{ top: number; left: number }> | null);
 vi.mock("../../src/engine/cdp-bridge.js", () => ({
+  markScrollersAtPoint: (...a: unknown[]) => markScrollersAtPointMock(...a),
+  readMarkedScrollers: (...a: unknown[]) => readMarkedScrollersMock(...a),
   evaluateInTab: (...a: unknown[]) => evaluateInTabMock(...a),
   listTabsLight: listTabsLightMock,
   dispatchWheelInTab: dispatchWheelInTabMock,
@@ -817,6 +822,10 @@ describe("ADR-018 Phase 3 — dispatchScrollWheel (Tier 2 CDP path)", () => {
     listTabsLightMock.mockReset();
     dispatchWheelInTabMock.mockReset();
     readScrollPositionInTabMock.mockReset();
+    markScrollersAtPointMock.mockReset();
+    markScrollersAtPointMock.mockResolvedValue([]);
+    readMarkedScrollersMock.mockReset();
+    readMarkedScrollersMock.mockResolvedValue(null);
     getCdpPortMock.mockReturnValue(9222);
   });
 
@@ -897,6 +906,73 @@ describe("ADR-018 Phase 3 — dispatchScrollWheel (Tier 2 CDP path)", () => {
       expect.any(Number), expect.any(Number),
       "TAB-X", 9222,
     );
+  });
+
+  describe("an inner container under the point (internal #403 item 2)", () => {
+    // Gmail, Slack web, Notion: the wheel scrolls a container and the document stays put.
+    it("the document still, a container under the point moved → delivered_via_cdp", async () => {
+      readScrollPositionInTabMock.mockResolvedValueOnce(snap(0, 0)).mockResolvedValueOnce(snap(0, 0));
+      markScrollersAtPointMock.mockResolvedValueOnce([{ top: 0, left: 0 }, { top: 40, left: 0 }]);
+      readMarkedScrollersMock.mockResolvedValueOnce([{ top: 0, left: 0 }, { top: 160, left: 0 }]);
+      dispatchWheelInTabMock.mockResolvedValue(undefined);
+      const result = await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1 });
+      expect(result).toEqual({ scrolled: true, channel: "cdp", reason: "delivered_via_cdp" });
+      // Asked at the point the wheel is sent to: the viewport centre here.
+      expect(markScrollersAtPointMock).toHaveBeenCalledWith(640, 400, "TAB-X", 9222);
+      expect(dispatchWheelInTabMock).toHaveBeenCalledWith(0, 120, 640, 400, "TAB-X", 9222);
+    });
+
+    it("a container moved on the other axis only → null", async () => {
+      readScrollPositionInTabMock.mockResolvedValueOnce(snap(0, 0)).mockResolvedValueOnce(snap(0, 0));
+      markScrollersAtPointMock.mockResolvedValueOnce([{ top: 10, left: 0 }]);
+      readMarkedScrollersMock.mockResolvedValueOnce([{ top: 10, left: 90 }]);
+      dispatchWheelInTabMock.mockResolvedValue(undefined);
+      expect(await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1 })).toBeNull();
+    });
+
+    it("containers still → null; the slot is read out (cleared) all the same", async () => {
+      readScrollPositionInTabMock.mockResolvedValueOnce(snap(0, 0)).mockResolvedValueOnce(snap(0, 0));
+      markScrollersAtPointMock.mockResolvedValueOnce([{ top: 10, left: 0 }]);
+      readMarkedScrollersMock.mockResolvedValueOnce([{ top: 10, left: 0 }]);
+      dispatchWheelInTabMock.mockResolvedValue(undefined);
+      expect(await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1 })).toBeNull();
+      expect(readMarkedScrollersMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("the page cannot say which containers (null or a throw) → the document alone decides, as before", async () => {
+      for (const mark of [async () => null, async () => { throw new Error("no answer"); }]) {
+        readScrollPositionInTabMock.mockReset();
+        readScrollPositionInTabMock.mockResolvedValueOnce(snap(100, 0)).mockResolvedValueOnce(snap(260, 0));
+        markScrollersAtPointMock.mockImplementationOnce(mark);
+        dispatchWheelInTabMock.mockResolvedValue(undefined);
+        expect(await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1 })).toEqual({ scrolled: true, channel: "cdp", reason: "delivered_via_cdp" });
+      }
+      expect(readMarkedScrollersMock).not.toHaveBeenCalled();
+    });
+
+    it("the containers read after the wheel do not line up with those before (the slot was replaced) → not counted", async () => {
+      readScrollPositionInTabMock.mockResolvedValueOnce(snap(0, 0)).mockResolvedValueOnce(snap(0, 0));
+      markScrollersAtPointMock.mockResolvedValueOnce([{ top: 0, left: 0 }]);
+      readMarkedScrollersMock.mockResolvedValueOnce([{ top: 300, left: 0 }, { top: 0, left: 0 }]);
+      dispatchWheelInTabMock.mockResolvedValue(undefined);
+      expect(await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1 })).toBeNull();
+    });
+
+    it("the document moved and no container did → delivered, as before", async () => {
+      readScrollPositionInTabMock.mockResolvedValueOnce(snap(100, 0)).mockResolvedValueOnce(snap(220, 0));
+      markScrollersAtPointMock.mockResolvedValueOnce([{ top: 5, left: 0 }]);
+      readMarkedScrollersMock.mockResolvedValueOnce([{ top: 5, left: 0 }]);
+      dispatchWheelInTabMock.mockResolvedValue(undefined);
+      expect(await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1 })).toEqual({ scrolled: true, channel: "cdp", reason: "delivered_via_cdp" });
+    });
+
+    it("the document's post read failed but a container moved → delivered", async () => {
+      readScrollPositionInTabMock.mockResolvedValueOnce(snap(0, 0)).mockResolvedValueOnce(null);
+      markScrollersAtPointMock.mockResolvedValueOnce([{ top: 0, left: 0 }]);
+      readMarkedScrollersMock.mockResolvedValueOnce([{ top: 120, left: 0 }]);
+      dispatchWheelInTabMock.mockResolvedValue(undefined);
+      expect(await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1 })).toEqual({ scrolled: true, channel: "cdp", reason: "delivered_via_cdp" });
+    });
   });
 
   it("vertical up: deltaY negative (UIA-internal sign convention — CDP/CSS positive-down matches)", async () => {

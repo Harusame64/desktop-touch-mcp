@@ -10,6 +10,9 @@
   tool (internal #377).
 
 ### Fixed — Windows
+- **`scroll` through CDP no longer answers "not delivered" when the page scrolled a box inside it.** Pages such as
+  Gmail, Slack and Notion scroll a container while the document stays put, and only the document was read. The
+  scrollable boxes under the wheel's point are now read too (internal #403).
 - **The `focus_window` call that `browser_click`'s and `scroll`'s refusals suggest now works.** They named the window
   by `hwnd`, which `focus_window` did not take, so following them failed. `browser_click` on a minimized window says
   where to read its `hwnd` (`desktop_discover`'s `windows[]`) instead of only "focus_window by its title"

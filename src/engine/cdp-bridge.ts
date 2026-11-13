@@ -600,6 +600,79 @@ export async function readScrollPositionInTab(
   }
 }
 
+/** The page-side expression `markScrollersAtPoint` evaluates; exported so the expression itself is run in tests. */
+export function markScrollersExpr(x: number, y: number): string {
+  return `
+(function(x, y) {
+  delete window.__dtmScrollChain;
+  var root = document.scrollingElement || document.documentElement;
+  var chain = [];
+  var el = document.elementFromPoint(x, y);
+  var room = /^(auto|scroll|overlay)$/;
+  while (el) {
+    if (el !== root && el.nodeType === 1) {
+      var cs = getComputedStyle(el);
+      if ((room.test(cs.overflowY) && el.scrollHeight > el.clientHeight) ||
+          (room.test(cs.overflowX) && el.scrollWidth > el.clientWidth)) chain.push(el);
+    }
+    var up = el.parentElement;
+    if (!up) { var r = el.getRootNode && el.getRootNode(); up = r && r.host ? r.host : null; }
+    el = up;
+  }
+  if (chain.length > 0) window.__dtmScrollChain = chain;
+  return chain.map(function(e) { return { top: e.scrollTop, left: e.scrollLeft }; });
+})(${JSON.stringify(x)}, ${JSON.stringify(y)})`;
+}
+
+/**
+ * internal #403 item 2 — the inner scroll containers a wheel at viewport point (`x`, `y`) can scroll: the
+ * element under the point and each ancestor (through shadow roots) whose overflow scrolls and that has room
+ * to move, nearest first. `document.scrollingElement` is not among them (readScrollPositionInTab reads it).
+ * Gmail, Slack web and Notion scroll a container like this while the document stays put, so a wheel read on
+ * the document alone answers "not delivered" for a page that moved.
+ *
+ * The containers are kept on the page (`window.__dtmScrollChain`) for `readMarkedScrollers`, which reads the
+ * same elements after the wheel and clears the slot. Answers their positions now, or null when the page
+ * could not be asked; an empty list when nothing under the point scrolls (no slot is kept then).
+ */
+export async function markScrollersAtPoint(
+  x: number,
+  y: number,
+  tabId: string | null = null,
+  port = DEFAULT_CDP_PORT,
+): Promise<Array<{ top: number; left: number }> | null> {
+  const expr = markScrollersExpr(x, y);
+  try {
+    const r = await evaluateInTab(expr, tabId, port);
+    return Array.isArray(r) ? (r as Array<{ top: number; left: number }>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The page-side expression `readMarkedScrollers` evaluates (exported for tests). */
+export const READ_MARKED_SCROLLERS_EXPR = `
+(function() {
+  var chain = window.__dtmScrollChain;
+  delete window.__dtmScrollChain;
+  if (!Array.isArray(chain)) return null;
+  return chain.map(function(e) { return { top: e.scrollTop, left: e.scrollLeft }; });
+})()`;
+
+/** internal #403 item 2 — the positions of the containers `markScrollersAtPoint` kept, in its order; clears them. */
+export async function readMarkedScrollers(
+  tabId: string | null = null,
+  port = DEFAULT_CDP_PORT,
+): Promise<Array<{ top: number; left: number }> | null> {
+  const expr = READ_MARKED_SCROLLERS_EXPR;
+  try {
+    const r = await evaluateInTab(expr, tabId, port);
+    return Array.isArray(r) ? (r as Array<{ top: number; left: number }>) : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Page-side JS that declares `zoom`, `monitorScale`, `chromeW` and `chromeH`: the viewport's offset
  * from the window origin (window.screenX / screenY), in DIPs, and the scales to convert with. Shared
