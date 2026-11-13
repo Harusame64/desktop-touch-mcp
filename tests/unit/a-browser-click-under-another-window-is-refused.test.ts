@@ -135,6 +135,14 @@ describe("asked again right before the press (internal #399)", () => {
     }
   });
 
+  for (const kind of ["owned", "other", "blocked"] as const) {
+    it(`${kind} at the press, as at the first check: nothing is pressed (gate 2 on #977)`, async () => {
+      const r = await osClickAndVerify(700, 507, null, null, 9222, answers(owners.aim!, owners[kind]!).owner);
+      expect(r).toHaveProperty("covered", kind === "blocked" ? "excluded" : kind);
+      expect(mocks.click).not.toHaveBeenCalled();
+    });
+  }
+
   it("the browser window both times: it presses once, as before", async () => {
     const a = answers(owners.aim!, owners.aim!);
     const r = await osClickAndVerify(700, 507, null, null, 9222, a.owner);
@@ -238,10 +246,16 @@ describe("the refusal", () => {
     };
     const devtools = suggest({ kind: "other", hwnd: 132188n, title: "DevTools - 127.0.0.1:8967/K399-A", via: "os_hit_test" });
     expect(devtools).toContain("browser's DevTools, undocked");
-    expect(devtools).toContain("Ctrl+Shift+D");
-    // A browser window showing a page titled "DevTools - …" is not DevTools.
-    expect(suggest({ kind: "other", hwnd: 5n, title: "DevTools - Docs - Google Chrome", via: "os_hit_test" })).not.toContain("undocked");
+    expect(devtools).toContain('keyboard({ action: "press", keys: "f12", hwnd: "132188" })');
+    expect(devtools).toContain('keyboard({ action: "press", keys: "ctrl+shift+d", hwnd: "132188" })');
+    // Bringing the browser forward is not the way past it: DevTools comes back over the page (gate 2 on #977).
+    expect(devtools).not.toContain("forceFocus");
+    // A browser window showing a page titled "DevTools - …" is not DevTools, whichever Chromium browser it is.
+    for (const browser of ["Google Chrome", "Microsoft Edge", "Brave", "Vivaldi", "Opera", "Google Chrome Canary"]) {
+      expect(suggest({ kind: "other", hwnd: 5n, title: `DevTools - Docs - ${browser}`, via: "os_hit_test" })).not.toContain("undocked");
+    }
     expect(suggest(owners.other!)).not.toContain("undocked");
+    expect(suggest(owners.other!)).toContain("forceFocus");
   });
 
   it("is not made for the browser window or for no answer", () => {

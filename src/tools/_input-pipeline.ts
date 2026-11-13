@@ -894,8 +894,6 @@ export async function resolveCdpDestinationForHwnd(
   }
 }
 
-// internal #398 — moved to engine/browser-frames.ts (browser_click names it too, internal #399).
-export { isUndockedDevToolsTitle } from "../engine/browser-frames.js";
 
 /**
  * The CDP browser's process id on `port`, or undefined when it cannot be read. Cached per port: the
