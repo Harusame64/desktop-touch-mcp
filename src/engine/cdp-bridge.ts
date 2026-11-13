@@ -624,10 +624,10 @@ export async function readScrollPositionInTab(
 export function wheelObserverExpr(vertical: boolean): string {
   return `
 (function(vertical) {
-  var o = { seen: false, ended: false, path: [], pre: [], ev: null };
+  var o = { seen: false, seenAt: 0, ended: false, path: [], pre: [], ev: null };
   var root = function() { return document.scrollingElement || document.documentElement; };
   o.listener = function(e) {
-    o.seen = true; o.ev = e;
+    o.seen = true; o.seenAt = performance.now(); o.ev = e;
     var p = e.composedPath();
     for (var i = 0; i < p.length; i++) {
       var n = p[i];
@@ -655,9 +655,9 @@ export function wheelObserverExpr(vertical: boolean): string {
 
 /**
  * internal #403 — called on the observer (`this`) after the wheel (`sign`: +1 down/right, −1 up/left). Waits
- * while the wheel has not arrived (up to `seenMs`), then until an element on the hit path has moved by ≥ 1 px the
- * way the wheel turns AND that scroll has ended (a `scrollend` on the path, or `settleMs` after the first move),
- * or `maxMs` passed. Waiting for the end keeps a smooth scroll from running into the next call, where it would be
+ * while the wheel has not arrived (up to `seenMs` from this call), then until an element on the hit path has moved
+ * by ≥ 1 px the way the wheel turns AND that scroll has ended (a `scrollend` on the path, or `settleMs` after the
+ * first move), or nothing moved within `maxMs` of the wheel being seen. Waiting for the end keeps a smooth scroll from running into the next call, where it would be
  * credited to that call's wheel (gate 2 on #980). Then it takes its listeners off and answers what it saw.
  *
  * When nothing moved, `under` is the first element on the path (nearest the point) that scrolls on the axis:
@@ -721,13 +721,15 @@ export const WHEEL_VERDICT_FN = `function(sign, seenMs, settleMs, maxMs) {
       resolve(r);
     }
     (function tick() {
-      var t = performance.now() - t0;
-      if (!o.seen) { if (t > seenMs) return done(); }
-      else {
-        if (firstMove < 0 && movedAt() >= 0) firstMove = t;
-        if (firstMove >= 0 && (o.ended || t - firstMove > settleMs)) return done();
-        if (firstMove < 0 && o.ended) return done();
-        if (t > maxMs) return done();
+      var now = performance.now();
+      if (!o.seen) { if (now - t0 > seenMs) return done(); }
+      else if (firstMove < 0 && movedAt() >= 0) firstMove = now;
+      if (o.seen) {
+        // Each wait runs from its own start (gate 2 on #981): the move from when the wheel was seen, the settle
+        // from the first move, so a wheel seen late still gets the whole move wait, and a move found late the
+        // whole settle.
+        if (firstMove >= 0) { if (o.ended || now - firstMove > settleMs) return done(); }
+        else if (o.ended || now - o.seenAt > maxMs) return done();
       }
       setTimeout(tick, 16);
     })();

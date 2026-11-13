@@ -143,12 +143,12 @@ const CHROMIUM_TOP_LEVEL_CLASS = "Chrome_WidgetWin_1";
 const CDP_SCROLL_DELIVERY_EPSILON_PX = 1;
 
 /**
- * internal #403 — how long the page's main frame is given to see the CDP wheel before it counts as never seen
- * (a frame of another site took it, or the observer's world is gone). Headless Chrome 157 delivered it 19–34 ms
- * after the dispatch was sent (dev/403-cdp-wheel-spike M2); headed Chrome 157 on Windows moved 1.3–3.1 ms after
- * the dispatch's reply (the same spike, win2 section).
+ * internal #403 — how long the page's main frame is given to see the CDP wheel, from when the verdict is asked,
+ * before it counts as never seen (a frame of another site took it, or the observer's world is gone). Headless
+ * Chrome 157 scrolled 19–34 ms after the dispatch was sent (dev/403-cdp-wheel-spike M2); how late a headed
+ * page sees it is unmeasured, but it moved 1.3–3.1 ms after the dispatch's reply (the same spike, win2 section).
  */
-const CDP_WHEEL_SEEN_MS = 250;
+export const CDP_WHEEL_SEEN_MS = 250;
 /**
  * internal #403 — after the first move, how long to wait for that scroll to end when no `scrollend` comes, so a
  * smooth scroll does not run on into the next call. A CDP wheel the browser scrolls itself moves in one step and
@@ -157,14 +157,16 @@ const CDP_WHEEL_SEEN_MS = 250;
  * past this wait: the verdict reads only the first move's direction, so the answer stands, but a call made at
  * once after may see the tail of that animation as its own move.
  */
-const CDP_WHEEL_SETTLE_MS = 300;
+export const CDP_WHEEL_SETTLE_MS = 300;
 /**
- * internal #403 — the longest wait in all after the wheel was seen; bounds "nothing moved" (at the end, or the
- * page cancelled the wheel and did not move). Every page measured moved within ~5 ms of the reply, including the
- * ones that animate the wheel themselves (win2, dev/980-hw b79e5740), and 19–34 ms headless; at 800 ms the replies
- * that end on nothing moved took ~1.06–1.26 s in all (dev/980-hw X11).
+ * internal #403 — how long after the page saw the wheel a first move is waited for; bounds "nothing moved" (at
+ * the end, or the page cancelled the wheel and did not move). Timed from the wheel's own arrival, so a page
+ * slow to see it is not cut short (gate 2 on #981). Every page measured headed moved within ~5 ms of the
+ * dispatch's reply, the ones that animate the wheel themselves included (first move −2..+4.5 ms, page clock,
+ * win2 dev/980-hw b79e5740). With 800 ms the replies that ended on nothing moved took ~1.06–1.26 s in all
+ * (dev/980-hw X11).
  */
-const CDP_WHEEL_MAX_MS = 300;
+export const CDP_WHEEL_MAX_MS = 300;
 
 /**
  * ADR-018 Phase 4 — Tier 3 PostMessage settle delay (ms) before reading

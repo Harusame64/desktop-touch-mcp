@@ -11,6 +11,7 @@ import { dirname, join } from "path";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { sleep } from "./helpers/wait.js";
 import { armWheelObserver, dispatchWheelInTab, evaluateInTab, disconnectAll, type WheelVerdict } from "../../src/engine/cdp-bridge.js";
+import { CDP_WHEEL_SEEN_MS, CDP_WHEEL_SETTLE_MS, CDP_WHEEL_MAX_MS } from "../../src/tools/_input-pipeline.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = `file:///${join(__dirname, "fixtures", "wheel-hit-path.html").replace(/\\/g, "/")}`;
@@ -42,7 +43,7 @@ async function wheelAt(x: number, y: number, deltaY = 120, deltaX = 0): Promise<
   if (obs === null) throw new Error("observer not armed");
   try {
     await dispatchWheelInTab(deltaX, vertical ? deltaY : 0, x, y, null, PORT);
-    return await obs.verdict((vertical ? deltaY : deltaX) > 0 ? 1 : -1, 250, 300, 800);
+    return await obs.verdict((vertical ? deltaY : deltaX) > 0 ? 1 : -1, CDP_WHEEL_SEEN_MS, CDP_WHEEL_SETTLE_MS, CDP_WHEEL_MAX_MS);
   } finally {
     await obs.release();
   }
