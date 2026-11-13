@@ -95,6 +95,12 @@ describe("wheelPointOnPage with the caller's point (internal #404)", () => {
     const d = deps({ pointAt: () => { n += 1; return n === 1 ? undefined : { child: PAGE, root: FRAME }; } });
     expect(wheelPointOnPage(FRAME, d, { x: 300, y: 450 })).toMatchObject({ kind: "point", point: { x: 600, y: 450 }, pointNotUsed: "unreadable" });
   });
+  it("Windows cannot be asked anywhere, or the page cannot be read: keep, saying the point was not used", () => {
+    expect(wheelPointOnPage(FRAME, deps({ pointAt: () => undefined }), { x: 300, y: 450 })).toEqual({ kind: "keep", pointNotUsed: "unreadable" });
+    expect(wheelPointOnPage(FRAME, deps({ surface: { isIconic: () => false, isCloaked: () => false, descendants: () => [] } }), { x: 300, y: 450 })).toEqual({ kind: "keep", pointNotUsed: "unreadable" });
+    // No point given: keep as before, with nothing to say.
+    expect(wheelPointOnPage(FRAME, deps({ pointAt: () => undefined }))).toEqual({ kind: "keep" });
+  });
   it("the page visible nowhere: still refused, the point changes nothing", () => {
     expect(wheelPointOnPage(FRAME, deps({ visibleFromX: null }), { x: 300, y: 450 })).toEqual({ kind: "not_visible", frame: FRAME, why: "covered" });
     expect(wheelPointOnPage(FRAME, deps({ iconic: true }), { x: 300, y: 450 })).toMatchObject({ kind: "not_visible", why: "minimized" });

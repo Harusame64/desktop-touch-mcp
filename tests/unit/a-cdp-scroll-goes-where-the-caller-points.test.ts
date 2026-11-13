@@ -113,6 +113,14 @@ describe("scroll on the window road, with x/y (internal #404)", () => {
     expect(t).toContain("The point (420, 90) is not on the page in that window");
   });
 
+  it("UIA answered for a point off the page: says the document was scrolled as a whole, not that a wheel went elsewhere", async () => {
+    m.windowNotUsed = "off";
+    m.result = { scrolled: true, channel: "uia", reason: "delivered_via_uia" };
+    const t = reply(await scrollHandler({ direction: "down", amount: 1, x: 420, y: 90, homing: false, hwnd: "1280" }));
+    expect(t).toContain("scrolled as a whole instead (UIA)");
+    expect(t).not.toContain("where the page shows");
+  });
+
   it("the page visible nowhere: the refusal, without a point note", async () => {
     m.windowNotUsed = "covered";
     m.result = { scrolled: false, channel: "postmessage", reason: "target_unreachable", pageNotVisible: { frame: 0x500n, why: "covered" } };

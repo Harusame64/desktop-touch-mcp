@@ -2492,7 +2492,9 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
       expect(uiaScrollByWheelAtHwndMock).not.toHaveBeenCalled();
       expect(win32PostMessageMock).toHaveBeenCalled();
       for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(600, 400));
-      expect(told).not.toHaveBeenCalled();
+      // Told on each read that the point was used (undefined), never a reason.
+      expect(told.mock.calls.length).toBeGreaterThan(0);
+      expect(told.mock.calls.every((c) => c[0] === undefined)).toBe(true);
     });
     it("postWheelToHwnd on its own carries the point too", async () => {
       shape(500);
@@ -2530,7 +2532,35 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
       await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1, at: at(600, 400), onPointNotUsed: told });
       expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledTimes(1);
       expect(win32PostMessageMock.mock.calls[0]![3]).toBe(lp(900, 450));
-      expect(told).not.toHaveBeenCalled();
+      // Told on each read that the point was used (undefined), never a reason.
+      expect(told.mock.calls.length).toBeGreaterThan(0);
+      expect(told.mock.calls.every((c) => c[0] === undefined)).toBe(true);
+    });
+    it("a later read replaces an earlier one: covered before Tier 1, visible at Tier 3's read, no reason stands", async () => {
+      shape(1100);
+      uiaScrollByWheelAtHwndMock.mockImplementation(async () => {
+        wheelPointDeps.pointAt = () => ({ child: PAGE, root: FRAME });
+        return { ok: false, scrolled: false };
+      });
+      const told = vi.fn();
+      await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1, at: at(600, 400), onPointNotUsed: told });
+      expect(told.mock.calls.map((c) => c[0])).toEqual(["covered", undefined]);
+      for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(600, 400));
+    });
+    it("a build without PostMessage: Tier 1 is not skipped for a point on the page", async () => {
+      shape(500);
+      nativeWin32Mock.win32PostMessage = undefined;
+      const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1, at: at(600, 400) });
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledTimes(1);
+      expect(r).toEqual({ scrolled: true, channel: "uia", reason: "delivered_via_uia" });
+    });
+    it("Windows cannot be asked at any point: kept, and the caller is told 'unreadable'", async () => {
+      shape(500);
+      wheelPointDeps.pointAt = () => undefined;
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: false, scrolled: false });
+      const told = vi.fn();
+      await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1, at: at(600, 400), onPointNotUsed: told });
+      expect(told.mock.calls.map((c) => c[0])).toEqual(["unreadable", "unreadable"]);
     });
     it("no point: Tier 1 first, as before", async () => {
       shape(500);

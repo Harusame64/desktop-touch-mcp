@@ -54,6 +54,7 @@ import {
   type DispatchOutcome,
   type VisualMotionObservation,
 } from "./_input-pipeline.js";
+import type { PointNotUsed } from "../engine/page-wheel-point.js";
 import { logDispatchSink } from "./_resolve-log.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
 import { moveCursorTo } from "../engine/cursor.js";
@@ -1604,18 +1605,23 @@ export const scrollHandler = async ({
     // page at its point (dev/404-window-road-point W3), and it used to go to the page's centre or a grid point.
     const pointFrame = dest.kind === "cdp" ? dest.frame : dest.kind === "hwnd" ? dest.hwnd : undefined;
     const at = pointFrame !== undefined && tx !== undefined && ty !== undefined ? { screenX: tx, screenY: ty, frame: pointFrame } : undefined;
-    let windowRoadPointNotUsed: "off" | "covered" | "unreadable" | undefined;
+    let windowRoadPointNotUsed: PointNotUsed | undefined;
     const tier1 = await dispatchScrollWheel(dest, {
       direction,
       notch: amount,
       ...(at !== undefined && { at }),
-      ...(at !== undefined && dest.kind === "hwnd" && { onPointNotUsed: (why: "off" | "covered" | "unreadable") => { windowRoadPointNotUsed = why; } }),
+      ...(at !== undefined && dest.kind === "hwnd" && { onPointNotUsed: (why: PointNotUsed | undefined) => { windowRoadPointNotUsed = why; } }),
     });
 
     // internal #403 / #404 — said only when the wheel was sent, elsewhere on the page than the caller's point.
     const pointNotUsed = tier1?.pointNotUsed ?? (tier1?.pageNotVisible === undefined ? windowRoadPointNotUsed : undefined);
     if (pointNotUsed !== undefined && tx !== undefined && ty !== undefined) {
-      const elsewhere = dest.kind === "cdp" ? "at the middle of the page" : "where the page shows (its middle when that is visible)";
+      // Tier 1 UIA answered: no wheel was sent, the document's own scroll position was moved (gate 2 on #982).
+      const elsewhere = dest.kind === "cdp"
+        ? "at the middle of the page"
+        : tier1?.channel === "uia"
+        ? "nowhere: the page's document was scrolled as a whole instead (UIA)"
+        : "where the page shows (its middle when that is visible)";
       scrollWarnings.push(
         pointNotUsed === "off"
           ? `The point (${tx}, ${ty}) is not on the page in that window (it is over the tab strip, the address bar, a DevTools pane, or outside the window), so the wheel was sent ${elsewhere}. To scroll one part of the page, pass x/y inside that part.`

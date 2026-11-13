@@ -16,18 +16,21 @@ import { PAGE_RWH_CLASS, resolvePageSurface, type PageSurfaceDeps } from "./page
 /** The top-level class of Chrome, Edge and Electron windows. */
 export const CHROMIUM_FRAME_CLASS = "Chrome_WidgetWin_1";
 
+/**
+ * internal #404 — why the caller's point is not the one a wheel carries: "off" the page surface (the tab strip, a
+ * DevTools pane, outside the window), "covered" by another window there, or "unreadable" (Windows could not be
+ * asked at it, or the page could not be read).
+ */
+export type PointNotUsed = "off" | "covered" | "unreadable";
+
 export type WheelPagePoint =
-  | { kind: "keep" }
+  | { kind: "keep"; pointNotUsed?: PointNotUsed }
   | {
       kind: "point";
       frame: bigint;
       point: { x: number; y: number };
-      /**
-       * internal #404 — the caller's point was given and this is not it: "off" the page surface (the tab strip,
-       * a DevTools pane, outside the window), "covered" by another window there, or "unreadable" (Windows could
-       * not be asked at it). Absent when the caller's point is the one returned, or none was given.
-       */
-      pointNotUsed?: "off" | "covered" | "unreadable";
+      /** internal #404 — the caller's point was given and this is not it. Absent when it is, or none was given. */
+      pointNotUsed?: PointNotUsed;
     }
   | { kind: "not_visible"; frame: bigint; why: "covered" | "minimized" | "cloaked" | "no_page_window" };
 
@@ -67,8 +70,10 @@ export function wheelPointOnPage(hwnd: bigint, deps: WheelPointDeps, preferred?:
   } catch {
     return { kind: "keep" };
   }
+  // A Chromium window whose page cannot be placed: the post keeps its old point, and a caller's point was not used.
+  const keep: WheelPagePoint = preferred !== undefined ? { kind: "keep", pointNotUsed: "unreadable" } : { kind: "keep" };
   const surface = resolvePageSurface(frame, deps.surface);
-  if (surface.kind === "unreadable") return { kind: "keep" };
+  if (surface.kind === "unreadable") return keep;
   if (surface.kind === "not_shown") {
     if (surface.why !== "no_page_window") return { kind: "not_visible", frame, why: surface.why };
     // No page window does not by itself prove the window is covered: a window just brought forward, or a
@@ -76,15 +81,15 @@ export function wheelPointOnPage(hwnd: bigint, deps: WheelPointDeps, preferred?:
     // before (gate 2 on #969; the same reading as browser_click's, PR #967 P12). Refuse only when another
     // window is what Windows finds at that centre, as when it covers all of it (win2 OQ-40-8 Q3).
     const r = deps.rectOf(frame);
-    if (r === null) return { kind: "keep" };
+    if (r === null) return keep;
     const at = deps.pointAt(Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2));
-    if (at === undefined || (at !== null && at.root === frame)) return { kind: "keep" };
+    if (at === undefined || (at !== null && at.root === frame)) return keep;
     return { kind: "not_visible", frame, why: "no_page_window" };
   }
   const { x, y, width, height } = surface.rect;
   const shows = (at: { child: bigint; root: bigint } | null): boolean =>
     at !== null && at.root === frame && (surface.rwhs.includes(at.child) || deps.classOf(at.child) !== PAGE_RWH_CLASS);
-  let pointNotUsed: "off" | "covered" | "unreadable" | undefined;
+  let pointNotUsed: PointNotUsed | undefined;
   if (preferred !== undefined) {
     const px = Math.round(preferred.x), py = Math.round(preferred.y);
     if (px < x || py < y || px >= x + width || py >= y + height) pointNotUsed = "off";
@@ -106,7 +111,7 @@ export function wheelPointOnPage(hwnd: bigint, deps: WheelPointDeps, preferred?:
     // than refuse on a missing instrument; once the centre was read as covered, falling back to it would
     // post at a point known to be another window's (gate 2 on #969), so try the next one.
     if (at === undefined) {
-      if (asked === 0) return { kind: "keep" };
+      if (asked === 0) return pointNotUsed !== undefined ? { kind: "keep", pointNotUsed } : { kind: "keep" };
       continue;
     }
     asked += 1;
