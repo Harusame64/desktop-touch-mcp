@@ -108,6 +108,7 @@ import {
 } from "../engine/cdp-bridge.js";
 import { getCdpPort } from "../utils/desktop-config.js";
 import type { Rect } from "../engine/vision-gpu/types.js";
+import { isUndockedDevToolsTitle } from "../engine/browser-frames.js";
 
 /**
  * Win32 class name of a Chrome / Edge **top-level** window. Used as the gate
@@ -965,14 +966,6 @@ export async function resolveCdpDestinationForHwnd(
   }
 }
 
-/**
- * internal #398 — an undocked DevTools window's title: "DevTools - <inspected url>", with no browser name at
- * the end. A browser window showing a page titled "DevTools …" ends with its browser's name ("- Google Chrome",
- * "- Microsoft Edge") and is not one (agy on #968). Exported for tests.
- */
-export function isUndockedDevToolsTitle(title: string): boolean {
-  return /^DevTools - /.test(title) && !/ - (Google Chrome|Microsoft[\u200b\s]*Edge|Chromium)$/u.test(title);
-}
 
 /**
  * The CDP browser's process id on `port`, or undefined when it cannot be read. Cached per port: the
