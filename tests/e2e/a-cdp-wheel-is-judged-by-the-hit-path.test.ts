@@ -147,6 +147,12 @@ describe.skipIf(!CHROME_AVAILABLE)("the CDP wheel is judged by the path the brow
     expect(v?.under).toBeUndefined();
   });
 
+  it("a column-reverse chat pane at its bottom (scrollTop 0): down is the end, up moves (codex on #980)", async () => {
+    await open("reverse");
+    expect(await wheelAt(200, 300)).toMatchObject({ under: "end", underLabel: "div#C" });
+    expect(await wheelAt(200, 300, -120)).toMatchObject({ moved: "div#C" });
+  });
+
   it("right-to-left: at the right edge, right is the end and left moves (gate 2 on #980)", async () => {
     await open("rtl");
     expect(await wheelAt(200, 300, 0, 120)).toMatchObject({ under: "end", underLabel: "div#W" });

@@ -665,7 +665,7 @@ export function wheelObserverExpr(vertical: boolean): string {
  * scrolls. Only that one is judged: the browser's scroll chain past it (overscroll-behavior, fixed and absolute
  * containing blocks) is not modelled. The document counts as scrolling unless the viewport's overflow (html's,
  * or body's propagated) hides that axis; a body whose overflow went to the viewport is not a scroller itself.
- * Right-to-left boxes run scrollLeft from −max to 0. Exported for tests.
+ * Right-to-left boxes sideways, and reversed flex boxes on their main axis, run from −max to 0. Exported for tests.
  */
 export const WHEEL_VERDICT_FN = `function(sign, seenMs, settleMs, maxMs) {
   var o = this, t0 = performance.now(), v = o.vertical;
@@ -691,9 +691,16 @@ export const WHEEL_VERDICT_FN = `function(sign, seenMs, settleMs, maxMs) {
     }
     var max = v ? el.scrollHeight - el.clientHeight : el.scrollWidth - el.clientWidth;
     if (max <= 0) return 'none';
-    var lo = 0, hi = max;
-    if (!v && getComputedStyle(el).direction === 'rtl') { lo = -max; hi = 0; }
+    // The scroll origin is at the far end (scroll position runs from -max to 0) for a right-to-left box sideways,
+    // a reversed flex box on its main axis (column-reverse chat panes, codex on #980), or any box already
+    // reading a negative position.
+    var cs2 = getComputedStyle(el), flex = /flex/.test(cs2.display);
+    var reversed = v
+      ? (flex && cs2.flexDirection === 'column-reverse')
+      : ((cs2.direction === 'rtl') !== (flex && cs2.flexDirection === 'row-reverse'));
     var at = pos(el);
+    var lo = 0, hi = max;
+    if (reversed || at < 0) { lo = -max; hi = 0; }
     return (sign > 0 ? at < hi - 1 : at > lo + 1) ? 'room' : 'end';
   }
   function label(el) {
