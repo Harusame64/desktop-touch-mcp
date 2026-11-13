@@ -748,7 +748,8 @@ fn find_scroll_pattern_in_subtree(
     // nothing, passed over DevTools, and met no other Document, the window is DevTools itself (undocked, named by the
     // caller): the search runs again without passing over DevTools, as before. A side panel is never the whole
     // window, so it is passed over on both passes: a page whose Document is not in the tree yet (loading, crashed)
-    // leaves only the panel, and that must not bring it back. A WebUI page in a tab (chrome://settings) is another
+    // leaves only the panel, and that must not bring it back. Meeting one also shows the window is a browser frame,
+    // not an undocked DevTools, so the second pass does not run then either (DevTools docked beside it would be taken). A WebUI page in a tab (chrome://settings) is another
     // Document, so DevTools or a panel beside it stays passed over.
     let mut seen = BrowserUiSeen::default();
     if let Some(found) = find_scroll_pattern_dfs(
@@ -757,7 +758,7 @@ fn find_scroll_pattern_in_subtree(
         return Some(found);
     }
     // Not when the first pass ran out of budget: the page's Document may lie past where it stopped.
-    if seen.devtools && !seen.other_document && *node_budget > 0 {
+    if seen.devtools && !seen.side_panel && !seen.other_document && *node_budget > 0 {
         let mut budget = MAX_SCROLL_DFS_NODES;
         return find_scroll_pattern_dfs(
             ctx, elem, depth, target_hwnd, need_vertical, need_horizontal, &mut budget, false, &mut seen,
@@ -766,11 +767,12 @@ fn find_scroll_pattern_in_subtree(
     None
 }
 
-/// internal #407 / #408 — what the DFS has met so far: DevTools' Document, a Document that is neither DevTools nor a
-/// side panel (the page, or a WebUI page in a tab).
+/// internal #407 / #408 — what the DFS has met so far: DevTools' Document, a side panel's, a Document that is neither
+/// (the page, or a WebUI page in a tab).
 #[derive(Default)]
 struct BrowserUiSeen {
     devtools: bool,
+    side_panel: bool,
     other_document: bool,
 }
 
@@ -795,15 +797,20 @@ fn is_devtools_url(url: &str) -> bool {
 
 /// internal #408 — whether a Document's URL is a browser side panel: a WebUI page whose host ends in `.top-chrome`
 /// (`chrome://bookmarks-side-panel.top-chrome/`, win2 dev/408-hw; `chrome-untrusted://…top-chrome/` for others).
-/// Matched by host on any scheme, since Brave, Vivaldi and Opera show their own (`brave://`); `top-chrome` is no
-/// public suffix, so no web page has such a host. Not every WebUI page: a settings, history or New Tab page in a tab
+/// Matched by host on any scheme but http(s), since Brave, Vivaldi and Opera show their own (`brave://`); a web page
+/// on a private `.top-chrome` host (hosts file, intranet DNS) stays a page. Not every WebUI page: a settings, history or New Tab page in a tab
 /// is the page the user is looking at (the rule cdp-default-tab.ts writes down). Any case; nothing is allocated.
 fn is_side_panel_url(url: &str) -> bool {
     const PANEL_HOST: &str = ".top-chrome";
-    let u = url.trim_start();
+    let u = url.trim();
+    if starts_with_ignore_case(u, "http://") || starts_with_ignore_case(u, "https://") {
+        return false;
+    }
     let Some((_, rest)) = u.split_once("://") else { return false };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host = authority.split(':').next().unwrap_or("");
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    // Userinfo first (it may hold a ':'), then the port.
+    let host_port = authority.rsplit('@').next().unwrap_or_default();
+    let host = host_port.split(':').next().unwrap_or_default();
     host.len()
         .checked_sub(PANEL_HOST.len())
         .and_then(|i| host.get(i..))
@@ -856,7 +863,10 @@ fn find_scroll_pattern_dfs(
                 seen.devtools = true;
                 return None;
             }
-            DocumentKind::SidePanel => return None,
+            DocumentKind::SidePanel => {
+                seen.side_panel = true;
+                return None;
+            }
             DocumentKind::Other => seen.other_document = true,
             _ => {}
         }
@@ -1009,6 +1019,10 @@ mod tests {
         assert!(is_devtools_url("DevTools://devtools/bundled/devtools_app.html"));
         assert!(!is_devtools_url("https://example.com/devtools://"));
         assert!(!is_devtools_url("chrome://bookmarks-side-panel.top-chrome/"));
+        assert!(!is_devtools_url("http://127.0.0.1:8080/wheel-hit-path.html#panes"));
+        assert!(!is_devtools_url("chrome://settings"));
+        assert!(!is_devtools_url("devtools:"));
+        assert!(!is_devtools_url(""));
         // internal #408 — Chrome's side panel as win2 read it (dev/408-hw), in any case, and on Brave's scheme.
         assert!(is_side_panel_url("chrome://bookmarks-side-panel.top-chrome/"));
         assert!(is_side_panel_url("chrome-untrusted://read-anything-side-panel.top-chrome/"));
@@ -1016,6 +1030,13 @@ mod tests {
         assert!(is_side_panel_url("brave://bookmarks-side-panel.top-chrome/"));
         assert!(is_side_panel_url("chrome://bookmarks-side-panel.top-chrome:443/"));
         assert!(is_side_panel_url("chrome://u@bookmarks-side-panel.top-chrome/"));
+        assert!(is_side_panel_url("chrome://u:p@bookmarks-side-panel.top-chrome/"));
+        assert!(is_side_panel_url("chrome://bookmarks-side-panel.top-chrome "));
+        // The userinfo is not the host; a web page on a private .top-chrome host stays a page.
+        assert!(!is_side_panel_url("chrome://x.top-chrome:pw@example.com/"));
+        assert!(!is_side_panel_url("https://x.top-chrome:pw@example.com/"));
+        assert!(!is_side_panel_url("http://dash.top-chrome/"));
+        assert!(!is_side_panel_url("HTTPS://dash.top-chrome/"));
         // A WebUI page in a tab is the page (cdp-default-tab.ts): DevTools or a panel beside it must still be passed
         // over, so it must not read as a panel.
         assert!(!is_side_panel_url("chrome://settings"));
@@ -1031,7 +1052,6 @@ mod tests {
         assert!(!is_side_panel_url(""));
         assert!(!is_side_panel_url("devtools://devtools/bundled/devtools_app.html"));
     }
-
 
     use super::wheel_step_percent;
 

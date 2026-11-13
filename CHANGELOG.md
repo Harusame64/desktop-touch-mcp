@@ -17,10 +17,10 @@
   already at its end. When the page cancels the wheel itself, or nothing that scrolls can be seen where it landed
   (another site's frame, a closed component), the answer is `unverifiable` with the road on, not a failure. When the
   wheel could not be sent at all, the reply says nothing was sent (internal #403).
-- **`scroll` on a Chrome or Edge window, reached without CDP, no longer scrolls DevTools or a side panel.**
-  UIA's search for something to scroll could reach a docked DevTools' Elements tree, or the list in Chrome's side
-  panel when the page had nothing UIA could scroll, and scrolled it, answering `delivered` while the page stayed
-  still. That search now passes over DevTools and Chrome's side panels, unless the window is DevTools itself; a
+- **`scroll` on a Chrome or Edge window, reached without CDP, no longer scrolls DevTools or Chrome's built-in side
+  panels.** UIA's search for something to scroll could reach a docked DevTools' Elements tree, or the list in
+  Chrome's side panel when the page had nothing UIA could scroll, and scrolled it, answering `delivered` while the
+  page stayed still. That search now passes over DevTools and those panels, unless the window is DevTools itself; a
   settings or other browser page in a tab still counts as the page. When the page has nothing UIA can scroll, the
   wheel is posted to the page as for any other window (internal #407, #408).
 - **`scroll` with `x`/`y` on a Chrome or Edge window reached without CDP also scrolls what is at that point.** The
