@@ -20,9 +20,9 @@
 - **`scroll` on a Chrome or Edge window, reached without CDP, no longer scrolls DevTools or a side panel.**
   UIA's search for something to scroll could reach a docked DevTools' Elements tree, or the list in Chrome's side
   panel when the page had nothing UIA could scroll, and scrolled it, answering `delivered` while the page stayed
-  still. That search now passes over the browser's own UI (DevTools and `chrome://`, `chrome-untrusted://` and
-  `edge://` pages), unless the window shows nothing else; when the page has nothing UIA can scroll, the wheel is
-  posted to the page as for any other window (internal #407, #408).
+  still. That search now passes over DevTools and Chrome's side panels, unless the window is DevTools itself; a
+  settings or other browser page in a tab still counts as the page. When the page has nothing UIA can scroll, the
+  wheel is posted to the page as for any other window (internal #407, #408).
 - **`scroll` with `x`/`y` on a Chrome or Edge window reached without CDP also scrolls what is at that point.** The
   wheel posted to the window carried the page's centre (or another visible point), and UIA, tried first, moved only
   the document. With two panes side by side, the one at the centre scrolled; with a box pointed at, the document
