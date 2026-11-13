@@ -10,6 +10,10 @@
   tool (internal #377).
 
 ### Fixed — Windows
+- **`scroll` with `x`/`y` on a Chrome or Edge page reached through CDP scrolls what is at that point.** The point
+  was dropped on that road and the wheel always went to the middle of the page, so with two panes side by side (a
+  mail list and a reading pane, a sidebar) the one at the middle scrolled instead of the one pointed at. A point off
+  the page (the tab strip, a DevTools pane) still scrolls the middle, and the reply says so (internal #403).
 - **The `focus_window` call that `browser_click`'s and `scroll`'s refusals suggest now works.** They named the window
   by `hwnd`, which `focus_window` did not take, so following them failed. `browser_click` on a minimized window says
   where to read its `hwnd` (`desktop_discover`'s `windows[]`) instead of only "focus_window by its title"

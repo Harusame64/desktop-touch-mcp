@@ -571,6 +571,9 @@ export async function readScrollPositionInTab(
   scrollWidth: number;
   clientHeight: number;
   clientWidth: number;
+  /** The viewport in CSS px (window.innerWidth/innerHeight, scrollbars included): maps a screen point onto it. */
+  innerWidth?: number;
+  innerHeight?: number;
 } | null> {
   const expr = `
 (function() {
@@ -583,6 +586,8 @@ export async function readScrollPositionInTab(
     scrollWidth: el.scrollWidth,
     clientHeight: el.clientHeight,
     clientWidth: el.clientWidth,
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
   };
 })()`;
   try {
@@ -593,6 +598,8 @@ export async function readScrollPositionInTab(
       scrollWidth: number;
       clientHeight: number;
       clientWidth: number;
+      innerWidth?: number;
+      innerHeight?: number;
     } | null;
     return result;
   } catch {

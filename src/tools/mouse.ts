@@ -48,6 +48,7 @@ import { offDesktopTarget, offDesktopFailure, type OffDesktopTarget } from "./_o
 import {
   resolveInputDestination,
   dispatchScrollWheel,
+  pointOnPageSurface,
   assertTier4Reachable,
   WHEEL_DELTA_PER_NOTCH,
   WHEEL_DELTA_MAX_PER_MSG,
@@ -1579,7 +1580,23 @@ export const scrollHandler = async ({
 
     // Phase 2: side-effect injection. Try Tier 1 (UIA) first; if dispatcher returns
     // null, fall through to the legacy nutjs SendInput path (Phase 1b lenient guard).
-    const tier1 = await dispatchScrollWheel(dest, { direction, notch: amount });
+    // internal #403 — on the CDP road the wheel goes where the caller pointed: Chromium scrolls the scroller
+    // under the wheel's point (dev/403-cdp-wheel-spike M1), and before this the point was dropped and the
+    // wheel always went to the page's centre. A point off the page (the tab strip, a docked DevTools pane)
+    // keeps the centre, and the reply says so.
+    let at: { screenX: number; screenY: number; frame: bigint } | undefined;
+    if (dest.kind === "cdp" && tx !== undefined && ty !== undefined && resolvedWin?.hwnd !== undefined) {
+      const where = pointOnPageSurface(resolvedWin.hwnd, tx, ty);
+      if (where === "on") at = { screenX: tx, screenY: ty, frame: resolvedWin.hwnd };
+      else {
+        scrollWarnings.push(
+          where === "off"
+            ? `The point (${tx}, ${ty}) is not on the page in that window (it is over the tab strip, the address bar, a DevTools pane, or outside the window), so the wheel was sent at the middle of the page. To scroll one part of the page, pass x/y inside that part.`
+            : `The page area of that window could not be read, so the wheel was sent at the middle of the page, not at (${tx}, ${ty}).`,
+        );
+      }
+    }
+    const tier1 = await dispatchScrollWheel(dest, { direction, notch: amount, ...(at !== undefined && { at }) });
 
     // ADR-040 PR ② (internal #396) — a Chromium window whose page is visible nowhere: posting would have
     // scrolled the window in front, so nothing was posted. Say so, and give the road on (invariant 8).

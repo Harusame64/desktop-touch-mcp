@@ -33,6 +33,7 @@ import {
 import { logDispatchSink } from "./_resolve-log.js";
 import { getWindowRectByHwnd, getWindowProcessId, getWindowTitleW, getWindowRoot, getWindowClassName, windowFromPoint, getWindowDpi, pageSurfaceDeps } from "../engine/win32.js";
 import { wheelPointOnPage, type WheelPointDeps, type WheelPagePoint } from "../engine/page-wheel-point.js";
+import { resolvePageSurface } from "../engine/page-surface.js";
 import { tabOfFrame, type TabOfFrameDeps } from "../engine/cdp-tab-of-frame.js";
 
 /** Exported so tests can replace the window reads (ADR-040 PR ②). */
@@ -388,17 +389,56 @@ export interface WheelParams {
   direction: "up" | "down" | "left" | "right";
   notch: number;
   /**
-   * Optional viewport-relative CSS px coordinates for Tier 2 CDP dispatch.
-   * CDP `Input.dispatchMouseEvent({type:'mouseWheel'})` requires `(x,y)` but
-   * routes the wheel to the tab (not the point) — so for Phase 3 these are
-   * a hint only; viewport center is used when omitted. Tier 1 (UIA) and
-   * Tier 4 (legacy SendInput) ignore both fields.
-   *
-   * Phase 3 / ADR §7 OQ6 carry-over: per-element CDP coords land in a future
-   * phase (e.g. `scroll(action='to_element', selector=...)` Tier 2 path).
+   * Optional viewport-relative CSS px coordinates for Tier 2 CDP dispatch. Chromium hit-tests a CDP
+   * `mouseWheel` at `(x,y)` and scrolls the scroller under it (measured: internal dev/403-cdp-wheel-spike
+   * M1, two side-by-side containers; an earlier comment here said it went to the tab, not the point).
+   * Viewport center is used when omitted. Tier 1 (UIA) and Tier 4 (legacy SendInput) ignore both fields.
    */
   x?: number;
   y?: number;
+  /**
+   * internal #403 — the caller's point, in screen px, on the page surface of `frame` (the caller checked
+   * that with `pointOnPageSurface`). The CDP road maps it into the viewport and sends the wheel there,
+   * instead of the viewport's centre. Takes precedence over `x`/`y`.
+   */
+  at?: { screenX: number; screenY: number; frame: bigint };
+}
+
+/**
+ * internal #403 — whether screen point (`x`, `y`) lies on `frame`'s page surface (the window the page is drawn
+ * in): "on", "off" (the tab strip, the address bar, a docked DevTools pane, outside the window), or
+ * "unreadable" when the surface cannot be read.
+ */
+export function pointOnPageSurface(frame: bigint, x: number, y: number): "on" | "off" | "unreadable" {
+  try {
+    const surface = resolvePageSurface(frame, wheelPointDeps.surface);
+    if (surface.kind !== "surface") return "unreadable";
+    const r = surface.rect;
+    return x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height ? "on" : "off";
+  } catch {
+    return "unreadable";
+  }
+}
+
+/**
+ * internal #403 — `at` mapped into the viewport's CSS px: (screen − the page surface's origin) × the viewport's
+ * CSS width over the surface's physical width, which carries the monitor's scale and the page zoom alike.
+ * Undefined when the surface or the viewport's size cannot be read, or the point is off the surface now.
+ */
+function viewportPointOf(
+  at: NonNullable<WheelParams["at"]>,
+  innerWidth: number | undefined,
+  innerHeight: number | undefined,
+): { x: number; y: number } | undefined {
+  if (!innerWidth || !innerHeight) return undefined;
+  let surface;
+  try { surface = resolvePageSurface(at.frame, wheelPointDeps.surface); } catch { return undefined; }
+  if (surface.kind !== "surface" || surface.rect.width <= 0 || surface.rect.height <= 0) return undefined;
+  const r = surface.rect;
+  const x = (at.screenX - r.x) * innerWidth / r.width;
+  const y = (at.screenY - r.y) * innerHeight / r.height;
+  if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return undefined;
+  return { x: Math.floor(x), y: Math.floor(y) };
 }
 
 /**
@@ -2040,8 +2080,10 @@ export async function dispatchScrollWheel(
       // CDP dispatchMouseEvent requires viewport coordinates. Phase 3 sends
       // wheels at the viewport center; per-element coords (ADR §7 OQ6) are a
       // future phase. The tab is the destination, not the point.
-      const cx = params.x ?? Math.floor(pre.clientWidth / 2);
-      const cy = params.y ?? Math.floor(pre.clientHeight / 2);
+      // internal #403 — at the caller's point when one was given on the page, else as before.
+      const atPoint = params.at !== undefined ? viewportPointOf(params.at, pre.innerWidth, pre.innerHeight) : undefined;
+      const cx = atPoint?.x ?? params.x ?? Math.floor(pre.clientWidth / 2);
+      const cy = atPoint?.y ?? params.y ?? Math.floor(pre.clientHeight / 2);
       // Recorded AFTER the await for the same reason as Tier 1: the helper
       // resolves the tab and opens a session first, and either can fail — the
       // surrounding catch turns that into a plain `null` outcome, so an event

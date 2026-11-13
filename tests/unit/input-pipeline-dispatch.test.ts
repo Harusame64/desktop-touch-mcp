@@ -198,6 +198,7 @@ const {
   assertTier4Reachable,
   postWheelToHwnd,
   wheelPointDeps,
+  pointOnPageSurface,
   tabOfFrameDeps,
 } = await import("../../src/tools/_input-pipeline.js");
 
@@ -897,6 +898,63 @@ describe("ADR-018 Phase 3 — dispatchScrollWheel (Tier 2 CDP path)", () => {
       expect.any(Number), expect.any(Number),
       "TAB-X", 9222,
     );
+  });
+
+  describe("at the caller's point (internal #403)", () => {
+    // Chromium scrolls the scroller under a CDP wheel's point (dev/403-cdp-wheel-spike M1), so the point
+    // has to be the caller's, mapped from screen px into the viewport's CSS px.
+    const saved = { ...wheelPointDeps };
+    const surfaceAt = (rect: { x: number; y: number; width: number; height: number } | null) => {
+      wheelPointDeps.surface = {
+        isIconic: () => false,
+        isCloaked: () => false,
+        descendants: () => (rect === null ? [] : [{ hwnd: 0x9001n, className: "Chrome_RenderWidgetHostHWND", visible: true, rect }]),
+      };
+    };
+    afterEach(() => { Object.assign(wheelPointDeps, saved); });
+    const page = (inner: { innerWidth?: number; innerHeight?: number }) => ({ ...snap(0, 0), ...inner });
+
+    it("maps screen px into CSS px by the surface's origin and the viewport's scale (150 % monitor)", async () => {
+      // A 1200×800 CSS viewport drawn 1800×1200 physical at (110, 180): a screen point (1010, 780) is CSS (600, 400).
+      surfaceAt({ x: 110, y: 180, width: 1800, height: 1200 });
+      readScrollPositionInTabMock.mockResolvedValueOnce(page({ innerWidth: 1200, innerHeight: 800 })).mockResolvedValueOnce(page({}));
+      dispatchWheelInTabMock.mockResolvedValue(undefined);
+      await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1, at: { screenX: 1010, screenY: 780, frame: 0x500n } });
+      expect(dispatchWheelInTabMock).toHaveBeenCalledWith(0, 120, 600, 400, "TAB-X", 9222);
+    });
+
+    it("a zoomed page: the viewport's CSS width carries the zoom (125 % zoom on a 100 % monitor)", async () => {
+      // 1000 physical px wide shows 800 CSS px: screen x 110+500 is CSS 400.
+      surfaceAt({ x: 110, y: 180, width: 1000, height: 600 });
+      readScrollPositionInTabMock.mockResolvedValueOnce(page({ innerWidth: 800, innerHeight: 480 })).mockResolvedValueOnce(page({}));
+      dispatchWheelInTabMock.mockResolvedValue(undefined);
+      await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1, at: { screenX: 610, screenY: 480, frame: 0x500n } });
+      expect(dispatchWheelInTabMock).toHaveBeenCalledWith(0, 120, 400, 240, "TAB-X", 9222);
+    });
+
+    it("the viewport's size or the surface cannot be read, or the point left the surface: the centre, as before", async () => {
+      for (const [rect, inner, at] of [
+        [{ x: 0, y: 0, width: 1280, height: 800 }, {}, { screenX: 10, screenY: 10 }],
+        [null, { innerWidth: 1280, innerHeight: 800 }, { screenX: 10, screenY: 10 }],
+        [{ x: 100, y: 100, width: 1280, height: 800 }, { innerWidth: 1280, innerHeight: 800 }, { screenX: 50, screenY: 50 }],
+      ] as const) {
+        dispatchWheelInTabMock.mockClear();
+        surfaceAt(rect);
+        readScrollPositionInTabMock.mockResolvedValueOnce(page(inner)).mockResolvedValueOnce(page({}));
+        dispatchWheelInTabMock.mockResolvedValue(undefined);
+        await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1, at: { ...at, frame: 0x500n } });
+        expect(dispatchWheelInTabMock).toHaveBeenCalledWith(0, 120, 640, 400, "TAB-X", 9222);
+      }
+    });
+
+    it("pointOnPageSurface: on, off (the tab strip above the page), unreadable", () => {
+      surfaceAt({ x: 110, y: 180, width: 1180, height: 710 });
+      expect(pointOnPageSurface(0x500n, 500, 500)).toBe("on");
+      expect(pointOnPageSurface(0x500n, 500, 150)).toBe("off");
+      expect(pointOnPageSurface(0x500n, 110 + 1180, 500)).toBe("off");
+      surfaceAt(null);
+      expect(pointOnPageSurface(0x500n, 500, 500)).toBe("unreadable");
+    });
   });
 
   it("vertical up: deltaY negative (UIA-internal sign convention — CDP/CSS positive-down matches)", async () => {

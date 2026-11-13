@@ -356,49 +356,49 @@
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 514,
+      "line": 515,
       "tool": "mouse_move",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 543,
+      "line": 544,
       "tool": "mouse_click",
       "errKind": "new-error",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 807,
+      "line": 808,
       "tool": "mouse_click",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 883,
+      "line": 884,
       "tool": "mouse_drag",
       "errKind": "new-error",
       "contextShape": "object-hoisted"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1039,
+      "line": 1040,
       "tool": "mouse_drag",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 1602,
+      "line": 1619,
       "tool": "scroll",
       "errKind": "new-error",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 2036,
+      "line": 2053,
       "tool": "get_cursor_position",
       "errKind": "identifier",
       "contextShape": "none"
