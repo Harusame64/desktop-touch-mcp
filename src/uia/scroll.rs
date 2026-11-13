@@ -739,17 +739,21 @@ fn find_scroll_pattern_in_subtree(
 ) -> Option<IUIAutomationScrollPattern> {
     // internal #407 — a docked DevTools sits in the browser frame's own tree, ahead of the page's Document, and its
     // Elements tree carries a ScrollPattern: the search scrolled it and answered scrolled while the page stayed still
-    // (win2, dev/407-uia-devtools U1/U2). Its Document reads devtools:// (U4), so the first pass passes over its
-    // subtree. When that pass found nothing, passed over a DevTools Document, and met no other Document, the window
-    // is DevTools itself (undocked, named by the caller): the search runs again without passing over it, as before.
-    let mut seen = DevToolsSeen::default();
+    // (win2, dev/407-uia-devtools U1/U2). Its Document reads devtools:// (U4). internal #408 — Chrome's side panel is
+    // another Document in the same tree (chrome://bookmarks-side-panel.top-chrome/): when the page had nothing UIA
+    // could scroll, the search took the panel's list, moved it 0→1.5 % and answered delivered with the page still
+    // (win2, dev/408-hw), also on a page whose inner panes the posted wheel scrolled with the panel closed. So the
+    // first pass passes over the subtree of every browser-UI Document. When that pass found nothing, passed over one,
+    // and met no other Document, the window shows only the browser's own UI (an undocked DevTools named by the
+    // caller, chrome://settings in a tab): the search runs again without passing over it, as before.
+    let mut seen = BrowserUiSeen::default();
     if let Some(found) = find_scroll_pattern_dfs(
         ctx, elem, depth, target_hwnd, need_vertical, need_horizontal, node_budget, true, &mut seen,
     ) {
         return Some(found);
     }
     // Not when the first pass ran out of budget: the page's Document may lie past where it stopped.
-    if seen.devtools && !seen.other_document && *node_budget > 0 {
+    if seen.browser_ui && !seen.other_document && *node_budget > 0 {
         let mut budget = MAX_SCROLL_DFS_NODES;
         return find_scroll_pattern_dfs(
             ctx, elem, depth, target_hwnd, need_vertical, need_horizontal, &mut budget, false, &mut seen,
@@ -760,25 +764,28 @@ fn find_scroll_pattern_in_subtree(
 
 /// internal #407 — what the DFS has met so far.
 #[derive(Default)]
-struct DevToolsSeen {
-    devtools: bool,
+struct BrowserUiSeen {
+    browser_ui: bool,
     other_document: bool,
 }
 
 enum DocumentKind {
     NotDocument,
-    DevTools,
+    BrowserUi,
     Other,
 }
 
-/// internal #407 — whether a DevTools front-end URL: `devtools://` or `chrome-devtools://`, in any case (the same set
-/// as `DEVTOOLS_FRONTEND` in cdp-default-tab.ts).
-fn is_devtools_url(url: &str) -> bool {
+/// internal #407 / #408 — whether a Document's URL is the browser's own UI rather than a page: DevTools' front end
+/// (`devtools://`, `chrome-devtools://`, the set of `DEVTOOLS_FRONTEND` in cdp-default-tab.ts) or a WebUI page such as
+/// Chrome's side panel (`chrome://`, `chrome-untrusted://`) or Edge's panes (`edge://`), in any case.
+fn is_browser_ui_url(url: &str) -> bool {
     let l = url.trim_start().to_ascii_lowercase();
-    l.starts_with("devtools://") || l.starts_with("chrome-devtools://")
+    ["devtools://", "chrome-devtools://", "chrome://", "chrome-untrusted://", "edge://"]
+        .iter()
+        .any(|scheme| l.starts_with(scheme))
 }
 
-/// internal #407 — `elem` as a Document: DevTools' (its value, the URL, is a DevTools front end), another, or not a
+/// internal #407 / #408 — `elem` as a Document: the browser's own UI (its value, the URL, is one), another, or not a
 /// Document. A value that cannot be read counts as another Document, so the search goes on as before.
 fn document_kind(elem: &IUIAutomationElement) -> DocumentKind {
     unsafe {
@@ -793,7 +800,7 @@ fn document_kind(elem: &IUIAutomationElement) -> DocumentKind {
             .and_then(|vp| vp.CurrentValue().ok())
             .map(|b| b.to_string());
         match url {
-            Some(u) if is_devtools_url(&u) => DocumentKind::DevTools,
+            Some(u) if is_browser_ui_url(&u) => DocumentKind::BrowserUi,
             _ => DocumentKind::Other,
         }
     }
@@ -808,19 +815,19 @@ fn find_scroll_pattern_dfs(
     need_vertical: bool,
     need_horizontal: bool,
     node_budget: &mut u32,
-    skip_devtools: bool,
-    seen: &mut DevToolsSeen,
+    skip_browser_ui: bool,
+    seen: &mut BrowserUiSeen,
 ) -> Option<IUIAutomationScrollPattern> {
     if depth == 0 || *node_budget == 0 {
         return None;
     }
     *node_budget = node_budget.saturating_sub(1);
     unsafe {
-        // internal #407 — see `find_scroll_pattern_in_subtree`: a DevTools Document's subtree is passed over on the
+        // internal #407 / #408 — see `find_scroll_pattern_in_subtree`: a browser-UI Document's subtree is passed over on the
         // first pass, and any other Document is noted.
         match document_kind(elem) {
-            DocumentKind::DevTools if skip_devtools => {
-                seen.devtools = true;
+            DocumentKind::BrowserUi if skip_browser_ui => {
+                seen.browser_ui = true;
                 return None;
             }
             DocumentKind::Other => seen.other_document = true,
@@ -875,7 +882,7 @@ fn find_scroll_pattern_dfs(
             }
             if let Some(found) = find_scroll_pattern_dfs(
                 ctx, &c, depth - 1, target_hwnd, need_vertical, need_horizontal,
-                node_budget, skip_devtools, seen,
+                node_budget, skip_browser_ui, seen,
             ) {
                 return Some(found);
             }
@@ -968,15 +975,23 @@ fn walk_scroll_ancestors(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn devtools_urls_are_told_from_pages() {
-        use super::is_devtools_url;
-        assert!(is_devtools_url("devtools://devtools/bundled/devtools_app.html"));
-        assert!(is_devtools_url("chrome-devtools://devtools/bundled/inspector.html"));
-        assert!(is_devtools_url("DevTools://devtools/bundled/devtools_app.html"));
-        assert!(!is_devtools_url("https://example.com/devtools://"));
-        assert!(!is_devtools_url("http://127.0.0.1:8080/wheel-hit-path.html#panes"));
-        assert!(!is_devtools_url(""));
-        assert!(!is_devtools_url("chrome://settings"));
+    fn browser_ui_urls_are_told_from_pages() {
+        use super::is_browser_ui_url;
+        assert!(is_browser_ui_url("devtools://devtools/bundled/devtools_app.html"));
+        assert!(is_browser_ui_url("chrome-devtools://devtools/bundled/inspector.html"));
+        assert!(is_browser_ui_url("DevTools://devtools/bundled/devtools_app.html"));
+        // internal #408 — Chrome's side panel as win2 read it, and the other WebUI schemes.
+        assert!(is_browser_ui_url("chrome://bookmarks-side-panel.top-chrome/"));
+        assert!(is_browser_ui_url("chrome://settings"));
+        assert!(is_browser_ui_url("chrome-untrusted://read-anything-side-panel.top-chrome/"));
+        assert!(is_browser_ui_url("edge://customize-edge/privacy"));
+        assert!(is_browser_ui_url("Edge://favorites"));
+        assert!(!is_browser_ui_url("https://example.com/devtools://"));
+        assert!(!is_browser_ui_url("https://example.com/chrome://settings"));
+        assert!(!is_browser_ui_url("http://127.0.0.1:8080/wheel-hit-path.html#panes"));
+        assert!(!is_browser_ui_url("file:///C:/pages/chrome.html"));
+        assert!(!is_browser_ui_url("about:blank"));
+        assert!(!is_browser_ui_url(""));
     }
 
     use super::wheel_step_percent;
