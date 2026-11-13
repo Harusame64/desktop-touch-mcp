@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const m = vi.hoisted(() => ({
   dispatched: [] as unknown[],
   notUsed: undefined as "off" | "unreadable" | undefined,
+  result: null as Record<string, unknown> | null,
   dest: { kind: "cdp" as const, tabId: "TAB", frame: 0x500n } as Record<string, unknown>,
 }));
 vi.mock("../../src/engine/cursor.js", () => ({ moveCursorTo: vi.fn(async () => undefined) }));
@@ -20,6 +21,7 @@ vi.mock(import("../../src/tools/_input-pipeline.js"), async (orig) => ({
   resolveInputDestination: vi.fn(async () => m.dest as never),
   dispatchScrollWheel: vi.fn(async (_d: unknown, p: unknown) => {
     m.dispatched.push(p);
+    if (m.result !== null) return m.result as never;
     return { scrolled: true, channel: "cdp" as const, reason: "delivered_via_cdp" as const, ...(m.notUsed !== undefined && { pointNotUsed: m.notUsed }) };
   }),
 }));
@@ -27,7 +29,7 @@ vi.mock(import("../../src/tools/_input-pipeline.js"), async (orig) => ({
 const { scrollHandler } = await import("../../src/tools/mouse.js");
 const reply = (r: { content: Array<{ type: string; text?: string }> }) => (r.content[0] as { text: string }).text;
 
-beforeEach(() => { m.dispatched.length = 0; m.notUsed = undefined; m.dest = { kind: "cdp", tabId: "TAB", frame: 0x500n }; });
+beforeEach(() => { m.dispatched.length = 0; m.notUsed = undefined; m.result = null; m.dest = { kind: "cdp", tabId: "TAB", frame: 0x500n }; });
 
 describe("scroll on the CDP road, with x/y", () => {
   it("the dispatcher gets the point and the frame the tab was found in", async () => {
@@ -68,4 +70,48 @@ describe("scroll on the CDP road, with x/y", () => {
     await scrollHandler({ direction: "down", amount: 1, x: 420, y: 515, homing: false, hwnd: "1280" });
     expect(m.dispatched).toEqual([{ direction: "down", notch: 1 }]);
   });
+});
+
+describe("the CDP road's answers become honest replies (internal #403)", () => {
+  const json = (r: { content: Array<{ type: string; text?: string }> }) => JSON.parse(reply(r)) as Record<string, any>;
+
+  it("the part under the point could move and did not: ScrollNotDelivered saying the wheel was sent", async () => {
+    m.result = { scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: "room_not_moved" };
+    const j = json(await scrollHandler({ direction: "down", amount: 1, homing: false, hwnd: "1280" }));
+    expect(j.code).toBe("ScrollNotDelivered");
+    expect(JSON.stringify(j)).toContain("could still scroll that way, but nothing moved");
+    expect(JSON.stringify(j)).toContain('"channel":"cdp"');
+  });
+
+  it("the path could not be read and the document did not move: says so, without claiming room", async () => {
+    m.result = { scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: "document_still" };
+    const t = reply(await scrollHandler({ direction: "down", amount: 1, homing: false, hwnd: "1280" }));
+    expect(t).toContain("could not be read, and the page itself did not move");
+    expect(t).not.toContain("could still scroll");
+  });
+
+  it("not sent: ScrollNotDelivered saying nothing was sent", async () => {
+    const mod = await import("../../src/tools/_input-pipeline.js");
+    vi.mocked(mod.dispatchScrollWheel).mockResolvedValueOnce(null);
+    const t = reply(await scrollHandler({ direction: "down", amount: 1, homing: false, hwnd: "1280" }));
+    expect(t).toContain("Nothing was sent");
+  });
+
+  it("at the end: ok, with the note", async () => {
+    m.result = { scrolled: true, channel: "cdp", reason: "delivered_via_cdp", atEnd: true };
+    const t = reply(await scrollHandler({ direction: "down", amount: 1, homing: false, hwnd: "1280" }));
+    expect(t).toContain('"ok":true');
+    expect(t).toContain("already at its end in the down direction");
+  });
+
+  for (const reason of ["page_handled_wheel", "hit_path_unobservable"] as const) {
+    it(`${reason}: ok with verifyDelivery unverifiable and the road on`, async () => {
+      m.result = { scrolled: false, channel: "cdp", reason };
+      const t = reply(await scrollHandler({ direction: "down", amount: 1, homing: false, hwnd: "1280" }));
+      expect(t).toContain('"ok":true');
+      expect(t).toContain('"status":"unverifiable"');
+      expect(t).toContain(`"reason":"${reason}"`);
+      expect(t).toContain("action:'to_element'");
+    });
+  }
 });

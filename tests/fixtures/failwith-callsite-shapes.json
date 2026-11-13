@@ -391,7 +391,7 @@
     },
     {
       "file": "src/tools/mouse.ts",
-      "line": 2109,
+      "line": 2111,
       "tool": "get_cursor_position",
       "errKind": "identifier",
       "contextShape": "none"

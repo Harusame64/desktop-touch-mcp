@@ -36,12 +36,13 @@ async function rightHalf(): Promise<[number, number]> {
 }
 
 /** Arms the observer, sends one notch at the viewport point, and answers the verdict. */
-async function wheelAt(x: number, y: number, deltaY = 120): Promise<WheelVerdict | null> {
-  const obs = await armWheelObserver(true, null, PORT);
+async function wheelAt(x: number, y: number, deltaY = 120, deltaX = 0): Promise<WheelVerdict | null> {
+  const vertical = deltaX === 0;
+  const obs = await armWheelObserver(vertical, null, PORT);
   if (obs === null) throw new Error("observer not armed");
   try {
-    await dispatchWheelInTab(0, deltaY, x, y, null, PORT);
-    return await obs.verdict(deltaY > 0 ? 1 : -1, 250, 500);
+    await dispatchWheelInTab(deltaX, vertical ? deltaY : 0, x, y, null, PORT);
+    return await obs.verdict((vertical ? deltaY : deltaX) > 0 ? 1 : -1, 250, 300, 800);
   } finally {
     await obs.release();
   }
@@ -73,9 +74,8 @@ describe.skipIf(!CHROME_AVAILABLE)("the CDP wheel is judged by the path the brow
     await evaluateInTab("document.getElementById('L').scrollTop = 1e9; true", null, PORT);
     await sleep(100);
     const v = await wheelAt(200, 300);
-    expect(v).toMatchObject({ seen: true, rooms: 0 });
+    expect(v).toMatchObject({ seen: true, under: "end", underLabel: "div#L" });
     expect(v?.moved).toBeUndefined();
-    expect(v?.ends).toBeGreaterThan(0);
   });
 
   it("the other way from the end: it moves", async () => {
@@ -93,17 +93,17 @@ describe.skipIf(!CHROME_AVAILABLE)("the CDP wheel is judged by the path the brow
   it("a closed shadow root: the path stops at the host, nothing on it scrolls — rooms 0, ends 0 (unobservable), though the inside moved", async () => {
     await open("shadow-closed");
     const v = await wheelAt(...(await rightHalf()));
-    expect(v).toMatchObject({ seen: true, defaultPrevented: false, rooms: 0, ends: 0 });
+    expect(v).toMatchObject({ seen: true, defaultPrevented: false });
     expect(v?.moved).toBeUndefined();
+    expect(v?.under).toBeUndefined();
     expect(await evaluateInTab("window.__inner.scrollTop", null, PORT)).toBeGreaterThan(0);
   });
 
   it("the page cancels the wheel: defaultPrevented, nothing moved, and the pane could still move", async () => {
     await open("handled");
     const v = await wheelAt(200, 300);
-    expect(v).toMatchObject({ seen: true, defaultPrevented: true });
+    expect(v).toMatchObject({ seen: true, defaultPrevented: true, under: "room" });
     expect(v?.moved).toBeUndefined();
-    expect(v?.rooms).toBeGreaterThan(0);
   });
 
   it("a pane that moves the other way while the wheel turns (the page easing back) is not counted as moved", async () => {
@@ -116,12 +116,49 @@ describe.skipIf(!CHROME_AVAILABLE)("the CDP wheel is judged by the path the brow
 
   it("a page that moves its content by transform: defaultPrevented, nothing scrolls on the path", async () => {
     await open("transform");
-    expect(await wheelAt(200, 300)).toMatchObject({ seen: true, defaultPrevented: true, rooms: 0, ends: 0 });
+    const v = await wheelAt(200, 300);
+    expect(v).toMatchObject({ seen: true, defaultPrevented: true });
+    expect(v?.under).toBeUndefined();
   });
 
   it("a page whose document scrolls: the document is what moved", async () => {
     await open("doc");
     expect(await wheelAt(...(await rightHalf()))).toMatchObject({ seen: true, moved: "document" });
+  });
+
+  it("overscroll-behavior:contain at its end with the document still able to move: the one under the point is at its end (gate 2 on #980)", async () => {
+    await open("contain");
+    const v = await wheelAt(200, 300);
+    expect(v?.moved).toBeUndefined();
+    expect(v).toMatchObject({ under: "end", underLabel: "div#L" });
+  });
+
+  it("a locked page (body overflow:hidden, a modal's list at its end): at its end, not room (gate 2 on #980)", async () => {
+    await open("locked");
+    const v = await wheelAt(200, 300);
+    expect(v?.moved).toBeUndefined();
+    expect(v).toMatchObject({ under: "end", underLabel: "div#L" });
+  });
+
+  it("a locked page with nothing else under the point: the document does not count as a scroller (its overflow is hidden)", async () => {
+    await open("lockedbare");
+    const v = await wheelAt(200, 300);
+    expect(v?.moved).toBeUndefined();
+    expect(v?.under).toBeUndefined();
+  });
+
+  it("right-to-left: at the right edge, right is the end and left moves (gate 2 on #980)", async () => {
+    await open("rtl");
+    expect(await wheelAt(200, 300, 0, 120)).toMatchObject({ under: "end", underLabel: "div#W" });
+    expect(await wheelAt(200, 300, 0, -120)).toMatchObject({ moved: "div#W" });
+  });
+
+  it("the listeners come off when no verdict is read (release alone)", async () => {
+    await open("panes");
+    const obs = await armWheelObserver(true, null, PORT);
+    await obs!.release();
+    // A wheel after the release is not seen by a leftover listener: a fresh observer sees exactly one.
+    expect(await wheelAt(200, 300)).toMatchObject({ seen: true, moved: "div#L" });
   });
 
   it("nothing is left in the page's own globals", async () => {

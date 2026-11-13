@@ -1896,12 +1896,14 @@ export const scrollHandler = async ({
     // `evaluateScrollDelivery`-driven `outcome.status` flow below.
     // internal #403 — the CDP wheel was sent at the point, and a scroller on the path the browser hit could
     // still move that way, but none did.
-    if (tier1 !== null && tier1.channel === "cdp" && tier1.scrolled === false && tier1.sentNotMoved === true) {
+    if (tier1 !== null && tier1.channel === "cdp" && tier1.scrolled === false && tier1.sentNotMoved !== undefined) {
       return failWith(
         new Error("ScrollNotDelivered"),
         "scroll",
         {
-          hint: "The wheel was sent to the page, and something under the point could still scroll that way, but nothing moved (internal #403).",
+          hint: tier1.sentNotMoved === "room_not_moved"
+            ? "The wheel was sent to the page, and the part under the point could still scroll that way, but nothing moved (internal #403)."
+            : "The wheel was sent to the page, but what it landed on could not be read, and the page itself did not move (internal #403).",
           direction,
           ...(scrollWarnings.length > 0 && { hints: { warnings: scrollWarnings } }),
           verifyDelivery: {

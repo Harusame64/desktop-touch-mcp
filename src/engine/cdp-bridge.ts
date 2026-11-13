@@ -637,7 +637,15 @@ export function wheelObserverExpr(vertical: boolean): string {
       o.pre.push(vertical ? el.scrollTop : el.scrollLeft);
     }
   };
-  o.onEnd = function() { o.ended = true; };
+  // A scroll that ended on this wheel's path (not a carousel elsewhere, gate 2 on #980).
+  o.onEnd = function(e) {
+    var t = (e.target === document || e.target === window) ? root() : e.target;
+    if (o.path.indexOf(t) >= 0) o.ended = true;
+  };
+  o.cleanup = function() {
+    window.removeEventListener('wheel', o.listener, true);
+    document.removeEventListener('scrollend', o.onEnd, true);
+  };
   window.addEventListener('wheel', o.listener, { capture: true, once: true, passive: false });
   document.addEventListener('scrollend', o.onEnd, true);
   o.vertical = vertical;
@@ -646,56 +654,81 @@ export function wheelObserverExpr(vertical: boolean): string {
 }
 
 /**
- * internal #403 — called on the observer (`this`) after the wheel: waits until an element on the hit path has
- * moved by ≥ 1 px the way the wheel turns (`sign`: +1 down/right, −1 up/left), a scroll ended, or `maxMs`
- * passed (`seenMs` when the wheel never arrived), then answers what it saw and takes its listeners off.
- * `rooms`/`ends`: how many scrollers on the path (overflow auto/scroll/overlay with content beyond the box, or
- * the document's own) could still move that way, or stood at their end. Exported for tests.
+ * internal #403 — called on the observer (`this`) after the wheel (`sign`: +1 down/right, −1 up/left). Waits
+ * while the wheel has not arrived (up to `seenMs`), then until an element on the hit path has moved by ≥ 1 px the
+ * way the wheel turns AND that scroll has ended (a `scrollend` on the path, or `settleMs` after the first move),
+ * or `maxMs` passed. Waiting for the end keeps a smooth scroll from running into the next call, where it would be
+ * credited to that call's wheel (gate 2 on #980). Then it takes its listeners off and answers what it saw.
+ *
+ * When nothing moved, `under` is the first element on the path (nearest the point) that scrolls on the axis:
+ * "room" (it could move that way), "end" (it stands at its end that way), or absent when nothing on the path
+ * scrolls. Only that one is judged: the browser's scroll chain past it (overscroll-behavior, fixed and absolute
+ * containing blocks) is not modelled. The document counts as scrolling unless the viewport's overflow (html's,
+ * or body's propagated) hides that axis; a body whose overflow went to the viewport is not a scroller itself.
+ * Right-to-left boxes run scrollLeft from −max to 0. Exported for tests.
  */
-export const WHEEL_VERDICT_FN = `function(sign, seenMs, maxMs) {
+export const WHEEL_VERDICT_FN = `function(sign, seenMs, settleMs, maxMs) {
   var o = this, t0 = performance.now(), v = o.vertical;
   var root = document.scrollingElement || document.documentElement;
+  var html = document.documentElement, body = document.body;
+  function ov(el) { var cs = getComputedStyle(el); return v ? cs.overflowY : cs.overflowX; }
   function pos(el) { return v ? el.scrollTop : el.scrollLeft; }
   function movedAt() {
     for (var i = 0; i < o.path.length; i++) if ((pos(o.path[i]) - o.pre[i]) * sign >= 1) return i;
     return -1;
   }
-  function room(el) {
+  function viewportOverflow() {
+    var h = ov(html);
+    return (h === 'visible' && body) ? ov(body) : h;
+  }
+  function judge(el) {
     if (el.isConnected === false) return 'none';
-    if (el !== root) {
-      var cs = getComputedStyle(el);
-      if (!/^(auto|scroll|overlay)$/.test(v ? cs.overflowY : cs.overflowX)) return 'none';
+    if (el === root) {
+      if (/^(hidden|clip)$/.test(viewportOverflow())) return 'none';
+    } else {
+      if (el === body && ov(html) === 'visible') return 'none';
+      if (!/^(auto|scroll|overlay)$/.test(ov(el))) return 'none';
     }
     var max = v ? el.scrollHeight - el.clientHeight : el.scrollWidth - el.clientWidth;
     if (max <= 0) return 'none';
+    var lo = 0, hi = max;
+    if (!v && getComputedStyle(el).direction === 'rtl') { lo = -max; hi = 0; }
     var at = pos(el);
-    return (sign > 0 ? at < max - 1 : at > 0) ? 'room' : 'end';
+    return (sign > 0 ? at < hi - 1 : at > lo + 1) ? 'room' : 'end';
   }
   function label(el) {
     if (el === root) return 'document';
     return el.tagName.toLowerCase() + (el.id ? '#' + el.id : '');
   }
   return new Promise(function(resolve) {
+    var firstMove = -1;
     function done() {
-      window.removeEventListener('wheel', o.listener, true);
-      document.removeEventListener('scrollend', o.onEnd, true);
-      var r = { seen: o.seen, defaultPrevented: !!(o.ev && o.ev.defaultPrevented), rooms: 0, ends: 0 };
+      o.cleanup();
+      var r = { seen: o.seen, defaultPrevented: !!(o.ev && o.ev.defaultPrevented) };
       var i = movedAt();
       if (i >= 0) { r.moved = label(o.path[i]); resolve(r); return; }
       for (var j = 0; j < o.path.length; j++) {
-        var k = room(o.path[j]);
-        if (k === 'room') r.rooms++; else if (k === 'end') r.ends++;
+        var k = judge(o.path[j]);
+        if (k !== 'none') { r.under = k; r.underLabel = label(o.path[j]); break; }
       }
       resolve(r);
     }
     (function tick() {
       var t = performance.now() - t0;
       if (!o.seen) { if (t > seenMs) return done(); }
-      else if (movedAt() >= 0 || o.ended || t > maxMs) return done();
+      else {
+        if (firstMove < 0 && movedAt() >= 0) firstMove = t;
+        if (firstMove >= 0 && (o.ended || t - firstMove > settleMs)) return done();
+        if (firstMove < 0 && o.ended) return done();
+        if (t > maxMs) return done();
+      }
       setTimeout(tick, 16);
     })();
   });
 }`;
+
+/** internal #403 — takes the observer's listeners off, called on it (`this`) when no verdict was read. */
+export const WHEEL_OBSERVER_CLEANUP_FN = `function() { this.cleanup(); }`;
 
 /** What the observer saw (see WHEEL_VERDICT_FN). */
 export interface WheelVerdict {
@@ -703,8 +736,9 @@ export interface WheelVerdict {
   defaultPrevented: boolean;
   /** The element that moved the way the wheel turns ("document", or tag#id). */
   moved?: string;
-  rooms: number;
-  ends: number;
+  /** Nothing moved: the nearest element on the path that scrolls on the axis could move that way ("room") or stood at its end ("end"); absent when none scrolls. */
+  under?: "room" | "end";
+  underLabel?: string;
 }
 
 let wheelObserverSeq = 0;
@@ -719,7 +753,7 @@ export async function armWheelObserver(
   vertical: boolean,
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT,
-): Promise<{ verdict(sign: 1 | -1, seenMs: number, maxMs: number): Promise<WheelVerdict | null>; release(): Promise<void> } | null> {
+): Promise<{ verdict(sign: 1 | -1, seenMs: number, settleMs: number, maxMs: number): Promise<WheelVerdict | null>; release(): Promise<void> } | null> {
   const objectGroup = `dtm-wheel-${process.pid}-${++wheelObserverSeq}`;
   let session: CdpSession;
   try {
@@ -727,7 +761,15 @@ export async function armWheelObserver(
   } catch {
     return null;
   }
+  let objectId: string | undefined;
+  let answered = false;
+  // Takes the listeners off when no verdict did (the wheel threw, the verdict call failed), then drops the group:
+  // a non-passive wheel listener left on window would make every later wheel on the page wait for the main
+  // thread (gate 2 on #980).
   const release = async () => {
+    if (objectId !== undefined && !answered) {
+      try { await session.send("Runtime.callFunctionOn", { objectId, functionDeclaration: WHEEL_OBSERVER_CLEANUP_FN }); } catch { /* gone */ }
+    }
     try { await session.send("Runtime.releaseObjectGroup", { objectGroup }); } catch { /* the page went away */ }
   };
   try {
@@ -739,16 +781,19 @@ export async function armWheelObserver(
     const made = (await session.send("Runtime.evaluate", {
       expression: wheelObserverExpr(vertical), contextId: world.executionContextId, returnByValue: false, objectGroup,
     })) as { result?: { objectId?: string }; exceptionDetails?: unknown };
-    const objectId = made.result?.objectId;
+    objectId = made.result?.objectId;
     if (made.exceptionDetails || objectId === undefined) { await release(); return null; }
+    const id = objectId;
     return {
-      verdict: async (sign, seenMs, maxMs) => {
+      verdict: async (sign, seenMs, settleMs, maxMs) => {
         try {
           const r = (await session.send("Runtime.callFunctionOn", {
-            objectId, functionDeclaration: WHEEL_VERDICT_FN, arguments: [{ value: sign }, { value: seenMs }, { value: maxMs }],
+            objectId: id, functionDeclaration: WHEEL_VERDICT_FN,
+            arguments: [{ value: sign }, { value: seenMs }, { value: settleMs }, { value: maxMs }],
             awaitPromise: true, returnByValue: true,
           })) as { result?: { value?: unknown }; exceptionDetails?: unknown };
           const v = r.result?.value as WheelVerdict | undefined;
+          if (!r.exceptionDetails && v !== undefined) answered = true;
           return !r.exceptionDetails && v !== undefined && typeof v.seen === "boolean" ? v : null;
         } catch {
           return null;

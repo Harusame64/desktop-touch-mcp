@@ -164,7 +164,7 @@ const readScrollPositionInTabMock = vi.fn();
 const getBrowserProcessIdMock = vi.fn(async (_port?: number) => 4242);
 const evaluateInTabMock = vi.fn();
 // internal #403 — the hit-path observer. Default: it cannot be armed (null), so the document decides, as before.
-type Verdict = { seen: boolean; defaultPrevented: boolean; moved?: string; rooms: number; ends: number };
+type Verdict = { seen: boolean; defaultPrevented: boolean; moved?: string; under?: "room" | "end"; underLabel?: string };
 const observerRelease = vi.fn(async () => {});
 const observerVerdict = vi.fn(async (..._a: unknown[]) => null as Verdict | null);
 const armWheelObserverMock = vi.fn(async (..._a: unknown[]) => null as null | { verdict: typeof observerVerdict; release: typeof observerRelease });
@@ -861,7 +861,7 @@ describe("ADR-018 Phase 3 — dispatchScrollWheel (Tier 2 CDP path)", () => {
       .mockResolvedValueOnce(snap(200, 0));
     dispatchWheelInTabMock.mockResolvedValue(undefined);
     const result = await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1 });
-    expect(result).toEqual({ scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: true });
+    expect(result).toEqual({ scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: "document_still" });
   });
 
   it("pre-snapshot returns null (no CDP session): null (no wheel dispatched)", async () => {
@@ -884,7 +884,7 @@ describe("ADR-018 Phase 3 — dispatchScrollWheel (Tier 2 CDP path)", () => {
       .mockResolvedValueOnce(null);
     dispatchWheelInTabMock.mockResolvedValue(undefined);
     const result = await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1 });
-    expect(result).toEqual({ scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: true });
+    expect(result).toEqual({ scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: "document_still" });
   });
 
   describe("judged by the path the browser hit (internal #403)", () => {
@@ -902,47 +902,47 @@ describe("ADR-018 Phase 3 — dispatchScrollWheel (Tier 2 CDP path)", () => {
     afterEach(() => { armWheelObserverMock.mockReset(); armWheelObserverMock.mockResolvedValue(null); });
 
     it("an element on the path moved the way the wheel turns → delivered, though the document stayed put (Gmail, Slack, Notion)", async () => {
-      armed({ seen: true, defaultPrevented: false, moved: "div#list", rooms: 1, ends: 0 });
+      armed({ seen: true, defaultPrevented: false, moved: "div#list" });
       expect(await send()).toEqual({ scrolled: true, channel: "cdp", reason: "delivered_via_cdp" });
       expect(armWheelObserverMock).toHaveBeenCalledWith(true, "TAB-X", 9222);
-      expect(observerVerdict).toHaveBeenCalledWith(1, 250, 500);
+      expect(observerVerdict).toHaveBeenCalledWith(1, 250, 300, 800);
       expect(observerRelease).toHaveBeenCalledTimes(1);
     });
 
     it("the observer is armed on the wheel's axis, and asked with its sign (up: -1; sideways: horizontal)", async () => {
-      armed({ seen: true, defaultPrevented: false, moved: "document", rooms: 0, ends: 0 });
+      armed({ seen: true, defaultPrevented: false, moved: "document" });
       await send("up");
-      expect(observerVerdict).toHaveBeenCalledWith(-1, 250, 500);
-      armed({ seen: true, defaultPrevented: false, moved: "document", rooms: 0, ends: 0 });
+      expect(observerVerdict).toHaveBeenCalledWith(-1, 250, 300, 800);
+      armed({ seen: true, defaultPrevented: false, moved: "document" });
       await send("left");
       expect(armWheelObserverMock).toHaveBeenLastCalledWith(false, "TAB-X", 9222);
-      expect(observerVerdict).toHaveBeenCalledWith(-1, 250, 500);
+      expect(observerVerdict).toHaveBeenCalledWith(-1, 250, 300, 800);
     });
 
     it("the page's handler took the wheel and nothing moved → unverifiable (page_handled_wheel)", async () => {
-      armed({ seen: true, defaultPrevented: true, rooms: 1, ends: 0 });
+      armed({ seen: true, defaultPrevented: true });
       expect(await send()).toEqual({ scrolled: false, channel: "cdp", reason: "page_handled_wheel" });
     });
 
-    it("a scroller on the path could move that way and none did → sent, not moved", async () => {
-      armed({ seen: true, defaultPrevented: false, rooms: 2, ends: 1 });
-      expect(await send()).toEqual({ scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: true });
+    it("the scroller nearest the point could move that way and did not → sent, not moved (room_not_moved)", async () => {
+      armed({ seen: true, defaultPrevented: false, under: "room" });
+      expect(await send()).toEqual({ scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: "room_not_moved" });
     });
 
-    it("every scroller on the path stands at its end that way → delivered at the end (already-at-boundary is success)", async () => {
-      armed({ seen: true, defaultPrevented: false, rooms: 0, ends: 2 });
+    it("the scroller nearest the point stands at its end that way → delivered at the end (already-at-boundary is success)", async () => {
+      armed({ seen: true, defaultPrevented: false, under: "end" });
       expect(await send()).toEqual({ scrolled: true, channel: "cdp", reason: "delivered_via_cdp", atEnd: true });
     });
 
     it("nothing on the path scrolls on that axis (a closed component, a transform-moved page) → unverifiable (hit_path_unobservable)", async () => {
-      armed({ seen: true, defaultPrevented: false, rooms: 0, ends: 0 });
+      armed({ seen: true, defaultPrevented: false });
       expect(await send()).toEqual({ scrolled: false, channel: "cdp", reason: "hit_path_unobservable" });
     });
 
     it("the main frame never saw the wheel (a frame of another site took it): the document decides; still → unverifiable, moved → delivered", async () => {
-      armed({ seen: false, defaultPrevented: false, rooms: 0, ends: 0 });
+      armed({ seen: false, defaultPrevented: false });
       expect(await send()).toEqual({ scrolled: false, channel: "cdp", reason: "hit_path_unobservable" });
-      armed({ seen: false, defaultPrevented: false, rooms: 0, ends: 0 });
+      armed({ seen: false, defaultPrevented: false });
       expect(await send("down", snap(120, 0))).toEqual({ scrolled: true, channel: "cdp", reason: "delivered_via_cdp" });
     });
 
@@ -950,11 +950,11 @@ describe("ADR-018 Phase 3 — dispatchScrollWheel (Tier 2 CDP path)", () => {
       armed(null);
       expect(await send("down", snap(120, 0))).toEqual({ scrolled: true, channel: "cdp", reason: "delivered_via_cdp" });
       armed(null);
-      expect(await send()).toEqual({ scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: true });
+      expect(await send()).toEqual({ scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: "document_still" });
     });
 
     it("the observer is released when the wheel throws, and nothing was sent → null", async () => {
-      armed({ seen: true, defaultPrevented: false, moved: "document", rooms: 0, ends: 0 });
+      armed({ seen: true, defaultPrevented: false, moved: "document" });
       readScrollPositionInTabMock.mockResolvedValueOnce(snap(0, 0));
       dispatchWheelInTabMock.mockRejectedValueOnce(new Error("socket closed"));
       expect(await dispatchScrollWheel(cdpDest, { direction: "down", notch: 1 })).toBeNull();

@@ -148,11 +148,12 @@ const CDP_SCROLL_DELIVERY_EPSILON_PX = 1;
  */
 const CDP_WHEEL_SEEN_MS = 250;
 /**
- * internal #403 — the longest wait, after the wheel was seen, for an element on its path to move. The answer
- * comes at the first move, so this bounds only "nothing moved" (and a slow smooth-scroll start). Unmeasured on
- * headed Windows (win2 M2).
+ * internal #403 — after the first move, how long to wait for that scroll to end when no `scrollend` comes, so a
+ * smooth scroll does not run on into the next call. Unmeasured on headed Windows (win2 M2).
  */
-const CDP_WHEEL_SETTLE_MAX_MS = 500;
+const CDP_WHEEL_SETTLE_MS = 300;
+/** internal #403 — the longest wait in all after the wheel was seen; bounds "nothing moved". Unmeasured on headed Windows. */
+const CDP_WHEEL_MAX_MS = 800;
 
 /**
  * ADR-018 Phase 4 — Tier 3 PostMessage settle delay (ms) before reading
@@ -542,10 +543,11 @@ export interface DispatchOutcome {
   atEnd?: boolean;
   /**
    * internal #403 — the CDP road with `scrolled: false, reason: "target_unreachable"`: the wheel WAS sent and
-   * a scroller on its path could still move that way, but none did. Without it, `null` from the CDP road
-   * means the wheel was not sent.
+   * nothing was seen moving. "room_not_moved": the scroller nearest the point on the path the browser hit could
+   * still move that way and did not. "document_still": the path could not be read, and the document did not move.
+   * Without it, `null` from the CDP road means the wheel was not sent.
    */
-  sentNotMoved?: boolean;
+  sentNotMoved?: "room_not_moved" | "document_still";
 }
 
 /**
@@ -2108,7 +2110,12 @@ export async function dispatchScrollWheel(
     let observer: Awaited<ReturnType<typeof armWheelObserver>> = null;
     try {
       const port = getCdpPort();
-      const pre = await readScrollPositionInTab(dest.tabId, port);
+      const axisIsVertical = params.direction === "up" || params.direction === "down";
+      const [pre, armed] = await Promise.all([
+        readScrollPositionInTab(dest.tabId, port),
+        armWheelObserver(axisIsVertical, dest.tabId, port),
+      ]);
+      observer = armed;
       if (pre === null) return null;
       const wheelDelta = wheelDeltaForNotch(params);
       // CDP dispatchMouseEvent takes viewport CSS px, and Chromium scrolls the scroller under that point
@@ -2119,9 +2126,7 @@ export async function dispatchScrollWheel(
       const pointNotUsed = mapped !== undefined && "why" in mapped ? mapped.why : undefined;
       const cx = atPoint?.x ?? params.x ?? Math.floor(pre.clientWidth / 2);
       const cy = atPoint?.y ?? params.y ?? Math.floor(pre.clientHeight / 2);
-      const axisIsVertical = params.direction === "up" || params.direction === "down";
       const sign: 1 | -1 = params.direction === "down" || params.direction === "right" ? 1 : -1;
-      observer = await armWheelObserver(axisIsVertical, dest.tabId, port);
       // Recorded AFTER the await for the same reason as Tier 1: the helper
       // resolves the tab and opens a session first, and either can fail — the
       // surrounding catch turns that into a plain `null` outcome, so an event
@@ -2137,12 +2142,12 @@ export async function dispatchScrollWheel(
       );
       logDispatchSink({ sink: "cdp", tool: "scroll", targetHwnd: null, tier: "2" });
       const sent = { channel: "cdp" as const, ...(pointNotUsed !== undefined && { pointNotUsed }) };
-      const verdict = observer !== null ? await observer.verdict(sign, CDP_WHEEL_SEEN_MS, CDP_WHEEL_SETTLE_MAX_MS) : null;
+      const verdict = observer !== null ? await observer.verdict(sign, CDP_WHEEL_SEEN_MS, CDP_WHEEL_SETTLE_MS, CDP_WHEEL_MAX_MS) : null;
       if (verdict !== null && verdict.seen) {
         if (verdict.moved !== undefined) return { scrolled: true, reason: "delivered_via_cdp", ...sent };
         if (verdict.defaultPrevented) return { scrolled: false, reason: "page_handled_wheel", ...sent };
-        if (verdict.rooms > 0) return { scrolled: false, reason: "target_unreachable", sentNotMoved: true, ...sent };
-        if (verdict.ends > 0) return { scrolled: true, reason: "delivered_via_cdp", atEnd: true, ...sent };
+        if (verdict.under === "room") return { scrolled: false, reason: "target_unreachable", sentNotMoved: "room_not_moved", ...sent };
+        if (verdict.under === "end") return { scrolled: true, reason: "delivered_via_cdp", atEnd: true, ...sent };
         return { scrolled: false, reason: "hit_path_unobservable", ...sent };
       }
       // No observer, or the main frame never saw the wheel: the document's own position, as before.
@@ -2156,7 +2161,7 @@ export async function dispatchScrollWheel(
         : Math.abs(post.scrollLeft - pre.scrollLeft);
       if (observedDelta >= CDP_SCROLL_DELIVERY_EPSILON_PX) return { scrolled: true, reason: "delivered_via_cdp", ...sent };
       if (verdict !== null) return { scrolled: false, reason: "hit_path_unobservable", ...sent };
-      return { scrolled: false, reason: "target_unreachable", sentNotMoved: true, ...sent };
+      return { scrolled: false, reason: "target_unreachable", sentNotMoved: "document_still", ...sent };
     } catch {
       return null;
     } finally {
