@@ -97,6 +97,62 @@ describe("osClickAndVerify asks who is on top before it moves the cursor", () =>
   }
 });
 
+describe("asked again right before the press (internal #399)", () => {
+  // win2 (dev/399-p10): the first check answered "the browser window" with an undocked DevTools window
+  // of the same browser behind it; in a real browser_click (dev/967-hw P10) the press then went into
+  // DevTools, the page got nothing, and the reply was ok. Between the two lie the cursor move and the
+  // probe install.
+  const DEVTOOLS: PointOwner = { kind: "other", hwnd: 132188n, title: "DevTools - 127.0.0.1:8967/K399-A", via: "os_hit_test" };
+  const answers = (...seq: PointOwner[]) => {
+    const asked: Array<[bigint, number, number]> = [];
+    return { asked, owner: (aim: bigint, x: number, y: number) => { asked.push([aim, x, y]); return seq[Math.min(asked.length - 1, seq.length - 1)]!; } };
+  };
+
+  it("a window that came over the point after the first check: the cursor moved, nothing is pressed, the cover comes back", async () => {
+    const a = answers(owners.aim!, DEVTOOLS);
+    const r = await osClickAndVerify(700, 507, null, null, 9222, a.owner);
+    expect(a.asked).toEqual([[4242n, 700, 507], [4242n, 700, 507]]);
+    expect(mocks.move).toHaveBeenCalledWith(700, 507);
+    expect(mocks.click).not.toHaveBeenCalled();
+    expect(r).toEqual({ covered: "other", hwnd: 132188n, title: "DevTools - 127.0.0.1:8967/K399-A", at: { x: 700, y: 507 } });
+  });
+
+  it("the probe installed for the press is read out (its observer disconnected), not left in the page", async () => {
+    const cdp = await import("../../src/engine/cdp-bridge.js");
+    const exprs: string[] = [];
+    vi.mocked(cdp.evaluateInTab).mockImplementation(async (expr: string) => {
+      exprs.push(expr);
+      if (expr.includes("__dtmClickProbe = probe")) return { ok: true, selectorFound: false, inIframe: false };
+      return { ok: true };
+    });
+    try {
+      const r = await osClickAndVerify(700, 507, null, null, 9222, answers(owners.aim!, DEVTOOLS).owner);
+      expect(r).toHaveProperty("covered", "other");
+      expect(mocks.click).not.toHaveBeenCalled();
+      expect(exprs.filter((e) => e.includes("delete window.__dtmClickProbe"))).toHaveLength(1);
+    } finally {
+      vi.mocked(cdp.evaluateInTab).mockImplementation(async () => { throw new Error("no CDP in this cell"); });
+    }
+  });
+
+  it("the browser window both times: it presses once, as before", async () => {
+    const a = answers(owners.aim!, owners.aim!);
+    const r = await osClickAndVerify(700, 507, null, null, 9222, a.owner);
+    expect(a.asked).toHaveLength(2);
+    expect(r).not.toHaveProperty("covered");
+    expect(mocks.click).toHaveBeenCalledTimes(1);
+  });
+
+  it("the same rule as the first check: no answer, or one from the window list, still presses", async () => {
+    for (const second of [owners.unknown!, { kind: "other", hwnd: 9n, title: "x", via: "enumeration" } as PointOwner]) {
+      mocks.click.mockClear();
+      const r = await osClickAndVerify(700, 507, null, null, 9222, answers(owners.aim!, second).owner);
+      expect(r).not.toHaveProperty("covered");
+      expect(mocks.click).toHaveBeenCalledTimes(1);
+    }
+  });
+});
+
 describe("which window the point is asked about", () => {
   const ask = async () => {
     const asked: bigint[] = [];
@@ -106,13 +162,14 @@ describe("which window the point is asked about", () => {
 
   it("the browser window it brought forward, when it was not in front", async () => {
     mocks.windows = [{ ...EDGE, isActive: false }];
-    expect(await ask()).toEqual([4242n]);
+    // Twice: before the cursor moves, and again right before the press (internal #399).
+    expect(await ask()).toEqual([4242n, 4242n]);
     expect(mocks.focused).toEqual([4242n]);
   });
 
   it("not a non-browser window whose title holds the tab's title (gate 2 on #834)", async () => {
     mocks.windows = [{ ...EDGE, hwnd: 1n, title: "Shop - notes.txt", className: "Notepad", isActive: true }, { ...EDGE, isActive: false }];
-    expect(await ask()).toEqual([4242n]);
+    expect(await ask()).toEqual([4242n, 4242n]);
   });
 
   it("the window of the tab the click is for, not the first tab's (codex P1 on #834)", async () => {
@@ -120,7 +177,7 @@ describe("which window the point is asked about", () => {
     mocks.windows = [EDGE, CART];
     const asked: bigint[] = [];
     await osClickAndVerify(283, 125, null, "t2", 9222, (aim) => { asked.push(aim); return owners.aim!; });
-    expect(asked).toEqual([5151n]);
+    expect(asked).toEqual([5151n, 5151n]);
   });
 
   it("the window cache still gets every window, not only the browser frames (codex P2 on #834)", async () => {
@@ -172,6 +229,19 @@ describe("the refusal", () => {
     expect(suggest("blocked")).not.toContain("forceFocus");
     // Already forced: the same advice again would be a loop.
     expect(suggest("other", true)).not.toContain("forceFocus");
+  });
+
+  it("names the way past an undocked DevTools window: dock, close or move it (internal #399)", () => {
+    const suggest = (o: PointOwner) => {
+      const r = browserPointCoveredFailure(browserPointCover(o)!, 700, 507, { selector: "#c" });
+      return (JSON.parse((r.content[0] as { text: string }).text) as { suggest: string[] }).suggest.join("\n");
+    };
+    const devtools = suggest({ kind: "other", hwnd: 132188n, title: "DevTools - 127.0.0.1:8967/K399-A", via: "os_hit_test" });
+    expect(devtools).toContain("browser's DevTools, undocked");
+    expect(devtools).toContain("Ctrl+Shift+D");
+    // A browser window showing a page titled "DevTools - …" is not DevTools.
+    expect(suggest({ kind: "other", hwnd: 5n, title: "DevTools - Docs - Google Chrome", via: "os_hit_test" })).not.toContain("undocked");
+    expect(suggest(owners.other!)).not.toContain("undocked");
   });
 
   it("is not made for the browser window or for no answer", () => {
