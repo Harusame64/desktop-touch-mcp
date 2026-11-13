@@ -113,6 +113,26 @@ describe("wheelPointOnPage with the caller's point (internal #404)", () => {
   });
 });
 
+describe("wheelPointOnPage marks a frame that draws another page window (internal #407)", () => {
+  const withDevTools = (pageRect = RECT) => ({
+    isIconic: () => false,
+    isCloaked: () => false,
+    descendants: () => [
+      { hwnd: 4n, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: { x: 100, y: 200, width: 1500, height: 500 } },
+      { hwnd: PAGE, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: pageRect },
+    ],
+  });
+  it("DevTools docked: the page's point, marked", () => {
+    expect(wheelPointOnPage(FRAME, deps({ surface: withDevTools() }))).toEqual({ kind: "point", frame: FRAME, point: { x: 600, y: 450 }, otherPageWindows: true });
+  });
+  it("with the caller's point on the page: that point, marked", () => {
+    expect(wheelPointOnPage(FRAME, deps({ surface: withDevTools() }), { x: 250, y: 600 })).toEqual({ kind: "point", frame: FRAME, point: { x: 250, y: 600 }, otherPageWindows: true });
+  });
+  it("one page window: not marked", () => {
+    expect(wheelPointOnPage(FRAME, deps())).not.toHaveProperty("otherPageWindows");
+  });
+});
+
 describe("the refusal gives a road on (ADR-040 invariant 8)", () => {
   const text = (r: { content: Array<{ type: string; text?: string }> }) => {
     const j = JSON.parse(r.content[0]!.text!) as { error: string; suggest?: string[] };

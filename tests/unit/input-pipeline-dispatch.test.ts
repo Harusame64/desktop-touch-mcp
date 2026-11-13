@@ -2587,6 +2587,72 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
     });
   });
 
+  // internal #407 — win2 dev/407-uia-devtools: with DevTools docked, UIA's search reached DevTools' Elements tree first
+  // and scrolled it (48.4→52.5 %), answering scrolled while the page did not move.
+  describe("Tier 1 UIA is not tried when the frame draws another page window beside the page (internal #407)", () => {
+    // DevTools docked right: its page window covers the content area, the page's is the left part inside it.
+    const DEVTOOLS = 0x502n;
+    const DEVTOOLS_RECT = { x: 508, y: 237, width: 1184, height: 505 };
+    const docked = (pageRect = PAGE_RECT) => {
+      wheelPointDeps.surface = {
+        isIconic: () => false,
+        isCloaked: () => false,
+        descendants: () => [
+          { hwnd: DEVTOOLS, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: DEVTOOLS_RECT },
+          { hwnd: PAGE, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: pageRect },
+        ],
+      };
+    };
+    beforeEach(() => {
+      uiaScrollByWheelAtHwndMock.mockReset();
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+    });
+    it("DevTools docked, no x/y: no UIA call, and the post goes to the page's own centre", async () => {
+      shape(500);
+      docked();
+      await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1 });
+      expect(uiaScrollByWheelAtHwndMock).not.toHaveBeenCalled();
+      expect(win32PostMessageMock).toHaveBeenCalled();
+      for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(Math.round(508 + 784 / 2), Math.round(237 + 505 / 2)));
+    });
+    it("DevTools docked, x/y off the page (over DevTools): no UIA call either, the caller told 'off'", async () => {
+      shape(500);
+      docked();
+      wheelPointDeps.pointAt = (x) => (x >= 1292 ? { child: DEVTOOLS, root: FRAME } : { child: PAGE, root: FRAME });
+      const told = vi.fn();
+      await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1, at: { screenX: 1400, screenY: 400, frame: FRAME }, onPointNotUsed: told });
+      expect(uiaScrollByWheelAtHwndMock).not.toHaveBeenCalled();
+      expect(told).toHaveBeenCalledWith("off");
+    });
+    it("the control: one page window, UIA first as before", async () => {
+      shape(500);
+      const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1 });
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledTimes(1);
+      expect(r).toEqual({ scrolled: true, channel: "uia", reason: "delivered_via_uia" });
+    });
+    it("the control: DevTools undocked (two page windows at one rect, DevTools outside this frame's tree): UIA first as before", async () => {
+      shape(500);
+      wheelPointDeps.surface = {
+        isIconic: () => false,
+        isCloaked: () => false,
+        descendants: () => [
+          { hwnd: PAGE, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: PAGE_RECT },
+          { hwnd: 0x503n, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: { ...PAGE_RECT } },
+        ],
+      };
+      await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1 });
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledTimes(1);
+    });
+    it("a build without PostMessage keeps UIA even with DevTools docked", async () => {
+      shape(500);
+      docked();
+      nativeWin32Mock.win32PostMessage = undefined;
+      const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1 });
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledTimes(1);
+      expect(r).toEqual({ scrolled: true, channel: "uia", reason: "delivered_via_uia" });
+    });
+  });
+
   // ADR-040 PR ③ — win2 (dev/adr-040-pr3): a hidden page keeps its last shown ScrollPercent and jumps to that
   // + one step, answering "unchanged", the same as a page at its end; the refusal then said nothing moved.
   describe("Tier 1 UIA is not tried on a Chromium window whose page is not visible", () => {

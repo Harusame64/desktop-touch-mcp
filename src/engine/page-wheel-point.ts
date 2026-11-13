@@ -31,6 +31,12 @@ export type WheelPagePoint =
       point: { x: number; y: number };
       /** internal #404 — the caller's point was given and this is not it. Absent when it is, or none was given. */
       pointNotUsed?: PointNotUsed;
+      /**
+       * internal #407 — the frame draws another page window beside this one (DevTools docked, a side panel). UIA's
+       * ScrollPattern search walks that one first and scrolls it (win2, dev/407-uia-devtools U1/U2: DevTools'
+       * Elements tree moved, the page did not, and the answer was scrolled). Present only when true.
+       */
+      otherPageWindows?: true;
     }
   | { kind: "not_visible"; frame: bigint; why: "covered" | "minimized" | "cloaked" | "no_page_window" };
 
@@ -90,19 +96,20 @@ export function wheelPointOnPage(hwnd: bigint, deps: WheelPointDeps, preferred?:
   const shows = (at: { child: bigint; root: bigint } | null): boolean =>
     at !== null && at.root === frame && (surface.rwhs.includes(at.child) || deps.classOf(at.child) !== PAGE_RWH_CLASS);
   let pointNotUsed: PointNotUsed | undefined;
+  const others = surface.others > 0;
+  const withWhy = (point: { x: number; y: number }): WheelPagePoint =>
+    ({ kind: "point", frame, point, ...(pointNotUsed !== undefined && { pointNotUsed }), ...(others && { otherPageWindows: true as const }) });
   if (preferred !== undefined) {
     const px = Math.round(preferred.x), py = Math.round(preferred.y);
     if (px < x || py < y || px >= x + width || py >= y + height) pointNotUsed = "off";
     else {
       const at = deps.pointAt(px, py);
       if (at === undefined) pointNotUsed = "unreadable";
-      else if (shows(at)) return { kind: "point", frame, point: { x: px, y: py } };
+      else if (shows(at)) return withWhy({ x: px, y: py });
       // Over this window but not its page (a DevTools pane drawn in its own page window), or another window.
       else pointNotUsed = at !== null && at.root === frame ? "off" : "covered";
     }
   }
-  const withWhy = (point: { x: number; y: number }): WheelPagePoint =>
-    ({ kind: "point", frame, point, ...(pointNotUsed !== undefined && { pointNotUsed }) });
   let asked = 0;
   for (const [fx, fy] of WHEEL_POINT_FRACTIONS) {
     const point = { x: Math.round(x + width * fx), y: Math.round(y + height * fy) };

@@ -2074,12 +2074,17 @@ export async function dispatchScrollWheel(
     // UIA's ScrollPattern moves only the document, whatever is under the point (win2, dev/404-window-road-point W4:
     // a box pointed at stayed still while the document moved, and with DevTools docked it answered delivered while
     // nothing in the page moved, W5). A posted wheel is hit-tested at its point inside the page (W3).
+    // internal #407 — nor when the frame draws another page window beside the page (DevTools docked, a side panel):
+    // UIA's search reaches that one first and scrolls it, answering scrolled while the page stays still (win2,
+    // dev/407-uia-devtools U2: DevTools' Elements tree moved 48.4→52.5 %, the page did not). The post goes to a
+    // point where the page itself shows, as above.
     // Only when Tier 3 can post at all: a build without PostMessage keeps UIA, the one road it has (gate 2 on #982).
-    const pointedOnPage = params.at !== undefined && pagePoint.kind === "point" && pagePoint.pointNotUsed === undefined
+    const skipTier1 = pagePoint.kind === "point"
+      && ((params.at !== undefined && pagePoint.pointNotUsed === undefined) || pagePoint.otherPageWindows === true)
       && typeof nativeWin32?.win32PostMessage === "function";
     // Told here too, since Tier 1 may answer before Tier 3 reads the point again (and Tier 3's read then replaces it).
     tellPointUse(params, pagePoint);
-    if (!pointedOnPage) {
+    if (!skipTier1) {
     try {
       // Resolve the Tier 1 native call through the tolerant `native-engine.ts`
       // loader — NOT a direct `import from "../../index.js"`, which `throw`s at
