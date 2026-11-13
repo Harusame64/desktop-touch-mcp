@@ -600,75 +600,134 @@ export async function readScrollPositionInTab(
   }
 }
 
-/** The page-side expression `markScrollersAtPoint` evaluates; exported so the expression itself is run in tests. */
+/**
+ * internal #403 item 2 — the page-side expression `markScrollersAtPoint` evaluates: an array of the scroll
+ * containers a wheel at viewport point (`x`, `y`) can scroll, nearest first. Exported so the expression
+ * itself is run in tests.
+ *
+ * - The point is followed into open shadow roots (`elementFromPoint` answers the outermost host) and into
+ *   same-origin iframes (the frame's own document, at the point less the frame's offset).
+ * - From there it climbs the flat tree: a slotted element's slot, else its parent, else its shadow host;
+ *   out of an iframe's document to the iframe element.
+ * - A container is an element whose overflow scrolls on an axis with room to move. The top document's
+ *   scrolling element is not one (readScrollPositionInTab reads it); a frame's is, when it has room.
+ */
 export function markScrollersExpr(x: number, y: number): string {
   return `
 (function(x, y) {
-  delete window.__dtmScrollChain;
-  var root = document.scrollingElement || document.documentElement;
-  var chain = [];
-  var el = document.elementFromPoint(x, y);
+  var top = document.scrollingElement || document.documentElement;
   var room = /^(auto|scroll|overlay)$/;
-  while (el) {
-    if (el !== root && el.nodeType === 1) {
-      var cs = getComputedStyle(el);
-      if ((room.test(cs.overflowY) && el.scrollHeight > el.clientHeight) ||
-          (room.test(cs.overflowX) && el.scrollWidth > el.clientWidth)) chain.push(el);
-    }
-    var up = el.parentElement;
-    if (!up) { var r = el.getRootNode && el.getRootNode(); up = r && r.host ? r.host : null; }
-    el = up;
+  var out = [];
+  function scrolls(el, view) {
+    var cs = view.getComputedStyle(el);
+    return (room.test(cs.overflowY) && el.scrollHeight > el.clientHeight) ||
+      (room.test(cs.overflowX) && el.scrollWidth > el.clientWidth);
   }
-  if (chain.length > 0) window.__dtmScrollChain = chain;
-  return chain.map(function(e) { return { top: e.scrollTop, left: e.scrollLeft }; });
+  function hit(doc, px, py) {
+    var el = doc.elementFromPoint(px, py);
+    for (var n = 0; el && el.shadowRoot && n < 32; n++) {
+      var inner = el.shadowRoot.elementFromPoint(px, py);
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    return el;
+  }
+  function walk(doc, view, px, py) {
+    var root = doc.scrollingElement || doc.documentElement;
+    var el = hit(doc, px, py);
+    if (el && el.tagName === 'IFRAME') {
+      var sub = null;
+      try { sub = el.contentDocument; } catch (e) { sub = null; }
+      if (sub && sub.defaultView) {
+        var r = el.getBoundingClientRect();
+        walk(sub, sub.defaultView, px - r.left - el.clientLeft, py - r.top - el.clientTop);
+        var subRoot = sub.scrollingElement || sub.documentElement;
+        if (subRoot && (subRoot.scrollHeight > subRoot.clientHeight || subRoot.scrollWidth > subRoot.clientWidth) &&
+            out.indexOf(subRoot) < 0) out.push(subRoot);
+      }
+    }
+    for (var steps = 0; el && steps < 1000; steps++) {
+      if (el !== root && el !== top && el.nodeType === 1 && out.indexOf(el) < 0 && scrolls(el, view)) out.push(el);
+      var up = el.assignedSlot || el.parentElement;
+      if (!up) { var rn = el.getRootNode && el.getRootNode(); up = rn && rn.host ? rn.host : null; }
+      el = up;
+    }
+  }
+  walk(document, window, x, y);
+  return out;
 })(${JSON.stringify(x)}, ${JSON.stringify(y)})`;
 }
 
 /**
- * internal #403 item 2 — the inner scroll containers a wheel at viewport point (`x`, `y`) can scroll: the
- * element under the point and each ancestor (through shadow roots) whose overflow scrolls and that has room
- * to move, nearest first. `document.scrollingElement` is not among them (readScrollPositionInTab reads it).
- * Gmail, Slack web and Notion scroll a container like this while the document stays put, so a wheel read on
- * the document alone answers "not delivered" for a page that moved.
+ * internal #403 item 2 — the function each container list is read with, as `this` (exported for tests). A
+ * container no longer in the document reads null: a detached element's scroll position reads 0, which is
+ * not a move (agy on #978).
+ */
+export const READ_SCROLLERS_FN = `function() {
+  var out = [];
+  for (var i = 0; i < this.length; i++) {
+    var e = this[i];
+    out.push(e.isConnected === false ? null : { top: e.scrollTop, left: e.scrollLeft });
+  }
+  return out;
+}`;
+
+/** The containers under a wheel's point, held by the page for this call only (see markScrollersAtPoint). */
+export interface ScrollerMark {
+  /** Their positions when marked, nearest first (null for one no longer in the document). Empty when nothing under the point scrolls. */
+  positions: Array<{ top: number; left: number } | null>;
+  /** The same containers' positions now, in the same order; null when they cannot be read. */
+  read(): Promise<Array<{ top: number; left: number } | null> | null>;
+  /** Lets the page drop them. Never throws. */
+  release(): Promise<void>;
+}
+
+let scrollerMarkSeq = 0;
+
+/**
+ * internal #403 item 2 — the inner scroll containers a wheel at viewport point (`x`, `y`) can scroll
+ * (`markScrollersExpr`), held by the page under an object group of this call: nothing is left in the page's
+ * own globals, two calls on one tab do not see each other's, and `release` drops them (the caller calls it
+ * in a finally). Gmail, Slack web and Notion scroll a container like this while the document stays put, so
+ * a wheel read on the document alone answered "not delivered" for a page that moved.
  *
- * The containers are kept on the page (`window.__dtmScrollChain`) for `readMarkedScrollers`, which reads the
- * same elements after the wheel and clears the slot. Answers their positions now, or null when the page
- * could not be asked; an empty list when nothing under the point scrolls (no slot is kept then).
+ * Null when the page could not be asked; the caller then judges by the document alone, as before.
  */
 export async function markScrollersAtPoint(
   x: number,
   y: number,
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT,
-): Promise<Array<{ top: number; left: number }> | null> {
-  const expr = markScrollersExpr(x, y);
+): Promise<ScrollerMark | null> {
+  const objectGroup = `dtm-scrollers-${process.pid}-${++scrollerMarkSeq}`;
+  let session: CdpSession;
   try {
-    const r = await evaluateInTab(expr, tabId, port);
-    return Array.isArray(r) ? (r as Array<{ top: number; left: number }>) : null;
+    session = await openSession(await resolveTab(tabId, port), port);
   } catch {
     return null;
   }
-}
-
-/** The page-side expression `readMarkedScrollers` evaluates (exported for tests). */
-export const READ_MARKED_SCROLLERS_EXPR = `
-(function() {
-  var chain = window.__dtmScrollChain;
-  delete window.__dtmScrollChain;
-  if (!Array.isArray(chain)) return null;
-  return chain.map(function(e) { return { top: e.scrollTop, left: e.scrollLeft }; });
-})()`;
-
-/** internal #403 item 2 — the positions of the containers `markScrollersAtPoint` kept, in its order; clears them. */
-export async function readMarkedScrollers(
-  tabId: string | null = null,
-  port = DEFAULT_CDP_PORT,
-): Promise<Array<{ top: number; left: number }> | null> {
-  const expr = READ_MARKED_SCROLLERS_EXPR;
+  const release = async () => {
+    try { await session.send("Runtime.releaseObjectGroup", { objectGroup }); } catch { /* the page went away */ }
+  };
   try {
-    const r = await evaluateInTab(expr, tabId, port);
-    return Array.isArray(r) ? (r as Array<{ top: number; left: number }>) : null;
+    const made = (await session.send("Runtime.evaluate", { expression: markScrollersExpr(x, y), returnByValue: false, objectGroup })) as
+      { result: { objectId?: string }; exceptionDetails?: unknown };
+    const objectId = made.result?.objectId;
+    if (made.exceptionDetails || objectId === undefined) { await release(); return null; }
+    const read = async (): Promise<Array<{ top: number; left: number } | null> | null> => {
+      try {
+        const r = (await session.send("Runtime.callFunctionOn", { objectId, functionDeclaration: READ_SCROLLERS_FN, returnByValue: true })) as
+          { result: { value?: unknown }; exceptionDetails?: unknown };
+        return !r.exceptionDetails && Array.isArray(r.result?.value) ? (r.result.value as Array<{ top: number; left: number } | null>) : null;
+      } catch {
+        return null;
+      }
+    };
+    const positions = await read();
+    if (positions === null) { await release(); return null; }
+    return { positions, read, release };
   } catch {
+    await release();
     return null;
   }
 }

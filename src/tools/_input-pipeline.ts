@@ -101,7 +101,6 @@ import {
   dispatchWheelInTab,
   readScrollPositionInTab,
   markScrollersAtPoint,
-  readMarkedScrollers,
   getBrowserProcessId,
   getWindowsForTargets,
   evaluateInTab,
@@ -2034,6 +2033,7 @@ export async function dispatchScrollWheel(
     // delta) returns null — caller emits `target_unreachable` per §2.6.2
     // path-(b) because Tier 4 SendInput must not be reached for a resolved
     // CDP destination (assertTier4Reachable throws on kind:'cdp').
+    let marked: Awaited<ReturnType<typeof markScrollersAtPoint>> = null;
     try {
       const port = getCdpPort();
       const pre = await readScrollPositionInTab(dest.tabId, port);
@@ -2045,9 +2045,9 @@ export async function dispatchScrollWheel(
       const cx = params.x ?? Math.floor(pre.clientWidth / 2);
       const cy = params.y ?? Math.floor(pre.clientHeight / 2);
       // internal #403 item 2 — the inner containers under the point, read too: a page that scrolls a
-      // container (Gmail, Slack web, Notion) leaves the document still. Not readable → the document alone,
-      // as before.
-      const innerPre = await markScrollersAtPoint(cx, cy, dest.tabId, port).catch(() => null);
+      // container (Gmail, Slack web, Notion) leaves the document still. Not readable (null) → the document
+      // alone, as before. Released in the finally below, whatever happens to the wheel.
+      marked = await markScrollersAtPoint(cx, cy, dest.tabId, port);
       // Recorded AFTER the await for the same reason as Tier 1: the helper
       // resolves the tab and opens a session first, and either can fail — the
       // surrounding catch turns that into a plain `null` outcome, so an event
@@ -2067,16 +2067,23 @@ export async function dispatchScrollWheel(
       // to land on the post-frame state without burning latency.
       await new Promise((r) => setTimeout(r, 16));
       const post = await readScrollPositionInTab(dest.tabId, port);
-      const innerPost = innerPre !== null && innerPre.length > 0
-        ? await readMarkedScrollers(dest.tabId, port).catch(() => null)
-        : null;
+      const innerPre = marked?.positions ?? [];
+      const innerPost = marked !== null && innerPre.length > 0 ? await marked.read() : null;
       const axisIsVertical =
         params.direction === "up" || params.direction === "down";
       const moved = (a: number, b: number) => Math.abs(b - a) >= CDP_SCROLL_DELIVERY_EPSILON_PX;
       const documentMoved = post !== null &&
         (axisIsVertical ? moved(pre.scrollTop, post.scrollTop) : moved(pre.scrollLeft, post.scrollLeft));
-      const innerMoved = innerPre !== null && innerPost !== null && innerPost.length === innerPre.length &&
-        innerPre.some((p, i) => axisIsVertical ? moved(p.top, innerPost[i]!.top) : moved(p.left, innerPost[i]!.left));
+      // A container counts only when it moved the way the wheel turns (gate 2 on #978): one still easing
+      // back from an earlier scroll, or a chat pane jumping to a new message, is not this wheel's.
+      const sign = params.direction === "down" || params.direction === "right" ? 1 : -1;
+      const along = (a: number, b: number) => (b - a) * sign >= CDP_SCROLL_DELIVERY_EPSILON_PX;
+      const innerMoved = innerPost !== null && innerPost.length === innerPre.length &&
+        innerPre.some((p, i) => {
+          const q = innerPost[i];
+          if (p === null || q === null || q === undefined) return false; // left the document: not a move
+          return axisIsVertical ? along(p.top, q.top) : along(p.left, q.left);
+        });
       if (!documentMoved && !innerMoved) {
         return null;
       }
@@ -2087,6 +2094,8 @@ export async function dispatchScrollWheel(
       };
     } catch {
       return null;
+    } finally {
+      await marked?.release();
     }
   }
   // unresolved → caller handles (Tier 4 SendInput fall-through)
