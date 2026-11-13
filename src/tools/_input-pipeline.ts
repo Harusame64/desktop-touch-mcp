@@ -33,6 +33,7 @@ import {
 import { logDispatchSink } from "./_resolve-log.js";
 import { getWindowRectByHwnd, getWindowProcessId, getWindowTitleW, getWindowRoot, getWindowClassName, windowFromPoint, getWindowDpi, pageSurfaceDeps } from "../engine/win32.js";
 import { wheelPointOnPage, type WheelPointDeps, type WheelPagePoint } from "../engine/page-wheel-point.js";
+import { resolvePageSurface } from "../engine/page-surface.js";
 import { tabOfFrame, type TabOfFrameDeps } from "../engine/cdp-tab-of-frame.js";
 
 /** Exported so tests can replace the window reads (ADR-040 PR ②). */
@@ -100,6 +101,7 @@ import {
   listTabsLight,
   dispatchWheelInTab,
   readScrollPositionInTab,
+  armWheelObserver,
   getBrowserProcessId,
   getWindowsForTargets,
   evaluateInTab,
@@ -139,6 +141,20 @@ const CHROMIUM_TOP_LEVEL_CLASS = "Chrome_WidgetWin_1";
  * at least this many px.)
  */
 const CDP_SCROLL_DELIVERY_EPSILON_PX = 1;
+
+/**
+ * internal #403 — how long the page's main frame is given to see the CDP wheel before it counts as never seen
+ * (a frame of another site took it, or the observer's world is gone). Headless Chrome 157 delivered it 19–34 ms
+ * after the dispatch was sent (dev/403-cdp-wheel-spike M2); headed Windows is unmeasured.
+ */
+const CDP_WHEEL_SEEN_MS = 250;
+/**
+ * internal #403 — after the first move, how long to wait for that scroll to end when no `scrollend` comes, so a
+ * smooth scroll does not run on into the next call. Unmeasured on headed Windows (win2 M2).
+ */
+const CDP_WHEEL_SETTLE_MS = 300;
+/** internal #403 — the longest wait in all after the wheel was seen; bounds "nothing moved". Unmeasured on headed Windows. */
+const CDP_WHEEL_MAX_MS = 800;
 
 /**
  * ADR-018 Phase 4 — Tier 3 PostMessage settle delay (ms) before reading
@@ -350,7 +366,8 @@ export const WHEEL_DELTA_PER_NOTCH = 120;
  */
 export type InputDestination =
   | { kind: "uia"; hwnd: bigint }
-  | { kind: "cdp"; tabId: string; nodeId?: number }
+  /** `frame`: the Chromium window the tab was found in (internal #403: where a caller's point is mapped from). */
+  | { kind: "cdp"; tabId: string; nodeId?: number; frame?: bigint }
   | { kind: "hwnd"; hwnd: bigint }
   | { kind: "unresolved"; reason: string };
 
@@ -389,17 +406,48 @@ export interface WheelParams {
   direction: "up" | "down" | "left" | "right";
   notch: number;
   /**
-   * Optional viewport-relative CSS px coordinates for Tier 2 CDP dispatch.
-   * CDP `Input.dispatchMouseEvent({type:'mouseWheel'})` requires `(x,y)` but
-   * routes the wheel to the tab (not the point) — so for Phase 3 these are
-   * a hint only; viewport center is used when omitted. Tier 1 (UIA) and
-   * Tier 4 (legacy SendInput) ignore both fields.
-   *
-   * Phase 3 / ADR §7 OQ6 carry-over: per-element CDP coords land in a future
-   * phase (e.g. `scroll(action='to_element', selector=...)` Tier 2 path).
+   * Optional viewport-relative CSS px coordinates for Tier 2 CDP dispatch. Chromium hit-tests a CDP
+   * `mouseWheel` at `(x,y)` and scrolls the scroller under it (measured: internal dev/403-cdp-wheel-spike
+   * M1, two side-by-side containers; an earlier comment here said it went to the tab, not the point).
+   * Viewport center is used when omitted. Tier 1 (UIA) and Tier 4 (legacy SendInput) ignore both fields.
    */
   x?: number;
   y?: number;
+  /**
+   * internal #403 — the caller's point, in screen px, and the Chromium window it was given for. The CDP road
+   * maps it into the viewport and sends the wheel there (`viewportPointOf`); when it cannot, the wheel goes to
+   * the centre and the outcome's `pointNotUsed` says why. Takes precedence over `x`/`y`.
+   */
+  at?: { screenX: number; screenY: number; frame: bigint };
+}
+
+/**
+ * internal #403 — the caller's point mapped into the viewport's CSS px, or why it was not: "off" when it is not on
+ * the frame's page surface now (the tab strip, the address bar, a DevTools pane, outside the window), "unreadable"
+ * when the surface or the viewport cannot be read or do not agree. The mapping is (screen − the surface's origin)
+ * × the viewport's CSS width over the surface's physical width, which carries the monitor's scale and the page
+ * zoom alike. The surface is picked with the viewport's physical size as the hint, as the click road does, so a
+ * side panel with its own page window is not taken for the page. A pinch-zoomed page, or one whose viewport does
+ * not fill the surface (DevTools' device emulation), is "unreadable": the mapping would land elsewhere.
+ */
+function viewportPointOf(
+  at: NonNullable<WheelParams["at"]>,
+  view: { innerWidth?: number; innerHeight?: number; devicePixelRatio?: number; pinchScale?: number },
+): { x: number; y: number } | { why: "off" | "unreadable" } {
+  const { innerWidth: w, innerHeight: h, devicePixelRatio: dpr } = view;
+  if (!w || !h || !dpr) return { why: "unreadable" };
+  if (view.pinchScale !== undefined && Math.abs(view.pinchScale - 1) > 0.001) return { why: "unreadable" };
+  let surface;
+  try {
+    surface = resolvePageSurface(at.frame, wheelPointDeps.surface, { width: Math.round(w * dpr), height: Math.round(h * dpr) });
+  } catch {
+    return { why: "unreadable" };
+  }
+  if (surface.kind !== "surface") return { why: "unreadable" };
+  const r = surface.rect;
+  if (r.width <= 0 || r.height <= 0 || Math.abs(r.width - w * dpr) > 2 || Math.abs(r.height - h * dpr) > 2) return { why: "unreadable" };
+  if (at.screenX < r.x || at.screenY < r.y || at.screenX >= r.x + r.width || at.screenY >= r.y + r.height) return { why: "off" };
+  return { x: Math.floor((at.screenX - r.x) * w / r.width), y: Math.floor((at.screenY - r.y) * h / r.height) };
 }
 
 /**
@@ -420,6 +468,11 @@ export interface WheelParams {
 export interface DispatchOutcome {
   scrolled: boolean;
   channel: Channel;
+  /**
+   * internal #403 — the CDP road was given the caller's point (`WheelParams.at`) and sent the wheel at the
+   * page's centre instead: "off" the page surface, or "unreadable". Absent when the point was used or none given.
+   */
+  pointNotUsed?: "off" | "unreadable";
   /**
    * ADR §2.6.2 reason value. Phase 1b emits `'delivered_via_uia'`, Phase 3
    * adds `'delivered_via_cdp'`, Phase 4 adds `'delivered_via_postmessage'`;
@@ -459,6 +512,13 @@ export interface DispatchOutcome {
     | "delivered_via_postmessage"
     | "pixel_delta_observed"
     | "target_unreachable"
+    // internal #403 — the CDP road, with `scrolled: false`; mouse.ts answers `unverifiable` for both.
+    // The page's own handler took the wheel (preventDefault) and nothing on the path moved.
+    | "page_handled_wheel"
+    // The wheel was sent, but nothing that can scroll on that axis is on the path the browser hit (a
+    // closed shadow root, a page that moves by transform, a frame of another site), or the wheel was
+    // never seen by the page's main frame; and the document did not move.
+    | "hit_path_unobservable"
     | null;
   /**
    * ADR-019 MVP-1 (Stage 1) — additive observation telemetry. Populated
@@ -477,6 +537,18 @@ export interface DispatchOutcome {
    * its point, so posting would scroll the window in front. Nothing was posted.
    */
   pageNotVisible?: { frame: bigint; why: "covered" | "minimized" | "cloaked" | "no_page_window" };
+  /**
+   * internal #403 — the CDP road with `scrolled: true` when nothing moved because every scroller on the path
+   * the browser hit already stood at its end the way the wheel turns ("already-at-boundary is success").
+   */
+  atEnd?: boolean;
+  /**
+   * internal #403 — the CDP road with `scrolled: false, reason: "target_unreachable"`: the wheel WAS sent and
+   * nothing was seen moving. "room_not_moved": the scroller nearest the point on the path the browser hit could
+   * still move that way and did not. "document_still": the path could not be read, and the document did not move.
+   * Without it, `null` from the CDP road means the wheel was not sent.
+   */
+  sentNotMoved?: "room_not_moved" | "document_still";
 }
 
 /**
@@ -871,7 +943,7 @@ export async function resolveInputDestination(
 export async function resolveCdpDestinationForHwnd(
   hwnd: bigint,
   className: string | null,
-): Promise<{ kind: "cdp"; tabId: string } | null> {
+): Promise<{ kind: "cdp"; tabId: string; frame: bigint } | null> {
   if (className !== CHROMIUM_TOP_LEVEL_CLASS) {
     return null;
   }
@@ -888,7 +960,7 @@ export async function resolveCdpDestinationForHwnd(
       if (browserPid !== undefined && windowPid !== browserPid) return null;
     }
     const shown = await tabOfFrame(hwnd, tabs, tabOfFrameDeps);
-    return shown.kind === "tab" ? { kind: "cdp", tabId: shown.tabId } : null;
+    return shown.kind === "tab" ? { kind: "cdp", tabId: shown.tabId, frame: hwnd } : null;
   } catch {
     return null;
   }
@@ -2017,24 +2089,37 @@ export async function dispatchScrollWheel(
     return await postWheelToHwnd(dest.hwnd, params, pagePoint);
   }
   if (dest.kind === "cdp") {
-    // ADR-018 Phase 3 — Tier 2 CDP wheel dispatch. Pre/post observation via
-    // `readScrollPositionInTab` (document.scrollingElement); we declare
-    // `delivered_via_cdp` only when both endpoints succeed AND scrollTop /
-    // scrollLeft moved by at least CDP_SCROLL_DELIVERY_EPSILON_PX on the
-    // axis of interest. Any failure (no session, JS exception, no observable
-    // delta) returns null — caller emits `target_unreachable` per §2.6.2
-    // path-(b) because Tier 4 SendInput must not be reached for a resolved
-    // CDP destination (assertTier4Reachable throws on kind:'cdp').
+    // ADR-018 Phase 3 — Tier 2 CDP wheel dispatch. internal #403 — judged by the path the browser itself
+    // hit-tested: an observer armed before the wheel reads the wheel event's composedPath() and each element's
+    // position, and after it waits until one of them moves the way the wheel turns (`armWheelObserver`).
+    // Answers:
+    // - moved → delivered; every scroller on the path at its end that way → delivered (`atEnd`);
+    // - a scroller on the path could move that way and none did → `sentNotMoved` (not delivered);
+    // - the page's handler took the wheel, or nothing on the path scrolls → `unverifiable` reasons;
+    // - the observer could not be armed, or the main frame never saw the wheel → the document's own position
+    //   decides, as before (and "not seen" without a document move is `hit_path_unobservable`).
+    // `null` means the wheel was not sent (no CDP session, the page unreadable, the dispatch threw). Tier 4
+    // SendInput must not be reached for a resolved CDP destination (assertTier4Reachable throws on kind:'cdp').
+    let observer: Awaited<ReturnType<typeof armWheelObserver>> = null;
     try {
       const port = getCdpPort();
-      const pre = await readScrollPositionInTab(dest.tabId, port);
+      const axisIsVertical = params.direction === "up" || params.direction === "down";
+      const [pre, armed] = await Promise.all([
+        readScrollPositionInTab(dest.tabId, port),
+        armWheelObserver(axisIsVertical, dest.tabId, port),
+      ]);
+      observer = armed;
       if (pre === null) return null;
       const wheelDelta = wheelDeltaForNotch(params);
-      // CDP dispatchMouseEvent requires viewport coordinates. Phase 3 sends
-      // wheels at the viewport center; per-element coords (ADR §7 OQ6) are a
-      // future phase. The tab is the destination, not the point.
-      const cx = params.x ?? Math.floor(pre.clientWidth / 2);
-      const cy = params.y ?? Math.floor(pre.clientHeight / 2);
+      // CDP dispatchMouseEvent takes viewport CSS px, and Chromium scrolls the scroller under that point
+      // (internal dev/403-cdp-wheel-spike M1). internal #403 — the caller's point when one was given and it
+      // maps onto the page; otherwise the viewport's centre, as before, and the outcome says why.
+      const mapped = params.at !== undefined ? viewportPointOf(params.at, pre) : undefined;
+      const atPoint = mapped !== undefined && "x" in mapped ? mapped : undefined;
+      const pointNotUsed = mapped !== undefined && "why" in mapped ? mapped.why : undefined;
+      const cx = atPoint?.x ?? params.x ?? Math.floor(pre.clientWidth / 2);
+      const cy = atPoint?.y ?? params.y ?? Math.floor(pre.clientHeight / 2);
+      const sign: 1 | -1 = params.direction === "down" || params.direction === "right" ? 1 : -1;
       // Recorded AFTER the await for the same reason as Tier 1: the helper
       // resolves the tab and opens a session first, and either can fail — the
       // surrounding catch turns that into a plain `null` outcome, so an event
@@ -2049,27 +2134,31 @@ export async function dispatchScrollWheel(
         port,
       );
       logDispatchSink({ sink: "cdp", tool: "scroll", targetHwnd: null, tier: "2" });
+      const sent = { channel: "cdp" as const, ...(pointNotUsed !== undefined && { pointNotUsed }) };
+      const verdict = observer !== null ? await observer.verdict(sign, CDP_WHEEL_SEEN_MS, CDP_WHEEL_SETTLE_MS, CDP_WHEEL_MAX_MS) : null;
+      if (verdict !== null && verdict.seen) {
+        if (verdict.moved !== undefined) return { scrolled: true, reason: "delivered_via_cdp", ...sent };
+        if (verdict.defaultPrevented) return { scrolled: false, reason: "page_handled_wheel", ...sent };
+        if (verdict.under === "room") return { scrolled: false, reason: "target_unreachable", sentNotMoved: "room_not_moved", ...sent };
+        if (verdict.under === "end") return { scrolled: true, reason: "delivered_via_cdp", atEnd: true, ...sent };
+        return { scrolled: false, reason: "hit_path_unobservable", ...sent };
+      }
+      // No observer, or the main frame never saw the wheel: the document's own position, as before.
       // Settle: CDP wheel handling is synchronous on the renderer side but
       // scrollTop reflects the layout-flushed value. A tiny yield is enough
       // to land on the post-frame state without burning latency.
       await new Promise((r) => setTimeout(r, 16));
       const post = await readScrollPositionInTab(dest.tabId, port);
-      if (post === null) return null;
-      const axisIsVertical =
-        params.direction === "up" || params.direction === "down";
-      const observedDelta = axisIsVertical
+      const observedDelta = post === null ? 0 : axisIsVertical
         ? Math.abs(post.scrollTop - pre.scrollTop)
         : Math.abs(post.scrollLeft - pre.scrollLeft);
-      if (observedDelta < CDP_SCROLL_DELIVERY_EPSILON_PX) {
-        return null;
-      }
-      return {
-        scrolled: true,
-        channel: "cdp",
-        reason: "delivered_via_cdp",
-      };
+      if (observedDelta >= CDP_SCROLL_DELIVERY_EPSILON_PX) return { scrolled: true, reason: "delivered_via_cdp", ...sent };
+      if (verdict !== null) return { scrolled: false, reason: "hit_path_unobservable", ...sent };
+      return { scrolled: false, reason: "target_unreachable", sentNotMoved: "document_still", ...sent };
     } catch {
       return null;
+    } finally {
+      await observer?.release();
     }
   }
   // unresolved → caller handles (Tier 4 SendInput fall-through)

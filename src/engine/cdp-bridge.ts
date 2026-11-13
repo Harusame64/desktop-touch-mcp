@@ -571,6 +571,12 @@ export async function readScrollPositionInTab(
   scrollWidth: number;
   clientHeight: number;
   clientWidth: number;
+  /** The viewport in CSS px (window.innerWidth/innerHeight, scrollbars included): maps a screen point onto it. */
+  innerWidth?: number;
+  innerHeight?: number;
+  /** window.devicePixelRatio (monitor scale × page zoom) and visualViewport.scale (pinch zoom). */
+  devicePixelRatio?: number;
+  pinchScale?: number;
 } | null> {
   const expr = `
 (function() {
@@ -583,6 +589,10 @@ export async function readScrollPositionInTab(
     scrollWidth: el.scrollWidth,
     clientHeight: el.clientHeight,
     clientWidth: el.clientWidth,
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    devicePixelRatio: window.devicePixelRatio,
+    pinchScale: window.visualViewport ? window.visualViewport.scale : 1,
   };
 })()`;
   try {
@@ -593,9 +603,213 @@ export async function readScrollPositionInTab(
       scrollWidth: number;
       clientHeight: number;
       clientWidth: number;
+      innerWidth?: number;
+      innerHeight?: number;
+      devicePixelRatio?: number;
+      pinchScale?: number;
     } | null;
     return result;
   } catch {
+    return null;
+  }
+}
+
+/**
+ * internal #403 — the page-side observer for one CDP wheel, run in an isolated world. A one-shot capture
+ * listener for `wheel` on window reads `composedPath()`: the elements the browser itself hit-tested, through
+ * open shadow roots and slots (measured: internal dev/403-cdp-wheel-spike M4), and each one's scroll position
+ * on the wheel's axis before the wheel moves anything (M5). `window`/`document` on the path stand for the
+ * document's scrolling element. Exported so the expression itself is run in tests.
+ */
+export function wheelObserverExpr(vertical: boolean): string {
+  return `
+(function(vertical) {
+  var o = { seen: false, ended: false, path: [], pre: [], ev: null };
+  var root = function() { return document.scrollingElement || document.documentElement; };
+  o.listener = function(e) {
+    o.seen = true; o.ev = e;
+    var p = e.composedPath();
+    for (var i = 0; i < p.length; i++) {
+      var n = p[i];
+      var el = (n === window || n === document) ? root() : (n && n.nodeType === 1 ? n : null);
+      if (!el || o.path.indexOf(el) >= 0) continue;
+      o.path.push(el);
+      o.pre.push(vertical ? el.scrollTop : el.scrollLeft);
+    }
+  };
+  // A scroll that ended on this wheel's path (not a carousel elsewhere, gate 2 on #980).
+  o.onEnd = function(e) {
+    var t = (e.target === document || e.target === window) ? root() : e.target;
+    if (o.path.indexOf(t) >= 0) o.ended = true;
+  };
+  o.cleanup = function() {
+    window.removeEventListener('wheel', o.listener, true);
+    document.removeEventListener('scrollend', o.onEnd, true);
+  };
+  window.addEventListener('wheel', o.listener, { capture: true, once: true, passive: false });
+  document.addEventListener('scrollend', o.onEnd, true);
+  o.vertical = vertical;
+  return o;
+})(${vertical ? "true" : "false"})`;
+}
+
+/**
+ * internal #403 — called on the observer (`this`) after the wheel (`sign`: +1 down/right, −1 up/left). Waits
+ * while the wheel has not arrived (up to `seenMs`), then until an element on the hit path has moved by ≥ 1 px the
+ * way the wheel turns AND that scroll has ended (a `scrollend` on the path, or `settleMs` after the first move),
+ * or `maxMs` passed. Waiting for the end keeps a smooth scroll from running into the next call, where it would be
+ * credited to that call's wheel (gate 2 on #980). Then it takes its listeners off and answers what it saw.
+ *
+ * When nothing moved, `under` is the first element on the path (nearest the point) that scrolls on the axis:
+ * "room" (it could move that way), "end" (it stands at its end that way), or absent when nothing on the path
+ * scrolls. Only that one is judged: the browser's scroll chain past it (overscroll-behavior, fixed and absolute
+ * containing blocks) is not modelled. The document counts as scrolling unless the viewport's overflow (html's,
+ * or body's propagated) hides that axis; a body whose overflow went to the viewport is not a scroller itself.
+ * Right-to-left boxes sideways, and reversed flex boxes on their main axis, run from −max to 0. Exported for tests.
+ */
+export const WHEEL_VERDICT_FN = `function(sign, seenMs, settleMs, maxMs) {
+  var o = this, t0 = performance.now(), v = o.vertical;
+  var root = document.scrollingElement || document.documentElement;
+  var html = document.documentElement, body = document.body;
+  function ov(el) { var cs = getComputedStyle(el); return v ? cs.overflowY : cs.overflowX; }
+  function pos(el) { return v ? el.scrollTop : el.scrollLeft; }
+  function movedAt() {
+    for (var i = 0; i < o.path.length; i++) if ((pos(o.path[i]) - o.pre[i]) * sign >= 1) return i;
+    return -1;
+  }
+  function viewportOverflow() {
+    var h = ov(html);
+    return (h === 'visible' && body) ? ov(body) : h;
+  }
+  function judge(el) {
+    if (el.isConnected === false) return 'none';
+    if (el === root) {
+      if (/^(hidden|clip)$/.test(viewportOverflow())) return 'none';
+    } else {
+      if (el === body && ov(html) === 'visible') return 'none';
+      if (!/^(auto|scroll|overlay)$/.test(ov(el))) return 'none';
+    }
+    var max = v ? el.scrollHeight - el.clientHeight : el.scrollWidth - el.clientWidth;
+    if (max <= 0) return 'none';
+    // The scroll origin is at the far end (scroll position runs from -max to 0) for a right-to-left box sideways,
+    // a reversed flex box on its main axis (column-reverse chat panes, codex on #980), or any box already
+    // reading a negative position.
+    var cs2 = getComputedStyle(el), flex = /flex/.test(cs2.display);
+    var reversed = v
+      ? (flex && cs2.flexDirection === 'column-reverse')
+      : ((cs2.direction === 'rtl') !== (flex && cs2.flexDirection === 'row-reverse'));
+    var at = pos(el);
+    var lo = 0, hi = max;
+    if (reversed || at < 0) { lo = -max; hi = 0; }
+    return (sign > 0 ? at < hi - 1 : at > lo + 1) ? 'room' : 'end';
+  }
+  function label(el) {
+    if (el === root) return 'document';
+    return el.tagName.toLowerCase() + (el.id ? '#' + el.id : '');
+  }
+  return new Promise(function(resolve) {
+    var firstMove = -1;
+    function done() {
+      o.cleanup();
+      var r = { seen: o.seen, defaultPrevented: !!(o.ev && o.ev.defaultPrevented) };
+      var i = movedAt();
+      if (i >= 0) { r.moved = label(o.path[i]); resolve(r); return; }
+      for (var j = 0; j < o.path.length; j++) {
+        var k = judge(o.path[j]);
+        if (k !== 'none') { r.under = k; r.underLabel = label(o.path[j]); break; }
+      }
+      resolve(r);
+    }
+    (function tick() {
+      var t = performance.now() - t0;
+      if (!o.seen) { if (t > seenMs) return done(); }
+      else {
+        if (firstMove < 0 && movedAt() >= 0) firstMove = t;
+        if (firstMove >= 0 && (o.ended || t - firstMove > settleMs)) return done();
+        if (firstMove < 0 && o.ended) return done();
+        if (t > maxMs) return done();
+      }
+      setTimeout(tick, 16);
+    })();
+  });
+}`;
+
+/** internal #403 — takes the observer's listeners off, called on it (`this`) when no verdict was read. */
+export const WHEEL_OBSERVER_CLEANUP_FN = `function() { this.cleanup(); }`;
+
+/** What the observer saw (see WHEEL_VERDICT_FN). */
+export interface WheelVerdict {
+  seen: boolean;
+  defaultPrevented: boolean;
+  /** The element that moved the way the wheel turns ("document", or tag#id). */
+  moved?: string;
+  /** Nothing moved: the nearest element on the path that scrolls on the axis could move that way ("room") or stood at its end ("end"); absent when none scrolls. */
+  under?: "room" | "end";
+  underLabel?: string;
+}
+
+let wheelObserverSeq = 0;
+
+/**
+ * internal #403 — arms the observer for one CDP wheel on the tab's main frame, in an isolated world (nothing
+ * in the page's own globals; the page's scripts cannot see or change it) under an object group of this call.
+ * `verdict` waits for the answer after the wheel was sent; `release` drops the group (call it in a finally;
+ * it never throws). Null when the tab cannot be asked: the caller judges as before.
+ */
+export async function armWheelObserver(
+  vertical: boolean,
+  tabId: string | null = null,
+  port = DEFAULT_CDP_PORT,
+): Promise<{ verdict(sign: 1 | -1, seenMs: number, settleMs: number, maxMs: number): Promise<WheelVerdict | null>; release(): Promise<void> } | null> {
+  const objectGroup = `dtm-wheel-${process.pid}-${++wheelObserverSeq}`;
+  let session: CdpSession;
+  try {
+    session = await openSession(await resolveTab(tabId, port), port);
+  } catch {
+    return null;
+  }
+  let objectId: string | undefined;
+  let answered = false;
+  // Takes the listeners off when no verdict did (the wheel threw, the verdict call failed), then drops the group:
+  // a non-passive wheel listener left on window would make every later wheel on the page wait for the main
+  // thread (gate 2 on #980).
+  const release = async () => {
+    if (objectId !== undefined && !answered) {
+      try { await session.send("Runtime.callFunctionOn", { objectId, functionDeclaration: WHEEL_OBSERVER_CLEANUP_FN }); } catch { /* gone */ }
+    }
+    try { await session.send("Runtime.releaseObjectGroup", { objectGroup }); } catch { /* the page went away */ }
+  };
+  try {
+    const tree = (await session.send("Page.getFrameTree", {})) as { frameTree?: { frame?: { id?: string } } };
+    const frameId = tree.frameTree?.frame?.id;
+    if (frameId === undefined) return null;
+    const world = (await session.send("Page.createIsolatedWorld", { frameId, worldName: "desktop-touch-wheel" })) as { executionContextId?: number };
+    if (world.executionContextId === undefined) return null;
+    const made = (await session.send("Runtime.evaluate", {
+      expression: wheelObserverExpr(vertical), contextId: world.executionContextId, returnByValue: false, objectGroup,
+    })) as { result?: { objectId?: string }; exceptionDetails?: unknown };
+    objectId = made.result?.objectId;
+    if (made.exceptionDetails || objectId === undefined) { await release(); return null; }
+    const id = objectId;
+    return {
+      verdict: async (sign, seenMs, settleMs, maxMs) => {
+        try {
+          const r = (await session.send("Runtime.callFunctionOn", {
+            objectId: id, functionDeclaration: WHEEL_VERDICT_FN,
+            arguments: [{ value: sign }, { value: seenMs }, { value: settleMs }, { value: maxMs }],
+            awaitPromise: true, returnByValue: true,
+          })) as { result?: { value?: unknown }; exceptionDetails?: unknown };
+          const v = r.result?.value as WheelVerdict | undefined;
+          if (!r.exceptionDetails && v !== undefined) answered = true;
+          return !r.exceptionDetails && v !== undefined && typeof v.seen === "boolean" ? v : null;
+        } catch {
+          return null;
+        }
+      },
+      release,
+    };
+  } catch {
+    await release();
     return null;
   }
 }

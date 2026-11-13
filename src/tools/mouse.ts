@@ -1288,7 +1288,13 @@ export interface ScrollVerifyOutcome {
     | "wheel_overlay_intercepted"
     | "target_unreachable"
     // ADR-018 Phase 6 §2.3 — pixel-delta observation fallback
-    | "pixel_delta_observed";
+    | "pixel_delta_observed"
+    // internal #403 — the CDP road, under `status='unverifiable'`: the page's own handler took the wheel
+    // (preventDefault) and nothing on its path moved; or nothing on the path the browser hit can scroll on
+    // that axis (a closed shadow root, a page moved by transform, a frame of another site) and the
+    // document did not move either.
+    | "page_handled_wheel"
+    | "hit_path_unobservable";
   /** Axis on which silent drop / unverifiable was detected (for context). */
   axis?: "vertical" | "horizontal";
   /**
@@ -1448,6 +1454,18 @@ export function resolveScrollOutcome(
     };
   }
 
+  if (tier1 !== null && !tier1.scrolled && (tier1.reason === "page_handled_wheel" || tier1.reason === "hit_path_unobservable")) {
+    return {
+      outcome: {
+        status: "unverifiable",
+        delta: "unverifiable",
+        reason: tier1.reason,
+        axis: direction === "up" || direction === "down" ? "vertical" : "horizontal",
+      },
+      channel: dispatchChannel ?? "wheel_send_input",
+    };
+  }
+
   if (tier1 !== null && tier1.reason === "pixel_delta_observed") {
     return {
       outcome: {
@@ -1579,7 +1597,21 @@ export const scrollHandler = async ({
 
     // Phase 2: side-effect injection. Try Tier 1 (UIA) first; if dispatcher returns
     // null, fall through to the legacy nutjs SendInput path (Phase 1b lenient guard).
-    const tier1 = await dispatchScrollWheel(dest, { direction, notch: amount });
+    // internal #403 — on the CDP road the wheel goes where the caller pointed: Chromium scrolls the scroller
+    // under the wheel's point (dev/403-cdp-wheel-spike M1), and before this the point was dropped and the
+    // wheel always went to the page's centre. The dispatcher maps it onto the page and says when it could not.
+    const cdpFrame = dest.kind === "cdp" ? dest.frame : undefined;
+    const at = cdpFrame !== undefined && tx !== undefined && ty !== undefined ? { screenX: tx, screenY: ty, frame: cdpFrame } : undefined;
+    const tier1 = await dispatchScrollWheel(dest, { direction, notch: amount, ...(at !== undefined && { at }) });
+
+    // internal #403 — said only when the wheel was sent, at the centre instead of the caller's point.
+    if (tier1?.pointNotUsed !== undefined && tx !== undefined && ty !== undefined) {
+      scrollWarnings.push(
+        tier1.pointNotUsed === "off"
+          ? `The point (${tx}, ${ty}) is not on the page in that window (it is over the tab strip, the address bar, a DevTools pane, or outside the window), so the wheel was sent at the middle of the page. To scroll one part of the page, pass x/y inside that part.`
+          : `The point (${tx}, ${ty}) could not be placed on the page (the page area could not be read, or the page is pinch-zoomed or shown in device emulation), so the wheel was sent at the middle of the page. To scroll a particular element, scroll({ action: "to_element" }) or scroll({ action: "smart" }) reach it through the page.`,
+      );
+    }
 
     // ADR-040 PR ② (internal #396) — a Chromium window whose page is visible nowhere: posting would have
     // scrolled the window in front, so nothing was posted. Say so, and give the road on (invariant 8).
@@ -1603,7 +1635,7 @@ export const scrollHandler = async ({
           new Error("ScrollNotDelivered"),
           "scroll",
           {
-            hint: "CDP wheel dispatch or scroll observation returned no delta — Tier 4 SendInput suppressed for resolved CDP destinations",
+            hint: "Nothing was sent: the page could not be read through CDP, or the CDP wheel could not be dispatched (internal #403). Tier 4 SendInput is suppressed for resolved CDP destinations.",
             direction,
             ...(scrollWarnings.length > 0 && { hints: { warnings: scrollWarnings } }),
             verifyDelivery: {
@@ -1862,6 +1894,27 @@ export const scrollHandler = async ({
     // override the TMOL signal. The Tier 1 UIA / Tier 2 CDP success paths
     // (`tier1.scrolled === true`) are unaffected — they retain the existing
     // `evaluateScrollDelivery`-driven `outcome.status` flow below.
+    // internal #403 — the CDP wheel was sent at the point, and a scroller on the path the browser hit could
+    // still move that way, but none did.
+    if (tier1 !== null && tier1.channel === "cdp" && tier1.scrolled === false && tier1.sentNotMoved !== undefined) {
+      return failWith(
+        new Error("ScrollNotDelivered"),
+        "scroll",
+        {
+          hint: tier1.sentNotMoved === "room_not_moved"
+            ? "The wheel was sent to the page, and the part under the point could still scroll that way, but nothing moved (internal #403)."
+            : "The wheel was sent to the page, but what it landed on could not be read, and the page itself did not move (internal #403).",
+          direction,
+          ...(scrollWarnings.length > 0 && { hints: { warnings: scrollWarnings } }),
+          verifyDelivery: {
+            status: "not_delivered" as const,
+            channel: "cdp" as const,
+            reason: "target_unreachable" as const,
+          },
+        },
+      );
+    }
+
     if (
       tier1 !== null &&
       tier1.scrolled === false &&
@@ -1913,6 +1966,28 @@ export const scrollHandler = async ({
     // the caller is left holding "something repainted" and no next step —
     // strictly less useful than the error it replaced, which was not the point
     // of the change. Rides the advisory channel instead.
+    // internal #403 — the CDP road's honest answers, each with the road on.
+    if (outcome.status === "unverifiable" && outcome.reason === "page_handled_wheel") {
+      scrollWarnings.push(
+        "The page handled the wheel itself (its script cancelled the browser's scrolling), and nothing it could " +
+          "scroll moved, so whether it moved its view could not be seen. Check with a screenshot or browser_eval; " +
+          "to bring an element into view without the wheel, use scroll({action:'to_element'}) or scroll({action:'smart'}).",
+      );
+    }
+    if (outcome.status === "unverifiable" && outcome.reason === "hit_path_unobservable") {
+      scrollWarnings.push(
+        "The wheel was sent, but nothing that can scroll was found where it landed (an embedded frame from " +
+          "another site, a component that hides its insides, or a page that moves its content itself), and the " +
+          "page itself did not move. Check with a screenshot; to reach an element, use scroll({action:'to_element'}) " +
+          "or scroll({action:'smart'}).",
+      );
+    }
+    if (outcome.status === "delivered" && tier1?.atEnd === true) {
+      scrollWarnings.push(
+        `Nothing moved: what is under the point is already at its end in the ${direction} direction.`,
+      );
+    }
+
     if (outcome.status === "unverifiable" && outcome.reason === "pixel_delta_observed") {
       scrollWarnings.push(
         "The view under the pointer repainted, but no scrollbar could confirm a scroll — " +

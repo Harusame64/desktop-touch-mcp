@@ -1,0 +1,58 @@
+<!doctype html>
+<!-- internal #403 — fixture for a-cdp-wheel-is-judged-by-the-hit-path.test.ts. #mode picks the page:
+     panes      two side-by-side scroll containers (L | R), the document does not scroll
+     shadow-open / shadow-closed   R's scroller inside a shadow root (open / closed), content slotted
+     handled    L cancels the wheel (preventDefault) and moves nothing
+     against    L cancels the wheel and moves itself the other way (a page easing back)
+     transform  a pane that moves its content by transform on wheel, nothing scrolls
+     doc        a long page whose document scrolls
+     contain    L has overscroll-behavior:contain and stands at its end; the document has room
+     locked     body overflow:hidden on a tall page (a modal open); L is the modal's list, at its end
+     rtl        a right-to-left wide pane (W), scrolled to its right edge
+     lockedbare body overflow:hidden on a tall page, nothing else scrolls under the point
+     reverse    a column-reverse chat pane (C) at its bottom (scrollTop 0) -->
+<html><head><style>
+html,body{margin:0;height:100%}
+body.fixed{overflow:hidden}
+.box{position:absolute;top:0;width:50%;height:100%;overflow:auto}
+.box>div{height:5000px;background:linear-gradient(#fff,#ccc)}
+#L{left:0}#R{left:50%}
+#H{position:absolute;top:0;left:50%;width:50%;height:100%;display:none}
+#T{position:absolute;top:0;left:0;width:50%;height:100%;overflow:hidden;display:none}
+#long{height:8000px;display:none}
+#W{position:absolute;top:0;left:0;width:50%;height:100%;overflow:auto;display:none}
+#W>div{width:5000px;height:10px}
+</style></head><body>
+<div id="L" class="box"><div></div></div>
+<div id="R" class="box"><div></div></div>
+<my-host id="H"><span style="display:block;height:5000px">slotted</span></my-host>
+<div id="T"><div id="Tc" style="height:5000px">moved by transform</div></div>
+<div id="long"></div>
+<div id="W" dir="rtl"><div></div></div>
+<div id="C" style="position:absolute;top:0;left:0;width:50%;height:100%;overflow:auto;display:none;flex-direction:column-reverse"><div style="height:5000px;flex:none">chat</div></div>
+<script>
+var mode = location.hash.slice(1) || 'panes';
+var b = document.body;
+if (mode !== 'doc' && mode !== 'contain' && mode !== 'locked' && mode !== 'lockedbare') b.className = 'fixed';
+if (mode === 'shadow-open' || mode === 'shadow-closed') {
+  document.getElementById('R').style.display = 'none';
+  var h = document.getElementById('H'); h.style.display = 'block';
+  var sr = h.attachShadow({ mode: mode === 'shadow-open' ? 'open' : 'closed' });
+  sr.innerHTML = '<div id="inner" style="height:100%;overflow:auto"><slot></slot></div>';
+  window.__inner = sr.getElementById('inner');
+}
+if (mode === 'handled') document.getElementById('L').addEventListener('wheel', function (e) { e.preventDefault(); }, { passive: false });
+if (mode === 'against') { var L = document.getElementById('L'); L.scrollTop = 400; L.addEventListener('wheel', function (e) { e.preventDefault(); L.scrollTop -= 60; }, { passive: false }); }
+if (mode === 'transform') {
+  document.getElementById('L').style.display = 'none';
+  document.getElementById('T').style.display = 'block';
+  var y = 0;
+  document.getElementById('T').addEventListener('wheel', function (e) { e.preventDefault(); y += e.deltaY; document.getElementById('Tc').style.transform = 'translateY(' + (-y) + 'px)'; }, { passive: false });
+}
+if (mode === 'doc') { ['L', 'R'].forEach(function (id) { document.getElementById(id).style.display = 'none'; }); document.getElementById('long').style.display = 'block'; }
+if (mode === 'contain') { var L1 = document.getElementById('L'); L1.style.overscrollBehavior = 'contain'; document.getElementById('long').style.display = 'block'; L1.style.position = 'fixed'; L1.scrollTop = 1e9; }
+if (mode === 'locked') { document.getElementById('long').style.display = 'block'; b.style.overflow = 'hidden'; var L2 = document.getElementById('L'); L2.style.position = 'fixed'; L2.scrollTop = 1e9; }
+if (mode === 'lockedbare') { ['L', 'R'].forEach(function (id) { document.getElementById(id).style.display = 'none'; }); document.getElementById('long').style.display = 'block'; b.style.overflow = 'hidden'; }
+if (mode === 'reverse') { ['L', 'R'].forEach(function (id) { document.getElementById(id).style.display = 'none'; }); var C = document.getElementById('C'); C.style.display = 'flex'; C.scrollTop = 0; }
+if (mode === 'rtl') { ['L', 'R'].forEach(function (id) { document.getElementById(id).style.display = 'none'; }); var W = document.getElementById('W'); W.style.display = 'block'; W.scrollLeft = 0; }
+</script></body></html>
