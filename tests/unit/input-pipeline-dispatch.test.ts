@@ -2562,6 +2562,23 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
       await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1, at: at(600, 400), onPointNotUsed: told });
       expect(told.mock.calls.map((c) => c[0])).toEqual(["unreadable", "unreadable"]);
     });
+    it("nothing could be posted (PostMessage refused every chunk): the point note is taken back (codex on #982)", async () => {
+      shape(500);
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: false, scrolled: false });
+      win32PostMessageMock.mockReturnValue(false);
+      const told = vi.fn();
+      const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1, at: at(600, 180), onPointNotUsed: told });
+      expect(r).toBeNull();
+      expect(told.mock.calls.at(-1)).toEqual([undefined]);
+    });
+    it("no PostMessage and UIA failed: the point note is taken back", async () => {
+      shape(500);
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: false, scrolled: false });
+      nativeWin32Mock.win32PostMessage = undefined;
+      const told = vi.fn();
+      expect(await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1, at: at(600, 180), onPointNotUsed: told })).toBeNull();
+      expect(told.mock.calls.map((c) => c[0])).toEqual(["off", undefined]);
+    });
     it("no point: Tier 1 first, as before", async () => {
       shape(500);
       const r = await dispatchScrollWheel({ kind: "hwnd", hwnd: FRAME }, { direction: "down", notch: 1 });

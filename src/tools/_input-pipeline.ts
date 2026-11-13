@@ -1425,7 +1425,9 @@ export async function postWheelToHwnd(
 ): Promise<DispatchOutcome | null> {
   const postMessage = nativeWin32?.win32PostMessage;
   const getScrollInfo = nativeWin32?.win32GetScrollInfo;
-  if (typeof postMessage !== "function") return null;
+  // internal #404 — nothing is posted on these nulls, so no point note may say where a wheel went (codex on #982).
+  const notPosted = (): null => { params.onPointNotUsed?.(undefined); return null; };
+  if (typeof postMessage !== "function") return notPosted();
   // ADR-040 PR ② (internal #396) — a Chromium window takes a posted wheel at its point, not at the
   // window it is posted to: every post carries a point where this window's page is visible, or none is sent.
   const readNow = pagePointOrKeep(hwnd, params.at);
@@ -1732,7 +1734,7 @@ export async function postWheelToHwnd(
     // ever posted. Surface as null so the caller emits `target_unreachable`
     // rather than claiming a false-positive delivery from the mixed-version
     // observation-API-missing branch below (Opus PR #305 Round 3 P2-1).
-    if (!postedAny) return null;
+    if (!postedAny) return notPosted();
 
     await new Promise((r) => setTimeout(r, POSTMESSAGE_SETTLE_MS));
 
