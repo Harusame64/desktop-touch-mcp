@@ -745,7 +745,7 @@ fn find_scroll_pattern_in_subtree(
     // (win2, dev/408-hw), also on a page whose inner panes the posted wheel scrolled with the panel closed. So the
     // first pass passes over the subtree of every browser-UI Document. When that pass found nothing, passed over one,
     // and met no other Document, the window shows only the browser's own UI (an undocked DevTools named by the
-    // caller, chrome://settings in a tab): the search runs again without passing over it, as before.
+    // caller): the search runs again without passing over it, as before.
     let mut seen = BrowserUiSeen::default();
     if let Some(found) = find_scroll_pattern_dfs(
         ctx, elem, depth, target_hwnd, need_vertical, need_horizontal, node_budget, true, &mut seen,
