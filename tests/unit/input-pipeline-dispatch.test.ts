@@ -905,18 +905,18 @@ describe("ADR-018 Phase 3 — dispatchScrollWheel (Tier 2 CDP path)", () => {
       armed({ seen: true, defaultPrevented: false, moved: "div#list" });
       expect(await send()).toEqual({ scrolled: true, channel: "cdp", reason: "delivered_via_cdp" });
       expect(armWheelObserverMock).toHaveBeenCalledWith(true, "TAB-X", 9222);
-      expect(observerVerdict).toHaveBeenCalledWith(1, 250, 300, 800);
+      expect(observerVerdict).toHaveBeenCalledWith(1, 250, 300, 300);
       expect(observerRelease).toHaveBeenCalledTimes(1);
     });
 
     it("the observer is armed on the wheel's axis, and asked with its sign (up: -1; sideways: horizontal)", async () => {
       armed({ seen: true, defaultPrevented: false, moved: "document" });
       await send("up");
-      expect(observerVerdict).toHaveBeenCalledWith(-1, 250, 300, 800);
+      expect(observerVerdict).toHaveBeenCalledWith(-1, 250, 300, 300);
       armed({ seen: true, defaultPrevented: false, moved: "document" });
       await send("left");
       expect(armWheelObserverMock).toHaveBeenLastCalledWith(false, "TAB-X", 9222);
-      expect(observerVerdict).toHaveBeenCalledWith(-1, 250, 300, 800);
+      expect(observerVerdict).toHaveBeenCalledWith(-1, 250, 300, 300);
     });
 
     it("the page's handler took the wheel and nothing moved → unverifiable (page_handled_wheel)", async () => {
