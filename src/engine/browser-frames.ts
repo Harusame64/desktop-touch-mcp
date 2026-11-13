@@ -65,3 +65,13 @@ export function framesOfBrowserProcess<T extends { hwnd: bigint }>(
 export function isChromiumFrameOrUnknown(w: { className?: string }): boolean {
   return w.className === undefined || w.className === "" || w.className === "Chrome_WidgetWin_1";
 }
+
+/**
+ * internal #398 — an undocked DevTools window's title: "DevTools - <inspected url>", with no browser name at
+ * the end. A browser window showing a page titled "DevTools …" ends with its browser's name ("- Google Chrome",
+ * "- Microsoft Edge", "- Brave", …) and is not one (agy on #968; other Chromium browsers, gate 2 on #977).
+ */
+export function isUndockedDevToolsTitle(title: string): boolean {
+  return /^DevTools - /.test(title) &&
+    !/ - (Google Chrome( (Beta|Dev|Canary|for Testing))?|Microsoft[\u200b\s]*Edge( (Beta|Dev|Canary))?|Chromium|Brave|Vivaldi|Opera)$/u.test(title);
+}

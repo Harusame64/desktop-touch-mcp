@@ -10,6 +10,9 @@
  * enumeration's region) exactly for normal windows at 100 % and 150 %, and within 2 px for a maximized
  * window at 150 %. The cells below use those numbers. The scale is the frame's monitor's, never the
  * tab's devicePixelRatio, which includes the page zoom (codex on #837).
+ *
+ * Each click asks who is on top twice, before the cursor moves and again right before the press
+ * (internal #399), so the window asked about appears twice.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PointOwner } from "../../src/engine/point-owner.js";
@@ -152,7 +155,7 @@ describe("osClickAndVerify brings forward, and asks about, the tab's own window"
     await osClickAndVerify(1400, 400, null, "B7AE2D", 9222, (aim) => { asked.push(aim); return AIM; });
     expect(mocks.boundsAskedFor).toEqual(["B7AE2D"]);
     expect(mocks.focused).toEqual([RIGHT.hwnd]);
-    expect(asked).toEqual([RIGHT.hwnd]);
+    expect(asked).toEqual([RIGHT.hwnd, RIGHT.hwnd]);
   });
 
   it("the tab's window is already active: nothing is brought forward, and it is the one asked", async () => {
@@ -161,7 +164,7 @@ describe("osClickAndVerify brings forward, and asks about, the tab's own window"
     const asked: bigint[] = [];
     await osClickAndVerify(400, 400, null, "EB77BA", 9222, (aim) => { asked.push(aim); return AIM; });
     expect(mocks.focused).toEqual([]);
-    expect(asked).toEqual([LEFT.hwnd]);
+    expect(asked).toEqual([LEFT.hwnd, LEFT.hwnd]);
   });
 
   it("the scale comes from the frame's monitor: at 150 % the DIP bounds find the frame at 1.5×", async () => {
@@ -172,7 +175,7 @@ describe("osClickAndVerify brings forward, and asks about, the tab's own window"
     mocks.bounds = { left: 960, top: 50, width: 940, height: 700 };
     const asked: bigint[] = [];
     await osClickAndVerify(2000, 600, null, "B7AE2D", 9222, (aim) => { asked.push(aim); return AIM; });
-    expect(asked).toEqual([right150.hwnd]);
+    expect(asked).toEqual([right150.hwnd, right150.hwnd]);
   });
 
   it("without bounds from CDP it falls back to the title, as before: the active window with that title", async () => {
@@ -180,7 +183,7 @@ describe("osClickAndVerify brings forward, and asks about, the tab's own window"
     const asked: bigint[] = [];
     await osClickAndVerify(1400, 400, null, "B7AE2D", 9222, (aim) => { asked.push(aim); return AIM; });
     expect(mocks.boundsAskedFor).toEqual(["B7AE2D"]);
-    expect(asked).toEqual([LEFT.hwnd]);
+    expect(asked).toEqual([LEFT.hwnd, LEFT.hwnd]);
   });
 });
 
@@ -206,7 +209,7 @@ describe("the CDP browser's own frames, and bringing the tab forward when its bo
     mocks.bounds = { left: 0, top: 50, width: 900, height: 600 };
     const asked: bigint[] = [];
     await osClickAndVerify(400, 300, null, "B7AE2D", 9346, (aim) => { asked.push(aim); return AIM; });
-    expect(asked).toEqual([edgeA.hwnd]);
+    expect(asked).toEqual([edgeA.hwnd, edgeA.hwnd]);
     // CDP's raise was tried first; it failed in this cell, so the window was focused as before.
     expect(mocks.raised).toEqual(["B7AE2D"]);
     expect(mocks.focused).toEqual([edgeA.hwnd]);
@@ -227,7 +230,7 @@ describe("the CDP browser's own frames, and bringing the tab forward when its bo
     await osClickAndVerify(600, 450, null, "B7AE2D", 9222, (aim) => { asked.push(aim); return AIM; });
     expect(mocks.raised).toEqual(["B7AE2D"]);
     expect(mocks.focused).toEqual([]);
-    expect(asked).toEqual([chromeB.hwnd]);
+    expect(asked).toEqual([chromeB.hwnd, chromeB.hwnd]);
   });
 
   it("forceFocus (internal #305): when CDP raises nothing, the frame is focused by force, and still asked before the click", async () => {
@@ -243,7 +246,7 @@ describe("the CDP browser's own frames, and bringing the tab forward when its bo
     await osClickAndVerify(600, 450, null, "B7AE2D", 9346, (aim) => { asked.push(aim); return AIM; }, true);
     expect(mocks.focused).toEqual([edgeB.hwnd]);
     expect(mocks.forced).toEqual([true]);
-    expect(asked).toEqual([edgeB.hwnd]);
+    expect(asked).toEqual([edgeB.hwnd, edgeB.hwnd]);
   });
 
   it("when CDP raises nothing, the frame is focused as before and is the one asked (the click is refused if covered)", async () => {
@@ -259,7 +262,7 @@ describe("the CDP browser's own frames, and bringing the tab forward when its bo
     await osClickAndVerify(600, 450, null, "B7AE2D", 9346, (aim) => { asked.push(aim); return AIM; });
     expect(mocks.raised).toEqual(["B7AE2D"]);
     expect(mocks.focused).toEqual([edgeB.hwnd]);
-    expect(asked).toEqual([edgeB.hwnd]);
+    expect(asked).toEqual([edgeB.hwnd, edgeB.hwnd]);
     expect(mocks.forced).toEqual([false]); // forceFocus defaults off
   });
 
@@ -271,7 +274,7 @@ describe("the CDP browser's own frames, and bringing the tab forward when its bo
     mocks.browserPid = 15864;
     const asked: bigint[] = [];
     await osClickAndVerify(400, 300, null, "B7AE2D", 9346, (aim) => { asked.push(aim); return AIM; });
-    expect(asked).toEqual([edgeA.hwnd]);
+    expect(asked).toEqual([edgeA.hwnd, edgeA.hwnd]);
   });
 
   it("two maximized windows of one browser: the tab is brought forward and the frame that took the foreground is asked", async () => {
@@ -285,7 +288,7 @@ describe("the CDP browser's own frames, and bringing the tab forward when its bo
     const asked: bigint[] = [];
     await osClickAndVerify(400, 300, null, "EB77BA", 9222, (aim) => { asked.push(aim); return AIM; });
     expect(mocks.raised).toEqual(["EB77BA"]);
-    expect(asked).toEqual([behind.hwnd]);
+    expect(asked).toEqual([behind.hwnd, behind.hwnd]);
   });
 
   it("the front window still in front after the raise is no evidence: the title decides (codex P1 on #840)", async () => {
@@ -301,7 +304,7 @@ describe("the CDP browser's own frames, and bringing the tab forward when its bo
     const asked: bigint[] = [];
     await osClickAndVerify(400, 300, null, "EB77BA", 9222, (aim) => { asked.push(aim); return AIM; });
     expect(mocks.raised).toEqual(["EB77BA"]);
-    expect(asked).toEqual([behind.hwnd]);
+    expect(asked).toEqual([behind.hwnd, behind.hwnd]);
     expect(mocks.focused).toEqual([behind.hwnd]);
   });
 
@@ -313,7 +316,7 @@ describe("the CDP browser's own frames, and bringing the tab forward when its bo
     mocks.onRaise = () => {};
     const asked: bigint[] = [];
     await osClickAndVerify(400, 300, null, "EB77BA", 9222, (aim) => { asked.push(aim); return AIM; });
-    expect(asked).toEqual([front.hwnd]);
+    expect(asked).toEqual([front.hwnd, front.hwnd]);
     expect(mocks.focused).toEqual([]);
   });
 
@@ -325,7 +328,7 @@ describe("the CDP browser's own frames, and bringing the tab forward when its bo
     const asked: bigint[] = [];
     await osClickAndVerify(400, 300, null, "EB77BA", 9222, (aim) => { asked.push(aim); return AIM; });
     expect(mocks.raised).toEqual(["EB77BA"]);
-    expect(asked).toEqual([front.hwnd]);
+    expect(asked).toEqual([front.hwnd, front.hwnd]);
   });
 
   it("a process id no frame carries narrows nothing (the control)", () => {

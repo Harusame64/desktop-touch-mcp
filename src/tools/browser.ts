@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { mouse, Button } from "../engine/nutjs.js";
-import { framesAtWindowBounds, framesOfBrowserProcess, isChromiumFrameOrUnknown } from "../engine/browser-frames.js";
+import { framesAtWindowBounds, framesOfBrowserProcess, isChromiumFrameOrUnknown, isUndockedDevToolsTitle } from "../engine/browser-frames.js";
 import { findTabFrame, alignToPageSurface, aimFromCoords, aimFromViewportRect, type PageAim } from "../engine/page-aim.js";
 import { PAGE_RWH_CLASS } from "../engine/page-surface.js";
 import { assertCoordinateReachable } from "../engine/reachable-bounds.js";
@@ -851,11 +851,19 @@ export function browserPointCoveredFailure(
       : cover.covered === "owned"
         ? `a window of the browser itself (a panel, popup or dialog), ${cover.title ? `"${cover.title}" ` : ""}(hwnd ${cover.hwnd})`
         : `another window, ${cover.title ? `"${cover.title}" ` : ""}(hwnd ${cover.hwnd})`;
+  const devtools = cover.covered !== "excluded" && isUndockedDevToolsTitle(cover.title) ? String(cover.hwnd) : undefined;
   return failCode(
     "BrowserPointCovered",
     `browser_click: ${what} is on top of the element's point (${x}, ${y}), so the click would land on it. Nothing was clicked.`,
     {
-      suggest: [
+      suggest: devtools !== undefined
+        ? [
+          // internal #399 — an undocked DevTools window of the browser can come back over the page after the
+          // browser window is brought forward, so bringing the browser forward (forceFocus) is not the way past it.
+          `The window on top is the browser's DevTools, undocked. Close it: keyboard({ action: "press", keys: "f12", hwnd: "${devtools}" }), or dock it into the browser window: keyboard({ action: "press", keys: "ctrl+shift+d", hwnd: "${devtools}" }), or move it off the point; then retry browser_click.`,
+          "To enter text, browser_fill sets the value through the page and does not use an OS click.",
+        ]
+        : [
         "Close or move what is on top (a panel, popup or dialog of the browser is dismissed in the browser), then retry browser_click.",
         // internal #305 — Windows can keep another app's window in front of the browser (an Edge window
         // behind Chrome). Forcing is opt-in (the user's decision 2026-10-28), so the refusal says how.
@@ -864,7 +872,7 @@ export function browserPointCoveredFailure(
           ? ["If Windows keeps the other window in front of the browser, retry with forceFocus: true to bring the browser window forward by force (AttachThreadInput). The point is checked again before clicking."]
           : []),
         "To enter text, browser_fill sets the value through the page and does not use an OS click.",
-      ],
+        ],
       context: { ...ctx, at: { x, y }, coveredBy: cover.covered },
     },
   );
@@ -998,7 +1006,9 @@ export async function osClickAndVerify(
   // node would be reported back as `delivered`. Checked before the cursor moves
   // and before focusing the browser, so a refused click has no side effect. (The
   // covered-point refusal below comes after the focus, so the browser may have
-  // been brought forward; the cursor has still not moved.)
+  // been brought forward; the cursor has still not moved. The second covered-point
+  // check, right before the press (internal #399), comes after the cursor moved and
+  // the probe was installed: a refusal there has moved the cursor, never pressed.)
   // ADR-040 — the point on the page surface, found without side effects, so the reachability check below
   // still runs before anything is focused (ADR-029). A covered window has no surface yet; the formula's
   // point is checked now and the surface is read again once the window is in front.
@@ -1073,6 +1083,20 @@ export async function osClickAndVerify(
   // Probe installed AFTER the cursor move (Codex P1). Best-effort: install/read
   // failures never fail the click — they degrade to `unverifiable`.
   const probe = await installClickProbe(probeSelector, tabId, port);
+
+  // internal #399 — asked again right before the press. win2 (dev/399-p10) saw the check above answer
+  // "the browser window" with an undocked DevTools window of the same browser lying at the same place
+  // behind it, and in a real browser_click (dev/967-hw P10) the press then went into DevTools and the
+  // page got nothing, answered ok. The window order changed between the check and the press (the
+  // cursor move and the probe install lie between them). The same rule as above, so nothing that
+  // clicks now is refused unless another window really is on top at the moment of the press.
+  if (browserHwnd !== undefined) {
+    const coverNow = browserPointCover(pointOwner(browserHwnd, x, y));
+    if (coverNow !== undefined) {
+      if (probe.installed) await readClickProbe(tabId, port);
+      return { ...coverNow, at: { x, y } };
+    }
+  }
 
   await mouse.click(Button.LEFT);
 
