@@ -25,10 +25,10 @@ const deps = (over: Partial<WheelPointDeps> & { iconic?: boolean; cloaked?: bool
 
 describe("wheelPointOnPage", () => {
   it("the page's centre when it shows", () => {
-    expect(wheelPointOnPage(PAGE, deps())).toEqual({ kind: "point", frame: FRAME, point: { x: 600, y: 450 } });
+    expect(wheelPointOnPage(PAGE, deps())).toEqual({ kind: "point", frame: FRAME, point: { x: 600, y: 450 }, pageWindows: [PAGE] });
   });
   it("a visible part when the centre is covered", () => {
-    expect(wheelPointOnPage(FRAME, deps({ visibleFromX: 900 }))).toEqual({ kind: "point", frame: FRAME, point: { x: 1000, y: 210 } });
+    expect(wheelPointOnPage(FRAME, deps({ visibleFromX: 900 }))).toEqual({ kind: "point", frame: FRAME, point: { x: 1000, y: 210 }, pageWindows: [PAGE] });
   });
   it("a strip along the right edge, narrower than the inner grid: found (gate 2 on #969)", () => {
     // Visible only from x 1075 (97.5 % of the page): the 0.98 line, x 1080.
@@ -72,19 +72,19 @@ describe("wheelPointOnPage with the caller's point (internal #404)", () => {
   it("on the visible page: that point, nothing else asked", () => {
     const asked: Array<[number, number]> = [];
     const d = deps({ pointAt: (x, y) => { asked.push([x, y]); return { child: PAGE, root: FRAME }; } });
-    expect(wheelPointOnPage(FRAME, d, { x: 250, y: 600 })).toEqual({ kind: "point", frame: FRAME, point: { x: 250, y: 600 } });
+    expect(wheelPointOnPage(FRAME, d, { x: 250, y: 600 })).toEqual({ kind: "point", frame: FRAME, point: { x: 250, y: 600 }, pageWindows: [PAGE] });
     expect(asked).toEqual([[250, 600]]);
   });
   it("on the page's edges: the first row and column count, the ones past them do not", () => {
-    expect(wheelPointOnPage(FRAME, deps(), { x: 100, y: 200 })).toEqual({ kind: "point", frame: FRAME, point: { x: 100, y: 200 } });
+    expect(wheelPointOnPage(FRAME, deps(), { x: 100, y: 200 })).toEqual({ kind: "point", frame: FRAME, point: { x: 100, y: 200 }, pageWindows: [PAGE] });
     expect(wheelPointOnPage(FRAME, deps(), { x: 1100, y: 450 })).toMatchObject({ point: { x: 600, y: 450 }, pointNotUsed: "off" });
     expect(wheelPointOnPage(FRAME, deps(), { x: 600, y: 700 })).toMatchObject({ point: { x: 600, y: 450 }, pointNotUsed: "off" });
   });
   it("off the page (the tab strip): the page's own point, and why", () => {
-    expect(wheelPointOnPage(FRAME, deps(), { x: 400, y: 150 })).toEqual({ kind: "point", frame: FRAME, point: { x: 600, y: 450 }, pointNotUsed: "off" });
+    expect(wheelPointOnPage(FRAME, deps(), { x: 400, y: 150 })).toEqual({ kind: "point", frame: FRAME, point: { x: 600, y: 450 }, pageWindows: [PAGE], pointNotUsed: "off" });
   });
   it("covered there by another window, visible elsewhere: a visible point, and why", () => {
-    expect(wheelPointOnPage(FRAME, deps({ visibleFromX: 900 }), { x: 300, y: 450 })).toEqual({ kind: "point", frame: FRAME, point: { x: 1000, y: 210 }, pointNotUsed: "covered" });
+    expect(wheelPointOnPage(FRAME, deps({ visibleFromX: 900 }), { x: 300, y: 450 })).toEqual({ kind: "point", frame: FRAME, point: { x: 1000, y: 210 }, pageWindows: [PAGE], pointNotUsed: "covered" });
   });
   it("over a DevTools pane of this window (its own page window): off, not covered", () => {
     const d = deps({ pointAt: (x) => (x < 500 ? { child: 4n, root: FRAME } : { child: PAGE, root: FRAME }), classOf: (h) => (h === 4n ? "Chrome_RenderWidgetHostHWND" : "Chrome_WidgetWin_1") });
@@ -109,7 +109,7 @@ describe("wheelPointOnPage with the caller's point (internal #404)", () => {
     expect(wheelPointOnPage(FRAME, deps({ classOf: () => "XLMAIN" }), { x: 300, y: 450 })).toEqual({ kind: "keep" });
   });
   it("fractions are rounded to the pixel asked", () => {
-    expect(wheelPointOnPage(FRAME, deps(), { x: 250.4, y: 600.6 })).toEqual({ kind: "point", frame: FRAME, point: { x: 250, y: 601 } });
+    expect(wheelPointOnPage(FRAME, deps(), { x: 250.4, y: 600.6 })).toEqual({ kind: "point", frame: FRAME, point: { x: 250, y: 601 }, pageWindows: [PAGE] });
   });
 });
 

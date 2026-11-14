@@ -57,6 +57,12 @@ pub struct ScrollByWheelAtHwndOptions {
     pub hwnd: String,
     pub wheel_delta_y: i32,
     pub wheel_delta_x: i32,
+    /// internal #409 — a Chromium page's own windows (`Chrome_RenderWidgetHostHWND`, as decimal strings) and a screen
+    /// point inside one of them. Given all three, only a Document drawn in one of these windows that holds the point
+    /// is scrolled (`find_page_document_scroll`); otherwise the search is the one below, as before.
+    pub page_windows: Option<Vec<String>>,
+    pub point_x: Option<i32>,
+    pub point_y: Option<i32>,
 }
 
 /// ADR-019 MVP-1 (Stage 1) — read-only sibling of `ScrollByWheelAtHwndOptions`.
@@ -379,6 +385,24 @@ fn scroll_by_wheel_at_hwnd_impl(
     // scrollable on the needed axis, for symmetry with Phase B).
     let need_vertical = opts.wheel_delta_y != 0;
     let need_horizontal = opts.wheel_delta_x != 0;
+
+    // internal #409 — the caller placed the wheel on a Chromium page: only that page's Document may move.
+    if let Some(page) = page_at_point(opts) {
+        let mut dfs_budget = MAX_SCROLL_DFS_NODES;
+        let mut best: Option<(u32, IUIAutomationScrollPattern)> = None;
+        find_page_document_scroll(
+            ctx, &elem, MAX_SEARCH_DEPTH, hwnd_i64 as isize, &page,
+            need_vertical, need_horizontal, &mut dfs_budget, &mut best,
+        );
+        return match best {
+            Some((_, scroll)) => apply_scroll_with_pattern(&scroll, opts),
+            None => Ok(ScrollResult {
+                ok: false,
+                scrolled: false,
+                error: Some("No Document of the page's window at the point has a ScrollPattern".into()),
+            }),
+        };
+    }
 
     // Phase A: walk from the element itself up through ancestors looking for
     // the first ScrollPattern. Stop at the desktop root (CompareElements true)
@@ -758,6 +782,142 @@ fn find_scroll_pattern_in_subtree(
     None
 }
 
+/// internal #409 — a Chromium page's own windows and a screen point inside one of them.
+struct PageAtPoint {
+    windows: Vec<isize>,
+    x: i32,
+    y: i32,
+}
+
+/// internal #409 — the page and point the caller gave, or `None` when any part is missing or unreadable (the search is
+/// then the one it was before).
+fn page_at_point(opts: &ScrollByWheelAtHwndOptions) -> Option<PageAtPoint> {
+    let (Some(list), Some(x), Some(y)) = (opts.page_windows.as_ref(), opts.point_x, opts.point_y) else {
+        return None;
+    };
+    let windows: Vec<isize> = list
+        .iter()
+        .map(|w| w.parse::<i64>().ok().filter(|h| *h != 0).map(|h| h as isize))
+        .collect::<Option<Vec<_>>>()?;
+    if windows.is_empty() {
+        return None;
+    }
+    Some(PageAtPoint { windows, x, y })
+}
+
+/// internal #409 — the window a UIA element is drawn in: itself when it carries one, else the nearest RawView ancestor
+/// that does. A web Document's is the `Chrome_RenderWidgetHostHWND` its page is drawn in: one step up for a page,
+/// DevTools or a side panel, 3–13 for an out-of-process iframe or the PDF viewer's inner Documents, none in Chrome 120,
+/// where the Document is that window's own element (win2, dev/409-spike rounds 2 and 4: 43 of 43 and every Chrome
+/// 120 cell). `None` when the walk fails or runs past `MAX_SEARCH_DEPTH` steps.
+fn drawn_in_window(ctx: &UiaContext, elem: &IUIAutomationElement) -> Option<isize> {
+    let raw = unsafe { ctx.automation.RawViewWalker().ok()? };
+    let mut current = elem.clone();
+    for _ in 0..MAX_SEARCH_DEPTH {
+        let h = unsafe { current.CurrentNativeWindowHandle().ok()? }.0 as isize;
+        if h != 0 {
+            return Some(h);
+        }
+        current = unsafe { raw.GetParentElement(&current).ok()? };
+    }
+    None
+}
+
+fn rect_holds(r: &windows::Win32::Foundation::RECT, x: i32, y: i32) -> bool {
+    x >= r.left && x < r.right && y >= r.top && y < r.bottom
+}
+
+/// internal #409 — the frame-wide search took whatever ScrollPattern came first: a docked DevTools pane, a side panel,
+/// an extension's panel, the New Tab page's customize button, the PDF viewer's thumbnails. It scrolled that and
+/// answered delivered while the page stayed still (win2, dev/409-spike). With a page and point, this search keeps only
+/// a Document drawn in one of the page's windows (`drawn_in_window`) that holds the point and scrolls on the needed
+/// axes, and the deepest such Document wins: the PDF viewer's body Document, inside the page's.
+///
+/// What it does not do:
+/// - It does not go down from the page's window (`ElementFromHandle`). In Chrome's immersive reading mode the hidden
+///   page is drawn in a window at the same rect, and a Document reached that way scrolled by both read-back and the
+///   page's own position while nothing on screen moved (round 2). Only what the frame's own tree shows is a candidate.
+/// - It does not use a descendant's ScrollPattern. An inner box of the page is moved by the posted wheel at the
+///   point (Tier 3), which Chromium hit-tests, so it is left to that.
+/// - A Document drawn in another window is passed over with its whole subtree: what is nested in it is drawn there
+///   too. One whose RawView ancestor is not the window its RuntimeId names (once in Chrome 157's split view, round 4)
+///   is passed over, and Tier 3 posts at the point instead.
+#[allow(clippy::too_many_arguments)]
+fn find_page_document_scroll(
+    ctx: &UiaContext,
+    elem: &IUIAutomationElement,
+    depth: u32,
+    target_hwnd: isize,
+    page: &PageAtPoint,
+    need_vertical: bool,
+    need_horizontal: bool,
+    node_budget: &mut u32,
+    best: &mut Option<(u32, IUIAutomationScrollPattern)>,
+) {
+    if depth == 0 || *node_budget == 0 {
+        return;
+    }
+    *node_budget = node_budget.saturating_sub(1);
+    unsafe {
+        let is_document = elem
+            .CurrentControlType()
+            .map(|ct| ct.0 == UIA_DocumentControlTypeId.0)
+            .unwrap_or(false);
+        if is_document {
+            match drawn_in_window(ctx, elem) {
+                Some(h) if page.windows.contains(&h) => {}
+                _ => return,
+            }
+            let holds = elem
+                .CurrentBoundingRectangle()
+                .map(|r| rect_holds(&r, page.x, page.y))
+                .unwrap_or(false);
+            if holds
+                && let Ok(pat) = elem.GetCurrentPattern(UIA_ScrollPatternId)
+                && let Ok(scroll) = pat.cast::<IUIAutomationScrollPattern>()
+            {
+                let v_ok = !need_vertical
+                    || scroll.CurrentVerticallyScrollable().map(|b| b.0 != 0).unwrap_or(false);
+                let h_ok = !need_horizontal
+                    || scroll.CurrentHorizontallyScrollable().map(|b| b.0 != 0).unwrap_or(false);
+                // `depth` counts down, so a smaller one is deeper; on a tie the first found stays.
+                if v_ok && h_ok && best.as_ref().is_none_or(|(d, _)| depth < *d) {
+                    *best = Some((depth, scroll));
+                }
+            }
+        }
+        let Ok(first) = ctx.walker.GetFirstChildElement(elem) else { return };
+        let mut child: Option<IUIAutomationElement> = Some(first);
+        while let Some(c) = child {
+            // The same window boundary as `find_scroll_pattern_dfs` (P2-1).
+            let child_hwnd = match c.CurrentNativeWindowHandle() {
+                Err(_) => {
+                    child = ctx.walker.GetNextSiblingElement(&c).ok();
+                    continue;
+                }
+                Ok(h) => h.0 as isize,
+            };
+            if child_hwnd != 0
+                && child_hwnd != target_hwnd
+                && !IsChild(
+                    HWND(target_hwnd as *mut std::ffi::c_void),
+                    HWND(child_hwnd as *mut std::ffi::c_void),
+                ).as_bool()
+            {
+                child = ctx.walker.GetNextSiblingElement(&c).ok();
+                continue;
+            }
+            find_page_document_scroll(
+                ctx, &c, depth - 1, target_hwnd, page, need_vertical, need_horizontal, node_budget, best,
+            );
+            if *node_budget == 0 {
+                return;
+            }
+            child = ctx.walker.GetNextSiblingElement(&c).ok();
+        }
+    }
+}
+
 /// internal #407 — what the DFS has met so far.
 #[derive(Default)]
 struct DevToolsSeen {
@@ -977,6 +1137,42 @@ mod tests {
         assert!(!is_devtools_url("http://127.0.0.1:8080/wheel-hit-path.html#panes"));
         assert!(!is_devtools_url(""));
         assert!(!is_devtools_url("chrome://settings"));
+    }
+
+    /// internal #409 — the page search runs only with every part given and readable; anything else keeps the old one.
+    #[test]
+    fn a_page_and_point_are_read_only_when_whole() {
+        use super::{page_at_point, ScrollByWheelAtHwndOptions};
+        let opts = |w: Option<Vec<&str>>, x: Option<i32>, y: Option<i32>| ScrollByWheelAtHwndOptions {
+            hwnd: "1".into(),
+            wheel_delta_y: 120,
+            wheel_delta_x: 0,
+            page_windows: w.map(|v| v.into_iter().map(String::from).collect()),
+            point_x: x,
+            point_y: y,
+        };
+        let p = page_at_point(&opts(Some(vec!["49482696", "105384926"]), Some(423), Some(540))).unwrap();
+        assert_eq!(p.windows, vec![49482696, 105384926]);
+        assert_eq!((p.x, p.y), (423, 540));
+        assert!(page_at_point(&opts(None, Some(1), Some(1))).is_none());
+        assert!(page_at_point(&opts(Some(vec!["5"]), None, Some(1))).is_none());
+        assert!(page_at_point(&opts(Some(vec!["5"]), Some(1), None)).is_none());
+        assert!(page_at_point(&opts(Some(vec![]), Some(1), Some(1))).is_none());
+        // One unreadable or null window makes the whole list unreadable, rather than a shorter list.
+        assert!(page_at_point(&opts(Some(vec!["5", "x"]), Some(1), Some(1))).is_none());
+        assert!(page_at_point(&opts(Some(vec!["5", "0"]), Some(1), Some(1))).is_none());
+    }
+
+    #[test]
+    fn a_rect_holds_its_top_left_but_not_its_far_edges() {
+        use super::rect_holds;
+        let r = windows::Win32::Foundation::RECT { left: 108, top: 187, right: 737, bottom: 892 };
+        assert!(rect_holds(&r, 108, 187));
+        assert!(rect_holds(&r, 423, 540));
+        assert!(!rect_holds(&r, 737, 540));
+        assert!(!rect_holds(&r, 423, 892));
+        assert!(!rect_holds(&r, 107, 540));
+        assert!(!rect_holds(&r, 1015, 540));
     }
 
     use super::wheel_step_percent;

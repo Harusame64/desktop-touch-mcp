@@ -2091,10 +2091,20 @@ export async function dispatchScrollWheel(
       const scrollByWheel = nativeUia?.uiaScrollByWheelAtHwnd;
       if (typeof scrollByWheel === "function") {
         const wheelDelta = wheelDeltaForNotch(params);
+        // internal #409 — on a Chromium page, Tier 1 may move only a Document drawn in the page's own window at the
+        // point Tier 3 would post to. Searched over the whole frame, it took a docked DevTools pane, a side panel, an
+        // extension's panel, the New Tab page's customize button or the PDF viewer's thumbnails first, and answered
+        // delivered while the page stayed still (win2, dev/409-spike rounds 1–4). When none is there it answers
+        // ok:false, and Tier 3 posts at that same point.
         const result = (await scrollByWheel({
           hwnd: dest.hwnd.toString(),
           wheelDeltaY: wheelDelta.y,
           wheelDeltaX: wheelDelta.x,
+          ...(pagePoint.kind === "point" && {
+            pageWindows: pagePoint.pageWindows.map((h) => h.toString()),
+            pointX: pagePoint.point.x,
+            pointY: pagePoint.point.y,
+          }),
         })) ?? { ok: false, scrolled: false };
         // ADR-035 Phase 1 — recorded from the RESULT, not before the call: the
         // native side returns `ok:false` without ever reaching

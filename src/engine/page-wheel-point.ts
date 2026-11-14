@@ -29,6 +29,12 @@ export type WheelPagePoint =
       kind: "point";
       frame: bigint;
       point: { x: number; y: number };
+      /**
+       * internal #409 — the page's own windows (the surface's `rwhs`), the point lies in one of them. Tier 1 may scroll
+       * only a Document drawn in one of these, so a DevTools pane, a side panel or the PDF viewer's thumbnails, drawn
+       * in other windows or away from the point, are not what moves.
+       */
+      pageWindows: bigint[];
       /** internal #404 — the caller's point was given and this is not it. Absent when it is, or none was given. */
       pointNotUsed?: PointNotUsed;
     }
@@ -96,13 +102,13 @@ export function wheelPointOnPage(hwnd: bigint, deps: WheelPointDeps, preferred?:
     else {
       const at = deps.pointAt(px, py);
       if (at === undefined) pointNotUsed = "unreadable";
-      else if (shows(at)) return { kind: "point", frame, point: { x: px, y: py } };
+      else if (shows(at)) return { kind: "point", frame, point: { x: px, y: py }, pageWindows: surface.rwhs };
       // Over this window but not its page (a DevTools pane drawn in its own page window), or another window.
       else pointNotUsed = at !== null && at.root === frame ? "off" : "covered";
     }
   }
   const withWhy = (point: { x: number; y: number }): WheelPagePoint =>
-    ({ kind: "point", frame, point, ...(pointNotUsed !== undefined && { pointNotUsed }) });
+    ({ kind: "point", frame, point, pageWindows: surface.rwhs, ...(pointNotUsed !== undefined && { pointNotUsed }) });
   let asked = 0;
   for (const [fx, fy] of WHEEL_POINT_FRACTIONS) {
     const point = { x: Math.round(x + width * fx), y: Math.round(y + height * fy) };
