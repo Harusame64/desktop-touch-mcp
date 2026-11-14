@@ -953,8 +953,9 @@ fn page_windows_in_contents_impl(ctx: &UiaContext, frame: &str) -> napi::Result<
     collect_document_windows(ctx, &contents, MAX_SEARCH_DEPTH, &mut budget, &mut windows);
     // A crashed tab's view is a Document drawn in the frame itself: its page window is gone, and what is left in the
     // contents area (a docked DevTools) is not the page (win2, dev/409-spike rounds 2–4, Chrome 157 and Edge 157).
-    // Then nothing is said, and the page stays as unplaced as before.
-    if windows.contains(&(raw as isize)) {
+    // Then nothing is said, and the page stays as unplaced as before. So is it when the walk ran out before the end,
+    // where such a view may lie unseen, or found no Document at all (agy on #986).
+    if budget == 0 || windows.is_empty() || windows.contains(&(raw as isize)) {
         return Ok(None);
     }
     Ok(Some(windows.into_iter().map(|h| (h as i64).to_string()).collect()))

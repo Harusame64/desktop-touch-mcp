@@ -2529,6 +2529,16 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
       }
     });
 
+    it("the read does not answer within 500 ms: as before, without waiting for it (agy on #986)", async () => {
+      besidePanel();
+      uiaPageWindowsInContentsMock.mockImplementation(() => new Promise(() => {}));
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+      const t0 = Date.now();
+      await dispatchScrollWheel(hwndDest, { direction: "down", notch: 1 });
+      expect(Date.now() - t0).toBeLessThan(2000);
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledWith({ hwnd: FRAME.toString(), wheelDeltaY: 120, wheelDeltaX: 0 });
+    });
+
     it("a placed page does not ask the contents area", async () => {
       shape(0);
       uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
