@@ -53,16 +53,15 @@ The last nerve carries the answer back. Once an action has been sent, the agent 
 
 The 2.4 releases check where a touch lands. A call that missed now refuses with nothing done, instead of answering `ok: true`.
 
-- **Typing that would not land is refused** (2.4.0). A line break is typed as Enter. A `keyboard` `type` of a space or line break while the focus is on a button refuses with `FocusedControlTakesNoText`. A `window_dock` of a window that stays maximized refuses too.
+- **Typing that would not land is refused** (2.4.0). A line break typed by keystroke is a plain Enter, not Ctrl+Enter. A `keyboard` `type` of a space or line break sent by keystroke while the focus is on a button refuses with `FocusedControlTakesNoText`; a paste is sent as before, with a warning. A `window_dock` of a window that stays maximized refuses too.
 - **Pastes into Windows Terminal are checked** (2.4.1). `terminal` and `keyboard` refuse a tab that is split, is not a terminal, changed on the way, or is the one the client runs in (`WindowsTerminalTargetUnsafe`).
-- **Scrolls and clicks in Chrome and Edge land on the page** (2.4.2). `scroll` moves the page, not DevTools, a side panel, a PDF's thumbnails or another window's page. `browser_click` refuses when its point would land on DevTools or another pane, and it hits the element with DevTools or a side bar open.
-- **A first start installs with PowerShell 7's module path set** (2.4.3). The launcher no longer stops with nothing unpacked when the client was started from a PowerShell 7 prompt.
+- **Scrolls and clicks in Chrome and Edge land on the page** (2.4.2). `scroll` moves the page, not DevTools, a side panel, a PDF's thumbnails or another window's page, in the layouts the release notes list. `browser_click` refuses when its point would land on DevTools or another pane, and it hits the element with DevTools or a side panel open.
+- **A first start installs with PowerShell 7's module path set** (2.4.3). The launcher no longer stops with nothing unpacked, on a first install or an upgrade, when the client was started from a PowerShell 7 prompt or PowerShell 7's module path was saved for the user.
 
 ## Still being built
 
-This is a nervous system under construction, and it still has numb spots and false alarms. A few are written down in the release notes:
+This is a nervous system under construction, and it still has numb spots and false alarms. A few are known:
 
-- `desktop_discover` aimed at a Store app's frame window by its handle, rather than by its title, is not yet tested for suspension.
 - A control whose label changes between discover and act (a `Play` button that turned into `Pause`) is refused, though it is the same control.
 - With two pages side by side in one window (a split view), a `scroll` without a point can move the pane that is not active.
 

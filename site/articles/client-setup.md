@@ -5,9 +5,9 @@ How to register `desktop-touch-mcp` in common MCP clients.
 This page is intentionally practical.  
 If you already know what MCP is, you should be able to copy one snippet, paste it into your client config, and move on.
 
-For the public site, the simplest honest scope note is:
+Scope:
 
-> **Windows 10 and 11 only. macOS and Linux are not supported.**
+> **The full toolset runs on Windows 10 and 11, and the examples assume one. On Apple Silicon Macs (macOS 14 or later) the same stdio command starts a [four-tool preview](https://github.com/Harusame64/desktop-touch-mcp#macos-preview); HTTP is not available there yet. Linux is not supported.**
 
 ---
 
@@ -25,7 +25,7 @@ npx -y @harusame64/desktop-touch-mcp
 
 ### HTTP
 
-Use this when your client prefers a URL-based MCP registration.
+Use this when your client prefers a URL-based MCP registration (Windows only for now).
 
 ```bash
 npx -y @harusame64/desktop-touch-mcp --http
@@ -57,6 +57,7 @@ npx -y @harusame64/desktop-touch-mcp --http --port 8080
 - Use `HTTP` when the client asks for a server URL
 - Use `HTTP` for ChatGPT Developer mode
 - Use `stdio` first if you want the simplest local setup
+- Prefer `stdio` where you can: typing into Windows Terminal through `desktop_act` asks you first, and that question reaches you only from a client that supports MCP elicitation (the client asking you on the server's behalf) over stdio
 
 ---
 
@@ -266,6 +267,37 @@ Then in ChatGPT:
 4. Add the local MCP endpoint
 
 If you are writing public setup docs, it is safer to describe ChatGPT as an `HTTP-first` client.
+
+---
+
+## Cursor
+
+Use `~/.cursor/mcp.json` (`%USERPROFILE%\.cursor\mcp.json` on Windows), or `.cursor/mcp.json` in a project. This follows Cursor's own `mcp.json` shape. Cursor is not yet among the clients this project has manually checked against.
+
+### Stdio
+
+```json
+{
+  "mcpServers": {
+    "desktop-touch": {
+      "command": "npx",
+      "args": ["-y", "@harusame64/desktop-touch-mcp"]
+    }
+  }
+}
+```
+
+### HTTP
+
+```json
+{
+  "mcpServers": {
+    "desktop-touch": {
+      "url": "http://127.0.0.1:23847/mcp"
+    }
+  }
+}
+```
 
 ---
 

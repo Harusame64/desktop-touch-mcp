@@ -64,8 +64,8 @@
               <h2>If the client can launch, use stdio. If it asks for a URL, use HTTP.</h2>
               <div class="three-up">
                 <div class="mini-card"><h3>Use stdio</h3><p>Claude Code, Codex, Gemini CLI, and many local clients are comfortable launching a local command.</p></div>
-                <div class="mini-card"><h3>Use HTTP</h3><p>VS Code, URL-based clients, and ChatGPT Developer mode fit better with a local endpoint.</p></div>
-                <div class="mini-card"><h3>Prefer stdio when you can</h3><p>Some features need it: typing into Windows Terminal through <code>desktop_act</code> asks you first, and that question reaches you only from a client with elicitation over stdio.</p></div>
+                <div class="mini-card"><h3>Use HTTP</h3><p>Clients that only take a server URL, such as ChatGPT Developer mode, fit better with a local endpoint.</p></div>
+                <div class="mini-card"><h3>Prefer stdio when you can</h3><p>Some features need it: typing into Windows Terminal through <code>desktop_act</code> asks you first, and that question reaches you only from a client that supports MCP elicitation (the client asking you on the server's behalf) over stdio.</p></div>
               </div>
             </section>
 
@@ -194,7 +194,7 @@ url = "http://127.0.0.1:23847/mcp"</pre>
 
             <section class="article-card">
               <span class="label">Cursor</span>
-              <h2>Use <code>~/.cursor/mcp.json</code>, or <code>.cursor/mcp.json</code> in a project.</h2>
+              <h2>Use <code>~/.cursor/mcp.json</code> (<code>%USERPROFILE%\.cursor\mcp.json</code> on Windows), or <code>.cursor/mcp.json</code> in a project.</h2>
               <p>Stdio:</p>
               <pre>{
   "mcpServers": {
@@ -212,7 +212,7 @@ url = "http://127.0.0.1:23847/mcp"</pre>
     }
   }
 }</pre>
-              <p>This follows Cursor's own <code>mcp.json</code> shape; Cursor is not yet in the list of clients checked by hand above.</p>
+              <p>This follows Cursor's own <code>mcp.json</code> shape. Cursor is not yet among the clients this project has manually checked against.</p>
             </section>
 
             <section class="article-card">

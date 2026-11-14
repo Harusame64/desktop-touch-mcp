@@ -75,7 +75,7 @@
     classDef stable fill:#e8f1ff,stroke:#3b6db3,color:#183257;
     classDef fresh fill:#d7f2ed,stroke:#1f8a70,color:#0e3b30;
     class A,B stable;
-    class C,D,E,F,G fresh;</pre>
+    class C,D,E,F,G,H,I fresh;</pre>
             </div>
           </div>
         </section>
@@ -132,19 +132,18 @@
               <h2>Land on what was named, or say that nothing happened.</h2>
               <p>The 2.4 releases check where a touch lands. A call that missed now refuses with nothing done, instead of answering <code>ok: true</code>.</p>
               <ul>
-                <li><strong>Typing that would not land is refused</strong> (2.4.0). A line break is typed as Enter. A <code>keyboard</code> <code>type</code> of a space or line break while the focus is on a button refuses with <code>FocusedControlTakesNoText</code>. A <code>window_dock</code> of a window that stays maximized refuses too.</li>
+                <li><strong>Typing that would not land is refused</strong> (2.4.0). A line break typed by keystroke is a plain Enter, not Ctrl+Enter. A <code>keyboard</code> <code>type</code> of a space or line break sent by keystroke while the focus is on a button refuses with <code>FocusedControlTakesNoText</code>; a paste is sent as before, with a warning. A <code>window_dock</code> of a window that stays maximized refuses too.</li>
                 <li><strong>Pastes into Windows Terminal are checked</strong> (2.4.1). <code>terminal</code> and <code>keyboard</code> refuse a tab that is split, is not a terminal, changed on the way, or is the one the client runs in (<code>WindowsTerminalTargetUnsafe</code>).</li>
-                <li><strong>Scrolls and clicks in Chrome and Edge land on the page</strong> (2.4.2). <code>scroll</code> moves the page, not DevTools, a side panel, a PDF's thumbnails or another window's page. <code>browser_click</code> refuses when its point would land on DevTools or another pane, and it hits the element with DevTools or a side bar open.</li>
-                <li><strong>A first start installs with PowerShell 7's module path set</strong> (2.4.3). The launcher no longer stops with nothing unpacked when the client was started from a PowerShell 7 prompt.</li>
+                <li><strong>Scrolls and clicks in Chrome and Edge land on the page</strong> (2.4.2). <code>scroll</code> moves the page, not DevTools, a side panel, a PDF's thumbnails or another window's page, in the layouts the release notes list. <code>browser_click</code> refuses when its point would land on DevTools or another pane, and it hits the element with DevTools or a side panel open.</li>
+                <li><strong>A first start installs with PowerShell 7's module path set</strong> (2.4.3). The launcher no longer stops with nothing unpacked, on a first install or an upgrade, when the client was started from a PowerShell 7 prompt or PowerShell 7's module path was saved for the user.</li>
               </ul>
             </section>
 
             <section class="article-card">
               <span class="label warm">Still being built</span>
               <h2>Numb spots and false alarms, written down.</h2>
-              <p>This is a nervous system under construction. A few of its gaps are written down in the release notes:</p>
+              <p>This is a nervous system under construction. A few of its gaps are known:</p>
               <ul>
-                <li><code>desktop_discover</code> aimed at a Store app's frame window by its handle, rather than by its title, is not yet tested for suspension.</li>
                 <li>A control whose label changes between discover and act (a <code>Play</code> button that turned into <code>Pause</code>) is refused, though it is the same control.</li>
                 <li>With two pages side by side in one window (a split view), a <code>scroll</code> without a point can move the pane that is not active.</li>
               </ul>
