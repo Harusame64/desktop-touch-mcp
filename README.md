@@ -215,7 +215,7 @@ On an Apple Silicon Mac (macOS 14 or later) the same `npx` command starts a macO
 | `screenshot` | Multi-mode capture: `detail='text'` (UIA/OCR), `diffMode` (P-frame), `dotByDot` (1:1), and `background`. Returns a cheap `screenshot://by-ref/{id}` link to the saved image instead of inlining pixels every time. |
 | `screenshot_query` / `screenshot_gc` | Inspect and prune the on-disk screenshot cache behind the by-ref links: `screenshot_query` lists saved captures without re-reading pixels; `screenshot_gc` reclaims space by retention policy (dry-run by default). |
 | `workspace_snapshot` | Instant session orientation: all window thumbnails + UI summaries in one call. |
-| `server_status` | Diagnostic check for native engine health and feature activation. |
+| `server_status` | Diagnostic check for native engine health and feature activation, and which version answered (`version`). |
 
 ### ⌨️ Input & Control
 | Tool | Description |
