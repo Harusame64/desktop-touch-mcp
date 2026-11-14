@@ -1624,7 +1624,7 @@ export const scrollHandler = async ({
         : "where the page shows (its middle when that is visible)";
       scrollWarnings.push(
         pointNotUsed === "off"
-          ? `The point (${tx}, ${ty}) is not on the page in that window (it is over the tab strip, the address bar, a DevTools pane, or outside the window), so the wheel was sent ${elsewhere}. To scroll one part of the page, pass x/y inside that part.`
+          ? `The point (${tx}, ${ty}) is not on the page in that window (it is over the tab strip, the address bar, a DevTools pane, a side panel, or outside the window), so the wheel was sent ${elsewhere}. To scroll one part of the page, pass x/y inside that part.`
           : pointNotUsed === "covered"
           ? `The point (${tx}, ${ty}) is covered by another window, so the wheel was sent ${elsewhere}. To scroll that part, bring the window forward first (focus_window), or pass x/y on a part of the page that shows.`
           : dest.kind !== "cdp"

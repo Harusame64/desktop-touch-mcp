@@ -20,7 +20,8 @@ const RIGHT = { rect: rect(1300, 100, 1200, 800), bounds: bounds(1300, 100, 1200
 const MAX = { rect: rect(-8, -8, 1936, 1056), bounds: bounds(-8, -8, 1936, 1056) };
 
 function deps(over: {
-  surface?: "surface" | "covered" | "minimized" | "cloaked" | "unreadable" | "panel";
+  surface?: "surface" | "covered" | "minimized" | "cloaked" | "unreadable" | "panel" | "split";
+  contents?: bigint[] | null | "throw";
   frameRect?: ReturnType<TabOfFrameDeps["frameRect"]>;
   scale?: number;
   title?: string;
@@ -38,6 +39,12 @@ function deps(over: {
           { hwnd: 0x200n, className: PAGE_RWH_CLASS, visible: true, rect: rect(110, 180, 800, 710) },
           { hwnd: 0x202n, className: PAGE_RWH_CLASS, visible: true, rect: rect(920, 220, 360, 670) },
         ]
+      : s === "split"
+        // Two pages side by side in one window (Chrome's split view).
+        ? [
+            { hwnd: 0x200n, className: PAGE_RWH_CLASS, visible: true, rect: rect(110, 180, 584, 708) },
+            { hwnd: 0x203n, className: PAGE_RWH_CLASS, visible: true, rect: rect(704, 180, 584, 708) },
+          ]
     : s === "covered"
       ? [{ hwnd: 0x201n, className: "Intermediate D3D Window", visible: true, rect: rect(0, 0, 10, 10) }]
       : [];
@@ -53,6 +60,10 @@ function deps(over: {
     frameRect: () => (over.frameRect === undefined ? LEFT.rect : over.frameRect),
     frameScale: () => over.scale ?? 1,
     frameTitle: () => over.title ?? "",
+    contentsWindows: async () => {
+      if (over.contents === "throw") throw new Error("uia");
+      return over.contents === undefined ? null : over.contents;
+    },
     windowsOf: async (ids) => {
       if (over.windowsThrow) throw new Error("CDP unreachable");
       const all = over.windows ?? {};
@@ -75,13 +86,24 @@ describe("tabOfFrame — a frame with no page surface is not on the CDP road (AD
     const d = deps({ surface: "unreadable", windows, visible: ["A"], title: "Alpha - Google Chrome" });
     expect(await tabOfFrame(FRAME, tabs, d)).toEqual({ kind: "none", why: "unreadable" });
   });
-  it("a side panel open beside the page (page windows that cannot be told apart): the tab is decided as for any frame (internal #410)", async () => {
-    const d = deps({ surface: "panel", windows, visible: ["A"], title: "Alpha - Google Chrome" });
+  it("a side panel open beside the page, told apart by the contents area: the frame's tab (internal #410)", async () => {
+    const d = deps({ surface: "panel", contents: [0x200n], windows, visible: ["A"], title: "Alpha - Google Chrome" });
     expect(await tabOfFrame(FRAME, tabs, d)).toEqual({ kind: "tab", tabId: "A" });
   });
   it("…and still none when no tab at the frame is visible", async () => {
-    const d = deps({ surface: "panel", windows, visible: [], title: "Alpha - Google Chrome" });
+    const d = deps({ surface: "panel", contents: [0x200n], windows, visible: [], title: "Alpha - Google Chrome" });
     expect(await tabOfFrame(FRAME, tabs, d)).toEqual({ kind: "none", why: "no_visible_tab" });
+  });
+  it("a panel beside the page whose contents area cannot be read (older Chrome, a failed read): none, as before", async () => {
+    for (const contents of [null, "throw", [0x999n]] as const) {
+      const d = deps({ surface: "panel", contents: contents as never, windows, visible: ["A"], title: "Alpha - Google Chrome" });
+      expect(await tabOfFrame(FRAME, tabs, d)).toEqual({ kind: "none", why: "unreadable" });
+      expect(d.visibility).not.toHaveBeenCalled();
+    }
+  });
+  it("a split view (two pages in the contents area): none, the active pane may not be the one the wheel is for (agy on #987)", async () => {
+    const d = deps({ surface: "split", contents: [0x200n, 0x203n], windows, visible: ["A"], title: "Alpha - Google Chrome" });
+    expect(await tabOfFrame(FRAME, tabs, d)).toEqual({ kind: "none", why: "unreadable" });
   });
   it("the control: the same window with its surface is on the CDP road", async () => {
     expect(await tabOfFrame(FRAME, tabs, deps({ windows, visible: ["A"], title: "Alpha - Google Chrome" })))
