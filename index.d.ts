@@ -475,6 +475,8 @@ export declare function uiaGetTextViaTextPattern(opts: { windowTitle: string; ti
 export declare function uiaScrollIntoView(opts: { windowTitle: string; name?: string; automationId?: string }): Promise<NativeScrollResult>
 export declare function uiaGetScrollAncestors(opts: { windowTitle: string; elementName: string }): Promise<Array<NativeScrollAncestor>>
 export declare function uiaScrollByPercent(opts: { windowTitle: string; elementName: string; verticalPercent: number; horizontalPercent: number }): Promise<NativeScrollResult>
+/** internal #409 — the windows of the Documents inside a Chromium frame's contents area (`MultiContentsView`), or null. */
+export declare function uiaPageWindowsInContents(frame: string): Promise<string[] | null>
 export declare function uiaScrollByWheelAtHwnd(opts: { hwnd: string; wheelDeltaY: number; wheelDeltaX: number; pageWindows?: string[]; pointX?: number; pointY?: number }): Promise<NativeScrollResult>
 /**
  * ADR-019 MVP-1 (Stage 1) — read-only ScrollPercent companion to
@@ -483,7 +485,6 @@ export declare function uiaScrollByWheelAtHwnd(opts: { hwnd: string; wheelDeltaY
  * pattern is exposed (custom-paint receivers like Excel `NUIScrollbar`, Word
  * MFC document body). Pure observation; no SetScrollPercent side effect.
  */
-export declare function uiaPageWindowsInContents(frame: string): Promise<string[] | null>
 export declare function uiaReadScrollPercentAtHwnd(opts: { hwnd: string; axis: "vertical" | "horizontal" }): Promise<number | null>
 export declare function uiaGetVirtualDesktopStatus(hwndIntegers: Array<string>): Promise<Record<string, boolean>>
 /** internal #227 — the selected tab of a Windows Terminal window, or null. */

@@ -451,6 +451,11 @@ export interface NativeUia {
     pointY?: number;
   }): Promise<NativeScrollResult>;
   /**
+   * internal #409 — the windows the Documents inside a Chromium frame's contents area (`MultiContentsView`) are drawn
+   * in, or null when the frame has none in its UIA tree (an older Chromium, Electron) or it cannot be read.
+   */
+  uiaPageWindowsInContents?(frame: string): Promise<string[] | null>;
+  /**
    * ADR-019 MVP-1 (Stage 1) — read-only `ScrollPercent` observation. Walks
    * UIA ancestors then DFS subtree to find a ScrollPattern whose requested
    * axis is scrollable, returns `CurrentVertical/HorizontalScrollPercent`
@@ -458,11 +463,6 @@ export interface NativeUia {
    * receivers like Excel `NUIScrollbar`, Word MFC). Pure observation;
    * never writes.
    */
-  /**
-   * internal #409 — the windows the Documents inside a Chromium frame's contents area (`MultiContentsView`) are drawn
-   * in, or null when the frame has none in its UIA tree (an older Chromium, Electron) or it cannot be read.
-   */
-  uiaPageWindowsInContents?(frame: string): Promise<string[] | null>;
   uiaReadScrollPercentAtHwnd?(opts: {
     hwnd: string;
     axis: "vertical" | "horizontal";

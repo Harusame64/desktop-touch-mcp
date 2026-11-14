@@ -2505,6 +2505,19 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
       for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(708, 490));
     });
 
+    it("…and Tier 3 reads the point again with those windows: a page covered meanwhile is refused, not posted to (gate 2 on #986)", async () => {
+      besidePanel();
+      uiaPageWindowsInContentsMock.mockResolvedValue([PAGE.toString()]);
+      // Tier 1 finds nothing; while it ran, another window came over the whole page.
+      uiaScrollByWheelAtHwndMock.mockImplementation(async () => {
+        wheelPointDeps.pointAt = () => ({ child: FRONT_PAGE, root: 0x600n });
+        return { ok: false, scrolled: false };
+      });
+      const r = await dispatchScrollWheel(hwndDest, { direction: "down", notch: 1 });
+      expect(win32PostMessageMock).not.toHaveBeenCalled();
+      expect(r).toMatchObject({ scrolled: false, reason: "target_unreachable", pageNotVisible: { why: "covered" } });
+    });
+
     it("the contents area holds both (two pages side by side), none, or the read fails: as before", async () => {
       for (const answer of [() => Promise.resolve([PAGE.toString(), "1282"]), () => Promise.resolve([]), () => Promise.reject(new Error("uia")), () => Promise.resolve(["x"])]) {
         besidePanel();

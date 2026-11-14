@@ -87,7 +87,8 @@ async function placedPagePoint(hwnd: bigint, at?: WheelParams["at"]): Promise<Wh
   } catch {
     return first;
   }
-  return pagePointOrKeep(hwnd, at, inContents);
+  const placed = pagePointOrKeep(hwnd, at, inContents);
+  return placed.kind === "point" ? { ...placed, inContents } : placed;
 }
 
 /**
@@ -1470,7 +1471,8 @@ export async function postWheelToHwnd(
   if (typeof postMessage !== "function") return notPosted();
   // ADR-040 PR ② (internal #396) — a Chromium window takes a posted wheel at its point, not at the
   // window it is posted to: every post carries a point where this window's page is visible, or none is sent.
-  const readNow = pagePointOrKeep(hwnd, params.at);
+  // internal #409 — a point placed with the contents area's windows is read again with them (gate 2 on #986).
+  const readNow = pagePointOrKeep(hwnd, params.at, earlierPagePoint?.kind === "point" ? earlierPagePoint.inContents : undefined);
   const pagePoint = readNow.kind === "keep" && earlierPagePoint?.kind === "point" ? earlierPagePoint : readNow;
   tellPointUse(params, pagePoint);
   if (pagePoint.kind === "not_visible") {

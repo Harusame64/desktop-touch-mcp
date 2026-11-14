@@ -3,9 +3,11 @@
 //! Mirrors `scrollElementIntoView`, `getScrollAncestors`, and `scrollByPercent`
 //! from `uia-bridge.ts`.
 
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::Accessibility::*;
-use windows::Win32::UI::WindowsAndMessaging::IsChild;
+use windows::Win32::UI::WindowsAndMessaging::{
+    GW_CHILD, GW_HWNDNEXT, GetClassNameW, GetWindow, GetWindowRect, IsChild, IsWindowVisible,
+};
 use windows::core::Interface;
 
 use super::thread::{self, UiaContext, win_err};
@@ -826,7 +828,7 @@ fn drawn_in_window(ctx: &UiaContext, elem: &IUIAutomationElement) -> Option<isiz
 /// room for a PDF inside an iframe. Only a corrupt or cyclic tree reaches it.
 const MAX_DRAWN_IN_STEPS: u32 = 40;
 
-fn rect_holds(r: &windows::Win32::Foundation::RECT, x: i32, y: i32) -> bool {
+fn rect_holds(r: &RECT, x: i32, y: i32) -> bool {
     x >= r.left && x < r.right && y >= r.top && y < r.bottom
 }
 
@@ -862,11 +864,7 @@ fn find_page_document_scroll(
     }
     *node_budget = node_budget.saturating_sub(1);
     unsafe {
-        let is_document = elem
-            .CurrentControlType()
-            .map(|ct| ct.0 == UIA_DocumentControlTypeId.0)
-            .unwrap_or(false);
-        if is_document {
+        if is_document(elem) {
             match drawn_in_window(ctx, elem) {
                 Some(h) if page.windows.contains(&h) => {}
                 _ => return None,
@@ -946,7 +944,8 @@ fn page_windows_in_contents_impl(ctx: &UiaContext, frame: &str) -> napi::Result<
         return Ok(None);
     };
     let mut budget = MAX_SCROLL_DFS_NODES;
-    let Some(contents) = find_contents_view(ctx, &root, MAX_SEARCH_DEPTH, &mut budget) else {
+    let page_rects = page_window_rects(HWND(raw as *mut std::ffi::c_void));
+    let Some(contents) = find_contents_view(ctx, &root, MAX_SEARCH_DEPTH, &page_rects, &mut budget) else {
         return Ok(None);
     };
     let mut windows: Vec<isize> = Vec::new();
@@ -961,6 +960,33 @@ fn page_windows_in_contents_impl(ctx: &UiaContext, frame: &str) -> napi::Result<
     Ok(Some(windows.into_iter().map(|h| (h as i64).to_string()).collect()))
 }
 
+/// internal #409 — the rects of the frame's visible page windows (`Chrome_RenderWidgetHostHWND`, its direct children,
+/// as every one measured was: win2, dev/409-spike round 2). At most 64 children are looked at.
+fn page_window_rects(frame: HWND) -> Vec<RECT> {
+    let mut out = Vec::new();
+    let mut child = unsafe { GetWindow(frame, GW_CHILD) }.ok();
+    for _ in 0..64 {
+        let Some(h) = child.filter(|h| !h.0.is_null()) else { break };
+        let mut buf = [0u16; 64];
+        let len = unsafe { GetClassNameW(h, &mut buf) };
+        let is_page = len > 0 && String::from_utf16_lossy(&buf[..len as usize]) == "Chrome_RenderWidgetHostHWND";
+        let mut r = RECT::default();
+        if is_page && unsafe { IsWindowVisible(h) }.as_bool() && unsafe { GetWindowRect(h, &mut r) }.is_ok() {
+            out.push(r);
+        }
+        child = unsafe { GetWindow(h, GW_HWNDNEXT) }.ok();
+    }
+    out
+}
+
+fn rect_is_empty(r: &RECT) -> bool {
+    r.right <= r.left || r.bottom <= r.top
+}
+
+fn rects_overlap(a: &RECT, b: &RECT) -> bool {
+    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+}
+
 fn is_document(elem: &IUIAutomationElement) -> bool {
     unsafe { elem.CurrentControlType() }
         .map(|ct| ct.0 == UIA_DocumentControlTypeId.0)
@@ -969,10 +995,15 @@ fn is_document(elem: &IUIAutomationElement) -> bool {
 
 /// internal #409 — the first element of class `CONTENTS_VIEW_CLASS` in tree order. It does not go into a Document: web
 /// content holds no browser views, and the walk would spend its budget there.
+///
+/// It passes over an element whose rect overlaps none of `page_rects` (the frame's page windows): the tab strip, the
+/// toolbar and the bookmarks bar, which come first in tree order and would otherwise spend the budget with many tabs
+/// open (gate 2 on #986). An element whose rect cannot be read or is empty is gone into, as before.
 fn find_contents_view(
     ctx: &UiaContext,
     elem: &IUIAutomationElement,
     depth: u32,
+    page_rects: &[RECT],
     budget: &mut u32,
 ) -> Option<IUIAutomationElement> {
     if depth == 0 || *budget == 0 {
@@ -985,9 +1016,16 @@ fn find_contents_view(
     if is_document(elem) {
         return None;
     }
+    if let Ok(r) = unsafe { elem.CurrentBoundingRectangle() }
+        && !page_rects.is_empty()
+        && !rect_is_empty(&r)
+        && !page_rects.iter().any(|p| rects_overlap(&r, p))
+    {
+        return None;
+    }
     let mut child = unsafe { ctx.walker.GetFirstChildElement(elem) }.ok();
     while let Some(c) = child {
-        if let Some(found) = find_contents_view(ctx, &c, depth - 1, budget) {
+        if let Some(found) = find_contents_view(ctx, &c, depth - 1, page_rects, budget) {
             return Some(found);
         }
         if *budget == 0 {

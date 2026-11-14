@@ -99,6 +99,11 @@ describe("a side panel beside the page: told apart by the contents area (interna
     expect(resolvePageSurface(1n, deps({ children: three }), undefined, [30607142n, 31n]))
       .toMatchObject({ kind: "surface", rwh: 31n, rect: r(116, 187, 400, 697) });
   });
+  it("DevTools docked and a panel, and the read saw only DevTools' Document: the page is placed by its windows alone (inside DevTools'), not narrowed to DevTools (gate 2 on #986)", () => {
+    const three = [rwh(30607142n, r(116, 187, 798, 697)), rwh(30738928n, r(923, 226, 360, 657)), rwh(31n, r(116, 187, 400, 697))];
+    expect(resolvePageSurface(1n, deps({ children: three }), undefined, [30607142n]))
+      .toMatchObject({ kind: "surface", rwh: 31n });
+  });
   it("two pages side by side in the contents area (split view): still ambiguous", () => {
     const split = [rwh(65735652n, r(112, 180, 584, 708)), rwh(57673972n, r(704, 180, 584, 708))];
     expect(resolvePageSurface(1n, deps({ children: split }), undefined, [65735652n, 57673972n]))

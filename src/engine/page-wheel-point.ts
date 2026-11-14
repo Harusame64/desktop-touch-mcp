@@ -44,6 +44,11 @@ export type WheelPagePoint =
        * other windows or away from the point, are not what moves.
        */
       pageWindows: bigint[];
+      /**
+       * internal #409 — the contents area's windows this point was placed with, when the page windows alone were
+       * ambiguous. A later read of the point (Tier 3's) is made with them too.
+       */
+      inContents?: readonly bigint[];
       /** internal #404 — the caller's point was given and this is not it. Absent when it is, or none was given. */
       pointNotUsed?: PointNotUsed;
     }
