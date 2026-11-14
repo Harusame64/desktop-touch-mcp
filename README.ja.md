@@ -207,7 +207,7 @@ Apple Silicon の Mac（macOS 14 以降）では、同じ `npx` で macOS 用の
 | `screenshot` | 複数のモードでキャプチャ：`detail='text'`（UIA/OCR）・`diffMode`（P-frame）・`dotByDot`（1:1）・`mode='background'`。画像は毎回インライン展開せず、保存した画像への安価なリンク `screenshot://by-ref/{id}` を返す。 |
 | `screenshot_query` / `screenshot_gc` | by-ref リンクの裏にあるディスクキャッシュを見る・掃除する。`screenshot_query` はピクセルを読み直さずに一覧を返し、`screenshot_gc` は保持ポリシーで領域を空ける（既定は dry-run）。 |
 | `workspace_snapshot` | 全ウィンドウのサムネイルと UI の要約を 1 回で取得し、作業の状況をつかむ。 |
-| `server_status` | ネイティブエンジンの状態と、有効になっている機能を診断する。 |
+| `server_status` | ネイティブエンジンの状態と、有効になっている機能を診断する。動いている版（`version`）も返す。 |
 
 ### ⌨️ 入力・操作
 | ツール | 概要 |

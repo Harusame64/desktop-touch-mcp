@@ -10,11 +10,15 @@
 - [ターミナルの完了判定 (`until`)](#ターミナルの完了判定-until)
 - [Key Locker (ターミナル認証情報の自動入力)](#key-locker-ターミナル認証情報の自動入力)
 - [ブラウザ CDP 自動化](#ブラウザ-cdp-自動化)
+- [起動時に CLI を自動ドッキング](#起動時に-cli-を自動ドッキング)
 - [マウスホーミング補正（トラクションコントロール）](#マウスホーミング補正トラクションコントロール)
 - [screenshot の主要パラメータ](#screenshot-の主要パラメータ)
 - [セキュリティ](#セキュリティ)
 - [マウス移動速度](#マウス移動速度)
 - [Force-Focus (AttachThreadInput)](#force-focus-attachthreadinput)
+- [Auto Guard](#auto-guard)
+- [診断ログ](#診断ログ)
+- [応答の高度なオプション](#応答の高度なオプション)
 - [UI オペレーティングレイヤー (V2)](#ui-オペレーティングレイヤー-v2)
 - [ネイティブエンジンの性能（v0.15 時点の計測）](#ネイティブエンジンの性能v015-時点の計測)
 - [パフォーマンス目安](#パフォーマンス目安)
@@ -30,7 +34,7 @@
 - `lease_expired` / `lease_generation_mismatch` / `lease_digest_mismatch` / `entity_not_found` → `desktop_discover` を再実行
 - `modal_blocking` → `response.blockingElement` (含まれていれば) がブロック中の modal を識別する。`role: "dialog"` は、別のダイアログ窓が対象の窓を無効にしていることを表す。`blockingElement.hwnd` がそのダイアログなので、`target.hwnd = blockingElement.hwnd` で `desktop_discover` し直して答えてからリトライ（`name` は題名で、空や他と同じことがある）。それ以外の role は、`desktop_discover` のスナップショットに写っている窓で、この entity を塞いでいるかを OS が答えられなかったもの。`blockingElement.hwnd` があれば `target.hwnd = blockingElement.hwnd` で `desktop_discover` し直して答え、無ければ `click_element(name=blockingElement.name)` で閉じる。そのあと元の対象を `desktop_discover` し直し、新しい lease で撃つ（この拒否はそのスナップショットから出たので、同じ lease では再び拒まれる）
 - `entity_outside_viewport` → 要素が画面外へ移動: `scroll(action='to_element' | 'raw')` 後に `desktop_discover` 再実行（窓ごと移動・閉じた場合は再 discover）
-- `origin_window_not_visible` → 要素の由来ウィンドウが最小化 / 非表示で、発見時の座標には何も描画されていない: `focus_window(windowTitle)` で復元してから `desktop_discover` 再実行
+- `origin_window_not_visible` → 要素の由来ウィンドウが最小化 / 非表示で、発見時の座標には何も描画されていない: `focus_window`（`title`、またはそのウィンドウを指す `hwnd`）で復元してから `desktop_discover` 再実行
 - `coordinate_outside_reachable_bounds` → 座標がどのモニタ上にも無い。座標ベースのマウス入力（`mouse_click` / `mouse_drag` / `scroll` / `browser_click`、および `desktop_act` の mouse route）は**全モニタで動作する**ようになった（プライマリの左 / 上に置いたモニタを含む）ため、このエラーは通常「座標が古い」ことを意味する — 読み取った後にウィンドウが移動 / 閉じた場合。`desktop_discover` を再実行して新しい座標で操作する。サーバが内蔵の Windows 入力モジュール無しで動いている場合はプライマリモニタのみに fallback する（その旨がエラーメッセージに出る）。対処はウィンドウをプライマリへ移すか、サーバの再インストール
 - `cursor_placement_blocked` → 座標はモニタ上にあるが、ポインタをそこへ置けなかったためクリックは送られていない。他のアプリがカーソルを自分のウィンドウ内に拘束している（全画面ゲームで多い）/ リモートデスクトップのセッションが切断・ロックされている / 他のプログラムがポインタを動かし続けている / モニタを着脱した直後、といった場合に起きる。カーソルを掴んでいるアプリから離れる、セッションに再接続する、モニタ構成を変えた場合は `desktop_discover` を取り直してから再試行する。カーソルを動かさない `click_element`（UIA invoke）はその間も使える（リスト・ツリー・グリッドの項目には使わない。その Invoke は項目を開く・実行する・編集を始める）
 - `keyboard_target_unsafe` → 文字が指定した欄に届かないため `type` を拒否した。キーボードのフォーカスが別のコントロールか別のウィンドウにある、受け取るコントロールか指定した欄が読み取り専用、または指定した欄（かそのウィンドウ）が無効。何も入力されておらず、どれかは `if_unexpected.detail` に出る。無効なら、無効にしているもの（送信中のフォーム・ダイアログ・まだ済んでいない手順）が済むのを待つか答えてから、`desktop_discover` し直して入力し直す。クリックしても変わらない。`desktop_discover` は無効な欄を出さないので、そこに出ないあいだはまだ無効。指定した欄が読み取り専用なら、その欄は文字を受け付けないので、打ち直しても変わらない。別のコントロール / ウィンドウなら、指定した欄にフォーカスを移してから入力し直す。その道ごとの戻り方は `if_unexpected.detail` に出る。タイトルで指定したウィンドウなら同じ entity への `desktop_act`（`action='click'`）で移せる。ハンドルで指定したウィンドウでは、テキスト欄へフォーカスを移す道がまだ無いので、ウィンドウのタイトルで `desktop_discover` し直し、そこから欄をクリックする——ただし共通ダイアログ（名前を付けて保存・開く）はタイトルもハンドルに解決するので、その道は開かない。別のウィンドウのときは、まず欄のウィンドウを前面に出す（`focus_window`）: 最後に持っていたフォーカスのまま前へ出るうえ、フォーカスを持っているウィンドウはたいてい欄の上に描かれている。前面の `keyboard` で打ち直さないこと: フォーカスを持っているものが文字を受け取ってしまう
@@ -44,15 +48,9 @@ Lease ライフサイクル:
 - TTL は `view` モード (`action`/`explore`/`debug`)、entity 数、レスポンスサイズに応じて伸縮 (上限 60 秒)。
 - `DESKTOP_TOUCH_DISABLE_FUKUWARAI_V2=1` で V1 ツール (`get_windows` / `get_ui_elements` / `set_element_value`) にフォールバック可能 — トラブルシューティング目的のみ。標準は V2。
 
-### Reactive Perception Graph (4)
-| ツール | 概要 |
-|---|---|
-| `perception_register` | 対象ウィンドウ/タブの live perception lens を登録し、action tool に渡す `lensId` を返す |
-| `perception_read` | attention が dirty/stale/blocked の時に lens を強制更新し、perception envelope を返す |
-| `perception_forget` | ワークフロー完了時や対象が置き換わった時に lens を解除 |
-| `perception_list` | 登録中 lens を一覧し、再利用やクリーンアップに使う |
+### Reactive Perception Graph
 
-Reactive Perception Graph は desktop-touch の低コストな状況把握レイヤーです。対象の同一性・フォーカス・矩形・準備状態・guard 結果を操作間で維持し、Claude が小さな操作のたびにスクリーンショットで確認し直さなくて済むようにします。
+Reactive Perception Graph は desktop-touch の低コストな状況把握レイヤーです。対象の同一性・フォーカス・矩形・準備状態・guard 結果を操作間で維持し、Claude が小さな操作のたびにスクリーンショットで確認し直さなくて済むようにします。以前あった `perception_register` / `perception_read` / `perception_forget` / `perception_list` の4つのツールは廃止しました。いまは Auto Perception（常時オン）が同じ仕組みを自動で使います（下の「起動時に CLI を自動ドッキング」の節の中の Auto Perception を参照）。
 
 ---
 
@@ -147,6 +145,62 @@ browser_navigate({url:"https://example.com"})            → CDP 経由でペー
 ```
 browser_open({launch:{}}) → browser_eval({action:"dom"}) → browser_locate(selector) → browser_click(selector)
 ```
+
+---
+
+## 起動時に CLI を自動ドッキング
+
+ほかのアプリを全画面で操作している間も、Claude CLI を見える場所に置いておけます。MCP の設定に環境変数を書くと、MCP が起動するたびに、ドッキングする窓が決まった位置へ自動で移ります。
+
+```json
+{
+  "mcpServers": {
+    "desktop-touch": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@harusame64/desktop-touch-mcp"],
+      "env": {
+        "DESKTOP_TOUCH_DOCK_TITLE": "@parent",
+        "DESKTOP_TOUCH_DOCK_CORNER": "bottom-right",
+        "DESKTOP_TOUCH_DOCK_WIDTH": "480",
+        "DESKTOP_TOUCH_DOCK_HEIGHT": "360",
+        "DESKTOP_TOUCH_DOCK_PIN": "true"
+      }
+    }
+  }
+}
+```
+
+| 環境変数 | デフォルト | 効果 |
+|---|---|---|
+| `DESKTOP_TOUCH_DOCK_TITLE` | *(未設定 = オフ)* | `@parent` は MCP のプロセスツリーをたどり、ホストしているターミナルを探します。題名・ブランチ・プロジェクトが変わっても影響を受けません。題名に含まれる文字列をそのまま書くこともできます。 |
+| `DESKTOP_TOUCH_DOCK_CORNER` | `bottom-right` | `top-left` / `top-right` / `bottom-left` / `bottom-right` |
+| `DESKTOP_TOUCH_DOCK_WIDTH` / `HEIGHT` | `480` / `360` | px（`"480"`）または作業領域に対する割合（`"25%"`）。4K/8K にも自動で合わせます |
+| `DESKTOP_TOUCH_DOCK_PIN` | `true` | 常に手前に表示するかどうか |
+| `DESKTOP_TOUCH_DOCK_MONITOR` | プライマリ | `desktop_state({includeScreen:true})` が返すモニタ id |
+| `DESKTOP_TOUCH_DOCK_SCALE_DPI` | `false` | true にすると、px の値に `dpi / 96` を掛けます（モニタごとの拡大縮小。opt-in） |
+| `DESKTOP_TOUCH_DOCK_MARGIN` | `8` | 画面の端との間隔（px） |
+| `DESKTOP_TOUCH_DOCK_TIMEOUT_MS` | `5000` | 対象の窓が現れるのを待つ最大時間 |
+
+> **入力先の落とし穴:** ピン留めした窓（Claude CLI など）がアクティブなとき、`keyboard(action='type')` / `keyboard(action='press')` のキーはその窓に届きます。打ちたかったアプリには**届きません**。キーボード操作の前に必ず `focus_window(title=...)` を呼び、`screenshot(detail='meta')` で `isActive=true` を確かめてください。
+
+### Auto Perception（常時オン）
+
+Phase 4 で、明示的な `perception_*` ツール群は公開のツール一覧から外しました。v0.12 の Auto Perception レイヤーが、`desktop_state` と `desktop_act` のすべての応答に `attention` シグナルを自動で付けます。操作ツールも、`windowTitle` を渡すと自動でガードします。lens を手で登録・読み取り・解除する必要は、もうありません。
+
+```
+# desktop_state は常に attention シグナルを返す
+desktop_state() → {focusedWindow, focusedElement, modal, attention:"ok", ...}
+
+# windowTitle を渡すと、操作ツールは自動でガードする:
+keyboard({action:"type", text:"hello", windowTitle:"Notepad"})
+→ post.perception:{status:"ok"}  // ガードが通らなければ、危険な入力は止める
+
+# attention が dirty / stale / settling のときは、desktop_state で更新する:
+desktop_state()  // Auto Perception で attention を評価し直す
+```
+
+対象を固定する高度なワークフローのために、操作ツール（`keyboard`、`mouse_click`、`mouse_drag`、`click_element`、`browser_click`、`browser_navigate`、`browser_eval`、`desktop_act`）には `lensId` パラメータが残っています。ふつうに Auto Perception を使うときは、`lensId` を省いてください。内部のレジストリ、ホットターゲットキャッシュ、センサーループは変わっていません。廃止したのは、明示的な `perception_register / perception_read / perception_forget / perception_list` ツールだけです。
 
 ---
 
@@ -276,11 +330,11 @@ Windows のフォアグラウンド保護機能により、ピン固定された
 
 強制フォーカスが拒否された場合、応答は `ok:false` + `code: "ForegroundRestricted"` (Issue #202 統一 — `focus_window` / `keyboard` / `terminal_send` / `mouse_click` で共通の shape) になります。当該操作自体は **抑止** され、誤ったウィンドウへキーストローク / クリックが届くことはありません。`focus_window` の auto-escalate ladder で先に focus を取得してから retry してください。旧 `hints.warnings: ["ForceFocusRefused"]` shape はもう発火しません。
 
-`browser_click` は振る舞いが異なります。カーソルを動かす前に、クリックを受け取る窓がどれかを必ず確かめます。ほかのアプリの窓がまだブラウザの前にあれば、`BrowserPointCovered` で断り、何もクリックしません。`forceFocus` を付けていないときは、エラーの応答で `forceFocus: true` を付けて再試行するよう案内します。ブラウザの窓がすでに前面にあるときは、タブを切り替えません。対象のタブが表示されておらず、同じ窓で別のタブが表示されている場合は、`BrowserPointCovered`（`context.coveredBy: "tab"`）で操作を断り、クリックしません。応答には対象のタブ（`context.target`）と、その窓で表示中のタブ（`context.showing`）が含まれるので、対象のタブを選んでから再試行できます。（窓を前面に出すときは、これまでどおりタブも一緒に前面に出ます。）
+`browser_click` は振る舞いが異なります。クリックを受け取る窓がどれかを、カーソルを動かす前と、押す直前の2回確かめます。ほかのアプリの窓がまだブラウザの前にあれば、`BrowserPointCovered` で断り、何もクリックしません。`forceFocus` を付けていないときは、エラーの応答で `forceFocus: true` を付けて再試行するよう案内します。前にあるのが切り離されたブラウザ自身の DevTools のときは、閉じる、ドッキングする、または移動するよう案内します。次の場合も、何もクリックせずに断り、次の一手を示します。要素の座標がブラウザの窓の別の区画（DevTools やサイドパネル）の上にあるとき（`context.coveredBy: "panel"`）、ページが窓に表示されていないとき（最小化、別の仮想デスクトップ、まだ描かれていない: `"page_not_shown"`）、窓に区画が複数あり、どれがページか決められないとき（`"surface_ambiguous"`）です。ブラウザの窓がすでに前面にあるときは、タブを切り替えません。対象のタブが表示されておらず、同じ窓で別のタブが表示されている場合は、`BrowserPointCovered`（`context.coveredBy: "tab"`）で操作を断り、クリックしません。応答には対象のタブ（`context.target`）と、その窓で表示中のタブ（`context.showing`）が含まれるので、対象のタブを選んでから再試行できます。（窓を前面に出すときは、これまでどおりタブも一緒に前面に出ます。）
 
-別の仮想デスクトップにある窓は、前面に出しません（利用者のデスクトップが切り替わるため）。`keyboard` / `terminal` の send / マウス系（homing で前面に出すとき）は `code: "WindowOnOtherDesktop"` で断り、何も送りません。`context.sameTitleOnScreen: true` は、同じ題名の窓がいまのデスクトップにあるという意味です。その窓を正確に指定してください（道具が受け取るなら `hwnd`、そうでなければより詳しい `windowTitle`）。`focus_window` はこれまでどおり前面に出します。
+別の仮想デスクトップにある窓は、前面に出しません（利用者のデスクトップが切り替わるため）。`keyboard`、`terminal` の send、マウス系（homing で前面に出すとき）、`scroll` の capture、画像の経路を通る `scroll(action:'smart')` は、`code: "WindowOnOtherDesktop"` で断り、何も送りません。`context.sameTitleOnScreen: true` は、同じ題名の窓がいまのデスクトップにあるという意味です。その窓を正確に指定してください（道具が受け取るなら `hwnd`、そうでなければより詳しい `windowTitle`）。`focus_window` はこれまでどおり前面に出します。
 
-自分の開いたダイアログ（「名前を付けて保存」など）が出ている間、その窓は無効になり、入力を受け付けません。そのため `keyboard` は、`windowTitle` でその窓を指されたとき、窓をダイアログより前に出さず、ダイアログにも打たずに、`code: "WindowBlockedByDialog"` で断ります。焦点も動かさず、何も送りません。ダイアログは `context.dialogHwnd` と `context.dialogTitle` で示します。ダイアログに打つときは、`context.dialogHwnd` を `hwnd` に渡してください。コンソールの窓は断りません。プロパティのダイアログが開いていても、入力を受け付けるためです。`hwnd` でその窓を指したときは、`click_element` と同じくダイアログに宛先を移し、応答の `parent_disabled_prefer_popup` でそう伝えます。
+自分の開いたダイアログ（「名前を付けて保存」など）が出ている間、その窓は無効になり、入力を受け付けません。そのため `keyboard` は、`windowTitle` でその窓を指されたとき、窓をダイアログより前に出さず、ダイアログにも打たずに、`code: "WindowBlockedByDialog"` で断ります。焦点も動かさず、何も送りません。ダイアログは `context.dialogHwnd` と `context.dialogTitle` で示します。ダイアログに打つときは、`context.dialogHwnd` を `hwnd` に渡してください。コンソールの窓は断りません。プロパティのダイアログが開いていても、入力を受け付けるためです。`hwnd` でその窓を指したときは、`click_element` と同じくダイアログに宛先を移し、応答の `parent_disabled_prefer_popup` でそう伝えます。`scroll` の capture と、画像の経路を通る `scroll(action:'smart')` も `WindowBlockedByDialog` で断り、`scroll(action:'read')` はキーを送らずに止まります。どれも、その窓をダイアログより前に出しません。
 
 **環境変数でグローバルデフォルトを設定する:**
 
@@ -308,6 +362,121 @@ Windows のフォアグラウンド保護機能により、ピン固定された
 Windows Terminal は、前面からのキー入力しか受け取りません。裏から送った文字は無視されます。`desktop_act` が Windows Terminal の窓に打つときは、MCP クライアントの質問画面で先に利用者へ訊きます（例："Type "echo hi" into Windows Terminal (PowerShell)? Takes the foreground ~0.2 s."）。そのため、MCP の elicitation に対応したクライアント（`elicitation` の機能を名乗るもの。MCP 2025-06-18 で追加）を stdio でつないでいる必要があります。Accept なら、前面を一瞬借りて貼り付け、元の窓に戻します。貼り付けのたびに必ず訊きます。訊かずに許可する方法はありません。Decline・Esc・120 秒以内に答えがない・質問を出せないクライアント（`claude -p` や、HTTP の接続を使うクライアント）は、どれも「許可なし」です。何も打たず、`foreground_not_allowed` と、理由を書いた `detail` を返します。「許可なし」の後に、利用者に訊かずに別の道で打たないでください。質問に全文を窓の題名・選ばれているタブと一緒に出すため、文字は1行で、それらを合わせて 600 文字以内に限ります。同じ題名の窓がほかにあるときは、質問に画面のどこにある窓かを添えます。同じ場所に重なっている場合は打ちません。答えるまでの間に窓や選ばれているタブが変わった場合は、何も打ちません。ペインに分割したタブと、選ばれているタブを読めない窓には打ちません（答えている間は、どのペインに入るかを読めないため）。前面にある端末には打ちません（クライアントがそのタブで動いていると、そこに入るため）。別の窓の端末を使ってください。貼り付けの前に、端末のキーボードの焦点を入力欄へ移します。開いたままの検索窓に文字が入らないようにするためで、移せないときは何も打ちません。末尾の改行1つは Enter として送ります。毎回訊くので、エージェントは複数のコマンドを1行にまとめる（`a; b`）ほうがよいです。
 
 この質問は `desktop_act` の道でだけ出ます。`terminal(action:'run'/'send')` と `keyboard(action:'type')` で Windows Terminal に送る道は、訊かずに前面を借りて貼り付けます。「許可なし」の後は、これらの道も使わないでください。訊かない代わりに、`terminal` は次の検査をします。選ばれているタブがペインに分割されている、端末でない、読めない、前面に出す間に変わった場合や、このサーバが Windows Terminal のタブをまったく読めない場合は、何も打たずに断ります（`WindowsTerminalTargetUnsafe`）。貼り付けの前に、そのタブの入力欄へキーボードの焦点を移します。開いたままの検索窓に文字が入らないようにするためで、移せないときは何も打ちません。前面にある端末は断りません（直前の `run` が前面に残した端末かもしれないため）。クライアントが動いているタブは断ります。サーバが Windows Terminal の中で動いているときは、クライアントのコンソールの題名を読み、選ばれているタブの題名がそれと同じなら断ります（`own_tab`）。題名を読めないときは送り、そのことを `hints.warnings` で伝えます。`terminal` は、貼る文字の末尾の改行を Enter として送ります。`focusFirst:false` では、前面の窓がこのターミナルであることだけを確かめます。違えば `TerminalNotInFront` で断り、何も送りません。`keyboard(action:'type')` で Windows Terminal を対象にしたとき（`windowTitle`・`hwnd`・`@active` のどれでも）も、既定の道と `method:'foreground_flash'` の両方で同じ検査をします。ただし `terminal` と違い、クラス名を読めない窓は検査しません。
+
+---
+
+## Auto Guard
+
+操作ツール（`mouse_click`、`mouse_drag`、`keyboard(action='type'/'press')`、`click_element`、`desktop_act`、`browser_click`、`browser_navigate`）は、`windowTitle` / `tabId` を渡すと、操作のたびに自動でガードします:
+
+- 対象の窓が同じものかを確かめます（プロセスの再起動や HWND の差し替えを検出します）
+- クリックの座標が、対象の窓の矩形の中にあるかを確かめます
+- 失敗も含め、すべての応答で `post.perception.status` を返します。LLM はスクリーンショットなしで立て直せます
+
+**キーボードの書き込みには宛先が要ります。** `keyboard(action='type'/'press'/'sequence')` には、`windowTitle` か `hwnd` のどちらかが必要です。どちらもないとガードする対象がなく、キーはその瞬間に前面にある窓に届きます。自分が直前にクリックして入った窓のこともあります。そうした呼び出しは、キーを1つも送る前に `code:"DestinationRequired"` で断ります。空、または空白だけの `windowTitle` は、対象がないのと同じに扱います。**題名のない**窓は `hwnd` で指せますが、すでに前面にある間だけです。キーボードの焦点を移すことも、ガードも、題名のない窓はまだ対象にできないためです。前面にないときは、先に `focus_window({ hwnd })` で前に出してください。題名のない窓に `hwnd` で書き込んだ `keyboard` の応答には、ガードなしで入力を届けたという警告も付きます。
+
+| 変数 | デフォルト | 意味 |
+|---|---|---|
+| `DESKTOP_TOUCH_REQUIRE_DESTINATION` | *(未設定 = 必須)* | `0` にすると、いま前面にある窓へ意図して打てます。断る代わりに、応答に警告を付けて通します。警告なしで通すことはありません。 |
+| `DESKTOP_TOUCH_AUTO_GUARD` | *(未設定 = オン)* | `0` にすると、宛先の検査も含め、ガードの層全体を切ります。 |
+
+**Auto guard を切る** — `DESKTOP_TOUCH_AUTO_GUARD=0` にすると、v0.11.12 の振る舞い（自動ガードなし）に戻ります:
+
+```json
+{
+  "mcpServers": {
+    "desktop-touch": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@harusame64/desktop-touch-mcp"],
+      "env": {
+        "DESKTOP_TOUCH_AUTO_GUARD": "0"
+      }
+    }
+  }
+}
+```
+
+Auto guard が有効なとき（既定）、`post.perception.status` は次のどれかです:
+
+| ステータス | 意味 |
+|---|---|
+| `ok` | ガードを通過。対象を確かめた |
+| `unguarded` | `windowTitle` が渡されず、ガードなしで操作した |
+| `ambiguous_target` | 複数の窓が一致した。`hwnd` を渡して1つに決めるか、より詳しい題名を使う |
+| `target_not_found` | 渡した題名に一致する窓がない |
+| `identity_changed` | 窓が差し替わった（プロセスの再起動 / HWND の変化） |
+| `blocked_by_modal` | 返しません。ガードが確かめるのは窓が同じものかどうかだけで、モーダルダイアログは確かめません。`keyboard` は、自分のダイアログで無効になった窓を `code: "WindowBlockedByDialog"` で断ります |
+| `unsafe_coordinates` | クリックの座標が、対象の窓の矩形の外にある |
+| `browser_not_ready` | ブラウザのタブがまだ読み込み中。待ってから再試行する |
+| `needs_escalation` | `browser_click` を使うか、`windowTitle` を指定する |
+| `destination_required` | `keyboard` の書き込みが対象を指していない。ガードより前に断るので、`post.perception` ではなく、`code:"DestinationRequired"` と、`context.guard` の下のこのステータスで届く。`windowTitle` か `hwnd` を渡す |
+
+`unsafe_coordinates` か `identity_changed` が返ったとき、応答に `suggestedFix.fixId` が含まれることがあります。その `fixId` を該当するツールの呼び出しに渡すと、立て直しを承認できます:
+
+```json
+{ "name": "mouse_click",           "arguments": { "fixId": "fix-..." } }
+{ "name": "keyboard(action='type')",         "arguments": { "fixId": "fix-...", "text": "hello" } }
+{ "name": "keyboard(action='sequence')",     "arguments": { "fixId": "fix-...", "steps": [ ... ] } }
+{ "name": "click_element",         "arguments": { "fixId": "fix-..." } }
+{ "name": "browser_click", "arguments": { "fixId": "fix-..." } }
+```
+
+この fix は1回限りで、15 秒で期限が切れます。実行の前に、サーバが対象のプロセスの同一性を確かめ直します。
+
+---
+
+## 診断ログ
+
+サーバは、ツールの応答に出ないイベントを、追記専用のログに残します。場所は `%USERPROFILE%\.desktop-touch-mcp\logs\diagnostic.log` で、1行に JSON オブジェクトが1つです。クラッシュと遅い呼び出しを記録します。入力が違う場所に入ったときに見る場所が診断ログになったので、各 `windowTitle` がどう解決されたか、各書き込みがどこへ行ったかも記録します:
+
+- 題名を引くたびに、**`resolve`** の記録: 一致した窓の数、選んだ窓、選ばれなかった窓。題名で何も一致せず、ターミナルのプロセス名による代わりの探し方が働いたときは、その印も付きます。
+- 入力を送るたびに、**`dispatch_sink`** の記録（`keyboard`、`terminal`、`scroll`、`desktop_act` のバックグラウンドの書き込み）: どの経路を使ったか、どの窓に宛てたか、その時点で前面にあった窓はどれか。
+- 1回のツール呼び出しから出たすべての記録に共通の、相関 id。呼び出しが重なっても、解決と、それが生んだ書き込みを突き合わせられます。
+
+入力の呼び出しが違う窓に打ったように見えたら、どの窓をなぜ選んだかは、このファイルに書いてあります。記録は、書き込みがプロセスを出る直前に書きます。そのため、その前に断られた送信や失敗した送信は、起きたこととしては記録に残りません。
+
+ログはローテーションします。`diagnostic.log` が 64 MiB を超えると `diagnostic.log.1` になり、ローテーションした世代は最大2つまで残します。**サーバが1つだけ動いているなら、最新の記録は必ず `diagnostic.log` にあります。** ただし、少し前のイベントを探すときは、1つのファイルではなく `diagnostic.log*` を検索してください。このグロブは `diagnostic.log.<pid>.rotating` にも当たります。これは、ローテーションの間だけ、サーバが書き込み中のファイルを退避させておくファイル名です。これが残っていたら、ローテーションが終わらなかったということです。途中でサーバが強制終了されたか、退避の後でローテーションが失敗し、サーバがファイルを元の名前に戻せなかったかです。その間に新しい `diagnostic.log` が作られていた場合は、上書きしないよう元の名前には戻しません。また、戻すための移動も、ローテーションが失敗したのと同じ理由で失敗することがあります。中身は何も失われていません。名前の pid は、どのサーバのファイルかを示します。このファイルは、次のローテーションで番号付きの世代に組み込まれます。そのサーバがまだ動いていればそのサーバが組み込みます。そうでなければ、元のサーバが終了した後か、退避から1時間たった後に（プロセス id は使い回されるため）、ほかのどのサーバでも組み込みます。そのため、クラッシュしたサーバのログが、ディスクにいつまでも残ることはありません。
+
+どの記録も、書く前に上限と比べます。そのため、何日も動き続けるサーバも、書きながらファイルをローテーションします。定期ジョブはなく、再起動も、手での掃除も要りません。何もしていないサーバは何もローテーションしません。検査は、書くものがあるときにしか走らないためです。
+
+**上限は大きさで、期間ではありません。** 3つの世代で 192 MiB の記録を持ちます。それでどこまでさかのぼれるかは、その機械の忙しさ次第です。この上限を設けるきっかけになった環境は、1日に平均約 170 MB を書いており、1日を少し超える程度でした。特定のイベントを残したいときは、来週見つかると期待せず、ファイルをコピーしておいてください。ディスクを使ってでも長くさかのぼりたいときは、`DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES` を上げてください。
+
+この大きさを超える場合が2つあります。どちらも知っておいてください:
+
+- **複数のサーバが1つのログを共有する。** MCP クライアントはそれぞれ自分のサーバを起動し、既定ではどれも同じファイルに書きます。各サーバは自分が書いたバイト数を数えていて、実際のファイルを測り直すのは数 MB ごとだけです。そのため、どれかがローテーションするまでに、書き込み中のファイルが上限を超えることがあります。超える量は、動いているサーバの数に応じて増えますが、際限なく増えはしません。2つのサーバが同じ瞬間にローテーションし、互いの名前の変更がぶつかることもあります。その場合は世代が1つ失われ、あるサーバの最新の記録が、書き込み中のファイルではなく `diagnostic.log.1` に入ることがあります。1つのファイルではなく `diagnostic.log*` を grep すれば、どちらも拾えます。
+- **書き込み中のファイルの名前を変えられない**（ほかのプログラムが開いたままにしている、または権限がない）。このときはローテーションできず、ログは際限なく大きくなり続けます。退避した `.rotating` ファイルが開かれたままのときも、同じようにローテーションが止まります。これは、番号付きの世代に触る前に確かめます。何も失われません。失敗したローテーションは、書き込み中のファイルをそのまま残すか、最悪でも上の `.rotating` の名前で退避させたままにして、後のローテーションで世代に組み込ませます。ただ、上限が効かないのはこの場合だけなので、そのままにはしません。ログ自体に `log_rotation_failed` の記録を書きます。1行ごとではなく、ローテーションの失敗が続く間に1回です。更新の後で大きすぎる `diagnostic.log` を見つけたら、まずこれを grep してください。
+
+1つの記録が、それを入れるファイルより大きくなることはありません。極端に大きなペイロードを持つイベントは、短くした代わりの記録として書きます。`kind` は同じで、`record_truncated`、元の大きさ、本来の内容の先頭数 KB を入れた `head` 欄が付きます。
+
+| 変数 | デフォルト | 意味 |
+|---|---|---|
+| `DESKTOP_TOUCH_RESOLVE_LOG_RAW` | *(未設定 = オフ)* | 窓の題名と、探す題名は、短いハッシュとその長さで記録します。題名には、ファイル名、メールの件名、ブラウザのページの題名が含まれることがあるためです。`1` にすると、文字もそのまま記録します（ハッシュは残るので、両方を含むログも端から端まで読めます）。 |
+| `DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE` | *(未設定 = オン)* | `1` にすると、ログをまったく書きません。 |
+| `DESKTOP_TOUCH_DIAGNOSTIC_LOG_PATH` | *(ユーザー別のログフォルダ)* | ログを別の場所に書きます。シンボリックリンクも使えます。ローテーションはリンクをたどるので、リンクは書き込み中のログを指し続け、ローテーションした世代はリンクの横ではなく、実際のファイルの横にできます。 |
+| `DESKTOP_TOUCH_DIAGNOSTIC_LOG_MAX_BYTES` | `67108864` (64 MiB) | 書き込み中のログがこの大きさを超えたら、`diagnostic.log.1` にローテーションします。ローテーションした世代を2つ残すので、ログのフォルダはふつうこの値の約3倍になります（これを超える2つの場合は上を参照）。1 MiB 未満の値は 1 MiB に、1 GiB を超える値は 1 GiB にします。正の整数でない値は既定値に戻ります。バイトのつもりで MiB の数を書いても、その逆でも、書き間違いでローテーションが止まることはありません。ログを完全に止めるには、`DESKTOP_TOUCH_DIAGNOSTIC_LOG_DISABLE` を使ってください。 |
+
+---
+
+## 応答の高度なオプション
+
+### browser_eval の構造化モード
+
+`withPerception: true` を渡すと、生のテキストではなく、`post.perception` を含む構造化された JSON の応答を受け取れます:
+
+```json
+{ "name": "browser_eval", "arguments": { "expression": "document.title", "withPerception": true } }
+```
+
+`{ ok: true, result: "...", post: { perception: { status: "ok", ... } } }` を返します。
+
+### mouse_drag の窓をまたぐガード
+
+`mouse_drag` は、開始と終了の両方の座標をガードするようになりました。窓の境界をまたぐドラッグ（またはデスクトップの壁紙に届くドラッグ）は、既定で止めます。窓をまたぐドラッグや範囲選択のドラッグを意図して行うときは、次のようにします:
+
+```json
+{ "name": "mouse_drag", "arguments": { "startX": 100, "startY": 100, "endX": 900, "endY": 900, "allowCrossWindowDrag": true } }
+```
 
 ---
 
@@ -395,7 +564,7 @@ v0.16.x での opt-in フラグです。v0.17 以降は V2 がデフォルト ON
 - `lease_expired` / `*_mismatch` / `entity_not_found` → `desktop_discover` を再実行してリースを更新
 - `modal_blocking` → `response.blockingElement` (含まれていれば) が `{ name, role, automationId?, hwnd? }` を返す。`role: "dialog"` のときは別のダイアログ窓が対象の窓を無効にしており、`hwnd` がそれ — `target.hwnd = blockingElement.hwnd` で `desktop_discover` し直して答えてから retry。それ以外の role はスナップショットに写った窓で、OS が確かめられなかったもの — `hwnd` があれば `target.hwnd = blockingElement.hwnd` で `desktop_discover`、無ければ `click_element(name=blockingElement.name)` で閉じる。そのあと元の対象を discover し直して新しい lease で撃つ（同じ lease では再び拒まれる）
 - `entity_outside_viewport` → 要素が画面外へ移動: 由来ウィンドウ内でスクロールアウトしたなら `scroll` / `scroll(action='to_element')`、ウィンドウごと移動・閉じたなら `desktop_discover` を再実行
-- `origin_window_not_visible` → `focus_window(windowTitle)` で最小化 / 非表示のウィンドウを復元してから `desktop_discover` を再実行
+- `origin_window_not_visible` → `focus_window`（`title`、またはそのウィンドウを指す `hwnd`）で最小化 / 非表示のウィンドウを復元してから `desktop_discover` を再実行
 - `coordinate_outside_reachable_bounds` → 座標がどのモニタ上にも無い（通常は座標が古い）: `desktop_discover` を再実行する。内蔵 Windows 入力モジュール無しの構成ではプライマリモニタのみ到達可（その旨がメッセージに出る）
 - `cursor_placement_blocked` → ポインタをそこへ置けずクリックは送られていない（アプリがカーソルを掴んでいる / セッションが非対話）: カーソルを解放するかセッションに再接続する、または `click_element`（UIA invoke、カーソル非使用。リスト・ツリー・グリッドの項目には使わない）を使う
 - `keyboard_target_unsafe` → 何も入力されていない: 文字が別のコントロール / ウィンドウ、または読み取り専用のコントロールへ行くところだった。あるいは指定した欄（かそのウィンドウ）が無効だった（どれかは `if_unexpected.detail`。無効なら、無効にしているものが済んでから discover し直す）。指定した欄にフォーカスを移してから入力し直す——前面の `keyboard` では打ち直さない。タイトル指定なら `desktop_act` の `action='click'`、ハンドル指定ならタイトルで discover し直してから（ただし共通ダイアログはタイトルもハンドルに解決するので、そこではテキスト欄にフォーカスを移す道が無い）。別のウィンドウのときは先に `focus_window`
