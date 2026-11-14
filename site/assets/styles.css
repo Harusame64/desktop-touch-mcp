@@ -183,7 +183,7 @@ img, svg { max-width: 100%; display: block; }
 .hero-card { overflow: hidden; }
 .hero-grid {
   display: grid;
-  grid-template-columns: 1.05fr 0.95fr;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
 }
 
 .hero-copy { padding: 48px 48px 42px; }
@@ -296,6 +296,10 @@ p, li, td, th, blockquote {
 
 .section-stack, .article-main {
   display: grid;
+  /* Grid tracks here are minmax(0, …): a plain track (an implicit one, or 1fr) has a minimum of its items'
+     min-content, so one long code line widened the page past a phone's screen. With a zero minimum the code
+     scrolls inside its own pre box instead. The same applies to every grid below. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 22px;
 }
 
@@ -483,7 +487,7 @@ blockquote {
 
 /* Tablet ↓ */
 @media (max-width: 980px) {
-  .hero-grid, .article-layout, .two-up, .three-up, .feature-grid { grid-template-columns: 1fr; }
+  .hero-grid, .article-layout, .two-up, .three-up, .feature-grid { grid-template-columns: minmax(0, 1fr); }
   .article-aside { position: static; }
   .hero-copy { padding: 36px 26px 26px; }
   .hero-visual { padding: 18px; }
