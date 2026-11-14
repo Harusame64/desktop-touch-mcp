@@ -575,19 +575,26 @@ export function windowsPowerShellEnv(env) {
   return Object.fromEntries(Object.entries(env).filter(([name]) => name.toUpperCase() !== "PSMODULEPATH"));
 }
 
-async function expandZip(zipPath, destination) {
+export async function expandZip(zipPath, destination) {
   // macOS: unzip restores the zip's node_modules/.bin symlinks as links, and adds no quarantine
   // attribute — the ad-hoc-signed addon loads only when it is not quarantined (measured, M3).
   if (process.platform === "darwin") {
     return await run("unzip", ["-q", "-o", zipPath, "-d", destination]);
   }
-  const script = "& { param($zip, $dest) Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force }";
+  // The archive module is the one that ships with the PowerShell running the script ($PSHOME), whatever the module path
+  // lists first: a PSModulePath persisted for the user (HKCU) can name PowerShell 7's folders too, and Windows
+  // PowerShell rebuilds its path from that even without the process variable (gate 2 on #991).
+  const script =
+    "& { param($zip, $dest) " +
+    "Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Archive') -Force; " +
+    "Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force }";
   const args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script, zipPath, destination];
 
   try {
     return await run("powershell.exe", args, windowsPowerShellEnv(process.env));
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
+    // PowerShell 7 loads its own archive module from $PSHOME (above), so its environment is passed as it is.
     return await run("pwsh.exe", ["-NoLogo", ...args]);
   }
 }
