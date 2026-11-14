@@ -23,6 +23,30 @@ const deps = (over: Partial<WheelPointDeps> & { iconic?: boolean; cloaked?: bool
   },
 });
 
+describe("the page's window at the point (internal #409)", () => {
+  const twoAtOneRect = (front: bigint) => deps({
+    pointAt: () => ({ child: front, root: FRAME }),
+    surface: {
+      isIconic: () => false,
+      isCloaked: () => false,
+      descendants: () => [
+        { hwnd: PAGE, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: RECT },
+        { hwnd: 3n, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: RECT },
+      ],
+    },
+  });
+  it("two page windows at one rect: the one Windows finds at the point", () => {
+    expect(wheelPointOnPage(FRAME, twoAtOneRect(3n))).toMatchObject({ kind: "point", pageWindows: [3n] });
+    expect(wheelPointOnPage(FRAME, twoAtOneRect(PAGE))).toMatchObject({ kind: "point", pageWindows: [PAGE] });
+    expect(wheelPointOnPage(FRAME, twoAtOneRect(3n), { x: 300, y: 450 })).toMatchObject({ kind: "point", point: { x: 300, y: 450 }, pageWindows: [3n] });
+  });
+  it("a child window drawn inside the page at the point: every page window of the surface", () => {
+    const d = twoAtOneRect(7n);
+    d.classOf = (h) => (h === 7n ? "Intermediate D3D Window" : "Chrome_WidgetWin_1");
+    expect(wheelPointOnPage(FRAME, d)).toMatchObject({ kind: "point", pageWindows: [PAGE, 3n] });
+  });
+});
+
 describe("wheelPointOnPage", () => {
   it("the page's centre when it shows", () => {
     expect(wheelPointOnPage(PAGE, deps())).toEqual({ kind: "point", frame: FRAME, point: { x: 600, y: 450 }, pageWindows: [PAGE] });

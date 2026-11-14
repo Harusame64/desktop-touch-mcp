@@ -2452,6 +2452,14 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
       for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(p.x, p.y));
     });
 
+    it("the page's own window named rather than the frame: no page and no point, the search as before", async () => {
+      shape(0);
+      wheelPointDeps.rootOf = () => FRAME;
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+      await dispatchScrollWheel({ kind: "hwnd", hwnd: PAGE }, { direction: "down", notch: 1 });
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledWith({ hwnd: PAGE.toString(), wheelDeltaY: 120, wheelDeltaX: 0 });
+    });
+
     it("not a Chromium window: no page and no point, the search as before", async () => {
       shape(0, "XLMAIN");
       uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });

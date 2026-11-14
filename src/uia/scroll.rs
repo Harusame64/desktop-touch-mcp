@@ -389,13 +389,12 @@ fn scroll_by_wheel_at_hwnd_impl(
     // internal #409 — the caller placed the wheel on a Chromium page: only that page's Document may move.
     if let Some(page) = page_at_point(opts) {
         let mut dfs_budget = MAX_SCROLL_DFS_NODES;
-        let mut best: Option<(u32, IUIAutomationScrollPattern)> = None;
-        find_page_document_scroll(
+        let found = find_page_document_scroll(
             ctx, &elem, MAX_SEARCH_DEPTH, hwnd_i64 as isize, &page,
-            need_vertical, need_horizontal, &mut dfs_budget, &mut best,
+            need_vertical, need_horizontal, &mut dfs_budget,
         );
-        return match best {
-            Some((_, scroll)) => apply_scroll_with_pattern(&scroll, opts),
+        return match found {
+            Some(scroll) => apply_scroll_with_pattern(&scroll, opts),
             None => Ok(ScrollResult {
                 ok: false,
                 scrolled: false,
@@ -809,11 +808,11 @@ fn page_at_point(opts: &ScrollByWheelAtHwndOptions) -> Option<PageAtPoint> {
 /// that does. A web Document's is the `Chrome_RenderWidgetHostHWND` its page is drawn in: one step up for a page,
 /// DevTools or a side panel, 3–13 for an out-of-process iframe or the PDF viewer's inner Documents, none in Chrome 120,
 /// where the Document is that window's own element (win2, dev/409-spike rounds 2 and 4: 43 of 43 and every Chrome
-/// 120 cell). `None` when the walk fails or runs past `MAX_SEARCH_DEPTH` steps.
+/// 120 cell). `None` when the walk fails or runs past `MAX_DRAWN_IN_STEPS` steps.
 fn drawn_in_window(ctx: &UiaContext, elem: &IUIAutomationElement) -> Option<isize> {
     let raw = unsafe { ctx.automation.RawViewWalker().ok()? };
     let mut current = elem.clone();
-    for _ in 0..MAX_SEARCH_DEPTH {
+    for _ in 0..MAX_DRAWN_IN_STEPS {
         let h = unsafe { current.CurrentNativeWindowHandle().ok()? }.0 as isize;
         if h != 0 {
             return Some(h);
@@ -823,6 +822,10 @@ fn drawn_in_window(ctx: &UiaContext, elem: &IUIAutomationElement) -> Option<isiz
     None
 }
 
+/// internal #409 — RawView steps `drawn_in_window` takes at most: the deepest seen was 13 (the PDF viewer's body), with
+/// room for a PDF inside an iframe. Only a corrupt or cyclic tree reaches it.
+const MAX_DRAWN_IN_STEPS: u32 = 40;
+
 fn rect_holds(r: &windows::Win32::Foundation::RECT, x: i32, y: i32) -> bool {
     x >= r.left && x < r.right && y >= r.top && y < r.bottom
 }
@@ -831,7 +834,8 @@ fn rect_holds(r: &windows::Win32::Foundation::RECT, x: i32, y: i32) -> bool {
 /// an extension's panel, the New Tab page's customize button, the PDF viewer's thumbnails. It scrolled that and
 /// answered delivered while the page stayed still (win2, dev/409-spike). With a page and point, this search keeps only
 /// a Document drawn in one of the page's windows (`drawn_in_window`) that holds the point and scrolls on the needed
-/// axes, and the deepest such Document wins: the PDF viewer's body Document, inside the page's.
+/// axes. The first in tree order wins, so the outermost: the page's own Document before a scrollable iframe at the
+/// point, as the frame-wide search had it; on a PDF, whose outer Documents do not scroll, the viewer's body.
 ///
 /// What it does not do:
 /// - It does not go down from the page's window (`ElementFromHandle`). In Chrome's immersive reading mode the hidden
@@ -852,10 +856,9 @@ fn find_page_document_scroll(
     need_vertical: bool,
     need_horizontal: bool,
     node_budget: &mut u32,
-    best: &mut Option<(u32, IUIAutomationScrollPattern)>,
-) {
+) -> Option<IUIAutomationScrollPattern> {
     if depth == 0 || *node_budget == 0 {
-        return;
+        return None;
     }
     *node_budget = node_budget.saturating_sub(1);
     unsafe {
@@ -866,7 +869,7 @@ fn find_page_document_scroll(
         if is_document {
             match drawn_in_window(ctx, elem) {
                 Some(h) if page.windows.contains(&h) => {}
-                _ => return,
+                _ => return None,
             }
             let holds = elem
                 .CurrentBoundingRectangle()
@@ -880,13 +883,12 @@ fn find_page_document_scroll(
                     || scroll.CurrentVerticallyScrollable().map(|b| b.0 != 0).unwrap_or(false);
                 let h_ok = !need_horizontal
                     || scroll.CurrentHorizontallyScrollable().map(|b| b.0 != 0).unwrap_or(false);
-                // `depth` counts down, so a smaller one is deeper; on a tie the first found stays.
-                if v_ok && h_ok && best.as_ref().is_none_or(|(d, _)| depth < *d) {
-                    *best = Some((depth, scroll));
+                if v_ok && h_ok {
+                    return Some(scroll);
                 }
             }
         }
-        let Ok(first) = ctx.walker.GetFirstChildElement(elem) else { return };
+        let first = ctx.walker.GetFirstChildElement(elem).ok()?;
         let mut child: Option<IUIAutomationElement> = Some(first);
         while let Some(c) = child {
             // The same window boundary as `find_scroll_pattern_dfs` (P2-1).
@@ -907,15 +909,18 @@ fn find_page_document_scroll(
                 child = ctx.walker.GetNextSiblingElement(&c).ok();
                 continue;
             }
-            find_page_document_scroll(
-                ctx, &c, depth - 1, target_hwnd, page, need_vertical, need_horizontal, node_budget, best,
-            );
+            if let Some(found) = find_page_document_scroll(
+                ctx, &c, depth - 1, target_hwnd, page, need_vertical, need_horizontal, node_budget,
+            ) {
+                return Some(found);
+            }
             if *node_budget == 0 {
-                return;
+                return None;
             }
             child = ctx.walker.GetNextSiblingElement(&c).ok();
         }
     }
+    None
 }
 
 /// internal #407 — what the DFS has met so far.

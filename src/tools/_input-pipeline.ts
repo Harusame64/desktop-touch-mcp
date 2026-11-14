@@ -2092,15 +2092,15 @@ export async function dispatchScrollWheel(
       if (typeof scrollByWheel === "function") {
         const wheelDelta = wheelDeltaForNotch(params);
         // internal #409 — on a Chromium page, Tier 1 may move only a Document drawn in the page's own window at the
-        // point Tier 3 would post to. Searched over the whole frame, it took a docked DevTools pane, a side panel, an
-        // extension's panel, the New Tab page's customize button or the PDF viewer's thumbnails first, and answered
-        // delivered while the page stayed still (win2, dev/409-spike rounds 1–4). When none is there it answers
-        // ok:false, and Tier 3 posts at that same point.
+        // point Tier 3 would post to. Searched over the whole frame, it took the New Tab page's customize button or the
+        // PDF viewer's thumbnails first, and answered delivered while the page stayed still (win2, dev/409-spike). When
+        // none is there it answers ok:false, and Tier 3 posts to the page as below. Only when the window named is the
+        // frame: a page or DevTools window named by its own handle keeps the search it had.
         const result = (await scrollByWheel({
           hwnd: dest.hwnd.toString(),
           wheelDeltaY: wheelDelta.y,
           wheelDeltaX: wheelDelta.x,
-          ...(pagePoint.kind === "point" && {
+          ...(pagePoint.kind === "point" && pagePoint.frame === dest.hwnd && {
             pageWindows: pagePoint.pageWindows.map((h) => h.toString()),
             pointX: pagePoint.point.x,
             pointY: pagePoint.point.y,

@@ -22,12 +22,12 @@
   `delivered` while the page stayed still. That search now passes over DevTools, unless the window is DevTools
   itself; when the page has nothing UIA can scroll, the wheel is posted to the page as for any other window
   (internal #407).
-- **`scroll` on a Chrome or Edge page reached without CDP moves the page, not a side panel or a part of the
-  browser.** UIA's search for something to scroll could still take a side panel, an extension's panel, the New Tab
-  page's customize button or a PDF's thumbnails first, and answer `delivered` while the page stayed still. When the
-  page's place on screen is known, UIA now moves only the page's own document under the point the wheel would be
-  posted to (a PDF's body, for a PDF). When nothing there can be moved that way, the wheel is posted at that point.
-  When the page's place is not known, nothing changes (internal #409).
+- **`scroll` on a Chrome or Edge page reached without CDP moves the page, not a PDF's thumbnails or the New Tab
+  page's customize button.** UIA's search for something to scroll took those first and answered `delivered` while
+  the page stayed still. When the page's place on screen is known, UIA now moves only the page's own document under
+  the point the wheel would be posted to (for a PDF, its body). When nothing there can be moved that way, the wheel
+  is posted to the page. With a side panel open beside the page, its place is not known yet, and nothing changes
+  (internal #409).
 - **`scroll` with `x`/`y` on a Chrome or Edge window reached without CDP also scrolls what is at that point.** The
   wheel posted to the window carried the page's centre (or another visible point), and UIA, tried first, moved only
   the document. With two panes side by side, the one at the centre scrolled; with a box pointed at, the document
