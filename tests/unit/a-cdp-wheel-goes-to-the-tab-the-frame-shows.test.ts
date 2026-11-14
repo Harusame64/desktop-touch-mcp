@@ -20,7 +20,7 @@ const RIGHT = { rect: rect(1300, 100, 1200, 800), bounds: bounds(1300, 100, 1200
 const MAX = { rect: rect(-8, -8, 1936, 1056), bounds: bounds(-8, -8, 1936, 1056) };
 
 function deps(over: {
-  surface?: "surface" | "covered" | "minimized" | "cloaked" | "unreadable";
+  surface?: "surface" | "covered" | "minimized" | "cloaked" | "unreadable" | "panel";
   frameRect?: ReturnType<TabOfFrameDeps["frameRect"]>;
   scale?: number;
   title?: string;
@@ -32,6 +32,12 @@ function deps(over: {
   const s = over.surface ?? "surface";
   const children = s === "surface"
     ? [{ hwnd: 0x200n, className: PAGE_RWH_CLASS, visible: true, rect: rect(110, 180, 1180, 710) }]
+    : s === "panel"
+      // internal #410 — the page's window and a side panel's beside it: neither inside the other, not one rect.
+      ? [
+          { hwnd: 0x200n, className: PAGE_RWH_CLASS, visible: true, rect: rect(110, 180, 800, 710) },
+          { hwnd: 0x202n, className: PAGE_RWH_CLASS, visible: true, rect: rect(920, 220, 360, 670) },
+        ]
     : s === "covered"
       ? [{ hwnd: 0x201n, className: "Intermediate D3D Window", visible: true, rect: rect(0, 0, 10, 10) }]
       : [];
@@ -68,6 +74,14 @@ describe("tabOfFrame — a frame with no page surface is not on the CDP road (AD
   it("the surface cannot be read: none, the window road keeps its own point (gate 2 on #971: no guess)", async () => {
     const d = deps({ surface: "unreadable", windows, visible: ["A"], title: "Alpha - Google Chrome" });
     expect(await tabOfFrame(FRAME, tabs, d)).toEqual({ kind: "none", why: "unreadable" });
+  });
+  it("a side panel open beside the page (page windows that cannot be told apart): the tab is decided as for any frame (internal #410)", async () => {
+    const d = deps({ surface: "panel", windows, visible: ["A"], title: "Alpha - Google Chrome" });
+    expect(await tabOfFrame(FRAME, tabs, d)).toEqual({ kind: "tab", tabId: "A" });
+  });
+  it("…and still none when no tab at the frame is visible", async () => {
+    const d = deps({ surface: "panel", windows, visible: [], title: "Alpha - Google Chrome" });
+    expect(await tabOfFrame(FRAME, tabs, d)).toEqual({ kind: "none", why: "no_visible_tab" });
   });
   it("the control: the same window with its surface is on the CDP road", async () => {
     expect(await tabOfFrame(FRAME, tabs, deps({ windows, visible: ["A"], title: "Alpha - Google Chrome" })))

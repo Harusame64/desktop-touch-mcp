@@ -6,7 +6,7 @@
  * behind scrolled the one in front and answered delivered_via_cdp (win2, #965 W2/W4, and main b1c614e9 in
  * OQ-40-8). A tab is the frame's only when all of these hold (ADR-040 invariants 1 and 6):
  * - the frame has a page surface (a covered, minimized or cloaked window has none, and its page does not
- *   take a CDP wheel: spike S1);
+ *   take a CDP wheel: spike S1), or page windows that cannot be told apart (a side panel beside the page);
  * - the tab is in a browser window whose bounds are the frame's rect;
  * - the frame's title shows the tab's title (the longest such title, so "Docs" is not taken for a frame
  *   showing "Docs - Project");
@@ -66,7 +66,11 @@ export async function tabOfFrame(
 ): Promise<TabOfFrame> {
   const surface = resolvePageSurface(frame, deps.surface);
   if (surface.kind === "not_shown") return { kind: "none", why: "not_shown" };
-  if (surface.kind === "unreadable") return { kind: "none", why: "unreadable" };
+  // internal #410 — page windows that cannot be told apart (a side panel or an extension's panel beside the page, a
+  // split view) are still drawn: a covered, minimized or cloaked frame has none (spike S1). Which tab the frame shows
+  // is decided below by its window, title and visibility, as for any frame, and the surface's rect is not used. It
+  // used to answer `unreadable` there, so a scroll with a panel open never took the CDP road.
+  if (surface.kind === "unreadable" && surface.why !== "ambiguous") return { kind: "none", why: "unreadable" };
   try {
     const rect = deps.frameRect(frame);
     if (rect === null) return { kind: "none", why: "unreadable" };
