@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Writes `src/stub-tool-catalog.ts` from the Windows server's own `tools/list`.
+ * Writes `src/stub-tool-catalog.ts`, and its short index `docs/tool-descriptions.md`, from the Windows server's own
+ * `tools/list`.
  *
  * The work is in `tests/unit/stub-catalog-is-the-live-tools-list.test.ts`, which registers the
  * real tools on a real McpServer and reads `tools/list` through the SDK client; this script runs
@@ -79,11 +80,11 @@ if (collected.length !== 1 || collected[0] !== FILE) {
 if (res.status !== 0 || passed === 0) {
   console.error(
     CHECK
-      ? "check:stub-catalog: src/stub-tool-catalog.ts is not the server's tools/list — run `npm run generate:stub-catalog`."
+      ? "check:stub-catalog: src/stub-tool-catalog.ts or docs/tool-descriptions.md is not the server's tools/list — run `npm run generate:stub-catalog`."
       : "generate-stub-tool-catalog: the generating test did not pass, so the catalog may not have been written.",
   );
   process.exit(res.status || 1);
 }
 console.log(CHECK
-  ? "check:stub-catalog: src/stub-tool-catalog.ts is the server's tools/list"
-  : "generate-stub-tool-catalog: wrote src/stub-tool-catalog.ts from tools/list");
+  ? "check:stub-catalog: src/stub-tool-catalog.ts and docs/tool-descriptions.md are the server's tools/list"
+  : "generate-stub-tool-catalog: wrote src/stub-tool-catalog.ts and docs/tool-descriptions.md from tools/list");
