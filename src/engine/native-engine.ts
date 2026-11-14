@@ -442,6 +442,13 @@ export interface NativeUia {
     hwnd: string;
     wheelDeltaY: number;
     wheelDeltaX: number;
+    /**
+     * internal #409 — a Chromium page's own windows and the screen point (physical px) inside one of them. Given,
+     * only a Document drawn in one of these windows that holds the point is scrolled, and none answers ok:false.
+     */
+    pageWindows?: string[];
+    pointX?: number;
+    pointY?: number;
   }): Promise<NativeScrollResult>;
   /**
    * ADR-019 MVP-1 (Stage 1) — read-only `ScrollPercent` observation. Walks

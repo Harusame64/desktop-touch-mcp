@@ -29,6 +29,13 @@ export type WheelPagePoint =
       kind: "point";
       frame: bigint;
       point: { x: number; y: number };
+      /**
+       * internal #409 — the page's window at the point: the one Windows finds there when it is one of the surface's,
+       * else all of the surface's `rwhs` (the point fell on a child drawn inside the page). Tier 1 may scroll only a
+       * Document drawn in one of these, so a DevTools pane, a side panel or the PDF viewer's thumbnails, drawn in
+       * other windows or away from the point, are not what moves.
+       */
+      pageWindows: bigint[];
       /** internal #404 — the caller's point was given and this is not it. Absent when it is, or none was given. */
       pointNotUsed?: PointNotUsed;
     }
@@ -87,8 +94,11 @@ export function wheelPointOnPage(hwnd: bigint, deps: WheelPointDeps, preferred?:
     return { kind: "not_visible", frame, why: "no_page_window" };
   }
   const { x, y, width, height } = surface.rect;
-  const shows = (at: { child: bigint; root: bigint } | null): boolean =>
-    at !== null && at.root === frame && (surface.rwhs.includes(at.child) || deps.classOf(at.child) !== PAGE_RWH_CLASS);
+  const shows = (at: { child: bigint; root: bigint }): boolean =>
+    at.root === frame && (surface.rwhs.includes(at.child) || deps.classOf(at.child) !== PAGE_RWH_CLASS);
+  // Two page windows can share the surface's rect (undocked DevTools, a hidden page under immersive reading): the
+  // one Windows finds at the point is the one in front.
+  const windowsAt = (at: { child: bigint; root: bigint }): bigint[] => (surface.rwhs.includes(at.child) ? [at.child] : surface.rwhs);
   let pointNotUsed: PointNotUsed | undefined;
   if (preferred !== undefined) {
     const px = Math.round(preferred.x), py = Math.round(preferred.y);
@@ -96,13 +106,13 @@ export function wheelPointOnPage(hwnd: bigint, deps: WheelPointDeps, preferred?:
     else {
       const at = deps.pointAt(px, py);
       if (at === undefined) pointNotUsed = "unreadable";
-      else if (shows(at)) return { kind: "point", frame, point: { x: px, y: py } };
+      else if (at !== null && shows(at)) return { kind: "point", frame, point: { x: px, y: py }, pageWindows: windowsAt(at) };
       // Over this window but not its page (a DevTools pane drawn in its own page window), or another window.
       else pointNotUsed = at !== null && at.root === frame ? "off" : "covered";
     }
   }
-  const withWhy = (point: { x: number; y: number }): WheelPagePoint =>
-    ({ kind: "point", frame, point, ...(pointNotUsed !== undefined && { pointNotUsed }) });
+  const withWhy = (point: { x: number; y: number }, at: { child: bigint; root: bigint }): WheelPagePoint =>
+    ({ kind: "point", frame, point, pageWindows: windowsAt(at), ...(pointNotUsed !== undefined && { pointNotUsed }) });
   let asked = 0;
   for (const [fx, fy] of WHEEL_POINT_FRACTIONS) {
     const point = { x: Math.round(x + width * fx), y: Math.round(y + height * fy) };
@@ -117,7 +127,7 @@ export function wheelPointOnPage(hwnd: bigint, deps: WheelPointDeps, preferred?:
     asked += 1;
     // Visible when this frame is the window there and the child is not another page window (DevTools' own,
     // which Chromium would hand the wheel). A child inside the page window counts as the page (gate 2).
-    if (shows(at)) return withWhy(point);
+    if (at !== null && shows(at)) return withWhy(point, at);
   }
   return { kind: "not_visible", frame, why: "covered" };
 }

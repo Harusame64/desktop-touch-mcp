@@ -2426,6 +2426,63 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
   });
   afterEach(() => { Object.assign(wheelPointDeps, saved); });
 
+  // internal #409 — Tier 1 searched the whole frame and moved a docked DevTools pane, a side panel or the PDF viewer's
+  // thumbnails instead of the page (win2, dev/409-spike). It is now told the page's windows and the point Tier 3 would
+  // post to, and when it finds no Document of the page there, Tier 3 posts at that same point.
+  describe("Tier 1 is told the page's windows and the point (internal #409)", () => {
+    const hwndDest = { kind: "hwnd" as const, hwnd: FRAME };
+    beforeEach(() => { uiaScrollByWheelAtHwndMock.mockReset(); });
+
+    it("a Chromium page: the page's window and the point Tier 3 would post to", async () => {
+      shape(0);
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+      expect(await dispatchScrollWheel(hwndDest, { direction: "down", notch: 1 })).toEqual({ scrolled: true, channel: "uia", reason: "delivered_via_uia" });
+      // The page's centre: 508 + 784/2, 237 + 505/2 rounded.
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledWith({ hwnd: FRAME.toString(), wheelDeltaY: 120, wheelDeltaX: 0, pageWindows: [PAGE.toString()], pointX: 900, pointY: 490 });
+    });
+
+    it("its centre covered: the point is the visible one, the same Tier 3 uses", async () => {
+      shape(1100);
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: false, scrolled: false });
+      await dispatchScrollWheel(hwndDest, { direction: "down", notch: 1 });
+      const p = { x: Math.round(508 + 784 * 0.9), y: Math.round(237 + 505 * 0.02) };
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledWith(expect.objectContaining({ pageWindows: [PAGE.toString()], pointX: p.x, pointY: p.y }));
+      // No Document of the page there: Tier 3 posts at that same point.
+      expect(win32PostMessageMock).toHaveBeenCalled();
+      for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(p.x, p.y));
+    });
+
+    it("the page's own window named rather than the frame: no page and no point, the search as before", async () => {
+      shape(0);
+      wheelPointDeps.rootOf = () => FRAME;
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+      await dispatchScrollWheel({ kind: "hwnd", hwnd: PAGE }, { direction: "down", notch: 1 });
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledWith({ hwnd: PAGE.toString(), wheelDeltaY: 120, wheelDeltaX: 0 });
+    });
+
+    it("not a Chromium window: no page and no point, the search as before", async () => {
+      shape(0, "XLMAIN");
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+      await dispatchScrollWheel(hwndDest, { direction: "down", notch: 1 });
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledWith({ hwnd: FRAME.toString(), wheelDeltaY: 120, wheelDeltaX: 0 });
+    });
+
+    it("a Chromium window whose page cannot be placed (two page windows side by side, no size to tell them): as before", async () => {
+      shape(0);
+      wheelPointDeps.surface = {
+        isIconic: () => false,
+        isCloaked: () => false,
+        descendants: () => [
+          { hwnd: PAGE, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: { x: 508, y: 237, width: 400, height: 505 } },
+          { hwnd: 0x502n, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: { x: 920, y: 237, width: 360, height: 505 } },
+        ],
+      };
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+      await dispatchScrollWheel(hwndDest, { direction: "down", notch: 1 });
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledWith({ hwnd: FRAME.toString(), wheelDeltaY: 120, wheelDeltaX: 0 });
+    });
+  });
+
   it("the frame's centre is covered (Q2'): every post carries a point where its own page shows", async () => {
     shape(1100);
     await postWheelToHwnd(FRAME, { direction: "down", notch: 3 });
