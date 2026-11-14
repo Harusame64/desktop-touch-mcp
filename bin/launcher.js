@@ -547,9 +547,9 @@ function stderrTail(stderr) {
 }
 
 /** Resolves with the command's stderr, which may be non-empty on success. */
-function run(command, args) {
+function run(command, args, env) {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { windowsHide: true, maxBuffer: RUN_MAX_BUFFER }, (error, _stdout, stderr) => {
+    execFile(command, args, { windowsHide: true, maxBuffer: RUN_MAX_BUFFER, ...(env && { env }) }, (error, _stdout, stderr) => {
       if (error) {
         const tail = stderrTail(stderr);
         error.message = tail ? `${error.message}\n${tail}` : error.message;
@@ -561,19 +561,40 @@ function run(command, args) {
   });
 }
 
-async function expandZip(zipPath, destination) {
+/**
+ * The environment for Windows PowerShell 5.1 (`powershell.exe`): this process's, without `PSModulePath`.
+ *
+ * A client started from a PowerShell 7 prompt passes PowerShell 7's `PSModulePath` down, with its own module folder
+ * first. Windows PowerShell 5.1 then loaded PowerShell 7.7's `Microsoft.PowerShell.Archive`, whose `Expand-Archive`
+ * calls a .NET overload that .NET Framework does not have: "Cannot find an overload for "ExtractToDirectory" and the
+ * argument count: "3"", 0 of 6,690 files, and the install failed (win2, the 2.4.2 npx smoke). Without the variable,
+ * Windows PowerShell builds its own default module path. Windows reads environment names in any case, so every
+ * spelling of it is dropped. Exported for tests.
+ */
+export function windowsPowerShellEnv(env) {
+  return Object.fromEntries(Object.entries(env).filter(([name]) => name.toUpperCase() !== "PSMODULEPATH"));
+}
+
+export async function expandZip(zipPath, destination) {
   // macOS: unzip restores the zip's node_modules/.bin symlinks as links, and adds no quarantine
   // attribute — the ad-hoc-signed addon loads only when it is not quarantined (measured, M3).
   if (process.platform === "darwin") {
     return await run("unzip", ["-q", "-o", zipPath, "-d", destination]);
   }
-  const script = "& { param($zip, $dest) Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force }";
+  // The archive module is the one that ships with the PowerShell running the script ($PSHOME), whatever the module path
+  // lists first: a PSModulePath persisted for the user (HKCU) can name PowerShell 7's folders too, and Windows
+  // PowerShell rebuilds its path from that even without the process variable (gate 2 on #991).
+  const script =
+    "& { param($zip, $dest) " +
+    "Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Archive') -Force; " +
+    "Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force }";
   const args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script, zipPath, destination];
 
   try {
-    return await run("powershell.exe", args);
+    return await run("powershell.exe", args, windowsPowerShellEnv(process.env));
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
+    // PowerShell 7 loads its own archive module from $PSHOME (above), so its environment is passed as it is.
     return await run("pwsh.exe", ["-NoLogo", ...args]);
   }
 }

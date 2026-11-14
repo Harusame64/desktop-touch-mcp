@@ -1,5 +1,29 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed — Windows
+- **The first run of a new version installs when PowerShell 7's module path is in the environment.** The launcher
+  unpacks the release zip with Windows PowerShell 5.1, which loaded PowerShell 7's archive module instead of its own
+  and could not use it. The install stopped with nothing unpacked, and the server did not start. It looked like this:
+  - the launcher's lines (stderr) ended with
+    `Extracting desktop-touch-mcp-windows.zip under <DESKTOP_TOUCH_MCP_HOME> left 0 of 6690 files.` (the count depends
+    on the version), then `The extractor reported:` and
+    `Cannot find an overload for "ExtractToDirectory" and the argument count: "3".`, at a line of
+    `…\Modules\Microsoft.PowerShell.Archive\Microsoft.PowerShell.Archive.psm1` under PowerShell 7's install folder
+    (`MethodCountCouldNotFindBest`), and it exited 1;
+  - an MCP client saw the server close before it answered, with no tools (`MCP error -32000: Connection closed`).
+
+  It happened with PowerShell 7.7 installed, in either of two ways, both measured:
+  - the client was started from a PowerShell 7 prompt, so it inherited PowerShell 7's `PSModulePath`;
+  - a `PSModulePath` naming PowerShell 7's module folder was saved for the user (`HKCU\Environment`), even with no
+    such variable in the client's own environment.
+
+  Only the first start of a new version (a first install, or an upgrade) unpacks a zip; a version already installed
+  kept starting. The launcher now loads the archive module that ships with the
+  PowerShell running it, and runs Windows PowerShell without the inherited variable. On 2.4.2 or earlier, when the
+  variable came from a PowerShell 7 prompt, starting the client from Windows PowerShell or `cmd` avoids it.
+
 ## [2.4.2] - 2026-11-14 — Scrolls and clicks in Chrome and Edge land on the page, and more replies say when nothing happened
 
 `scroll` on Chrome and Edge moves the page rather than DevTools, a side panel, a PDF's thumbnails or another window,
