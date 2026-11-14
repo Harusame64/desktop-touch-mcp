@@ -982,12 +982,12 @@ fn page_windows_in_contents_impl(ctx: &UiaContext, frame: &str) -> napi::Result<
     };
     let mut windows: Vec<isize> = Vec::new();
     let mut budget = MAX_SCROLL_DFS_NODES;
-    collect_document_windows(ctx, &contents, MAX_SEARCH_DEPTH, &mut budget, &mut windows);
+    let complete = collect_document_windows(ctx, &contents, MAX_SEARCH_DEPTH, &mut budget, &mut windows).is_ok();
     // A crashed tab's view is a Document drawn in the frame itself: its page window is gone, and what is left in the
     // contents area (a docked DevTools) is not the page (win2, dev/409-spike rounds 2–4, Chrome 157 and Edge 157).
-    // Then nothing is said, and the page stays as unplaced as before. So is it when the walk ran out before the end,
-    // where such a view may lie unseen, or found no Document at all (agy on #986).
-    if budget == 0 || windows.is_empty() || windows.contains(&(raw as isize)) {
+    // Then nothing is said, and the page stays as unplaced as before. So is it when the read did not see the whole area
+    // (`Incomplete`), where such a view or a second page may lie unseen, or found no Document at all (agy, codex on #986).
+    if !complete || windows.is_empty() || windows.contains(&(raw as isize)) {
         return Ok(None);
     }
     Ok(Some(windows.into_iter().map(|h| (h as i64).to_string()).collect()))
@@ -1077,26 +1077,38 @@ fn collect_document_windows(
     depth: u32,
     budget: &mut u32,
     out: &mut Vec<isize>,
-) {
+) -> Result<(), Incomplete> {
     if depth == 0 || *budget == 0 {
-        return;
+        return Err(Incomplete);
     }
     *budget -= 1;
     if is_document(elem) {
-        if let Some(h) = drawn_in_window(ctx, elem)
-            && !out.contains(&h)
-        {
+        let h = drawn_in_window(ctx, elem).ok_or(Incomplete)?;
+        if !out.contains(&h) {
             out.push(h);
         }
-        return;
+        return Ok(());
     }
-    let mut child = unsafe { ctx.walker.GetFirstChildElement(elem) }.ok();
+    let mut child = next_element(unsafe { ctx.walker.GetFirstChildElement(elem) })?;
     while let Some(c) = child {
-        collect_document_windows(ctx, &c, depth - 1, budget, out);
-        if *budget == 0 {
-            return;
-        }
-        child = unsafe { ctx.walker.GetNextSiblingElement(&c) }.ok();
+        collect_document_windows(ctx, &c, depth - 1, budget, out)?;
+        child = next_element(unsafe { ctx.walker.GetNextSiblingElement(&c) })?;
+    }
+    Ok(())
+}
+
+/// internal #409 — the contents-area read did not see all of it: a Document whose window could not be read, the depth
+/// or node budget run out, or a walk step that failed. A partial list could make one of two pages, or DevTools, look
+/// like the only page, so the read then answers nothing (codex on #986).
+struct Incomplete;
+
+/// A walker step: the element, `None` at the end of the list (UIA's null element, an empty error), or `Incomplete`
+/// when the step failed.
+fn next_element(step: windows::core::Result<IUIAutomationElement>) -> Result<Option<IUIAutomationElement>, Incomplete> {
+    match step {
+        Ok(e) => Ok(Some(e)),
+        Err(e) if e.code().is_ok() => Ok(None),
+        Err(_) => Err(Incomplete),
     }
 }
 
