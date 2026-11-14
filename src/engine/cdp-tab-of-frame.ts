@@ -6,7 +6,8 @@
  * behind scrolled the one in front and answered delivered_via_cdp (win2, #965 W2/W4, and main b1c614e9 in
  * OQ-40-8). A tab is the frame's only when all of these hold (ADR-040 invariants 1 and 6):
  * - the frame has a page surface (a covered, minimized or cloaked window has none, and its page does not
- *   take a CDP wheel: spike S1);
+ *   take a CDP wheel: spike S1). With a side panel beside the page, its contents area tells the page's window
+ *   from the panel's (internal #410);
  * - the tab is in a browser window whose bounds are the frame's rect;
  * - the frame's title shows the tab's title (the longest such title, so "Docs" is not taken for a frame
  *   showing "Docs - Project");
@@ -38,6 +39,11 @@ export interface TabOfFrameDeps {
   /** The frame's monitor scale (DPI / 96): CDP window bounds are DIPs. */
   frameScale: (frame: bigint) => number;
   frameTitle: (frame: bigint) => string;
+  /**
+   * internal #410 — the windows the frame's contents area draws its Documents in (UIA's `MultiContentsView`), or null
+   * when that cannot be read. Asked only when the frame's page windows cannot be told apart.
+   */
+  contentsWindows: (frame: bigint) => Promise<readonly bigint[] | null>;
   /** `Browser.getWindowForTarget` for each target: its window id and bounds (DIPs). Throws when unreachable. */
   windowsOf: (targetIds: readonly string[]) => Promise<Map<string, { windowId: number; bounds?: WindowBounds }>>;
   /** The tab's `document.visibilityState`, or undefined when it gave no answer in time. */
@@ -64,9 +70,23 @@ export async function tabOfFrame(
   tabs: ReadonlyArray<{ id: string; title: string; url: string; type: string }>,
   deps: TabOfFrameDeps,
 ): Promise<TabOfFrame> {
-  const surface = resolvePageSurface(frame, deps.surface);
+  let surface = resolvePageSurface(frame, deps.surface);
   if (surface.kind === "not_shown") return { kind: "none", why: "not_shown" };
-  if (surface.kind === "unreadable") return { kind: "none", why: "unreadable" };
+  // internal #410 — with a side panel or an extension's panel beside the page, its page windows cannot be told apart,
+  // and a scroll with a panel open never took the CDP road. The contents area tells them apart (#986): the page's
+  // window is in it, the panel's is not. A split view shows two pages in it and stays ambiguous: both tabs answer
+  // visible, and the frame's title names only the active one, which may not be the pane the wheel is for (agy on
+  // #987). So does a frame whose contents area cannot be read.
+  if (surface.kind === "unreadable" && surface.why === "ambiguous") {
+    let inContents: readonly bigint[] | null = null;
+    try {
+      inContents = await deps.contentsWindows(frame);
+    } catch {
+      // unread: stays ambiguous
+    }
+    if (inContents !== null) surface = resolvePageSurface(frame, deps.surface, undefined, inContents);
+  }
+  if (surface.kind !== "surface") return { kind: "none", why: "unreadable" };
   try {
     const rect = deps.frameRect(frame);
     if (rect === null) return { kind: "none", why: "unreadable" };

@@ -73,22 +73,32 @@ const CONTENTS_READ_TIMEOUT_MS = 500;
  */
 async function placedPagePoint(hwnd: bigint, at?: WheelParams["at"]): Promise<WheelPagePoint> {
   const first = pagePointOrKeep(hwnd, at);
-  const read = nativeUia?.uiaPageWindowsInContents;
-  if (first.kind !== "keep" || first.ambiguousFrame === undefined || typeof read !== "function") return first;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const windows = await Promise.race([
-    read(first.ambiguousFrame.toString()).catch(() => null),
-    new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), CONTENTS_READ_TIMEOUT_MS); }),
-  ]).finally(() => clearTimeout(timer));
-  if (!Array.isArray(windows) || windows.length === 0) return first;
-  let inContents: bigint[];
-  try {
-    inContents = windows.map((w) => BigInt(w));
-  } catch {
-    return first;
-  }
+  if (first.kind !== "keep" || first.ambiguousFrame === undefined) return first;
+  const inContents = await contentsWindowsOf(first.ambiguousFrame);
+  if (inContents === null) return first;
   const placed = pagePointOrKeep(hwnd, at, inContents);
   return placed.kind === "point" ? { ...placed, inContents } : placed;
+}
+
+/**
+ * internal #409 — the windows a Chromium frame's contents area draws its Documents in (`uiaPageWindowsInContents`), or
+ * null: no such read in this build, no answer within `CONTENTS_READ_TIMEOUT_MS`, a failed or empty read, or a handle
+ * that does not parse.
+ */
+async function contentsWindowsOf(frame: bigint): Promise<bigint[] | null> {
+  const read = nativeUia?.uiaPageWindowsInContents;
+  if (typeof read !== "function") return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const windows = await Promise.race([
+    read(frame.toString()).catch(() => null),
+    new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), CONTENTS_READ_TIMEOUT_MS); }),
+  ]).finally(() => clearTimeout(timer));
+  if (!Array.isArray(windows) || windows.length === 0) return null;
+  try {
+    return windows.map((w) => BigInt(w));
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -112,6 +122,7 @@ export const tabOfFrameDeps: TabOfFrameDeps = {
   frameRect: (h) => getWindowRectByHwnd(h),
   frameScale: (h) => getWindowDpi(h) / 96,
   frameTitle: (h) => getWindowTitleW(h),
+  contentsWindows: (h) => contentsWindowsOf(h),
   windowsOf: (ids) => getWindowsForTargets(ids, getCdpPort()),
   visibility: async (id) => {
     let timer: ReturnType<typeof setTimeout> | undefined;

@@ -17,6 +17,11 @@
   already at its end. When the page cancels the wheel itself, or nothing that scrolls can be seen where it landed
   (another site's frame, a closed component), the answer is `unverifiable` with the road on, not a failure. When the
   wheel could not be sent at all, the reply says nothing was sent (internal #403).
+- **`scroll` on a Chrome or Edge window with a side panel open goes through CDP when the browser's CDP port is
+  open.** With the bookmarks, reading list or an extension's panel beside the page, the window's tab was not looked
+  for, and the wheel went the window road. The page is now told from the panel by the area the browser draws its tabs
+  in, and its tab is found as for any window. A point over the panel is said to be off the page. A split view (two
+  pages side by side), and an older Chrome that has no such area, take the window road as before (internal #410).
 - **`scroll` on a Chrome or Edge window with DevTools docked, reached without CDP, no longer scrolls DevTools.**
   UIA's search for something to scroll reached DevTools' Elements tree before the page and scrolled it, answering
   `delivered` while the page stayed still. That search now passes over DevTools, unless the window is DevTools
