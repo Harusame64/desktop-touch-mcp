@@ -1,6 +1,12 @@
 # Changelog
 
-## [Unreleased]
+## [2.4.2] - 2026-11-14 — Scrolls and clicks in Chrome and Edge land on the page, and more replies say when nothing happened
+
+`scroll` on Chrome and Edge moves the page rather than DevTools, a side panel, a PDF's thumbnails or another window,
+and takes CDP in more cases when its port is open. Some calls that answered `ok: true` now refuse, with nothing done:
+`notification_show` with an empty body, `keyboard` into a window its own dialog has disabled, `scroll(action:'smart')`
+on the image road for a window on another virtual desktop or disabled by its dialog, and `browser_click` when its
+point would land on DevTools or another pane.
 
 ### Added — Windows
 - **`focus_window` takes `hwnd`**, from `desktop_discover`'s `windows[].hwnd` or a refusal's suggestion: exactly
