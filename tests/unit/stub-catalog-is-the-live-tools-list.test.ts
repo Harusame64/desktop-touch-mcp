@@ -76,7 +76,8 @@ export function firstSentence(description: string): string {
 }
 
 function docsIndexSource(entries: Array<{ name: string; description: string }>): string {
-  const cell = (t: string) => t.replace(/\|/g, "\\|");
+  // A backslash first, so a "\|" in a description cannot turn the escape of its "|" into a literal backslash (CodeQL).
+  const cell = (t: string) => t.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
   return [
     "# MCP Tool Descriptions",
     "",
