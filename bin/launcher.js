@@ -547,9 +547,9 @@ function stderrTail(stderr) {
 }
 
 /** Resolves with the command's stderr, which may be non-empty on success. */
-function run(command, args) {
+function run(command, args, env) {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { windowsHide: true, maxBuffer: RUN_MAX_BUFFER }, (error, _stdout, stderr) => {
+    execFile(command, args, { windowsHide: true, maxBuffer: RUN_MAX_BUFFER, ...(env && { env }) }, (error, _stdout, stderr) => {
       if (error) {
         const tail = stderrTail(stderr);
         error.message = tail ? `${error.message}\n${tail}` : error.message;
@@ -559,6 +559,20 @@ function run(command, args) {
       resolve(String(stderr ?? ""));
     });
   });
+}
+
+/**
+ * The environment for Windows PowerShell 5.1 (`powershell.exe`): this process's, without `PSModulePath`.
+ *
+ * A client started from a PowerShell 7 prompt passes PowerShell 7's `PSModulePath` down, with its own module folder
+ * first. Windows PowerShell 5.1 then loaded PowerShell 7.7's `Microsoft.PowerShell.Archive`, whose `Expand-Archive`
+ * calls a .NET overload that .NET Framework does not have: "Cannot find an overload for "ExtractToDirectory" and the
+ * argument count: "3"", 0 of 6,690 files, and the install failed (win2, the 2.4.2 npx smoke). Without the variable,
+ * Windows PowerShell builds its own default module path. Windows reads environment names in any case, so every
+ * spelling of it is dropped. Exported for tests.
+ */
+export function windowsPowerShellEnv(env) {
+  return Object.fromEntries(Object.entries(env).filter(([name]) => name.toUpperCase() !== "PSMODULEPATH"));
 }
 
 async function expandZip(zipPath, destination) {
@@ -571,7 +585,7 @@ async function expandZip(zipPath, destination) {
   const args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script, zipPath, destination];
 
   try {
-    return await run("powershell.exe", args);
+    return await run("powershell.exe", args, windowsPowerShellEnv(process.env));
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
     return await run("pwsh.exe", ["-NoLogo", ...args]);

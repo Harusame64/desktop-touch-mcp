@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed — Windows
+- **The first run of a new version installs when the MCP client was started from a PowerShell 7 prompt.** The
+  launcher unpacks the release zip with Windows PowerShell 5.1, which then loaded PowerShell 7.7's archive module
+  from the inherited `PSModulePath` and failed ("Cannot find an overload for "ExtractToDirectory""), leaving no files.
+  Windows PowerShell now runs without that variable and builds its own module path. A version already installed was
+  not affected.
+
 ## [2.4.2] - 2026-11-14 — Scrolls and clicks in Chrome and Edge land on the page, and more replies say when nothing happened
 
 `scroll` on Chrome and Edge moves the page rather than DevTools, a side panel, a PDF's thumbnails or another window,
