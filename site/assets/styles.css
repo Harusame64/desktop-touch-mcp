@@ -296,6 +296,9 @@ p, li, td, th, blockquote {
 
 .section-stack, .article-main {
   display: grid;
+  /* One column that may shrink below its content: an implicit grid column is as wide as its longest unbreakable
+     line, so a long code line widened every card past a phone's screen. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 22px;
 }
 
@@ -483,7 +486,9 @@ blockquote {
 
 /* Tablet ↓ */
 @media (max-width: 980px) {
-  .hero-grid, .article-layout, .two-up, .three-up, .feature-grid { grid-template-columns: 1fr; }
+  /* minmax(0, 1fr), not 1fr: a 1fr track is never narrower than its longest unbreakable line, so one long code line
+     widened the whole article past a phone's screen (745 px at 360). The code scrolls inside its own box instead. */
+  .hero-grid, .article-layout, .two-up, .three-up, .feature-grid { grid-template-columns: minmax(0, 1fr); }
   .article-aside { position: static; }
   .hero-copy { padding: 36px 26px 26px; }
   .hero-visual { padding: 18px; }
