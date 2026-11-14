@@ -243,9 +243,25 @@ async function fetchTabs(port: number): Promise<CdpTab[]> {
     throw new Error(`CDP /json returned HTTP ${res.status}`);
   }
   const tabs = (await res.json()) as CdpTab[];
-  for (const t of tabs) if (typeof t?.id === "string") rememberTabPort(t.id, port);
+  for (const t of tabs) {
+    if (typeof t?.id === "string") rememberTabPort(t.id, port);
+    if (typeof t?.title === "string") t.title = unescapeTargetTitle(t.title);
+  }
   return tabs;
 }
+
+/**
+ * internal #406 — Chrome's `/json` list HTML-escapes a target's title (`base::EscapeForHTML`: & < > " ' as `&amp;`
+ * `&lt;` `&gt;` `&quot;` `&#39;`). The window's own title, `document.title` and `Target.getTargets` give it plain
+ * (win2, dev/406-spike). So a page titled "… viewport & smooth …" was not matched to its window ("…&amp;…"), and its
+ * scroll left CDP for the window road. Those five are turned back, in one pass, so a title that literally reads
+ * "&amp;" (sent as "&amp;amp;") stays "&amp;". Exported for tests.
+ */
+export function unescapeTargetTitle(title: string): string {
+  return title.replace(/&(amp|lt|gt|quot|#39);/g, (whole, e: string) => TITLE_ENTITIES[e] ?? whole);
+}
+
+const TITLE_ENTITIES: Readonly<Record<string, string>> = { amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" };
 
 /**
  * llm22 drive F13 (win2, 2026-10-04): after `browser_open(port:9333)`, `desktop_discover` and

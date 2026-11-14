@@ -17,6 +17,10 @@
   already at its end. When the page cancels the wheel itself, or nothing that scrolls can be seen where it landed
   (another site's frame, a closed component), the answer is `unverifiable` with the road on, not a failure. When the
   wheel could not be sent at all, the reply says nothing was sent (internal #403).
+- **`scroll` on a Chrome or Edge page whose title has `&`, `<`, `>`, `"` or `'` goes through CDP when its port is
+  open.** The browser's tab list gives those titles HTML-escaped (`&amp;`), so the page was not matched to its window
+  and the wheel went the window road. Tab titles are now read as the page has them, which also fixes how they read
+  in `browser_*` replies and in finding the tab's window (internal #406).
 - **`scroll` on a Chrome or Edge window with a side panel open goes through CDP when the browser's CDP port is
   open.** With the bookmarks, reading list or an extension's panel beside the page, the window's tab was not looked
   for, and the wheel went the window road. The page is now told from the panel by the area the browser draws its tabs
