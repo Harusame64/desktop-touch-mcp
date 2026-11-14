@@ -1,6 +1,9 @@
 # Changelog
 
-## [Unreleased]
+## [2.4.3] - 2026-11-14 — The first start of a new version installs with PowerShell 7's module path set
+
+One fix: on Windows, a first install or an upgrade stopped with nothing unpacked when PowerShell 7's `PSModulePath`
+was in the environment or saved for the user. The ways it showed are below.
 
 ### Fixed — Windows
 - **The first run of a new version installs when PowerShell 7's module path is in the environment.** The launcher
