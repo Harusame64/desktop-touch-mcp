@@ -72,8 +72,21 @@ export function selectPageRect(rects: readonly Rect[], hint?: PageSizeHint): Rec
   return null;
 }
 
-/** ADR-040 §4.3 — the page surface of a Chromium frame. No side effects. */
-export function resolvePageSurface(frame: bigint, deps: PageSurfaceDeps, hint?: PageSizeHint): PageSurface {
+/**
+ * ADR-040 §4.3 — the page surface of a Chromium frame. No side effects.
+ *
+ * internal #409 — `inContents`: the windows the frame's contents area draws its Documents in (the page's, and a docked
+ * DevTools'; a side panel's is outside it), read from UIA by `uiaPageWindowsInContents`. Used only when the windows
+ * alone are ambiguous: a side panel's window beside the page's has neither the inside nor the same-rect shape. Then the
+ * candidates are narrowed to those windows and told apart as before; when that is still ambiguous (two pages side by
+ * side in a split view), the answer stays `ambiguous`.
+ */
+export function resolvePageSurface(
+  frame: bigint,
+  deps: PageSurfaceDeps,
+  hint?: PageSizeHint,
+  inContents?: readonly bigint[],
+): PageSurface {
   try {
     if (deps.isIconic(frame)) return { kind: "not_shown", frame, why: "minimized" };
     if (deps.isCloaked(frame)) return { kind: "not_shown", frame, why: "cloaked" };
@@ -89,9 +102,14 @@ export function resolvePageSurface(frame: bigint, deps: PageSurfaceDeps, hint?: 
   if (children.length === 0) return { kind: "unreadable", frame, why: "no_children_read" };
   const rwh = children.filter((c) => c.className === PAGE_RWH_CLASS && c.visible && c.rect !== null);
   if (rwh.length === 0) return { kind: "not_shown", frame, why: "no_page_window" };
-  const rect = selectPageRect(rwh.map((c) => c.rect!), hint);
+  let candidates = rwh;
+  let rect = selectPageRect(rwh.map((c) => c.rect!), hint);
+  if (rect === null && inContents !== undefined) {
+    candidates = rwh.filter((c) => inContents.includes(c.hwnd));
+    rect = selectPageRect(candidates.map((c) => c.rect!), hint);
+  }
   if (rect === null) return { kind: "unreadable", frame, why: "ambiguous" };
-  const at = rwh.filter((c) => sameRect(c.rect!, rect)).map((c) => c.hwnd);
+  const at = candidates.filter((c) => sameRect(c.rect!, rect)).map((c) => c.hwnd);
   return { kind: "surface", frame, rwh: at[0]!, rwhs: at, rect };
 }
 

@@ -475,6 +475,8 @@ export declare function uiaGetTextViaTextPattern(opts: { windowTitle: string; ti
 export declare function uiaScrollIntoView(opts: { windowTitle: string; name?: string; automationId?: string }): Promise<NativeScrollResult>
 export declare function uiaGetScrollAncestors(opts: { windowTitle: string; elementName: string }): Promise<Array<NativeScrollAncestor>>
 export declare function uiaScrollByPercent(opts: { windowTitle: string; elementName: string; verticalPercent: number; horizontalPercent: number }): Promise<NativeScrollResult>
+/** internal #409 — the windows of the Documents inside a Chromium frame's contents area (`MultiContentsView`), or null. */
+export declare function uiaPageWindowsInContents(frame: string): Promise<string[] | null>
 export declare function uiaScrollByWheelAtHwnd(opts: { hwnd: string; wheelDeltaY: number; wheelDeltaX: number; pageWindows?: string[]; pointX?: number; pointY?: number }): Promise<NativeScrollResult>
 /**
  * ADR-019 MVP-1 (Stage 1) — read-only ScrollPercent companion to

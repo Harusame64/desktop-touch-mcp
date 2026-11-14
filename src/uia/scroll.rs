@@ -3,9 +3,11 @@
 //! Mirrors `scrollElementIntoView`, `getScrollAncestors`, and `scrollByPercent`
 //! from `uia-bridge.ts`.
 
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::Accessibility::*;
-use windows::Win32::UI::WindowsAndMessaging::IsChild;
+use windows::Win32::UI::WindowsAndMessaging::{
+    GW_CHILD, GW_HWNDNEXT, GetClassNameW, GetWindow, GetWindowRect, IsChild, IsWindowVisible,
+};
 use windows::core::Interface;
 
 use super::thread::{self, UiaContext, win_err};
@@ -804,12 +806,22 @@ fn page_at_point(opts: &ScrollByWheelAtHwndOptions) -> Option<PageAtPoint> {
     Some(PageAtPoint { windows, x, y })
 }
 
-/// internal #409 — the window a UIA element is drawn in: itself when it carries one, else the nearest RawView ancestor
-/// that does. A web Document's is the `Chrome_RenderWidgetHostHWND` its page is drawn in: one step up for a page,
-/// DevTools or a side panel, 3–13 for an out-of-process iframe or the PDF viewer's inner Documents, none in Chrome 120,
-/// where the Document is that window's own element (win2, dev/409-spike rounds 2 and 4: 43 of 43 and every Chrome
-/// 120 cell). `None` when the walk fails or runs past `MAX_DRAWN_IN_STEPS` steps.
+/// internal #409 — the window a UIA element is drawn in. A web Document's is the `Chrome_RenderWidgetHostHWND` its page
+/// is drawn in.
+///
+/// It is read first from the element's RuntimeId: UIA builds the id of an element hosted in a window as
+/// `[42, <that window's handle>, …]`. Every Document measured had it (win2, dev/409-spike: 81 of 81 and 43 of 43;
+/// nested iframe and PDF Documents name their page's window). Only then is it the nearest RawView ancestor-or-self
+/// with a native window, which named the same window while a tab stayed on the page it loaded.
+///
+/// After a navigation in the same tab, Chrome 157 left a Document's RawView parent on the old page window, gone from
+/// the frame or hidden, while its RuntimeId named the new, visible one. That happened 5 times (dev/986-hw r1) and once
+/// in a split view (round 4), and it lasted until a reload. On the RawView answer, the page had no Document of its
+/// own window: Tier 1 passed it over, and the contents area named a window that was not there (gate on #986).
 fn drawn_in_window(ctx: &UiaContext, elem: &IUIAutomationElement) -> Option<isize> {
+    if let Some(h) = runtime_id_window(elem) {
+        return Some(h);
+    }
     let raw = unsafe { ctx.automation.RawViewWalker().ok()? };
     let mut current = elem.clone();
     for _ in 0..MAX_DRAWN_IN_STEPS {
@@ -822,11 +834,34 @@ fn drawn_in_window(ctx: &UiaContext, elem: &IUIAutomationElement) -> Option<isiz
     None
 }
 
+/// UIA's first RuntimeId part for an id built from a window handle (`[42, hwnd, …]`).
+const RUNTIME_ID_WINDOW_PREFIX: i32 = 42;
+
+/// internal #409 — the window handle in an element's RuntimeId (`drawn_in_window`), or `None` when it has none.
+fn runtime_id_window(elem: &IUIAutomationElement) -> Option<isize> {
+    let ids = unsafe {
+        let mut v = elem.GetCurrentPropertyValue(UIA_RuntimeIdPropertyId).ok()?;
+        let read = super::tree::runtime_id_ints_from_variant(&v);
+        let _ = windows::Win32::System::Variant::VariantClear(&mut v);
+        read
+    }?;
+    window_in_runtime_id(&ids)
+}
+
+/// The window handle in a RuntimeId of the `[42, hwnd, …]` shape. A handle is 32 bits wide, so a negative part is read
+/// as unsigned. Exported to the tests.
+fn window_in_runtime_id(ids: &[i32]) -> Option<isize> {
+    match ids {
+        [RUNTIME_ID_WINDOW_PREFIX, h, ..] if *h != 0 => Some(*h as u32 as isize),
+        _ => None,
+    }
+}
+
 /// internal #409 — RawView steps `drawn_in_window` takes at most: the deepest seen was 13 (the PDF viewer's body), with
 /// room for a PDF inside an iframe. Only a corrupt or cyclic tree reaches it.
 const MAX_DRAWN_IN_STEPS: u32 = 40;
 
-fn rect_holds(r: &windows::Win32::Foundation::RECT, x: i32, y: i32) -> bool {
+fn rect_holds(r: &RECT, x: i32, y: i32) -> bool {
     x >= r.left && x < r.right && y >= r.top && y < r.bottom
 }
 
@@ -844,8 +879,7 @@ fn rect_holds(r: &windows::Win32::Foundation::RECT, x: i32, y: i32) -> bool {
 /// - It does not use a descendant's ScrollPattern. An inner box of the page is moved by the posted wheel at the
 ///   point (Tier 3), which Chromium hit-tests, so it is left to that.
 /// - A Document drawn in another window is passed over with its whole subtree: what is nested in it is drawn there
-///   too. One whose RawView ancestor is not the window its RuntimeId names (once in Chrome 157's split view, round 4)
-///   is passed over, and Tier 3 posts at the point instead.
+///   too. Which window that is, `drawn_in_window` reads from its RuntimeId first (see there for why).
 #[allow(clippy::too_many_arguments)]
 fn find_page_document_scroll(
     ctx: &UiaContext,
@@ -862,11 +896,7 @@ fn find_page_document_scroll(
     }
     *node_budget = node_budget.saturating_sub(1);
     unsafe {
-        let is_document = elem
-            .CurrentControlType()
-            .map(|ct| ct.0 == UIA_DocumentControlTypeId.0)
-            .unwrap_or(false);
-        if is_document {
+        if is_document(elem) {
             match drawn_in_window(ctx, elem) {
                 Some(h) if page.windows.contains(&h) => {}
                 _ => return None,
@@ -921,6 +951,165 @@ fn find_page_document_scroll(
         }
     }
     None
+}
+
+/// internal #409 — the Views class of the area a Chromium browser draws its tabs' contents in. In Chrome 157 and Edge
+/// 157 the page's Document and a docked DevTools' are under it, and side panels, extension panels and Edge's side pane
+/// are outside it (win2, dev/409-spike rounds 3 and 4). Chrome 120 and Electron have no such element.
+const CONTENTS_VIEW_CLASS: &str = "MultiContentsView";
+
+/// internal #409 — the windows the Documents inside a Chromium frame's contents area are drawn in, or `None` when the
+/// frame has no contents area in its UIA tree (an older Chromium, Electron) or it cannot be read. The page surface uses
+/// it to tell the page from a side panel beside it when their windows alone cannot.
+pub fn page_windows_in_contents(frame: String) -> napi::Result<Option<Vec<String>>> {
+    thread::execute_with_timeout(move |ctx| page_windows_in_contents_impl(ctx, &frame), DEFAULT_TIMEOUT_MS)
+}
+
+fn page_windows_in_contents_impl(ctx: &UiaContext, frame: &str) -> napi::Result<Option<Vec<String>>> {
+    let raw: i64 = frame
+        .parse()
+        .map_err(|e| napi::Error::from_reason(format!("uia_page_windows_in_contents: hwnd parse error: {e}")))?;
+    if raw == 0 {
+        return Ok(None);
+    }
+    let Ok(root) = (unsafe { ctx.automation.ElementFromHandle(HWND(raw as *mut std::ffi::c_void)) }) else {
+        return Ok(None);
+    };
+    let mut budget = MAX_SCROLL_DFS_NODES;
+    let page_rects = page_window_rects(HWND(raw as *mut std::ffi::c_void));
+    let Some(contents) = find_contents_view(ctx, &root, MAX_SEARCH_DEPTH, &page_rects, &mut budget) else {
+        return Ok(None);
+    };
+    let mut windows: Vec<isize> = Vec::new();
+    let mut budget = MAX_SCROLL_DFS_NODES;
+    let complete = collect_document_windows(ctx, &contents, MAX_SEARCH_DEPTH, &mut budget, &mut windows).is_ok();
+    // A crashed tab's view is a Document drawn in the frame itself: its page window is gone, and what is left in the
+    // contents area (a docked DevTools) is not the page (win2, dev/409-spike rounds 2–4, Chrome 157 and Edge 157).
+    // Then nothing is said, and the page stays as unplaced as before. So is it when the read did not see the whole area
+    // (`Incomplete`), where such a view or a second page may lie unseen, or found no Document at all (agy, codex on #986).
+    if !complete || windows.is_empty() || windows.contains(&(raw as isize)) {
+        return Ok(None);
+    }
+    Ok(Some(windows.into_iter().map(|h| (h as i64).to_string()).collect()))
+}
+
+/// internal #409 — the rects of the frame's visible page windows (`Chrome_RenderWidgetHostHWND`, its direct children,
+/// as every one measured was: win2, dev/409-spike round 2). At most 64 children are looked at.
+fn page_window_rects(frame: HWND) -> Vec<RECT> {
+    let mut out = Vec::new();
+    let mut child = unsafe { GetWindow(frame, GW_CHILD) }.ok();
+    for _ in 0..64 {
+        let Some(h) = child.filter(|h| !h.0.is_null()) else { break };
+        let mut buf = [0u16; 64];
+        let len = unsafe { GetClassNameW(h, &mut buf) };
+        let is_page = len > 0 && String::from_utf16_lossy(&buf[..len as usize]) == "Chrome_RenderWidgetHostHWND";
+        let mut r = RECT::default();
+        if is_page && unsafe { IsWindowVisible(h) }.as_bool() && unsafe { GetWindowRect(h, &mut r) }.is_ok() {
+            out.push(r);
+        }
+        child = unsafe { GetWindow(h, GW_HWNDNEXT) }.ok();
+    }
+    out
+}
+
+fn rect_is_empty(r: &RECT) -> bool {
+    r.right <= r.left || r.bottom <= r.top
+}
+
+fn rects_overlap(a: &RECT, b: &RECT) -> bool {
+    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+}
+
+fn is_document(elem: &IUIAutomationElement) -> bool {
+    unsafe { elem.CurrentControlType() }
+        .map(|ct| ct.0 == UIA_DocumentControlTypeId.0)
+        .unwrap_or(false)
+}
+
+/// internal #409 — the first element of class `CONTENTS_VIEW_CLASS` in tree order. It does not go into a Document: web
+/// content holds no browser views, and the walk would spend its budget there.
+///
+/// It passes over an element whose rect overlaps none of `page_rects` (the frame's page windows): the tab strip, the
+/// toolbar and the bookmarks bar, which come first in tree order and would otherwise spend the budget with many tabs
+/// open (gate 2 on #986). An element whose rect cannot be read or is empty is gone into, as before.
+fn find_contents_view(
+    ctx: &UiaContext,
+    elem: &IUIAutomationElement,
+    depth: u32,
+    page_rects: &[RECT],
+    budget: &mut u32,
+) -> Option<IUIAutomationElement> {
+    if depth == 0 || *budget == 0 {
+        return None;
+    }
+    *budget -= 1;
+    if unsafe { elem.CurrentClassName() }.map(|c| c == CONTENTS_VIEW_CLASS).unwrap_or(false) {
+        return Some(elem.clone());
+    }
+    if is_document(elem) {
+        return None;
+    }
+    if let Ok(r) = unsafe { elem.CurrentBoundingRectangle() }
+        && !page_rects.is_empty()
+        && !rect_is_empty(&r)
+        && !page_rects.iter().any(|p| rects_overlap(&r, p))
+    {
+        return None;
+    }
+    let mut child = unsafe { ctx.walker.GetFirstChildElement(elem) }.ok();
+    while let Some(c) = child {
+        if let Some(found) = find_contents_view(ctx, &c, depth - 1, page_rects, budget) {
+            return Some(found);
+        }
+        if *budget == 0 {
+            return None;
+        }
+        child = unsafe { ctx.walker.GetNextSiblingElement(&c) }.ok();
+    }
+    None
+}
+
+/// internal #409 — the windows (`drawn_in_window`) of the outermost Documents under `elem`, each once. What is nested
+/// in a Document is drawn in its window, so the walk does not go into one.
+fn collect_document_windows(
+    ctx: &UiaContext,
+    elem: &IUIAutomationElement,
+    depth: u32,
+    budget: &mut u32,
+    out: &mut Vec<isize>,
+) -> Result<(), Incomplete> {
+    if depth == 0 || *budget == 0 {
+        return Err(Incomplete);
+    }
+    *budget -= 1;
+    if is_document(elem) {
+        let h = drawn_in_window(ctx, elem).ok_or(Incomplete)?;
+        if !out.contains(&h) {
+            out.push(h);
+        }
+        return Ok(());
+    }
+    let mut child = next_element(unsafe { ctx.walker.GetFirstChildElement(elem) })?;
+    while let Some(c) = child {
+        collect_document_windows(ctx, &c, depth - 1, budget, out)?;
+        child = next_element(unsafe { ctx.walker.GetNextSiblingElement(&c) })?;
+    }
+    Ok(())
+}
+
+/// internal #409 — the contents-area read did not see all of it: a Document whose window could not be read, the depth
+/// or node budget run out, or a walk step that failed. A partial list could make one of two pages, or DevTools, look
+/// like the only page, so the read then answers nothing (codex on #986).
+struct Incomplete;
+
+/// A walker step: the element, `None` at the end of the list (UIA's null element, an empty error), or `Incomplete`
+/// when the step failed.
+fn next_element(step: windows::core::Result<IUIAutomationElement>) -> Result<Option<IUIAutomationElement>, Incomplete> {
+    match step {
+        Ok(e) => Ok(Some(e)),
+        Err(e) if e.code().is_ok() => Ok(None),
+        Err(_) => Err(Incomplete),
+    }
 }
 
 /// internal #407 — what the DFS has met so far.
@@ -1166,6 +1355,21 @@ mod tests {
         // One unreadable or null window makes the whole list unreadable, rather than a shorter list.
         assert!(page_at_point(&opts(Some(vec!["5", "x"]), Some(1), Some(1))).is_none());
         assert!(page_at_point(&opts(Some(vec!["5", "0"]), Some(1), Some(1))).is_none());
+    }
+
+    /// internal #409 — the window in a RuntimeId (win2's records: a page Document, an iframe's, a PDF body's).
+    #[test]
+    fn a_runtime_id_names_its_window_only_in_the_window_shape() {
+        use super::window_in_runtime_id;
+        assert_eq!(window_in_runtime_id(&[42, 34802618, 4, 6, 1, 1]), Some(34802618));
+        assert_eq!(window_in_runtime_id(&[42, 29689714, 4, 27, 5, 2]), Some(29689714));
+        assert_eq!(window_in_runtime_id(&[42, 4655826]), Some(4655826));
+        // A handle with the top bit set is read unsigned, not as a negative number.
+        assert_eq!(window_in_runtime_id(&[42, -2]), Some(0xFFFF_FFFE));
+        assert_eq!(window_in_runtime_id(&[42, 0, 4]), None);
+        assert_eq!(window_in_runtime_id(&[7, 34802618, 4]), None);
+        assert_eq!(window_in_runtime_id(&[42]), None);
+        assert_eq!(window_in_runtime_id(&[]), None);
     }
 
     #[test]

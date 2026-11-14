@@ -45,12 +45,16 @@ const uiaReadScrollPercentAtHwndMock = vi.fn<
   [{ hwnd: string; axis: "vertical" | "horizontal" }],
   Promise<number | null>
 >(async () => null);
+// internal #409 — the windows inside a Chromium frame's contents area. Default: none read (null), as before.
+const uiaPageWindowsInContentsMock = vi.fn<[string], Promise<string[] | null>>(async () => null);
 const nativeUiaMock: {
   uiaScrollByWheelAtHwnd?: unknown;
   uiaReadScrollPercentAtHwnd?: unknown;
+  uiaPageWindowsInContents?: unknown;
 } = {
   uiaScrollByWheelAtHwnd: uiaScrollByWheelAtHwndMock,
   uiaReadScrollPercentAtHwnd: uiaReadScrollPercentAtHwndMock,
+  uiaPageWindowsInContents: uiaPageWindowsInContentsMock,
 };
 const win32PostMessageMock = vi.fn<[bigint, number, bigint, bigint], boolean>();
 const win32GetScrollInfoMock = vi.fn<
@@ -2467,7 +2471,8 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
       expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledWith({ hwnd: FRAME.toString(), wheelDeltaY: 120, wheelDeltaX: 0 });
     });
 
-    it("a Chromium window whose page cannot be placed (two page windows side by side, no size to tell them): as before", async () => {
+    // A side panel's window beside the page's: neither inside the other nor at one rect.
+    const besidePanel = () => {
       shape(0);
       wheelPointDeps.surface = {
         isIconic: () => false,
@@ -2477,9 +2482,68 @@ describe("ADR-040 PR ② (internal #396) — a window-road wheel to a Chromium w
           { hwnd: 0x502n, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: { x: 920, y: 237, width: 360, height: 505 } },
         ],
       };
+    };
+    afterEach(() => { uiaPageWindowsInContentsMock.mockReset(); uiaPageWindowsInContentsMock.mockImplementation(async () => null); });
+
+    it("a Chromium window whose page cannot be placed and whose contents area cannot be read: as before", async () => {
+      besidePanel();
       uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
       await dispatchScrollWheel(hwndDest, { direction: "down", notch: 1 });
+      expect(uiaPageWindowsInContentsMock).toHaveBeenCalledWith(FRAME.toString());
       expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledWith({ hwnd: FRAME.toString(), wheelDeltaY: 120, wheelDeltaX: 0 });
+    });
+
+    it("a side panel beside the page, told apart by the contents area: the page's window and its centre", async () => {
+      besidePanel();
+      uiaPageWindowsInContentsMock.mockResolvedValue([PAGE.toString()]);
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: false, scrolled: false });
+      await dispatchScrollWheel(hwndDest, { direction: "down", notch: 1 });
+      // The page's centre (508 + 200, 237 + 252.5), not the frame's (on the panel in a narrow window).
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledWith({ hwnd: FRAME.toString(), wheelDeltaY: 120, wheelDeltaX: 0, pageWindows: [PAGE.toString()], pointX: 708, pointY: 490 });
+      // Tier 3 posts there too.
+      expect(win32PostMessageMock).toHaveBeenCalled();
+      for (const c of win32PostMessageMock.mock.calls) expect(c[3]).toBe(lp(708, 490));
+    });
+
+    it("…and Tier 3 reads the point again with those windows: a page covered meanwhile is refused, not posted to (gate 2 on #986)", async () => {
+      besidePanel();
+      uiaPageWindowsInContentsMock.mockResolvedValue([PAGE.toString()]);
+      // Tier 1 finds nothing; while it ran, another window came over the whole page.
+      uiaScrollByWheelAtHwndMock.mockImplementation(async () => {
+        wheelPointDeps.pointAt = () => ({ child: FRONT_PAGE, root: 0x600n });
+        return { ok: false, scrolled: false };
+      });
+      const r = await dispatchScrollWheel(hwndDest, { direction: "down", notch: 1 });
+      expect(win32PostMessageMock).not.toHaveBeenCalled();
+      expect(r).toMatchObject({ scrolled: false, reason: "target_unreachable", pageNotVisible: { why: "covered" } });
+    });
+
+    it("the contents area holds both (two pages side by side), none, or the read fails: as before", async () => {
+      for (const answer of [() => Promise.resolve([PAGE.toString(), "1282"]), () => Promise.resolve([]), () => Promise.reject(new Error("uia")), () => Promise.resolve(["x"])]) {
+        besidePanel();
+        uiaScrollByWheelAtHwndMock.mockReset();
+        uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+        uiaPageWindowsInContentsMock.mockImplementation(answer);
+        await dispatchScrollWheel(hwndDest, { direction: "down", notch: 1 });
+        expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledWith({ hwnd: FRAME.toString(), wheelDeltaY: 120, wheelDeltaX: 0 });
+      }
+    });
+
+    it("the read does not answer within 500 ms: as before, without waiting for it (agy on #986)", async () => {
+      besidePanel();
+      uiaPageWindowsInContentsMock.mockImplementation(() => new Promise(() => {}));
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+      const t0 = Date.now();
+      await dispatchScrollWheel(hwndDest, { direction: "down", notch: 1 });
+      expect(Date.now() - t0).toBeLessThan(2000);
+      expect(uiaScrollByWheelAtHwndMock).toHaveBeenCalledWith({ hwnd: FRAME.toString(), wheelDeltaY: 120, wheelDeltaX: 0 });
+    });
+
+    it("a placed page does not ask the contents area", async () => {
+      shape(0);
+      uiaScrollByWheelAtHwndMock.mockResolvedValue({ ok: true, scrolled: true });
+      await dispatchScrollWheel(hwndDest, { direction: "down", notch: 1 });
+      expect(uiaPageWindowsInContentsMock).not.toHaveBeenCalled();
     });
   });
 

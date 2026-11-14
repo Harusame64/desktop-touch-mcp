@@ -54,12 +54,41 @@ export const wheelPointDeps: WheelPointDeps = {
  * `wheelPointOnPage`, or `keep` when a read throws (a rect or WindowFromPoint read the deps do not guard):
  * a missing instrument keeps the caller's point, as invariant 3 asks, and never throws out of the dispatch.
  */
-function pagePointOrKeep(hwnd: bigint, at?: WheelParams["at"]): WheelPagePoint {
+function pagePointOrKeep(hwnd: bigint, at?: WheelParams["at"], inContents?: readonly bigint[]): WheelPagePoint {
   try {
-    return wheelPointOnPage(hwnd, wheelPointDeps, at !== undefined ? { x: at.screenX, y: at.screenY } : undefined);
+    return wheelPointOnPage(hwnd, wheelPointDeps, at !== undefined ? { x: at.screenX, y: at.screenY } : undefined, inContents);
   } catch {
     return { kind: "keep" };
   }
+}
+
+/** ms the contents-area read is given before the page is left unplaced, as before (internal #409). */
+const CONTENTS_READ_TIMEOUT_MS = 500;
+
+/**
+ * internal #409 — `pagePointOrKeep`, and when the frame's page windows could not be told apart, once more with the
+ * windows its contents area draws Documents in (UIA). A side panel or an extension's panel beside the page made the
+ * page unplaceable, so the wheel kept the frame's centre (on the panel, in a narrow window) and Tier 1 searched the
+ * whole frame. No read, a timeout, or a frame without a contents area keeps the first answer.
+ */
+async function placedPagePoint(hwnd: bigint, at?: WheelParams["at"]): Promise<WheelPagePoint> {
+  const first = pagePointOrKeep(hwnd, at);
+  const read = nativeUia?.uiaPageWindowsInContents;
+  if (first.kind !== "keep" || first.ambiguousFrame === undefined || typeof read !== "function") return first;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const windows = await Promise.race([
+    read(first.ambiguousFrame.toString()).catch(() => null),
+    new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), CONTENTS_READ_TIMEOUT_MS); }),
+  ]).finally(() => clearTimeout(timer));
+  if (!Array.isArray(windows) || windows.length === 0) return first;
+  let inContents: bigint[];
+  try {
+    inContents = windows.map((w) => BigInt(w));
+  } catch {
+    return first;
+  }
+  const placed = pagePointOrKeep(hwnd, at, inContents);
+  return placed.kind === "point" ? { ...placed, inContents } : placed;
 }
 
 /**
@@ -1442,7 +1471,8 @@ export async function postWheelToHwnd(
   if (typeof postMessage !== "function") return notPosted();
   // ADR-040 PR ② (internal #396) — a Chromium window takes a posted wheel at its point, not at the
   // window it is posted to: every post carries a point where this window's page is visible, or none is sent.
-  const readNow = pagePointOrKeep(hwnd, params.at);
+  // internal #409 — a point placed with the contents area's windows is read again with them (gate 2 on #986).
+  const readNow = pagePointOrKeep(hwnd, params.at, earlierPagePoint?.kind === "point" ? earlierPagePoint.inContents : undefined);
   const pagePoint = readNow.kind === "keep" && earlierPagePoint?.kind === "point" ? earlierPagePoint : readNow;
   tellPointUse(params, pagePoint);
   if (pagePoint.kind === "not_visible") {
@@ -2061,7 +2091,7 @@ export async function dispatchScrollWheel(
     // on an up, and a minimized one from 0 to 15645, each answered "pre/post percent unchanged" — the same as a
     // page already at its end — so the refusal below said nothing was scrolled while the page had moved.
     // The same reading as Tier 3's, so a page visible anywhere still gets Tier 1 as before.
-    const pagePoint = pagePointOrKeep(dest.hwnd, params.at);
+    const pagePoint = await placedPagePoint(dest.hwnd, params.at);
     if (pagePoint.kind === "not_visible") {
       return {
         scrolled: false,

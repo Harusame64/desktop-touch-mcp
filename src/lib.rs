@@ -396,6 +396,24 @@ impl Task for UiaReadScrollPercentAtHwndTask {
     }
 }
 
+/// internal #409 — the windows a Chromium frame's contents area draws its Documents in (`uia::scroll::page_windows_in_contents`).
+#[cfg(windows)]
+pub struct UiaPageWindowsInContentsTask(String);
+
+#[cfg(windows)]
+impl Task for UiaPageWindowsInContentsTask {
+    type Output = Option<Vec<String>>;
+    type JsValue = Option<Vec<String>>;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        uia::scroll::page_windows_in_contents(self.0.clone())
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
 #[cfg(windows)]
 pub struct UiaGetSelectedTabTask(String);
 
@@ -523,6 +541,14 @@ pub fn uia_read_scroll_percent_at_hwnd(
     opts: uia::scroll::ReadScrollPercentAtHwndOptions,
 ) -> AsyncTask<UiaReadScrollPercentAtHwndTask> {
     AsyncTask::new(UiaReadScrollPercentAtHwndTask(opts))
+}
+
+/// internal #409 — the windows the Documents inside a Chromium frame's contents area (`MultiContentsView`) are drawn
+/// in, as decimal strings, or null when the frame has no such area in its UIA tree or it cannot be read.
+#[cfg(windows)]
+#[napi]
+pub fn uia_page_windows_in_contents(frame: String) -> AsyncTask<UiaPageWindowsInContentsTask> {
+    AsyncTask::new(UiaPageWindowsInContentsTask(frame))
 }
 
 /// internal #227 — the selected tab of a Windows Terminal window, or null.

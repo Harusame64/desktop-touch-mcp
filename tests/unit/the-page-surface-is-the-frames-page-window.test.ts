@@ -81,6 +81,44 @@ describe("resolvePageSurface (ADR-040 invariant 3: surface / not shown / unreada
   });
 });
 
+// internal #409 — win2, dev/409-spike: the page, a docked DevTools and a side panel (bookmarks) in one frame. The
+// page's and DevTools' Documents are inside the contents area (MultiContentsView), the panel's outside it.
+describe("a side panel beside the page: told apart by the contents area (internal #409)", () => {
+  const PAGE_BM = r(116, 187, 335, 697); // doc-bm-w600
+  const PANEL = r(460, 226, 360, 657);
+  const children = [rwh(53545728n, PAGE_BM), rwh(49089480n, PANEL)];
+  it("without it, ambiguous as before", () => {
+    expect(resolvePageSurface(1n, deps({ children }))).toMatchObject({ kind: "unreadable", why: "ambiguous" });
+  });
+  it("with it, the page's window", () => {
+    expect(resolvePageSurface(1n, deps({ children }), undefined, [53545728n]))
+      .toEqual({ kind: "surface", frame: 1n, rwh: 53545728n, rwhs: [53545728n], rect: PAGE_BM });
+  });
+  it("DevTools docked too: both are in the contents area, and the page is the one inside", () => {
+    const three = [rwh(30607142n, r(116, 187, 798, 697)), rwh(30738928n, r(923, 226, 360, 657)), rwh(31n, r(116, 187, 400, 697))];
+    expect(resolvePageSurface(1n, deps({ children: three }), undefined, [30607142n, 31n]))
+      .toMatchObject({ kind: "surface", rwh: 31n, rect: r(116, 187, 400, 697) });
+  });
+  it("DevTools docked and a panel, and the read saw only DevTools' Document: the page is placed by its windows alone (inside DevTools'), not narrowed to DevTools (gate 2 on #986)", () => {
+    const three = [rwh(30607142n, r(116, 187, 798, 697)), rwh(30738928n, r(923, 226, 360, 657)), rwh(31n, r(116, 187, 400, 697))];
+    expect(resolvePageSurface(1n, deps({ children: three }), undefined, [30607142n]))
+      .toMatchObject({ kind: "surface", rwh: 31n });
+  });
+  it("two pages side by side in the contents area (split view): still ambiguous", () => {
+    const split = [rwh(65735652n, r(112, 180, 584, 708)), rwh(57673972n, r(704, 180, 584, 708))];
+    expect(resolvePageSurface(1n, deps({ children: split }), undefined, [65735652n, 57673972n]))
+      .toMatchObject({ kind: "unreadable", why: "ambiguous" });
+  });
+  it("none of the frame's page windows in it (a crashed tab: only DevTools' and the panel's): ambiguous", () => {
+    expect(resolvePageSurface(1n, deps({ children }), undefined, [999n])).toMatchObject({ kind: "unreadable", why: "ambiguous" });
+    expect(resolvePageSurface(1n, deps({ children }), undefined, [])).toMatchObject({ kind: "unreadable", why: "ambiguous" });
+  });
+  it("not used when the windows alone already tell the page (DevTools docked right)", () => {
+    const s = resolvePageSurface(1n, deps({ children: [rwh(855176n, RIGHT), rwh(1641660n, DEVTOOLS)] }), undefined, [1641660n]);
+    expect(s).toMatchObject({ kind: "surface", rwh: 855176n });
+  });
+});
+
 describe("pointOnSurface", () => {
   it("places a viewport point on the surface's origin (the #306 cell: DevTools right, centre 488 css)", () => {
     // Formula point was 766 for a centre at 488 (+278); the surface origin is the viewport's.

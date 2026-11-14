@@ -24,7 +24,15 @@ export const CHROMIUM_FRAME_CLASS = "Chrome_WidgetWin_1";
 export type PointNotUsed = "off" | "covered" | "unreadable";
 
 export type WheelPagePoint =
-  | { kind: "keep"; pointNotUsed?: PointNotUsed }
+  | {
+      kind: "keep";
+      pointNotUsed?: PointNotUsed;
+      /**
+       * internal #409 — the frame's page windows could not be told apart (a side panel beside the page). Its contents
+       * area, read from UIA, may tell them: `wheelPointOnPage` again with `inContents`.
+       */
+      ambiguousFrame?: bigint;
+    }
   | {
       kind: "point";
       frame: bigint;
@@ -36,6 +44,11 @@ export type WheelPagePoint =
        * other windows or away from the point, are not what moves.
        */
       pageWindows: bigint[];
+      /**
+       * internal #409 — the contents area's windows this point was placed with, when the page windows alone were
+       * ambiguous. A later read of the point (Tier 3's) is made with them too.
+       */
+      inContents?: readonly bigint[];
       /** internal #404 — the caller's point was given and this is not it. Absent when it is, or none was given. */
       pointNotUsed?: PointNotUsed;
     }
@@ -69,7 +82,12 @@ export const WHEEL_POINT_FRACTIONS: ReadonlyArray<readonly [number, number]> = [
  * DevTools docked and page zoom 125 %). It is tried first, by the same visibility test as the grid's; when it is
  * not on the visible page, the grid is tried as before and `pointNotUsed` says why.
  */
-export function wheelPointOnPage(hwnd: bigint, deps: WheelPointDeps, preferred?: { x: number; y: number }): WheelPagePoint {
+export function wheelPointOnPage(
+  hwnd: bigint,
+  deps: WheelPointDeps,
+  preferred?: { x: number; y: number },
+  inContents?: readonly bigint[],
+): WheelPagePoint {
   let frame: bigint;
   try {
     frame = deps.rootOf(hwnd) ?? hwnd;
@@ -79,8 +97,10 @@ export function wheelPointOnPage(hwnd: bigint, deps: WheelPointDeps, preferred?:
   }
   // A Chromium window whose page cannot be placed: the post keeps its old point, and a caller's point was not used.
   const keep: WheelPagePoint = preferred !== undefined ? { kind: "keep", pointNotUsed: "unreadable" } : { kind: "keep" };
-  const surface = resolvePageSurface(frame, deps.surface);
-  if (surface.kind === "unreadable") return keep;
+  const surface = resolvePageSurface(frame, deps.surface, undefined, inContents);
+  if (surface.kind === "unreadable") {
+    return surface.why === "ambiguous" && inContents === undefined ? { ...keep, ambiguousFrame: frame } : keep;
+  }
   if (surface.kind === "not_shown") {
     if (surface.why !== "no_page_window") return { kind: "not_visible", frame, why: surface.why };
     // No page window does not by itself prove the window is covered: a window just brought forward, or a

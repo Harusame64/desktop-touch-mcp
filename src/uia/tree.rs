@@ -533,6 +533,14 @@ fn cached_runtime_id(elem: &IUIAutomationElement) -> Option<String> {
 /// # Safety
 /// `v` must be a VARIANT UIA returned, not yet cleared.
 pub(crate) unsafe fn runtime_id_from_variant(v: &VARIANT) -> Option<String> {
+    unsafe { runtime_id_ints_from_variant(v) }.map(|ids| ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("."))
+}
+
+/// A `VT_ARRAY | VT_I4` VARIANT's integers; `None` for anything else.
+///
+/// # Safety
+/// `v` must be a VARIANT UIA returned, not yet cleared.
+pub(crate) unsafe fn runtime_id_ints_from_variant(v: &VARIANT) -> Option<Vec<i32>> {
     unsafe {
         let inner = &v.Anonymous.Anonymous;
         if inner.vt != VARENUM(VT_ARRAY.0 | VT_I4.0) {
@@ -547,8 +555,7 @@ pub(crate) unsafe fn runtime_id_from_variant(v: &VARIANT) -> Option<String> {
         if sa.cDims != 1 || n == 0 || sa.pvData.is_null() {
             return None;
         }
-        let ids = std::slice::from_raw_parts(sa.pvData as *const i32, n);
-        Some(ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("."))
+        Some(std::slice::from_raw_parts(sa.pvData as *const i32, n).to_vec())
     }
 }
 

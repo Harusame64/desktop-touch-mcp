@@ -26,8 +26,13 @@
   page's customize button.** UIA's search for something to scroll took those first and answered `delivered` while
   the page stayed still. When the page's place on screen is known, UIA now moves only the page's own document under
   the point the wheel would be posted to (for a PDF, its body). When nothing there can be moved that way, the wheel
-  is posted to the page. With a side panel open beside the page, its place is not known yet, and nothing changes
-  (internal #409).
+  is posted to the page (internal #409).
+- **`scroll` on a Chrome or Edge page reached without CDP moves the page with a side panel open beside it.** With
+  the bookmarks, reading list or an extension's panel open, the page's place could not be told from the panel's,
+  so UIA could take the panel and answer `delivered`, and in a narrow window the wheel went to the window's centre on
+  the panel. The page is now told by the area the browser draws its tabs in, the page is scrolled as above, and `x`/`y`
+  on the page are used. In browsers whose accessibility tree has no such area (older Chrome), and with two pages
+  side by side or a crashed tab, nothing changes (internal #409).
 - **`scroll` with `x`/`y` on a Chrome or Edge window reached without CDP also scrolls what is at that point.** The
   wheel posted to the window carried the page's centre (or another visible point), and UIA, tried first, moved only
   the document. With two panes side by side, the one at the centre scrolled; with a box pointed at, the document
