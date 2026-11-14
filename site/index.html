@@ -77,7 +77,7 @@
             <p>The quickest way to install and launch the runtime is:</p>
             <pre>npx -y @harusame64/desktop-touch-mcp</pre>
             <p>
-              On first run, the launcher downloads the matching Windows runtime from GitHub Releases,
+              On first run, the launcher downloads the runtime for your system (Windows, or the macOS preview) from GitHub Releases,
               verifies it, and caches it locally.
             </p>
             <div class="hero-actions">
@@ -92,7 +92,7 @@
             <h2>Stable enough for daily work, and still moving.</h2>
             <div class="three-up">
               <div class="mini-card"><h3>In daily use</h3><p>32 tools, a native Rust engine, and regular releases. The project is used every day to drive real Windows applications — Notepad, Excel, Chrome, Windows Terminal, and whatever else is on the machine.</p></div>
-              <div class="mini-card"><h3>Evolving release to release</h3><p>The newer surfaces — discover-then-act targeting, browser semantic targeting, Key Locker, multi-monitor capture — keep gaining capability. Each release notes what changed for you.</p></div>
+              <div class="mini-card"><h3>Evolving release to release</h3><p>The newer surfaces — discover-then-act targeting, browser semantic targeting, Key Locker, typing into Windows Terminal and Word, the macOS preview — keep gaining capability. Each release notes what changed for you: see the <a href="https://github.com/Harusame64/desktop-touch-mcp/releases/latest">latest release</a>.</p></div>
               <div class="mini-card"><h3>Evaluation still open</h3><p>Systematic benchmarking of the ideas behind the design is still being built out. The evaluation plan is public rather than implied.</p></div>
             </div>
           </section>
@@ -104,7 +104,7 @@
             <div class="three-up">
               <a class="mini-card" href="./articles/v2-milestone.html">
                 <h3>v2: A Sense of Touch</h3>
-                <p>The 2.x series gives the agent something like sensory nerves. Before an act, <code>desktop_act</code> checks whether the target can still be touched and refuses under a named <code>reason</code> instead of guessing (2.0), and reads UI Automation deep enough to reach browsers, Electron apps and Word (2.1). When something cannot be touched, it says so: a suspended app's last frame, a covered window and a truncated list are no longer reported as seen (2.2). After an act, it reports what happened, including "the press may already have happened", and <code>browser_click</code> checks which window would take the click before moving the cursor (2.3).</p>
+                <p>The 2.x series gives the agent something like sensory nerves. Before an act, <code>desktop_act</code> checks whether the target can still be touched and refuses under a named <code>reason</code> instead of guessing (2.0), and reads UI Automation deep enough to reach browsers, Electron apps and Word (2.1). When something cannot be touched, it says so: a suspended app's last frame, a covered window and a truncated list are no longer reported as seen (2.2). After an act, it reports what happened, including "the press may already have happened", and <code>browser_click</code> checks which window would take the click before moving the cursor (2.3). A touch that would miss is refused with nothing done: typing that would not land, a paste into the wrong Windows Terminal tab, and a scroll or click that would reach DevTools or a side panel instead of the page (2.4).</p>
               </a>
               <a class="mini-card" href="https://github.com/Harusame64/desktop-touch-mcp/releases/tag/v1.16.0">
                 <h3>v1.16: Scrolling That Reaches WebView Apps, and Means What It Says</h3>
@@ -260,7 +260,7 @@ act</pre></div>
               <a class="mini-card" href="./articles/beyond-coordinate-roulette.html"><h3>Beyond Coordinate Roulette</h3><p>The philosophy piece behind entity-first, meaning-first UI interaction.</p></a>
             </div>
             <div class="three-up" style="margin-top: 18px;">
-              <a class="mini-card" href="./articles/client-setup.html"><h3>Client setup</h3><p>Copy-paste config snippets for Claude, Copilot, VS Code, Codex, ChatGPT, and Gemini CLI.</p></a>
+              <a class="mini-card" href="./articles/client-setup.html"><h3>Client setup</h3><p>Copy-paste config snippets for Claude, Copilot, VS Code, Codex, ChatGPT, Cursor, and Gemini CLI.</p></a>
               <a class="mini-card" href="./articles/planned-evaluation.html"><h3>Planned evaluation</h3><p>The scenarios, metrics, and reporting format intended to validate these ideas.</p></a>
             </div>
           </section>

@@ -97,7 +97,7 @@ site/
 - `articles/v1.10-milestone.html`
   - published v1.10 milestone page
 - `articles/v2-milestone.md`
-  - v2 milestone draft (covers the 2.0–2.3 arc)
+  - v2 milestone draft (covers the 2.0–2.4 arc)
 - `articles/v2-milestone.html`
   - published v2 milestone page
 - `assets/styles.css`

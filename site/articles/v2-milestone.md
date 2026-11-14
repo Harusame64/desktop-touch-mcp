@@ -49,13 +49,21 @@ The last nerve carries the answer back. Once an action has been sent, the agent 
 - **A failed value write is checked before typing again** (2.3.2). On the native UI Automation path, the field is read back after the write reports failure. If it holds the requested value, the act reports success; if it changed to another value, it returns `value_not_applied` without typing again. If it is unchanged or cannot be read, the keyboard fallback remains.
 - **`browser_click` lands where it aims** (2.3.2). After bringing the browser forward, it checks which window would receive the click before moving the cursor. A covering window, including a panel, popup or dialog of the browser itself, causes `BrowserPointCovered`; if Windows cannot answer the hit test, the click proceeds as before. The same release corrects clicks that landed roughly 8–12 px too low, points that drifted at any page zoom other than 100 %, and clicks that could land in another window showing the same title.
 
+## Where does the touch land? — refusing a false ok (2.4)
+
+The 2.4 releases check where a touch lands. A call that missed now refuses with nothing done, instead of answering `ok: true`.
+
+- **Typing that would not land is refused** (2.4.0). A line break typed by keystroke is a plain Enter, not Ctrl+Enter. A `keyboard` `type` of a space or line break sent by keystroke while the focus is on a button refuses with `FocusedControlTakesNoText`; a paste is sent as before, with a warning. A `window_dock` of a window that stays maximized refuses too.
+- **Pastes into Windows Terminal are checked** (2.4.1). `terminal` and `keyboard` refuse a tab that is split, is not a terminal, changed on the way, or is the one the client runs in (`WindowsTerminalTargetUnsafe`).
+- **Scrolls and clicks in Chrome and Edge land on the page** (2.4.2). `scroll` moves the page, not DevTools, a side panel, a PDF's thumbnails or another window's page, in the layouts the release notes list. `browser_click` refuses when its point would land on DevTools or another pane, and it hits the element with DevTools or a side panel open.
+- **A first start installs with PowerShell 7's module path set** (2.4.3). The launcher no longer stops with nothing unpacked, on a first install or an upgrade, when the client was started from a PowerShell 7 prompt or PowerShell 7's module path was saved for the user.
+
 ## Still being built
 
-This is a nervous system under construction, and it still has numb spots and false alarms. A few are written down in the release notes:
+This is a nervous system under construction, and it still has numb spots and false alarms. A few are known:
 
-- `desktop_discover` aimed at a Store app's frame window by its handle, rather than by its title, is not yet tested for suspension.
 - A control whose label changes between discover and act (a `Play` button that turned into `Pause`) is refused, though it is the same control.
-- With DevTools or a side panel docked beside a page, `browser_click` can still be off horizontally by half the panel's width and vertically by about 8 px.
+- With two pages side by side in one window (a split view), a `scroll` without a point can move the pane that is not active.
 
 Each one is a place where the agent cannot yet tell what it is touching. The direction does not change: when in doubt, say so and do nothing, rather than act and report success.
 

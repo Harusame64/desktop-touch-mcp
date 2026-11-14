@@ -72,7 +72,7 @@ If you want to try the project first, the shortest path is:
 npx -y @harusame64/desktop-touch-mcp
 ```
 
-On first run, the launcher downloads the matching Windows runtime from GitHub Releases,
+On first run, the launcher downloads the runtime for your system (Windows, or the macOS preview) from GitHub Releases,
 verifies it, and caches it locally.
 
 If you want ready-to-paste client config examples, add a dedicated setup page:
@@ -86,7 +86,7 @@ If you want ready-to-paste client config examples, add a dedicated setup page:
 Stable enough for daily work, and still moving.
 
 - **In daily use** — 32 tools, a native Rust engine, and regular releases; used every day to drive real Windows applications — Notepad, Excel, Chrome, Windows Terminal, and whatever else is on the machine
-- **Evolving release to release** — discover-then-act targeting, browser semantic targeting, Key Locker, and multi-monitor capture keep gaining capability; each release notes what changed for you
+- **Evolving release to release** — discover-then-act targeting, browser semantic targeting, Key Locker, typing into Windows Terminal and Word, and the macOS preview keep gaining capability; each release notes what changed for you (see the [latest release](https://github.com/Harusame64/desktop-touch-mcp/releases/latest))
 - **Evaluation still open** — systematic benchmarking of the ideas behind the design is still being built out, and the evaluation plan is public rather than implied
 
 ---
@@ -96,7 +96,7 @@ Stable enough for daily work, and still moving.
 As the project evolves, we document major architectural shifts and milestones here.
 
 ### v2: A Sense of Touch
-The 2.x series gives the agent something like sensory nerves. Before an act, `desktop_act` checks whether the target can still be touched and refuses under a named `reason` instead of guessing (2.0), and reads UI Automation deep enough to reach browsers, Electron apps and Word (2.1). When something cannot be touched, it says so: a suspended app's last frame, a covered window and a truncated list are no longer reported as seen (2.2). After an act, it reports what happened, including "the press may already have happened", and `browser_click` checks which window would take the click before moving the cursor (2.3).
+The 2.x series gives the agent something like sensory nerves. Before an act, `desktop_act` checks whether the target can still be touched and refuses under a named `reason` instead of guessing (2.0), and reads UI Automation deep enough to reach browsers, Electron apps and Word (2.1). When something cannot be touched, it says so: a suspended app's last frame, a covered window and a truncated list are no longer reported as seen (2.2). After an act, it reports what happened, including "the press may already have happened", and `browser_click` checks which window would take the click before moving the cursor (2.3). A touch that would miss is refused with nothing done: typing that would not land, a paste into the wrong Windows Terminal tab, and a scroll or click that would reach DevTools or a side panel instead of the page (2.4).
 - [Read the v2 Milestone Article](./articles/v2-milestone.html) · [v2.0.0 release notes](https://github.com/Harusame64/desktop-touch-mcp/releases/tag/v2.0.0)
 
 ### v1.16: Scrolling That Reaches WebView Apps, and Means What It Says
@@ -255,7 +255,7 @@ show how a conventional loop differs from an uncertainty-aware one.
 
 ### Client setup
 
-Copy-paste configuration examples for Claude, GitHub Copilot CLI, VS Code / Copilot Chat, OpenAI Codex, ChatGPT Developer mode, and Gemini CLI.
+Copy-paste configuration examples for Claude, GitHub Copilot CLI, VS Code / Copilot Chat, OpenAI Codex, ChatGPT Developer mode, Cursor, and Gemini CLI.
 
 ### RPG explainer
 
