@@ -458,6 +458,11 @@ export interface NativeUia {
    * receivers like Excel `NUIScrollbar`, Word MFC). Pure observation;
    * never writes.
    */
+  /**
+   * internal #409 — the windows the Documents inside a Chromium frame's contents area (`MultiContentsView`) are drawn
+   * in, or null when the frame has none in its UIA tree (an older Chromium, Electron) or it cannot be read.
+   */
+  uiaPageWindowsInContents?(frame: string): Promise<string[] | null>;
   uiaReadScrollPercentAtHwnd?(opts: {
     hwnd: string;
     axis: "vertical" | "horizontal";

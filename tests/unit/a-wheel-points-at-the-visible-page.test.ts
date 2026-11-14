@@ -47,6 +47,32 @@ describe("the page's window at the point (internal #409)", () => {
   });
 });
 
+describe("a side panel beside the page (internal #409)", () => {
+  const PANEL = { x: 1110, y: 200, width: 300, height: 500 };
+  const d = () => deps({
+    pointAt: (x) => ({ child: x >= 1110 ? 4n : PAGE, root: FRAME }),
+    surface: {
+      isIconic: () => false,
+      isCloaked: () => false,
+      descendants: () => [
+        { hwnd: PAGE, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: RECT },
+        { hwnd: 4n, className: "Chrome_RenderWidgetHostHWND", visible: true, rect: PANEL },
+      ],
+    },
+  });
+  it("keep, naming the frame whose contents area may tell them apart", () => {
+    expect(wheelPointOnPage(FRAME, d())).toEqual({ kind: "keep", ambiguousFrame: FRAME });
+    expect(wheelPointOnPage(FRAME, d(), { x: 300, y: 450 })).toEqual({ kind: "keep", pointNotUsed: "unreadable", ambiguousFrame: FRAME });
+  });
+  it("with the contents area's windows: the page's centre, and the caller's point on the page", () => {
+    expect(wheelPointOnPage(FRAME, d(), undefined, [PAGE])).toEqual({ kind: "point", frame: FRAME, point: { x: 600, y: 450 }, pageWindows: [PAGE] });
+    expect(wheelPointOnPage(FRAME, d(), { x: 300, y: 450 }, [PAGE])).toEqual({ kind: "point", frame: FRAME, point: { x: 300, y: 450 }, pageWindows: [PAGE] });
+  });
+  it("still ambiguous with them: keep, and no second ask", () => {
+    expect(wheelPointOnPage(FRAME, d(), undefined, [PAGE, 4n])).toEqual({ kind: "keep" });
+  });
+});
+
 describe("wheelPointOnPage", () => {
   it("the page's centre when it shows", () => {
     expect(wheelPointOnPage(PAGE, deps())).toEqual({ kind: "point", frame: FRAME, point: { x: 600, y: 450 }, pageWindows: [PAGE] });

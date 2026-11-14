@@ -923,6 +923,112 @@ fn find_page_document_scroll(
     None
 }
 
+/// internal #409 — the Views class of the area a Chromium browser draws its tabs' contents in. In Chrome 157 and Edge
+/// 157 the page's Document and a docked DevTools' are under it, and side panels, extension panels and Edge's side pane
+/// are outside it (win2, dev/409-spike rounds 3 and 4). Chrome 120 and Electron have no such element.
+const CONTENTS_VIEW_CLASS: &str = "MultiContentsView";
+
+/// internal #409 — the windows the Documents inside a Chromium frame's contents area are drawn in, or `None` when the
+/// frame has no contents area in its UIA tree (an older Chromium, Electron) or it cannot be read. The page surface uses
+/// it to tell the page from a side panel beside it when their windows alone cannot.
+pub fn page_windows_in_contents(frame: String) -> napi::Result<Option<Vec<String>>> {
+    thread::execute_with_timeout(move |ctx| page_windows_in_contents_impl(ctx, &frame), DEFAULT_TIMEOUT_MS)
+}
+
+fn page_windows_in_contents_impl(ctx: &UiaContext, frame: &str) -> napi::Result<Option<Vec<String>>> {
+    let raw: i64 = frame
+        .parse()
+        .map_err(|e| napi::Error::from_reason(format!("uia_page_windows_in_contents: hwnd parse error: {e}")))?;
+    if raw == 0 {
+        return Ok(None);
+    }
+    let Ok(root) = (unsafe { ctx.automation.ElementFromHandle(HWND(raw as *mut std::ffi::c_void)) }) else {
+        return Ok(None);
+    };
+    let mut budget = MAX_SCROLL_DFS_NODES;
+    let Some(contents) = find_contents_view(ctx, &root, MAX_SEARCH_DEPTH, &mut budget) else {
+        return Ok(None);
+    };
+    let mut windows: Vec<isize> = Vec::new();
+    let mut budget = MAX_SCROLL_DFS_NODES;
+    collect_document_windows(ctx, &contents, MAX_SEARCH_DEPTH, &mut budget, &mut windows);
+    // A crashed tab's view is a Document drawn in the frame itself: its page window is gone, and what is left in the
+    // contents area (a docked DevTools) is not the page (win2, dev/409-spike rounds 2–4, Chrome 157 and Edge 157).
+    // Then nothing is said, and the page stays as unplaced as before.
+    if windows.contains(&(raw as isize)) {
+        return Ok(None);
+    }
+    Ok(Some(windows.into_iter().map(|h| (h as i64).to_string()).collect()))
+}
+
+fn is_document(elem: &IUIAutomationElement) -> bool {
+    unsafe { elem.CurrentControlType() }
+        .map(|ct| ct.0 == UIA_DocumentControlTypeId.0)
+        .unwrap_or(false)
+}
+
+/// internal #409 — the first element of class `CONTENTS_VIEW_CLASS` in tree order. It does not go into a Document: web
+/// content holds no browser views, and the walk would spend its budget there.
+fn find_contents_view(
+    ctx: &UiaContext,
+    elem: &IUIAutomationElement,
+    depth: u32,
+    budget: &mut u32,
+) -> Option<IUIAutomationElement> {
+    if depth == 0 || *budget == 0 {
+        return None;
+    }
+    *budget -= 1;
+    if unsafe { elem.CurrentClassName() }.map(|c| c == CONTENTS_VIEW_CLASS).unwrap_or(false) {
+        return Some(elem.clone());
+    }
+    if is_document(elem) {
+        return None;
+    }
+    let mut child = unsafe { ctx.walker.GetFirstChildElement(elem) }.ok();
+    while let Some(c) = child {
+        if let Some(found) = find_contents_view(ctx, &c, depth - 1, budget) {
+            return Some(found);
+        }
+        if *budget == 0 {
+            return None;
+        }
+        child = unsafe { ctx.walker.GetNextSiblingElement(&c) }.ok();
+    }
+    None
+}
+
+/// internal #409 — the windows (`drawn_in_window`) of the outermost Documents under `elem`, each once. What is nested
+/// in a Document is drawn in its window, so the walk does not go into one.
+fn collect_document_windows(
+    ctx: &UiaContext,
+    elem: &IUIAutomationElement,
+    depth: u32,
+    budget: &mut u32,
+    out: &mut Vec<isize>,
+) {
+    if depth == 0 || *budget == 0 {
+        return;
+    }
+    *budget -= 1;
+    if is_document(elem) {
+        if let Some(h) = drawn_in_window(ctx, elem)
+            && !out.contains(&h)
+        {
+            out.push(h);
+        }
+        return;
+    }
+    let mut child = unsafe { ctx.walker.GetFirstChildElement(elem) }.ok();
+    while let Some(c) = child {
+        collect_document_windows(ctx, &c, depth - 1, budget, out);
+        if *budget == 0 {
+            return;
+        }
+        child = unsafe { ctx.walker.GetNextSiblingElement(&c) }.ok();
+    }
+}
+
 /// internal #407 — what the DFS has met so far.
 #[derive(Default)]
 struct DevToolsSeen {

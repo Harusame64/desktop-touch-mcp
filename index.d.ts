@@ -483,6 +483,7 @@ export declare function uiaScrollByWheelAtHwnd(opts: { hwnd: string; wheelDeltaY
  * pattern is exposed (custom-paint receivers like Excel `NUIScrollbar`, Word
  * MFC document body). Pure observation; no SetScrollPercent side effect.
  */
+export declare function uiaPageWindowsInContents(frame: string): Promise<string[] | null>
 export declare function uiaReadScrollPercentAtHwnd(opts: { hwnd: string; axis: "vertical" | "horizontal" }): Promise<number | null>
 export declare function uiaGetVirtualDesktopStatus(hwndIntegers: Array<string>): Promise<Record<string, boolean>>
 /** internal #227 — the selected tab of a Windows Terminal window, or null. */
