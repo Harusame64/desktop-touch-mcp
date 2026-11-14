@@ -806,12 +806,22 @@ fn page_at_point(opts: &ScrollByWheelAtHwndOptions) -> Option<PageAtPoint> {
     Some(PageAtPoint { windows, x, y })
 }
 
-/// internal #409 — the window a UIA element is drawn in: itself when it carries one, else the nearest RawView ancestor
-/// that does. A web Document's is the `Chrome_RenderWidgetHostHWND` its page is drawn in: one step up for a page,
-/// DevTools or a side panel, 3–13 for an out-of-process iframe or the PDF viewer's inner Documents, none in Chrome 120,
-/// where the Document is that window's own element (win2, dev/409-spike rounds 2 and 4: 43 of 43 and every Chrome
-/// 120 cell). `None` when the walk fails or runs past `MAX_DRAWN_IN_STEPS` steps.
+/// internal #409 — the window a UIA element is drawn in. A web Document's is the `Chrome_RenderWidgetHostHWND` its page
+/// is drawn in.
+///
+/// It is read first from the element's RuntimeId: UIA builds the id of an element hosted in a window as
+/// `[42, <that window's handle>, …]`. Every Document measured had it (win2, dev/409-spike: 81 of 81 and 43 of 43;
+/// nested iframe and PDF Documents name their page's window). Only then is it the nearest RawView ancestor-or-self
+/// with a native window, which named the same window while a tab stayed on the page it loaded.
+///
+/// After a navigation in the same tab, Chrome 157 left a Document's RawView parent on the old page window, gone from
+/// the frame or hidden, while its RuntimeId named the new, visible one. That happened 5 times (dev/986-hw r1) and once
+/// in a split view (round 4), and it lasted until a reload. On the RawView answer, the page had no Document of its
+/// own window: Tier 1 passed it over, and the contents area named a window that was not there (gate on #986).
 fn drawn_in_window(ctx: &UiaContext, elem: &IUIAutomationElement) -> Option<isize> {
+    if let Some(h) = runtime_id_window(elem) {
+        return Some(h);
+    }
     let raw = unsafe { ctx.automation.RawViewWalker().ok()? };
     let mut current = elem.clone();
     for _ in 0..MAX_DRAWN_IN_STEPS {
@@ -822,6 +832,29 @@ fn drawn_in_window(ctx: &UiaContext, elem: &IUIAutomationElement) -> Option<isiz
         current = unsafe { raw.GetParentElement(&current).ok()? };
     }
     None
+}
+
+/// UIA's first RuntimeId part for an id built from a window handle (`[42, hwnd, …]`).
+const RUNTIME_ID_WINDOW_PREFIX: i32 = 42;
+
+/// internal #409 — the window handle in an element's RuntimeId (`drawn_in_window`), or `None` when it has none.
+fn runtime_id_window(elem: &IUIAutomationElement) -> Option<isize> {
+    let ids = unsafe {
+        let mut v = elem.GetCurrentPropertyValue(UIA_RuntimeIdPropertyId).ok()?;
+        let read = super::tree::runtime_id_ints_from_variant(&v);
+        let _ = windows::Win32::System::Variant::VariantClear(&mut v);
+        read
+    }?;
+    window_in_runtime_id(&ids)
+}
+
+/// The window handle in a RuntimeId of the `[42, hwnd, …]` shape. A handle is 32 bits wide, so a negative part is read
+/// as unsigned. Exported to the tests.
+fn window_in_runtime_id(ids: &[i32]) -> Option<isize> {
+    match ids {
+        [RUNTIME_ID_WINDOW_PREFIX, h, ..] if *h != 0 => Some(*h as u32 as isize),
+        _ => None,
+    }
 }
 
 /// internal #409 — RawView steps `drawn_in_window` takes at most: the deepest seen was 13 (the PDF viewer's body), with
@@ -846,8 +879,7 @@ fn rect_holds(r: &RECT, x: i32, y: i32) -> bool {
 /// - It does not use a descendant's ScrollPattern. An inner box of the page is moved by the posted wheel at the
 ///   point (Tier 3), which Chromium hit-tests, so it is left to that.
 /// - A Document drawn in another window is passed over with its whole subtree: what is nested in it is drawn there
-///   too. One whose RawView ancestor is not the window its RuntimeId names (once in Chrome 157's split view, round 4)
-///   is passed over, and Tier 3 posts at the point instead.
+///   too. Which window that is, `drawn_in_window` reads from its RuntimeId first (see there for why).
 #[allow(clippy::too_many_arguments)]
 fn find_page_document_scroll(
     ctx: &UiaContext,
@@ -1311,6 +1343,21 @@ mod tests {
         // One unreadable or null window makes the whole list unreadable, rather than a shorter list.
         assert!(page_at_point(&opts(Some(vec!["5", "x"]), Some(1), Some(1))).is_none());
         assert!(page_at_point(&opts(Some(vec!["5", "0"]), Some(1), Some(1))).is_none());
+    }
+
+    /// internal #409 — the window in a RuntimeId (win2's records: a page Document, an iframe's, a PDF body's).
+    #[test]
+    fn a_runtime_id_names_its_window_only_in_the_window_shape() {
+        use super::window_in_runtime_id;
+        assert_eq!(window_in_runtime_id(&[42, 34802618, 4, 6, 1, 1]), Some(34802618));
+        assert_eq!(window_in_runtime_id(&[42, 29689714, 4, 27, 5, 2]), Some(29689714));
+        assert_eq!(window_in_runtime_id(&[42, 4655826]), Some(4655826));
+        // A handle with the top bit set is read unsigned, not as a negative number.
+        assert_eq!(window_in_runtime_id(&[42, -2]), Some(0xFFFF_FFFE));
+        assert_eq!(window_in_runtime_id(&[42, 0, 4]), None);
+        assert_eq!(window_in_runtime_id(&[7, 34802618, 4]), None);
+        assert_eq!(window_in_runtime_id(&[42]), None);
+        assert_eq!(window_in_runtime_id(&[]), None);
     }
 
     #[test]
