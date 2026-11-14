@@ -77,8 +77,8 @@ Inside `desktop-touch-mcp`, this is not one single feature.
 
 It is the design direction behind things like:
 
-- `desktop_see`
-- `desktop_touch`
+- `desktop_discover`
+- `desktop_act`
 - entity leases
 - guarded execution
 - semantic diffs

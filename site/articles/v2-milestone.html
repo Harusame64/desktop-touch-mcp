@@ -65,7 +65,12 @@
         G[read back, hit-test]
     end
 
-    v1x --&gt; v2a --&gt; v2b --&gt; v2c
+    subgraph v2d["2.4: Where the touch lands"]
+        H[refuse a false ok]
+        I[the page, not a panel]
+    end
+
+    v1x --&gt; v2a --&gt; v2b --&gt; v2c --&gt; v2d
 
     classDef stable fill:#e8f1ff,stroke:#3b6db3,color:#183257;
     classDef fresh fill:#d7f2ed,stroke:#1f8a70,color:#0e3b30;
@@ -123,13 +128,25 @@
             </section>
 
             <section class="article-card">
+              <span class="label">Where the touch lands (2.4)</span>
+              <h2>Land on what was named, or say that nothing happened.</h2>
+              <p>The 2.4 releases check where a touch lands. A call that missed now refuses with nothing done, instead of answering <code>ok: true</code>.</p>
+              <ul>
+                <li><strong>Typing that would not land is refused</strong> (2.4.0). A line break is typed as Enter. A <code>keyboard</code> <code>type</code> of a space or line break while the focus is on a button refuses with <code>FocusedControlTakesNoText</code>. A <code>window_dock</code> of a window that stays maximized refuses too.</li>
+                <li><strong>Pastes into Windows Terminal are checked</strong> (2.4.1). <code>terminal</code> and <code>keyboard</code> refuse a tab that is split, is not a terminal, changed on the way, or is the one the client runs in (<code>WindowsTerminalTargetUnsafe</code>).</li>
+                <li><strong>Scrolls and clicks in Chrome and Edge land on the page</strong> (2.4.2). <code>scroll</code> moves the page, not DevTools, a side panel, a PDF's thumbnails or another window's page. <code>browser_click</code> refuses when its point would land on DevTools or another pane, and it hits the element with DevTools or a side bar open.</li>
+                <li><strong>A first start installs with PowerShell 7's module path set</strong> (2.4.3). The launcher no longer stops with nothing unpacked when the client was started from a PowerShell 7 prompt.</li>
+              </ul>
+            </section>
+
+            <section class="article-card">
               <span class="label warm">Still being built</span>
               <h2>Numb spots and false alarms, written down.</h2>
               <p>This is a nervous system under construction. A few of its gaps are written down in the release notes:</p>
               <ul>
                 <li><code>desktop_discover</code> aimed at a Store app's frame window by its handle, rather than by its title, is not yet tested for suspension.</li>
                 <li>A control whose label changes between discover and act (a <code>Play</code> button that turned into <code>Pause</code>) is refused, though it is the same control.</li>
-                <li>With DevTools or a side panel docked beside a page, <code>browser_click</code> can still be off horizontally by half the panel's width and vertically by about 8 px.</li>
+                <li>With two pages side by side in one window (a split view), a <code>scroll</code> without a point can move the pane that is not active.</li>
               </ul>
               <p>Each one is a place where the agent cannot yet tell what it is touching. The direction does not change: when in doubt, say so and do nothing, rather than act and report success.</p>
               <div class="hero-actions">
@@ -144,7 +161,7 @@
               <h3>From aiming to feeling</h3>
               <p>The 1.x series taught desktop-touch to aim. The 2.x series teaches it to <em>feel</em>: before an act it checks whether the target can be touched, when it cannot be it says so, and after an act it reports what happened, including when it is not sure. The agent on the other end has more evidence about whether a touch landed, and clearer signals when the system cannot tell. Those signals help it decide whether to continue, look again or stop.</p>
               <h3>Release span</h3>
-              <p>2.0.0 (breaking changes, listed in a table in its release notes) through 2.3.3. The macOS preview, four tools, arrived in 2.3.0. The full sequence is in the changelog.</p>
+              <p>2.0.0 (breaking changes, listed in a table in its release notes) through 2.4.3. The macOS preview, four tools, arrived in 2.3.0. The full sequence is in the changelog.</p>
               <h3>Related pages</h3>
               <ul>
                 <li><a href="../index.html">Project top</a></li>

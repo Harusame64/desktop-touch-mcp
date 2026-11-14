@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>desktop-touch-mcp Client Setup | Windows MCP server</title>
-    <meta name="description" content="Copy-paste setup snippets for connecting the desktop-touch-mcp Windows MCP server to Claude, GitHub Copilot, VS Code, Codex, ChatGPT Developer mode, and Gemini CLI." />
+    <meta name="description" content="Copy-paste setup snippets for connecting the desktop-touch-mcp Windows MCP server to Claude, GitHub Copilot, VS Code, Codex, ChatGPT Developer mode, Cursor, and Gemini CLI." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@500;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,700&display=swap" rel="stylesheet" />
@@ -38,7 +38,7 @@
             <span class="eyebrow">Copy, paste, try</span>
             <h1>Connect <code>desktop-touch-mcp</code> to the client you already use</h1>
             <p class="lead">This page keeps the setup practical. Pick your client, copy one snippet, and you should be able to get moving without reverse-engineering transport names or config shapes.</p>
-            <p><strong>Current scope:</strong> all examples on this page assume a local <strong>Windows 10 or 11</strong> machine. macOS and Linux are not supported.</p>
+            <p><strong>Current scope:</strong> the full toolset runs on a local <strong>Windows 10 or 11</strong> machine, and the examples on this page assume one. On Apple Silicon Macs (macOS 14 or later), the same stdio command starts a <a href="https://github.com/Harusame64/desktop-touch-mcp#macos-preview">four-tool preview</a>; HTTP is not available there yet. Linux is not supported.</p>
           </div>
         </section>
 
@@ -49,7 +49,7 @@
               <h2>Choose the transport first.</h2>
               <p><strong>Stdio</strong> is the simplest path when your client can launch local MCP servers itself.</p>
               <pre>npx -y @harusame64/desktop-touch-mcp</pre>
-              <p><strong>HTTP</strong> is the right path when your client wants a server URL.</p>
+              <p><strong>HTTP</strong> is the right path when your client wants a server URL (Windows only for now).</p>
               <pre>npx -y @harusame64/desktop-touch-mcp --http</pre>
               <p>The default local MCP endpoint is:</p>
               <pre>http://127.0.0.1:23847/mcp</pre>
@@ -65,7 +65,7 @@
               <div class="three-up">
                 <div class="mini-card"><h3>Use stdio</h3><p>Claude Code, Codex, Gemini CLI, and many local clients are comfortable launching a local command.</p></div>
                 <div class="mini-card"><h3>Use HTTP</h3><p>VS Code, URL-based clients, and ChatGPT Developer mode fit better with a local endpoint.</p></div>
-                <div class="mini-card"><h3>Keep both</h3><p>It is reasonable for public docs to show stdio first and HTTP second for the same project.</p></div>
+                <div class="mini-card"><h3>Prefer stdio when you can</h3><p>Some features need it: typing into Windows Terminal through <code>desktop_act</code> asks you first, and that question reaches you only from a client with elicitation over stdio.</p></div>
               </div>
             </section>
 
@@ -190,6 +190,29 @@ url = "http://127.0.0.1:23847/mcp"</pre>
                 <li>Create an app for your MCP server</li>
                 <li>Add the local MCP endpoint</li>
               </ol>
+            </section>
+
+            <section class="article-card">
+              <span class="label">Cursor</span>
+              <h2>Use <code>~/.cursor/mcp.json</code>, or <code>.cursor/mcp.json</code> in a project.</h2>
+              <p>Stdio:</p>
+              <pre>{
+  "mcpServers": {
+    "desktop-touch": {
+      "command": "npx",
+      "args": ["-y", "@harusame64/desktop-touch-mcp"]
+    }
+  }
+}</pre>
+              <p>HTTP:</p>
+              <pre>{
+  "mcpServers": {
+    "desktop-touch": {
+      "url": "http://127.0.0.1:23847/mcp"
+    }
+  }
+}</pre>
+              <p>This follows Cursor's own <code>mcp.json</code> shape; Cursor is not yet in the list of clients checked by hand above.</p>
             </section>
 
             <section class="article-card">
