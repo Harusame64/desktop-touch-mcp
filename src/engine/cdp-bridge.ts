@@ -258,9 +258,10 @@ async function fetchTabs(port: number): Promise<CdpTab[]> {
  * "&amp;" (sent as "&amp;amp;") stays "&amp;". Exported for tests.
  */
 export function unescapeTargetTitle(title: string): string {
-  return title.replace(/&(amp|lt|gt|quot|#39);/g, (_, e: string) =>
-    e === "amp" ? "&" : e === "lt" ? "<" : e === "gt" ? ">" : e === "quot" ? '"' : "'");
+  return title.replace(/&(amp|lt|gt|quot|#39);/g, (whole, e: string) => TITLE_ENTITIES[e] ?? whole);
 }
+
+const TITLE_ENTITIES: Readonly<Record<string, string>> = { amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" };
 
 /**
  * llm22 drive F13 (win2, 2026-10-04): after `browser_open(port:9333)`, `desktop_discover` and

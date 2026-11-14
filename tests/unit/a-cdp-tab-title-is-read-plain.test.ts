@@ -11,10 +11,10 @@ afterEach(() => { globalThis.fetch = realFetch; });
 
 describe("the tab list reads titles plain", () => {
   it("listTabs and listTabsLight give the title as the window shows it, and leave the url alone", async () => {
-    const raw = [{ id: "T1", type: "page", url: "http://h/?a=1&amp;b=2", title: "viewport &amp; smooth &lt;x&gt;" }];
+    const raw = [{ id: "T406-plain-title", type: "page", url: "http://h/?a=1&amp;b=2", title: "viewport &amp; smooth &lt;x&gt;" }];
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify(raw))) as never;
     expect((await listTabs(9222))[0]).toMatchObject({ title: "viewport & smooth <x>", url: "http://h/?a=1&amp;b=2" });
-    expect((await listTabsLight(9222))[0]).toEqual({ id: "T1", type: "page", url: "http://h/?a=1&amp;b=2", title: "viewport & smooth <x>" });
+    expect((await listTabsLight(9222))[0]).toEqual({ id: "T406-plain-title", type: "page", url: "http://h/?a=1&amp;b=2", title: "viewport & smooth <x>" });
   });
 });
 

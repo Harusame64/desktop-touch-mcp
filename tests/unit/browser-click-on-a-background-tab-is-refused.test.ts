@@ -121,6 +121,16 @@ describe("internal #318: the last look before the click", () => {
     expect(JSON.stringify(body.suggest)).toContain('focus_window({ title: \\"Cart\\", chromeTabUrlContains');
     expect(body.context).toMatchObject({ coveredBy: "tab", target: CART, showing: [SHOP] });
   });
+
+  it("a title with a double quote is quoted as JSON, so the suggested call can be copied as it reads (gate 2 on #988)", () => {
+    const QUOTED = { tabId: "t3", title: 'Say "hi" - Docs', url: "https://example.test/hi" };
+    const r = browserPointCoveredFailure({ covered: "tab", target: QUOTED, showing: [SHOP] }, 392, 360, { selector: "#btn" });
+    const body = JSON.parse(r.content[0]!.type === "text" ? r.content[0]!.text : "{}");
+    expect(body.error).toContain('"Say \\"hi\\" - Docs" (https://example.test/hi, tabId t3)');
+    const advice = (body.suggest as string[]).join(" ");
+    expect(advice).toContain('focus_window({ title: "Say \\"hi\\" - Docs", chromeTabUrlContains');
+    expect(advice).toContain('with query "Say \\"hi\\" - Docs"');
+  });
 });
 
 describe("internal #318: hiddenTabCover", () => {

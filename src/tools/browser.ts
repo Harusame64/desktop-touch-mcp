@@ -777,13 +777,15 @@ export function browserPointCoveredFailure(
     // internal #318 — the user's decision (2026-10-28): do not switch the user's tab, refuse, and give
     // the caller everything it needs to switch and retry.
     const front = cover.showing[0];
-    const shown = (t: TabSummary) => `"${t.title}" (${t.url}, tabId ${t.tabId})`;
+    // The titles are plain since internal #406 (not HTML-escaped), so a '"' in one is quoted as JSON, and the call
+    // below can be copied as it reads (gate 2 on #988).
+    const shown = (t: TabSummary) => `${JSON.stringify(t.title)} (${t.url}, tabId ${t.tabId})`;
     return failCode(
       "BrowserPointCovered",
       `browser_click: the tab ${shown(cover.target)} is not the one its window shows, so a click at the element's point (${x}, ${y}) would land on the tab that is${front ? `: ${shown(front)}` : ""}. browser_click does not switch tabs in a window that is already in front. Nothing was clicked.`,
       {
         suggest: [
-          `Select the tab, then retry browser_click with tabId "${cover.target.tabId}": focus_window({ title: "${cover.target.title}", chromeTabUrlContains: <part of "${cover.target.url}"> }) selects it (pass the target tab's title: the window's title changes to it). Or desktop_discover on the browser window with query "${cover.target.title}" and desktop_act on that tab-strip entry (its label starts with the title).`,
+          `Select the tab, then retry browser_click with tabId "${cover.target.tabId}": focus_window({ title: ${JSON.stringify(cover.target.title)}, chromeTabUrlContains: <part of "${cover.target.url}"> }) selects it (pass the target tab's title: the window's title changes to it). Or desktop_discover on the browser window with query ${JSON.stringify(cover.target.title)} and desktop_act on that tab-strip entry (its label starts with the title).`,
           "If the tab showing is the one you meant, retry with its tabId instead (showing[] in the context: tabs of the same window).",
           "To read or change the hidden tab without clicking, browser_eval and browser_fill work on a hidden tab through the page.",
         ],
