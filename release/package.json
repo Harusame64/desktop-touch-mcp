@@ -7,7 +7,7 @@
     "@modelcontextprotocol/sdk": "^1.32.2",
     "@nut-tree-fork/nut-js": "^4.2.6",
     "sharp": "^0.35.5",
-    "ws": "^8.22.1",
+    "ws": "^8.23.0",
     "zod": "^4.6.7"
   },
   "overrides": {
