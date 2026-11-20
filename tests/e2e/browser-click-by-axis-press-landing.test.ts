@@ -120,12 +120,16 @@ describe.skipIf(!CHROME)("browser_click by-axis: a covered match is read like th
     expect(await counts()).toEqual({});
   });
 
-  it("does not refuse a checkbox inside a dialog the old rules call modal: its own label takes the press (/code-review round 2 on #1006)", async () => {
-    await page(`<div role="dialog" aria-label="Prefs" style="position:fixed;left:20px;top:20px;right:20px;bottom:20px;background:#fff;z-index:10"><input type="checkbox" id="cb" style="position:absolute;left:20px;top:20px;margin:0"><label for="cb" style="position:absolute;left:20px;top:20px;padding:0 0 0 30px;width:200px;height:20px">Remember me</label><button id="okb">OK</button></div>
+  it("does not refuse a button inside a dialog the old rules call modal: a visible part of it takes the press (/code-review round 2 on #1006)", async () => {
+    // A badge covers the button's centre, so the hit is in the dialog and the old rules name the dialog as the
+    // blocker; the button is in the dialog, so a person presses its visible part. (A checkbox by role is not used:
+    // by:'role' role:'checkbox' finds no match there yet, internal #420.)
+    await page(`<div role="dialog" aria-label="Prefs" style="position:fixed;left:20px;top:20px;right:20px;bottom:20px;background:#fff;z-index:10"><button id="apply" data-n="apply" style="position:absolute;left:40px;top:40px;width:160px;height:40px">Apply now</button><span style="position:absolute;left:100px;top:40px;width:40px;height:40px;background:red">3</span><button id="okb">OK</button></div>
       <div style="position:fixed;inset:0;z-index:9;pointer-events:none"></div>`);
     await evaluateInTab("document.body.style.overflow='hidden';document.getElementById('okb').focus();true", null, PORT);
-    const r = await click({ by: "role", pattern: "checkbox" });
+    const r = await click({ by: "text", pattern: "Apply now" });
     expect(r.code).not.toBe("BrowserModalBlocking");
+    expect(r.code).not.toBe("BrowserNoActionableTarget");
     expect(await marks()).toBe(0);
   });
 
