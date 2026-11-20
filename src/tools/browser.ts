@@ -746,12 +746,27 @@ export function cdpClickRefusal(cover: BrowserPointCover, x: number, y: number, 
   const failure = browserPointCoveredFailure(cover, x, y, ctx);
   const text = (failure.content?.[0] as { text?: string } | undefined)?.text ?? "";
   let sentence = text;
+  let suggest: string[] = [];
   try {
-    sentence = (JSON.parse(text) as { error?: string }).error ?? text;
+    const parsed = JSON.parse(text) as { error?: string; suggest?: unknown };
+    sentence = parsed.error ?? text;
+    if (Array.isArray(parsed.suggest)) suggest = parsed.suggest.filter((s): s is string => typeof s === "string");
   } catch {
     // plain text: keep it
   }
-  const err = new Error(sentence.replace(/^browser_click: /, "desktop_act (cdp): "));
+  // An excluded window is not named (R3): its own reason, whose advice says so and not to retry by coordinate.
+  if (cover.covered === "excluded") {
+    const err = new Error(sentence.replace(/^browser_click: /, "desktop_act (cdp): "));
+    err.name = "AimBlockedByExcludedWindowError";
+    (err as Error & { callerDetail?: string }).callerDetail = err.message;
+    return err;
+  }
+  // The remedy is browser_click's first suggestion (close DevTools with F12 on that hwnd, select the hidden tab,
+  // restore the window, dismiss the browser's own panel): the published advice of the reason below is generic, and
+  // the old ambiguous-pane refusal carried its remedy in the sentence (/code-review on #1001). "Nothing was
+  // clicked" is in the sentence, which comes first, so the 1000-character cap on the detail cuts the remedy, not it.
+  const remedy = suggest[0] !== undefined ? ` Next: ${suggest[0]}` : "";
+  const err = new Error(sentence.replace(/^browser_click: /, "desktop_act (cdp): ") + remedy);
   err.name = cover.covered === "other" || cover.covered === "owned" ? "AimOccludedError" : "AimedRouteFailedError";
   (err as Error & { callerDetail?: string }).callerDetail = err.message;
   return err;

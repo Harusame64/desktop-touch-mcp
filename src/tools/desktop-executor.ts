@@ -2749,6 +2749,7 @@ function adr029Refusal(err: unknown): string | undefined {
   // `act.aim` row, which reads as "nothing ran" though the act reached the cdp_click rung and refused there (win2).
   if (err.name === "AimOccludedError") return "aim_occluded";
   if (err.name === "AimedRouteFailedError") return "aim_route_failed";
+  if (err.name === "AimBlockedByExcludedWindowError") return "aim_blocked_by_excluded_window";
   return undefined;
 }
 
