@@ -3935,20 +3935,28 @@ function getSharedRealDeps(): ExecutorDeps {
       // internal #421 — the OS road presses the element's centre only. Covered there, the CDP road's reading says
       // what is in front (and refuses typed); if a point elsewhere would reach the element (a visible part, its own
       // label, a skin), the OS cursor is not aimed there: nothing is pressed.
+      let at = coords;
       if (coords.occluded) {
         const p = await pressPointFor(selector, tab, port);
+        // The centre itself reaches it now (an overlay left, or the scroll cleared a header): press it there, at
+        // coordinates read again, since the reading may have scrolled the page (/code-review on #1004).
+        const again = p.via === "element" && (p.how === "self" || p.how === "inside") ? await getElementScreenCoords(selector, tab, port) : null;
+        if (again && !(again as { error?: string }).error && !again.occluded) {
+          at = again;
+        } else {
         const err = new Error(
           `desktop_act (cdp): the CDP press on "${selector}" could not be sent, and its centre is covered; it is reached ` +
-            `only at ${p.how === "skin" ? "a layer of its widget" : p.via === "label" ? "its label" : "another part of it"}, ` +
+            `only at ${p.how === "skin" ? "a layer of its widget" : p.via === "label" ? "its label" : "a part of it away from its centre"}, ` +
             "where the OS press is not aimed. Nothing was clicked. Try again.",
         );
         err.name = "AimedRouteFailedError";
         (err as Error & { callerDetail?: string }).callerDetail = err.message;
         throw err;
+        }
       }
-      const r = await osClickAndVerify(coords.x, coords.y, selector, tab, port, undefined, false, aimFromCoords(coords));
+      const r = await osClickAndVerify(at.x, at.y, selector, tab, port, undefined, false, aimFromCoords(at));
       if ("covered" in r) {
-        throw cdpClickRefusal(r, r.at?.x ?? coords.x, r.at?.y ?? coords.y, { selector, tabId: tab });
+        throw cdpClickRefusal(r, r.at?.x ?? at.x, r.at?.y ?? at.y, { selector, tabId: tab });
       }
       return { via: "os_click", verifyDelivery: { status: r.status, ...(r.reason !== undefined && { reason: r.reason }) } };
     },

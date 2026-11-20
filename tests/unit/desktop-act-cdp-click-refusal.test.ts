@@ -72,14 +72,15 @@ describe("the real cdpClick (internal #415)", () => {
     dispatch: () => Promise<unknown>,
     osAnswer: unknown,
     calls: Calls,
-    page: { occluded?: boolean; pressPoint?: () => Promise<unknown> } = {},
+    page: { occluded?: boolean; occludedOnce?: boolean; pressPoint?: () => Promise<unknown> } = {},
   ) {
     vi.resetModules();
+    let coordsRead = 0;
     vi.doMock("../../src/engine/cdp-bridge.js", async (orig) => ({
       ...(await orig<typeof import("../../src/engine/cdp-bridge.js")>()),
       portForTab: () => 9335,
       resolveTabId: async () => "T1",
-      getElementScreenCoords: async () => ({ x: 154, y: 291, ...(page.occluded !== undefined && { occluded: page.occluded }) }),
+      getElementScreenCoords: async () => { const first = (coordsRead++) === 0; return { x: first ? 154 : 160, y: first ? 291 : 300, ...(page.occluded !== undefined && { occluded: page.occluded && (!page.occludedOnce || first) }) }; },
     }));
     vi.doMock("../../src/engine/page-aim.js", async (orig) => ({
       ...(await orig<typeof import("../../src/engine/page-aim.js")>()),
@@ -146,6 +147,15 @@ describe("the real cdpClick (internal #415)", () => {
     expect(err?.callerDetail).toContain("its label");
     expect(err?.callerDetail).toContain("Nothing was clicked");
     expect(calls.os).toEqual([]);
+  });
+
+  it("presses on the OS road when the reading finds the centre clear now, at coordinates read again (/code-review on #1004)", async () => {
+    const calls: Calls = { dispatch: [], os: [] };
+    const pressPoint = async () => ({ x: 1, y: 1, via: "element", how: "self" });
+    const r = await realCdpClick(() => dispatchError(false), { status: "delivered", channel: "cdp" }, calls, { occluded: true, occludedOnce: true, pressPoint });
+    expect(calls.os).toHaveLength(1);
+    expect(calls.os[0].slice(0, 2)).toEqual([160, 300]);
+    expect(r).toEqual({ via: "os_click", verifyDelivery: { status: "delivered" } });
   });
 
   it("does not read the page on the OS road when the centre is not covered (control)", async () => {

@@ -1180,9 +1180,12 @@ export async function pressPointFor(
     }
     if ("x" in p) {
       if (p.how !== "skin") return p;
+      // The browser's own reading decides what the page script cannot see: a computed accessible name or role
+      // makes the layer something a person deals with, not a skin. Whether it listens for clicks is not asked —
+      // React and delegated jQuery handlers sit on the root or the document (/code-review on #1004) — and a skin
+      // that does not forward reads as unverifiable after the press. An unreadable answer keeps the page's reading.
       const h = await inspectHitAtPoint(selector, p.x, p.y, tabId, port);
-      const unnamed = h !== null && (h.ignored || (h.name === "" && SKIN_ROLES.has(h.role)));
-      if (h !== null && unnamed && h.pointerListeners) return p;
+      if (h === null || h.ignored || (h.name === "" && SKIN_ROLES.has(h.role))) return p;
     }
     const cover = (await evaluateInTab(buildCoverJs(selector), tabId, port)) as PageCover | null;
     if (cover?.emptyOverlay === true && attempt < 6) {
@@ -1193,7 +1196,7 @@ export async function pressPointFor(
       ? coverSentence(selector, cover)
       : `"${selector}" is covered in the page and what covers it could not be read; nothing was clicked.`;
     const err = new Error(`desktop_act (cdp): ${sentence}`);
-    err.name = cover?.dialog ? "ModalBlockingError" : "AimedRouteFailedError";
+    err.name = cover?.dialog?.modal ? "ModalBlockingError" : "AimedRouteFailedError";
     (err as Error & { callerDetail?: string }).callerDetail = err.message;
     throw err;
   }
@@ -1228,9 +1231,10 @@ export async function cdpDispatchClickAndVerify(
   const before = await pageIds();
   await dispatchMouseMoveInTab(point.x, point.y, tabId, port);
   const probe = await installClickProbe(selector, tabId, port);
-  const guard = (await evaluateInTab(buildPressGuardJs(selector), tabId, port).catch(() => null)) as { ok?: boolean } | null;
+  await evaluateInTab(buildPressGuardJs(selector), tabId, port).catch(() => null);
+  // Read (and so removed) whether or not the install answered: its answer can be lost after it ran. The guard also
+  // removes itself after a few seconds in the page.
   const readGuard = async (): Promise<{ blocked: number; first: string | null } | null> => {
-    if (guard?.ok !== true) return null;
     const g = (await evaluateInTab(buildReadPressGuardJs(), tabId, port).catch(() => null)) as
       | { ok: boolean; blocked: number; first: string | null }
       | null;

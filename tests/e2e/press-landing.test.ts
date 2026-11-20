@@ -13,6 +13,7 @@ import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chro
 import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll, dispatchMouseMoveInTab } from "../../src/engine/cdp-bridge.js";
 import { cdpDispatchClickAndVerify } from "../../src/tools/browser.js";
+import { buildPressGuardJs } from "../../src/tools/press-landing.js";
 
 const PORT = 9231;
 const CHROME = tryFindChrome() !== null;
@@ -58,15 +59,41 @@ describe.skipIf(!CHROME)("desktop_act's CDP click presses the way a person would
     expect(await read("document.getElementById('ic').checked")).toBe(true);
   });
 
-  it("does not press an empty layer with no listener over the control (control: the browser's confirmation decides)", async () => {
+  it("presses an unnamed layer with no handler, and says it could not confirm the press (control: no harm, no claim)", async () => {
     await page(`<div style="position:relative;width:22px;height:22px;margin:80px"><input type="checkbox" id="ic" style="position:absolute;top:20%;left:20%;margin:0"><ins style="position:absolute;inset:0;background:#fff"></ins></div>`);
     const out = await press("#ic");
-    expect(out.ok).toBe(false);
-    if (!out.ok) {
-      expect(out.name).toBe("AimedRouteFailedError");
-      expect(out.detail).toContain("nothing was clicked");
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.r.pressedAt).toBe("skin");
+      expect(out.r.status).toBe("unverifiable");
     }
     expect(await read("document.getElementById('ic').checked")).toBe(false);
+  });
+
+  it("does not take a NAMED layer over the control for a skin: it is refused by name", async () => {
+    await page(`<div style="position:relative;width:22px;height:22px;margin:80px"><input type="checkbox" id="ic" style="position:absolute;top:20%;left:20%;margin:0"><ins aria-label="Locked" style="position:absolute;inset:0;background:#fff"></ins></div>`);
+    const out = await press("#ic");
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.detail).toContain('"Locked"');
+    expect(await read("document.getElementById('ic').checked")).toBe(false);
+  });
+
+  it("presses a skin whose handler is delegated to the document (jQuery .on / React root)", async () => {
+    await page(`<div class="w" style="position:relative;width:22px;height:22px;margin:80px"><input type="checkbox" id="ic" style="position:absolute;top:20%;left:20%;margin:0;opacity:0"><ins class="skin" style="position:absolute;inset:0;border:2px solid #333"></ins></div>
+      <script>document.addEventListener('click',function(e){if(e.target.classList.contains('skin')){var i=e.target.parentElement.querySelector('input');i.checked=!i.checked;}});</script>`);
+    const out = await press("#ic");
+    expect(out.ok).toBe(true);
+    expect(await read("document.getElementById('ic').checked")).toBe(true);
+  });
+
+  it("presses a skin found only after scrolling, at the scroll it was measured at", async () => {
+    await page(`<div style="position:absolute;top:1500px;left:80px;width:22px;height:22px"><input type="checkbox" id="ic" style="position:absolute;top:20%;left:20%;margin:0;opacity:0"><ins id="skin" style="position:absolute;inset:0;border:2px solid #333"></ins></div>
+      <button data-n="other" style="position:absolute;top:1120px;left:60px;width:200px;height:60px">Other</button>
+      <script>document.getElementById('skin').addEventListener('click',function(){var i=document.getElementById('ic');i.checked=!i.checked;});</script>`);
+    const out = await press("#ic");
+    expect(out.ok).toBe(true);
+    expect(await read("document.getElementById('ic').checked")).toBe(true);
+    expect(await counts()).toEqual({});
   });
 
   it("presses an sr-only checkbox through its own label", async () => {
@@ -115,6 +142,31 @@ describe.skipIf(!CHROME)("desktop_act's CDP click presses the way a person would
     expect((await counts()).behind).toBe(1);
   });
 
+  it("waits out a loading overlay while a hidden modal sits in the page (a hidden dialog is not what is in front)", async () => {
+    await page(`${BEHIND}<div class="modal" role="dialog" aria-label="Hidden settings" style="display:none"></div><dialog aria-label="Closed"></dialog>
+      <div id="scrim" style="position:fixed;inset:0;background:rgba(255,255,255,.6);z-index:2000"></div>
+      <script>setTimeout(function(){document.getElementById('scrim').remove();},700);</script>`);
+    const out = await press("#behind");
+    expect(out.ok).toBe(true);
+    expect((await counts()).behind).toBe(1);
+  });
+
+  it("lets a whole press through when it started on the element, though its mousedown opens a menu over it", async () => {
+    await page(`<button id="t" data-n="t" style="position:absolute;left:100px;top:100px;width:160px;height:40px">Menu</button>
+      <script>document.getElementById('t').addEventListener('mousedown',function(){var m=document.createElement('div');m.id='menu';m.setAttribute('role','menu');m.setAttribute('aria-label','Menu');m.style.cssText='position:absolute;left:90px;top:90px;width:200px;height:100px;background:#eef;z-index:9';document.body.appendChild(m);});</script>`);
+    const out = await press("#t");
+    expect(out.ok).toBe(true);
+    expect(await read("!!document.getElementById('menu')")).toBe(true);
+  });
+
+  it("removes the press guard from the page by itself when it is never read", async () => {
+    await page(`<button id="b">B</button>`);
+    await read(buildPressGuardJs("#b"));
+    expect(await read("!!window.__dtmPressGuard")).toBe(true);
+    await sleep(5300);
+    expect(await read("!!window.__dtmPressGuard")).toBe(false);
+  }, 10_000);
+
   // ── what a person has to deal with first ───────────────────────────────────────────────────────────────────
   it("refuses the page behind a modal as modal_blocking, names it and its buttons, and the modal stays open", async () => {
     await page(`${BEHIND}<div id="m" role="dialog" aria-modal="true" aria-label="Settings" data-n="modal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1050">
@@ -130,6 +182,32 @@ describe.skipIf(!CHROME)("desktop_act's CDP click presses the way a person would
     }
     expect(await counts()).toEqual({});
     expect(await read("!!document.getElementById('m')")).toBe(true);
+  });
+
+  it("does not take an app root's modal backdrop for a skin (win2 on #1004, R1: #root holds the target and the backdrop)", async () => {
+    await page(`<div id="root"><button id="t" data-n="t" style="position:absolute;left:300px;top:300px">Target</button>
+      <div id="bd" data-n="backdrop" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1040"></div>
+      <div id="dlg" role="dialog" aria-modal="true" aria-label="Consent dialog" style="position:fixed;left:400px;top:100px;width:300px;height:150px;background:#fff;z-index:1050"><button>Inside</button></div></div>
+      <script>document.getElementById('bd').addEventListener('click',function(){document.getElementById('dlg').remove();this.remove();});</script>`);
+    const out = await press("#t");
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.name).toBe("ModalBlockingError");
+      expect(out.detail).toContain('"Consent dialog"');
+    }
+    expect(await counts()).toEqual({});
+    expect(await read("!!document.getElementById('dlg')")).toBe(true);
+  });
+
+  it("does not take it for a skin in an in-flow app root either (R1v: #app is about the viewport's size)", async () => {
+    await page(`<div id="app" style="height:900px;position:relative"><div class="page"><button id="t" data-n="t" style="margin:300px">Target</button></div>
+      <div id="bd" data-n="backdrop" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1040"></div>
+      <div id="dlg" role="dialog" aria-modal="true" aria-label="Consent dialog" style="position:fixed;left:400px;top:100px;width:300px;height:150px;background:#fff;z-index:1050"><button>Inside</button></div></div>
+      <script>document.getElementById('bd').addEventListener('click',function(){document.getElementById('dlg').remove();this.remove();});</script>`);
+    const out = await press("#t");
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.name).toBe("ModalBlockingError");
+    expect(await counts()).toEqual({});
   });
 
   it("presses a button inside the modal (control)", async () => {
@@ -162,6 +240,31 @@ describe.skipIf(!CHROME)("desktop_act's CDP click presses the way a person would
       expect(out.name).toBe("ModalBlockingError");
       expect(out.detail).toContain('"Confirm"');
       expect(out.detail).toContain('"Yes"');
+    }
+    expect(await counts()).toEqual({});
+  });
+
+  it("does not press the strip of a button left uncovered beside a modal confirm with no backdrop (R4)", async () => {
+    await page(`<div role="dialog" aria-modal="true" aria-label="Consent" style="position:fixed;left:0;top:100px;width:700px;height:500px;background:#fff;z-index:1000">
+      <button id="inA" data-n="inA" style="position:absolute;left:20px;top:250px;width:300px">In A</button>
+      <div role="dialog" aria-modal="true" aria-label="Confirm" style="position:absolute;left:130px;top:180px;width:300px;height:200px;background:#ffd;z-index:2000"><button data-n="yes">Yes</button></div></div>`);
+    const out = await press("#inA");
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.name).toBe("ModalBlockingError");
+      expect(out.detail).toContain('"Confirm"');
+    }
+    expect(await counts()).toEqual({});
+  });
+
+  it("names a non-modal drawer as a cover, not as modal_blocking (R7)", async () => {
+    await page(`${BEHIND}<div role="dialog" aria-label="Side drawer" style="position:fixed;left:0;top:0;width:420px;height:100%;background:#eef;z-index:50"><button>Drawer button</button></div>`);
+    const out = await press("#behind");
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.name).toBe("AimedRouteFailedError");
+      expect(out.detail).toContain("Side drawer");
+      expect(out.detail).toContain('"Drawer button"');
     }
     expect(await counts()).toEqual({});
   });
