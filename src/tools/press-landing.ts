@@ -52,16 +52,18 @@ export function pressLandingRuleJs(): string {
     if (t === 'TEXTAREA' || (t === 'INPUT' && ['', 'text', 'search', 'email', 'url', 'tel', 'number'].indexOf(ty) >= 0)) return ['textbox', 'searchbox', 'combobox'];
     return [];
   }
-  function __dtmSameKindBeside(parent, hit, el) {
-    var want = __dtmRoles(el); if (want.length === 0) return false;
-    var root = hit; while (root.parentElement && root.parentElement !== parent) root = root.parentElement;
-    if (root === el || root.contains(el)) return false;
-    var nodes = [root].concat(Array.prototype.slice.call(root.querySelectorAll('[role]')));
-    for (var i = 0; i < nodes.length && i < 200; i++) {
-      var r = nodes[i].getAttribute('role');
-      if (r && want.indexOf(r) >= 0) return true;
+  // The controls of the element's kind drawn beside it in its parent (outside the element), which stand for it while
+  // it is hidden from people. The press goes to such a control's own point: Select2 opens on its combobox, and a
+  // press on the widget's outer wrapper does nothing (win2 on #1004, db867002).
+  function __dtmSameKindControls(el) {
+    var want = __dtmRoles(el), parent = el.parentElement, out = [];
+    if (want.length === 0 || !parent || !__dtmHiddenFromPeople(el)) return out;
+    var nodes = parent.querySelectorAll('[role]');
+    for (var i = 0; i < nodes.length && out.length < 4; i++) {
+      if (nodes[i] === el || el.contains(nodes[i]) || nodes[i].contains(el)) continue;
+      if (want.indexOf(nodes[i].getAttribute('role')) >= 0) out.push(nodes[i]);
     }
-    return false;
+    return out;
   }
   function __dtmShown(d) {
     if (!d || !d.getBoundingClientRect) return false;
@@ -121,13 +123,13 @@ export function pressLandingRuleJs(): string {
     // is a control in the element's own parent — Select2 hides the native <select> (aria-hidden, clipped) and draws
     // its combobox beside it. A person presses the widget they see; so does this (win2 on #1004, R12: discover
     // lists the hidden select, and main pressed the widget).
-    // It has to present itself as the same kind of control: the part of the parent the hit is in holds a control
-    // whose role is the element's (a combobox or listbox for a <select>, a checkbox or switch for a checkbox, a
-    // radio for a radio). A control that merely shares a parent with a hidden input — a submit button, a link — is
-    // not its replacement (codex on #1004). Not an id: Select2 gives an id-less select a random token the select
-    // does not carry, and parks the select at the widget's corner, so the hit is the widget's outer wrapper (win2).
-    var parent = el.parentElement;
-    if (parent && parent.contains(hit) && __dtmHiddenFromPeople(el) && __dtmSameKindBeside(parent, hit, el)) return { ok: true, how: 'replacement' };
+    // It has to be a control of the same kind as the element — a combobox or listbox for a <select>, a checkbox or
+    // switch for a checkbox, a radio for a radio — and the hit has to be in that control itself. A control that
+    // merely shares a parent with a hidden input (a submit button, a link) is not its replacement (codex on #1004),
+    // and nor is the widget's outer wrapper, which Select2 does not open on (win2). Not an id: Select2 gives an
+    // id-less select a random token the select does not carry.
+    var kin = __dtmSameKindControls(el);
+    for (var z = 0; z < kin.length; z++) if (kin[z] === hit || kin[z].contains(hit)) return { ok: true, how: 'replacement' };
     // A skin candidate: a layer drawn right over the element — its box inside the element's box grown by 24px or
     // half the element's size, whichever is more — in the element's parent or grandparent, and nothing from the
     // hit up to that wrapper has text, a name, an interactive role, or is a dialog or a label. The browser confirms
@@ -192,6 +194,8 @@ export function buildPressPointJs(selector: string): string {
     var targets = [{ n: el, via: 'element' }];
     var labs = el.labels ? Array.prototype.slice.call(el.labels) : [];
     for (var i = 0; i < labs.length; i++) targets.push({ n: labs[i], via: 'label' });
+    var kin = __dtmSameKindControls(el);
+    for (var z = 0; z < kin.length; z++) targets.push({ n: kin[z], via: 'element' });
     var skin = null;
     for (var t = 0; t < targets.length; t++) {
       var ps = points(targets[t].n);
