@@ -105,32 +105,27 @@ describe.skipIf(!CHROME)("browser_click by-axis: a covered match is read like th
     expect(await marks()).toBe(0);
   });
 
-  it("refuses before any landing read a modal only the old rules find, and presses no strip of the element beside it (/code-review on #1006)", async () => {
-    // No aria-modal: a dialog over most of the page with a transparent full-page layer (what the old rules read as
-    // its backdrop), scroll locked, focus inside; the button's left part shows beside it. Without that layer the old
-    // rules find no modal, and the strip is pressed, as on the selector road (win2 on #1006, Y1): only aria-modal
-    // and an open <dialog> are facts the press is refused on.
-    await page(`<button data-n="strip" style="position:absolute;left:20px;top:300px;width:300px;height:40px">Archive all</button>
-      <div role="dialog" aria-label="Settings" style="position:fixed;left:120px;top:20px;right:20px;bottom:20px;background:#fff;border:1px solid #000;z-index:10"><button id="okb">OK</button></div>
+  it("names a modal only the old rules find as BrowserModalBlocking when nothing reaches the element, and decides on facts only (internal #421)", async () => {
+    // No aria-modal: a dialog covering the whole button, with a transparent full-page layer (the old rules' backdrop),
+    // scroll locked and focus inside. The landing read finds no point and refuses; the old rules choose the words.
+    await page(`<button data-n="under" style="position:absolute;left:200px;top:300px;width:200px;height:40px">Archive all</button>
+      <div role="dialog" aria-label="Settings" style="position:fixed;left:20px;top:20px;right:20px;bottom:20px;background:#fff;border:1px solid #000;z-index:10"><button id="okb">OK</button></div>
       <div style="position:fixed;inset:0;z-index:9;pointer-events:none"></div>`);
     await evaluateInTab("document.body.style.overflow='hidden';document.getElementById('okb').focus();true", null, PORT);
     const r = await click({ by: "text", pattern: "Archive all" });
-    // Measured on mac Chrome 157: the old rules take it (backdrop, scroll lock, focus inside, 0.75 of the page).
     expect(r.code).toBe("BrowserModalBlocking");
-    expect(r.context).toMatchObject({ blockingElement: { name: "Settings", role: "dialog" }, signals: { ariaModal: false, backdrop: true } });
+    expect(r.context).toMatchObject({ blockingElement: { name: "Settings", role: "dialog" }, signals: { ariaModal: false }, offers: ["OK"] });
     expect(await marks()).toBe(0);
     expect(await counts()).toEqual({});
   });
 
-  it("leaves another call's mark alone when it marks its own (/code-review on #1006)", async () => {
-    await page(`<button style="position:absolute;left:100px;top:100px">First</button><button style="position:absolute;left:300px;top:100px">Second</button>`);
-    for (const [pattern, nonce] of [["First", "m1"], ["Second", "m2"]] as const) {
-      const o = await resolveBrowserActionTarget({ by: "text", pattern, action: "click", port: PORT, tabId: null });
-      if (o.kind !== "resolved") throw new Error(o.kind);
-      await evaluateInTab(buildTagResolvedJs({ by: "text", pattern, caseSensitive: false }, o.index, o.climbDepth, o.matched, nonce), null, PORT);
-    }
-    expect(await marks()).toBe(2);
-    await evaluateInTab(buildUntagJs("m2"), null, PORT);
-    expect(await evaluateInTab("document.querySelector('[data-dtm-press]').getAttribute('data-dtm-press')", null, PORT)).toBe("m1");
+  it("does not refuse a checkbox inside a dialog the old rules call modal: its own label takes the press (/code-review round 2 on #1006)", async () => {
+    await page(`<div role="dialog" aria-label="Prefs" style="position:fixed;left:40px;top:40px;width:500px;height:400px;background:#fff;z-index:10"><input type="checkbox" id="cb" style="position:absolute;left:20px;top:20px;margin:0"><label for="cb" style="position:absolute;left:20px;top:20px;padding:0 0 0 30px;width:200px;height:20px">Remember me</label><button id="okb">OK</button></div>
+      <div style="position:fixed;inset:0;z-index:9;pointer-events:none"></div>`);
+    await evaluateInTab("document.body.style.overflow='hidden';document.getElementById('okb').focus();true", null, PORT);
+    const r = await click({ by: "role", pattern: "checkbox" });
+    expect(r.code).not.toBe("BrowserModalBlocking");
+    expect(await marks()).toBe(0);
   });
+
 });

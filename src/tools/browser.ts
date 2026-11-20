@@ -1314,7 +1314,7 @@ async function screenPointForLanding(
   const vp = at.viewport;
   if (vp === undefined) return { x: at.x, y: at.y, aim: undefined, rect: undefined };
   return {
-    rect: { x: vp.left / dpr, y: vp.top / dpr, w: vp.width / dpr, h: vp.height / dpr },
+    rect: { x: Math.round(vp.left / dpr), y: Math.round(vp.top / dpr), w: Math.round(vp.width / dpr), h: Math.round(vp.height / dpr) },
     x: Math.round(at.left - vp.left + landing.x * dpr),
     y: Math.round(at.top - vp.top + landing.y * dpr),
     aim: { viewportX: landing.x * dpr, viewportY: landing.y * dpr, hint: { width: vp.innerWidth, height: vp.innerHeight } },
@@ -2275,7 +2275,7 @@ async function handleBrowserClickByAxis(args: {
     }
   }
   // ADR-023 Phase 2b: the old preflight's modal reading. It upgrades a modal-occluded noActionable to
-  // BrowserModalBlocking as before, except where the landing read below refuses the same modal itself.
+  // BrowserModalBlocking as before when there is no covered single match; with one, it chooses the words only.
   let modal: { blocker: { name: string; role: string } } | null = null;
   let signals: ModalVerdict["signals"] | null = null;
   if (outcome.kind === "noActionable" && outcome.modalFacts) {
@@ -2287,14 +2287,11 @@ async function handleBrowserClickByAxis(args: {
       verdict.blockerDialogIndex !== undefined &&
       outcome.occludedTopByDialogIndex === verdict.blockerDialogIndex
     ) {
-      // The landing read knows aria-modal and an open <dialog> as modal, and then tries the element's centre only:
-      // those go to it, which names what the dialog offers. A modal the old rules find another way is refused
-      // before any landing read, as before, so no strip of the element left beside it is pressed (/code-review on
-      // #1006).
+      // With a covered single match the landing read decides, on facts: aria-modal and an open <dialog> are refused
+      // there, and the old rules only choose the words of a refusal (internal #421: a guess never decides whether to
+      // press — /code-review round 2 on #1006 found the guess refusing an element inside its own dialog).
       modal = { blocker: verdict.blocker };
-      if (!covered || !(verdict.signals.ariaModal || verdict.signals.nativeDialogOpen)) {
-        return browserModalBlockingFailure(verdict.blocker, verdict.signals, ctx);
-      }
+      if (!covered) return browserModalBlockingFailure(verdict.blocker, verdict.signals, ctx);
     }
   }
   if (target === null) return browserResolveStopToFailure(outcome as Exclude<ResolveActionOutcome, { kind: "resolved" | "error" }>, "browser_click", ctx);
@@ -2337,7 +2334,7 @@ async function handleBrowserClickByAxis(args: {
       if ("error" in landing) {
         if (landing.outside === true) {
           return failCode("ElementNotInViewport", `browser_click: ${label} is outside the viewport and could not be scrolled into it. Nothing was clicked.`, {
-            suggest: ["Scroll the element into view first using browser_eval with element.scrollIntoView(), then retry browser_click."],
+            suggest: ["Scrolling it into view was tried and did not bring it in (it may sit in a clipped or fixed container): look at the page with a screenshot or browser_eval, then act on what shows."],
             context: ctx,
           });
         }
@@ -2347,11 +2344,13 @@ async function handleBrowserClickByAxis(args: {
       scrollHeld = true;
       try {
         ({ x: pressX, y: pressY, aim: pressAim, rect: landedRect } = await screenPointForLanding(tagSel, landing, tab, port));
-      } catch {
-        // The page re-rendered the element after the read (the mark is on the old node): answered as the resolve's
-        // stop, never with the mark's selector, which names nothing the caller can use (/code-review on #1006).
+      } catch (e) {
         await settlePressScroll(true, tab, port);
-        return stop();
+        // The page re-rendered the element after the read (the mark is on the old node, or it is now zero-size):
+        // answered as the resolve's stop, never with the mark's selector, which names nothing the caller can use
+        // (/code-review on #1006). Anything else (a closed tab, a lost connection) is answered as itself.
+        if (e instanceof ElementZeroSizeError || (e instanceof Error && e.message.startsWith("Element not found:"))) return stop();
+        throw e;
       }
       pressedAt = landing.how === "skin" || landing.how === "replacement" || landing.how === "host" ? landing.how : landing.how === "own_label" ? "label" : "element";
     }
