@@ -106,6 +106,32 @@ describe.skipIf(!CHROME)("desktop_act's CDP click presses the way a person would
     expect(await read("document.getElementById('tw').checked")).toBe(true);
   });
 
+  it("does not follow a link inside the element's own label (/code-review on #1004)", async () => {
+    await page(`<label style="position:absolute;left:80px;top:80px;width:60px"><input type="checkbox" id="agree" style="position:absolute;width:1px;height:1px;clip:rect(0,0,0,0);left:0;top:0"><a id="terms" data-n="terms" href="#terms" style="display:inline-block;width:60px;height:24px">Terms</a></label>`);
+    const out = await press("#agree");
+    expect(out.ok).toBe(false);
+    expect(await counts()).toEqual({});
+    expect(await read("location.hash")).toBe("");
+  });
+
+  it("does not press the element's own wrapper as a skin when the element takes no pointer input (/code-review on #1004)", async () => {
+    await page(`<div class="toggle" data-n="wrap" style="position:absolute;left:80px;top:80px;width:40px;height:24px;background:#ccc"><input type="checkbox" id="cb" style="pointer-events:none;margin:4px"></div>`);
+    const out = await press("#cb");
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.detail).toContain("does not take a press at its own point");
+    expect(await counts()).toEqual({});
+  });
+
+  it("presses a skin inside a second modal opened over the first (/code-review on #1004)", async () => {
+    await page(`<div role="dialog" aria-modal="true" aria-label="First" style="position:fixed;left:50px;top:50px;width:600px;height:400px;background:#fff;z-index:1000"><button>Back</button></div>
+      <div role="dialog" aria-modal="true" aria-label="Second" style="position:fixed;left:200px;top:150px;width:300px;height:200px;background:#eef;z-index:2000">
+        <div style="position:absolute;left:40px;top:60px;width:22px;height:22px"><input type="checkbox" id="ic" style="position:absolute;top:20%;left:20%;margin:0;opacity:0"><ins id="skin" style="position:absolute;inset:0;border:2px solid #333"></ins></div></div>
+      <script>document.getElementById('skin').addEventListener('click',function(){var i=document.getElementById('ic');i.checked=!i.checked;});</script>`);
+    const out = await press("#ic");
+    expect(out.ok).toBe(true);
+    expect(await read("document.getElementById('ic').checked")).toBe(true);
+  });
+
   it("presses the right radio of a btn-check group through its own label, not the other's", async () => {
     await page(`<div style="margin:80px;position:relative;display:inline-flex">
       <input type="radio" name="g" id="g1" style="position:absolute;clip:rect(0,0,0,0);pointer-events:none;left:0;top:0"><label for="g1" style="padding:8px 16px;border:1px solid">Left</label>

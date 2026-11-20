@@ -55,9 +55,17 @@ export function pressLandingRuleJs(): string {
     try { return d.tagName === 'DIALOG' && d.matches(':modal'); } catch (e) { return false; }
   }
   // A modal dialog that is shown and does not hold the element: a person answers it first.
+  // A shown modal that does not hold the element and is in front of it: when the element is itself inside a shown
+  // modal (a second modal opened over the first), a modal counts only if what is at the element's centre is in it
+  // (/code-review on #1004: modal A under a modal B holding the element is not in front of it).
   function __dtmModalAgainst(el) {
-    var all = document.querySelectorAll(__DTM_DIALOG);
-    for (var i = 0; i < all.length; i++) if (__dtmModal(all[i]) && __dtmShown(all[i]) && !all[i].contains(el)) return all[i];
+    var all = document.querySelectorAll(__DTM_DIALOG), mine = false, i;
+    for (i = 0; i < all.length; i++) if (__dtmModal(all[i]) && __dtmShown(all[i]) && all[i].contains(el)) mine = true;
+    var r = el.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    for (i = 0; i < all.length; i++) {
+      if (!__dtmModal(all[i]) || !__dtmShown(all[i]) || all[i].contains(el)) continue;
+      if (!mine || (hit && all[i].contains(hit))) return all[i];
+    }
     return null;
   }
   function __dtmShownDialogIn(root) {
@@ -79,9 +87,16 @@ export function pressLandingRuleJs(): string {
     if (el.contains(hit)) return { ok: true, how: 'inside' };
     var lab = hit.closest ? hit.closest('label') : null;
     if (lab) {
-      if (lab.control === el) return { ok: true, how: 'own_label' };
+      if (lab.control === el) {
+        // Interactive content inside the label (a "Terms" link in "I agree to the Terms") does not activate the
+        // control; a press there follows the link (/code-review on #1004).
+        for (var m = hit; m && m !== lab; m = m.parentElement) if (m !== el && m.matches(__DTM_INTERACTIVE)) return { ok: false, how: 'covered' };
+        return { ok: true, how: 'own_label' };
+      }
       if (lab.control) return { ok: false, how: 'other_label' };
     }
+    // A hit that holds the element (its wrapper, with the element taking no pointer input) is not a skin of it.
+    if (hit.contains(el)) return { ok: false, how: 'container' };
     // A replacement: the element is hidden from people (aria-hidden, a 1-2px box, or fully transparent) and the hit
     // is a control in the element's own parent — Select2 hides the native <select> (aria-hidden, clipped) and draws
     // its combobox beside it. A person presses the widget they see; so does this (win2 on #1004, R12: discover
@@ -212,12 +227,14 @@ export interface PageCover {
   container?: boolean;
 }
 
-/** What is in front of `selector`'s centre, as page script (the element already scrolled to the centre). */
+/** What is in front of `selector`'s centre, as page script (the element scrolled to the centre first). */
 export function buildCoverJs(selector: string): string {
   return `(function() {
   ${pressLandingRuleJs()}
   var el = document.querySelector(${JSON.stringify(selector)});
   if (!el) return null;
+  // The point search may have left the page at another anchor; the cover is read at the centred scroll.
+  el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
   var r = el.getBoundingClientRect();
   var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
   if (!hit) return null;

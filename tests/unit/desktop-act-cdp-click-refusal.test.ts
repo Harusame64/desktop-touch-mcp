@@ -80,7 +80,7 @@ describe("the real cdpClick (internal #415)", () => {
       ...(await orig<typeof import("../../src/engine/cdp-bridge.js")>()),
       portForTab: () => 9335,
       resolveTabId: async () => "T1",
-      getElementScreenCoords: async () => { const first = (coordsRead++) === 0; return { x: first ? 154 : 160, y: first ? 291 : 300, ...(page.occluded !== undefined && { occluded: page.occluded && (!page.occludedOnce || first) }) }; },
+      getElementScreenCoords: async () => { const first = (coordsRead++) === 0; return { x: first ? 154 : 160, y: first ? 291 : 300, inViewport: true, ...(page.occluded !== undefined && { occluded: page.occluded && (!page.occludedOnce || first) }) }; },
     }));
     vi.doMock("../../src/engine/page-aim.js", async (orig) => ({
       ...(await orig<typeof import("../../src/engine/page-aim.js")>()),

@@ -1155,8 +1155,9 @@ export async function osClickAndVerify(
  * internal #421 — where desktop_act's CDP click presses `selector`, or the typed refusal when no point reaches it.
  *
  * The point comes from the page (`buildPressPointJs`): the element or a visible part of it, its own label, and only
- * then a skin of its widget, which the browser must confirm: the hit's accessibility node is unnamed and has no role
- * of its own, and it listens for pointer events (`inspectHitAtPoint`; spike 3 on real libraries). With no point, what
+ * then a skin of its widget, which the browser must confirm — the hit's accessibility node is unnamed and has no role
+ * of its own (`inspectHitAtPoint`; spike 3 on real libraries) — or the widget drawn in place of a hidden element
+ * (Select2). With no point, what
  * is in front is read (`buildCoverJs`): an empty overlay over the page is waited out briefly, as a person would wait
  * for a page to load; anything else is refused, naming it and what it offers. A dialog's refusal is `modal_blocking`;
  * every other cover is `aim_route_failed`. Both say nothing was clicked.

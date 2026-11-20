@@ -3942,13 +3942,17 @@ function getSharedRealDeps(): ExecutorDeps {
         // The centre itself reaches it now (an overlay left, or the scroll cleared a header): press it there, at
         // coordinates read again, since the reading may have scrolled the page (/code-review on #1004).
         const again = p.via === "element" && (p.how === "self" || p.how === "inside") ? await getElementScreenCoords(selector, tab, port) : null;
-        if (again && !(again as { error?: string }).error && !again.occluded) {
+        // In view too: an element taller than the viewport can be clear at a grid point while its centre is off the
+        // page area, and the OS cursor would go outside the page (/code-review on #1004).
+        if (again && !(again as { error?: string }).error && !again.occluded && again.inViewport) {
           at = again;
         } else {
+        const where = p.via === "element" && (p.how === "self" || p.how === "inside")
+          ? "its centre could not be confirmed clear again, in view"
+          : `it is reached only at ${p.how === "skin" ? "a layer of its widget" : p.how === "replacement" ? "the widget drawn in its place" : p.via === "label" ? "its label" : "a part of it away from its centre"}, where the OS press is not aimed`;
         const err = new Error(
-          `desktop_act (cdp): the CDP press on "${selector}" could not be sent, and its centre is covered; it is reached ` +
-            `only at ${p.how === "skin" ? "a layer of its widget" : p.how === "replacement" ? "the widget drawn in its place" : p.via === "label" ? "its label" : "a part of it away from its centre"}, ` +
-            "where the OS press is not aimed. Nothing was clicked. Try again.",
+          `desktop_act (cdp): the CDP press on "${selector}" could not be sent, and its centre is covered; ${where}. ` +
+            "Nothing was clicked. Re-call desktop_discover and try again.",
         );
         err.name = "AimedRouteFailedError";
         (err as Error & { callerDetail?: string }).callerDetail = err.message;
