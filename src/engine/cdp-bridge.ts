@@ -569,6 +569,41 @@ export async function dispatchWheelInTab(
 }
 
 /**
+ * internal #415 — a left click sent to the tab itself by CDP `Input.dispatchMouseEvent` (move, press, release),
+ * at viewport CSS px. Nothing goes through the OS cursor: the browser window is not raised, the tab is not
+ * activated, and a window in front of the point cannot take it (win2's spike: delivered in front, behind another
+ * window, in a background tab and minimized; the user's typing was not taken).
+ *
+ * A failure is thrown as `CdpClickDispatchError` with `pressSent`: false means no press reached the browser (a
+ * fallback may press), true means the press was sent and the release was not — the click may have happened.
+ */
+export class CdpClickDispatchError extends Error {
+  constructor(message: string, readonly pressSent: boolean, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "CdpClickDispatchError";
+  }
+}
+
+export async function dispatchClickInTab(
+  x: number,
+  y: number,
+  tabId: string | null = null,
+  port = DEFAULT_CDP_PORT,
+): Promise<void> {
+  let pressSent = false;
+  try {
+    const tab = await resolveTab(tabId, port);
+    const session = await openSession(tab, port);
+    await session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: 0 });
+    pressSent = true; // from here on the browser may have the press, even if this send throws
+    await session.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
+    await session.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 });
+  } catch (e) {
+    throw new CdpClickDispatchError(e instanceof Error ? e.message : String(e), pressSent, { cause: e });
+  }
+}
+
+/**
  * ADR-018 §2.2 — Tier 2 observation. Reads the document scrolling element's
  * scroll position. Uses the `document.scrollingElement || document.documentElement`
  * two-step query to avoid the `<body>` quirk that Phase 3 also fixes in

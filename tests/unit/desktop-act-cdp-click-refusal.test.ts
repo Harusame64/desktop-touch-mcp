@@ -63,10 +63,12 @@ describe("cdpClickRefusal (internal #415)", () => {
   }
 });
 
-// The wiring: the real `cdpClick` presses only through `osClickAndVerify`, throws the typed refusal it returns,
-// and hands back the probe's verdict. Stubbed at the module edges (CDP, page-aim, browser.ts's click road).
+// The wiring: the real `cdpClick` sends the press to the tab by CDP (`cdpDispatchClickAndVerify`) and touches no
+// OS cursor. Only when CDP could not send the press does it take browser_click's OS road (`osClickAndVerify`), and
+// a refusal there arrives typed. Stubbed at the module edges (CDP, page-aim, browser.ts's click roads).
 describe("the real cdpClick (internal #415)", () => {
-  async function realCdpClick(answer: unknown, calls: unknown[][]) {
+  type Calls = { dispatch: unknown[][]; os: unknown[][] };
+  async function realCdpClick(dispatch: () => Promise<unknown>, osAnswer: unknown, calls: Calls) {
     vi.resetModules();
     vi.doMock("../../src/engine/cdp-bridge.js", async (orig) => ({
       ...(await orig<typeof import("../../src/engine/cdp-bridge.js")>()),
@@ -80,13 +82,21 @@ describe("the real cdpClick (internal #415)", () => {
     }));
     vi.doMock("../../src/tools/browser.js", async (orig) => ({
       ...(await orig<typeof import("../../src/tools/browser.js")>()),
+      cdpDispatchClickAndVerify: async (...args: unknown[]) => {
+        calls.dispatch.push(args);
+        return dispatch();
+      },
       osClickAndVerify: async (...args: unknown[]) => {
-        calls.push(args);
-        return answer;
+        calls.os.push(args);
+        return osAnswer;
       },
     }));
     const { _realExecutorDepsForTest } = await import("../../src/tools/desktop-executor.js");
     return _realExecutorDepsForTest().cdpClick("#go", "T1");
+  }
+  async function dispatchError(pressSent: boolean): Promise<never> {
+    const { CdpClickDispatchError } = await import("../../src/engine/cdp-bridge.js");
+    throw new CdpClickDispatchError("socket closed", pressSent);
   }
   afterEach(() => {
     vi.resetModules();
@@ -95,19 +105,45 @@ describe("the real cdpClick (internal #415)", () => {
     vi.doUnmock("../../src/tools/browser.js");
   });
 
-  it("presses through osClickAndVerify with the tab, port, selector and the element's aim", async () => {
-    const calls: unknown[][] = [];
-    const r = await realCdpClick({ status: "delivered", channel: "cdp" }, calls);
-    expect(calls).toHaveLength(1);
-    const [x, y, probe, tab, port, , force, aim] = calls[0];
-    expect([x, y, probe, tab, port, force, aim]).toEqual([154, 291, "#go", "T1", 9335, false, { marker: "aim" }]);
-    expect(r).toEqual({ verifyDelivery: { status: "delivered" } });
+  it("sends the press to the tab by CDP and never touches the OS road", async () => {
+    const calls: Calls = { dispatch: [], os: [] };
+    const r = await realCdpClick(async () => ({ status: "delivered", channel: "cdp", openedTabs: 1 }), undefined, calls);
+    expect(calls.dispatch).toEqual([["#go", "T1", 9335]]);
+    expect(calls.os).toEqual([]);
+    expect(r).toEqual({ via: "cdp_dispatch", verifyDelivery: { status: "delivered" }, openedTabs: 1 });
   });
 
-  it("throws the typed refusal when the road answers a cover, and does not report a press", async () => {
-    const calls: unknown[][] = [];
+  it("falls back to browser_click's OS road only when CDP could not send the press", async () => {
+    const calls: Calls = { dispatch: [], os: [] };
+    const r = await realCdpClick(() => dispatchError(false), { status: "delivered", channel: "cdp" }, calls);
+    expect(calls.os).toHaveLength(1);
+    const [x, y, probe, tab, port, , force, aim] = calls.os[0];
+    expect([x, y, probe, tab, port, force, aim]).toEqual([154, 291, "#go", "T1", 9335, false, { marker: "aim" }]);
+    expect(r).toEqual({ via: "os_click", verifyDelivery: { status: "delivered" } });
+  });
+
+  it("does not press again when the CDP press was sent and the release failed", async () => {
+    const calls: Calls = { dispatch: [], os: [] };
+    const err = await realCdpClick(() => dispatchError(true), { status: "delivered", channel: "cdp" }, calls)
+      .then(() => null, (e: unknown) => e as Error & { callerDetail?: string });
+    expect(err).not.toBeNull();
+    expect(err!.name).toBe("AimedRouteFailedError");
+    expect(err!.callerDetail).toContain("may have taken effect");
+    expect(calls.os).toEqual([]);
+  });
+
+  it("a missing element is not a reason to fall back", async () => {
+    const calls: Calls = { dispatch: [], os: [] };
     await expect(
-      realCdpClick({ covered: "other", hwnd: 8719034n, title: "Decoy", at: { x: 154, y: 291 } }, calls),
+      realCdpClick(async () => { throw new Error("Element not found: #go"); }, { status: "delivered", channel: "cdp" }, calls),
+    ).rejects.toThrow("Element not found");
+    expect(calls.os).toEqual([]);
+  });
+
+  it("throws the typed refusal when the fallback's road answers a cover", async () => {
+    const calls: Calls = { dispatch: [], os: [] };
+    await expect(
+      realCdpClick(() => dispatchError(false), { covered: "other", hwnd: 8719034n, title: "Decoy", at: { x: 154, y: 291 } }, calls),
     ).rejects.toMatchObject({ name: "AimOccludedError" });
   });
 });

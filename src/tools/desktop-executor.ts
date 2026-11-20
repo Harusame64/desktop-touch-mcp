@@ -159,11 +159,17 @@ export interface ExecutorDeps {
   /** UIA ValuePattern: type text into a textbox. `hwnd` as in {@link ExecutorDeps.uiaClick}. */
   uiaSetValue(windowTitle: string, value: string, name?: string, automationId?: string, hwnd?: bigint, address?: ValueWriteAddress): Promise<{ focusedBy?: string } | void>;
   /**
-   * CDP: click a DOM element by CSS selector. CDP finds the element's point; the press is an OS click through
-   * browser_click's road (`osClickAndVerify`), so it is refused when something else would take it (internal #415).
-   * Resolves the delivery hint when the press went out.
+   * CDP: click a DOM element by CSS selector. The press is sent to the tab by CDP (internal #415), so no window is
+   * raised and a window in front cannot take it. Only when CDP could not send the press at all does it fall back
+   * to browser_click's OS click (`osClickAndVerify`), which brings the browser forward and is refused when
+   * something else would take the click. Resolves which press went out, the delivery hint, and how many page tabs
+   * appeared (null when they could not be counted).
    */
-  cdpClick(selector: string, tabId?: string): Promise<{ verifyDelivery?: { status: string; reason?: string } } | void>;
+  cdpClick(selector: string, tabId?: string): Promise<{
+    via?: "cdp_dispatch" | "os_click";
+    verifyDelivery?: { status: string; reason?: string };
+    openedTabs?: number | null;
+  } | void>;
   /** CDP: fill a text input by CSS selector.
    * Uses the port the tab was listed on (`portForTab`, llm22 F13). */
   cdpFill(selector: string, value: string, tabId?: string): Promise<void>;
@@ -3599,12 +3605,15 @@ export function createDesktopExecutor(
         return "cdp";
       }
       const clicked = await probedStep("cdp_click", aimHwnd, entity, () => d.cdpClick(cdpSelector, cdpTabId));
-      // internal #415 — what the click probe saw (`delivered` / `unverifiable`), recorded beside the route.
+      // internal #415 — which press went out, what the click probe saw (`delivered` / `unverifiable`), and the page
+      // tabs the click opened, recorded beside the route.
       probeRoute("cdp", aimHwnd, entity, {
         why: "cdp_click",
         tabId: cdpTabId ?? null,
-        // A named field, not a spread: the road vocabulary's parser reads every field of this row (ADR-036).
+        // Named fields, not a spread: the road vocabulary's parser reads every field of this row (ADR-036).
+        clickVia: clicked ? (clicked.via ?? null) : null,
         verifyDelivery: clicked ? (clicked.verifyDelivery ?? null) : null,
+        openedTabs: clicked ? (clicked.openedTabs ?? null) : null,
       });
       return "cdp";
     }
@@ -3875,23 +3884,52 @@ function getSharedRealDeps(): ExecutorDeps {
       // ADR-040 — one tab for the coordinates and the window they are placed on (codex on #967).
       const tab = tabId ?? await resolveTabId(null, portForTab(tabId)).catch(() => null);
       const port = portForTab(tabId);
+      // internal #415 — the press goes to the tab by CDP. It used to be an OS click at the element's screen point,
+      // which a window in front took while the act answered ok:true (win2, a same-title decoy); browser_click's
+      // OS road refuses that, but it has to bring the browser forward and may switch the user's tab first. CDP's
+      // press needs neither (win2's spike: delivered behind another window, in a background tab and minimized,
+      // and the user's typing was not taken).
+      const { cdpDispatchClickAndVerify } = await import("./browser.js");
+      const { CdpClickDispatchError } = await import("../engine/cdp-bridge.js");
+      try {
+        const r = await cdpDispatchClickAndVerify(selector, tab, port);
+        return {
+          via: "cdp_dispatch",
+          verifyDelivery: { status: r.status, ...(r.reason !== undefined && { reason: r.reason }) },
+          openedTabs: r.openedTabs,
+        };
+      } catch (e) {
+        if (!(e instanceof CdpClickDispatchError)) throw e;
+        if (e.pressSent) {
+          // The press reached the browser and the release did not: the click may have happened. Typed, so the
+          // act is not answered with a coordinate click that would press a second time.
+          const err = new Error(
+            `desktop_act (cdp): the click on "${selector}" was sent and the browser stopped answering (${e.message}); ` +
+              "it may have taken effect. Look at the page before clicking again, so it is not done twice.",
+            { cause: e },
+          );
+          err.name = "AimedRouteFailedError";
+          (err as Error & { callerDetail?: string }).callerDetail = err.message;
+          throw err;
+        }
+        // CDP could not send the press at all: fall back to browser_click's OS road (below).
+      }
+
       const coords = await getElementScreenCoords(selector, tab, port);
       if ((coords as { error?: string }).error) {
         throw new Error((coords as { error?: string }).error ?? "CDP getElementScreenCoords failed");
       }
-      // internal #415 — the same road as browser_click. It used to align the point to the page surface and press
-      // with nut.js, nothing else: an asked-for owner of "another window" was never asked, so a window in front
-      // took the click and the act answered ok:true (win2, a same-title decoy). `osClickAndVerify` brings the tab
-      // forward, reads the page surface again (ADR-040, including the ambiguous-pane refusal and the reachable-
-      // bounds check this body used to make itself), refuses another window / pane / hidden tab before and right
-      // before the press, presses with the OS cursor, and reads a click probe.
+      // The fallback is browser_click's road. `osClickAndVerify` brings the tab forward, reads the page surface
+      // again (ADR-040, including the ambiguous-pane refusal and the reachable-bounds check), refuses another
+      // window / pane / hidden tab before and right before the press, presses with the OS cursor, and reads a
+      // click probe.
       const { aimFromCoords } = await import("../engine/page-aim.js");
       const { osClickAndVerify, cdpClickRefusal } = await import("./browser.js");
       const r = await osClickAndVerify(coords.x, coords.y, selector, tab, port, undefined, false, aimFromCoords(coords));
       if ("covered" in r) {
         throw cdpClickRefusal(r, r.at?.x ?? coords.x, r.at?.y ?? coords.y, { selector, tabId: tab });
       }
-      return { verifyDelivery: { status: r.status, ...(r.reason !== undefined && { reason: r.reason }) } };
+      return { via: "os_click", verifyDelivery: { status: r.status, ...(r.reason !== undefined && { reason: r.reason }) } };
     },
 
     async cdpFill(selector, value, tabId) {

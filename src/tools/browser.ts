@@ -16,6 +16,8 @@ import { coercedBoolean, coercedBooleanWithDefault } from "./_coerce.js";
 import { pollUntil } from "../engine/poll.js";
 import {
   listTabs,
+  listTabsLight,
+  dispatchClickInTab,
   evaluateInTab,
   getElementScreenCoords,
   ElementZeroSizeError,
@@ -1141,6 +1143,72 @@ export async function osClickAndVerify(
 
   await mouse.click(Button.LEFT);
 
+  const verifyDelivery = await verdictFromClickProbe(probe, tabId, port);
+  return { ...verifyDelivery, at: { x, y } };
+}
+
+
+/**
+ * internal #415 — `desktop_act`'s CDP click: the press is sent to the tab by CDP (`dispatchClickInTab`), not with
+ * the OS cursor, so no window is raised or activated and a window in front cannot take it. The element is
+ * scrolled into view when its centre is outside the viewport, the click probe reads what the press did, and the
+ * page tabs are counted before and after: a page that opens a tab or window on click (`window.open`,
+ * `target=_blank`) can switch the user's tab or raise its window (win2's spike), and the caller hears of it.
+ *
+ * Throws `CdpClickDispatchError` (from the bridge) when the press could not be sent; a missing or unrendered
+ * element is a plain Error, as `getElementScreenCoords` answered it before.
+ */
+export async function cdpDispatchClickAndVerify(
+  selector: string,
+  tabId: string | null,
+  port: number,
+): Promise<VerifyDeliveryHint & { openedTabs: number | null }> {
+  const point = (await evaluateInTab(`
+(function() {
+  var sel = ${JSON.stringify(selector)};
+  var el = document.querySelector(sel);
+  if (!el) return { error: "Element not found: " + sel };
+  function centre() {
+    var r = el.getBoundingClientRect();
+    return { w: r.width, h: r.height, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }
+  var c = centre();
+  if (c.w === 0 && c.h === 0) return { error: "Element has zero size (hidden or not rendered): " + sel };
+  if (c.x < 0 || c.x >= window.innerWidth || c.y < 0 || c.y >= window.innerHeight) {
+    el.scrollIntoView({ block: "center", inline: "center" });
+    c = centre();
+  }
+  return { x: c.x, y: c.y };
+})()`, tabId, port)) as { x: number; y: number } | { error: string };
+  if ("error" in point) throw new Error(point.error);
+
+  const pageIds = async (): Promise<Set<string> | null> => {
+    try {
+      return new Set((await listTabsLight(port)).filter((t) => t.type === "page").map((t) => t.id));
+    } catch {
+      return null;
+    }
+  };
+  const before = await pageIds();
+  const probe = await installClickProbe(selector, tabId, port);
+  try {
+    await dispatchClickInTab(point.x, point.y, tabId, port);
+  } catch (e) {
+    if (probe.installed) await readClickProbe(tabId, port);
+    throw e;
+  }
+  const verdict = await verdictFromClickProbe(probe, tabId, port);
+  const after = await pageIds();
+  const openedTabs = before === null || after === null ? null : [...after].filter((id) => !before.has(id)).length;
+  return { ...verdict, openedTabs };
+}
+
+/** The click probe's verdict after a press (shared by the OS click and the CDP click, internal #415). */
+async function verdictFromClickProbe(
+  probe: { installed: boolean },
+  tabId: string | null,
+  port: number,
+): Promise<VerifyDeliveryHint> {
   let verifyDelivery: VerifyDeliveryHint = {
     status: "unverifiable",
     channel: "cdp",
@@ -1165,7 +1233,7 @@ export async function osClickAndVerify(
       verifyDelivery = { status: "unverifiable", channel: "cdp", reason: "probe_read_failed" };
     }
   }
-  return { ...verifyDelivery, at: { x, y } };
+  return verifyDelivery;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
