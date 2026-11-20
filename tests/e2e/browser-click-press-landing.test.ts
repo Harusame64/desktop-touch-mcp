@@ -11,7 +11,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll } from "../../src/engine/cdp-bridge.js";
-import { browserClickElementHandler } from "../../src/tools/browser.js";
+import { browserClickElementHandler, readPressLanding } from "../../src/tools/browser.js";
 
 const PORT = 9235;
 const CHROME = tryFindChrome() !== null;
@@ -48,6 +48,9 @@ describe.skipIf(!CHROME)("browser_click refuses what a person must deal with fir
     expect(r.code).toBe("BrowserModalBlocking");
     expect(r.context?.blockingElement).toEqual({ name: "Delete file", role: "dialog" });
     expect(r.context?.offers).toEqual(["Delete", "Cancel"]);
+    // The reply keeps its shape from before #421: the fixed first sentence, and signals (/code-review on #1005).
+    expect(r.error).toContain("the target is behind a modal dialog blocking the page — not clicking through it.");
+    expect(r.context?.signals).toMatchObject({ backdrop: expect.any(Boolean) });
     expect(r.error).toContain("nothing was clicked");
     expect(await counts()).toEqual({});
   });
@@ -99,5 +102,26 @@ describe.skipIf(!CHROME)("browser_click refuses what a person must deal with fir
     const r = await click("#inert");
     expect(r.code).toBe("BrowserPointCovered");
     expect(r.error).toContain("does not take a press at its own point");
+  });
+
+  it("leaves the page and the element's scroll container where they were when it refuses (/code-review on #1005)", async () => {
+    await page(`<div id="box" style="position:absolute;top:200px;left:0;width:500px;height:200px;overflow:auto"><div style="height:1200px;position:relative"><button id="deep" data-n="deep" style="position:absolute;top:100px;left:300px">Deep</button></div></div>
+      <div role="region" aria-label="Cookies" style="position:fixed;left:0;right:0;top:0;bottom:0;background:#eee;z-index:5"><button data-n="accept">Accept all</button></div>`);
+    await evaluateInTab("scrollTo(0,100);document.getElementById('box').scrollTop=40;true", null, PORT);
+    const r = await click("#deep");
+    expect(r.code).toBe("BrowserPointCovered");
+    expect(await evaluateInTab("[scrollY, document.getElementById('box').scrollTop]", null, PORT)).toEqual([100, 40]);
+  });
+
+  it("reads an icon with pointer-events: none inside a button as pressable through the button, as Playwright retargets (/code-review on #1005)", async () => {
+    await page(`<button id="close" data-n="close" style="position:absolute;left:300px;top:300px;padding:8px"><svg id="ico" width="16" height="16" style="pointer-events:none"><rect width="16" height="16"/></svg></button>`);
+    const p = await readPressLanding("#ico", null, PORT);
+    expect(p).toMatchObject({ how: "host" });
+  });
+
+  it("does not retarget to a container that is not a button or link (control: a plain div holder is still refused)", async () => {
+    await page(`<div id="wrap" style="position:absolute;left:300px;top:300px;padding:10px;background:#ddd"><span id="inert" style="pointer-events:none">Inert</span></div>`);
+    const p = await readPressLanding("#inert", null, PORT);
+    expect("cover" in p).toBe(true);
   });
 });

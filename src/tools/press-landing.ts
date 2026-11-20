@@ -121,6 +121,11 @@ ${ELEMENT_NAME_JS}
     if (!hit) return { ok: false, how: 'nothing' };
     if (hit === el) return { ok: true, how: 'self' };
     if (el.contains(hit)) return { ok: true, how: 'inside' };
+    // An element inside a button or a link is pressed as that button or link, as Playwright retargets its target
+    // ('button-link'): an icon with pointer-events: none inside a close button is pressed through the button, which
+    // is where a person's press goes (/code-review on #1005: the old browser_click road clicked it so).
+    var host = el.parentElement && el.parentElement.closest ? el.parentElement.closest('a[href],button,[role=button],[role=link]') : null;
+    if (host && (hit === host || host.contains(hit))) return { ok: true, how: 'host' };
     var lab = hit.closest ? hit.closest('label') : null;
     if (lab) {
       if (lab.control === el) {
@@ -175,7 +180,7 @@ ${ELEMENT_NAME_JS}
 }
 
 export type PressPoint =
-  | { x: number; y: number; via: "element" | "label"; how: "self" | "inside" | "own_label" | "skin" | "replacement" }
+  | { x: number; y: number; via: "element" | "label"; how: "self" | "inside" | "host" | "own_label" | "skin" | "replacement" }
   | { error: string; outside?: boolean };
 
 /**
@@ -380,4 +385,35 @@ export function coverSentence(selector: string, c: PageCover, tool: "desktop_act
     return `"${selector}" is under an empty overlay that covers the page (${c.cover}), which stayed through a short wait — often a page still loading; nothing was clicked. Wait for it to go, then try again.`;
   }
   return `"${selector}" is covered in the page by ${c.cover}; nothing was clicked.${offers} Deal with what covers it (close it, or use one of its controls), or scroll so the element is clear, then ${again}.`;
+}
+
+/**
+ * Where the element's scroll containers and the page are scrolled, kept in the page so a refusal can put them back:
+ * the landing read scrolls (a sticky header, the cover read's centring), and a refused press must not leave the page
+ * moved (/code-review on #1005: browser_click's rule, a denied action never scrolls).
+ */
+export function buildSaveScrollJs(selector: string): string {
+  return `(function() {
+  var el = document.querySelector(${JSON.stringify(selector)});
+  var out = [];
+  for (var n = el ? el.parentElement : null; n; n = n.parentElement) {
+    if (n.scrollTop !== 0 || n.scrollLeft !== 0 || n.scrollHeight > n.clientHeight || n.scrollWidth > n.clientWidth) out.push([n, n.scrollLeft, n.scrollTop]);
+  }
+  out.push([null, scrollX, scrollY]);
+  window.__dtmScrollSave = out;
+  return true;
+})()`;
+}
+
+/** Put back what {@link buildSaveScrollJs} kept (`restore` false only forgets it), innermost first, the page last. */
+export function buildRestoreScrollJs(restore: boolean): string {
+  return `(function() {
+  var s = window.__dtmScrollSave; delete window.__dtmScrollSave;
+  if (!s || !${restore}) return false;
+  for (var i = 0; i < s.length; i++) {
+    if (s[i][0] === null) scrollTo({ left: s[i][1], top: s[i][2], behavior: 'instant' });
+    else { s[i][0].scrollLeft = s[i][1]; s[i][0].scrollTop = s[i][2]; }
+  }
+  return true;
+})()`;
 }

@@ -77,13 +77,22 @@ describe("internal #421: browser_click's press guard", () => {
   it("answers page_stopped, naming what the press landed on, when the guard stopped it", async () => {
     mocks.guard.read = { ok: true, blocked: 3, first: 'div.menu "Account"' };
     const r = await press("#btn");
-    expect(r).toEqual({ covered: "page_stopped", first: 'div.menu "Account"', at: { x: 392, y: 360 } });
+    expect(r).toEqual({ covered: "page_stopped", first: 'div.menu "Account"', pageReacted: false, at: { x: 392, y: 360 } });
     const f = browserPointCoveredFailure(r as never, 392, 360, { selector: "#btn" });
     const body = JSON.parse((f.content[0] as { text: string }).text) as { code: string; error: string; context: Record<string, unknown> };
     expect(body.code).toBe("BrowserPointCovered");
     expect(body.context.coveredBy).toBe("page_stopped");
     expect(body.context.landedOn).toBe('div.menu "Account"');
-    expect(body.error).toContain("nothing was clicked");
+    expect(body.context.pageReacted).toBe(false);
+    expect(body.error).toContain("the element was not clicked");
+    expect(body.error).not.toContain("still changed");
+  });
+
+  it("says the page still changed when its own listener ran before the stop (/code-review on #1005)", async () => {
+    const f = browserPointCoveredFailure({ covered: "page_stopped", first: "div.menu", pageReacted: true }, 1, 2, { selector: "#btn" });
+    const body = JSON.parse((f.content[0] as { text: string }).text) as { error: string; context: Record<string, unknown> };
+    expect(body.context.pageReacted).toBe(true);
+    expect(body.error).toContain("The page still changed");
   });
 
   it("answers the probe's verdict when the press landed (blocked 0)", async () => {
@@ -91,13 +100,23 @@ describe("internal #421: browser_click's press guard", () => {
     expect("covered" in r).toBe(false);
   });
 
-  it("keeps the probe's verdict when the guard could not be installed or read (control: no guard, no claim)", async () => {
-    mocks.guard.install = { ok: false };
-    mocks.guard.read = { ok: true, blocked: 5, first: "x" };
-    expect("covered" in (await press("#btn"))).toBe(false);
-    expect(mocks.calls).not.toContain("read");
-    mocks.calls = [];
-    mocks.guard = { install: { ok: true }, read: null };
+  it("reads the guard though its install answered nothing: the answer can be lost after it ran (/code-review on #1005)", async () => {
+    mocks.guard.install = null;
+    mocks.guard.read = { ok: true, blocked: 2, first: "div.menu" };
+    const r = await press("#btn");
+    expect(mocks.calls).toEqual(["move", "guard", "press", "read"]);
+    expect(r).toMatchObject({ covered: "page_stopped", first: "div.menu" });
+  });
+
+  it("waits for the press to reach the page before reading the guard, though the probe was not installed (/code-review on #1005)", async () => {
+    // The probe throws in this cell ("no probe"), so its verdict does not wait; the guard's read must.
+    const t0 = Date.now();
+    await press("#btn");
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(450);
+  });
+
+  it("keeps the probe's verdict when the guard could not be read (control: no reading, no claim)", async () => {
+    mocks.guard.read = null;
     expect("covered" in (await press("#btn"))).toBe(false);
   });
 
