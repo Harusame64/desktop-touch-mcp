@@ -121,7 +121,7 @@ describe.skipIf(!CHROME)("browser_click by-axis: a covered match is read like th
   });
 
   it("does not refuse a checkbox inside a dialog the old rules call modal: its own label takes the press (/code-review round 2 on #1006)", async () => {
-    await page(`<div role="dialog" aria-label="Prefs" style="position:fixed;left:40px;top:40px;width:500px;height:400px;background:#fff;z-index:10"><input type="checkbox" id="cb" style="position:absolute;left:20px;top:20px;margin:0"><label for="cb" style="position:absolute;left:20px;top:20px;padding:0 0 0 30px;width:200px;height:20px">Remember me</label><button id="okb">OK</button></div>
+    await page(`<div role="dialog" aria-label="Prefs" style="position:fixed;left:20px;top:20px;right:20px;bottom:20px;background:#fff;z-index:10"><input type="checkbox" id="cb" style="position:absolute;left:20px;top:20px;margin:0"><label for="cb" style="position:absolute;left:20px;top:20px;padding:0 0 0 30px;width:200px;height:20px">Remember me</label><button id="okb">OK</button></div>
       <div style="position:fixed;inset:0;z-index:9;pointer-events:none"></div>`);
     await evaluateInTab("document.body.style.overflow='hidden';document.getElementById('okb').focus();true", null, PORT);
     const r = await click({ by: "role", pattern: "checkbox" });
