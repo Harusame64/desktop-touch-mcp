@@ -2704,8 +2704,12 @@ export const browserClickElementHandler = async ({
       if (scrollHeld) await settlePressScroll(true, effectiveTabId ?? null, port);
       throw e;
     }
-    // A refusal before the press puts the scroll back; a press (page_stopped included: it was sent) keeps it.
-    if (scrollHeld) await settlePressScroll(isCover(clicked) && clicked.covered !== "page_stopped", effectiveTabId ?? null, port);
+    // A refusal before the press puts the scroll back, and so does a stopped press the page did not react to; a
+    // press the page may have acted on keeps the scroll it was made at (round 3).
+    if (scrollHeld) {
+      const restore = isCover(clicked) && (clicked.covered !== "page_stopped" || clicked.pageReacted === false);
+      await settlePressScroll(restore, effectiveTabId ?? null, port);
+    }
     // ADR-040 — the point that was checked (the page surface's), in the refusal and the reply alike.
     const clickedAt = clicked.at ?? { x: pressX, y: pressY };
     if (isCover(clicked)) return browserPointCoveredFailure(clicked, clickedAt.x, clickedAt.y, { selector: effectiveSelector }, force);

@@ -129,7 +129,9 @@ ${ELEMENT_NAME_JS}
     // not a press on this one (/code-review on #1005, round 2).
     var host = !el.matches(__DTM_INTERACTIVE) && el.parentElement && el.parentElement.closest ? el.parentElement.closest('a[href],button,[role=button],[role=link]') : null;
     if (host && (hit === host || host.contains(hit))) {
-      for (var hn = hit; hn && hn !== host; hn = hn.parentElement) if (hn.matches(__DTM_INTERACTIVE) || hn.tagName === 'LABEL') return { ok: false, how: 'covered' };
+      // A node that holds the element (a focusable wrapper inside the link) is the element's own way to the host, not
+      // a control beside it (round 3).
+      for (var hn = hit; hn && hn !== host; hn = hn.parentElement) if (!hn.contains(el) && (hn.matches(__DTM_INTERACTIVE) || hn.tagName === 'LABEL')) return { ok: false, how: 'covered' };
       return { ok: true, how: 'host' };
     }
     var lab = hit.closest ? hit.closest('label') : null;

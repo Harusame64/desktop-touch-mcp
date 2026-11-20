@@ -138,14 +138,25 @@ describe.skipIf(!CHROME)("browser_click refuses what a person must deal with fir
   });
 
   it("puts the scroll back when the press is not sent after a landing read that scrolled (round 2 on #1005)", async () => {
-    // A sticky header over the link: the landing read scrolls it clear and returns a point. The OS press cannot
-    // be sent from this machine (no Windows focus), so the call fails after the read; the scroll must come back.
-    await page(`<div style="position:sticky;top:0;height:120px;background:#333;color:#fff;z-index:5">Header</div><div style="height:600px"></div><a id="lnk" href="#done" data-n="lnk">Link</a><div style="height:1400px"></div>`);
-    await evaluateInTab("scrollTo(0, document.getElementById('lnk').offsetTop - 60);true", null, PORT);
-    const before = await evaluateInTab("scrollY", null, PORT);
+    // A sticky header over the link: the landing read scrolls it clear and returns a point. The OS press cannot be
+    // sent from this machine (no Windows window to focus), so the call fails after the read; the scroll must come
+    // back. Both halves are shown: the held read alone moves the page, and the call leaves it where it was.
+    const STICKY = `<div style="position:sticky;top:0;height:120px;background:#333;color:#fff;z-index:5">Header</div><div style="height:600px"></div><a id="lnk" href="#done" data-n="lnk">Link</a><div style="height:1400px"></div>`;
+    const setUp = async () => { await page(STICKY); await evaluateInTab("scrollTo(0, document.getElementById('lnk').offsetTop - 60);true", null, PORT); return evaluateInTab("scrollY", null, PORT); };
+    const before = await setUp();
+    const held = await readPressLanding("#lnk", null, PORT, { holdScroll: true });
+    expect(held).toMatchObject({ how: "self" });
+    expect(await evaluateInTab("scrollY", null, PORT)).not.toBe(before);
+    const again = await setUp();
     const r = await click("#lnk");
-    if (r.ok === true) return; // pressed on a machine that can press: nothing to check here
-    expect(await evaluateInTab("scrollY", null, PORT)).toBe(before);
+    if (r.ok === true) return; // a machine that can press: the scroll stays where the press was made
+    expect(r.code).not.toBe("ElementNotInViewport");
+    expect(await evaluateInTab("scrollY", null, PORT)).toBe(again);
     expect(await counts()).toEqual({});
+  });
+
+  it("presses an icon in a link through a focusable wrapper that holds it (round 3 on #1005)", async () => {
+    await page(`<a id="card" href="#item" style="position:absolute;left:300px;top:300px"><div tabindex="0" style="padding:10px"><svg id="ic" width="16" height="16" style="pointer-events:none"><rect width="16" height="16"/></svg></div></a>`);
+    expect(await readPressLanding("#ic", null, PORT)).toMatchObject({ how: "host" });
   });
 });
