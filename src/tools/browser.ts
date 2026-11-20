@@ -16,6 +16,9 @@ import { coercedBoolean, coercedBooleanWithDefault } from "./_coerce.js";
 import { pollUntil } from "../engine/poll.js";
 import {
   listTabs,
+  listTabsLight,
+  dispatchMouseMoveInTab,
+  dispatchClickInTab,
   evaluateInTab,
   getElementScreenCoords,
   ElementZeroSizeError,
@@ -720,7 +723,7 @@ async function readClickProbe(
  *     observedSignals?: { mutationCount, urlChanged, activeElementChanged }
  *   }
  */
-type VerifyDeliveryHint = {
+export type VerifyDeliveryHint = {
   /** ADR-040 — the point that was checked and clicked (the page surface's, or the caller's). */
   at?: { x: number; y: number };
   status: "delivered" | "unverifiable";
@@ -732,6 +735,45 @@ type VerifyDeliveryHint = {
     activeElementChanged: boolean;
   };
 };
+
+/**
+ * internal #415 — `desktop_act`'s CDP click refused at a point `browser_click` would also refuse. The sentence is
+ * browser_click's (it names the window, pane or tab in the way and says nothing was clicked), re-addressed to
+ * desktop_act and carried as `callerDetail`. **Typed by `name`** (guarded-touch matches the name): a plain Error
+ * arrives as `executor_failed`, whose first suggestion is a coordinate click at the entity — into the very window
+ * this refused (win2 on the #415 spike). Another window, or one the browser owns, on top is `aim_occluded`; the
+ * page not shown, a pane, a hidden tab, an ambiguous surface or an excluded window is `aim_route_failed` (the
+ * blind press is refused, and the click_element / re-discover advice applies).
+ */
+export function cdpClickRefusal(cover: BrowserPointCover, x: number, y: number, ctx: Record<string, unknown>): Error {
+  const failure = browserPointCoveredFailure(cover, x, y, ctx);
+  const text = (failure.content?.[0] as { text?: string } | undefined)?.text ?? "";
+  let sentence = text;
+  let suggest: string[] = [];
+  try {
+    const parsed = JSON.parse(text) as { error?: string; suggest?: unknown };
+    sentence = parsed.error ?? text;
+    if (Array.isArray(parsed.suggest)) suggest = parsed.suggest.filter((s): s is string => typeof s === "string");
+  } catch {
+    // plain text: keep it
+  }
+  // An excluded window is not named (R3): its own reason, whose advice says so and not to retry by coordinate.
+  if (cover.covered === "excluded") {
+    const err = new Error(sentence.replace(/^browser_click: /, "desktop_act (cdp): "));
+    err.name = "AimBlockedByExcludedWindowError";
+    (err as Error & { callerDetail?: string }).callerDetail = err.message;
+    return err;
+  }
+  // The remedy is browser_click's first suggestion (close DevTools with F12 on that hwnd, select the hidden tab,
+  // restore the window, dismiss the browser's own panel): the published advice of the reason below is generic, and
+  // the old ambiguous-pane refusal carried its remedy in the sentence (/code-review on #1001). "Nothing was
+  // clicked" is in the sentence, which comes first, so the 1000-character cap on the detail cuts the remedy, not it.
+  const remedy = suggest[0] !== undefined ? ` Next: ${suggest[0]}` : "";
+  const err = new Error(sentence.replace(/^browser_click: /, "desktop_act (cdp): ") + remedy);
+  err.name = cover.covered === "other" || cover.covered === "owned" ? "AimOccludedError" : "AimedRouteFailedError";
+  (err as Error & { callerDetail?: string }).callerDetail = err.message;
+  return err;
+}
 
 /** internal #274 — what is on top of the click point instead of the browser window. */
 export type BrowserPointCover = ({ at?: { x: number; y: number } }) & (
@@ -1102,6 +1144,94 @@ export async function osClickAndVerify(
 
   await mouse.click(Button.LEFT);
 
+  const verifyDelivery = await verdictFromClickProbe(probe, tabId, port);
+  return { ...verifyDelivery, at: { x, y } };
+}
+
+
+/**
+ * internal #415 — `desktop_act`'s CDP click: the press is sent to the tab by CDP (`dispatchClickInTab`), not with
+ * the OS cursor, so no window is raised or activated and a window in front cannot take it. The element is
+ * scrolled into view when its centre is outside the viewport, the click probe reads what the press did, and the
+ * page tabs are counted before and after: a page that opens a tab or window on click (`window.open`,
+ * `target=_blank`) can switch the user's tab or raise its window (win2's spike). The count and the verdict are
+ * recorded on desktop_act's route row; the act's answer does not carry them yet.
+ *
+ * Throws `CdpClickDispatchError` (from the bridge) when the press could not be sent; a missing or unrendered
+ * element is a plain Error, as `getElementScreenCoords` answered it before.
+ */
+export async function cdpDispatchClickAndVerify(
+  selector: string,
+  tabId: string | null,
+  port: number,
+): Promise<VerifyDeliveryHint & { openedTabs: number | null }> {
+  const point = (await evaluateInTab(`
+(function() {
+  var sel = ${JSON.stringify(selector)};
+  var el = document.querySelector(sel);
+  if (!el) return { error: "Element not found: " + sel };
+  function centre() {
+    var r = el.getBoundingClientRect();
+    return { w: r.width, h: r.height, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }
+  var c = centre();
+  if (c.w === 0 && c.h === 0) return { error: "Element has zero size (hidden or not rendered): " + sel };
+  function outside() { return c.x < 0 || c.x >= window.innerWidth || c.y < 0 || c.y >= window.innerHeight; }
+  if (outside()) {
+    // instant: a page with scroll-behavior: smooth would still be animating when the point is read.
+    el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    c = centre();
+    if (outside()) return { error: "Element is outside the viewport and could not be scrolled into it: " + sel + ". Nothing was clicked.", outside: true };
+  }
+  return { x: c.x, y: c.y };
+})()`, tabId, port)) as { x: number; y: number } | { error: string; outside?: boolean };
+  if ("error" in point) {
+    const err = new Error(`desktop_act (cdp): ${point.error}`);
+    // Typed, so the act is not answered with a coordinate click at a point that is off the page (agy on #1001).
+    // A missing or unrendered element stays a plain Error, as getElementScreenCoords answered it before.
+    if (point.outside === true) {
+      err.name = "AimedRouteFailedError";
+      (err as Error & { callerDetail?: string }).callerDetail = err.message;
+    }
+    throw err;
+  }
+
+  const pageIds = async (): Promise<Set<string> | null> => {
+    try {
+      return new Set((await listTabsLight(port)).filter((t) => t.type === "page").map((t) => t.id));
+    } catch {
+      return null;
+    }
+  };
+  const before = await pageIds();
+  // The pointer moves first and the probe is installed after it, so hover effects are not read as the click
+  // (the order browser_click keeps with the OS cursor, Codex P1 there).
+  await dispatchMouseMoveInTab(point.x, point.y, tabId, port);
+  const probe = await installClickProbe(selector, tabId, port);
+  try {
+    await dispatchClickInTab(point.x, point.y, tabId, port);
+  } catch (e) {
+    if (probe.installed) await readClickProbe(tabId, port);
+    throw e;
+  }
+  const verdict = await verdictFromClickProbe(probe, tabId, port);
+  const after = await pageIds();
+  const openedTabs = before === null || after === null ? null : [...after].filter((id) => !before.has(id)).length;
+  // A tab the click opened is evidence it landed: a `window.open` button changes no DOM of its own page, and the
+  // probe alone read it as unverifiable (win2 on #1001, cell 7).
+  if (openedTabs !== null && openedTabs > 0 && verdict.status === "unverifiable") {
+    const { reason: _unverifiedBecause, ...rest } = verdict;
+    return { ...rest, status: "delivered", openedTabs };
+  }
+  return { ...verdict, openedTabs };
+}
+
+/** The click probe's verdict after a press (shared by the OS click and the CDP click, internal #415). */
+async function verdictFromClickProbe(
+  probe: { installed: boolean },
+  tabId: string | null,
+  port: number,
+): Promise<VerifyDeliveryHint> {
   let verifyDelivery: VerifyDeliveryHint = {
     status: "unverifiable",
     channel: "cdp",
@@ -1126,7 +1256,7 @@ export async function osClickAndVerify(
       verifyDelivery = { status: "unverifiable", channel: "cdp", reason: "probe_read_failed" };
     }
   }
-  return { ...verifyDelivery, at: { x, y } };
+  return verifyDelivery;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
