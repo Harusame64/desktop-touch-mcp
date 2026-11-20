@@ -3859,31 +3859,27 @@ function getSharedRealDeps(): ExecutorDeps {
       const { resolveTabId } = await import("../engine/cdp-bridge.js");
       // ADR-040 — one tab for the coordinates and the window they are placed on (codex on #967).
       const tab = tabId ?? await resolveTabId(null, portForTab(tabId)).catch(() => null);
-      const coords = await getElementScreenCoords(selector, tab, portForTab(tabId));
+      const port = portForTab(tabId);
+      const coords = await getElementScreenCoords(selector, tab, port);
       if ((coords as { error?: string }).error) {
         throw new Error((coords as { error?: string }).error ?? "CDP getElementScreenCoords failed");
       }
-      // ADR-040 — the point on the page surface (the frame's page RWH), as browser_click takes it, not the
-      // page-side formula (#306). When the surface cannot be read, the formula's point, as before.
-      const { findTabFrame, alignToPageSurface, aimFromCoords } = await import("../engine/page-aim.js");
-      const port = portForTab(tabId);
-      const frame = await findTabFrame(port, tab).catch(() => undefined);
-      const aligned = alignToPageSurface(frame, aimFromCoords(coords), { x: coords.x, y: coords.y });
-      // The page's window cannot be told from another pane: the point is not known (ADR-040, agy on #967).
-      if (aligned.surface?.kind === "unreadable" && aligned.surface.why === "ambiguous") {
-        throw new Error(
-          `Nothing was clicked: the browser window (hwnd ${String(aligned.surface.frame)}) shows more than one pane (DevTools or a side panel), and which one is the page could not be told. ` +
-          `Close DevTools with keyboard({ action: "press", keys: "f12", hwnd: "${String(aligned.surface.frame)}" }) or the side panel, then retry; or use browser_click with tabId, or browser_fill / browser_eval.`,
-        );
+      // SPIKE internal #415 — the same road as browser_click: bring the tab forward, read the page surface,
+      // refuse when another window / pane / hidden tab would take the press (before and right before it),
+      // press with the OS cursor, and read a click probe. This used to press with nut.js after only the
+      // surface alignment, so a window in front took the click while the act answered ok:true.
+      const { aimFromCoords } = await import("../engine/page-aim.js");
+      const { osClickAndVerify, browserPointCoveredFailure } = await import("./browser.js");
+      const r = await osClickAndVerify(coords.x, coords.y, selector, tab, port, undefined, false, aimFromCoords(coords));
+      if ("covered" in r) {
+        const f = browserPointCoveredFailure(r, r.at?.x ?? coords.x, r.at?.y ?? coords.y, { selector, tabId: tab });
+        const text = (f.content?.[0] as { text?: string } | undefined)?.text ?? "";
+        let msg = text;
+        try { msg = (JSON.parse(text) as { error?: string }).error ?? text; } catch { /* plain text */ }
+        throw new Error(msg.replace(/^browser_click: /, "desktop_act (cdp): "));
       }
-      const { x, y } = aligned.point;
-      // ADR-029: coordinates only become known inside this dep, so the
-      // reachability check lives here rather than in the executor core.
-      assertCoordinateReachable(x, y);
-      const { mouse, Button } = await import("../engine/nutjs.js");
-      const { moveCursorTo } = await import("../engine/cursor.js");
-      await moveCursorTo(x, y);
-      await mouse.click(Button.LEFT);
+      // SPIKE — the delivery hint is not returned through the executor yet; logged for the spike only.
+      console.error(`[SPIKE415] cdpClick verifyDelivery=${JSON.stringify(r)}`);
     },
 
     async cdpFill(selector, value, tabId) {
