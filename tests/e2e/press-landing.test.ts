@@ -150,6 +150,15 @@ describe.skipIf(!CHROME)("desktop_act's CDP click presses the way a person would
     expect((await counts()).b).toBe(1);
   });
 
+  it("presses the widget beside an id-less hidden select parked at its corner (real Select2's shape, win2 on #1004)", async () => {
+    await page(`<div style="margin:80px;position:relative"><select class="select2-hidden-accessible" aria-hidden="true" tabindex="-1" style="position:absolute;width:1px;height:1px;clip:rect(0,0,0,0);overflow:hidden;left:0;top:0;margin:0;border:0;padding:0"><option>Apple</option></select><span class="select2-container" style="display:inline-block;width:240px;margin-top:0.7px"><span class="selection" style="display:block"><span id="sel2" role="combobox" aria-expanded="false" aria-labelledby="select2-spgw-container" tabindex="0" style="display:block;height:28px;border:1px solid #aaa"><span id="select2-spgw-container">Apple</span></span></span></span></div>
+      <script>document.querySelector('.selection').addEventListener('mousedown',function(){document.getElementById('sel2').setAttribute('aria-expanded','true');});</script>`);
+    const out = await press("select");
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.r.pressedAt).toBe("replacement");
+    expect(await read("document.getElementById('sel2').getAttribute('aria-expanded')")).toBe("true");
+  });
+
   it("presses the widget that replaces a hidden native select (Select2: win2 on #1004, R12)", async () => {
     await page(`<div style="margin:80px;position:relative"><select id="fruit" aria-hidden="true" tabindex="-1" style="position:absolute;width:1px;height:1px;clip:rect(0,0,0,0);overflow:hidden;left:0;top:0;margin:0;border:0;padding:0"><option>Apple</option><option>Banana</option></select>
       <span class="select2" style="display:inline-block;width:200px"><span id="sel" role="combobox" aria-expanded="false" aria-labelledby="select2-fruit-container" tabindex="0" style="display:block;height:28px;border:1px solid #aaa"><span id="select2-fruit-container">Apple</span></span></span></div>

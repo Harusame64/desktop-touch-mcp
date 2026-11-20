@@ -43,21 +43,23 @@ export function pressLandingRuleJs(): string {
     var r = n.getBoundingClientRect(); if (r.width <= 2 && r.height <= 2) return true;
     return getComputedStyle(n).opacity === '0';
   }
-  function __dtmNamesElement(parent, hit, el) {
-    var key = el.id || el.getAttribute('data-select2-id') || '';
-    if (!key) return false;
+  function __dtmRoles(n) {
+    var r = n.getAttribute('role'); if (r) return [r];
+    var t = n.tagName, ty = (n.getAttribute('type') || '').toLowerCase();
+    if (t === 'SELECT') return ['combobox', 'listbox'];
+    if (t === 'INPUT' && ty === 'checkbox') return ['checkbox', 'switch'];
+    if (t === 'INPUT' && ty === 'radio') return ['radio'];
+    if (t === 'TEXTAREA' || (t === 'INPUT' && ['', 'text', 'search', 'email', 'url', 'tel', 'number'].indexOf(ty) >= 0)) return ['textbox', 'searchbox', 'combobox'];
+    return [];
+  }
+  function __dtmSameKindBeside(parent, hit, el) {
+    var want = __dtmRoles(el); if (want.length === 0) return false;
     var root = hit; while (root.parentElement && root.parentElement !== parent) root = root.parentElement;
-    function names(v) {
-      for (var at = v.indexOf(key); at >= 0; at = v.indexOf(key, at + 1)) {
-        var b = at === 0 ? '' : v.charAt(at - 1), e = v.charAt(at + key.length);
-        if (!/[A-Za-z0-9]/.test(b) && !/[A-Za-z0-9]/.test(e)) return true;
-      }
-      return false;
-    }
-    var nodes = [root].concat(Array.prototype.slice.call(root.querySelectorAll('*')));
-    var attrs = ['id', 'aria-labelledby', 'aria-controls', 'aria-owns', 'for'];
-    for (var i = 0; i < nodes.length && i < 200; i++) for (var j = 0; j < attrs.length; j++) {
-      var v = nodes[i].getAttribute(attrs[j]); if (v && names(v)) return true;
+    if (root === el || root.contains(el)) return false;
+    var nodes = [root].concat(Array.prototype.slice.call(root.querySelectorAll('[role]')));
+    for (var i = 0; i < nodes.length && i < 200; i++) {
+      var r = nodes[i].getAttribute('role');
+      if (r && want.indexOf(r) >= 0) return true;
     }
     return false;
   }
@@ -119,14 +121,13 @@ export function pressLandingRuleJs(): string {
     // is a control in the element's own parent — Select2 hides the native <select> (aria-hidden, clipped) and draws
     // its combobox beside it. A person presses the widget they see; so does this (win2 on #1004, R12: discover
     // lists the hidden select, and main pressed the widget).
-    // It has to say it stands for the element: something in the widget names the element's id (or the
-    // data-select2-id Select2 gives an element without one) in its id, aria-labelledby, aria-controls, aria-owns or
-    // for — Select2's selection is aria-labelledby="select2-<id>-container". A control that merely shares a parent
-    // with a hidden input is not its replacement (codex on #1004).
+    // It has to present itself as the same kind of control: the part of the parent the hit is in holds a control
+    // whose role is the element's (a combobox or listbox for a <select>, a checkbox or switch for a checkbox, a
+    // radio for a radio). A control that merely shares a parent with a hidden input — a submit button, a link — is
+    // not its replacement (codex on #1004). Not an id: Select2 gives an id-less select a random token the select
+    // does not carry, and parks the select at the widget's corner, so the hit is the widget's outer wrapper (win2).
     var parent = el.parentElement;
-    if (parent && parent.contains(hit) && __dtmHiddenFromPeople(el) && __dtmNamesElement(parent, hit, el)) {
-      for (var q = hit; q && q !== parent; q = q.parentElement) if (q.matches(__DTM_INTERACTIVE)) return { ok: true, how: 'replacement' };
-    }
+    if (parent && parent.contains(hit) && __dtmHiddenFromPeople(el) && __dtmSameKindBeside(parent, hit, el)) return { ok: true, how: 'replacement' };
     // A skin candidate: a layer drawn right over the element — its box inside the element's box grown by 24px or
     // half the element's size, whichever is more — in the element's parent or grandparent, and nothing from the
     // hit up to that wrapper has text, a name, an interactive role, or is a dialog or a label. The browser confirms
@@ -203,8 +204,6 @@ export function buildPressPointJs(selector: string): string {
         var v = __dtmLandsOn(el, document.elementFromPoint(ps[k].x, ps[k].y));
         if (!v.ok) continue;
         if (modalAgainst && (v.how === 'skin' || v.how === 'replacement')) continue;
-        // A replacement is taken at the element's centre only, not at an edge where a neighbour may sit.
-        if (v.how === 'replacement' && k !== 0) continue;
         if (v.how !== 'skin' && v.how !== 'replacement') return { x: ps[k].x, y: ps[k].y, via: targets[t].via, how: v.how };
         if (!skin) skin = { x: ps[k].x, y: ps[k].y, via: targets[t].via, how: v.how };
       }
