@@ -1200,6 +1200,12 @@ export async function cdpDispatchClickAndVerify(
   const verdict = await verdictFromClickProbe(probe, tabId, port);
   const after = await pageIds();
   const openedTabs = before === null || after === null ? null : [...after].filter((id) => !before.has(id)).length;
+  // A tab the click opened is evidence it landed: a `window.open` button changes no DOM of its own page, and the
+  // probe alone read it as unverifiable (win2 on #1001, cell 7).
+  if (openedTabs !== null && openedTabs > 0 && verdict.status === "unverifiable") {
+    const { reason: _unverifiedBecause, ...rest } = verdict;
+    return { ...rest, status: "delivered", openedTabs };
+  }
   return { ...verdict, openedTabs };
 }
 
