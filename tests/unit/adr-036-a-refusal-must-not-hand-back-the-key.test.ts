@@ -148,6 +148,18 @@ describe("the loop keeps each refusal's own name", () => {
     }
   });
 
+  it("says a dialog inside the page blocks the element, with the sentence as detail (internal #418)", async () => {
+    // Flattened to `executor_failed`, its advice is a coordinate click: onto the backdrop the act refused.
+    const refusal = Object.assign(new Error("x"), { name: "ModalBlockingError", callerDetail: 'desktop_act (cdp): "#go" is behind a dialog that blocks the page ("Sign in", role dialog); nothing was clicked.' });
+    const { loop, lease } = loopThatThrows(refusal);
+    const result = await loop.touch({ lease });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("modal_blocking");
+      expect(result.detail).toMatch(/behind a dialog that blocks the page/);
+    }
+  });
+
   it("keeps an error of another name as executor_failed (control, internal #227)", async () => {
     const failed = Object.assign(new Error("x"), { name: "TerminalSendSomethingElse", callerDetail: "…" });
     const { loop, lease } = loopThatThrows(failed);

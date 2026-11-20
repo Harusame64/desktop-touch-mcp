@@ -2756,6 +2756,8 @@ function adr029Refusal(err: unknown): string | undefined {
   if (err.name === "AimOccludedError") return "aim_occluded";
   if (err.name === "AimedRouteFailedError") return "aim_route_failed";
   if (err.name === "AimBlockedByExcludedWindowError") return "aim_blocked_by_excluded_window";
+  // internal #418 — a dialog inside the page blocks the element (win2: the refusal wrote no row).
+  if (err.name === "ModalBlockingError") return "modal_blocking";
   return undefined;
 }
 
@@ -3925,7 +3927,9 @@ function getSharedRealDeps(): ExecutorDeps {
       // window / pane / hidden tab before and right before the press, presses with the OS cursor, and reads a
       // click probe.
       const { aimFromCoords } = await import("../engine/page-aim.js");
-      const { osClickAndVerify, cdpClickRefusal } = await import("./browser.js");
+      const { osClickAndVerify, cdpClickRefusal, refuseIfPageModalBlocks } = await import("./browser.js");
+      // internal #418 — browser_click's modal preflight, on this road too.
+      if (coords.occluded) await refuseIfPageModalBlocks(selector, tab, port);
       const r = await osClickAndVerify(coords.x, coords.y, selector, tab, port, undefined, false, aimFromCoords(coords));
       if ("covered" in r) {
         throw cdpClickRefusal(r, r.at?.x ?? coords.x, r.at?.y ?? coords.y, { selector, tabId: tab });

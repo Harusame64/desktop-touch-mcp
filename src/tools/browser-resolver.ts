@@ -1606,7 +1606,9 @@ export function buildModalOccluderProbeJs(selector: string): string {
   if (!el) return { found: false };
   const __modal = ${buildPageLevelModalFactsJs()};
 ${occluderIndexHelperJs()}
-  return { found: true, occludedByDialogIndex: __occludedDialogIndexForEl(el), modalFacts: __modal };
+  const insideDialogIndices = [];
+  for (let i = 0; i < __mNodes.length; i++) { if (__mNodes[i].contains(el)) insideDialogIndices.push(i); }
+  return { found: true, occludedByDialogIndex: __occludedDialogIndexForEl(el), insideDialogIndices: insideDialogIndices, modalFacts: __modal };
   } catch (e) { return { found: false }; }
 })()`;
 }
@@ -1614,6 +1616,12 @@ ${occluderIndexHelperJs()}
 export interface SelectorModalProbe {
   modalFacts: ModalFacts;
   occludedByDialogIndex: number | null;
+  /**
+   * Indices into `modalFacts.dialogCandidates` of the dialogs that contain the element (internal #418): a cover
+   * that belongs to the dialog the element is in does not put the element behind that dialog. Absent from an
+   * older probe.
+   */
+  insideDialogIndices?: number[];
 }
 
 /**
@@ -1632,7 +1640,8 @@ export async function probeSelectorModalOcclusion(
   } catch {
     return null;
   }
-  const r = raw as { found?: boolean; occludedByDialogIndex?: number | null; modalFacts?: ModalFacts } | null;
+  const r = raw as { found?: boolean; occludedByDialogIndex?: number | null; insideDialogIndices?: unknown; modalFacts?: ModalFacts } | null;
   if (!r || r.found !== true || !r.modalFacts) return null;
-  return { modalFacts: r.modalFacts, occludedByDialogIndex: r.occludedByDialogIndex ?? null };
+  const inside = Array.isArray(r.insideDialogIndices) ? r.insideDialogIndices.filter((i): i is number => typeof i === "number") : undefined;
+  return { modalFacts: r.modalFacts, occludedByDialogIndex: r.occludedByDialogIndex ?? null, ...(inside !== undefined && { insideDialogIndices: inside }) };
 }

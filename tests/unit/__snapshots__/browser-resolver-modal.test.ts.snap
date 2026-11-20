@@ -429,7 +429,9 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     if (!hit || hit === el || el.contains(hit)) return null;
     return __occluderDialogIndex(hit);
   }
-  return { found: true, occludedByDialogIndex: __occludedDialogIndexForEl(el), modalFacts: __modal };
+  const insideDialogIndices = [];
+  for (let i = 0; i < __mNodes.length; i++) { if (__mNodes[i].contains(el)) insideDialogIndices.push(i); }
+  return { found: true, occludedByDialogIndex: __occludedDialogIndexForEl(el), insideDialogIndices: insideDialogIndices, modalFacts: __modal };
   } catch (e) { return { found: false }; }
 })()"
 `;
