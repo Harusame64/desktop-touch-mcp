@@ -113,13 +113,11 @@ describe.skipIf(!CHROME)("browser_click by-axis: a covered match is read like th
       <div style="position:fixed;inset:0;z-index:9;pointer-events:none"></div>`);
     await evaluateInTab("document.body.style.overflow='hidden';document.getElementById('okb').focus();true", null, PORT);
     const r = await click({ by: "text", pattern: "Archive all" });
-    if (r.code === "BrowserModalBlocking") {
-      expect(await marks()).toBe(0);
-      expect(await counts()).toEqual({});
-    } else {
-      // The old rules did not take this shape for a modal: the cell says nothing about the early refusal then.
-      expect(r.code).not.toBeUndefined();
-    }
+    // Measured on mac Chrome 157: the old rules take it (backdrop, scroll lock, focus inside, 0.75 of the page).
+    expect(r.code).toBe("BrowserModalBlocking");
+    expect(r.context).toMatchObject({ blockingElement: { name: "Settings", role: "dialog" }, signals: { ariaModal: false, backdrop: true } });
+    expect(await marks()).toBe(0);
+    expect(await counts()).toEqual({});
   });
 
   it("leaves another call's mark alone when it marks its own (/code-review on #1006)", async () => {
