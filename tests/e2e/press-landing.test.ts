@@ -124,6 +124,25 @@ describe.skipIf(!CHROME)("desktop_act's CDP click presses the way a person would
     expect((await counts()).b).toBe(1);
   });
 
+  it("presses the widget that replaces a hidden native select (Select2: win2 on #1004, R12)", async () => {
+    await page(`<div style="margin:80px;position:relative"><select id="fruit" aria-hidden="true" tabindex="-1" style="position:absolute;width:1px;height:1px;clip:rect(0,0,0,0);overflow:hidden;left:0;top:0;margin:0;border:0;padding:0"><option>Apple</option><option>Banana</option></select>
+      <span class="select2" style="display:inline-block;width:200px"><span id="sel" role="combobox" aria-expanded="false" tabindex="0" style="display:block;height:28px;border:1px solid #aaa">Apple</span></span></div>
+      <script>document.getElementById('sel').addEventListener('mousedown',function(){this.setAttribute('aria-expanded','true');});</script>`);
+    const out = await press("#fruit");
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.r.pressedAt).toBe("replacement");
+    expect(await read("document.getElementById('sel').getAttribute('aria-expanded')")).toBe("true");
+  });
+
+  it("does not press another control over a VISIBLE element in the same parent (control for the replacement rule)", async () => {
+    await page(`<div style="margin:80px;position:relative"><button id="under" data-n="under" style="width:120px;height:30px">Under</button>
+      <button data-n="over" style="position:absolute;left:0;top:0;width:120px;height:30px">Over</button></div>`);
+    const out = await press("#under");
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.detail).toContain('"Over"');
+    expect(await counts()).toEqual({});
+  });
+
   it("scrolls a link out from under a sticky header", async () => {
     await page(`<header data-n="header" style="position:fixed;top:0;left:0;right:0;height:80px;background:#ccc;z-index:5">Header</header>
       <a id="l" data-n="l" href="#x" style="position:absolute;left:600px;top:1000px">Link</a>`);
@@ -265,6 +284,50 @@ describe.skipIf(!CHROME)("desktop_act's CDP click presses the way a person would
       expect(out.name).toBe("AimedRouteFailedError");
       expect(out.detail).toContain("Side drawer");
       expect(out.detail).toContain('"Drawer button"');
+    }
+    expect(await counts()).toEqual({});
+  });
+
+  it("names the covering part, not the dialog, when a part of the element's own modal covers it (/code-review on #1004)", async () => {
+    await page(`<div role="dialog" aria-modal="true" aria-label="Consent" style="position:fixed;left:100px;top:100px;width:500px;height:300px;background:#fff;z-index:1000">
+      <button id="agree" data-n="agree" style="position:absolute;left:40px;top:40px;width:120px;height:30px">Agree</button>
+      <div aria-label="Terms banner" style="position:absolute;left:0;top:20px;width:500px;height:80px;background:#ffe">Read the terms first</div></div>`);
+    const out = await press("#agree");
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.name).toBe("AimedRouteFailedError");
+      expect(out.detail).toContain("Terms banner");
+      expect(out.detail).not.toContain("Answer the dialog");
+    }
+    expect(await counts()).toEqual({});
+  });
+
+  it("does not press a strip of the element's LABEL beside a modal either (/code-review on #1004)", async () => {
+    await page(`<label id="lab" data-n="lab" style="position:absolute;left:20px;top:300px;width:400px;height:30px;display:block"><input type="checkbox" id="cb" style="margin:0"> Subscribe to the newsletter please</label>
+      <div role="dialog" aria-modal="true" aria-label="Confirm" style="position:absolute;left:0;top:280px;width:300px;height:80px;background:#ffd;z-index:2000"><button>Yes</button></div>`);
+    const out = await press("#cb");
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.name).toBe("ModalBlockingError");
+    expect(await read("document.getElementById('cb').checked")).toBe(false);
+  });
+
+  it("does not press a skin in an app a modal has made aria-hidden (/code-review on #1004)", async () => {
+    await page(`<div id="app" aria-hidden="true"><div style="position:absolute;left:80px;top:300px;width:22px;height:22px"><input type="checkbox" id="ic" style="position:absolute;top:20%;left:20%;margin:0;opacity:0"><ins id="skin" style="position:absolute;inset:0;border:2px solid #333"></ins></div></div>
+      <div role="dialog" aria-modal="true" aria-label="Notice" style="position:fixed;left:400px;top:100px;width:300px;height:150px;background:#fff;z-index:1050"><button>Close</button></div>
+      <script>document.getElementById('skin').addEventListener('click',function(){var i=document.getElementById('ic');i.checked=!i.checked;});</script>`);
+    const out = await press("#ic");
+    expect(out.ok).toBe(false);
+    expect(await read("document.getElementById('ic').checked")).toBe(false);
+  });
+
+  it("says the element does not take a press at its point when the hit is its own container (/code-review on #1004)", async () => {
+    await page(`<main style="position:relative;height:600px"><button id="dead" data-n="dead" style="position:absolute;left:100px;top:100px;pointer-events:none">Dead</button>
+      <div role="dialog" aria-label="Cookie panel" style="position:absolute;left:400px;top:400px;width:200px;height:80px;background:#eee"><button>OK</button></div></main>`);
+    const out = await press("#dead");
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.detail).toContain("does not take a press at its own point");
+      expect(out.detail).not.toContain("Cookie panel");
     }
     expect(await counts()).toEqual({});
   });

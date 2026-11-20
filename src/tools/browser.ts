@@ -1180,14 +1180,17 @@ export async function pressPointFor(
     }
     if ("x" in p) {
       if (p.how !== "skin") return p;
-      // The browser's own reading decides what the page script cannot see: a computed accessible name or role
-      // makes the layer something a person deals with, not a skin. Whether it listens for clicks is not asked —
-      // React and delegated jQuery handlers sit on the root or the document (/code-review on #1004) — and a skin
-      // that does not forward reads as unverifiable after the press. An unreadable answer keeps the page's reading.
-      const h = await inspectHitAtPoint(selector, p.x, p.y, tabId, port);
-      if (h === null || h.ignored || (h.name === "" && SKIN_ROLES.has(h.role))) return p;
+      // The browser's own reading decides what the page script cannot see: a computed accessible name, or a role
+      // of its own, makes the layer something a person deals with, not a skin; ignored counts only when unnamed.
+      // Whether it listens for clicks is not asked — React and delegated jQuery handlers sit on the root or the
+      // document (/code-review on #1004) — and a skin that does not forward reads as unverifiable after the press.
+      // An unreadable answer keeps the page's reading.
+      const h = await inspectHitAtPoint(p.x, p.y, tabId, port);
+      if (h === null || (h.name === "" && (h.ignored || SKIN_ROLES.has(h.role)))) return p;
     }
-    const cover = (await evaluateInTab(buildCoverJs(selector), tabId, port)) as PageCover | null;
+    // A failed read is answered as an unread cover, typed: it must not become executor_failed, whose advice is a
+    // coordinate press onto the cover (/code-review on #1004).
+    const cover = (await evaluateInTab(buildCoverJs(selector), tabId, port).catch(() => null)) as PageCover | null;
     if (cover?.emptyOverlay === true && attempt < 6) {
       await new Promise<void>((r) => setTimeout(r, 300));
       continue;
@@ -1217,9 +1220,9 @@ export async function cdpDispatchClickAndVerify(
   selector: string,
   tabId: string | null,
   port: number,
-): Promise<VerifyDeliveryHint & { openedTabs: number | null; pressedAt: "element" | "label" | "skin" }> {
+): Promise<VerifyDeliveryHint & { openedTabs: number | null; pressedAt: "element" | "label" | "skin" | "replacement" }> {
   const point = await pressPointFor(selector, tabId, port);
-  const pressedAt = point.how === "skin" ? "skin" : point.via;
+  const pressedAt = point.how === "skin" || point.how === "replacement" ? point.how : point.via;
 
   const pageIds = async (): Promise<Set<string> | null> => {
     try {

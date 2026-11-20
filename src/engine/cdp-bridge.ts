@@ -591,56 +591,38 @@ export class CdpClickDispatchError extends Error {
 
 /**
  * internal #421 — what the browser itself says about the element at a page point, for telling a widget's skin from
- * a cover: the accessibility node of the hit (role, name, ignored), and whether the hit or any ancestor below the
- * one that contains `selector`'s element listens for pointer, mouse or click events. Measured on real libraries
- * (spike 3): skins are unnamed with a listener (iCheck's `ins.iCheck-helper`: insertion "", mousedown/mouseup/click);
- * every cover a person has to deal with has a name and role (dialog, banner, a calendar day) or is a label of
- * another control (ignored, labelFor). Uses object ids only, so no DOM or Accessibility domain is enabled on the
- * shared session. Answers null when the page cannot be read.
+ * a cover: the accessibility node of the hit (role, name, ignored). Measured on real libraries (spike 3): skins are
+ * unnamed with no role of their own (iCheck's `ins.iCheck-helper`: insertion ""); every cover a person has to deal
+ * with has a name and a role (dialog, banner, a calendar day). Uses an object id, so no DOM or Accessibility domain
+ * is enabled on the shared session. Answers null when the page cannot be read.
  */
 export async function inspectHitAtPoint(
-  selector: string,
   x: number,
   y: number,
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT,
-): Promise<{ role: string; name: string; ignored: boolean; pointerListeners: boolean } | null> {
+): Promise<{ role: string; name: string; ignored: boolean } | null> {
   const group = "dtm-inspect-hit";
+  let session: CdpSession | null = null;
   try {
     const tab = await resolveTab(tabId, port);
-    const session = await openSession(tab, port);
-    const chain = (await session.send("Runtime.evaluate", {
-      expression: `(function(){ var el = document.querySelector(${JSON.stringify(selector)}); var out = [];
-        for (var n = document.elementFromPoint(${x}, ${y}); n && !(el && n.contains(el)); n = n.parentElement) out.push(n);
-        return out; })()`,
+    session = await openSession(tab, port);
+    const hit = (await session.send("Runtime.evaluate", {
+      expression: `document.elementFromPoint(${x}, ${y})`,
       returnByValue: false,
       objectGroup: group,
     })) as { result?: { objectId?: string } };
-    const chainId = chain.result?.objectId;
-    if (!chainId) return null;
-    const props = (await session.send("Runtime.getProperties", { objectId: chainId, ownProperties: true })) as {
-      result: Array<{ name: string; value?: { objectId?: string } }>;
-    };
-    const nodes = props.result.filter((p) => /^\d+$/.test(p.name) && p.value?.objectId).map((p) => p.value!.objectId!);
-    if (nodes.length === 0) return null;
-    const ax = (await session.send("Accessibility.getPartialAXTree", { objectId: nodes[0], fetchRelatives: false })) as {
+    const id = hit.result?.objectId;
+    if (!id) return null;
+    const ax = (await session.send("Accessibility.getPartialAXTree", { objectId: id, fetchRelatives: false })) as {
       nodes: Array<{ ignored?: boolean; role?: { value?: string }; name?: { value?: string } }>;
     };
     const a = ax.nodes[0];
-    let pointerListeners = false;
-    for (const id of nodes) {
-      const ls = (await session.send("DOMDebugger.getEventListeners", { objectId: id })) as { listeners: Array<{ type: string }> };
-      if (ls.listeners.some((l) => /^(click|mousedown|mouseup|pointerdown|pointerup)$/.test(l.type))) { pointerListeners = true; break; }
-    }
-    return { role: a?.role?.value ?? "", name: (a?.name?.value ?? "").trim(), ignored: a?.ignored === true, pointerListeners };
+    return { role: a?.role?.value ?? "", name: (a?.name?.value ?? "").trim(), ignored: a?.ignored === true };
   } catch {
     return null;
   } finally {
-    try {
-      const tab = await resolveTab(tabId, port);
-      const session = await openSession(tab, port);
-      await session.send("Runtime.releaseObjectGroup", { objectGroup: group });
-    } catch { /* ignore */ }
+    try { await session?.send("Runtime.releaseObjectGroup", { objectGroup: group }); } catch { /* ignore */ }
   }
 }
 

@@ -169,7 +169,7 @@ export interface ExecutorDeps {
     via?: "cdp_dispatch" | "os_click";
     verifyDelivery?: { status: string; reason?: string };
     openedTabs?: number | null;
-    pressedAt?: "element" | "label" | "skin";
+    pressedAt?: "element" | "label" | "skin" | "replacement";
   } | void>;
   /** CDP: fill a text input by CSS selector.
    * Uses the port the tab was listed on (`portForTab`, llm22 F13). */
@@ -3618,7 +3618,8 @@ export function createDesktopExecutor(
         pressVia: clicked ? (clicked.via ?? null) : null,
         verifyDelivery: clicked ? (clicked.verifyDelivery ?? null) : null,
         openedTabs: clicked ? (clicked.openedTabs ?? null) : null,
-        // internal #421 — where the press went: the element, its own label, or a skin of its widget.
+        // internal #421 — where the press went: the element, its own label, a skin of its widget, or the widget that
+        // replaces a hidden element (Select2).
         pressedAt: clicked ? (clicked.pressedAt ?? null) : null,
       });
       return "cdp";
@@ -3946,7 +3947,7 @@ function getSharedRealDeps(): ExecutorDeps {
         } else {
         const err = new Error(
           `desktop_act (cdp): the CDP press on "${selector}" could not be sent, and its centre is covered; it is reached ` +
-            `only at ${p.how === "skin" ? "a layer of its widget" : p.via === "label" ? "its label" : "a part of it away from its centre"}, ` +
+            `only at ${p.how === "skin" ? "a layer of its widget" : p.how === "replacement" ? "the widget drawn in its place" : p.via === "label" ? "its label" : "a part of it away from its centre"}, ` +
             "where the OS press is not aimed. Nothing was clicked. Try again.",
         );
         err.name = "AimedRouteFailedError";

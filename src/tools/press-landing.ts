@@ -16,10 +16,13 @@
  *   Bootstrap btn-check inputs, whose own box is clipped);
  * - a point on ANOTHER control's label never does (btn-check groups stack their hidden inputs: the centre of "Right"
  *   is under the "Left" label);
- * - a skin — an empty layer drawn over the control inside the same small wrapper, which a script forwards (iCheck's
- *   `ins.iCheck-helper`) — reaches it. Tried last, and confirmed by the browser before the press: its accessibility
- *   node has no name and no role of its own, and it (or a wrapper below the element's) listens for pointer events.
- *   Every cover a person deals with has a name and a role (dialog, banner, a calendar day) or is another's label.
+ * - a skin — an empty layer drawn right over the control, in its parent or grandparent, which a script forwards
+ *   (iCheck's `ins.iCheck-helper`) — reaches it. Tried last, and confirmed by the browser before the press: its
+ *   accessibility node has no name and no role of its own. Every cover a person deals with has a name and a role
+ *   (dialog, banner, a calendar day) or is another's label. Whether it listens for clicks is not asked (React and
+ *   delegated jQuery handlers sit on the root); a skin that does not forward reads as unverifiable after the press;
+ * - a widget drawn in place of a hidden element (Select2 hides the native <select>) is pressed as a person would;
+ * - under a modal dialog that does not hold the element, only centres are tried, and no skin or replacement.
  *
  * A press that mislands anyway (the layout moved between the read and the press) is stopped in the page, as
  * Playwright does: trusted pointer, mouse and click events at window capture whose hit the rule does not allow are
@@ -35,6 +38,11 @@ export function pressLandingRuleJs(): string {
   function __dtmArea(n) { var r = n.getBoundingClientRect(); return r.width * r.height; }
   // A dialog counts only while it is drawn: an open <dialog>, or any other with a box and not hidden by CSS
   // (/code-review on #1004: a hidden Bootstrap .modal named a loading spinner a dialog).
+  function __dtmHiddenFromPeople(n) {
+    if (n.getAttribute('aria-hidden') === 'true') return true;
+    var r = n.getBoundingClientRect(); if (r.width <= 2 && r.height <= 2) return true;
+    return getComputedStyle(n).opacity === '0';
+  }
   function __dtmShown(d) {
     if (!d || !d.getBoundingClientRect) return false;
     if (d.tagName === 'DIALOG' && !d.open) return false;
@@ -74,6 +82,14 @@ export function pressLandingRuleJs(): string {
       if (lab.control === el) return { ok: true, how: 'own_label' };
       if (lab.control) return { ok: false, how: 'other_label' };
     }
+    // A replacement: the element is hidden from people (aria-hidden, a 1-2px box, or fully transparent) and the hit
+    // is a control in the element's own parent — Select2 hides the native <select> (aria-hidden, clipped) and draws
+    // its combobox beside it. A person presses the widget they see; so does this (win2 on #1004, R12: discover
+    // lists the hidden select, and main pressed the widget).
+    var parent = el.parentElement;
+    if (parent && parent.contains(hit) && __dtmHiddenFromPeople(el)) {
+      for (var q = hit; q && q !== parent; q = q.parentElement) if (q.matches(__DTM_INTERACTIVE)) return { ok: true, how: 'replacement' };
+    }
     // A skin candidate: a layer drawn right over the element — its box inside the element's box grown by 24px or
     // half the element's size, whichever is more — in the element's parent or grandparent, and nothing from the
     // hit up to that wrapper has text, a name, an interactive role, or is a dialog or a label. The browser confirms
@@ -105,7 +121,7 @@ export function pressLandingRuleJs(): string {
 }
 
 export type PressPoint =
-  | { x: number; y: number; via: "element" | "label"; how: "self" | "inside" | "own_label" | "skin" }
+  | { x: number; y: number; via: "element" | "label"; how: "self" | "inside" | "own_label" | "skin" | "replacement" }
   | { error: string; outside?: boolean };
 
 /**
@@ -141,13 +157,17 @@ export function buildPressPointJs(selector: string): string {
     var skin = null;
     for (var t = 0; t < targets.length; t++) {
       var ps = points(targets[t].n);
-      if (modalAgainst && targets[t].via === 'element') ps = ps.slice(0, 1);
+      // Under a modal that does not hold the element: centres only, the element's and its labels', and no skin or
+      // replacement — a layer over a control in the app the modal has made inert is not a way past it either
+      // (/code-review on #1004).
+      if (modalAgainst) ps = ps.slice(0, 1);
       for (var k = 0; k < ps.length; k++) {
         if (!inView(ps[k].x, ps[k].y)) continue;
         var v = __dtmLandsOn(el, document.elementFromPoint(ps[k].x, ps[k].y));
         if (!v.ok) continue;
-        if (v.how !== 'skin') return { x: ps[k].x, y: ps[k].y, via: targets[t].via, how: v.how };
-        if (!skin) skin = { x: ps[k].x, y: ps[k].y, via: targets[t].via, how: 'skin' };
+        if (modalAgainst && (v.how === 'skin' || v.how === 'replacement')) continue;
+        if (v.how !== 'skin' && v.how !== 'replacement') return { x: ps[k].x, y: ps[k].y, via: targets[t].via, how: v.how };
+        if (!skin) skin = { x: ps[k].x, y: ps[k].y, via: targets[t].via, how: v.how };
       }
     }
     return skin;
@@ -158,13 +178,13 @@ export function buildPressPointJs(selector: string): string {
   var sx = scrollX, sy = scrollY;
   var c = el.getBoundingClientRect();
   var found = inView(c.left + c.width / 2, c.top + c.height / 2) ? tryHere() : null;
-  var skinAt = found && found.how === 'skin' ? 'asIs' : null;
-  if (found && found.how !== 'skin') return found;
+  var skinAt = found && (found.how === 'skin' || found.how === 'replacement') ? 'asIs' : null;
+  if (found && !skinAt) return found;
   var anchors = ['center', 'start', 'end'];
   for (var a = 0; a < anchors.length; a++) {
     el.scrollIntoView({ block: anchors[a], inline: 'center', behavior: 'instant' });
     var here = tryHere();
-    if (here && here.how !== 'skin') return here;
+    if (here && here.how !== 'skin' && here.how !== 'replacement') return here;
     if (here && !skinAt) skinAt = anchors[a];
   }
   if (skinAt) {
@@ -188,6 +208,8 @@ export interface PageCover {
   offers: string[];
   /** An empty overlay over most of the page (no text, nothing to press): often loading, worth a short wait. */
   emptyOverlay: boolean;
+  /** The hit holds the element: the element itself does not take a press at its point. */
+  container?: boolean;
 }
 
 /** What is in front of `selector`'s centre, as page script (the element already scrolled to the centre). */
@@ -199,17 +221,22 @@ export function buildCoverJs(selector: string): string {
   var r = el.getBoundingClientRect();
   var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
   if (!hit) return null;
+  // The hit holds the element: the element does not take the press at its own point (pointer-events: none, or a
+  // container's ::before/::after drawn over it). Nothing is in front of it to name (/code-review on #1004).
+  if (hit.contains(el)) return { cover: __dtmDescribe(hit), dialog: null, offers: [], emptyOverlay: false, container: true };
+  // A dialog that holds the element is not in front of it: a part of the element's own dialog covers it.
+  function notMine(d) { return d && !d.contains(el) ? d : null; }
   // What is in front: the dialog the cover is in, holds, or is the backdrop of; otherwise the topmost ancestor of
   // the cover that does not hold the element (Playwright's "from <root> subtree").
-  var d = hit.closest(__DTM_DIALOG);
+  var d = notMine(hit.closest(__DTM_DIALOG));
   if (d && !__dtmShown(d)) d = null;
-  if (!d) d = __dtmShownDialogIn(hit);
+  if (!d) d = notMine(__dtmShownDialogIn(hit));
   if (!d) {
     var cs = getComputedStyle(hit);
     if ((cs.position === 'fixed' || cs.position === 'absolute') && __dtmArea(hit) >= innerWidth * innerHeight * 0.8) {
       var all = document.querySelectorAll(__DTM_DIALOG);
       for (var i = 0; i < all.length && !d; i++) {
-        if (!__dtmShown(all[i])) continue;
+        if (!__dtmShown(all[i]) || all[i].contains(el)) continue;
         for (var a = all[i]; a && !d; a = a.parentElement) if (a.parentElement === hit.parentElement && a !== hit) d = all[i];
       }
     }
@@ -220,7 +247,7 @@ export function buildCoverJs(selector: string): string {
   var cands = root.querySelectorAll(__DTM_INTERACTIVE);
   for (var j = 0; j < cands.length && offers.length < 6; j++) {
     var cr = cands[j].getBoundingClientRect(); if (cr.width === 0 || cr.height === 0) continue;
-    var nm = __dtmName(cands[j]); if (nm) offers.push(nm);
+    var nm = __dtmName(cands[j]); if (nm && offers.indexOf(nm) < 0) offers.push(nm);
   }
   var empty = !d && offers.length === 0 && (root.textContent || '').trim() === '' && __dtmArea(root) >= innerWidth * innerHeight * 0.8;
   return { cover: __dtmDescribe(hit), dialog: d ? { name: __dtmName(d), role: d.getAttribute('role') || d.tagName.toLowerCase(), modal: __dtmModal(d) } : null, offers: offers, emptyOverlay: empty };
@@ -277,6 +304,10 @@ export function buildReadPressGuardJs(): string {
 
 /** The sentence a refusal carries: what is in front of the element, and what to do about it. */
 export function coverSentence(selector: string, c: PageCover): string {
+  if (c.container) {
+    return `"${selector}" does not take a press at its own point: it goes to ${c.cover}, which holds it (the element ` +
+      "has pointer-events: none, or something its container draws lies over it); nothing was clicked. Act on what the page offers instead, or re-call desktop_discover.";
+  }
   const offers = c.offers.length > 0 ? ` It offers: ${c.offers.map((o) => JSON.stringify(o)).join(", ")}.` : "";
   if (c.dialog?.modal) {
     const name = c.dialog.name === "" ? "with no name" : JSON.stringify(c.dialog.name);
