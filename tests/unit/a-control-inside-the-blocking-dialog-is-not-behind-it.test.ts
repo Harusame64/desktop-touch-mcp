@@ -1,9 +1,13 @@
 /**
- * internal #419 — `__occludedDialogIndexForEl` (the in-page helper every modal preflight reads: browser_click's
- * selector and by-axis paths, desktop_act's CDP click) answered the dialog's index for an element INSIDE that dialog
- * whenever a part of the same dialog covered its centre — a styled box over a checkbox, the dialog's own footer —
- * so the element was refused as "behind" the dialog it belongs to (/code-review on #1002; win2 measured the
- * desktop_act side, cell M7). The helper is run here, not string-matched: the rule lives inside a page script.
+ * internal #419 — `__occludedDialogIndexForEl` (the in-page helper the modal preflights read: browser_click's
+ * selector path, desktop_act's CDP click, and the by-axis path's choice of stop) answered the dialog's index for an
+ * element INSIDE that dialog whenever a part of the same dialog covered its centre — a styled box over a checkbox,
+ * the dialog's own footer — so the element was refused as "behind" the dialog it belongs to (/code-review on #1002;
+ * win2 measured the desktop_act side, cell M7). The by-axis path still does not click such an element (its gather
+ * counts any foreign hit as not receiving events); it now stops as no actionable target instead of as a modal.
+ * A cover held by any dialog the element is NOT in — a confirm stacked over it, nested or beside it — keeps the
+ * index it had (/code-review on #1003). The helper is run here, not string-matched: the rule lives inside a page
+ * script.
  */
 import { describe, expect, it } from "vitest";
 import { runInNewContext } from "node:vm";
@@ -60,6 +64,29 @@ describe("the occluding dialog of an element (internal #419)", () => {
     const dialog = new FakeEl("dialog", body, { left: 200, top: 100, width: 600, height: 400 });
     const text = new FakeEl("p", dialog);
     expect(occludedIndex(target, text, [dialog], body)).toBe(0);
+  });
+
+  it("is still the dialog for a control of A covered by a confirm B nested inside A (/code-review on #1003)", () => {
+    const body = new FakeEl("body", null, FULL);
+    const a = new FakeEl("A", body, FULL);
+    const target = new FakeEl("button", a);
+    const b = new FakeEl("B", a, { left: 300, top: 200, width: 400, height: 300 });
+    const text = new FakeEl("p", b);
+    expect(occludedIndex(target, text, [a, b], body)).toBe(0);
+  });
+
+  it("is still the dialog for a control of A covered by the backdrop of a confirm B beside it", () => {
+    const body = new FakeEl("body", null, FULL);
+    const rootA = new FakeEl("rootA", body, FULL);
+    rootA.style.position = "fixed";
+    const a = new FakeEl("A", rootA, { left: 200, top: 100, width: 600, height: 400 });
+    const target = new FakeEl("button", a);
+    const rootB = new FakeEl("rootB", body, FULL);
+    rootB.style.position = "fixed";
+    const bdB = new FakeEl("backdropB", rootB, FULL);
+    bdB.style.position = "fixed";
+    const b = new FakeEl("B", rootB, { left: 300, top: 200, width: 400, height: 300 });
+    expect(occludedIndex(target, bdB, [a, b], body)).toBe(0);
   });
 
   it("is the covering dialog for an element inside ANOTHER dialog", () => {

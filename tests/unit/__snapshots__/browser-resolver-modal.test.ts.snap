@@ -428,10 +428,19 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     const hit = document.elementFromPoint(cx, cy);
     if (!hit || hit === el || el.contains(hit)) return null;
     const i = __occluderDialogIndex(hit);
-    // internal #419 — a cover that belongs to the dialog the element is in (a styled box over a checkbox, the
-    // dialog's own footer) does not put the element behind that dialog: the element is one of its controls.
-    if (i !== null && __mNodes[i].contains(el)) return null;
-    return i;
+    if (i === null) return null;
+    // internal #419 — a cover that belongs only to dialogs the element is in (a styled box over a checkbox, the
+    // dialog's own footer) does not put the element behind a dialog: the element is one of its controls. Any
+    // dialog that holds the cover (in its subtree or its backdrops) and not the element — a confirm stacked over
+    // it, nested or beside it — keeps the answer it had (/code-review on #1003).
+    for (let k = 0; k < __mNodes.length; k++) {
+      const d = __mNodes[k];
+      let holds = d === hit || d.contains(hit);
+      const bds = __mBd[k];
+      for (let j = 0; !holds && j < bds.length; j++) { if (bds[j] === hit || bds[j].contains(hit)) holds = true; }
+      if (holds && !d.contains(el)) return i;
+    }
+    return null;
   }
   return { found: true, occludedByDialogIndex: __occludedDialogIndexForEl(el), modalFacts: __modal };
   } catch (e) { return { found: false }; }
@@ -953,10 +962,19 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     const hit = document.elementFromPoint(cx, cy);
     if (!hit || hit === el || el.contains(hit)) return null;
     const i = __occluderDialogIndex(hit);
-    // internal #419 — a cover that belongs to the dialog the element is in (a styled box over a checkbox, the
-    // dialog's own footer) does not put the element behind that dialog: the element is one of its controls.
-    if (i !== null && __mNodes[i].contains(el)) return null;
-    return i;
+    if (i === null) return null;
+    // internal #419 — a cover that belongs only to dialogs the element is in (a styled box over a checkbox, the
+    // dialog's own footer) does not put the element behind a dialog: the element is one of its controls. Any
+    // dialog that holds the cover (in its subtree or its backdrops) and not the element — a confirm stacked over
+    // it, nested or beside it — keeps the answer it had (/code-review on #1003).
+    for (let k = 0; k < __mNodes.length; k++) {
+      const d = __mNodes[k];
+      let holds = d === hit || d.contains(hit);
+      const bds = __mBd[k];
+      for (let j = 0; !holds && j < bds.length; j++) { if (bds[j] === hit || bds[j].contains(hit)) holds = true; }
+      if (holds && !d.contains(el)) return i;
+    }
+    return null;
   }
 
   // Physical-coord conversion constants (getElementScreenCoords formula,
