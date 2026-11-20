@@ -2745,6 +2745,10 @@ function adr029Refusal(err: unknown): string | undefined {
   if (!(err instanceof Error)) return undefined;
   if (err.name === "CoordinateOutsideReachableBounds") return "coordinate_outside_reachable_bounds";
   if (err.name === "CursorPlacementBlocked") return "cursor_placement_blocked";
+  // internal #415 — the CDP click's refusals (`cdpClickRefusal`). Without these the decoy round ended on the
+  // `act.aim` row, which reads as "nothing ran" though the act reached the cdp_click rung and refused there (win2).
+  if (err.name === "AimOccludedError") return "aim_occluded";
+  if (err.name === "AimedRouteFailedError") return "aim_route_failed";
   return undefined;
 }
 
