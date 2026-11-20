@@ -21,7 +21,7 @@ function facts(dialogCandidates: DialogFacts[]): ModalFacts {
 
 const MODAL = facts([dialog({ ariaModal: true, name: "Sign in to continue", role: "dialog", hasBackdrop: true })]);
 
-type ModalAnswer = { found: true; occludedByDialogIndex: number | null; insideDialogIndices?: number[]; modalFacts: ModalFacts } | "throws";
+type ModalAnswer = { found: true; occludedByDialogIndex: number | null; modalFacts: ModalFacts } | "throws";
 
 async function clickWith(occluded: boolean, modal: ModalAnswer, order: string[]) {
   vi.resetModules();
@@ -88,19 +88,10 @@ describe("a CDP click behind a dialog that blocks the page (internal #418)", () 
     expect(order).toEqual(["move", "press"]);
   });
 
-  it("presses an element inside the blocking dialog that a part of the same dialog covers (/code-review on #1002)", async () => {
-    // A styled box over a hidden checkbox in a consent dialog: the cover maps to the dialog's index, and so
-    // does the element. Refusing it would send the caller to the dialog's own buttons — this is one of them.
-    const order: string[] = [];
-    const out = await clickWith(true, { found: true, occludedByDialogIndex: 0, insideDialogIndices: [0], modalFacts: MODAL }, order);
-    expect(out.ok).toBe(true);
-    expect(order).toEqual(["modal-probe", "move", "press"]);
-  });
-
   it("still refuses an element inside another dialog that the blocking one covers", async () => {
     const order: string[] = [];
     const two = facts([dialog({ name: "Help", viewportCoverage: 0.2 }), dialog({ ariaModal: true, name: "Sign in", hasBackdrop: true, zIndex: 2000 })]);
-    const out = await clickWith(true, { found: true, occludedByDialogIndex: 1, insideDialogIndices: [0], modalFacts: two }, order);
+    const out = await clickWith(true, { found: true, occludedByDialogIndex: 1, modalFacts: two }, order);
     expect(out.ok).toBe(false);
     if (!out.ok) expect(out.e.name).toBe("ModalBlockingError");
     expect(order).toEqual(["modal-probe"]);

@@ -1245,10 +1245,9 @@ export async function refuseIfPageModalBlocks(selector: string, tabId: string | 
     !verdict.isModal ||
     !verdict.blocker ||
     verdict.blockerDialogIndex === undefined ||
-    probe.occludedByDialogIndex !== verdict.blockerDialogIndex ||
-    // The element is inside that dialog: what covers it (a styled box over a checkbox, the dialog's own footer)
-    // is part of the dialog it belongs to, not a dialog in front of it (/code-review on #1002).
-    probe.insideDialogIndices?.includes(verdict.blockerDialogIndex) === true
+    // An element inside that dialog, covered by a part of it, is not behind it: the probe answers no index then
+    // (`__occludedDialogIndexForEl`, internal #419), the one rule browser_click's preflights read too.
+    probe.occludedByDialogIndex !== verdict.blockerDialogIndex
   ) {
     return;
   }

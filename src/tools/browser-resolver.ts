@@ -1547,7 +1547,7 @@ export function detectModal(facts: ModalFacts): ModalVerdict {
  * Backdrop-aware: a target behind a modal is typically occluded by the backdrop/
  * scrim (library modals put it in a sibling element, outside the dialog subtree).
  */
-function occluderIndexHelperJs(): string {
+export function occluderIndexHelperJs(): string {
   return `  const __mNodes = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog'));
   function __mBackdrops(d) {
     const out = [];
@@ -1587,7 +1587,11 @@ function occluderIndexHelperJs(): string {
     if (cx < 0 || cx >= window.innerWidth || cy < 0 || cy >= window.innerHeight) return null;
     const hit = document.elementFromPoint(cx, cy);
     if (!hit || hit === el || el.contains(hit)) return null;
-    return __occluderDialogIndex(hit);
+    const i = __occluderDialogIndex(hit);
+    // internal #419 — a cover that belongs to the dialog the element is in (a styled box over a checkbox, the
+    // dialog's own footer) does not put the element behind that dialog: the element is one of its controls.
+    if (i !== null && __mNodes[i].contains(el)) return null;
+    return i;
   }`;
 }
 
@@ -1606,9 +1610,7 @@ export function buildModalOccluderProbeJs(selector: string): string {
   if (!el) return { found: false };
   const __modal = ${buildPageLevelModalFactsJs()};
 ${occluderIndexHelperJs()}
-  const insideDialogIndices = [];
-  for (let i = 0; i < __mNodes.length; i++) { if (__mNodes[i].contains(el)) insideDialogIndices.push(i); }
-  return { found: true, occludedByDialogIndex: __occludedDialogIndexForEl(el), insideDialogIndices: insideDialogIndices, modalFacts: __modal };
+  return { found: true, occludedByDialogIndex: __occludedDialogIndexForEl(el), modalFacts: __modal };
   } catch (e) { return { found: false }; }
 })()`;
 }
@@ -1616,12 +1618,6 @@ ${occluderIndexHelperJs()}
 export interface SelectorModalProbe {
   modalFacts: ModalFacts;
   occludedByDialogIndex: number | null;
-  /**
-   * Indices into `modalFacts.dialogCandidates` of the dialogs that contain the element (internal #418): a cover
-   * that belongs to the dialog the element is in does not put the element behind that dialog. Absent from an
-   * older probe.
-   */
-  insideDialogIndices?: number[];
 }
 
 /**
@@ -1640,8 +1636,7 @@ export async function probeSelectorModalOcclusion(
   } catch {
     return null;
   }
-  const r = raw as { found?: boolean; occludedByDialogIndex?: number | null; insideDialogIndices?: unknown; modalFacts?: ModalFacts } | null;
+  const r = raw as { found?: boolean; occludedByDialogIndex?: number | null; modalFacts?: ModalFacts } | null;
   if (!r || r.found !== true || !r.modalFacts) return null;
-  const inside = Array.isArray(r.insideDialogIndices) ? r.insideDialogIndices.filter((i): i is number => typeof i === "number") : undefined;
-  return { modalFacts: r.modalFacts, occludedByDialogIndex: r.occludedByDialogIndex ?? null, ...(inside !== undefined && { insideDialogIndices: inside }) };
+  return { modalFacts: r.modalFacts, occludedByDialogIndex: r.occludedByDialogIndex ?? null };
 }

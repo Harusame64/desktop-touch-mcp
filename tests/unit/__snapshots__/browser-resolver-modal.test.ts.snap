@@ -427,11 +427,13 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     if (cx < 0 || cx >= window.innerWidth || cy < 0 || cy >= window.innerHeight) return null;
     const hit = document.elementFromPoint(cx, cy);
     if (!hit || hit === el || el.contains(hit)) return null;
-    return __occluderDialogIndex(hit);
+    const i = __occluderDialogIndex(hit);
+    // internal #419 — a cover that belongs to the dialog the element is in (a styled box over a checkbox, the
+    // dialog's own footer) does not put the element behind that dialog: the element is one of its controls.
+    if (i !== null && __mNodes[i].contains(el)) return null;
+    return i;
   }
-  const insideDialogIndices = [];
-  for (let i = 0; i < __mNodes.length; i++) { if (__mNodes[i].contains(el)) insideDialogIndices.push(i); }
-  return { found: true, occludedByDialogIndex: __occludedDialogIndexForEl(el), insideDialogIndices: insideDialogIndices, modalFacts: __modal };
+  return { found: true, occludedByDialogIndex: __occludedDialogIndexForEl(el), modalFacts: __modal };
   } catch (e) { return { found: false }; }
 })()"
 `;
@@ -950,7 +952,11 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     if (cx < 0 || cx >= window.innerWidth || cy < 0 || cy >= window.innerHeight) return null;
     const hit = document.elementFromPoint(cx, cy);
     if (!hit || hit === el || el.contains(hit)) return null;
-    return __occluderDialogIndex(hit);
+    const i = __occluderDialogIndex(hit);
+    // internal #419 — a cover that belongs to the dialog the element is in (a styled box over a checkbox, the
+    // dialog's own footer) does not put the element behind that dialog: the element is one of its controls.
+    if (i !== null && __mNodes[i].contains(el)) return null;
+    return i;
   }
 
   // Physical-coord conversion constants (getElementScreenCoords formula,

@@ -262,8 +262,6 @@ describe("ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe"
     expect(js).toContain("if (!el) return { found: false };");
     expect(js).toContain("occludedByDialogIndex: __occludedDialogIndexForEl(el)");
     expect(js).toContain("modalFacts: __modal");
-    // internal #418 — which dialogs contain the element, so a cover from its own dialog is not a blocker.
-    expect(js).toContain("insideDialogIndices: insideDialogIndices");
     expect(js).toContain("} catch (e) { return { found: false }; }"); // never throws
     expect(js).toMatchSnapshot();
   });
