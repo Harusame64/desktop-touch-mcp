@@ -2598,6 +2598,8 @@ export const browserClickElementHandler = async ({
     let pressAim = aimFromCoords(coords);
     // Set when the point came from the landing read: it is inside the viewport by construction.
     let landed = false;
+    // Where the press went, as desktop_act says it (win2 on #1005: a label press could only be told from the page).
+    let pressedAt: "element" | "label" | "skin" | "replacement" = "element";
     // Issue #441's rescue for a zero-size first match, also when the page re-renders between the reads below.
     const rescueZeroSize = () => attemptSelectorActionabilityRescue({
       selector: effectiveSelector, tabId: effectiveTabId, port,
@@ -2652,6 +2654,7 @@ export const browserClickElementHandler = async ({
         pressAim = undefined;
       }
       landed = true;
+      pressedAt = landing.how === "skin" || landing.how === "replacement" ? landing.how : landing.how === "own_label" ? "label" : "element";
     }
     if (!landed && !coords.inViewport) {
       return failCode(
@@ -2696,6 +2699,7 @@ export const browserClickElementHandler = async ({
       ok: true,
       clicked: selector,
       at: clickedAt,
+      pressedAt,
       activeTab: { id: tabCtx.id, title: tabCtx.title, url: tabCtx.url },
       readyState: tabCtx.readyState,
       hints: { verifyDelivery },
