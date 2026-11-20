@@ -106,8 +106,10 @@ describe.skipIf(!CHROME)("browser_click by-axis: a covered match is read like th
   });
 
   it("refuses before any landing read a modal only the old rules find, and presses no strip of the element beside it (/code-review on #1006)", async () => {
-    // No aria-modal: a backdrop-less dialog over most of the page, scroll locked, focus inside; the button's left
-    // part shows beside it.
+    // No aria-modal: a dialog over most of the page with a transparent full-page layer (what the old rules read as
+    // its backdrop), scroll locked, focus inside; the button's left part shows beside it. Without that layer the old
+    // rules find no modal, and the strip is pressed, as on the selector road (win2 on #1006, Y1): only aria-modal
+    // and an open <dialog> are facts the press is refused on.
     await page(`<button data-n="strip" style="position:absolute;left:20px;top:300px;width:300px;height:40px">Archive all</button>
       <div role="dialog" aria-label="Settings" style="position:fixed;left:120px;top:20px;right:20px;bottom:20px;background:#fff;border:1px solid #000;z-index:10"><button id="okb">OK</button></div>
       <div style="position:fixed;inset:0;z-index:9;pointer-events:none"></div>`);
