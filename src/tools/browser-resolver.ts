@@ -508,6 +508,47 @@ ${viewportOriginJs(args.pageZoom ?? 1)}
 `;
 }
 
+/** internal #421 — the attribute a by-axis click puts on its resolved element, so the landing read can name it. */
+export const PRESS_TAG_ATTR = "data-dtm-press";
+
+/**
+ * internal #421 — the by-axis click's handle on its resolved element: re-gathers the same pool, checks the matched
+ * element is the one resolve saw (the fill act's identity gate), climbs, and marks the clickable with
+ * `data-dtm-press="<nonce>"`, so the landing read, the press guard and the cover read can find it by a selector.
+ * Older marks are removed first: one an earlier call could not remove would otherwise stay until the page reloads.
+ * Two clicks in flight on one tab are not supported (the press guard, the scroll save and the click probe are one
+ * slot per page as well). `buildUntagJs` removes this call's mark after the press or the refusal.
+ */
+export function buildTagResolvedJs(
+  args: ActionFactsArgs,
+  index: number,
+  climbDepth: number,
+  expect: { name: string; role: string | null; ariaLabel: string | null; tag: string; id: string | null; formName: string | null; total: number },
+  nonce: string,
+): string {
+  return `${candidatePoolJs(args)}
+  document.querySelectorAll('[${PRESS_TAG_ATTR}]').forEach(function(n) { n.removeAttribute('${PRESS_TAG_ATTR}'); });
+  if (pool.length !== ${expect.total}) return { ok: false, error: 'identity_changed' };
+  if (top.length <= ${index}) return { ok: false, error: 'index_out_of_range' };
+  const matched = top[${index}].el;
+  if (elText(matched) !== ${JSON.stringify(expect.name)} || (matched.getAttribute('role') || null) !== ${JSON.stringify(expect.role)} ||
+      (matched.getAttribute('aria-label') || null) !== ${JSON.stringify(expect.ariaLabel)} || matched.tagName.toLowerCase() !== ${JSON.stringify(expect.tag)} ||
+      (matched.id || null) !== ${JSON.stringify(expect.id)} || (matched.getAttribute('name') || null) !== ${JSON.stringify(expect.formName)}) {
+    return { ok: false, error: 'identity_changed' };
+  }
+  let el = matched;
+  for (let d = 0; d < ${climbDepth} && el; d++) el = el.parentElement;
+  if (!el) return { ok: false, error: 'resolved_element_lost' };
+  el.setAttribute('${PRESS_TAG_ATTR}', ${JSON.stringify(nonce)});
+  return { ok: true };
+})()`;
+}
+
+/** Remove the by-axis click's mark (`buildTagResolvedJs`). */
+export function buildUntagJs(nonce: string): string {
+  return `(function() { document.querySelectorAll('[${PRESS_TAG_ATTR}="' + ${JSON.stringify(nonce)} + '"]').forEach(function(n) { n.removeAttribute('${PRESS_TAG_ATTR}'); }); return true; })()`;
+}
+
 /**
  * Build the injected-JS IIFE that ACTS on a by-axis fill target (browser_fill
  * by-axis, plan §S5 — the 2nd eval: gather→decide ran in node, this acts). It
