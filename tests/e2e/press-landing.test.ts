@@ -169,11 +169,16 @@ describe.skipIf(!CHROME)("desktop_act's CDP click presses the way a person would
   it("presses the widget that replaces a hidden native select (Select2: win2 on #1004, R12)", async () => {
     await page(`<div style="margin:80px;position:relative"><select id="fruit" aria-hidden="true" tabindex="-1" style="position:absolute;width:1px;height:1px;clip:rect(0,0,0,0);overflow:hidden;left:0;top:0;margin:0;border:0;padding:0"><option>Apple</option><option>Banana</option></select>
       <span class="select2" style="display:inline-block;width:200px"><span id="sel" role="combobox" aria-expanded="false" aria-labelledby="select2-fruit-container" tabindex="0" style="display:block;height:28px;border:1px solid #aaa"><span id="select2-fruit-container">Apple</span></span></span></div>
-      <script>document.getElementById('sel').addEventListener('mousedown',function(){this.setAttribute('aria-expanded','true');});</script>`);
+      <script>document.getElementById('sel').addEventListener('mousedown',function(e){this.setAttribute('aria-expanded','true');window.__at=[e.clientX,e.clientY];});</script>`);
     const out = await press("#fruit");
     expect(out.ok).toBe(true);
     if (out.ok) expect(out.r.pressedAt).toBe("replacement");
     expect(await read("document.getElementById('sel').getAttribute('aria-expanded')")).toBe("true");
+    // The select's corner falls inside the combobox's edge here; the press still goes to the combobox's centre.
+    const [x, y] = (await read("window.__at")) as [number, number];
+    const c = (await read("(function(){var r=document.getElementById('sel').getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2];})()")) as [number, number];
+    expect(Math.abs(x - c[0])).toBeLessThan(2);
+    expect(Math.abs(y - c[1])).toBeLessThan(2);
   });
 
   it("does not press an unrelated button that shares a parent with a hidden input (codex on #1004)", async () => {
