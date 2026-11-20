@@ -152,13 +152,18 @@ describe.skipIf(!CHROME)("desktop_act's CDP click presses the way a person would
 
   it("presses the combobox beside an id-less hidden select parked at its corner, where the hit is the outer wrapper (real Select2's shape, win2 on #1004)", async () => {
     await page(`<div style="margin:80px;position:relative"><select class="select2-hidden-accessible" aria-hidden="true" tabindex="-1" style="position:absolute;width:1px;height:1px;clip:rect(0,0,0,0);overflow:hidden;left:0;top:0;margin:0;border:0;padding:0"><option>Apple</option></select><span class="select2-container" style="display:inline-block;width:240px;vertical-align:top"><span class="selection" style="display:block;padding-top:2px"><span id="sel2" role="combobox" aria-expanded="false" aria-labelledby="select2-spgw-container" tabindex="0" style="display:block;height:28px;border:1px solid #aaa"><span id="select2-spgw-container">Apple</span></span></span></span></div>
-      <script>document.getElementById('sel2').addEventListener('mousedown',function(){this.setAttribute('aria-expanded','true');});</script>`);
+      <script>document.getElementById('sel2').addEventListener('mousedown',function(e){this.setAttribute('aria-expanded','true');window.__at=[e.clientX,e.clientY];});</script>`);
     // As measured on real Select2: the hidden select's own point hits the widget's outer wrapper, not the combobox.
     expect(await read("(function(){var r=document.querySelector('select').getBoundingClientRect();return document.elementFromPoint(r.left+r.width/2,r.top+r.height/2).className;})()")).toBe("selection");
     const out = await press("select");
     expect(out.ok).toBe(true);
     if (out.ok) expect(out.r.pressedAt).toBe("replacement");
     expect(await read("document.getElementById('sel2').getAttribute('aria-expanded')")).toBe("true");
+    // At the combobox's own centre, not at the hidden select's corner on its edge (win2 on #1004, 3ea1c742).
+    const [x, y] = (await read("window.__at")) as [number, number];
+    const c = (await read("(function(){var r=document.getElementById('sel2').getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2];})()")) as [number, number];
+    expect(Math.abs(x - c[0])).toBeLessThan(2);
+    expect(Math.abs(y - c[1])).toBeLessThan(2);
   });
 
   it("presses the widget that replaces a hidden native select (Select2: win2 on #1004, R12)", async () => {

@@ -195,7 +195,7 @@ export function buildPressPointJs(selector: string): string {
     var labs = el.labels ? Array.prototype.slice.call(el.labels) : [];
     for (var i = 0; i < labs.length; i++) targets.push({ n: labs[i], via: 'label' });
     var kin = __dtmSameKindControls(el);
-    for (var z = 0; z < kin.length; z++) targets.push({ n: kin[z], via: 'element' });
+    for (var z = 0; z < kin.length; z++) targets.push({ n: kin[z], via: 'element', kin: true });
     var skin = null;
     for (var t = 0; t < targets.length; t++) {
       var ps = points(targets[t].n);
@@ -209,10 +209,12 @@ export function buildPressPointJs(selector: string): string {
         if (!v.ok) continue;
         if (modalAgainst && (v.how === 'skin' || v.how === 'replacement')) continue;
         if (v.how !== 'skin' && v.how !== 'replacement') return { x: ps[k].x, y: ps[k].y, via: targets[t].via, how: v.how };
-        if (!skin) skin = { x: ps[k].x, y: ps[k].y, via: targets[t].via, how: v.how };
+        // A replacement is pressed at the replacing control's own point when there is one, not at the hidden
+        // element's corner that happens to fall on its edge (win2 on #1004, 3ea1c742).
+        if (!skin || (v.how === 'replacement' && targets[t].kin && !skin.kin)) skin = { x: ps[k].x, y: ps[k].y, via: targets[t].via, how: v.how, kin: !!targets[t].kin };
       }
     }
-    return skin;
+    return skin ? { x: skin.x, y: skin.y, via: skin.via, how: skin.how } : null;
   }
   // A point on the element or its label at any scroll wins. A skin is kept as the fallback with the scroll it was
   // found at, and measured again there before it is returned: a point is only true at the scroll it was read at
