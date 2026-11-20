@@ -1181,11 +1181,20 @@ export async function cdpDispatchClickAndVerify(
     // instant: a page with scroll-behavior: smooth would still be animating when the point is read.
     el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
     c = centre();
-    if (outside()) return { error: "Element is outside the viewport and could not be scrolled into it: " + sel + ". Nothing was clicked." };
+    if (outside()) return { error: "Element is outside the viewport and could not be scrolled into it: " + sel + ". Nothing was clicked.", outside: true };
   }
   return { x: c.x, y: c.y };
-})()`, tabId, port)) as { x: number; y: number } | { error: string };
-  if ("error" in point) throw new Error(point.error);
+})()`, tabId, port)) as { x: number; y: number } | { error: string; outside?: boolean };
+  if ("error" in point) {
+    const err = new Error(`desktop_act (cdp): ${point.error}`);
+    // Typed, so the act is not answered with a coordinate click at a point that is off the page (agy on #1001).
+    // A missing or unrendered element stays a plain Error, as getElementScreenCoords answered it before.
+    if (point.outside === true) {
+      err.name = "AimedRouteFailedError";
+      (err as Error & { callerDetail?: string }).callerDetail = err.message;
+    }
+    throw err;
+  }
 
   const pageIds = async (): Promise<Set<string> | null> => {
     try {

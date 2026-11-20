@@ -5,13 +5,13 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-async function clickWith(tabsAfter: string[], probe: { mutationCount: number }, order: string[] = []) {
+async function clickWith(tabsAfter: string[], probe: { mutationCount: number }, order: string[] = [], point: unknown = { x: 10, y: 20 }) {
   vi.resetModules();
   let listed = 0;
   vi.doMock("../../src/engine/cdp-bridge.js", async (orig) => ({
     ...(await orig<typeof import("../../src/engine/cdp-bridge.js")>()),
     evaluateInTab: async (expr: string) => {
-      if (expr.includes("getBoundingClientRect")) return { x: 10, y: 20 };
+      if (expr.includes("getBoundingClientRect")) return point;
       if (expr.includes("__dtmClickProbe") && expr.includes("MutationObserver")) {
         order.push("probe");
         return { ok: true, selectorFound: true, inIframe: false };
@@ -53,5 +53,14 @@ describe("a CDP click that opens a tab (internal #415)", () => {
     const order: string[] = [];
     await clickWith(["T1"], { mutationCount: 0 }, order);
     expect(order).toEqual(["move", "probe", "press"]);
+  });
+
+  it("an element that cannot be scrolled into the viewport is refused typed, with nothing pressed", async () => {
+    const order: string[] = [];
+    const err = await clickWith(["T1"], { mutationCount: 0 }, order, { error: "Element is outside the viewport and could not be scrolled into it: #go. Nothing was clicked.", outside: true })
+      .then(() => null, (e: unknown) => e as Error & { callerDetail?: string });
+    expect(err?.name).toBe("AimedRouteFailedError");
+    expect(err?.callerDetail).toContain("Nothing was clicked");
+    expect(order).toEqual([]);
   });
 });
