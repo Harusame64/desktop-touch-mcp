@@ -158,8 +158,12 @@ export interface ExecutorDeps {
   uiaSelect(windowTitle: string, name?: string, automationId?: string, controlType?: string, hwnd?: bigint): Promise<{ focusedBy?: string; selected?: boolean; notified?: boolean } | void>;
   /** UIA ValuePattern: type text into a textbox. `hwnd` as in {@link ExecutorDeps.uiaClick}. */
   uiaSetValue(windowTitle: string, value: string, name?: string, automationId?: string, hwnd?: bigint, address?: ValueWriteAddress): Promise<{ focusedBy?: string } | void>;
-  /** CDP: click a DOM element by CSS selector. */
-  cdpClick(selector: string, tabId?: string): Promise<void>;
+  /**
+   * CDP: click a DOM element by CSS selector. CDP finds the element's point; the press is an OS click through
+   * browser_click's road (`osClickAndVerify`), so it is refused when something else would take it (internal #415).
+   * Resolves the delivery hint when the press went out.
+   */
+  cdpClick(selector: string, tabId?: string): Promise<{ verifyDelivery?: { status: string; reason?: string } } | void>;
   /** CDP: fill a text input by CSS selector.
    * Uses the port the tab was listed on (`portForTab`, llm22 F13). */
   cdpFill(selector: string, value: string, tabId?: string): Promise<void>;
@@ -3589,8 +3593,14 @@ export function createDesktopExecutor(
         probeRoute("cdp", aimHwnd, entity, { why: "cdp_fill", tabId: cdpTabId ?? null });
         return "cdp";
       }
-      await probedStep("cdp_click", aimHwnd, entity, () => d.cdpClick(cdpSelector, cdpTabId));
-      probeRoute("cdp", aimHwnd, entity, { why: "cdp_click", tabId: cdpTabId ?? null });
+      const clicked = await probedStep("cdp_click", aimHwnd, entity, () => d.cdpClick(cdpSelector, cdpTabId));
+      // internal #415 — what the click probe saw (`delivered` / `unverifiable`), recorded beside the route.
+      probeRoute("cdp", aimHwnd, entity, {
+        why: "cdp_click",
+        tabId: cdpTabId ?? null,
+        // A named field, not a spread: the road vocabulary's parser reads every field of this row (ADR-036).
+        verifyDelivery: clicked ? (clicked.verifyDelivery ?? null) : null,
+      });
       return "cdp";
     }
 
@@ -3859,31 +3869,24 @@ function getSharedRealDeps(): ExecutorDeps {
       const { resolveTabId } = await import("../engine/cdp-bridge.js");
       // ADR-040 — one tab for the coordinates and the window they are placed on (codex on #967).
       const tab = tabId ?? await resolveTabId(null, portForTab(tabId)).catch(() => null);
-      const coords = await getElementScreenCoords(selector, tab, portForTab(tabId));
+      const port = portForTab(tabId);
+      const coords = await getElementScreenCoords(selector, tab, port);
       if ((coords as { error?: string }).error) {
         throw new Error((coords as { error?: string }).error ?? "CDP getElementScreenCoords failed");
       }
-      // ADR-040 — the point on the page surface (the frame's page RWH), as browser_click takes it, not the
-      // page-side formula (#306). When the surface cannot be read, the formula's point, as before.
-      const { findTabFrame, alignToPageSurface, aimFromCoords } = await import("../engine/page-aim.js");
-      const port = portForTab(tabId);
-      const frame = await findTabFrame(port, tab).catch(() => undefined);
-      const aligned = alignToPageSurface(frame, aimFromCoords(coords), { x: coords.x, y: coords.y });
-      // The page's window cannot be told from another pane: the point is not known (ADR-040, agy on #967).
-      if (aligned.surface?.kind === "unreadable" && aligned.surface.why === "ambiguous") {
-        throw new Error(
-          `Nothing was clicked: the browser window (hwnd ${String(aligned.surface.frame)}) shows more than one pane (DevTools or a side panel), and which one is the page could not be told. ` +
-          `Close DevTools with keyboard({ action: "press", keys: "f12", hwnd: "${String(aligned.surface.frame)}" }) or the side panel, then retry; or use browser_click with tabId, or browser_fill / browser_eval.`,
-        );
+      // internal #415 — the same road as browser_click. It used to align the point to the page surface and press
+      // with nut.js, nothing else: an asked-for owner of "another window" was never asked, so a window in front
+      // took the click and the act answered ok:true (win2, a same-title decoy). `osClickAndVerify` brings the tab
+      // forward, reads the page surface again (ADR-040, including the ambiguous-pane refusal and the reachable-
+      // bounds check this body used to make itself), refuses another window / pane / hidden tab before and right
+      // before the press, presses with the OS cursor, and reads a click probe.
+      const { aimFromCoords } = await import("../engine/page-aim.js");
+      const { osClickAndVerify, cdpClickRefusal } = await import("./browser.js");
+      const r = await osClickAndVerify(coords.x, coords.y, selector, tab, port, undefined, false, aimFromCoords(coords));
+      if ("covered" in r) {
+        throw cdpClickRefusal(r, r.at?.x ?? coords.x, r.at?.y ?? coords.y, { selector, tabId: tab });
       }
-      const { x, y } = aligned.point;
-      // ADR-029: coordinates only become known inside this dep, so the
-      // reachability check lives here rather than in the executor core.
-      assertCoordinateReachable(x, y);
-      const { mouse, Button } = await import("../engine/nutjs.js");
-      const { moveCursorTo } = await import("../engine/cursor.js");
-      await moveCursorTo(x, y);
-      await mouse.click(Button.LEFT);
+      return { verifyDelivery: { status: r.status, ...(r.reason !== undefined && { reason: r.reason }) } };
     },
 
     async cdpFill(selector, value, tabId) {

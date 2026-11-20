@@ -720,7 +720,7 @@ async function readClickProbe(
  *     observedSignals?: { mutationCount, urlChanged, activeElementChanged }
  *   }
  */
-type VerifyDeliveryHint = {
+export type VerifyDeliveryHint = {
   /** ADR-040 — the point that was checked and clicked (the page surface's, or the caller's). */
   at?: { x: number; y: number };
   status: "delivered" | "unverifiable";
@@ -732,6 +732,30 @@ type VerifyDeliveryHint = {
     activeElementChanged: boolean;
   };
 };
+
+/**
+ * internal #415 — `desktop_act`'s CDP click refused at a point `browser_click` would also refuse. The sentence is
+ * browser_click's (it names the window, pane or tab in the way and says nothing was clicked), re-addressed to
+ * desktop_act and carried as `callerDetail`. **Typed by `name`** (guarded-touch matches the name): a plain Error
+ * arrives as `executor_failed`, whose first suggestion is a coordinate click at the entity — into the very window
+ * this refused (win2 on the #415 spike). Another window, or one the browser owns, on top is `aim_occluded`; the
+ * page not shown, a pane, a hidden tab, an ambiguous surface or an excluded window is `aim_route_failed` (the
+ * blind press is refused, and the click_element / re-discover advice applies).
+ */
+export function cdpClickRefusal(cover: BrowserPointCover, x: number, y: number, ctx: Record<string, unknown>): Error {
+  const failure = browserPointCoveredFailure(cover, x, y, ctx);
+  const text = (failure.content?.[0] as { text?: string } | undefined)?.text ?? "";
+  let sentence = text;
+  try {
+    sentence = (JSON.parse(text) as { error?: string }).error ?? text;
+  } catch {
+    // plain text: keep it
+  }
+  const err = new Error(sentence.replace(/^browser_click: /, "desktop_act (cdp): "));
+  err.name = cover.covered === "other" || cover.covered === "owned" ? "AimOccludedError" : "AimedRouteFailedError";
+  (err as Error & { callerDetail?: string }).callerDetail = err.message;
+  return err;
+}
 
 /** internal #274 — what is on top of the click point instead of the browser window. */
 export type BrowserPointCover = ({ at?: { x: number; y: number } }) & (
