@@ -72,14 +72,15 @@ describe("the real cdpClick (internal #415)", () => {
     dispatch: () => Promise<unknown>,
     osAnswer: unknown,
     calls: Calls,
-    page: { occluded?: boolean; modal?: () => Promise<void> } = {},
+    page: { occluded?: boolean; occludedOnce?: boolean; pressPoint?: () => Promise<unknown> } = {},
   ) {
     vi.resetModules();
+    let coordsRead = 0;
     vi.doMock("../../src/engine/cdp-bridge.js", async (orig) => ({
       ...(await orig<typeof import("../../src/engine/cdp-bridge.js")>()),
       portForTab: () => 9335,
       resolveTabId: async () => "T1",
-      getElementScreenCoords: async () => ({ x: 154, y: 291, ...(page.occluded !== undefined && { occluded: page.occluded }) }),
+      getElementScreenCoords: async () => { const first = (coordsRead++) === 0; return { x: first ? 154 : 160, y: first ? 291 : 300, inViewport: true, ...(page.occluded !== undefined && { occluded: page.occluded && (!page.occludedOnce || first) }) }; },
     }));
     vi.doMock("../../src/engine/page-aim.js", async (orig) => ({
       ...(await orig<typeof import("../../src/engine/page-aim.js")>()),
@@ -95,7 +96,7 @@ describe("the real cdpClick (internal #415)", () => {
         calls.os.push(args);
         return osAnswer;
       },
-      refuseIfPageModalBlocks: async () => { await page.modal?.(); },
+      pressPointFor: async () => page.pressPoint?.(),
     }));
     const { _realExecutorDepsForTest } = await import("../../src/tools/desktop-executor.js");
     return _realExecutorDepsForTest().cdpClick("#go", "T1");
@@ -128,20 +129,40 @@ describe("the real cdpClick (internal #415)", () => {
     expect(r).toEqual({ via: "os_click", verifyDelivery: { status: "delivered" } });
   });
 
-  it("runs the page-modal preflight on the OS road too, and presses nothing when it refuses (internal #418)", async () => {
+  it("refuses on the OS road what the CDP road's reading refuses, and presses nothing (internal #421)", async () => {
     const calls: Calls = { dispatch: [], os: [] };
-    const modal = async () => { throw Object.assign(new Error("behind a dialog"), { name: "ModalBlockingError" }); };
-    const err = await realCdpClick(() => dispatchError(false), { status: "delivered", channel: "cdp" }, calls, { occluded: true, modal })
+    const pressPoint = async () => { throw Object.assign(new Error("behind a dialog"), { name: "ModalBlockingError" }); };
+    const err = await realCdpClick(() => dispatchError(false), { status: "delivered", channel: "cdp" }, calls, { occluded: true, pressPoint })
       .then(() => null, (e: unknown) => e as Error);
     expect(err?.name).toBe("ModalBlockingError");
     expect(calls.os).toEqual([]);
   });
 
-  it("does not run the preflight on the OS road when the point is not covered (control)", async () => {
+  it("does not aim the OS press at a label or a skin: covered at the centre, it presses nothing (internal #421)", async () => {
+    const calls: Calls = { dispatch: [], os: [] };
+    const pressPoint = async () => ({ x: 10, y: 20, via: "label", how: "own_label" });
+    const err = await realCdpClick(() => dispatchError(false), { status: "delivered", channel: "cdp" }, calls, { occluded: true, pressPoint })
+      .then(() => null, (e: unknown) => e as Error & { callerDetail?: string });
+    expect(err?.name).toBe("AimedRouteFailedError");
+    expect(err?.callerDetail).toContain("its label");
+    expect(err?.callerDetail).toContain("Nothing was clicked");
+    expect(calls.os).toEqual([]);
+  });
+
+  it("presses on the OS road when the reading finds the centre clear now, at coordinates read again (/code-review on #1004)", async () => {
+    const calls: Calls = { dispatch: [], os: [] };
+    const pressPoint = async () => ({ x: 1, y: 1, via: "element", how: "self" });
+    const r = await realCdpClick(() => dispatchError(false), { status: "delivered", channel: "cdp" }, calls, { occluded: true, occludedOnce: true, pressPoint });
+    expect(calls.os).toHaveLength(1);
+    expect(calls.os[0].slice(0, 2)).toEqual([160, 300]);
+    expect(r).toEqual({ via: "os_click", verifyDelivery: { status: "delivered" } });
+  });
+
+  it("does not read the page on the OS road when the centre is not covered (control)", async () => {
     const calls: Calls = { dispatch: [], os: [] };
     let asked = 0;
-    const modal = async () => { asked++; };
-    await realCdpClick(() => dispatchError(false), { status: "delivered", channel: "cdp" }, calls, { occluded: false, modal });
+    const pressPoint = async () => { asked++; return { x: 1, y: 1, via: "element", how: "self" }; };
+    await realCdpClick(() => dispatchError(false), { status: "delivered", channel: "cdp" }, calls, { occluded: false, pressPoint });
     expect(asked).toBe(0);
     expect(calls.os).toHaveLength(1);
   });

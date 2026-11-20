@@ -589,6 +589,43 @@ export class CdpClickDispatchError extends Error {
   }
 }
 
+/**
+ * internal #421 — what the browser itself says about the element at a page point, for telling a widget's skin from
+ * a cover: the accessibility node of the hit (role, name, ignored). Measured on real libraries (spike 3): skins are
+ * unnamed with no role of their own (iCheck's `ins.iCheck-helper`: insertion ""); every cover a person has to deal
+ * with has a name and a role (dialog, banner, a calendar day). Uses an object id, so no DOM or Accessibility domain
+ * is enabled on the shared session. Answers null when the page cannot be read.
+ */
+export async function inspectHitAtPoint(
+  x: number,
+  y: number,
+  tabId: string | null = null,
+  port = DEFAULT_CDP_PORT,
+): Promise<{ role: string; name: string; ignored: boolean } | null> {
+  const group = "dtm-inspect-hit";
+  let session: CdpSession | null = null;
+  try {
+    const tab = await resolveTab(tabId, port);
+    session = await openSession(tab, port);
+    const hit = (await session.send("Runtime.evaluate", {
+      expression: `document.elementFromPoint(${x}, ${y})`,
+      returnByValue: false,
+      objectGroup: group,
+    })) as { result?: { objectId?: string } };
+    const id = hit.result?.objectId;
+    if (!id) return null;
+    const ax = (await session.send("Accessibility.getPartialAXTree", { objectId: id, fetchRelatives: false })) as {
+      nodes: Array<{ ignored?: boolean; role?: { value?: string }; name?: { value?: string } }>;
+    };
+    const a = ax.nodes[0];
+    return { role: a?.role?.value ?? "", name: (a?.name?.value ?? "").trim(), ignored: a?.ignored === true };
+  } catch {
+    return null;
+  } finally {
+    try { await session?.send("Runtime.releaseObjectGroup", { objectGroup: group }); } catch { /* ignore */ }
+  }
+}
+
 export async function dispatchMouseMoveInTab(
   x: number,
   y: number,
