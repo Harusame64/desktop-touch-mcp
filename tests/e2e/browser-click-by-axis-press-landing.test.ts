@@ -116,6 +116,8 @@ describe.skipIf(!CHROME)("browser_click by-axis: a covered match is read like th
     const r = await click({ by: "text", pattern: "Archive all" });
     expect(r.code).toBe("BrowserModalBlocking");
     expect(r.context).toMatchObject({ blockingElement: { name: "Settings", role: "dialog" }, signals: { ariaModal: false }, offers: ["OK"] });
+    expect(r.error).toContain('is behind a dialog in the page ("Settings", role dialog)');
+    expect(r.error).not.toContain("scroll so the element is clear");
     expect(await marks()).toBe(0);
     expect(await counts()).toEqual({});
   });

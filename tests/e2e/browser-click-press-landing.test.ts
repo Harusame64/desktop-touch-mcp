@@ -64,6 +64,7 @@ describe.skipIf(!CHROME)("browser_click refuses what a person must deal with fir
     const r = await click("#behind");
     expect(r.code).toBe("BrowserModalBlocking");
     expect(r.context?.blockingElement).toMatchObject({ role: "dialog" });
+    expect(r.error).toContain("is behind a dialog in the page");
     expect(await counts()).toEqual({});
   });
 

@@ -2113,8 +2113,13 @@ function browserPageCoverFailure(
   // A by-axis click names the element by what it searched for and answers with its own context (PR-C).
   by?: { label: string; ctx: Record<string, unknown> },
 ): ToolResult {
-  const sentence = cover
-    ? coverSentence(selector, cover, "browser_click", by?.label)
+  // A modal the old rules name gets the dialog's wording too ("answer the dialog"), not the cover's ("scroll so the
+  // element is clear"), which cannot clear a dialog over the page (win2 on #1006, Z1f).
+  const worded = cover && modal && !cover.dialog?.modal
+    ? { ...cover, dialog: { name: modal.blocker.name, role: modal.blocker.role, modal: true } }
+    : cover;
+  const sentence = worded
+    ? coverSentence(selector, worded, "browser_click", by?.label)
     : `${by?.label ?? `"${selector}"`} is covered in the page and what covers it could not be read; nothing was clicked.`;
   const who = by?.ctx ?? { selector };
   const offers = cover && cover.offers.length > 0 ? { offers: cover.offers } : {};
