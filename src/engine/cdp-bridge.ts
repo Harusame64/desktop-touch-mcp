@@ -579,7 +579,8 @@ export async function dispatchWheelInTab(
  * `dispatchClickInTab` presses and releases there.
  *
  * A failure is thrown as `CdpClickDispatchError` with `pressSent`: false means no press reached the browser (a
- * fallback may press), true means the press was written and the release failed — the click may have happened.
+ * fallback may press), true means the press was written to an open session and its answer or the release did not
+ * come back — the click may have happened, so no fallback presses again.
  */
 export class CdpClickDispatchError extends Error {
   constructor(message: string, readonly pressSent: boolean, options?: { cause?: unknown }) {

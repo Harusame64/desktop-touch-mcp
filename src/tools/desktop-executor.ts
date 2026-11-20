@@ -3902,7 +3902,7 @@ function getSharedRealDeps(): ExecutorDeps {
       } catch (e) {
         if (!(e instanceof CdpClickDispatchError)) throw e;
         if (e.pressSent) {
-          // The press reached the browser and the release did not: the click may have happened. Typed, so the
+          // The press was written to an open session and an answer did not come back: the click may have happened. Typed, so the
           // act is not answered with a coordinate click that would press a second time.
           const err = new Error(
             `desktop_act (cdp): the click on "${selector}" was sent and the browser stopped answering (${e.message}); ` +
