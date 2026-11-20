@@ -3876,7 +3876,15 @@ function getSharedRealDeps(): ExecutorDeps {
         const text = (f.content?.[0] as { text?: string } | undefined)?.text ?? "";
         let msg = text;
         try { msg = (JSON.parse(text) as { error?: string }).error ?? text; } catch { /* plain text */ }
-        throw new Error(msg.replace(/^browser_click: /, "desktop_act (cdp): "));
+        // Typed by name (guarded-touch matches `err.name`): a plain Error arrives as `executor_failed`, whose
+        // first suggestion is a coordinate click at the entity — into the very window this refused (win2, #415).
+        // Another window (or one the browser owns) on top: `aim_occluded`. The page not shown, a panel, a hidden
+        // tab, an ambiguous surface, an excluded window: `aim_route_failed` (the blind press is refused).
+        const err = new Error(msg.replace(/^browser_click: /, "desktop_act (cdp): "));
+        err.name = r.covered === "other" || r.covered === "owned" ? "AimOccludedError" : "AimedRouteFailedError";
+        // The sentence is written for the caller (browser_click's refusal), so it may travel as `detail`.
+        (err as Error & { callerDetail?: string }).callerDetail = err.message;
+        throw err;
       }
       // SPIKE — the delivery hint is not returned through the executor yet; logged for the spike only.
       console.error(`[SPIKE415] cdpClick verifyDelivery=${JSON.stringify(r)}`);
