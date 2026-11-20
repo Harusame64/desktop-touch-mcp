@@ -1183,8 +1183,9 @@ export async function cdpDispatchClickAndVerify(
     c = centre();
     if (outside()) return { error: "Element is outside the viewport and could not be scrolled into it: " + sel + ". Nothing was clicked.", outside: true };
   }
-  return { x: c.x, y: c.y };
-})()`, tabId, port)) as { x: number; y: number } | { error: string; outside?: boolean };
+  var hit = document.elementFromPoint(c.x, c.y);
+  return { x: c.x, y: c.y, occluded: !!hit && hit !== el && !el.contains(hit) };
+})()`, tabId, port)) as { x: number; y: number; occluded?: boolean } | { error: string; outside?: boolean };
   if ("error" in point) {
     const err = new Error(`desktop_act (cdp): ${point.error}`);
     // Typed, so the act is not answered with a coordinate click at a point that is off the page (agy on #1001).
@@ -1195,6 +1196,8 @@ export async function cdpDispatchClickAndVerify(
     }
     throw err;
   }
+
+  if (point.occluded === true) await refuseIfPageModalBlocks(selector, tabId, port);
 
   const pageIds = async (): Promise<Set<string> | null> => {
     try {
@@ -1224,6 +1227,37 @@ export async function cdpDispatchClickAndVerify(
     return { ...rest, status: "delivered", openedTabs };
   }
   return { ...verdict, openedTabs };
+}
+
+/**
+ * internal #418 — desktop_act's click refuses an element behind a dialog that blocks the page, by browser_click's
+ * rule (ADR-023 Phase 2b): the point is covered, and the cover belongs to the dialog `detectModal` names as the
+ * blocker. `Input.dispatchMouseEvent` presses whatever is on top, so the backdrop took the press and the act
+ * answered ok. A cover that is not that dialog (a banner, a sticky header, a label over a custom checkbox) is
+ * pressed as before, as browser_click does. Thrown with the name guarded-touch reads as `modal_blocking`.
+ * A probe that cannot answer leaves the click as it was (a probe failure must never break a click).
+ */
+export async function refuseIfPageModalBlocks(selector: string, tabId: string | null, port: number): Promise<void> {
+  const probe = await probeSelectorModalOcclusion(selector, tabId, port);
+  if (!probe) return;
+  const verdict = detectModal(probe.modalFacts);
+  if (
+    !verdict.isModal ||
+    !verdict.blocker ||
+    verdict.blockerDialogIndex === undefined ||
+    probe.occludedByDialogIndex !== verdict.blockerDialogIndex
+  ) {
+    return;
+  }
+  const name = verdict.blocker.name.replace(/\s+/g, " ").trim().slice(0, 80);
+  const err = new Error(
+    `desktop_act (cdp): "${selector}" is behind a dialog that blocks the page (${name === "" ? "no name" : JSON.stringify(name)}, ` +
+      `role ${verdict.blocker.role}); nothing was clicked. Answer the dialog — its own buttons come in desktop_discover, ` +
+      "or press Escape — then re-call desktop_discover.",
+  );
+  err.name = "ModalBlockingError";
+  (err as Error & { callerDetail?: string }).callerDetail = err.message;
+  throw err;
 }
 
 /** The click probe's verdict after a press (shared by the OS click and the CDP click, internal #415). */
