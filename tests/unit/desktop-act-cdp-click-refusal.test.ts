@@ -68,13 +68,18 @@ describe("cdpClickRefusal (internal #415)", () => {
 // a refusal there arrives typed. Stubbed at the module edges (CDP, page-aim, browser.ts's click roads).
 describe("the real cdpClick (internal #415)", () => {
   type Calls = { dispatch: unknown[][]; os: unknown[][] };
-  async function realCdpClick(dispatch: () => Promise<unknown>, osAnswer: unknown, calls: Calls) {
+  async function realCdpClick(
+    dispatch: () => Promise<unknown>,
+    osAnswer: unknown,
+    calls: Calls,
+    page: { occluded?: boolean; modal?: () => Promise<void> } = {},
+  ) {
     vi.resetModules();
     vi.doMock("../../src/engine/cdp-bridge.js", async (orig) => ({
       ...(await orig<typeof import("../../src/engine/cdp-bridge.js")>()),
       portForTab: () => 9335,
       resolveTabId: async () => "T1",
-      getElementScreenCoords: async () => ({ x: 154, y: 291 }),
+      getElementScreenCoords: async () => ({ x: 154, y: 291, ...(page.occluded !== undefined && { occluded: page.occluded }) }),
     }));
     vi.doMock("../../src/engine/page-aim.js", async (orig) => ({
       ...(await orig<typeof import("../../src/engine/page-aim.js")>()),
@@ -90,6 +95,7 @@ describe("the real cdpClick (internal #415)", () => {
         calls.os.push(args);
         return osAnswer;
       },
+      refuseIfPageModalBlocks: async () => { await page.modal?.(); },
     }));
     const { _realExecutorDepsForTest } = await import("../../src/tools/desktop-executor.js");
     return _realExecutorDepsForTest().cdpClick("#go", "T1");
@@ -120,6 +126,24 @@ describe("the real cdpClick (internal #415)", () => {
     const [x, y, probe, tab, port, , force, aim] = calls.os[0];
     expect([x, y, probe, tab, port, force, aim]).toEqual([154, 291, "#go", "T1", 9335, false, { marker: "aim" }]);
     expect(r).toEqual({ via: "os_click", verifyDelivery: { status: "delivered" } });
+  });
+
+  it("runs the page-modal preflight on the OS road too, and presses nothing when it refuses (internal #418)", async () => {
+    const calls: Calls = { dispatch: [], os: [] };
+    const modal = async () => { throw Object.assign(new Error("behind a dialog"), { name: "ModalBlockingError" }); };
+    const err = await realCdpClick(() => dispatchError(false), { status: "delivered", channel: "cdp" }, calls, { occluded: true, modal })
+      .then(() => null, (e: unknown) => e as Error);
+    expect(err?.name).toBe("ModalBlockingError");
+    expect(calls.os).toEqual([]);
+  });
+
+  it("does not run the preflight on the OS road when the point is not covered (control)", async () => {
+    const calls: Calls = { dispatch: [], os: [] };
+    let asked = 0;
+    const modal = async () => { asked++; };
+    await realCdpClick(() => dispatchError(false), { status: "delivered", channel: "cdp" }, calls, { occluded: false, modal });
+    expect(asked).toBe(0);
+    expect(calls.os).toHaveLength(1);
   });
 
   it("does not press again when the CDP press was sent and the release failed", async () => {

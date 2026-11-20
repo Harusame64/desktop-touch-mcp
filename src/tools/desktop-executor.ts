@@ -2756,6 +2756,8 @@ function adr029Refusal(err: unknown): string | undefined {
   if (err.name === "AimOccludedError") return "aim_occluded";
   if (err.name === "AimedRouteFailedError") return "aim_route_failed";
   if (err.name === "AimBlockedByExcludedWindowError") return "aim_blocked_by_excluded_window";
+  // internal #418 — a dialog inside the page blocks the element (win2: the refusal wrote no row).
+  if (err.name === "ModalBlockingError") return "modal_blocking";
   return undefined;
 }
 

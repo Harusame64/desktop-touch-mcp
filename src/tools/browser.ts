@@ -1245,13 +1245,18 @@ export async function refuseIfPageModalBlocks(selector: string, tabId: string | 
     !verdict.isModal ||
     !verdict.blocker ||
     verdict.blockerDialogIndex === undefined ||
-    probe.occludedByDialogIndex !== verdict.blockerDialogIndex
+    probe.occludedByDialogIndex !== verdict.blockerDialogIndex ||
+    // The element is inside that dialog: what covers it (a styled box over a checkbox, the dialog's own footer)
+    // is part of the dialog it belongs to, not a dialog in front of it (/code-review on #1002).
+    probe.insideDialogIndices?.includes(verdict.blockerDialogIndex) === true
   ) {
     return;
   }
-  const name = verdict.blocker.name.replace(/\s+/g, " ").trim().slice(0, 80);
+  // `detectModal` names an unnamed dialog "modal"; the facts say whether it had a name of its own.
+  const ownName = probe.modalFacts.dialogCandidates[verdict.blockerDialogIndex]?.name ?? "";
+  const name = ownName.replace(/\s+/g, " ").trim().slice(0, 80);
   const err = new Error(
-    `desktop_act (cdp): "${selector}" is behind a dialog that blocks the page (${name === "" ? "no name" : JSON.stringify(name)}, ` +
+    `desktop_act (cdp): "${selector}" is behind a dialog that blocks the page (${name === "" ? "with no name" : JSON.stringify(name)}, ` +
       `role ${verdict.blocker.role}); nothing was clicked. Answer the dialog — its own buttons come in desktop_discover, ` +
       "or press Escape — then re-call desktop_discover.",
   );
