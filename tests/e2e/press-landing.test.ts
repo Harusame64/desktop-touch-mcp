@@ -387,6 +387,29 @@ describe.skipIf(!CHROME)("desktop_act's CDP click presses the way a person would
     expect(await counts()).toEqual({});
   });
 
+  it("never puts a typed password into a refusal when the password field is the cover (codex on #1004, P1)", async () => {
+    await page(`${BEHIND}<input type="password" id="pw" style="position:absolute;left:280px;top:290px;width:140px;height:40px;z-index:5">
+      <script>document.getElementById('pw').value='hunter2';</script>`);
+    const out = await press("#behind");
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.detail).toContain("input#pw");
+      expect(out.detail).not.toContain("hunter2");
+    }
+  });
+
+  it("lists a password field in what the dialog in front offers by its label, never its value (codex on #1004, P1)", async () => {
+    await page(`${BEHIND}<div role="dialog" aria-modal="true" aria-label="Sign in" style="position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1050">
+      <div style="background:#fff;width:300px;margin:100px auto;padding:20px"><input type="password" id="pw2" aria-label="Password"><button>Log in</button></div></div>
+      <script>document.getElementById('pw2').value='hunter2';</script>`);
+    const out = await press("#behind");
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.detail).toContain('"Password", "Log in"');
+      expect(out.detail).not.toContain("hunter2");
+    }
+  });
+
   it("refuses an input under an open calendar without picking a date, and names the calendar's days", async () => {
     await page(`<input id="below" style="position:absolute;left:100px;top:200px">
       <div id="cal" style="position:absolute;left:90px;top:150px;width:300px;height:120px;background:#fff;border:1px solid;z-index:10">

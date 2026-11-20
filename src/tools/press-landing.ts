@@ -30,9 +30,12 @@
  * guard, none of them changed.
  */
 
+import { ELEMENT_NAME_JS } from "./_element-name-js.js";
+
 /** The landing rule, as page script: `__dtmLandsOn(el, hit)`, `__dtmDescribe(n)`, `__dtmName(n)`. */
 export function pressLandingRuleJs(): string {
   return `
+${ELEMENT_NAME_JS}
   var __DTM_INTERACTIVE = 'a[href],button,input,select,textarea,summary,[contenteditable=""],[contenteditable=true],[role=button],[role=link],[role=checkbox],[role=radio],[role=switch],[role=tab],[role=menuitem],[role=option],[role=combobox],[role=textbox],[tabindex]:not([tabindex="-1"])';
   var __DTM_DIALOG = 'dialog,[role=dialog],[role=alertdialog],[aria-modal=true]';
   function __dtmArea(n) { var r = n.getBoundingClientRect(); return r.width * r.height; }
@@ -96,12 +99,23 @@ export function pressLandingRuleJs(): string {
     for (var i = 0; i < all.length; i++) if (__dtmShown(all[i])) return all[i];
     return null;
   }
+  // Names come from the one naming every CDP script shares (ELEMENT_NAME_JS): an entry's value is never a name, and
+  // what the page masks is never read out — a password field over the element, or in what is in front of it, is
+  // named by its label, never by what was typed into it (codex on #1004, P1).
   function __dtmName(n) {
     if (!n || !n.getAttribute) return '';
-    var nm = n.getAttribute('aria-label');
-    if (!nm) { var lb = n.getAttribute('aria-labelledby'); var t = lb ? document.getElementById(lb.split(' ')[0]) : null; nm = t ? t.textContent : ''; }
-    if (!nm) nm = n.getAttribute('title') || n.getAttribute('alt') || n.value && n.tagName === 'INPUT' && n.type !== 'text' && n.value || n.textContent || '';
-    return String(nm).replace(/\\s+/g, ' ').trim().slice(0, 40);
+    var v = '';
+    if (__isEntry(n) || __isMasked(n)) v = __fieldName(n);
+    else {
+      v = (n.getAttribute('aria-label') || '').trim();
+      if (!v) {
+        var lb = n.getAttribute('aria-labelledby');
+        if (lb) v = lb.trim().split(/\\s+/).map(function(id) { var t = document.getElementById(id); return t ? __textWithoutFields(t) : ''; }).join(' ').trim();
+      }
+      if (!v) v = (n.getAttribute('title') || n.getAttribute('alt') || '').trim();
+      if (!v) v = __textWithoutFields(n);
+    }
+    return String(v || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
   }
   function __dtmLandsOn(el, hit) {
     if (!hit) return { ok: false, how: 'nothing' };
