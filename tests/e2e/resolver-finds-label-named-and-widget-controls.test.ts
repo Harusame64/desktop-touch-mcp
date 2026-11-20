@@ -84,6 +84,13 @@ describe.skipIf(!CHROME)("the by-axis resolver finds what a person sees and name
     if (o.kind === "resolved") expect(o.matched.role).toBe("combobox");
   });
 
+  it("leaves the aria-hidden native select out without the hit-test gate too (the covered road's re-resolve)", async () => {
+    await page(SELECT2);
+    const o = await resolve({ by: "role", pattern: "combobox" }, false);
+    expect(o.kind).toBe("resolved");
+    if (o.kind === "resolved") expect(o.matched.role).toBe("combobox");
+  });
+
   it("resolves Select2's shown value by text through its combobox", async () => {
     await page(SELECT2);
     const o = await resolve({ by: "text", pattern: "Apple" });
