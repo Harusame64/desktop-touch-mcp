@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { mouse, Button } from "../engine/nutjs.js";
@@ -49,7 +50,7 @@ import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix }
 import { prepareBrowserEvalExpression } from "./browser-eval-helpers.js";
 import { ELEMENT_NAME_JS } from "./_element-name-js.js";
 import { buildPressPointJs, buildCoverJs, buildPressGuardJs, buildReadPressGuardJs, buildSaveScrollJs, buildRestoreScrollJs, coverSentence, type PageCover, type PressPoint } from "./press-landing.js";
-import { buildCandidateCollectionJs, resolveBrowserActionTarget, scrollResolvedCandidateIntoView, buildFillActJs, buildPageLevelModalFactsJs, detectModal, probeSelectorModalOcclusion, type ResolveActionOutcome, type ModalFacts, type ModalVerdict } from "./browser-resolver.js";
+import { buildCandidateCollectionJs, buildTagResolvedJs, buildUntagJs, PRESS_TAG_ATTR, resolveBrowserActionTarget, scrollResolvedCandidateIntoView, buildFillActJs, buildPageLevelModalFactsJs, detectModal, probeSelectorModalOcclusion, type ResolveActionOutcome, type ModalFacts, type ModalVerdict } from "./browser-resolver.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -1297,6 +1298,28 @@ async function readPressLandingAt(
   }
 }
 
+/**
+ * internal #421 — the screen point (physical px) and page aim for a landing read's point (CSS px of the viewport).
+ * The landing read may have scrolled (a sticky header over the element), so the element's place is read again, and
+ * the point is placed from the viewport's screen origin; without a viewport reading, the element's centre.
+ */
+async function screenPointForLanding(
+  selector: string,
+  landing: { x: number; y: number },
+  tabId: string | null,
+  port: number,
+): Promise<{ x: number; y: number; aim: PageAim | undefined }> {
+  const at = await getElementScreenCoords(selector, tabId, port);
+  const dpr = Number(await evaluateInTab("window.devicePixelRatio || 1", tabId, port)) || 1;
+  const vp = at.viewport;
+  if (vp === undefined) return { x: at.x, y: at.y, aim: undefined };
+  return {
+    x: Math.round(at.left - vp.left + landing.x * dpr),
+    y: Math.round(at.top - vp.top + landing.y * dpr),
+    aim: { viewportX: landing.x * dpr, viewportY: landing.y * dpr, hint: { width: vp.innerWidth, height: vp.innerHeight } },
+  };
+}
+
 /** Accessibility roles a skin may have: none of its own (spike 3: iCheck's `ins` is "insertion"). */
 const SKIN_ROLES = new Set(["", "generic", "none", "presentation", "insertion", "deletion", "InlineTextBox"]);
 
@@ -2086,10 +2109,13 @@ function browserPageCoverFailure(
   cover: PageCover | null,
   modal: { blocker: { name: string; role: string } } | null,
   signals: ModalVerdict["signals"] | null,
+  // A by-axis click names the element by what it searched for and answers with its own context (PR-C).
+  by?: { label: string; ctx: Record<string, unknown> },
 ): ToolResult {
   const sentence = cover
-    ? coverSentence(selector, cover, "browser_click")
-    : `"${selector}" is covered in the page and what covers it could not be read; nothing was clicked.`;
+    ? coverSentence(selector, cover, "browser_click", by?.label)
+    : `${by?.label ?? `"${selector}"`} is covered in the page and what covers it could not be read; nothing was clicked.`;
+  const who = by?.ctx ?? { selector };
   const offers = cover && cover.offers.length > 0 ? { offers: cover.offers } : {};
   if (cover?.dialog?.modal || modal) {
     const blocker = cover?.dialog?.modal ? { name: cover.dialog.name, role: cover.dialog.role } : modal!.blocker;
@@ -2103,7 +2129,7 @@ function browserPageCoverFailure(
           "Dismiss the modal first: click its close/cancel button (e.g. browser_click({by:'role', pattern:'button', scope:'<dialog selector>'})) or send Escape via keyboard(action:'press'), then retry.",
           "If the modal is expected, act on its contents directly — its own buttons/inputs are inside the dialog and are not blocked.",
         ],
-        context: { selector, blockingElement: blocker, ...(signals && { signals }), ...offers },
+        context: { ...who, blockingElement: blocker, ...(signals && { signals }), ...offers },
       },
     );
   }
@@ -2120,7 +2146,7 @@ function browserPageCoverFailure(
               ? "Deal with what covers the element first (close it, or use one of its controls: context.offers), then retry browser_click."
               : "Deal with what covers the element first (close it, or scroll so the element is clear), then retry browser_click.",
       ],
-      context: { selector, coveredBy: "page", ...(cover && { cover: cover.cover }), ...offers },
+      context: { ...who, coveredBy: "page", ...(cover && { cover: cover.cover }), ...offers },
     },
   );
 }
@@ -2226,38 +2252,106 @@ async function handleBrowserClickByAxis(args: {
   });
   const ctx = { by, pattern, ...(role ? { role } : {}), ...(scope ? { scope } : {}) };
   if (outcome.kind === "error") return browserResolveErrorToFailure(outcome, "browser_click", ctx);
-  // ADR-023 Phase 2b: upgrade a modal-occluded noActionable to BrowserModalBlocking.
-  // The target's center is covered by a modal dialog/backdrop (occludedTopByDialogIndex)
-  // that detectModal confirms is the modal blocker (index identity, not name/role —
-  // robust to multiple/same-named dialogs). by-axis never blind-clicks an occluded
-  // target (receivesEvents already gated it to noActionable); this only makes the
-  // stop explain WHY + how to recover. Non-modal occluders stay noActionable.
+  // internal #421 (PR-C) — a single match whose centre is covered in the page: resolved again without the hit-test
+  // gate, it is read for a point a person would press (a visible part, its label, a skin, the widget in its place,
+  // the element with a sticky header scrolled off it) or refused naming what is in front, as the selector road does.
+  // Off-screen matches and several matches stop as before.
+  let target: Extract<ResolveActionOutcome, { kind: "resolved" }> | null = outcome.kind === "resolved" ? outcome : null;
+  let covered = false;
+  if (outcome.kind === "noActionable") {
+    const loose = await resolveBrowserActionTarget({
+      by, pattern, role, scope, caseSensitive, action: "click", requireReceivesEvents: false, tabId: tabId ?? null, port,
+    });
+    if (loose.kind === "resolved") {
+      const cx = loose.rect.x + loose.rect.w / 2;
+      const cy = loose.rect.y + loose.rect.h / 2;
+      const vw = loose.viewport.innerWidth;
+      const vh = loose.viewport.innerHeight;
+      if (cx >= 0 && cy >= 0 && cx < vw && cy < vh) {
+        target = loose;
+        covered = true;
+      }
+    }
+  }
+  // ADR-023 Phase 2b: the old preflight's modal reading. Without a covered single match it upgrades a
+  // modal-occluded noActionable to BrowserModalBlocking as before; with one, it chooses the refusal's words only.
+  let modal: { blocker: { name: string; role: string } } | null = null;
+  let signals: ModalVerdict["signals"] | null = null;
   if (outcome.kind === "noActionable" && outcome.modalFacts) {
     const verdict = detectModal(outcome.modalFacts);
+    signals = verdict.signals;
     if (
       verdict.isModal &&
       verdict.blocker &&
       verdict.blockerDialogIndex !== undefined &&
       outcome.occludedTopByDialogIndex === verdict.blockerDialogIndex
     ) {
-      return browserModalBlockingFailure(verdict.blocker, verdict.signals, ctx);
+      modal = { blocker: verdict.blocker };
+      if (!covered) return browserModalBlockingFailure(verdict.blocker, verdict.signals, ctx);
     }
   }
-  if (outcome.kind !== "resolved") return browserResolveStopToFailure(outcome, "browser_click", ctx);
+  if (target === null) return browserResolveStopToFailure(outcome as Exclude<ResolveActionOutcome, { kind: "resolved" | "error" }>, "browser_click", ctx);
 
   // Minimized-window guard: the gather eval's viewport origin is the Windows
-  // -32000 parking marker → outcome.physical is a large negative point the OS
+  // -32000 parking marker → the physical point is a large negative point the OS
   // would clamp to (0,0). Stop before the OS click so we never trip the failsafe
   // (the resolve gather above is a pure CDP eval — no click happened yet).
-  if (isOffscreenMinimized(outcome.viewport.screenX, outcome.viewport.screenY)) {
+  if (isOffscreenMinimized(target.viewport.screenX, target.viewport.screenY)) {
     return browserMinimizedFailure(ctx, await minimizedBrowserFrame(port));
   }
 
-  // Resolved: OS-click at the physical point (probe with null selector — the
-  // resolver located the element by coords; document-level mutation probe).
-  const clicked = await osClickAndVerify(outcome.physical.x, outcome.physical.y, null, outcome.tabId ?? tabId ?? null, port, whoIsUnderPoint, force, aimFromViewportRect(outcome.rect, outcome.viewport));
+  // The resolved element is marked so the landing read, the press guard and the cover read can find it by a
+  // selector; the mark goes once the press is sent or refused. A mark that cannot be made (the page changed since
+  // the gather) leaves the clear road as it was, without the guard, and stops the covered one as before.
+  const tab = target.tabId ?? tabId ?? null;
+  const nonce = randomUUID();
+  const tagSel = `[${PRESS_TAG_ATTR}="${nonce}"]`;
+  const tagged = ((await evaluateInTab(
+    buildTagResolvedJs({ by, pattern, role, scope, caseSensitive: caseSensitive ?? false }, target.index, target.climbDepth, target.matched, nonce),
+    tab, port,
+  ).catch(() => null)) as { ok?: boolean } | null)?.ok === true;
+  const label = `the element found by ${by}:${JSON.stringify(pattern)}`;
+  let clicked: Awaited<ReturnType<typeof osClickAndVerify>>;
+  let pressedAt: "element" | "host" | "label" | "skin" | "replacement" = "element";
+  try {
+    let pressX = target.physical.x;
+    let pressY = target.physical.y;
+    let pressAim: PageAim | undefined = aimFromViewportRect(target.rect, target.viewport);
+    let scrollHeld = false;
+    if (covered) {
+      if (!tagged) {
+        if (modal) return browserModalBlockingFailure(modal.blocker, signals ?? ({} as ModalVerdict["signals"]), ctx);
+        return browserResolveStopToFailure(outcome as Exclude<ResolveActionOutcome, { kind: "resolved" | "error" }>, "browser_click", ctx);
+      }
+      const landing = await readPressLanding(tagSel, tab, port, { holdScroll: true });
+      if ("error" in landing) {
+        return browserResolveStopToFailure(outcome as Exclude<ResolveActionOutcome, { kind: "resolved" | "error" }>, "browser_click", ctx);
+      }
+      if ("cover" in landing) return browserPageCoverFailure(tagSel, landing.cover, modal, signals, { label, ctx });
+      scrollHeld = true;
+      try {
+        ({ x: pressX, y: pressY, aim: pressAim } = await screenPointForLanding(tagSel, landing, tab, port));
+      } catch (e) {
+        await settlePressScroll(true, tab, port);
+        throw e;
+      }
+      pressedAt = landing.how === "skin" || landing.how === "replacement" || landing.how === "host" ? landing.how : landing.how === "own_label" ? "label" : "element";
+    }
+    try {
+      clicked = await osClickAndVerify(pressX, pressY, null, tab, port, whoIsUnderPoint, force, pressAim, undefined, tagged ? tagSel : undefined);
+    } catch (e) {
+      if (scrollHeld) await settlePressScroll(true, tab, port);
+      throw e;
+    }
+    if (scrollHeld) {
+      const restore = isCover(clicked) && (clicked.covered !== "page_stopped" || clicked.pageReacted === false);
+      await settlePressScroll(restore, tab, port);
+    }
+  } finally {
+    if (tagged) await evaluateInTab(buildUntagJs(nonce), tab, port).catch(() => null);
+  }
   // ADR-040 — the point that was checked (the page surface's), in the refusal and the reply alike.
-  const clickedAt = clicked.at ?? outcome.physical;
+  const clickedAt = clicked.at ?? target.physical;
   if (isCover(clicked)) return browserPointCoveredFailure(clicked, clickedAt.x, clickedAt.y, ctx, force);
   const { at: _at, ...verifyDelivery } = clicked;
   const tabCtx = await getTabContext(tabId ?? null, port);
@@ -2285,7 +2379,8 @@ async function handleBrowserClickByAxis(args: {
     ok: true,
     clicked: { by, pattern, ...(role ? { role } : {}) },
     at: clickedAt,
-    resolved: { rect: outcome.rect, climbDepth: outcome.climbDepth },
+    pressedAt,
+    resolved: { rect: target.rect, climbDepth: target.climbDepth },
     activeTab: { id: tabCtx.id, title: tabCtx.title, url: tabCtx.url },
     readyState: tabCtx.readyState,
     hints: { verifyDelivery },
@@ -2662,25 +2757,12 @@ export const browserClickElementHandler = async ({
       // The landing read may have scrolled (a sticky header over the element): the element's place is read again,
       // and the point is placed from the viewport's screen origin.
       scrollHeld = true;
-      let at: ElementCoords;
-      let dpr: number;
       try {
-        at = await getElementScreenCoords(effectiveSelector, effectiveTabId ?? null, port);
-        dpr = Number(await evaluateInTab("window.devicePixelRatio || 1", effectiveTabId ?? null, port)) || 1;
+        ({ x: pressX, y: pressY, aim: pressAim } = await screenPointForLanding(effectiveSelector, landing, effectiveTabId ?? null, port));
       } catch (e) {
         await settlePressScroll(true, effectiveTabId ?? null, port);
         if (e instanceof ElementZeroSizeError) return await rescueZeroSize();
         throw e;
-      }
-      const vp = at.viewport;
-      if (vp !== undefined) {
-        pressX = Math.round(at.left - vp.left + landing.x * dpr);
-        pressY = Math.round(at.top - vp.top + landing.y * dpr);
-        pressAim = { viewportX: landing.x * dpr, viewportY: landing.y * dpr, hint: { width: vp.innerWidth, height: vp.innerHeight } };
-      } else {
-        pressX = at.x;
-        pressY = at.y;
-        pressAim = undefined;
       }
       landed = true;
       pressedAt = landing.how === "skin" || landing.how === "replacement" || landing.how === "host" ? landing.how : landing.how === "own_label" ? "label" : "element";
