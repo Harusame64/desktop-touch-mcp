@@ -77,15 +77,16 @@ describe("internal #421: browser_click's press guard", () => {
   it("answers page_stopped, naming what the press landed on, when the guard stopped it", async () => {
     mocks.guard.read = { ok: true, blocked: 3, first: 'div.menu "Account"' };
     const r = await press("#btn");
-    expect(r).toEqual({ covered: "page_stopped", first: 'div.menu "Account"', pageReacted: false, at: { x: 392, y: 360 } });
+    // The probe is not installed in this cell, so whether the page reacted is unknown (round 2 on #1005).
+    expect(r).toEqual({ covered: "page_stopped", first: 'div.menu "Account"', pageReacted: null, at: { x: 392, y: 360 } });
     const f = browserPointCoveredFailure(r as never, 392, 360, { selector: "#btn" });
     const body = JSON.parse((f.content[0] as { text: string }).text) as { code: string; error: string; context: Record<string, unknown> };
     expect(body.code).toBe("BrowserPointCovered");
     expect(body.context.coveredBy).toBe("page_stopped");
     expect(body.context.landedOn).toBe('div.menu "Account"');
-    expect(body.context.pageReacted).toBe(false);
+    expect(body.context.pageReacted).toBe(null);
     expect(body.error).toContain("the element was not clicked");
-    expect(body.error).not.toContain("still changed");
+    expect(body.error).toContain("could not be measured");
   });
 
   it("says the page still changed when its own listener ran before the stop (/code-review on #1005)", async () => {
@@ -93,6 +94,14 @@ describe("internal #421: browser_click's press guard", () => {
     const body = JSON.parse((f.content[0] as { text: string }).text) as { error: string; context: Record<string, unknown> };
     expect(body.context.pageReacted).toBe(true);
     expect(body.error).toContain("The page still changed");
+  });
+
+  it("says nothing more when the probe measured no change (pageReacted false)", async () => {
+    const f = browserPointCoveredFailure({ covered: "page_stopped", first: "div.menu", pageReacted: false }, 1, 2, { selector: "#btn" });
+    const body = JSON.parse((f.content[0] as { text: string }).text) as { error: string; context: Record<string, unknown> };
+    expect(body.context.pageReacted).toBe(false);
+    expect(body.error).not.toContain("still changed");
+    expect(body.error).not.toContain("could not be measured");
   });
 
   it("answers the probe's verdict when the press landed (blocked 0)", async () => {

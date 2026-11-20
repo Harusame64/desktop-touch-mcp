@@ -124,4 +124,28 @@ describe.skipIf(!CHROME)("browser_click refuses what a person must deal with fir
     const p = await readPressLanding("#inert", null, PORT);
     expect("cover" in p).toBe(true);
   });
+
+  it("does not retarget an element that is itself a control: a button in a role=button row stays a button (round 2 on #1005)", async () => {
+    await page(`<div role="button" id="row" style="position:absolute;left:200px;top:300px;width:400px;height:40px;background:#eee"><button id="del" style="position:absolute;left:300px;top:8px">Delete</button><span style="position:absolute;left:290px;top:0;width:90px;height:40px;background:#fc0">New</span></div>`);
+    const p = await readPressLanding("#del", null, PORT);
+    expect("cover" in p).toBe(true);
+  });
+
+  it("does not take a press on another control inside the same host for the element's own (round 2 on #1005)", async () => {
+    await page(`<div role="button" id="card" style="position:absolute;left:200px;top:300px;width:300px;height:80px;background:#eee"><svg id="like" width="20" height="20" style="position:absolute;left:20px;top:20px;pointer-events:none"><rect width="20" height="20"/></svg><button id="rm" style="position:absolute;left:0;top:0;width:80px;height:80px">Remove</button></div>`);
+    const p = await readPressLanding("#like", null, PORT);
+    expect("cover" in p).toBe(true);
+  });
+
+  it("puts the scroll back when the press is not sent after a landing read that scrolled (round 2 on #1005)", async () => {
+    // A sticky header over the link: the landing read scrolls it clear and returns a point. The OS press cannot
+    // be sent from this machine (no Windows focus), so the call fails after the read; the scroll must come back.
+    await page(`<div style="position:sticky;top:0;height:120px;background:#333;color:#fff;z-index:5">Header</div><div style="height:600px"></div><a id="lnk" href="#done" data-n="lnk">Link</a><div style="height:1400px"></div>`);
+    await evaluateInTab("scrollTo(0, document.getElementById('lnk').offsetTop - 60);true", null, PORT);
+    const before = await evaluateInTab("scrollY", null, PORT);
+    const r = await click("#lnk");
+    if (r.ok === true) return; // pressed on a machine that can press: nothing to check here
+    expect(await evaluateInTab("scrollY", null, PORT)).toBe(before);
+    expect(await counts()).toEqual({});
+  });
 });

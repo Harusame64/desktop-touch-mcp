@@ -124,8 +124,14 @@ ${ELEMENT_NAME_JS}
     // An element inside a button or a link is pressed as that button or link, as Playwright retargets its target
     // ('button-link'): an icon with pointer-events: none inside a close button is pressed through the button, which
     // is where a person's press goes (/code-review on #1005: the old browser_click road clicked it so).
-    var host = el.parentElement && el.parentElement.closest ? el.parentElement.closest('a[href],button,[role=button],[role=link]') : null;
-    if (host && (hit === host || host.contains(hit))) return { ok: true, how: 'host' };
+    // Only an element that is not itself a control (Playwright keeps a button, a link or a field as it is), and only
+    // a hit with no other control or label between it and the host: a press on another button in the same card is
+    // not a press on this one (/code-review on #1005, round 2).
+    var host = !el.matches(__DTM_INTERACTIVE) && el.parentElement && el.parentElement.closest ? el.parentElement.closest('a[href],button,[role=button],[role=link]') : null;
+    if (host && (hit === host || host.contains(hit))) {
+      for (var hn = hit; hn && hn !== host; hn = hn.parentElement) if (hn.matches(__DTM_INTERACTIVE) || hn.tagName === 'LABEL') return { ok: false, how: 'covered' };
+      return { ok: true, how: 'host' };
+    }
     var lab = hit.closest ? hit.closest('label') : null;
     if (lab) {
       if (lab.control === el) {
@@ -327,9 +333,11 @@ export function buildCoverJs(selector: string): string {
 export function buildPressGuardJs(selector: string): string {
   return `(function() {
   ${pressLandingRuleJs()}
+  // An earlier guard goes first, also when this one cannot be installed: it is read after the press whatever the
+  // install answered, and must not report another press's events (/code-review on #1005, round 2).
+  if (window.__dtmPressGuard) { try { window.__dtmPressGuard.remove(); } catch (e) {} delete window.__dtmPressGuard; }
   var el = document.querySelector(${JSON.stringify(selector)});
   if (!el) return { ok: false };
-  if (window.__dtmPressGuard) { try { window.__dtmPressGuard.remove(); } catch (e) {} }
   var types = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'auxclick', 'dblclick', 'contextmenu'];
   // Decided once, on the first event of the press, as Playwright's interceptor does: a press that started on the
   // element is let through whole (a mousedown handler may open a menu over it, and stopping the rest would leave a
@@ -412,7 +420,7 @@ export function buildRestoreScrollJs(restore: boolean): string {
   if (!s || !${restore}) return false;
   for (var i = 0; i < s.length; i++) {
     if (s[i][0] === null) scrollTo({ left: s[i][1], top: s[i][2], behavior: 'instant' });
-    else { s[i][0].scrollLeft = s[i][1]; s[i][0].scrollTop = s[i][2]; }
+    else s[i][0].scrollTo({ left: s[i][1], top: s[i][2], behavior: 'instant' });
   }
   return true;
 })()`;

@@ -3949,7 +3949,7 @@ function getSharedRealDeps(): ExecutorDeps {
         } else {
         const where = p.via === "element" && (p.how === "self" || p.how === "inside")
           ? "its centre could not be confirmed clear again, in view"
-          : `it is reached only at ${p.how === "skin" ? "a layer of its widget" : p.how === "replacement" ? "the widget drawn in its place" : p.via === "label" ? "its label" : "a part of it away from its centre"}, where the OS press is not aimed`;
+          : `it is reached only at ${p.how === "skin" ? "a layer of its widget" : p.how === "replacement" ? "the widget drawn in its place" : p.how === "host" ? "the button or link it is inside" : p.via === "label" ? "its label" : "a part of it away from its centre"}, where the OS press is not aimed`;
         const err = new Error(
           `desktop_act (cdp): the CDP press on "${selector}" could not be sent, and its centre is covered; ${where}. ` +
             "Nothing was clicked. Re-call desktop_discover and try again.",
