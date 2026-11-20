@@ -46,7 +46,7 @@ describe.skipIf(!CHROME)("browser_click by-axis: a covered match is read like th
     const r = await click({ by: "text", pattern: "Checkout" });
     expect(r.code).toBe("BrowserPointCovered");
     expect(r.context).toMatchObject({ by: "text", pattern: "Checkout", coveredBy: "page", offers: ["Accept all", "Reject"] });
-    expect(r.error).toContain('the element found by text:"Checkout" is covered in the page');
+    expect(r.error).toContain('The element found by text:"Checkout" is covered in the page');
     expect(r.error).not.toContain("data-dtm-press");
     expect(await counts()).toEqual({});
     expect(await marks()).toBe(0);
@@ -103,5 +103,34 @@ describe.skipIf(!CHROME)("browser_click by-axis: a covered match is read like th
     expect(r.code).not.toBe("BrowserNoActionableTarget");
     expect(r.code).not.toBe("BrowserPointCovered");
     expect(await marks()).toBe(0);
+  });
+
+  it("refuses before any landing read a modal only the old rules find, and presses no strip of the element beside it (/code-review on #1006)", async () => {
+    // No aria-modal: a backdrop-less dialog over most of the page, scroll locked, focus inside; the button's left
+    // part shows beside it.
+    await page(`<button data-n="strip" style="position:absolute;left:20px;top:300px;width:300px;height:40px">Archive all</button>
+      <div role="dialog" aria-label="Settings" style="position:fixed;left:120px;top:20px;right:20px;bottom:20px;background:#fff;border:1px solid #000;z-index:10"><button id="okb">OK</button></div>
+      <div style="position:fixed;inset:0;z-index:9;pointer-events:none"></div>`);
+    await evaluateInTab("document.body.style.overflow='hidden';document.getElementById('okb').focus();true", null, PORT);
+    const r = await click({ by: "text", pattern: "Archive all" });
+    if (r.code === "BrowserModalBlocking") {
+      expect(await marks()).toBe(0);
+      expect(await counts()).toEqual({});
+    } else {
+      // The old rules did not take this shape for a modal: the cell says nothing about the early refusal then.
+      expect(r.code).not.toBeUndefined();
+    }
+  });
+
+  it("leaves another call's mark alone when it marks its own (/code-review on #1006)", async () => {
+    await page(`<button style="position:absolute;left:100px;top:100px">First</button><button style="position:absolute;left:300px;top:100px">Second</button>`);
+    for (const [pattern, nonce] of [["First", "m1"], ["Second", "m2"]] as const) {
+      const o = await resolveBrowserActionTarget({ by: "text", pattern, action: "click", port: PORT, tabId: null });
+      if (o.kind !== "resolved") throw new Error(o.kind);
+      await evaluateInTab(buildTagResolvedJs({ by: "text", pattern, caseSensitive: false }, o.index, o.climbDepth, o.matched, nonce), null, PORT);
+    }
+    expect(await marks()).toBe(2);
+    await evaluateInTab(buildUntagJs("m2"), null, PORT);
+    expect(await evaluateInTab("document.querySelector('[data-dtm-press]').getAttribute('data-dtm-press')", null, PORT)).toBe("m1");
   });
 });

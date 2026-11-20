@@ -515,7 +515,8 @@ export const PRESS_TAG_ATTR = "data-dtm-press";
  * internal #421 — the by-axis click's handle on its resolved element: re-gathers the same pool, checks the matched
  * element is the one resolve saw (the fill act's identity gate), climbs, and marks the clickable with
  * `data-dtm-press="<nonce>"`, so the landing read, the press guard and the cover read can find it by a selector.
- * Any older mark is removed first. `buildUntagJs` removes it after the press or the refusal.
+ * Marks of other calls are left alone (one may be in flight on the same tab: /code-review on #1006); each call's
+ * `buildUntagJs` removes its own after the press or the refusal.
  */
 export function buildTagResolvedJs(
   args: ActionFactsArgs,
@@ -525,7 +526,6 @@ export function buildTagResolvedJs(
   nonce: string,
 ): string {
   return `${candidatePoolJs(args)}
-  document.querySelectorAll('[${PRESS_TAG_ATTR}]').forEach(function(n) { n.removeAttribute('${PRESS_TAG_ATTR}'); });
   if (pool.length !== ${expect.total}) return { ok: false, error: 'identity_changed' };
   if (top.length <= ${index}) return { ok: false, error: 'index_out_of_range' };
   const matched = top[${index}].el;

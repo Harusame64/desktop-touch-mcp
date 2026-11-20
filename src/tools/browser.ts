@@ -1308,12 +1308,13 @@ async function screenPointForLanding(
   landing: { x: number; y: number },
   tabId: string | null,
   port: number,
-): Promise<{ x: number; y: number; aim: PageAim | undefined }> {
+): Promise<{ x: number; y: number; aim: PageAim | undefined; rect: { x: number; y: number; w: number; h: number } | undefined }> {
   const at = await getElementScreenCoords(selector, tabId, port);
   const dpr = Number(await evaluateInTab("window.devicePixelRatio || 1", tabId, port)) || 1;
   const vp = at.viewport;
-  if (vp === undefined) return { x: at.x, y: at.y, aim: undefined };
+  if (vp === undefined) return { x: at.x, y: at.y, aim: undefined, rect: undefined };
   return {
+    rect: { x: vp.left / dpr, y: vp.top / dpr, w: vp.width / dpr, h: vp.height / dpr },
     x: Math.round(at.left - vp.left + landing.x * dpr),
     y: Math.round(at.top - vp.top + landing.y * dpr),
     aim: { viewportX: landing.x * dpr, viewportY: landing.y * dpr, hint: { width: vp.innerWidth, height: vp.innerHeight } },
@@ -2273,8 +2274,8 @@ async function handleBrowserClickByAxis(args: {
       }
     }
   }
-  // ADR-023 Phase 2b: the old preflight's modal reading. Without a covered single match it upgrades a
-  // modal-occluded noActionable to BrowserModalBlocking as before; with one, it chooses the refusal's words only.
+  // ADR-023 Phase 2b: the old preflight's modal reading. It upgrades a modal-occluded noActionable to
+  // BrowserModalBlocking as before, except where the landing read below refuses the same modal itself.
   let modal: { blocker: { name: string; role: string } } | null = null;
   let signals: ModalVerdict["signals"] | null = null;
   if (outcome.kind === "noActionable" && outcome.modalFacts) {
@@ -2286,8 +2287,14 @@ async function handleBrowserClickByAxis(args: {
       verdict.blockerDialogIndex !== undefined &&
       outcome.occludedTopByDialogIndex === verdict.blockerDialogIndex
     ) {
+      // The landing read knows aria-modal and an open <dialog> as modal, and then tries the element's centre only:
+      // those go to it, which names what the dialog offers. A modal the old rules find another way is refused
+      // before any landing read, as before, so no strip of the element left beside it is pressed (/code-review on
+      // #1006).
       modal = { blocker: verdict.blocker };
-      if (!covered) return browserModalBlockingFailure(verdict.blocker, verdict.signals, ctx);
+      if (!covered || !(verdict.signals.ariaModal || verdict.signals.nativeDialogOpen)) {
+        return browserModalBlockingFailure(verdict.blocker, verdict.signals, ctx);
+      }
     }
   }
   if (target === null) return browserResolveStopToFailure(outcome as Exclude<ResolveActionOutcome, { kind: "resolved" | "error" }>, "browser_click", ctx);
@@ -2310,9 +2317,11 @@ async function handleBrowserClickByAxis(args: {
     buildTagResolvedJs({ by, pattern, role, scope, caseSensitive: caseSensitive ?? false }, target.index, target.climbDepth, target.matched, nonce),
     tab, port,
   ).catch(() => null)) as { ok?: boolean } | null)?.ok === true;
-  const label = `the element found by ${by}:${JSON.stringify(pattern)}`;
+  const label = `The element found by ${by}:${JSON.stringify(pattern)}`;
   let clicked: Awaited<ReturnType<typeof osClickAndVerify>>;
   let pressedAt: "element" | "host" | "label" | "skin" | "replacement" = "element";
+  // The element's rect after a landing read that scrolled, for the reply (/code-review on #1006).
+  let landedRect: { x: number; y: number; w: number; h: number } | undefined;
   try {
     let pressX = target.physical.x;
     let pressY = target.physical.y;
@@ -2324,16 +2333,25 @@ async function handleBrowserClickByAxis(args: {
         return browserResolveStopToFailure(outcome as Exclude<ResolveActionOutcome, { kind: "resolved" | "error" }>, "browser_click", ctx);
       }
       const landing = await readPressLanding(tagSel, tab, port, { holdScroll: true });
+      const stop = () => browserResolveStopToFailure(outcome as Exclude<ResolveActionOutcome, { kind: "resolved" | "error" }>, "browser_click", ctx);
       if ("error" in landing) {
-        return browserResolveStopToFailure(outcome as Exclude<ResolveActionOutcome, { kind: "resolved" | "error" }>, "browser_click", ctx);
+        if (landing.outside === true) {
+          return failCode("ElementNotInViewport", `browser_click: ${label} is outside the viewport and could not be scrolled into it. Nothing was clicked.`, {
+            suggest: ["Scroll the element into view first using browser_eval with element.scrollIntoView(), then retry browser_click."],
+            context: ctx,
+          });
+        }
+        return stop();
       }
       if ("cover" in landing) return browserPageCoverFailure(tagSel, landing.cover, modal, signals, { label, ctx });
       scrollHeld = true;
       try {
-        ({ x: pressX, y: pressY, aim: pressAim } = await screenPointForLanding(tagSel, landing, tab, port));
-      } catch (e) {
+        ({ x: pressX, y: pressY, aim: pressAim, rect: landedRect } = await screenPointForLanding(tagSel, landing, tab, port));
+      } catch {
+        // The page re-rendered the element after the read (the mark is on the old node): answered as the resolve's
+        // stop, never with the mark's selector, which names nothing the caller can use (/code-review on #1006).
         await settlePressScroll(true, tab, port);
-        throw e;
+        return stop();
       }
       pressedAt = landing.how === "skin" || landing.how === "replacement" || landing.how === "host" ? landing.how : landing.how === "own_label" ? "label" : "element";
     }
@@ -2380,7 +2398,7 @@ async function handleBrowserClickByAxis(args: {
     clicked: { by, pattern, ...(role ? { role } : {}) },
     at: clickedAt,
     pressedAt,
-    resolved: { rect: target.rect, climbDepth: target.climbDepth },
+    resolved: { rect: landedRect ?? target.rect, climbDepth: target.climbDepth },
     activeTab: { id: tabCtx.id, title: tabCtx.title, url: tabCtx.url },
     readyState: tabCtx.readyState,
     hints: { verifyDelivery },
