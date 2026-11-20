@@ -5,21 +5,25 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-async function clickWith(tabsAfter: string[], probe: { mutationCount: number }) {
+async function clickWith(tabsAfter: string[], probe: { mutationCount: number }, order: string[] = []) {
   vi.resetModules();
   let listed = 0;
   vi.doMock("../../src/engine/cdp-bridge.js", async (orig) => ({
     ...(await orig<typeof import("../../src/engine/cdp-bridge.js")>()),
     evaluateInTab: async (expr: string) => {
       if (expr.includes("getBoundingClientRect")) return { x: 10, y: 20 };
-      if (expr.includes("__dtmClickProbe") && expr.includes("MutationObserver")) return { ok: true, selectorFound: true, inIframe: false };
+      if (expr.includes("__dtmClickProbe") && expr.includes("MutationObserver")) {
+        order.push("probe");
+        return { ok: true, selectorFound: true, inIframe: false };
+      }
       return { ok: true, mutationCount: probe.mutationCount, urlChanged: false, activeElementChanged: false, inIframe: false };
     },
     listTabsLight: async () => {
       const ids = listed++ === 0 ? ["T1"] : tabsAfter;
       return ids.map((id) => ({ id, title: id, url: "about:blank", type: "page" }));
     },
-    dispatchClickInTab: async () => {},
+    dispatchMouseMoveInTab: async () => { order.push("move"); },
+    dispatchClickInTab: async () => { order.push("press"); },
   }));
   const { cdpDispatchClickAndVerify } = await import("../../src/tools/browser.js");
   return cdpDispatchClickAndVerify("#go", "T1", 9335);
@@ -43,5 +47,11 @@ describe("a CDP click that opens a tab (internal #415)", () => {
     expect(r.status).toBe("unverifiable");
     expect(r.reason).toBe("no_dom_mutation");
     expect(r.openedTabs).toBe(0);
+  });
+
+  it("moves the pointer before installing the probe, so hover effects are not read as the click", async () => {
+    const order: string[] = [];
+    await clickWith(["T1"], { mutationCount: 0 }, order);
+    expect(order).toEqual(["move", "probe", "press"]);
   });
 });

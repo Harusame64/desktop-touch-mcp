@@ -569,18 +569,37 @@ export async function dispatchWheelInTab(
 }
 
 /**
- * internal #415 — a left click sent to the tab itself by CDP `Input.dispatchMouseEvent` (move, press, release),
- * at viewport CSS px. Nothing goes through the OS cursor: the browser window is not raised, the tab is not
- * activated, and a window in front of the point cannot take it (win2's spike: delivered in front, behind another
- * window, in a background tab and minimized; the user's typing was not taken).
+ * internal #415 — a left click sent to the tab itself by CDP `Input.dispatchMouseEvent`, at viewport CSS px.
+ * Nothing goes through the OS cursor: the browser window is not raised, the tab is not activated, and a window in
+ * front of the point cannot take it (win2's spike: delivered in front, behind another window, in a background tab
+ * and minimized, at 150 % zoom; the user's typing was not taken).
+ *
+ * Two calls, so a caller can install its click probe between them and not count hover effects as the click (the
+ * order browser_click keeps with the OS cursor): `dispatchMouseMoveInTab` moves the pointer to the point,
+ * `dispatchClickInTab` presses and releases there.
  *
  * A failure is thrown as `CdpClickDispatchError` with `pressSent`: false means no press reached the browser (a
- * fallback may press), true means the press was sent and the release was not — the click may have happened.
+ * fallback may press), true means the press was written and the release failed — the click may have happened.
  */
 export class CdpClickDispatchError extends Error {
   constructor(message: string, readonly pressSent: boolean, options?: { cause?: unknown }) {
     super(message, options);
     this.name = "CdpClickDispatchError";
+  }
+}
+
+export async function dispatchMouseMoveInTab(
+  x: number,
+  y: number,
+  tabId: string | null = null,
+  port = DEFAULT_CDP_PORT,
+): Promise<void> {
+  try {
+    const tab = await resolveTab(tabId, port);
+    const session = await openSession(tab, port);
+    await session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: 0 });
+  } catch (e) {
+    throw new CdpClickDispatchError(e instanceof Error ? e.message : String(e), false, { cause: e });
   }
 }
 
@@ -594,8 +613,8 @@ export async function dispatchClickInTab(
   try {
     const tab = await resolveTab(tabId, port);
     const session = await openSession(tab, port);
-    await session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: 0 });
-    pressSent = true; // from here on the browser may have the press, even if this send throws
+    // A closed session rejects without writing anything: then the press was not sent.
+    pressSent = session.isOpen;
     await session.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
     await session.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 });
   } catch (e) {

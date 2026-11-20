@@ -163,7 +163,7 @@ export interface ExecutorDeps {
    * raised and a window in front cannot take it. Only when CDP could not send the press at all does it fall back
    * to browser_click's OS click (`osClickAndVerify`), which brings the browser forward and is refused when
    * something else would take the click. Resolves which press went out, the delivery hint, and how many page tabs
-   * appeared (null when they could not be counted).
+   * appeared (null when they could not be counted); these go to the route row, not to the act's answer.
    */
   cdpClick(selector: string, tabId?: string): Promise<{
     via?: "cdp_dispatch" | "os_click";
@@ -3611,7 +3611,8 @@ export function createDesktopExecutor(
         why: "cdp_click",
         tabId: cdpTabId ?? null,
         // Named fields, not a spread: the road vocabulary's parser reads every field of this row (ADR-036).
-        clickVia: clicked ? (clicked.via ?? null) : null,
+        // Not `clickVia`: the uia_downgrade rows use that name for the UIA client that answered.
+        pressVia: clicked ? (clicked.via ?? null) : null,
         verifyDelivery: clicked ? (clicked.verifyDelivery ?? null) : null,
         openedTabs: clicked ? (clicked.openedTabs ?? null) : null,
       });

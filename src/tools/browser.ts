@@ -17,6 +17,7 @@ import { pollUntil } from "../engine/poll.js";
 import {
   listTabs,
   listTabsLight,
+  dispatchMouseMoveInTab,
   dispatchClickInTab,
   evaluateInTab,
   getElementScreenCoords,
@@ -1153,7 +1154,8 @@ export async function osClickAndVerify(
  * the OS cursor, so no window is raised or activated and a window in front cannot take it. The element is
  * scrolled into view when its centre is outside the viewport, the click probe reads what the press did, and the
  * page tabs are counted before and after: a page that opens a tab or window on click (`window.open`,
- * `target=_blank`) can switch the user's tab or raise its window (win2's spike), and the caller hears of it.
+ * `target=_blank`) can switch the user's tab or raise its window (win2's spike). The count and the verdict are
+ * recorded on desktop_act's route row; the act's answer does not carry them yet.
  *
  * Throws `CdpClickDispatchError` (from the bridge) when the press could not be sent; a missing or unrendered
  * element is a plain Error, as `getElementScreenCoords` answered it before.
@@ -1174,9 +1176,12 @@ export async function cdpDispatchClickAndVerify(
   }
   var c = centre();
   if (c.w === 0 && c.h === 0) return { error: "Element has zero size (hidden or not rendered): " + sel };
-  if (c.x < 0 || c.x >= window.innerWidth || c.y < 0 || c.y >= window.innerHeight) {
-    el.scrollIntoView({ block: "center", inline: "center" });
+  function outside() { return c.x < 0 || c.x >= window.innerWidth || c.y < 0 || c.y >= window.innerHeight; }
+  if (outside()) {
+    // instant: a page with scroll-behavior: smooth would still be animating when the point is read.
+    el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
     c = centre();
+    if (outside()) return { error: "Element is outside the viewport and could not be scrolled into it: " + sel + ". Nothing was clicked." };
   }
   return { x: c.x, y: c.y };
 })()`, tabId, port)) as { x: number; y: number } | { error: string };
@@ -1190,6 +1195,9 @@ export async function cdpDispatchClickAndVerify(
     }
   };
   const before = await pageIds();
+  // The pointer moves first and the probe is installed after it, so hover effects are not read as the click
+  // (the order browser_click keeps with the OS cursor, Codex P1 there).
+  await dispatchMouseMoveInTab(point.x, point.y, tabId, port);
   const probe = await installClickProbe(selector, tabId, port);
   try {
     await dispatchClickInTab(point.x, point.y, tabId, port);
