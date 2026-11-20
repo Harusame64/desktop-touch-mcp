@@ -109,8 +109,9 @@ describe.skipIf(!CHROME)("browser_click by-axis: a covered match is read like th
     // No aria-modal: a dialog covering the whole button, with a transparent full-page layer (the old rules' backdrop),
     // scroll locked and focus inside. The landing read finds no point and refuses; the old rules choose the words.
     await page(`<button data-n="under" style="position:absolute;left:200px;top:300px;width:200px;height:40px">Archive all</button>
-      <div role="dialog" aria-label="Settings" style="position:fixed;left:20px;top:20px;right:20px;bottom:20px;background:#fff;border:1px solid #000;z-index:10"><button id="okb">OK</button></div>
+      <div role="dialog" aria-label="Settings" style="position:fixed;inset:0;background:#fff;z-index:10"><button id="okb">OK</button></div>
       <div style="position:fixed;inset:0;z-index:9;pointer-events:none"></div>`);
+    // The dialog fills the viewport: scrolling (which works under overflow: hidden too) uncovers no part of the button.
     await evaluateInTab("document.body.style.overflow='hidden';document.getElementById('okb').focus();true", null, PORT);
     const r = await click({ by: "text", pattern: "Archive all" });
     expect(r.code).toBe("BrowserModalBlocking");
