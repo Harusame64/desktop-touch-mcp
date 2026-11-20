@@ -152,12 +152,20 @@ describe.skipIf(!CHROME)("desktop_act's CDP click presses the way a person would
 
   it("presses the widget that replaces a hidden native select (Select2: win2 on #1004, R12)", async () => {
     await page(`<div style="margin:80px;position:relative"><select id="fruit" aria-hidden="true" tabindex="-1" style="position:absolute;width:1px;height:1px;clip:rect(0,0,0,0);overflow:hidden;left:0;top:0;margin:0;border:0;padding:0"><option>Apple</option><option>Banana</option></select>
-      <span class="select2" style="display:inline-block;width:200px"><span id="sel" role="combobox" aria-expanded="false" tabindex="0" style="display:block;height:28px;border:1px solid #aaa">Apple</span></span></div>
+      <span class="select2" style="display:inline-block;width:200px"><span id="sel" role="combobox" aria-expanded="false" aria-labelledby="select2-fruit-container" tabindex="0" style="display:block;height:28px;border:1px solid #aaa"><span id="select2-fruit-container">Apple</span></span></span></div>
       <script>document.getElementById('sel').addEventListener('mousedown',function(){this.setAttribute('aria-expanded','true');});</script>`);
     const out = await press("#fruit");
     expect(out.ok).toBe(true);
     if (out.ok) expect(out.r.pressedAt).toBe("replacement");
     expect(await read("document.getElementById('sel').getAttribute('aria-expanded')")).toBe("true");
+  });
+
+  it("does not press an unrelated button that shares a parent with a hidden input (codex on #1004)", async () => {
+    await page(`<form style="margin:80px;position:relative"><input id="token" style="position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;margin:0;border:0;padding:0">
+      <button type="button" data-n="submit" style="position:absolute;left:-10px;top:-10px;width:120px;height:30px">Submit</button></form>`);
+    const out = await press("#token");
+    expect(out.ok).toBe(false);
+    expect(await counts()).toEqual({});
   });
 
   it("does not press another control over a VISIBLE element in the same parent (control for the replacement rule)", async () => {
