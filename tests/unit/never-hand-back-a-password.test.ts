@@ -434,7 +434,9 @@ describe("the tools win2 measured leak nothing the page masks", () => {
     const facts = run(buildActionCandidateFactsJs({ by: "ariaLabel", pattern: "a", caseSensitive: false, includeModal: true }), page) as {
       candidates: Array<{ name: string }>;
     };
-    expect(facts.candidates.map((c) => c.name).sort()).toEqual(["Account password", "Search"]);
+    // P4 is named by its <label for> ("PASSCODE-LABEL"), which by:"ariaLabel" reads since internal #420; still by
+    // that name, never by what is typed in it.
+    expect(facts.candidates.map((c) => c.name).sort()).toEqual(["Account password", "PASSCODE-LABEL", "Search"]);
     expect(leaked(JSON.stringify(facts))).toEqual([]);
     // The modal facts name the dialog from its heading, without the masked text in it.
     expect(JSON.stringify(facts)).toContain('"name":"Verify"');

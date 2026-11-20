@@ -90,11 +90,41 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
   const maxN = ${JSON.stringify(maxResults + offset)};
   const offN = ${JSON.stringify(offset)};
 
-  function isVisible(el) {
+  function isVisibleBox(el) {
     const s = window.getComputedStyle(el);
     if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
+  }
+  // internal #420 — a form control a page hides and draws itself (iCheck's opacity: 0 input, an sr-only checkbox)
+  // is seen through its label: a person sees the label and presses it. A control with no shown label stays hidden
+  // (Choices' display: none select, whose own widget is matched instead).
+  function isVisible(el) {
+    if (isVisibleBox(el)) return true;
+    if (!el.labels || el.labels.length === 0) return false;
+    const s = window.getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden') return false;
+    for (let i = 0; i < el.labels.length; i++) if (isVisibleBox(el.labels[i])) return true;
+    return false;
+  }
+  // internal #420 — the name a person reads for a control: aria-label, the text aria-labelledby points at, or its
+  // own <label>s. Read with the shared naming (__textWithoutFields): never a field's value or masked text.
+  function accessibleName(el) {
+    const aria = (el.getAttribute('aria-label') || '').trim();
+    if (aria) return aria;
+    const by = el.getAttribute('aria-labelledby');
+    if (by) {
+      const parts = [];
+      for (const id of by.trim().split(' ')) { const n = id && document.getElementById(id); if (n) parts.push(__textWithoutFields(n)); }
+      const t = parts.filter(Boolean).join(' ');
+      if (t) return t;
+    }
+    if (el.labels && el.labels.length > 0) {
+      const parts = [];
+      for (let i = 0; i < el.labels.length; i++) parts.push(__textWithoutFields(el.labels[i]));
+      return parts.filter(Boolean).join(' ');
+    }
+    return '';
   }
   function inViewportRect(rect) {
     return rect.top < window.innerHeight && rect.bottom > 0 &&
@@ -212,12 +242,29 @@ ${ELEMENT_NAME_JS}
     if (!aborted && needle === 'button')  for (const el of root.querySelectorAll('button')) record(el, 0.85, 'roleImplicit');
     if (!aborted && needle === 'link')    for (const el of root.querySelectorAll('a[href]')) record(el, 0.85, 'roleImplicit');
     if (!aborted && needle === 'heading') for (const el of root.querySelectorAll('h1,h2,h3,h4,h5,h6')) record(el, 0.85, 'roleImplicit');
+    // internal #420 — the form controls' implicit roles, as the role filter (roleMatches) already reads them. A
+    // control the page hides from people with aria-hidden (Select2's native select, under the combobox it draws) is
+    // left out: the widget that stands for it is the match.
+    function implicit(sel, ok) {
+      for (const el of root.querySelectorAll(sel)) if (!el.closest('[aria-hidden="true"]') && (!ok || ok(el))) record(el, 0.85, 'roleImplicit');
+    }
+    if (!aborted && needle === 'checkbox') implicit('input[type=checkbox]');
+    if (!aborted && needle === 'radio')    implicit('input[type=radio]');
+    if (!aborted && needle === 'combobox') implicit('select', function(el) { return !el.multiple && !(el.size > 1); });
+    if (!aborted && needle === 'textbox') {
+      implicit('textarea, input', function(el) {
+        const ty = (el.getAttribute('type') || 'text').toLowerCase();
+        return el.tagName === 'TEXTAREA' || ['text', 'email', 'tel', 'url', 'password'].indexOf(ty) >= 0;
+      });
+    }
   } else if (by === 'ariaLabel') {
     const needle = cs ? pat : pat.toLowerCase();
     let i = 0;
     for (const el of all) {
       if (overBudget(i++)) { aborted = true; break; }
-      const aria = el.getAttribute('aria-label') || '';
+      // The accessible name, not only the aria-label attribute: a control named by its <label> or by
+      // aria-labelledby is found by that name too (internal #420).
+      const aria = accessibleName(el);
       if (!aria) continue;
       const cmp = cs ? aria : aria.toLowerCase();
       if (cmp === needle) record(el, 0.95, 'ariaLabel');
@@ -336,6 +383,8 @@ function candidatePoolJs(args: ActionFactsArgs): string {
     if (roleFilter === 'link') return tg === 'a' && el.hasAttribute('href');
     if (roleFilter === 'textbox') return tg === 'textarea' || (tg === 'input' && !/^(button|submit|reset|checkbox|radio|range|color|file|image|hidden)$/.test(ty));
     if (roleFilter === 'checkbox') return tg === 'input' && ty === 'checkbox';
+    if (roleFilter === 'combobox') return tg === 'select' && !el.multiple && !(el.size > 1);
+    if (roleFilter === 'listbox') return tg === 'select' && (el.multiple || el.size > 1);
     if (roleFilter === 'radio') return tg === 'input' && ty === 'radio';
     if (roleFilter === 'heading') return /^h[1-6]$/.test(tg);
     return false;
@@ -388,7 +437,9 @@ ${viewportOriginJs(args.pageZoom ?? 1)}
   function actNode(el) {
     const cs2 = window.getComputedStyle(el);
     const r = el.getBoundingClientRect();
-    const vis = cs2.display !== 'none' && cs2.visibility !== 'hidden' && cs2.opacity !== '0' && r.width > 0 && r.height > 0;
+    // The same reading as the candidate filter: a control the page hides and draws itself is seen through its shown
+    // label (internal #420).
+    const vis = isVisible(el);
     // :disabled is ancestor-aware — a control inside <fieldset disabled> has
     // el.disabled === false but is functionally disabled (Codex Round 2 P2).
     let disabled;
@@ -410,6 +461,7 @@ ${viewportOriginJs(args.pageZoom ?? 1)}
       hasHref: el.tagName === 'A' && el.hasAttribute('href'),
       tabindex: ti,
       hasOnclick: el.hasAttribute('onclick'),
+      labelsControl: el.tagName === 'LABEL' && !!el.control,
       cursorPointer: cs2.cursor === 'pointer',
       visible: vis,
       enabled: enabled,
@@ -687,6 +739,8 @@ export interface ClickableNode {
   tabindex: number | null;
   /** an `onclick` attribute is present */
   hasOnclick: boolean;
+  /** internal #420 — a `<label>` with a control (`label.control`); absent from a gather built before it existed */
+  labelsControl?: boolean;
   /** computed `cursor: pointer` */
   cursorPointer: boolean;
   /** display/visibility/opacity not hiding it AND size > 0 */
@@ -844,6 +898,10 @@ const STRONG_ROLES = new Set([
   "checkbox",
   "radio",
   "switch",
+  // internal #420 — a widget drawn in place of a native select (Select2's combobox, Choices' listbox) is pressed
+  // the way the select would be.
+  "combobox",
+  "listbox",
 ]);
 
 /** ADR §1.2 D4 clickable signal strength (strong stops the climb / auto-acts). */
@@ -851,6 +909,8 @@ export function clickableStrength(n: ClickableNode): ClickableStrength {
   if (
     STRONG_TAGS.has(n.tag) ||
     (n.tag === "a" && n.hasHref) ||
+    // internal #420 — a <label> of a control presses that control (a person presses "Remember me").
+    (n.tag === "label" && n.labelsControl === true) ||
     (n.role !== null && STRONG_ROLES.has(n.role))
   ) {
     return "strong";
