@@ -169,6 +169,7 @@ export interface ExecutorDeps {
     via?: "cdp_dispatch" | "os_click";
     verifyDelivery?: { status: string; reason?: string };
     openedTabs?: number | null;
+    pressedAt?: "element" | "label" | "skin";
   } | void>;
   /** CDP: fill a text input by CSS selector.
    * Uses the port the tab was listed on (`portForTab`, llm22 F13). */
@@ -3617,6 +3618,8 @@ export function createDesktopExecutor(
         pressVia: clicked ? (clicked.via ?? null) : null,
         verifyDelivery: clicked ? (clicked.verifyDelivery ?? null) : null,
         openedTabs: clicked ? (clicked.openedTabs ?? null) : null,
+        // internal #421 — where the press went: the element, its own label, or a skin of its widget.
+        pressedAt: clicked ? (clicked.pressedAt ?? null) : null,
       });
       return "cdp";
     }
@@ -3900,6 +3903,7 @@ function getSharedRealDeps(): ExecutorDeps {
           via: "cdp_dispatch",
           verifyDelivery: { status: r.status, ...(r.reason !== undefined && { reason: r.reason }) },
           openedTabs: r.openedTabs,
+          pressedAt: r.pressedAt,
         };
       } catch (e) {
         if (!(e instanceof CdpClickDispatchError)) throw e;
@@ -3927,9 +3931,21 @@ function getSharedRealDeps(): ExecutorDeps {
       // window / pane / hidden tab before and right before the press, presses with the OS cursor, and reads a
       // click probe.
       const { aimFromCoords } = await import("../engine/page-aim.js");
-      const { osClickAndVerify, cdpClickRefusal, refuseIfPageModalBlocks } = await import("./browser.js");
-      // internal #418 — browser_click's modal preflight, on this road too.
-      if (coords.occluded) await refuseIfPageModalBlocks(selector, tab, port);
+      const { osClickAndVerify, cdpClickRefusal, pressPointFor } = await import("./browser.js");
+      // internal #421 — the OS road presses the element's centre only. Covered there, the CDP road's reading says
+      // what is in front (and refuses typed); if a point elsewhere would reach the element (a visible part, its own
+      // label, a skin), the OS cursor is not aimed there: nothing is pressed.
+      if (coords.occluded) {
+        const p = await pressPointFor(selector, tab, port);
+        const err = new Error(
+          `desktop_act (cdp): the CDP press on "${selector}" could not be sent, and its centre is covered; it is reached ` +
+            `only at ${p.how === "skin" ? "a layer of its widget" : p.via === "label" ? "its label" : "another part of it"}, ` +
+            "where the OS press is not aimed. Nothing was clicked. Try again.",
+        );
+        err.name = "AimedRouteFailedError";
+        (err as Error & { callerDetail?: string }).callerDetail = err.message;
+        throw err;
+      }
       const r = await osClickAndVerify(coords.x, coords.y, selector, tab, port, undefined, false, aimFromCoords(coords));
       if ("covered" in r) {
         throw cdpClickRefusal(r, r.at?.x ?? coords.x, r.at?.y ?? coords.y, { selector, tabId: tab });

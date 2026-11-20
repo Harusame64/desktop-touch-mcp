@@ -19,6 +19,7 @@ import {
   listTabsLight,
   dispatchMouseMoveInTab,
   dispatchClickInTab,
+  inspectHitAtPoint,
   evaluateInTab,
   getElementScreenCoords,
   ElementZeroSizeError,
@@ -47,6 +48,7 @@ import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/re
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 import { prepareBrowserEvalExpression } from "./browser-eval-helpers.js";
 import { ELEMENT_NAME_JS } from "./_element-name-js.js";
+import { buildPressPointJs, buildCoverJs, buildPressGuardJs, buildReadPressGuardJs, coverSentence, type PageCover, type PressPoint } from "./press-landing.js";
 import { buildCandidateCollectionJs, resolveBrowserActionTarget, scrollResolvedCandidateIntoView, buildFillActJs, buildPageLevelModalFactsJs, detectModal, probeSelectorModalOcclusion, type ResolveActionOutcome, type ModalFacts, type ModalVerdict } from "./browser-resolver.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1150,54 +1152,71 @@ export async function osClickAndVerify(
 
 
 /**
- * internal #415 — `desktop_act`'s CDP click: the press is sent to the tab by CDP (`dispatchClickInTab`), not with
- * the OS cursor, so no window is raised or activated and a window in front cannot take it. The element is
- * scrolled into view when its centre is outside the viewport, the click probe reads what the press did, and the
- * page tabs are counted before and after: a page that opens a tab or window on click (`window.open`,
- * `target=_blank`) can switch the user's tab or raise its window (win2's spike). The count and the verdict are
- * recorded on desktop_act's route row; the act's answer does not carry them yet.
+ * internal #421 — where desktop_act's CDP click presses `selector`, or the typed refusal when no point reaches it.
  *
- * Throws `CdpClickDispatchError` (from the bridge) when the press could not be sent; a missing or unrendered
- * element is a plain Error, as `getElementScreenCoords` answered it before.
+ * The point comes from the page (`buildPressPointJs`): the element or a visible part of it, its own label, and only
+ * then a skin of its widget, which the browser must confirm: the hit's accessibility node is unnamed and has no role
+ * of its own, and it listens for pointer events (`inspectHitAtPoint`; spike 3 on real libraries). With no point, what
+ * is in front is read (`buildCoverJs`): an empty overlay over the page is waited out briefly, as a person would wait
+ * for a page to load; anything else is refused, naming it and what it offers. A dialog's refusal is `modal_blocking`;
+ * every other cover is `aim_route_failed`. Both say nothing was clicked.
+ */
+export async function pressPointFor(
+  selector: string,
+  tabId: string | null,
+  port: number,
+): Promise<Extract<PressPoint, { x: number }>> {
+  for (let attempt = 0; ; attempt++) {
+    const p = (await evaluateInTab(buildPressPointJs(selector), tabId, port)) as PressPoint | { none: true };
+    if ("error" in p) {
+      const err = new Error(`desktop_act (cdp): ${p.error}`);
+      // Typed, so the act is not answered with a coordinate click at a point that is off the page (agy on #1001).
+      // A missing or unrendered element stays a plain Error, as getElementScreenCoords answered it before.
+      if (p.outside === true) {
+        err.name = "AimedRouteFailedError";
+        (err as Error & { callerDetail?: string }).callerDetail = err.message;
+      }
+      throw err;
+    }
+    if ("x" in p) {
+      if (p.how !== "skin") return p;
+      const h = await inspectHitAtPoint(selector, p.x, p.y, tabId, port);
+      const unnamed = h !== null && (h.ignored || (h.name === "" && SKIN_ROLES.has(h.role)));
+      if (h !== null && unnamed && h.pointerListeners) return p;
+    }
+    const cover = (await evaluateInTab(buildCoverJs(selector), tabId, port)) as PageCover | null;
+    if (cover?.emptyOverlay === true && attempt < 6) {
+      await new Promise<void>((r) => setTimeout(r, 300));
+      continue;
+    }
+    const sentence = cover
+      ? coverSentence(selector, cover)
+      : `"${selector}" is covered in the page and what covers it could not be read; nothing was clicked.`;
+    const err = new Error(`desktop_act (cdp): ${sentence}`);
+    err.name = cover?.dialog ? "ModalBlockingError" : "AimedRouteFailedError";
+    (err as Error & { callerDetail?: string }).callerDetail = err.message;
+    throw err;
+  }
+}
+
+/** Accessibility roles a skin may have: none of its own (spike 3: iCheck's `ins` is "insertion"). */
+const SKIN_ROLES = new Set(["", "generic", "none", "presentation", "insertion", "deletion", "InlineTextBox"]);
+
+/**
+ * internal #415 — desktop_act's click, sent to the tab by CDP, and what the click probe saw.
+ *
+ * The press goes where {@link pressPointFor} says (internal #421). The pointer moves first and the probe and the
+ * press guard are installed after it, so hover effects are not read as the click. The guard stops a press whose hit
+ * the landing rule does not allow — the layout moved between the read and the press — and that press is refused as
+ * not landed, nothing clicked.
  */
 export async function cdpDispatchClickAndVerify(
   selector: string,
   tabId: string | null,
   port: number,
-): Promise<VerifyDeliveryHint & { openedTabs: number | null }> {
-  const point = (await evaluateInTab(`
-(function() {
-  var sel = ${JSON.stringify(selector)};
-  var el = document.querySelector(sel);
-  if (!el) return { error: "Element not found: " + sel };
-  function centre() {
-    var r = el.getBoundingClientRect();
-    return { w: r.width, h: r.height, x: r.left + r.width / 2, y: r.top + r.height / 2 };
-  }
-  var c = centre();
-  if (c.w === 0 && c.h === 0) return { error: "Element has zero size (hidden or not rendered): " + sel };
-  function outside() { return c.x < 0 || c.x >= window.innerWidth || c.y < 0 || c.y >= window.innerHeight; }
-  if (outside()) {
-    // instant: a page with scroll-behavior: smooth would still be animating when the point is read.
-    el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
-    c = centre();
-    if (outside()) return { error: "Element is outside the viewport and could not be scrolled into it: " + sel + ". Nothing was clicked.", outside: true };
-  }
-  var hit = document.elementFromPoint(c.x, c.y);
-  return { x: c.x, y: c.y, occluded: !!hit && hit !== el && !el.contains(hit) };
-})()`, tabId, port)) as { x: number; y: number; occluded?: boolean } | { error: string; outside?: boolean };
-  if ("error" in point) {
-    const err = new Error(`desktop_act (cdp): ${point.error}`);
-    // Typed, so the act is not answered with a coordinate click at a point that is off the page (agy on #1001).
-    // A missing or unrendered element stays a plain Error, as getElementScreenCoords answered it before.
-    if (point.outside === true) {
-      err.name = "AimedRouteFailedError";
-      (err as Error & { callerDetail?: string }).callerDetail = err.message;
-    }
-    throw err;
-  }
-
-  if (point.occluded === true) await refuseIfPageModalBlocks(selector, tabId, port);
+): Promise<VerifyDeliveryHint & { openedTabs: number | null; pressedAt: "element" | "label" | "skin" }> {
+  const point = await pressPointFor(selector, tabId, port);
+  const pressedAt = point.how === "skin" ? "skin" : point.via;
 
   const pageIds = async (): Promise<Set<string> | null> => {
     try {
@@ -1207,15 +1226,33 @@ export async function cdpDispatchClickAndVerify(
     }
   };
   const before = await pageIds();
-  // The pointer moves first and the probe is installed after it, so hover effects are not read as the click
-  // (the order browser_click keeps with the OS cursor, Codex P1 there).
   await dispatchMouseMoveInTab(point.x, point.y, tabId, port);
   const probe = await installClickProbe(selector, tabId, port);
+  const guard = (await evaluateInTab(buildPressGuardJs(selector), tabId, port).catch(() => null)) as { ok?: boolean } | null;
+  const readGuard = async (): Promise<{ blocked: number; first: string | null } | null> => {
+    if (guard?.ok !== true) return null;
+    const g = (await evaluateInTab(buildReadPressGuardJs(), tabId, port).catch(() => null)) as
+      | { ok: boolean; blocked: number; first: string | null }
+      | null;
+    return g?.ok === true ? g : null;
+  };
   try {
     await dispatchClickInTab(point.x, point.y, tabId, port);
   } catch (e) {
     if (probe.installed) await readClickProbe(tabId, port);
+    await readGuard();
     throw e;
+  }
+  const stopped = await readGuard();
+  if (stopped !== null && stopped.blocked > 0) {
+    if (probe.installed) await readClickProbe(tabId, port);
+    const err = new Error(
+      `desktop_act (cdp): the press on "${selector}" landed on ${stopped.first ?? "another element"} — the page moved ` +
+        "between reading the point and pressing — and was stopped in the page; nothing was clicked. Re-call desktop_discover and try again.",
+    );
+    err.name = "AimedRouteFailedError";
+    (err as Error & { callerDetail?: string }).callerDetail = err.message;
+    throw err;
   }
   const verdict = await verdictFromClickProbe(probe, tabId, port);
   const after = await pageIds();
@@ -1224,45 +1261,9 @@ export async function cdpDispatchClickAndVerify(
   // probe alone read it as unverifiable (win2 on #1001, cell 7).
   if (openedTabs !== null && openedTabs > 0 && verdict.status === "unverifiable") {
     const { reason: _unverifiedBecause, ...rest } = verdict;
-    return { ...rest, status: "delivered", openedTabs };
+    return { ...rest, status: "delivered", openedTabs, pressedAt };
   }
-  return { ...verdict, openedTabs };
-}
-
-/**
- * internal #418 — desktop_act's click refuses an element behind a dialog that blocks the page, by browser_click's
- * rule (ADR-023 Phase 2b): the point is covered, and the cover belongs to the dialog `detectModal` names as the
- * blocker. `Input.dispatchMouseEvent` presses whatever is on top, so the backdrop took the press and the act
- * answered ok. A cover that is not that dialog (a banner, a sticky header, a label over a custom checkbox) is
- * pressed as before, as browser_click does. Thrown with the name guarded-touch reads as `modal_blocking`.
- * A probe that cannot answer leaves the click as it was (a probe failure must never break a click).
- */
-export async function refuseIfPageModalBlocks(selector: string, tabId: string | null, port: number): Promise<void> {
-  const probe = await probeSelectorModalOcclusion(selector, tabId, port);
-  if (!probe) return;
-  const verdict = detectModal(probe.modalFacts);
-  if (
-    !verdict.isModal ||
-    !verdict.blocker ||
-    verdict.blockerDialogIndex === undefined ||
-    probe.occludedByDialogIndex !== verdict.blockerDialogIndex ||
-    // The element is inside that dialog: what covers it (a styled box over a checkbox, the dialog's own footer)
-    // is part of the dialog it belongs to, not a dialog in front of it (/code-review on #1002).
-    probe.insideDialogIndices?.includes(verdict.blockerDialogIndex) === true
-  ) {
-    return;
-  }
-  // `detectModal` names an unnamed dialog "modal"; the facts say whether it had a name of its own.
-  const ownName = probe.modalFacts.dialogCandidates[verdict.blockerDialogIndex]?.name ?? "";
-  const name = ownName.replace(/\s+/g, " ").trim().slice(0, 80);
-  const err = new Error(
-    `desktop_act (cdp): "${selector}" is behind a dialog that blocks the page (${name === "" ? "with no name" : JSON.stringify(name)}, ` +
-      `role ${verdict.blocker.role}); nothing was clicked. Answer the dialog — its own buttons come in desktop_discover, ` +
-      "or press Escape — then re-call desktop_discover.",
-  );
-  err.name = "ModalBlockingError";
-  (err as Error & { callerDetail?: string }).callerDetail = err.message;
-  throw err;
+  return { ...verdict, openedTabs, pressedAt };
 }
 
 /** The click probe's verdict after a press (shared by the OS click and the CDP click, internal #415). */

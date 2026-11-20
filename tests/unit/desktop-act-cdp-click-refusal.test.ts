@@ -72,7 +72,7 @@ describe("the real cdpClick (internal #415)", () => {
     dispatch: () => Promise<unknown>,
     osAnswer: unknown,
     calls: Calls,
-    page: { occluded?: boolean; modal?: () => Promise<void> } = {},
+    page: { occluded?: boolean; pressPoint?: () => Promise<unknown> } = {},
   ) {
     vi.resetModules();
     vi.doMock("../../src/engine/cdp-bridge.js", async (orig) => ({
@@ -95,7 +95,7 @@ describe("the real cdpClick (internal #415)", () => {
         calls.os.push(args);
         return osAnswer;
       },
-      refuseIfPageModalBlocks: async () => { await page.modal?.(); },
+      pressPointFor: async () => page.pressPoint?.(),
     }));
     const { _realExecutorDepsForTest } = await import("../../src/tools/desktop-executor.js");
     return _realExecutorDepsForTest().cdpClick("#go", "T1");
@@ -128,20 +128,31 @@ describe("the real cdpClick (internal #415)", () => {
     expect(r).toEqual({ via: "os_click", verifyDelivery: { status: "delivered" } });
   });
 
-  it("runs the page-modal preflight on the OS road too, and presses nothing when it refuses (internal #418)", async () => {
+  it("refuses on the OS road what the CDP road's reading refuses, and presses nothing (internal #421)", async () => {
     const calls: Calls = { dispatch: [], os: [] };
-    const modal = async () => { throw Object.assign(new Error("behind a dialog"), { name: "ModalBlockingError" }); };
-    const err = await realCdpClick(() => dispatchError(false), { status: "delivered", channel: "cdp" }, calls, { occluded: true, modal })
+    const pressPoint = async () => { throw Object.assign(new Error("behind a dialog"), { name: "ModalBlockingError" }); };
+    const err = await realCdpClick(() => dispatchError(false), { status: "delivered", channel: "cdp" }, calls, { occluded: true, pressPoint })
       .then(() => null, (e: unknown) => e as Error);
     expect(err?.name).toBe("ModalBlockingError");
     expect(calls.os).toEqual([]);
   });
 
-  it("does not run the preflight on the OS road when the point is not covered (control)", async () => {
+  it("does not aim the OS press at a label or a skin: covered at the centre, it presses nothing (internal #421)", async () => {
+    const calls: Calls = { dispatch: [], os: [] };
+    const pressPoint = async () => ({ x: 10, y: 20, via: "label", how: "own_label" });
+    const err = await realCdpClick(() => dispatchError(false), { status: "delivered", channel: "cdp" }, calls, { occluded: true, pressPoint })
+      .then(() => null, (e: unknown) => e as Error & { callerDetail?: string });
+    expect(err?.name).toBe("AimedRouteFailedError");
+    expect(err?.callerDetail).toContain("its label");
+    expect(err?.callerDetail).toContain("Nothing was clicked");
+    expect(calls.os).toEqual([]);
+  });
+
+  it("does not read the page on the OS road when the centre is not covered (control)", async () => {
     const calls: Calls = { dispatch: [], os: [] };
     let asked = 0;
-    const modal = async () => { asked++; };
-    await realCdpClick(() => dispatchError(false), { status: "delivered", channel: "cdp" }, calls, { occluded: false, modal });
+    const pressPoint = async () => { asked++; return { x: 1, y: 1, via: "element", how: "self" }; };
+    await realCdpClick(() => dispatchError(false), { status: "delivered", channel: "cdp" }, calls, { occluded: false, pressPoint });
     expect(asked).toBe(0);
     expect(calls.os).toHaveLength(1);
   });
