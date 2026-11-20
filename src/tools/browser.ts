@@ -48,7 +48,7 @@ import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/re
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 import { prepareBrowserEvalExpression } from "./browser-eval-helpers.js";
 import { ELEMENT_NAME_JS } from "./_element-name-js.js";
-import { buildPressPointJs, buildCoverJs, buildPressGuardJs, buildReadPressGuardJs, coverSentence, type PageCover, type PressPoint } from "./press-landing.js";
+import { buildPressPointJs, buildCoverJs, buildPressGuardJs, buildReadPressGuardJs, buildSaveScrollJs, buildRestoreScrollJs, coverSentence, type PageCover, type PressPoint } from "./press-landing.js";
 import { buildCandidateCollectionJs, resolveBrowserActionTarget, scrollResolvedCandidateIntoView, buildFillActJs, buildPageLevelModalFactsJs, detectModal, probeSelectorModalOcclusion, type ResolveActionOutcome, type ModalFacts, type ModalVerdict } from "./browser-resolver.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -788,7 +788,10 @@ export type BrowserPointCover = ({ at?: { x: number; y: number } }) & (
   // ADR-040 — the page is not shown after the window was brought forward (minimized, on another desktop,
   // or its page window did not appear), or its page window cannot be told from another pane.
   | { covered: "page_not_shown"; why: "minimized" | "cloaked" | "no_page_window"; hwnd: bigint; at?: { x: number; y: number } }
-  | { covered: "surface_ambiguous"; hwnd: bigint; at?: { x: number; y: number } });
+  | { covered: "surface_ambiguous"; hwnd: bigint; at?: { x: number; y: number } }
+  // internal #421 — the press reached the page but landed on something the landing rule does not allow (the layout
+  // moved between the read and the press): the page's press guard stopped it, so the element got nothing.
+  | { covered: "page_stopped"; first: string | null; pageReacted: boolean | null; at?: { x: number; y: number } });
 
 /** internal #318 — a tab as the refusal names it. */
 export interface TabSummary { tabId: string; title: string; url: string }
@@ -870,6 +873,24 @@ export function browserPointCoveredFailure(
           "To act without an OS click, browser_fill sets a field's value and browser_eval runs script in the page.",
         ],
         context: { ...ctx, at: { x, y }, coveredBy: "surface_ambiguous", hwnd: String(cover.hwnd) },
+      },
+    );
+  }
+  if (cover.covered === "page_stopped") {
+    // internal #421 — the press went out, and the page's guard stopped it before the page acted on it.
+    return failCode(
+      "BrowserPointCovered",
+      `browser_click: the press at (${x}, ${y}) landed on ${cover.first ?? "something other than the element"}, not on the element — the page changed between the read and the press — and was stopped in the page; the element was not clicked.` +
+        (cover.pageReacted === true
+          ? " The page still changed (a listener of its own ran before the stop): look at it before acting again."
+          : cover.pageReacted === null
+            ? " Whether the page reacted could not be measured: look at it before acting again."
+            : ""),
+      {
+        suggest: [
+          "Look at the page again (it may have opened a menu or moved), then retry browser_click.",
+        ],
+        context: { ...ctx, at: { x, y }, coveredBy: "page_stopped", pageReacted: cover.pageReacted, ...(cover.first !== null && { landedOn: cover.first }) },
       },
     );
   }
@@ -1043,6 +1064,12 @@ export async function osClickAndVerify(
     pointAt: (px, py) => windowFromPoint(px, py) ?? undefined,
     classOf: getWindowClassName,
   },
+  /**
+   * internal #421 — the element the press must land on. With it, the page's press guard (`buildPressGuardJs`) is
+   * installed right before the press and read after it: a press whose first event lands on anything the landing rule
+   * does not allow is stopped in the page and answered `page_stopped`. Without it, nothing is installed, as before.
+   */
+  guardSelector?: string,
 ): Promise<VerifyDeliveryHint | BrowserPointCover> {
   // ADR-029: every browser_click path (selector, by-axis, actionability rescue)
   // funnels here, and this is an OS cursor click — CDP only resolves the
@@ -1144,9 +1171,28 @@ export async function osClickAndVerify(
     }
   }
 
+  // Installed last, right before the press, so no refusal above leaves it in the page (it also removes itself).
+  // Read whether or not the install answered: its answer can be lost after it ran (as cdpDispatchClickAndVerify).
+  if (guardSelector !== undefined) await evaluateInTab(buildPressGuardJs(guardSelector), tabId, port).catch(() => null);
+
   await mouse.click(Button.LEFT);
 
   const verifyDelivery = await verdictFromClickProbe(probe, tabId, port);
+  if (guardSelector !== undefined) {
+    // Read after the press has reached the page: the probe's verdict waits 500 ms, but not when the probe was not
+    // installed, so the wait is made here then (/code-review on #1005). An unread guard keeps the probe's answer.
+    if (!probe.installed) await new Promise<void>((r) => setTimeout(r, 500));
+    const g = (await evaluateInTab(buildReadPressGuardJs(), tabId, port).catch(() => null)) as
+      { ok?: boolean; blocked?: number; first?: string | null } | null;
+    if (g?.ok === true && (g.blocked ?? 0) > 0) {
+      // A listener the page put on window capture before the guard still ran, so the page may have reacted: the
+      // probe's reading says whether it did.
+      // Unknown (null) when the probe did not measure: not installed, not read, or another frame.
+      const pageReacted = verifyDelivery.status === "delivered" ? true
+        : verifyDelivery.reason === "no_dom_mutation" ? false : null;
+      return { covered: "page_stopped", first: g.first ?? null, pageReacted, at: { x, y } };
+    }
+  }
   return { ...verifyDelivery, at: { x, y } };
 }
 
@@ -1167,18 +1213,69 @@ export async function pressPointFor(
   tabId: string | null,
   port: number,
 ): Promise<Extract<PressPoint, { x: number }>> {
+  const landing = await readPressLanding(selector, tabId, port);
+  if ("x" in landing) return landing;
+  if ("error" in landing) {
+    const err = new Error(`desktop_act (cdp): ${landing.error}`);
+    // Typed, so the act is not answered with a coordinate click at a point that is off the page (agy on #1001).
+    // A missing or unrendered element stays a plain Error, as getElementScreenCoords answered it before.
+    if (landing.outside === true) {
+      err.name = "AimedRouteFailedError";
+      (err as Error & { callerDetail?: string }).callerDetail = err.message;
+    }
+    throw err;
+  }
+  const cover = landing.cover;
+  const sentence = cover
+    ? coverSentence(selector, cover)
+    : `"${selector}" is covered in the page and what covers it could not be read; nothing was clicked.`;
+  const err = new Error(`desktop_act (cdp): ${sentence}`);
+  err.name = cover?.dialog?.modal ? "ModalBlockingError" : "AimedRouteFailedError";
+  (err as Error & { callerDetail?: string }).callerDetail = err.message;
+  throw err;
+}
+
+/**
+ * internal #421 — the landing read shared by desktop_act and browser_click: a point that reaches `selector`, the
+ * page's error for it, or what covers it (null when that could not be read). The point is in CSS px of the viewport
+ * at the scroll the page is left at. See {@link pressPointFor}.
+ */
+export async function readPressLanding(
+  selector: string,
+  tabId: string | null,
+  port: number,
+  opts: { holdScroll?: boolean } = {},
+): Promise<Extract<PressPoint, { x: number }> | Extract<PressPoint, { error: string }> | { cover: PageCover | null }> {
+  // The scroll is kept and put back when nothing is pressed: the reads below scroll the element (a sticky header,
+  // the cover read's centring), and a refusal must leave the page where it was (/code-review on #1005). With
+  // `holdScroll`, a point leaves the saved scroll in the page for the caller to settle once it knows whether it
+  // pressed ({@link settlePressScroll}): a refusal after the read must put it back too (round 2).
+  await evaluateInTab(buildSaveScrollJs(selector), tabId, port).catch(() => null);
+  let result: Awaited<ReturnType<typeof readPressLandingAt>>;
+  try {
+    result = await readPressLandingAt(selector, tabId, port);
+  } catch (e) {
+    await settlePressScroll(true, tabId, port);
+    throw e;
+  }
+  if (!("x" in result)) await settlePressScroll(true, tabId, port);
+  else if (opts.holdScroll !== true) await settlePressScroll(false, tabId, port);
+  return result;
+}
+
+/** Put the scroll saved by {@link readPressLanding} back (`restore`), or forget it once the press was sent. */
+export async function settlePressScroll(restore: boolean, tabId: string | null, port: number): Promise<void> {
+  await evaluateInTab(buildRestoreScrollJs(restore), tabId, port).catch(() => null);
+}
+
+async function readPressLandingAt(
+  selector: string,
+  tabId: string | null,
+  port: number,
+): Promise<Extract<PressPoint, { x: number }> | Extract<PressPoint, { error: string }> | { cover: PageCover | null }> {
   for (let attempt = 0; ; attempt++) {
     const p = (await evaluateInTab(buildPressPointJs(selector), tabId, port)) as PressPoint | { none: true };
-    if ("error" in p) {
-      const err = new Error(`desktop_act (cdp): ${p.error}`);
-      // Typed, so the act is not answered with a coordinate click at a point that is off the page (agy on #1001).
-      // A missing or unrendered element stays a plain Error, as getElementScreenCoords answered it before.
-      if (p.outside === true) {
-        err.name = "AimedRouteFailedError";
-        (err as Error & { callerDetail?: string }).callerDetail = err.message;
-      }
-      throw err;
-    }
+    if ("error" in p) return p;
     if ("x" in p) {
       if (p.how !== "skin") return p;
       // The browser's own reading decides what the page script cannot see: a computed accessible name, or a role
@@ -1196,13 +1293,7 @@ export async function pressPointFor(
       await new Promise<void>((r) => setTimeout(r, 300));
       continue;
     }
-    const sentence = cover
-      ? coverSentence(selector, cover)
-      : `"${selector}" is covered in the page and what covers it could not be read; nothing was clicked.`;
-    const err = new Error(`desktop_act (cdp): ${sentence}`);
-    err.name = cover?.dialog?.modal ? "ModalBlockingError" : "AimedRouteFailedError";
-    (err as Error & { callerDetail?: string }).callerDetail = err.message;
-    throw err;
+    return { cover };
   }
 }
 
@@ -1225,6 +1316,8 @@ export async function cdpDispatchClickAndVerify(
   const point = await pressPointFor(selector, tabId, port);
   // Where the point landed, not which box it was searched in: a point from a clipped input's own box that lands on
   // its label is a label press (win2 on #1004, N1).
+  // desktop_act's values are unchanged: a press through the button or link the element is inside reads "element"
+  // there (browser_click says "host").
   const pressedAt = point.how === "skin" || point.how === "replacement" ? point.how : point.how === "own_label" ? "label" : "element";
 
   const pageIds = async (): Promise<Set<string> | null> => {
@@ -1984,6 +2077,55 @@ export function browserMinimizedFailure(ctx: Record<string, unknown>, hwnd?: big
 }
 
 /**
+ * internal #421 — browser_click's refusal when no point reaches the element in the page (`readPressLanding`): a
+ * dialog that blocks the page is `BrowserModalBlocking`, as before; anything else in front — a banner, a menu, an
+ * open picker, an overlay that stayed — is `BrowserPointCovered` with coveredBy "page", naming it and what it offers.
+ */
+function browserPageCoverFailure(
+  selector: string,
+  cover: PageCover | null,
+  modal: { blocker: { name: string; role: string } } | null,
+  signals: ModalVerdict["signals"] | null,
+): ToolResult {
+  const sentence = cover
+    ? coverSentence(selector, cover, "browser_click")
+    : `"${selector}" is covered in the page and what covers it could not be read; nothing was clicked.`;
+  const offers = cover && cover.offers.length > 0 ? { offers: cover.offers } : {};
+  if (cover?.dialog?.modal || modal) {
+    const blocker = cover?.dialog?.modal ? { name: cover.dialog.name, role: cover.dialog.role } : modal!.blocker;
+    // The reply keeps its shape from before #421: the fixed first sentence and `signals` (the old preflight's
+    // reading), with what the dialog offers added.
+    return failCode(
+      "BrowserModalBlocking",
+      `browser_click: the target is behind a modal dialog blocking the page — not clicking through it. See context.blockingElement for the dialog. ${sentence}`,
+      {
+        suggest: [
+          "Dismiss the modal first: click its close/cancel button (e.g. browser_click({by:'role', pattern:'button', scope:'<dialog selector>'})) or send Escape via keyboard(action:'press'), then retry.",
+          "If the modal is expected, act on its contents directly — its own buttons/inputs are inside the dialog and are not blocked.",
+        ],
+        context: { selector, blockingElement: blocker, ...(signals && { signals }), ...offers },
+      },
+    );
+  }
+  return failCode(
+    "BrowserPointCovered",
+    `browser_click: ${sentence}`,
+    {
+      suggest: [
+        cover === null
+          ? "Look at the page (browser_eval or a screenshot) to see what is over the element, deal with it, then retry browser_click."
+          : cover.emptyOverlay
+            ? "Wait for the overlay to go (often a page still loading), then retry browser_click."
+            : cover.offers.length > 0
+              ? "Deal with what covers the element first (close it, or use one of its controls: context.offers), then retry browser_click."
+              : "Deal with what covers the element first (close it, or scroll so the element is clear), then retry browser_click.",
+      ],
+      context: { selector, coveredBy: "page", ...(cover && { cover: cover.cover }), ...offers },
+    },
+  );
+}
+
+/**
  * Typed failure for a click whose target is occluded by a modal dialog blocking
  * the page (ADR-023 Phase 2b). Returned by BOTH click paths BEFORE the OS click /
  * generic stop so the click never lands on the backdrop (selector path) and the
@@ -2470,27 +2612,80 @@ export const browserClickElementHandler = async ({
     if (isOffscreenMinimized(coords.screenX, coords.screenY)) {
       return browserMinimizedFailure({ selector: effectiveSelector }, await minimizedBrowserFrame(port));
     }
-    // ADR-023 Phase 2b: modal-blocking preflight (between minimized and inViewport,
-    // per the #407 chokepoint order). Only when the target is occluded (cheap
-    // hit-test in getElementScreenCoords) do we run the modal probe — so the common
-    // unoccluded click pays no extra eval. If the occluder is the modal blocker,
-    // stop before the OS click (it would otherwise click through to the backdrop).
-    // A non-modal occluder preserves existing behavior (proceed to the click).
+    // internal #421 — where a person would press (between minimized and inViewport, per the #407 chokepoint
+    // order). Only when something covers the element's centre (the cheap hit-test in getElementScreenCoords), so
+    // the common clear click pays no extra eval. The press goes to a point that reaches the element — a visible part
+    // of it, its own label, a skin of its widget, the widget drawn in its place, or the element with a sticky header
+    // scrolled off it — and is refused, naming what is in front, only when nothing reaches it.
+    let pressX = coords.x;
+    let pressY = coords.y;
+    let pressAim = aimFromCoords(coords);
+    // Set when the point came from the landing read: it is inside the viewport by construction.
+    let landed = false;
+    // Set once the landing read left its saved scroll in the page: settled after the press, put back on a refusal.
+    let scrollHeld = false;
+    // Where the press went, as desktop_act says it (win2 on #1005: a label press could only be told from the page).
+    let pressedAt: "element" | "host" | "label" | "skin" | "replacement" = "element";
+    // Issue #441's rescue for a zero-size first match, also when the page re-renders between the reads below.
+    const rescueZeroSize = () => attemptSelectorActionabilityRescue({
+      selector: effectiveSelector, tabId: effectiveTabId, port,
+      scrollIntoView, guardAlreadyRun: true, narrate, perceptionEnv: perceptionEnvBrowser, force,
+    });
     if (coords.occluded) {
-      const probe = await probeSelectorModalOcclusion(effectiveSelector, effectiveTabId ?? null, port);
-      if (probe) {
-        const verdict = detectModal(probe.modalFacts);
-        if (
-          verdict.isModal &&
-          verdict.blocker &&
-          verdict.blockerDialogIndex !== undefined &&
-          probe.occludedByDialogIndex === verdict.blockerDialogIndex
-        ) {
-          return browserModalBlockingFailure(verdict.blocker, verdict.signals, { selector: effectiveSelector });
+      const landing = await readPressLanding(effectiveSelector, effectiveTabId ?? null, port, { holdScroll: true });
+      if ("error" in landing) {
+        if (landing.outside === true) {
+          return failCode("ElementNotInViewport", `browser_click: ${landing.error}`, {
+            suggest: ["Element is outside the visible viewport. Scroll it into view first using browser_eval with element.scrollIntoView(), then retry browser_click."],
+            context: { selector: effectiveSelector },
+          });
         }
+        if (landing.error.startsWith("Element has zero size")) return await rescueZeroSize();
+        throw new Error(landing.error);
       }
+      if ("cover" in landing) {
+        // The old preflight's rules, used for the words only, never to decide whether to press: a dialog the page
+        // does not mark aria-modal is still named BrowserModalBlocking, and its reading is kept as `signals`.
+        let modal: { blocker: { name: string; role: string } } | null = null;
+        let signals: ModalVerdict["signals"] | null = null;
+        const probe = await probeSelectorModalOcclusion(effectiveSelector, effectiveTabId ?? null, port).catch(() => null);
+        if (probe) {
+          const verdict = detectModal(probe.modalFacts);
+          signals = verdict.signals;
+          if (verdict.isModal && verdict.blocker && verdict.blockerDialogIndex !== undefined &&
+              probe.occludedByDialogIndex === verdict.blockerDialogIndex) {
+            modal = { blocker: verdict.blocker };
+          }
+        }
+        return browserPageCoverFailure(effectiveSelector, landing.cover, modal, signals);
+      }
+      // The landing read may have scrolled (a sticky header over the element): the element's place is read again,
+      // and the point is placed from the viewport's screen origin.
+      scrollHeld = true;
+      let at: ElementCoords;
+      let dpr: number;
+      try {
+        at = await getElementScreenCoords(effectiveSelector, effectiveTabId ?? null, port);
+        dpr = Number(await evaluateInTab("window.devicePixelRatio || 1", effectiveTabId ?? null, port)) || 1;
+      } catch (e) {
+        await settlePressScroll(true, effectiveTabId ?? null, port);
+        if (e instanceof ElementZeroSizeError) return await rescueZeroSize();
+        throw e;
+      }
+      const vp = at.viewport;
+      if (vp !== undefined) {
+        pressX = Math.round(at.left - vp.left + landing.x * dpr);
+        pressY = Math.round(at.top - vp.top + landing.y * dpr);
+        pressAim = { viewportX: landing.x * dpr, viewportY: landing.y * dpr, hint: { width: vp.innerWidth, height: vp.innerHeight } };
+      } else {
+        pressX = at.x;
+        pressY = at.y;
+        pressAim = undefined;
+      }
+      landed = true;
+      pressedAt = landing.how === "skin" || landing.how === "replacement" || landing.how === "host" ? landing.how : landing.how === "own_label" ? "label" : "element";
     }
-    if (!coords.inViewport) {
+    if (!landed && !coords.inViewport) {
       return failCode(
         "ElementNotInViewport",
         `browser_click: element "${effectiveSelector}" is outside the visible viewport.`,
@@ -2501,10 +2696,22 @@ export const browserClickElementHandler = async ({
       );
     }
     // OS click + CDP delivery verification (Issue #181, shared with the by-axis
-    // path). Focus → move → probe → click → settle → read → verifyDelivery.
-    const clicked = await osClickAndVerify(coords.x, coords.y, effectiveSelector, effectiveTabId ?? null, port, whoIsUnderPoint, force, aimFromCoords(coords));
+    // path). Focus → move → probe → guard → click → settle → read → verifyDelivery.
+    let clicked: Awaited<ReturnType<typeof osClickAndVerify>>;
+    try {
+      clicked = await osClickAndVerify(pressX, pressY, effectiveSelector, effectiveTabId ?? null, port, whoIsUnderPoint, force, pressAim, undefined, effectiveSelector);
+    } catch (e) {
+      if (scrollHeld) await settlePressScroll(true, effectiveTabId ?? null, port);
+      throw e;
+    }
+    // A refusal before the press puts the scroll back, and so does a stopped press the page did not react to; a
+    // press the page may have acted on keeps the scroll it was made at (round 3).
+    if (scrollHeld) {
+      const restore = isCover(clicked) && (clicked.covered !== "page_stopped" || clicked.pageReacted === false);
+      await settlePressScroll(restore, effectiveTabId ?? null, port);
+    }
     // ADR-040 — the point that was checked (the page surface's), in the refusal and the reply alike.
-    const clickedAt = clicked.at ?? { x: coords.x, y: coords.y };
+    const clickedAt = clicked.at ?? { x: pressX, y: pressY };
     if (isCover(clicked)) return browserPointCoveredFailure(clicked, clickedAt.x, clickedAt.y, { selector: effectiveSelector }, force);
     const { at: _at, ...verifyDelivery } = clicked;
 
@@ -2533,6 +2740,7 @@ export const browserClickElementHandler = async ({
       ok: true,
       clicked: selector,
       at: clickedAt,
+      pressedAt,
       activeTab: { id: tabCtx.id, title: tabCtx.title, url: tabCtx.url },
       readyState: tabCtx.readyState,
       hints: { verifyDelivery },
@@ -3942,7 +4150,7 @@ export function registerBrowserTools(server: McpServer): void {
     "browser_click",
     {
       description:
-        "Click a DOM element in Chrome/Edge. Two ways to target: (1) selector — a CSS selector (combines browser_locate + mouse_click; stable across repaints); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern, so you do not have to build a CSS selector for dynamic-class SPAs. by-axis resolves to a SINGLE actionable element (climbing to a clickable ancestor up to 3 levels, hit-testing for occlusion) and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ actionable elements match, or code:'BrowserNoActionableTarget' when matches exist but none is clickable — it never guesses. If the target is behind a modal dialog blocking the page, BOTH targeting modes STOP with code:'BrowserModalBlocking' (context.blockingElement {name, role}) instead of clicking through to the backdrop — dismiss the dialog (its close button or Escape) and retry; a plain navigation drawer does not count as blocking. Right before the press it checks what is under the point and STOPS with code:'BrowserPointCovered' (nothing clicked; suggest names the next step) when another window, DevTools or a side panel is there, the page is not shown, or the tab is not in front. Optionally add role to filter (by:'text',pattern:'Save',role:'button') and scope to narrow the search. Provide EITHER selector OR by+pattern (not both). Pass tabId+port so the server auto-guards (verifies tab readyState and identity) and returns post.perception.status. lensId is optional for advanced pinned-tab workflows. Caveats: selector mode fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first (by-axis only resolves in-viewport actionable targets). hints.verifyDelivery:{status:'delivered'|'unverifiable', reason, observedSignals:{mutationCount,urlChanged,activeElementChanged}} reports the post-click observation in 2 values: 'delivered' fires only when mutationCount>0 OR urlChanged (activeElementChanged is recorded in observedSignals but intentionally NOT a delivery signal — plain clicks on focusable controls always update focus, treating that as 'delivered' would mask silent-fail regressions); 'unverifiable' reason ∈ {'iframe_context_mismatch','no_dom_mutation','probe_install_failed','probe_read_failed'}. BrowserClickNotDelivered is reserved-only (false-positive risk too high to emit) — degradation reads from 'unverifiable' status.",
+        "Click a DOM element in Chrome/Edge. Two ways to target: (1) selector — a CSS selector (combines browser_locate + mouse_click; stable across repaints); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern, for dynamic-class SPAs. by-axis resolves to a SINGLE actionable element (climbing to a clickable ancestor up to 3 levels, hit-testing for occlusion) and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ actionable elements match, or code:'BrowserNoActionableTarget' when matches exist but none is clickable — it never guesses. If the target is behind a modal dialog blocking the page, BOTH targeting modes STOP with code:'BrowserModalBlocking' (context.blockingElement {name, role}; nothing clicked) — dismiss the dialog (its close button or Escape) and retry; a navigation drawer does not count. selector mode presses past a label, a skin or a sticky header over the element, and STOPS with code:'BrowserPointCovered' (coveredBy:'page', context.cover/offers; nothing clicked) when a banner, menu or overlay is in front; the reply's pressedAt says where it pressed. Right before the press it checks what is under the point and STOPS with code:'BrowserPointCovered' (nothing clicked; suggest names the next step) when another window, DevTools or a side panel is there, the page is not shown, or the tab is not in front; selector mode also stops a press the page moved under (coveredBy:'page_stopped': the element was not clicked; check pageReacted). Optional role filter (by:'text',pattern:'Save',role:'button') and scope. Provide EITHER selector OR by+pattern (not both). Pass tabId+port to auto-guard (tab readyState and identity) and get post.perception.status; lensId is for pinned-tab workflows. Caveats: selector mode fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first (by-axis only resolves in-viewport actionable targets). hints.verifyDelivery:{status:'delivered'|'unverifiable', reason, observedSignals:{mutationCount,urlChanged,activeElementChanged}} reports the post-click observation in 2 values: 'delivered' only when mutationCount>0 OR urlChanged (a focus change alone is not delivery: every click on a focusable control moves focus); 'unverifiable' reason ∈ {'iframe_context_mismatch','no_dom_mutation','probe_install_failed','probe_read_failed'}. BrowserClickNotDelivered is reserved and never emitted: read 'unverifiable' instead.",
       inputSchema: browserClickRegistrationSchema,
     },
     browserClickRegistrationHandler as typeof browserClickElementHandler
