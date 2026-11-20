@@ -363,19 +363,21 @@ export function buildReadPressGuardJs(): string {
 }
 
 /** The sentence a refusal carries: what is in front of the element, and what to do about it. */
-export function coverSentence(selector: string, c: PageCover): string {
+export function coverSentence(selector: string, c: PageCover, tool: "desktop_act" | "browser_click" = "desktop_act"): string {
+  // desktop_act re-reads the window with desktop_discover; browser_click is called again with its selector.
+  const again = tool === "desktop_act" ? "re-call desktop_discover" : "retry browser_click";
   if (c.container) {
     return `"${selector}" does not take a press at its own point: it goes to ${c.cover}, which holds it (the element ` +
-      "has pointer-events: none, or something its container draws lies over it); nothing was clicked. Act on what the page offers instead, or re-call desktop_discover.";
+      `has pointer-events: none, or something its container draws lies over it); nothing was clicked. Act on what the page offers instead, or ${again}.`;
   }
   const offers = c.offers.length > 0 ? ` It offers: ${c.offers.map((o) => JSON.stringify(o)).join(", ")}.` : "";
   if (c.dialog?.modal) {
     const name = c.dialog.name === "" ? "with no name" : JSON.stringify(c.dialog.name);
     return `"${selector}" is behind a dialog in the page (${name}, role ${c.dialog.role}); nothing was clicked.${offers} ` +
-      "Answer the dialog (one of its own controls, or Escape), then re-call desktop_discover.";
+      `Answer the dialog (one of its own controls, or Escape), then ${again}.`;
   }
   if (c.emptyOverlay) {
     return `"${selector}" is under an empty overlay that covers the page (${c.cover}), which stayed through a short wait — often a page still loading; nothing was clicked. Wait for it to go, then try again.`;
   }
-  return `"${selector}" is covered in the page by ${c.cover}; nothing was clicked.${offers} Deal with what covers it (close it, or use one of its controls), or scroll so the element is clear, then re-call desktop_discover.`;
+  return `"${selector}" is covered in the page by ${c.cover}; nothing was clicked.${offers} Deal with what covers it (close it, or use one of its controls), or scroll so the element is clear, then ${again}.`;
 }
