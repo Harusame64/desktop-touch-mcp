@@ -1223,7 +1223,9 @@ export async function cdpDispatchClickAndVerify(
   port: number,
 ): Promise<VerifyDeliveryHint & { openedTabs: number | null; pressedAt: "element" | "label" | "skin" | "replacement" }> {
   const point = await pressPointFor(selector, tabId, port);
-  const pressedAt = point.how === "skin" || point.how === "replacement" ? point.how : point.via;
+  // Where the point landed, not which box it was searched in: a point from a clipped input's own box that lands on
+  // its label is a label press (win2 on #1004, N1).
+  const pressedAt = point.how === "skin" || point.how === "replacement" ? point.how : point.how === "own_label" ? "label" : "element";
 
   const pageIds = async (): Promise<Set<string> | null> => {
     try {
