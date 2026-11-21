@@ -71,17 +71,20 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
       const v = el.getAttribute(attr);
       if (v && v.length < 60) { const s = el.tagName.toLowerCase() + '[' + attr + '=' + JSON.stringify(v) + ']'; if (alone(s)) return s; }
     }
-    // The path of positions: two levels, then more until it matches this element alone or reaches an id, up to
-    // eight; past the scan's time budget, two levels as before (/code-review on #1011: a query per level and result).
-    let node = el; let path = '';
-    for (let depth = 0; node.parentElement && depth < 8; depth++) {
+    // The path of positions: two levels, then more until it matches this element alone or reaches a unique id. The
+    // document is asked at each level up to eight, or until the scan's time budget is spent (/code-review on #1011: a
+    // query per level and result); past that, the path climbs to an id or to <body> without asking, which is unique
+    // by construction (win2 on #1011: pages built of alike blocks matched twice at eight levels).
+    let node = el; let path = ''; let ask = true;
+    for (let depth = 0; node.parentElement; depth++) {
       const p = node.parentElement;
       const idx = Array.from(p.children).indexOf(node) + 1;
       const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
       path = path ? seg + ' > ' + path : seg;
       if (p.id && alone('#' + CSS.escape(p.id))) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
       node = p;
-      if (depth >= 1 && (nowFn() > deadline || alone(path))) break;
+      if (ask && depth >= 1 && alone(path)) break;
+      if (depth >= 7 || nowFn() > deadline) ask = false;
     }
     return path || el.tagName.toLowerCase();
   }
@@ -395,17 +398,20 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
       const v = el.getAttribute(attr);
       if (v && v.length < 60) { const s = el.tagName.toLowerCase() + '[' + attr + '=' + JSON.stringify(v) + ']'; if (alone(s)) return s; }
     }
-    // The path of positions: two levels, then more until it matches this element alone or reaches an id, up to
-    // eight; past the scan's time budget, two levels as before (/code-review on #1011: a query per level and result).
-    let node = el; let path = '';
-    for (let depth = 0; node.parentElement && depth < 8; depth++) {
+    // The path of positions: two levels, then more until it matches this element alone or reaches a unique id. The
+    // document is asked at each level up to eight, or until the scan's time budget is spent (/code-review on #1011: a
+    // query per level and result); past that, the path climbs to an id or to <body> without asking, which is unique
+    // by construction (win2 on #1011: pages built of alike blocks matched twice at eight levels).
+    let node = el; let path = ''; let ask = true;
+    for (let depth = 0; node.parentElement; depth++) {
       const p = node.parentElement;
       const idx = Array.from(p.children).indexOf(node) + 1;
       const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
       path = path ? seg + ' > ' + path : seg;
       if (p.id && alone('#' + CSS.escape(p.id))) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
       node = p;
-      if (depth >= 1 && (nowFn() > deadline || alone(path))) break;
+      if (ask && depth >= 1 && alone(path)) break;
+      if (depth >= 7 || nowFn() > deadline) ask = false;
     }
     return path || el.tagName.toLowerCase();
   }
@@ -887,17 +893,20 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
       const v = el.getAttribute(attr);
       if (v && v.length < 60) { const s = el.tagName.toLowerCase() + '[' + attr + '=' + JSON.stringify(v) + ']'; if (alone(s)) return s; }
     }
-    // The path of positions: two levels, then more until it matches this element alone or reaches an id, up to
-    // eight; past the scan's time budget, two levels as before (/code-review on #1011: a query per level and result).
-    let node = el; let path = '';
-    for (let depth = 0; node.parentElement && depth < 8; depth++) {
+    // The path of positions: two levels, then more until it matches this element alone or reaches a unique id. The
+    // document is asked at each level up to eight, or until the scan's time budget is spent (/code-review on #1011: a
+    // query per level and result); past that, the path climbs to an id or to <body> without asking, which is unique
+    // by construction (win2 on #1011: pages built of alike blocks matched twice at eight levels).
+    let node = el; let path = ''; let ask = true;
+    for (let depth = 0; node.parentElement; depth++) {
       const p = node.parentElement;
       const idx = Array.from(p.children).indexOf(node) + 1;
       const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
       path = path ? seg + ' > ' + path : seg;
       if (p.id && alone('#' + CSS.escape(p.id))) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
       node = p;
-      if (depth >= 1 && (nowFn() > deadline || alone(path))) break;
+      if (ask && depth >= 1 && alone(path)) break;
+      if (depth >= 7 || nowFn() > deadline) ask = false;
     }
     return path || el.tagName.toLowerCase();
   }

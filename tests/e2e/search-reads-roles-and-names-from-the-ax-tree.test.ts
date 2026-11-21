@@ -183,6 +183,16 @@ describe.skipIf(!CHROME)("browser_search by:'role' and by:'ariaLabel' read the a
     expect(await marks()).toBe(0);
   });
 
+  it("returns a unique selector for blocks built alike deeper than eight levels (win2 on #1011: Amazon's tiles)", async () => {
+    const deep = (n: number, inner: string): string => (n === 0 ? inner : `<div>${deep(n - 1, inner)}</div>`);
+    const block = deep(11, `<a href="#t">Tile</a>`);
+    await page(`<div>${block}</div><div>${block}</div>`);
+    const b = await search({ by: "role", pattern: "link" });
+    expect(b.total).toBe(2);
+    expect(new Set(b.results!.map((h) => h.selector)).size).toBe(2);
+    for (const h of b.results!) expect(await evaluateInTab(`document.querySelectorAll(${JSON.stringify(h.selector)}).length`, null, PORT)).toBe(1);
+  });
+
   it("leaves by:'text' on DOM text (control)", async () => {
     await page(SR);
     expect(sels(await search({ by: "text", pattern: "Accept terms" }))).toEqual(["body:nth-child(2) > label:nth-child(2)"]);
