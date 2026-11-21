@@ -647,6 +647,11 @@ function axIsControl(role: string, n: { properties?: Array<{ name?: string; valu
   return v !== undefined && v !== null && v !== false && v !== "false";
 }
 
+/** desktop_discover's controls mode leaves these to the page-side list (or out: a slider it cannot press). */
+const AX_LISTED_BY_TAG = new Set(["link", "button", "textbox", "searchbox", "slider", "spinbutton"]);
+/** Roles a widget draws its own way (a skin, a replacement): marked first in controls mode. */
+const AX_DRAWN_ROLES = new Set(["checkbox", "radio", "switch", "combobox", "listbox"]);
+
 /** Marks never made: text runs of a name, not elements a person acts on. */
 const AX_TEXT_ROLES = new Set(["StaticText", "InlineTextBox", "LineBreak", "RootWebArea", "none"]);
 
@@ -661,10 +666,12 @@ const AX_TEXT_ROLES = new Set(["StaticText", "InlineTextBox", "LineBreak", "Root
  * not ignored and not a text run, is marked `data-dtm-ax="<nonce>:<score>:<c when a control>:<role>"`,
  * the best 200 first, so the page-side gather takes them as its candidates. A native multi-row select (role
  * listbox) is left out: a press on it picks the option under the centre. Answers how many were marked, or null when
- * the tree (or the scope) could not be read; with none marked, the caller keeps the DOM reading.
+ * the tree (or the scope) could not be read; with none marked, the caller keeps the DOM reading. `by: "controls"`
+ * marks the controls desktop_discover's list needs the tree for (PR-C2b): not links, buttons, text fields, sliders
+ * or spinbuttons.
  */
 export async function markAxMatches(
-  opts: { by: "role" | "ariaLabel"; pattern: string; caseSensitive: boolean; nonce: string; scope?: string },
+  opts: { by: "role" | "ariaLabel" | "controls"; pattern: string; caseSensitive: boolean; nonce: string; scope?: string },
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT,
 ): Promise<number | null> {
@@ -688,7 +695,20 @@ export async function markAxMatches(
     const from = rootObj.result?.objectId;
     if (!from) return null;
     const scored: Array<{ backend: number; score: number; control: boolean; role: string }> = [];
-    if (opts.by === "role") {
+    if (opts.by === "controls") {
+      // desktop_discover (internal #420, PR-C2b): every control the tree shows that is not a link or a button (the
+      // page-side list finds those by their tags and roles) — a checkbox drawn by a skin, Select2's combobox, Choices'
+      // popup listbox, a role=checkbox div — named or not.
+      const nodes = ((await s.send("Accessibility.queryAXTree", { objectId: from })) as { nodes: AxNode[] }).nodes;
+      for (const n of nodes) {
+        const r = n.role?.value ?? "";
+        // Links, buttons and native fields are left to the page-side list, which finds them by their tags; a div the
+        // tree calls a textbox (the CDP fill cannot write to it), a slider or a spinbutton is not listed. The roles a
+        // widget draws in its own way come first (/code-review on #1009).
+        if (n.ignored || !n.backendDOMNodeId || !axIsControl(r, n) || AX_LISTED_BY_TAG.has(r)) continue;
+        scored.push({ backend: n.backendDOMNodeId, score: AX_DRAWN_ROLES.has(r) ? 0.9 : 0.85, control: true, role: r });
+      }
+    } else if (opts.by === "role") {
       const role = opts.caseSensitive ? opts.pattern : opts.pattern.toLowerCase();
       const nodes = ((await s.send("Accessibility.queryAXTree", { objectId: from, role })) as { nodes: AxNode[] }).nodes;
       for (const n of nodes) {
@@ -716,7 +736,9 @@ export async function markAxMatches(
       scored.push(...exact, ...partial);
     }
     scored.sort((a, b) => b.score - a.score);
-    const marks = scored.slice(0, 200);
+    // desktop_discover's list takes its first 60 in document order, so a control early in the page must not be
+    // crowded out of a score-sorted 200 by ones later; a by-axis question keeps its best 200.
+    const marks = scored.slice(0, opts.by === "controls" ? 1000 : 200);
     const done = await Promise.all(marks.map(async (m) => {
       try {
         const { object } = (await s.send("DOM.resolveNode", { backendNodeId: m.backend, objectGroup: group })) as { object: { objectId?: string } };
@@ -731,7 +753,12 @@ export async function markAxMatches(
             // test stays for one that does (/code-review on #1008).
             if (this.nodeType !== 1 || this.getRootNode() !== document || window !== window.top) return 0;
             if (role === 'listbox' && this.tagName === 'SELECT') return 0;
-            this.setAttribute('${AX_MARK_ATTR}', v);
+            // One token per call, beside other calls' tokens: a discover and a click on the same tab do not overwrite
+            // each other's marks (/code-review on #1009).
+            var mine = v.split(':')[0] + ':';
+            var keep = (this.getAttribute('${AX_MARK_ATTR}') || '').split(' ').filter(function(t) { return t && t.indexOf(mine) !== 0; });
+            keep.push(v);
+            this.setAttribute('${AX_MARK_ATTR}', keep.join(' '));
             return 1;
           }`,
         })) as { result?: { value?: number } };
@@ -751,7 +778,7 @@ export async function markAxMatches(
 /** Remove one call's accessibility-tree marks ({@link markAxMatches}); another call's marks on the tab stay. */
 export async function clearAxMarks(nonce: string, tabId: string | null = null, port = DEFAULT_CDP_PORT): Promise<void> {
   await evaluateInTab(
-    `document.querySelectorAll('[${AX_MARK_ATTR}^=' + ${JSON.stringify(JSON.stringify(nonce + ":"))} + ']').forEach(function(n){n.removeAttribute('${AX_MARK_ATTR}')});true`,
+    `(function(){var mine=${JSON.stringify(nonce + ":")};document.querySelectorAll('[${AX_MARK_ATTR}*=' + JSON.stringify(mine) + ']').forEach(function(n){var keep=(n.getAttribute('${AX_MARK_ATTR}')||'').split(' ').filter(function(t){return t&&t.indexOf(mine)!==0;});if(keep.length)n.setAttribute('${AX_MARK_ATTR}',keep.join(' '));else n.removeAttribute('${AX_MARK_ATTR}');});return true})()`,
     tabId, port,
   ).catch(() => null);
 }

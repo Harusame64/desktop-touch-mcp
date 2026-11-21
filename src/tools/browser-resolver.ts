@@ -102,8 +102,13 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
   // internal #420 — the element the accessibility tree matched, and its score and whether its role is a control.
   function axOf(el) {
     if (axMark === null) return null;
-    const v = (el.getAttribute('${AX_MARK_ATTR}') || '').split(':');
-    return v[0] === axMark ? { score: parseFloat(v[1]) || 0.7, control: v[2] === 'c', role: v[3] || '' } : null;
+    // The attribute holds one token per call ("<nonce>:<score>:<c>:<role>"), space-separated.
+    const toks = (el.getAttribute('${AX_MARK_ATTR}') || '').split(' ');
+    for (let i = 0; i < toks.length; i++) {
+      const v = toks[i].split(':');
+      if (v[0] === axMark) return { score: parseFloat(v[1]) || 0.7, control: v[2] === 'c', role: v[3] || '' };
+    }
+    return null;
   }
   function isVisible(el) {
     const s = window.getComputedStyle(el);
