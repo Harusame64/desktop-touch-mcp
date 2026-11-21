@@ -29,7 +29,7 @@ async function page(body: string): Promise<void> {
 }
 type Hit = { selector: string; role?: string; confidence: number; matchedBy: string };
 type Body = { ok?: boolean; code?: string; total?: number; returned?: number; truncated?: boolean; results?: Hit[] };
-async function search(a: { by: "role" | "ariaLabel" | "text"; pattern: string; scope?: string; visibleOnly?: boolean; inViewportOnly?: boolean; maxResults?: number; offset?: number; caseSensitive?: boolean }): Promise<Body> {
+async function search(a: { by: "role" | "ariaLabel" | "text" | "regex"; pattern: string; scope?: string; visibleOnly?: boolean; inViewportOnly?: boolean; maxResults?: number; offset?: number; caseSensitive?: boolean }): Promise<Body> {
   const r = await browserSearchHandler({
     maxResults: 50, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive: false, port: PORT, ...a,
   });
@@ -234,6 +234,22 @@ describe.skipIf(!CHROME)("browser_search by:'text' and by:'regex' match what the
       const all = await search({ by, pattern: "priceBlock", visibleOnly: false });
       expect(sels(all)).toEqual(["#later", "#shown"]);
       expect(sels(await search({ by, pattern: "priceBlock" }))).toEqual(["#shown"]);
+    }
+  });
+
+  it("finds what the page does draw: a style shown with CSS (/code-review on #1015)", async () => {
+    // Judged by layout, which also lets a noscript through when scripts are blocked: its content is laid out then.
+    await page(`<style id="demo" style="display:block">.priceTag{color:red}</style>`);
+    for (const by of ["text", "regex"] as const) expect(sels(await search({ by, pattern: "priceTag" }))).toEqual(["#demo"]);
+  });
+
+  it("answers a search scoped into <head> as asked (/code-review on #1015)", async () => {
+    await page(`<p>other</p>`);
+    await evaluateInTab(`(function(){document.title='Checkout page';return true})()`, null, PORT);
+    for (const by of ["text", "regex"] as const) {
+      const b = await search({ by, pattern: "Checkout", scope: "head", visibleOnly: false });
+      expect(b.total).toBe(1);
+      expect(await evaluateInTab(`document.querySelector(${JSON.stringify(b.results![0].selector)}).tagName`, null, PORT)).toBe("TITLE");
     }
   });
 });

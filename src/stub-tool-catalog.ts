@@ -585,7 +585,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "maximum": 9007199254740991
         },
         "visibleOnly": {
-          "description": "Only visible elements (default true). Set false to include hidden ones with confidence penalty.",
+          "description": "Only visible elements (default true). Set false to include hidden ones with confidence penalty. text/regex never match a script's or style's source or what <head> holds, unless scope is inside it.",
           "type": "boolean",
           "default": true
         },

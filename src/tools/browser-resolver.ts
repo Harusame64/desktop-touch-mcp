@@ -189,10 +189,20 @@ ${ELEMENT_NAME_JS}
 
   const all = root.querySelectorAll('*');
   let candidates = [];
-  // Text the page never draws as text: a script's or a style's source, a noscript's markup while scripts run, a
-  // template's, and what <head> holds (the title). The text axes do not match it, visible or not (win2 on #1011:
-  // by:'text' with visibleOnly:false listed Amazon's <script> JSON).
-  function notDrawnText(el) { return !!el.closest('head, script, style, noscript, template'); }
+  // Text the page never draws: a script's or a style's source, a noscript's markup while scripts run, a template's,
+  // and what <head> holds (the title). The text axes leave it out, visibleOnly or not (win2 on #1011: by:'text' with
+  // visibleOnly:false listed Amazon's <script> JSON). Judged by whether the page lays it out, not by the tag
+  // (/code-review on #1015): a noscript is drawn when scripts are blocked, a style a page shows with CSS is drawn. Not
+  // by display: Chrome computes a noscript inline while scripts run and lays out nothing for it. A search the caller
+  // scoped into one of them (scope:'head') is answered as asked.
+  const NOT_TEXT = 'head, script, style, noscript, template';
+  function notDrawnText(el) {
+    for (let a = el.closest(NOT_TEXT); a; a = a.parentElement ? a.parentElement.closest(NOT_TEXT) : null) {
+      if (a === root || a.contains(root)) return false;
+      if (a.getClientRects().length === 0) return true;
+    }
+    return false;
+  }
 
   if (axMark !== null) {
     // internal #420 — by:'role' / by:'ariaLabel' from the browser's accessibility tree, marked before this gather.
@@ -221,13 +231,12 @@ ${ELEMENT_NAME_JS}
     let i = 0;
     for (const el of all) {
       if (overBudget(i++)) { aborted = true; break; }
-      if (notDrawnText(el)) continue;
       // Direct child text only (avoid double-counting parent matches via descendants)
       const direct = Array.from(el.childNodes)
         .filter(n => n.nodeType === 3)
         .map(n => n.textContent || '')
         .join('').trim();
-      if (!direct) continue;
+      if (!direct || notDrawnText(el)) continue;
       const hay = cs ? direct : direct.toLowerCase();
       // What the page masks is not matched: a hit on hidden text would answer what the text says.
       if (!hay.includes(needle) || __isMasked(el)) continue;
@@ -241,9 +250,8 @@ ${ELEMENT_NAME_JS}
     let i = 0;
     for (const el of all) {
       if (overBudget(i++)) { aborted = true; break; }
-      if (notDrawnText(el)) continue;
       const direct = Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent || '').join('').trim();
-      if (!direct) continue;
+      if (!direct || notDrawnText(el)) continue;
       if (re.test(direct) && !__isMasked(el)) record(el, 0.9, 'regex');
     }
   } else if (by === 'role') {
