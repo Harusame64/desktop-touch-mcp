@@ -120,6 +120,13 @@ describe.skipIf(!CHROME)("browser_search by:'role' and by:'ariaLabel' read the a
     expect(await marks()).toBe(0);
   });
 
+  it("marks past 200 when the page asks for more: 300 native checkboxes only the tree calls checkboxes (/code-review)", async () => {
+    await page(Array.from({ length: 300 }, (_, i) => `<input type="checkbox" id="c${i}">`).join(""));
+    const b = await search({ by: "role", pattern: "checkbox", maxResults: 50, offset: 250 });
+    expect([b.total, b.returned]).toEqual([300, 50]);
+    expect(await marks()).toBe(0);
+  });
+
   it("leaves by:'text' on DOM text (control)", async () => {
     await page(SR);
     expect(sels(await search({ by: "text", pattern: "Accept terms" }))).toEqual(["body:nth-child(2) > label:nth-child(2)"]);
