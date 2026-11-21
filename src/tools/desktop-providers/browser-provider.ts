@@ -31,8 +31,14 @@ interface BrowserElement {
 // A checkbox, radio or switch reads as a button, as UIA's are (uiaRoleFromControlType): it is pressed, not typed
 // into (internal #420: a native checkbox read "textbox"). A combobox a widget draws (Select2, Choices) is pressed to
 // open, so it is a button too; a native select and a text field stay textboxes.
+/** A submit, reset, image or button input: pressed, not typed into (win2 on #1009: "Send" read as a textbox). */
+function isPressInput(type: string): boolean {
+  return /^input\[(submit|reset|image|button)\]$/.test(type);
+}
+
 function cdpRoleFromType(type: string): string {
   if (type === "link")   return "link";
+  if (isPressInput(type)) return "button";
   if (type === "button" || type.startsWith("toggle[")) return "button";
   if (type.startsWith("input[") || type === "select" || type === "textarea" || type === "textbox") return "textbox";
   if (type === "menuitem" || type === "option" || type === "tab") return "menuitem";
@@ -46,6 +52,7 @@ function isField(type: string): boolean {
 }
 
 function cdpActionability(type: string): Array<"click" | "invoke" | "type" | "read"> {
+  if (isPressInput(type)) return ["invoke", "click"];
   if (type === "link" || type === "button" || type.startsWith("toggle[")) return ["invoke", "click"];
   if (type.startsWith("input[") || type === "textarea" || type === "select" || type === "textbox") return ["type", "click"];
   if (type === "menuitem" || type === "option" || type === "tab" || type === "treeitem") return ["invoke", "click"];
@@ -128,8 +135,6 @@ export function interactiveScript(axNonce: string | null): string {
     if(role==='menuitem'||role==='option') return role;
     if(tag==='a') return 'link';
     if(tag==='button'||role==='button') return 'button';
-    // A submit, reset, image or button input is pressed, not typed into (win2 on #1009: "Send" read as a textbox).
-    if(tag==='input'&&/^(submit|reset|image|button)$/.test(el.type)) return 'button';
     if(tag==='input') return 'input['+(el.type||'text')+']';
     return tag;
   }
