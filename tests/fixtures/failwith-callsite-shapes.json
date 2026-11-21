@@ -181,14 +181,14 @@
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 3802,
+      "line": 3798,
       "tool": "browser_search",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 3950,
+      "line": 3946,
       "tool": "browser_disconnect",
       "errKind": "identifier",
       "contextShape": "none"
