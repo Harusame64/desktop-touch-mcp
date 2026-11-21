@@ -61,9 +61,69 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(what(await resolve({ by: "role", pattern: "combobox" }, false))).toBe("span#s2");
   });
 
-  it("does not find the aria-hidden native select by its label's name", async () => {
+  it("finds Select2's combobox, never its aria-hidden native select, by the select's label (W12)", async () => {
     await page(SELECT2);
-    expect(what(await resolve({ by: "ariaLabel", pattern: "Fruit" }, false))).not.toBe("select#fruit");
+    expect(what(await resolve({ by: "ariaLabel", pattern: "Fruit" }, false))).toBe("span#s2");
+  });
+
+  it("finds Choices' select by the label of the select it hides, and presses it (win2 on #1008, W12)", async () => {
+    const CH = `<label for="fr2" style="position:absolute;left:100px;top:60px">Fruit</label><div class="choices" id="chw" role="listbox" tabindex="0" aria-haspopup="true" aria-expanded="false" style="position:absolute;left:100px;top:100px;width:260px;height:40px;border:1px solid"><div class="choices__inner"><select id="fr2" hidden tabindex="-1"><option>Apple</option></select><div>Apple</div></div></div>`;
+    await page(CH);
+    expect(what(await resolve({ by: "ariaLabel", pattern: "Fruit" }))).toBe("div#chw");
+    expect(what(await resolve({ by: "ariaLabel", pattern: "Fruit", role: "listbox" }))).toBe("div#chw");
+    await page(CH); // the resolves above leave their marks for a caller; the click starts clean
+    const r = await browserClickElementHandler({ by: "ariaLabel", pattern: "Fruit", port: PORT } as never);
+    const body = JSON.parse((r.content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { code?: string; ok?: boolean };
+    expect(await marks()).toBe(0);
+    if (body.ok !== true) expect(["BrowserNoActionableTarget", "BrowserAmbiguousTarget", "BrowserPointCovered"]).not.toContain(body.code);
+  });
+
+  it("does not lend a hidden select's label to a widget that is not drawn for it (control)", async () => {
+    await page(`<label for="hs">Country</label><select id="hs" hidden><option>JP</option></select><div class="row"><div><div><div><div><div role="combobox" id="other" tabindex="0" aria-label="State" style="position:absolute;left:100px;top:100px;width:200px;height:28px;border:1px solid">--</div></div></div></div></div></div>`);
+    expect((await resolve({ by: "ariaLabel", pattern: "Country" })).kind).not.toBe("resolved");
+    expect(await marks()).toBe(0);
+  });
+
+  // ── /code-review high on #1010 ───────────────────────────────────────────────────────────────────────────────
+  it("does not lend a merely hidden select's label to a combobox right after it (another field)", async () => {
+    await page(`<label for="ct">Country</label><select id="ct" hidden></select><div role="combobox" tabindex="0" aria-label="State" style="position:absolute;left:100px;top:100px;width:200px;height:28px;border:1px solid">--</div>`);
+    expect((await resolve({ by: "ariaLabel", pattern: "Country" })).kind).not.toBe("resolved");
+  });
+
+  it("names a select by its label's own words, not the options of the select it wraps", async () => {
+    await page(`<label>Fruit <div role="listbox" id="wf" tabindex="0" aria-haspopup="true" style="display:inline-block;width:200px;height:30px;border:1px solid"><select hidden><option>Apple</option><option>Banana</option></select>Apple</div></label>`);
+    const o = await resolve({ by: "ariaLabel", pattern: "Fruit" });
+    expect(what(o)).toBe("div#wf");
+    expect(await evaluateInTab("document.getElementById('wf').getAttribute('data-dtm-ax').split(':')[1]", null, PORT)).toBe("0.95");
+    await page(`<label>Fruit <div role="listbox" id="wf" tabindex="0" aria-haspopup="true" style="display:inline-block;width:200px;height:30px;border:1px solid"><select hidden><option>Apple</option><option>Banana</option></select>Apple</div></label>`);
+    expect((await resolve({ by: "ariaLabel", pattern: "Banana" })).kind).not.toBe("resolved");
+  });
+
+  it("keeps the tree's better mark on a widget named exactly so, when its select's label only contains the pattern", async () => {
+    await page(`<label for="fb2">Fruit basket</label><div role="combobox" id="wn" aria-label="Fruit" tabindex="0" style="position:absolute;left:100px;top:100px;width:200px;height:30px;border:1px solid"><select id="fb2" hidden></select></div>`);
+    expect(what(await resolve({ by: "ariaLabel", pattern: "Fruit" }))).toBe("div#wn");
+    expect(await evaluateInTab("document.getElementById('wn').getAttribute('data-dtm-ax').split(' ').length + ':' + document.getElementById('wn').getAttribute('data-dtm-ax').split(':')[1]", null, PORT)).toBe("1:0.95");
+  });
+
+  it("does not make a listbox with no popup pressable by lending it a name (a press there picks an option)", async () => {
+    await page(`<label for="tp">Toppings</label><div role="listbox" id="lt" tabindex="0" style="position:absolute;left:100px;top:100px;width:200px"><select id="tp" hidden multiple></select><div role="option">Cheese</div><div role="option">Ham</div></div>`);
+    expect((await resolve({ by: "ariaLabel", pattern: "Toppings" })).kind).not.toBe("resolved");
+  });
+
+  it("lends a Select2 select's aria-label too", async () => {
+    await page(`<select aria-label="Fruit" tabindex="-1" aria-hidden="true" style="position:absolute;width:1px;height:1px;clip:rect(0 0 0 0);overflow:hidden"></select><span class="select2"><span class="selection"><span role="combobox" id="s2a" tabindex="0" aria-haspopup="true" style="display:block;width:200px;height:28px;border:1px solid"><span role="textbox" aria-readonly="true">Apple</span></span></span></span>`);
+    expect(what(await resolve({ by: "ariaLabel", pattern: "Fruit" }))).toBe("span#s2a");
+  });
+
+  it("keeps a shown select found by its own label (it is in the tree; nothing is lent)", async () => {
+    await page(`<label for="vs" style="position:absolute;left:100px;top:60px">Size</label><select id="vs" style="position:absolute;left:100px;top:100px"><option>M</option></select>`);
+    expect(what(await resolve({ by: "ariaLabel", pattern: "Size" }))).toBe("select#vs");
+  });
+
+  it("lends a label only inside the scope asked for", async () => {
+    await page(`<div id="a"><label for="fa">Fruit</label><div role="listbox" id="wa" tabindex="0" aria-haspopup="true" style="position:absolute;left:100px;top:100px;width:200px;height:30px;border:1px solid"><select id="fa" hidden></select>A</div></div><div id="b"><label for="fb">Fruit</label><div role="listbox" id="wb" tabindex="0" aria-haspopup="true" style="position:absolute;left:100px;top:200px;width:200px;height:30px;border:1px solid"><select id="fb" hidden></select>B</div></div>`);
+    expect((await resolve({ by: "ariaLabel", pattern: "Fruit" })).kind).toBe("ambiguous");
+    expect(what(await resolve({ by: "ariaLabel", pattern: "Fruit", scope: "#b" } as never))).toBe("div#wb");
   });
 
   it("resolves a Choices-style combobox by role, not its hidden select", async () => {
