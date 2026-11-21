@@ -51,6 +51,7 @@ import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/re
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 import { prepareBrowserEvalExpression } from "./browser-eval-helpers.js";
 import { ELEMENT_NAME_JS } from "./_element-name-js.js";
+import { UNIQUE_SELECTOR_JS } from "./_unique-selector-js.js";
 import { buildPressPointJs, buildCoverJs, buildPressGuardJs, buildReadPressGuardJs, buildSaveScrollJs, buildRestoreScrollJs, coverSentence, type PageCover, type PressPoint } from "./press-landing.js";
 import { buildCandidateCollectionJs, buildTagResolvedJs, buildUntagJs, PRESS_TAG_ATTR, resolveBrowserActionTarget, scrollResolvedCandidateIntoView, buildFillActJs, buildPageLevelModalFactsJs, detectModal, probeSelectorModalOcclusion, type ResolveActionOutcome, type ModalFacts, type ModalVerdict } from "./browser-resolver.js";
 
@@ -3359,41 +3360,22 @@ export const browserGetInteractiveHandler = async ({
            rect.left < window.innerWidth && rect.right > 0;
   }
 
-  // Fix #3: use CSS.escape for IDs; improve nth-child fallback to include parent path
-  function bestSelector(el) {
-    if (el.id) return '#' + CSS.escape(el.id);
-    const name = el.getAttribute('name');
-    if (name) return el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']';
-    const ariaLabel = el.getAttribute('aria-label');
-    if (ariaLabel && ariaLabel.length < 80)
-      return el.tagName.toLowerCase() + '[aria-label=' + JSON.stringify(ariaLabel) + ']';
-    if (el.tagName === 'A' && el.href) {
-      try {
-        const u = new URL(el.href);
-        const dp = u.pathname.match(/\\/dp\\/([A-Z0-9]{10})/);
-        if (dp) return 'a[href*="/dp/' + dp[1] + '"]';
-        if (u.pathname.length > 1 && u.pathname.length < 60)
-          return 'a[href*=' + JSON.stringify(u.pathname.slice(0, 40)) + ']';
-      } catch(e) {}
-    }
-    // Stable data attributes
-    for (const attr of ['data-testid', 'data-asin']) {
-      const v = el.getAttribute(attr);
-      if (v && v.length < 60) return el.tagName.toLowerCase() + '[' + attr + '=' + JSON.stringify(v) + ']';
-    }
-    // nth-child with up to 2 ancestor levels for specificity
-    let node = el;
-    let path = '';
-    for (let depth = 0; depth < 2 && node.parentElement; depth++) {
-      const p = node.parentElement;
-      const idx = Array.from(p.children).indexOf(node) + 1;
-      const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
-      path = path ? seg + ' > ' + path : seg;
-      if (p.id) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
-      node = p;
-    }
-    return path || el.tagName.toLowerCase();
+  // A selector that matches this element alone in the document, the one definition browser_search shares: an id the
+  // page repeats, a radio group's shared name or a two-level path had pressed the first match (internal #420). A
+  // link's path is tried after its aria-label, and kept only when no other link has it.
+${UNIQUE_SELECTOR_JS}
+  const selDeadline = performance.now() + 3000;
+  function linkPaths(el) {
+    if (el.tagName !== 'A' || !el.href) return [];
+    try {
+      const u = new URL(el.href);
+      const dp = u.pathname.match(/\\/dp\\/([A-Z0-9]{10})/);
+      if (dp) return ['a[href*="/dp/' + dp[1] + '"]'];
+      if (u.pathname.length > 1 && u.pathname.length < 60) return ['a[href*=' + JSON.stringify(u.pathname.slice(0, 40)) + ']'];
+    } catch (e) {}
+    return [];
   }
+  function bestSelector(el) { return __uniqueSelector(el, () => performance.now() > selDeadline, linkPaths); }
 
   function elType(el) {
     const tag = el.tagName.toLowerCase();
