@@ -199,8 +199,9 @@ ${ELEMENT_NAME_JS}
   // - a noscript, by whether scripts run in this document, read at most once per search and only when a noscript is
   //   reached, from the scripting media feature, which writes nothing to the page (/code-review on #1015: an innerHTML
   //   probe broke under Trusted Types and wrote to the page on every axis). It follows CDP's
-  //   setScriptExecutionDisabled (measured, Chrome on macOS). A Chromium before 120 does not know the feature (the
-  //   query reads "not all"); there the fragment parse answers, which follows the same flag;
+  //   setScriptExecutionDisabled and Chrome's JavaScript site setting (measured: mac, and win2 on #1015, where a
+  //   Report-Only Trusted Types policy received no report from a search). A Chromium before 120 does not know the
+  //   feature (the query reads "not all"); there the fragment parse answers, which follows the same flag;
   // - the rest, by a computed display of none: a style a page shows with CSS is drawn.
   // A search scoped into one of them (scope:'head') is answered as asked.
   const NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';

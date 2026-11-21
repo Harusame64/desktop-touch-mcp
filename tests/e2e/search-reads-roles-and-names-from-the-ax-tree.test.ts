@@ -277,7 +277,11 @@ describe.skipIf(!CHROME)("browser_search by:'text' and by:'regex' match what the
       const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="require-trusted-types-for 'script'"><style>.c{display:contents}</style></head><body><noscript><p id="a">Enable scripts to checkout</p></noscript><noscript class="c"><p id="b">Enable scripts to pay</p></noscript><svg width="1" height="1"><noscript>Enable scripts svg</noscript></svg></body></html>`;
       await send("Page.navigate", { url: "data:text/html;charset=utf-8," + encodeURIComponent(html) });
       await sleep(400);
-      for (const by of ["text", "regex"] as const) expect(sels(await search({ by, pattern: "Enable scripts" }))).toEqual(["#a", "#b"]);
+      for (const by of ["text", "regex"] as const) {
+        expect(sels(await search({ by, pattern: "Enable scripts" }))).toEqual(["#a", "#b"]);
+        // visibleOnly:false, so the SVG noscript is judged by the rule, not filtered as invisible.
+        expect(sels(await search({ by, pattern: "Enable scripts", visibleOnly: false }))).toEqual(["#a", "#b"]);
+      }
     } finally {
       // Back to a page without the policy, so the next document.write is allowed.
       await send("Emulation.setScriptExecutionDisabled", { value: false });
