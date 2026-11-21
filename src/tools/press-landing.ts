@@ -205,7 +205,11 @@ export function buildPressPointJs(selector: string): string {
   var el = document.querySelector(sel);
   if (!el) return { error: "Element not found: " + sel };
   var r0 = el.getBoundingClientRect();
-  if (r0.width === 0 && r0.height === 0) return { error: "Element has zero size (hidden or not rendered): " + sel };
+  // A 0x0 control a person presses through its <label> or the widget drawn in its place (MkDocs' palette radios) is
+  // still pressed there; with neither, it is not rendered (internal #420, the deep check on #1008).
+  if (r0.width === 0 && r0.height === 0 && !((el.labels && el.labels.length > 0) || __dtmSameKindControls(el).length > 0)) {
+    return { error: "Element has zero size (hidden or not rendered): " + sel };
+  }
   function inView(x, y) { return x >= 0 && y >= 0 && x < innerWidth && y < innerHeight; }
   function points(n) {
     var r = n.getBoundingClientRect(); if (r.width === 0 || r.height === 0) return [];

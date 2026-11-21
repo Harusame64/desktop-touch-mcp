@@ -10,7 +10,7 @@ import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chro
 import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll, markAxMatches, clearAxMarks } from "../../src/engine/cdp-bridge.js";
 import { resolveBrowserActionTarget, type ResolveActionOutcome } from "../../src/tools/browser-resolver.js";
-import { browserClickElementHandler } from "../../src/tools/browser.js";
+import { browserClickElementHandler, readPressLanding } from "../../src/tools/browser.js";
 
 const PORT = 9238;
 const CHROME = tryFindChrome() !== null;
@@ -193,5 +193,29 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(await evaluateInTab("Array.from(document.querySelectorAll('[data-dtm-ax]')).map(function(n){return n.getAttribute('data-dtm-ax').split(':')[0]})", null, PORT)).toEqual(["bbb"]);
     await clearAxMarks("bbb", null, PORT);
     expect(await marks()).toBe(0);
+  });
+
+  it("sees 0x0 radios through their shown labels, tells them apart, and picks the one named (MkDocs' palette toggle)", async () => {
+    await page(`<form><input type="radio" name="p" id="p0" style="position:absolute;width:0;height:0;margin:0;opacity:0"><label for="p0" style="position:absolute;left:100px;top:100px">Light</label>
+      <input type="radio" name="p" id="p1" style="position:absolute;width:0;height:0;margin:0;opacity:0"><label for="p1" style="position:absolute;left:200px;top:100px">Dark</label>
+      <input type="radio" name="p" id="p2" style="position:absolute;width:0;height:0;margin:0;opacity:0"><label for="p2" style="position:absolute;left:300px;top:100px">System</label></form>`);
+    expect(what(await resolve({ by: "ariaLabel", pattern: "Dark" }, false))).toBe("input#p1");
+    expect((await resolve({ by: "role", pattern: "radio" }, false)).kind).toBe("ambiguous");
+  });
+
+  it("sees a select a widget replaces (opacity 0, with a box), so the landing read can press the widget (Choices)", async () => {
+    await page(`<label for="fl" style="position:absolute;left:100px;top:80px">Flavour</label><select id="fl" style="position:absolute;left:100px;top:100px;width:200px;opacity:0"><option>Vanilla</option></select><div role="combobox" tabindex="0" style="position:absolute;left:100px;top:100px;width:200px;height:24px;border:1px solid">Vanilla</div>`);
+    expect(what(await resolve({ by: "ariaLabel", pattern: "Flavour" }, false))).toBe("select#fl");
+  });
+
+  it("finds where to press a 0x0 radio: its own label (the landing read no longer stops at its zero size)", async () => {
+    await page(`<input type="radio" name="p" id="z" style="position:absolute;width:0;height:0;margin:0;opacity:0"><label for="z" style="position:absolute;left:200px;top:100px">Dark</label>`);
+    await evaluateInTab("document.getElementById('z').setAttribute('data-t','1');true", null, PORT);
+    expect(await readPressLanding("[data-t]", null, PORT)).toMatchObject({ how: "own_label" });
+  });
+
+  it("still says a 0x0 element with no label is not rendered (control)", async () => {
+    await page(`<button id="nb" data-t="1" style="position:absolute;width:0;height:0;padding:0;border:0"></button>`);
+    expect(await readPressLanding("[data-t]", null, PORT)).toMatchObject({ error: expect.stringContaining("zero size") });
   });
 });

@@ -108,12 +108,24 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
   function isVisible(el) {
     const s = window.getComputedStyle(el);
     if (s.display === 'none' || s.visibility === 'hidden') return false;
-    // A checkbox or radio the tree exposes is there for a person, though the page draws it another way (iCheck's
-    // opacity: 0 input under its skin): the landing read finds where to press it. It still needs a box: a 0x0
-    // control is not one a person can reach (/code-review on #1008: a honeypot field, collapsed palette radios).
+    // A checkbox, radio or select the tree exposes is one a page may draw another way: iCheck's opacity: 0 input under
+    // its skin, a select a widget replaces (Choices), a 0x0 radio whose <label> is the button (MkDocs' palette
+    // toggle). It is seen when it has a box of its own or a shown label; the landing read then finds where a person
+    // presses it (the skin, the label, the widget). Any other element at opacity 0 or with no box is hidden: a
+    // honeypot text field, collapsed radios with no label (/code-review and the deep check on #1008).
     const ax = axOf(el);
-    // Only a checkbox or radio is drawn another way like this; a text field at opacity 0 is a hidden one (a honeypot).
-    if (s.opacity === '0' && !(ax && ax.control && el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio'))) return false;
+    if (ax && ax.control && ((el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) || el.tagName === 'SELECT')) {
+      const rb = el.getBoundingClientRect();
+      if (rb.width > 0 && rb.height > 0) return true;
+      const labs = el.labels || [];
+      for (let i = 0; i < labs.length; i++) {
+        const ls = window.getComputedStyle(labs[i]);
+        const lr = labs[i].getBoundingClientRect();
+        if (ls.display !== 'none' && ls.visibility !== 'hidden' && ls.opacity !== '0' && lr.width > 0 && lr.height > 0) return true;
+      }
+      return false;
+    }
+    if (s.opacity === '0') return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   }
@@ -1000,7 +1012,9 @@ export function decideActionTarget(
   const distinct = new Map<string, (typeof resolved)[number]>();
   for (const r of resolved) {
     if (r.actionable && r.clickable) {
-      const key = rectKey(r.clickable.rect);
+      // A box with no area is no evidence of being the same target: 0x0 radios a page stacks at one place are three
+      // (internal #420, the deep check on #1008).
+      const key = r.clickable.rect.w === 0 || r.clickable.rect.h === 0 ? `#${r.f.index}` : rectKey(r.clickable.rect);
       if (!distinct.has(key)) distinct.set(key, r);
     }
   }
