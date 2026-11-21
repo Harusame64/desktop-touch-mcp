@@ -475,7 +475,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     const by = el.getAttribute('aria-labelledby');
     if (by) {
       const parts = [];
-      for (const id of by.trim().split(' ')) { const n = id && document.getElementById(id); if (n) parts.push(__textWithoutFields(n)); }
+      for (const id of by.trim().split(/s+/)) { const n = id && document.getElementById(id); if (n) parts.push(__textWithoutFields(n)); }
       const t = parts.filter(Boolean).join(' ');
       if (t) return t;
     }
@@ -678,30 +678,36 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     // internal #420 — the form controls' implicit roles, as the role filter (roleMatches) already reads them. A
     // control the page hides from people with aria-hidden (Select2's native select, under the combobox it draws) is
     // left out: the widget that stands for it is the match.
+    // These are a wider reading ('roleImplicitControl'): the decision uses them only when the explicit roles
+    // settle nothing, so a page's one role=textbox editor is not made ambiguous by a native field.
     function implicit(sel, ok) {
-      for (const el of root.querySelectorAll(sel)) if (!el.closest('[aria-hidden="true"]') && (!ok || ok(el))) record(el, 0.85, 'roleImplicit');
+      for (const el of root.querySelectorAll(sel)) if (!el.closest('[aria-hidden="true"]') && (!ok || ok(el))) record(el, 0.85, 'roleImplicitControl');
     }
     if (!aborted && needle === 'checkbox') implicit('input[type=checkbox]');
     if (!aborted && needle === 'radio')    implicit('input[type=radio]');
     if (!aborted && needle === 'combobox') implicit('select', function(el) { return !el.multiple && !(el.size > 1); });
-    if (!aborted && needle === 'textbox') {
-      implicit('textarea, input', function(el) {
-        const ty = (el.getAttribute('type') || 'text').toLowerCase();
-        return el.tagName === 'TEXTAREA' || ['text', 'email', 'tel', 'url', 'password'].indexOf(ty) >= 0;
-      });
-    }
+    if (!aborted && needle === 'listbox')  implicit('select', function(el) { return el.multiple || el.size > 1; });
+    // The same set as the role filter's textbox (roleMatches), read from el.type (an unknown type is text).
+    if (!aborted && needle === 'textbox') implicit('textarea, input', function(el) {
+      return el.tagName === 'TEXTAREA' || !/^(button|submit|reset|checkbox|radio|range|color|file|image|hidden)$/.test(el.type);
+    });
   } else if (by === 'ariaLabel') {
     const needle = cs ? pat : pat.toLowerCase();
     let i = 0;
     for (const el of all) {
       if (overBudget(i++)) { aborted = true; break; }
       // The accessible name, not only the aria-label attribute: a control named by its <label> or by
-      // aria-labelledby is found by that name too (internal #420).
-      const aria = accessibleName(el);
+      // aria-labelledby is found by that name too (internal #420). Such a match is a wider reading
+      // ('ariaLabelName'): the decision uses it only when the attribute's matches settle nothing. A control under
+      // aria-hidden is not found by a name it does not show (Select2's native select).
+      const attr = (el.getAttribute('aria-label') || '').trim();
+      const aria = attr || accessibleName(el);
       if (!aria) continue;
+      if (!attr && el.closest('[aria-hidden="true"]')) continue;
+      const how = attr ? 'ariaLabel' : 'ariaLabelName';
       const cmp = cs ? aria : aria.toLowerCase();
-      if (cmp === needle) record(el, 0.95, 'ariaLabel');
-      else if (cmp.includes(needle)) record(el, 0.7, 'ariaLabel');
+      if (cmp === needle) record(el, 0.95, how);
+      else if (cmp.includes(needle)) record(el, 0.7, how);
     }
   }
 
@@ -1043,6 +1049,20 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
       tabindex: ti,
       hasOnclick: el.hasAttribute('onclick'),
       labelsControl: el.tagName === 'LABEL' && !!el.control,
+      // The label's control can take the press: enabled, and not hidden from people with aria-hidden (internal #420).
+      controlUsable: el.tagName === 'LABEL' && !!el.control && !el.control.closest('[aria-hidden="true"]') &&
+        !(function(c) { try { return c.matches(':disabled'); } catch (e) { return !!c.disabled; } })(el.control) &&
+        el.control.getAttribute('aria-disabled') !== 'true',
+      // The box reading before #420 (no seeing through a label): the narrower decision uses it.
+      visibleBox: isVisibleBox(el),
+      // A combobox or listbox showing options of its own is an open list, not the closed widget a press opens.
+      hasVisibleOptions: (function() {
+        const r0 = (el.getAttribute('role') || '').toLowerCase();
+        if (r0 !== 'combobox' && r0 !== 'listbox') return false;
+        const opts = el.querySelectorAll('[role=option]');
+        for (let i = 0; i < opts.length && i < 50; i++) if (isVisibleBox(opts[i])) return true;
+        return false;
+      })(),
       cursorPointer: cs2.cursor === 'pointer',
       visible: vis,
       enabled: enabled,

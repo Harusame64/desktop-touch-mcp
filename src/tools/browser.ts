@@ -2276,7 +2276,7 @@ async function handleBrowserClickByAxis(args: {
       // A box of 2px or less is a control hidden from people (an sr-only checkbox, often parked at -1,-1): wherever
       // it sits, it is pressed through its label or the widget drawn in its place, which the landing read finds
       // (internal #420, #1006 X2a).
-      const hidden = loose.rect.w <= 2 || loose.rect.h <= 2;
+      const hidden = (loose.rect.w <= 2 || loose.rect.h <= 2) && /^(input|select|textarea)$/.test(loose.matched.tag);
       if (hidden || (cx >= 0 && cy >= 0 && cx < vw && cy < vh)) {
         target = loose;
         covered = true;

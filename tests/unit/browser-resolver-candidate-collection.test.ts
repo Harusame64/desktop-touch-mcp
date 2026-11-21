@@ -69,8 +69,11 @@ describe("ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extr
       "record(el, 0.9, 'regex')",
       "record(el, 0.75, 'role')",
       "record(el, 0.85, 'roleImplicit')",
-      "record(el, 0.95, 'ariaLabel')",
-      "record(el, 0.7, 'ariaLabel')",
+      // internal #420: the ariaLabel axis records 'ariaLabel' for the attribute and 'ariaLabelName' for a name from a
+      // label or aria-labelledby, at the same scores.
+      "const how = attr ? 'ariaLabel' : 'ariaLabelName';",
+      "record(el, 0.95, how)",
+      "record(el, 0.7, how)",
       "record(selectorMatches[i], 1.0, 'selector')",
       "const SCAN_BUDGET_MS = 3000;",
     ]) {
@@ -150,7 +153,7 @@ describe("ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot)", 
       "filtered.sort((a, b) =>",          // shared matching body
       "const top = pool.slice(0, N);",    // shared pool fragment
       'const roleFilter = "textbox";',    // role filter shared
-      "record(el, 0.95, 'ariaLabel')",    // shared per-axis scoring
+      "record(el, 0.95, how)",    // shared per-axis scoring (internal #420: 'ariaLabel' or 'ariaLabelName')
     ]) {
       expect(js).toContain(frag);
     }

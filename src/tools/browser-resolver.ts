@@ -115,7 +115,7 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
     const by = el.getAttribute('aria-labelledby');
     if (by) {
       const parts = [];
-      for (const id of by.trim().split(' ')) { const n = id && document.getElementById(id); if (n) parts.push(__textWithoutFields(n)); }
+      for (const id of by.trim().split(/\s+/)) { const n = id && document.getElementById(id); if (n) parts.push(__textWithoutFields(n)); }
       const t = parts.filter(Boolean).join(' ');
       if (t) return t;
     }
@@ -245,30 +245,36 @@ ${ELEMENT_NAME_JS}
     // internal #420 — the form controls' implicit roles, as the role filter (roleMatches) already reads them. A
     // control the page hides from people with aria-hidden (Select2's native select, under the combobox it draws) is
     // left out: the widget that stands for it is the match.
+    // These are a wider reading ('roleImplicitControl'): the decision uses them only when the explicit roles
+    // settle nothing, so a page's one role=textbox editor is not made ambiguous by a native field.
     function implicit(sel, ok) {
-      for (const el of root.querySelectorAll(sel)) if (!el.closest('[aria-hidden="true"]') && (!ok || ok(el))) record(el, 0.85, 'roleImplicit');
+      for (const el of root.querySelectorAll(sel)) if (!el.closest('[aria-hidden="true"]') && (!ok || ok(el))) record(el, 0.85, 'roleImplicitControl');
     }
     if (!aborted && needle === 'checkbox') implicit('input[type=checkbox]');
     if (!aborted && needle === 'radio')    implicit('input[type=radio]');
     if (!aborted && needle === 'combobox') implicit('select', function(el) { return !el.multiple && !(el.size > 1); });
-    if (!aborted && needle === 'textbox') {
-      implicit('textarea, input', function(el) {
-        const ty = (el.getAttribute('type') || 'text').toLowerCase();
-        return el.tagName === 'TEXTAREA' || ['text', 'email', 'tel', 'url', 'password'].indexOf(ty) >= 0;
-      });
-    }
+    if (!aborted && needle === 'listbox')  implicit('select', function(el) { return el.multiple || el.size > 1; });
+    // The same set as the role filter's textbox (roleMatches), read from el.type (an unknown type is text).
+    if (!aborted && needle === 'textbox') implicit('textarea, input', function(el) {
+      return el.tagName === 'TEXTAREA' || !/^(button|submit|reset|checkbox|radio|range|color|file|image|hidden)$/.test(el.type);
+    });
   } else if (by === 'ariaLabel') {
     const needle = cs ? pat : pat.toLowerCase();
     let i = 0;
     for (const el of all) {
       if (overBudget(i++)) { aborted = true; break; }
       // The accessible name, not only the aria-label attribute: a control named by its <label> or by
-      // aria-labelledby is found by that name too (internal #420).
-      const aria = accessibleName(el);
+      // aria-labelledby is found by that name too (internal #420). Such a match is a wider reading
+      // ('ariaLabelName'): the decision uses it only when the attribute's matches settle nothing. A control under
+      // aria-hidden is not found by a name it does not show (Select2's native select).
+      const attr = (el.getAttribute('aria-label') || '').trim();
+      const aria = attr || accessibleName(el);
       if (!aria) continue;
+      if (!attr && el.closest('[aria-hidden="true"]')) continue;
+      const how = attr ? 'ariaLabel' : 'ariaLabelName';
       const cmp = cs ? aria : aria.toLowerCase();
-      if (cmp === needle) record(el, 0.95, 'ariaLabel');
-      else if (cmp.includes(needle)) record(el, 0.7, 'ariaLabel');
+      if (cmp === needle) record(el, 0.95, how);
+      else if (cmp.includes(needle)) record(el, 0.7, how);
     }
   }
 
@@ -462,6 +468,20 @@ ${viewportOriginJs(args.pageZoom ?? 1)}
       tabindex: ti,
       hasOnclick: el.hasAttribute('onclick'),
       labelsControl: el.tagName === 'LABEL' && !!el.control,
+      // The label's control can take the press: enabled, and not hidden from people with aria-hidden (internal #420).
+      controlUsable: el.tagName === 'LABEL' && !!el.control && !el.control.closest('[aria-hidden="true"]') &&
+        !(function(c) { try { return c.matches(':disabled'); } catch (e) { return !!c.disabled; } })(el.control) &&
+        el.control.getAttribute('aria-disabled') !== 'true',
+      // The box reading before #420 (no seeing through a label): the narrower decision uses it.
+      visibleBox: isVisibleBox(el),
+      // A combobox or listbox showing options of its own is an open list, not the closed widget a press opens.
+      hasVisibleOptions: (function() {
+        const r0 = (el.getAttribute('role') || '').toLowerCase();
+        if (r0 !== 'combobox' && r0 !== 'listbox') return false;
+        const opts = el.querySelectorAll('[role=option]');
+        for (let i = 0; i < opts.length && i < 50; i++) if (isVisibleBox(opts[i])) return true;
+        return false;
+      })(),
       cursorPointer: cs2.cursor === 'pointer',
       visible: vis,
       enabled: enabled,
@@ -741,9 +761,15 @@ export interface ClickableNode {
   hasOnclick: boolean;
   /** internal #420 — a `<label>` with a control (`label.control`); absent from a gather built before it existed */
   labelsControl?: boolean;
+  /** internal #420 — that control is enabled and not under aria-hidden */
+  controlUsable?: boolean;
+  /** internal #420 — visible by its own box only (display/visibility/opacity, size > 0), as before #420 */
+  visibleBox?: boolean;
+  /** internal #420 — a combobox/listbox with a shown role=option inside (an open list) */
+  hasVisibleOptions?: boolean;
   /** computed `cursor: pointer` */
   cursorPointer: boolean;
-  /** display/visibility/opacity not hiding it AND size > 0 */
+  /** display/visibility/opacity not hiding it AND size > 0, or (internal #420) a form control seen through its shown label; `visibleBox` is the box-only reading */
   visible: boolean;
   /** not `:disabled` (ancestor-aware — includes `<fieldset disabled>` descendants) and `aria-disabled !== "true"` */
   enabled: boolean;
@@ -898,20 +924,22 @@ const STRONG_ROLES = new Set([
   "checkbox",
   "radio",
   "switch",
-  // internal #420 — a widget drawn in place of a native select (Select2's combobox, Choices' listbox) is pressed
-  // the way the select would be.
-  "combobox",
-  "listbox",
 ]);
 
+/** The readings internal #420 added: a match made only by one of them is used when the older readings settle nothing. */
+const WIDE_MATCHES = new Set(["ariaLabelName", "roleImplicitControl"]);
+
 /** ADR §1.2 D4 clickable signal strength (strong stops the climb / auto-acts). */
-export function clickableStrength(n: ClickableNode): ClickableStrength {
+export function clickableStrength(n: ClickableNode, wide = false, fill = false): ClickableStrength {
   if (
     STRONG_TAGS.has(n.tag) ||
     (n.tag === "a" && n.hasHref) ||
-    // internal #420 — a <label> of a control presses that control (a person presses "Remember me").
-    (n.tag === "label" && n.labelsControl === true) ||
-    (n.role !== null && STRONG_ROLES.has(n.role))
+    (n.role !== null && STRONG_ROLES.has(n.role)) ||
+    // internal #420, the wider reading only: a <label> of a usable control presses that control (a person presses
+    // "Remember me"), and a closed combobox or listbox widget (Select2, Choices) is pressed as the select would be.
+    // Not for a fill: a label is not the field to write (the fill resolves the field itself).
+    (wide && !fill && n.tag === "label" && n.labelsControl === true && n.controlUsable !== false) ||
+    (wide && (n.role === "combobox" || n.role === "listbox") && n.hasVisibleOptions !== true)
   ) {
     return "strong";
   }
@@ -927,8 +955,11 @@ export function clickableStrength(n: ClickableNode): ClickableStrength {
  * `receivesEvents` (a click-occlusion guard) is not a precondition (plan §S2/S5,
  * Round 1 P2-2). `visible` + `enabled` still gate both paths.
  */
-export function isActionable(n: ClickableNode, requireReceivesEvents = true): boolean {
-  return n.visible && n.enabled && (!requireReceivesEvents || n.receivesEvents);
+export function isActionable(n: ClickableNode, requireReceivesEvents = true, wide = false): boolean {
+  // The narrower reading sees an element by its own box, as before internal #420; the wider one also sees a control
+  // through its shown label.
+  const visible = wide ? n.visible : (n.visibleBox ?? n.visible);
+  return visible && n.enabled && (!requireReceivesEvents || n.receivesEvents);
 }
 
 /**
@@ -937,10 +968,10 @@ export function isActionable(n: ClickableNode, requireReceivesEvents = true): bo
  * weak/medium signals alone never auto-resolve (FR-4 safety, ADR §1.2 D4); such
  * candidates surface in the ambiguity/no-actionable response for explicit choice.
  */
-export function climbToClickable(facts: CandidateFacts): { node: ClickableNode; depth: number } | null {
+export function climbToClickable(facts: CandidateFacts, wide = false, fill = false): { node: ClickableNode; depth: number } | null {
   const max = Math.min(facts.chain.length, CLIMB_MAX_DEPTH + 1); // index 0 = self
   for (let depth = 0; depth < max; depth++) {
-    if (clickableStrength(facts.chain[depth]) === "strong") {
+    if (clickableStrength(facts.chain[depth], wide, fill) === "strong") {
       return { node: facts.chain[depth], depth };
     }
   }
@@ -996,11 +1027,27 @@ export const NO_ACTIONABLE_NEXT_HINTS: readonly string[] = [
 export function decideActionTarget(
   facts: CandidateFacts[],
   totalMatches: number,
-  opts: { requireReceivesEvents?: boolean } = {},
+  opts: { requireReceivesEvents?: boolean; wide?: boolean; fill?: boolean } = {},
 ): ResolveDecision {
+  // internal #420 — the older readings decide first, over the matches they made: a target they resolve, or an
+  // ambiguity they find, stands as before. Only when they find nothing actionable do the wider readings decide
+  // (names from labels, implicit roles, labels and closed widgets as pressable, controls seen through their label),
+  // so a search that was unique before #420 is never made ambiguous or moved by them.
+  // Two kinds of widening, kept apart: matches the wider readings ADD (names from labels, implicit roles) count only
+  // when the older readings matched nothing at all, so an explicit role=textbox editor is not traded for a native
+  // field; the wider ways of SEEING a match (a label or a closed widget as pressable, a control seen through its
+  // label) apply to the older readings' own matches when those settle nothing.
+  if (opts.wide === undefined) {
+    const older = facts.filter((f) => !WIDE_MATCHES.has(f.matchedBy));
+    if (older.length === 0) return decideActionTarget(facts, totalMatches, { ...opts, wide: true });
+    const narrow = decideActionTarget(older, totalMatches, { ...opts, wide: false });
+    if (narrow.kind !== "noActionable") return narrow;
+    return decideActionTarget(older, totalMatches, { ...opts, wide: true });
+  }
+  const wide = opts.wide;
   const requireReceivesEvents = opts.requireReceivesEvents ?? true;
   const resolved = facts.map((f) => {
-    const c = climbToClickable(f);
+    const c = climbToClickable(f, wide, opts.fill === true);
     return {
       f,
       clickable: c?.node ?? null,
@@ -1012,7 +1059,7 @@ export function decideActionTarget(
       // constrained action must stop (noActionable) rather than silently act on a
       // wrong-role element (e.g. role:'button' resolving to an <a> nested in a
       // div[role=button]). roleMatch is undefined when no role filter was set.
-      actionable: c ? isActionable(c.node, requireReceivesEvents) && c.node.roleMatch !== false : false,
+      actionable: c ? isActionable(c.node, requireReceivesEvents, wide) && c.node.roleMatch !== false : false,
     };
   });
 
@@ -1189,6 +1236,7 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
     // per-action default (fill = false, click = true). Issue #441 rescue 1st pass
     // passes false to resolve an off-viewport candidate before scrolling it in.
     requireReceivesEvents: args.requireReceivesEvents ?? (args.action !== "fill"),
+    fill: args.action === "fill",
   });
   if (decision.kind === "resolved") {
     // Identity of the matched element (chain[0] = top[index] before climb) so a

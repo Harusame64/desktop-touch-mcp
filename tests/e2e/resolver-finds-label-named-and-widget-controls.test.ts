@@ -119,4 +119,49 @@ describe.skipIf(!CHROME)("the by-axis resolver finds what a person sees and name
     expect(body.code).not.toBe("BrowserPointCovered");
     expect(body.code).not.toBe("BrowserAmbiguousTarget");
   });
+
+  // ── the older readings decide first (/code-review on #1007): what was unique before stays so ──────────────────
+  it("keeps a button named by aria-label when a search field's sr-only label says the same", async () => {
+    await page(`<label for="q" class="sr">Search</label><input id="q" type="search" style="position:absolute;left:100px;top:100px"><button aria-label="Search" id="go" style="position:absolute;left:300px;top:100px">Go</button>`);
+    expect(await tagOf(await resolve({ by: "ariaLabel", pattern: "Search" }))).toBe("button#go");
+  });
+
+  it("keeps a link when a form label shares its words", async () => {
+    await page(`<label for="pw" style="position:absolute;left:100px;top:100px">Password</label><input id="pw" type="password" style="position:absolute;left:200px;top:100px"><a href="/reset" id="forgot" style="position:absolute;left:100px;top:200px">Forgot password?</a>`);
+    expect(await tagOf(await resolve({ by: "text", pattern: "password" }))).toBe("a#forgot");
+  });
+
+  it("does not trade the one explicit role=textbox editor for a native field (an added match counts only when nothing else matched)", async () => {
+    await page(`<div contenteditable="true" role="textbox" aria-label="Body" id="ed" style="position:absolute;left:100px;top:100px;width:300px;height:60px;border:1px solid"></div><input type="text" id="q" style="position:absolute;left:100px;top:300px">`);
+    // As before #420: the editor is matched and is not a pressable control, so the click stops; the native field is
+    // not picked instead.
+    expect(await tagOf(await resolve({ by: "role", pattern: "textbox" }))).toBe("noActionable");
+  });
+
+  it("does not take the label of a disabled checkbox for pressable", async () => {
+    await page(`<input type="checkbox" id="t" disabled style="position:absolute;left:100px;top:100px"><label for="t" style="position:absolute;left:130px;top:100px">Accept terms</label>`);
+    expect((await resolve({ by: "text", pattern: "Accept terms" })).kind).toBe("noActionable");
+  });
+
+  it("does not find Select2's aria-hidden native select by its label's name", async () => {
+    await page(`<label for="fruit" style="position:absolute;left:100px;top:260px">Fruit</label>${SELECT2}`);
+    const o = await resolve({ by: "ariaLabel", pattern: "Fruit" }, false);
+    expect(o.kind === "resolved" ? o.matched.tag : o.kind).not.toBe("select");
+  });
+
+  it("does not press an open listbox's centre for a non-option row in it", async () => {
+    await page(`<ul role="listbox" style="position:absolute;left:100px;top:100px;width:200px;margin:0;padding:0;list-style:none"><li role="presentation">Recent searches</li><li role="option">Paris</li><li role="option">Tokyo</li><li role="option">Lima</li></ul>`);
+    expect((await resolve({ by: "text", pattern: "Recent searches" })).kind).toBe("noActionable");
+  });
+
+  it("finds a type=search field by role textbox when nothing explicit does (the wider reading, as the role filter reads it)", async () => {
+    await page(`<input type="search" id="s" style="position:absolute;left:100px;top:100px">`);
+    expect(await tagOf(await resolve({ by: "role", pattern: "textbox" }))).toBe("input#s");
+  });
+
+  it("does not resolve a fill to a field's label (a label is not the field to write)", async () => {
+    await page(`<label for="em" style="position:absolute;left:100px;top:100px">Email</label><input id="em" type="email" style="position:absolute;left:200px;top:100px">`);
+    const o = await resolveBrowserActionTarget({ by: "text", pattern: "Email", action: "fill", port: PORT, tabId: null });
+    expect(o.kind === "resolved" ? o.matched.tag : o.kind).not.toBe("label");
+  });
 });
