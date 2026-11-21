@@ -671,7 +671,7 @@ const AX_TEXT_ROLES = new Set(["StaticText", "InlineTextBox", "LineBreak", "Root
  * or spinbuttons.
  */
 export async function markAxMatches(
-  opts: { by: "role" | "ariaLabel" | "controls"; pattern: string; caseSensitive: boolean; nonce: string; scope?: string; cap?: number; onFound?: (n: number) => void },
+  opts: { by: "role" | "ariaLabel" | "controls"; pattern: string; caseSensitive: boolean; nonce: string; scope?: string; cap?: number; onFound?: (found: number, triedAll: boolean) => void },
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT,
 ): Promise<number | null> {
@@ -736,12 +736,11 @@ export async function markAxMatches(
       scored.push(...exact, ...partial);
     }
     scored.sort((a, b) => b.score - a.score);
-    opts.onFound?.(scored.length);
     // desktop_discover's list takes its first 60 in document order, so a control early in the page must not be
     // crowded out of a score-sorted 200 by ones later; a by-axis question keeps its best 200, unless the caller asks
     // for more (browser_search pages through up to 1000).
-    const marks = scored.slice(0, opts.cap ?? (opts.by === "controls" ? 1000 : 200));
-    const done = await Promise.all(marks.map(async (m) => {
+    const cap = opts.cap ?? (opts.by === "controls" ? 1000 : 200);
+    const markOne = async (m: (typeof scored)[number]): Promise<number> => {
       try {
         const { object } = (await s.send("DOM.resolveNode", { backendNodeId: m.backend, objectGroup: group })) as { object: { objectId?: string } };
         if (!object.objectId) return 0;
@@ -768,8 +767,17 @@ export async function markAxMatches(
       } catch {
         return 0;
       }
-    }));
-    let count = done.reduce<number>((a, b) => a + b, 0);
+    };
+    // Up to `cap` marked: a node that cannot be marked (in a shadow root or a frame) does not use up the cap, so the
+    // next ones are tried in further rounds (/code-review on #1011: 999 shadow checkboxes hid 20 in the document).
+    let count = 0;
+    let tried = 0;
+    while (tried < scored.length && count < cap) {
+      const batch = scored.slice(tried, tried + (cap - count));
+      tried += batch.length;
+      count += (await Promise.all(batch.map(markOne))).reduce<number>((a, b) => a + b, 0);
+    }
+    opts.onFound?.(scored.length, tried >= scored.length);
     if (opts.by === "ariaLabel") {
       // The tree leaves out a select a widget hides (Select2, Choices), so its <label> names nothing a person can
       // press; the widget drawn for it is marked under that name (win2 on #1008, W12). Which widget stands for which

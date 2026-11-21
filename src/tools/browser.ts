@@ -3746,13 +3746,12 @@ export const browserSearchHandler = async ({
     let tab: string | null = tabId ?? null;
     let axMark: string | undefined;
     let axFound = 0;
-    let axMarked = 0;
+    let axTriedAll = true;
     if (by === "role" || by === "ariaLabel") {
       try { tab = tab ?? await resolveTabId(null, port); } catch { /* the gather reports it */ }
       const nonce = randomUUID().slice(0, 8);
-      const marked = await markAxMatches({ by, pattern, caseSensitive, nonce, cap: AX_SEARCH_CAP, onFound: (n) => { axFound = n; }, ...(scope && { scope }) }, tab, port);
+      const marked = await markAxMatches({ by, pattern, caseSensitive, nonce, cap: AX_SEARCH_CAP, onFound: (n, all) => { axFound = n; axTriedAll = all; }, ...(scope && { scope }) }, tab, port);
       if (marked !== null && marked > 0) axMark = nonce;
-      axMarked = marked ?? 0;
     }
     let result: unknown;
     try {
@@ -3783,10 +3782,9 @@ export const browserSearchHandler = async ({
       total: number; returned: number; truncated: boolean;
       results: Array<{ confidence: number; selector: string; text: string }>;
     };
-    // The tree matched more than its cap, the cap was filled, and the total (what was marked, with what the DOM reading
-    // found) is below the tree's count: more results may exist than it says. A node never marked (in a shadow root or
-    // a frame) does not fill the cap (/code-review on #1011).
-    if (axFound > AX_SEARCH_CAP && axMarked >= AX_SEARCH_CAP && payload.total < axFound) payload.truncated = true;
+    // The cap filled before every node the tree matched was tried, and the total (what was marked, with what the DOM
+    // reading found) is below the tree's count: more results may exist than it says (/code-review on #1011).
+    if (!axTriedAll && payload.total < axFound) payload.truncated = true;
     if (payload.total === 0) {
       return failCode(
         "BrowserSearchNoResults",

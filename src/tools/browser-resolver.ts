@@ -143,6 +143,8 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs & { axAlone?: boo
   // one matching two elements would press the first (win2 on #1011: Select2's span:nth-child(1) > span:nth-child(1)).
   function alone(sel) { try { return document.querySelectorAll(sel).length === 1; } catch (e) { return false; } }
   function bestSelector(el) {
+    // Past the scan's time budget nothing is asked: the path below climbs to <body>, unique by construction.
+    if (nowFn() > deadline) return pathTo(el, false);
     if (el.id && alone('#' + CSS.escape(el.id))) return '#' + CSS.escape(el.id);
     const name = el.getAttribute('name');
     if (name) { const s = el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']'; if (alone(s)) return s; }
@@ -155,11 +157,14 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs & { axAlone?: boo
       const v = el.getAttribute(attr);
       if (v && v.length < 60) { const s = el.tagName.toLowerCase() + '[' + attr + '=' + JSON.stringify(v) + ']'; if (alone(s)) return s; }
     }
-    // The path of positions: two levels, then more until it matches this element alone or reaches a unique id. The
-    // document is asked at each level up to eight, or until the scan's time budget is spent (/code-review on #1011: a
-    // query per level and result); past that, the path climbs to an id or to <body> without asking, which is unique
-    // by construction (win2 on #1011: pages built of alike blocks matched twice at eight levels).
-    let node = el; let path = ''; let ask = true;
+    return pathTo(el, true);
+  }
+  // The path of positions: two segments, then more until it matches this element alone or reaches a unique id. The
+  // document is asked for paths of two to eight segments, while the scan's time budget lasts (/code-review on #1011:
+  // a query per level and result); past that, the path climbs on to <body>, unique by construction, asking only
+  // whether an ancestor's id is unique (win2 on #1011: pages built of alike blocks matched twice at eight levels).
+  function pathTo(el, ask) {
+    let node = el; let path = '';
     for (let depth = 0; node.parentElement; depth++) {
       const p = node.parentElement;
       const idx = Array.from(p.children).indexOf(node) + 1;
@@ -209,11 +214,24 @@ ${ELEMENT_NAME_JS}
   function record(el, score, by) {
     const prev = matchScore.get(el) || 0;
     if (score > prev) { matchScore.set(el, score); matchedByMap.set(el, by); }
+    // The DOM's more specific word for an equal score: a native button the tree also found is 'roleImplicit'
+    // (/code-review on #1011).
+    else if (score === prev && by === 'roleImplicit') matchedByMap.set(el, by);
     if (!pushed.has(el)) { candidates.push(el); pushed.add(el); }
   }
 
   const all = root.querySelectorAll('*');
   let candidates = [];
+
+  if (axMark !== null) {
+    // internal #420 — by:'role' / by:'ariaLabel' from the browser's accessibility tree, marked before this gather.
+    // First, so equal scores keep the tree's document order (a result's place is what results[0] means).
+    const marked = root.querySelectorAll('[${AX_MARK_ATTR}]');
+    for (let i = 0; i < marked.length; i++) {
+      const ax = axOf(marked[i]);
+      if (ax) record(marked[i], ax.score, by);
+    }
+  }
 
   // browser_search adds the DOM reading to the tree's marks: what it found before stays found (a hidden element the
   // tree leaves out, a control under a misused aria-hidden, a node a re-render replaced after the marking), and an
@@ -281,17 +299,6 @@ ${ELEMENT_NAME_JS}
     }
   }
 
-  if (axMark !== null) {
-    // internal #420 — by:'role' / by:'ariaLabel' from the browser's accessibility tree, marked before this gather.
-    // After the DOM reading, so an element both found at the same score keeps the DOM's more specific matchedBy
-    // ('roleImplicit'; /code-review on #1011).
-    const marked = root.querySelectorAll('[${AX_MARK_ATTR}]');
-    for (let i = 0; i < marked.length; i++) {
-      const ax = axOf(marked[i]);
-      if (ax) record(marked[i], ax.score, by);
-    }
-  }
-
   // candidates already de-duplicated via the pushed Set in record()
 
   if (aborted && candidates.length === 0) {
@@ -337,8 +344,9 @@ export function buildCandidateCollectionJs(args: CandidateCollectionArgs): strin
     selector: bestSelector(el),
     // internal #420 — the role the browser computed for an element the tree matched (a role attribute it ignored,
     // role="presentation" on a button, or the first known of "switch checkbox", is not what it is), else the attribute.
-    // Only an ARIA role name (lowercase): Chrome's own names (LabelText, StaticText) are not roles a caller can ask for.
-    role: (/^[a-z]+$/.test((axOf(el) || {}).role || '') ? axOf(el).role : '') || el.getAttribute('role') || undefined,
+    // Only an ARIA role name (lowercase, doc-chapter too): Chrome's own names (LabelText, StaticText) are not roles a
+    // caller can ask for.
+    role: (/^[a-z]+(-[a-z]+)*$/.test((axOf(el) || {}).role || '') ? axOf(el).role : '') || el.getAttribute('role') || undefined,
     ariaLabel: el.getAttribute('aria-label') || undefined,
     matchedBy: matchedByMap.get(el),
     confidence: score(matchScore.get(el) || 0, visible),

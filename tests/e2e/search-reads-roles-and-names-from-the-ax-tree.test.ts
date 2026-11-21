@@ -193,6 +193,26 @@ describe.skipIf(!CHROME)("browser_search by:'role' and by:'ariaLabel' read the a
     for (const h of b.results!) expect(await evaluateInTab(`document.querySelectorAll(${JSON.stringify(h.selector)}).length`, null, PORT)).toBe(1);
   });
 
+  it("keeps checkboxes in the document found past 999 in a shadow root: unmarkable nodes do not use up the cap (/code-review on #1011)", async () => {
+    await page(`<input type="checkbox" id="first"><div id="host"></div>` + Array.from({ length: 20 }, (_, i) => `<input type="checkbox" id="k${i}">`).join(""));
+    await evaluateInTab(`(function(){var r=document.getElementById('host').attachShadow({mode:'open'});r.innerHTML=Array.from({length:1100},function(){return '<input type="checkbox">'}).join('');return true})()`, null, PORT);
+    const b = await search({ by: "role", pattern: "checkbox" });
+    expect([b.total, b.truncated]).toEqual([21, false]);
+    expect(await marks()).toBe(0);
+  });
+
+  it("lists equal scores in document order: results[0] is the first on the page (/code-review on #1011)", async () => {
+    await page(`<label for="e">Email</label><input id="e"><p>…</p><button id="eb" aria-label="Email">✉</button>`);
+    expect((await search({ by: "ariaLabel", pattern: "Email" })).results?.map((h) => h.selector)).toEqual(["#e", "#eb"]);
+    await page(`<button id="nb">Native</button><div role="button" id="db" tabindex="0">Div</div>`);
+    expect((await search({ by: "role", pattern: "button" })).results?.map((h) => h.selector)).toEqual(["#nb", "#db"]);
+  });
+
+  it("reports a hyphenated ARIA role the browser picked from a fallback list (doc-chapter)", async () => {
+    await page(`<section id="ch" role="doc-chapter region" aria-label="Chapter one"><p>x</p></section>`);
+    expect((await search({ by: "ariaLabel", pattern: "Chapter one" })).results?.find((h) => h.selector === "#ch")?.role).toBe("doc-chapter");
+  });
+
   it("leaves by:'text' on DOM text (control)", async () => {
     await page(SR);
     expect(sels(await search({ by: "text", pattern: "Accept terms" }))).toEqual(["body:nth-child(2) > label:nth-child(2)"]);
