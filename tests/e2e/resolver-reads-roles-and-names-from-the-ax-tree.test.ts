@@ -250,6 +250,11 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(await marks()).toBeGreaterThan(0); // resolved: the caller clears
   });
 
+  it("finds the field whose name contains the pattern beside a heading named exactly so, with no role given", async () => {
+    await page(`<h2 style="position:absolute;left:100px;top:40px">Email</h2><input id="ea" aria-label="Email address" style="position:absolute;left:100px;top:120px">`);
+    expect(what(await resolve({ by: "ariaLabel", pattern: "Email" }))).toBe("input#ea");
+  });
+
   it("keeps a containing name when the equal name is hidden (a collapsed copy)", async () => {
     await page(`<button aria-label="Menu" style="position:absolute;left:100px;top:40px;opacity:0">≡</button><button id="om" aria-label="Open menu" style="position:absolute;left:100px;top:120px">≡</button>`);
     expect(what(await resolve({ by: "ariaLabel", pattern: "Menu" }))).toBe("button#om");

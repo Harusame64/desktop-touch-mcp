@@ -721,9 +721,9 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   // cap so total/candidates reflect the role-filtered pool (plan §S4 role combine).
   const roleFilter = null;
   function roleMatches(el) {
-    // internal #420 — an element the accessibility tree matched is filtered by the role the browser computed.
-    // Its attribute reading counts too, as before: role:'textbox' still takes a search field (searchbox) by its name
-    // (/code-review on #1008).
+    // internal #420 — an element the accessibility tree matched passes on the role the browser computed, or on the
+    // attribute reading below, as before #1008 (role:'textbox' still takes a search field, a searchbox, by its name);
+    // the computed role adds to the attribute reading, it does not narrow it (/code-review on #1008).
     const axr = axOf(el);
     if (axr && axr.role === roleFilter) return true;
     const explicit = (el.getAttribute('role') || '').toLowerCase();
@@ -757,11 +757,11 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     return false;
   }
   let pool = roleFilter ? filtered.filter(function(e) { return roleMatchesChain(e.el); }) : filtered;
-  // internal #420 — an equal accessible name wins over names containing it, among the matches seen and of the role
-  // asked for: a heading or a hidden copy named exactly so does not hide the button whose name contains it.
-  if (axMark !== null && pool.some(function(e) { const a = axOf(e.el); return !!a && a.score >= 0.95; })) {
-    pool = pool.filter(function(e) { const a = axOf(e.el); return !!a && a.score >= 0.95; });
-  }
+  // internal #420 — a control with an equal accessible name wins over names containing it, among the matches seen and
+  // of the role asked for. Only a control: a heading or a section named exactly so stays beside the field whose name
+  // contains it, so the field is still found (/code-review on #1008).
+  function axExactControl(e) { const a = axOf(e.el); return !!a && a.score >= 0.95 && a.control; }
+  if (axMark !== null && pool.some(axExactControl)) pool = pool.filter(axExactControl);
   const top = pool.slice(0, N);
   const __modal = (function() {
 

@@ -710,9 +710,9 @@ export async function markAxMatches(
         if (cmp === needle) exact.push({ ...hit, score: 0.95 });
         else if (cmp.includes(needle)) partial.push({ ...hit, score: 0.7 });
       }
-      // Both are marked, equal names first: the gather prefers an equal name among the matches it can see and the
-      // role allows ("Email" is the field named Email, not also a button reading "Email me updates"), and keeps a
-      // containing name when the equal one is a heading or hidden (/code-review on #1008).
+      // Both are marked, equal names first: the gather prefers a control with an equal name among the matches it can
+      // see and the role allows ("Email" is the field named Email, not also a button reading "Email me updates"), and
+      // keeps containing names beside an equal one that is hidden or not a control (/code-review on #1008).
       scored.push(...exact, ...partial);
     }
     scored.sort((a, b) => b.score - a.score);

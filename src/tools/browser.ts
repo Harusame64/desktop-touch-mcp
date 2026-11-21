@@ -1311,10 +1311,10 @@ async function screenPointForLanding(
   tabId: string | null,
   port: number,
 ): Promise<{ x: number; y: number; aim: PageAim | undefined; rect: { x: number; y: number; w: number; h: number } | undefined }> {
-  // A zero-size element pressed through its label or the control in its place has its point (a 0x0 radio: win2 on
+  // A zero-size element pressed through its label, the control in its place or its skin has its point (a 0x0 radio: win2 on
   // #1008, W11); only the viewport's place on the screen is read from it. Any other element that is zero-size now
   // collapsed after the read, and stops as before (/code-review on #1008).
-  const at = await getElementScreenCoords(selector, tabId, port, { allowZeroSize: landing.how === "own_label" || landing.how === "replacement" });
+  const at = await getElementScreenCoords(selector, tabId, port, { allowZeroSize: landing.how === "own_label" || landing.how === "replacement" || landing.how === "skin" });
   const dpr = Number(await evaluateInTab("window.devicePixelRatio || 1", tabId, port)) || 1;
   const vp = at.viewport;
   if (vp === undefined) return { x: at.x, y: at.y, aim: undefined, rect: undefined };
@@ -2299,6 +2299,7 @@ async function clickByAxis(args: {
     if (loose.kind === "ambiguous") {
       const vp = (await evaluateInTab("[innerWidth, innerHeight]", tabId ?? null, port).catch(() => null)) as [number, number] | null;
       const pressable = vp === null ? 0 : loose.candidates.filter((c) => {
+        if (!c.actionability.visible || !c.actionability.enabled) return false;
         const cx = c.rect.x + c.rect.w / 2;
         const cy = c.rect.y + c.rect.h / 2;
         return c.rect.w <= 2 || c.rect.h <= 2 || (cx >= 0 && cy >= 0 && cx < vp[0] && cy < vp[1]);
