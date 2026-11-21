@@ -110,6 +110,12 @@ describe.skipIf(!CHROME)("desktop_discover's browser lane lists the controls the
     expect(await marks()).toBe(0);
   });
 
+  it("reads a native checkbox as a toggle even when the tree could not be read (no marks)", async () => {
+    await page(`<label><input type="checkbox" id="cb"> Accept terms</label>`);
+    const rows = (await evaluateInTab(interactiveScript(null), tabId, PORT)) as Array<{ type: string; selector: string }>;
+    expect(rows.find((r) => r.selector === "#cb")?.type).toBe("toggle[checkbox]");
+  });
+
   it("names the attribute the page-side list reads as the one the tree marks with", () => {
     expect(interactiveScript("n0nce")).toContain(`[${AX_MARK_ATTR}^=`);
   });
