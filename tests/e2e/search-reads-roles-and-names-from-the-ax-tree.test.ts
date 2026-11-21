@@ -239,7 +239,7 @@ describe.skipIf(!CHROME)("browser_search by:'text' and by:'regex' match what the
   });
 
   it("finds what the page does draw: a style shown with CSS (/code-review on #1015)", async () => {
-    // Judged by layout, which also lets a noscript through when scripts are blocked: its content is laid out then.
+    // A style is judged by its own computed display: shown with CSS, it is drawn.
     await page(`<style id="demo" style="display:block">.priceTag{color:red}</style>`);
     for (const by of ["text", "regex"] as const) expect(sels(await search({ by, pattern: "priceTag" }))).toEqual(["#demo"]);
   });
@@ -266,19 +266,21 @@ describe.skipIf(!CHROME)("browser_search by:'text' and by:'regex' match what the
     });
     try {
       await send("Emulation.setScriptExecutionDisabled", { value: true });
-      const html = `<!doctype html><html><head><meta charset="utf-8"><style>.c{display:contents}</style></head><body><noscript><p id="a">Enable scripts to checkout</p></noscript><noscript class="c"><p id="b">Enable scripts to pay</p></noscript></body></html>`;
+      // Under Trusted Types too: reading whether scripts run writes nothing to the page (/code-review on #1015).
+      const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="require-trusted-types-for 'script'"><style>.c{display:contents}</style></head><body><noscript><p id="a">Enable scripts to checkout</p></noscript><noscript class="c"><p id="b">Enable scripts to pay</p></noscript></body></html>`;
       await send("Page.navigate", { url: "data:text/html;charset=utf-8," + encodeURIComponent(html) });
       await sleep(400);
-      expect(sels(await search({ by: "text", pattern: "Enable scripts" }))).toEqual(["#a", "#b"]);
+      for (const by of ["text", "regex"] as const) expect(sels(await search({ by, pattern: "Enable scripts" }))).toEqual(["#a", "#b"]);
     } finally {
+      // Back to a page without the policy, so the next document.write is allowed.
       await send("Emulation.setScriptExecutionDisabled", { value: false });
+      await send("Page.navigate", { url: "about:blank" });
+      await sleep(300);
       ws.close();
     }
     // Scripts running: the same noscripts draw nothing, and their markup is not matched.
-    await evaluateInTab(`location.href='about:blank';true`, null, PORT).catch(() => undefined);
-    await sleep(300);
     await page(`<noscript><p>Enable scripts to checkout</p></noscript>`);
-    expect((await search({ by: "text", pattern: "Enable scripts", visibleOnly: false })).code).toBe("BrowserSearchNoResults");
+    for (const by of ["text", "regex"] as const) expect((await search({ by, pattern: "Enable scripts", visibleOnly: false })).code).toBe("BrowserSearchNoResults");
   });
 
   it("leaves out a noscript's markup under a hidden parent, an SVG style's CSS, while scripts run (/code-review on #1015)", async () => {

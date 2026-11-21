@@ -224,19 +224,21 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
   // by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is hidden text, which
   // visibleOnly decides. Each element is judged by its own reason for drawing nothing, not by boxes (/code-review on
   // #1015, three rounds: a box goes missing for a hidden ancestor and for display:contents too):
-  // - a noscript, by whether scripts run in this document: fragment parsing follows the document's scripting flag, so
-  //   a noscript parsed into a detached div holds raw text while scripts run and elements while they are blocked;
-  // - an SVG script or style is never drawn: the SVG renderer has no place for it, and its display computes inline;
+  // - an SVG element (script, style, or a noscript parsed into an <svg>) is never drawn: the SVG renderer has no place
+  //   for it, and its display computes inline;
+  // - a noscript, by whether scripts run in this document, read once, when the first one is reached, from the
+  //   scripting media feature, which writes nothing to the page (/code-review on #1015: an innerHTML probe broke under
+  //   Trusted Types and ran on every call). It follows CDP's setScriptExecutionDisabled (measured, Chrome on macOS);
   // - the rest, by a computed display of none: a style a page shows with CSS is drawn.
   // A search scoped into one of them (scope:'head') is answered as asked.
   const NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
-  const scriptsRun = (function() {
-    try { const d = document.createElement('div'); d.innerHTML = '<noscript><i></i></noscript>'; return !d.querySelector('i'); }
-    catch (e) { return true; }
-  })();
+  let scriptsRun = null;
   function drawsNothing(a) {
-    if (a.localName === 'noscript') return scriptsRun;
     if (a.namespaceURI === 'http://www.w3.org/2000/svg') return true;
+    if (a.localName === 'noscript') {
+      if (scriptsRun === null) { try { scriptsRun = !matchMedia('(scripting: none)').matches; } catch (e) { scriptsRun = true; } }
+      return scriptsRun;
+    }
     return getComputedStyle(a).display === 'none';
   }
   function notDrawnText(el) {
@@ -594,19 +596,21 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   // by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is hidden text, which
   // visibleOnly decides. Each element is judged by its own reason for drawing nothing, not by boxes (/code-review on
   // #1015, three rounds: a box goes missing for a hidden ancestor and for display:contents too):
-  // - a noscript, by whether scripts run in this document: fragment parsing follows the document's scripting flag, so
-  //   a noscript parsed into a detached div holds raw text while scripts run and elements while they are blocked;
-  // - an SVG script or style is never drawn: the SVG renderer has no place for it, and its display computes inline;
+  // - an SVG element (script, style, or a noscript parsed into an <svg>) is never drawn: the SVG renderer has no place
+  //   for it, and its display computes inline;
+  // - a noscript, by whether scripts run in this document, read once, when the first one is reached, from the
+  //   scripting media feature, which writes nothing to the page (/code-review on #1015: an innerHTML probe broke under
+  //   Trusted Types and ran on every call). It follows CDP's setScriptExecutionDisabled (measured, Chrome on macOS);
   // - the rest, by a computed display of none: a style a page shows with CSS is drawn.
   // A search scoped into one of them (scope:'head') is answered as asked.
   const NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
-  const scriptsRun = (function() {
-    try { const d = document.createElement('div'); d.innerHTML = '<noscript><i></i></noscript>'; return !d.querySelector('i'); }
-    catch (e) { return true; }
-  })();
+  let scriptsRun = null;
   function drawsNothing(a) {
-    if (a.localName === 'noscript') return scriptsRun;
     if (a.namespaceURI === 'http://www.w3.org/2000/svg') return true;
+    if (a.localName === 'noscript') {
+      if (scriptsRun === null) { try { scriptsRun = !matchMedia('(scripting: none)').matches; } catch (e) { scriptsRun = true; } }
+      return scriptsRun;
+    }
     return getComputedStyle(a).display === 'none';
   }
   function notDrawnText(el) {
@@ -1131,19 +1135,21 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   // by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is hidden text, which
   // visibleOnly decides. Each element is judged by its own reason for drawing nothing, not by boxes (/code-review on
   // #1015, three rounds: a box goes missing for a hidden ancestor and for display:contents too):
-  // - a noscript, by whether scripts run in this document: fragment parsing follows the document's scripting flag, so
-  //   a noscript parsed into a detached div holds raw text while scripts run and elements while they are blocked;
-  // - an SVG script or style is never drawn: the SVG renderer has no place for it, and its display computes inline;
+  // - an SVG element (script, style, or a noscript parsed into an <svg>) is never drawn: the SVG renderer has no place
+  //   for it, and its display computes inline;
+  // - a noscript, by whether scripts run in this document, read once, when the first one is reached, from the
+  //   scripting media feature, which writes nothing to the page (/code-review on #1015: an innerHTML probe broke under
+  //   Trusted Types and ran on every call). It follows CDP's setScriptExecutionDisabled (measured, Chrome on macOS);
   // - the rest, by a computed display of none: a style a page shows with CSS is drawn.
   // A search scoped into one of them (scope:'head') is answered as asked.
   const NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
-  const scriptsRun = (function() {
-    try { const d = document.createElement('div'); d.innerHTML = '<noscript><i></i></noscript>'; return !d.querySelector('i'); }
-    catch (e) { return true; }
-  })();
+  let scriptsRun = null;
   function drawsNothing(a) {
-    if (a.localName === 'noscript') return scriptsRun;
     if (a.namespaceURI === 'http://www.w3.org/2000/svg') return true;
+    if (a.localName === 'noscript') {
+      if (scriptsRun === null) { try { scriptsRun = !matchMedia('(scripting: none)').matches; } catch (e) { scriptsRun = true; } }
+      return scriptsRun;
+    }
     return getComputedStyle(a).display === 'none';
   }
   function notDrawnText(el) {
