@@ -128,6 +128,8 @@ export function interactiveScript(axNonce: string | null): string {
     if(role==='menuitem'||role==='option') return role;
     if(tag==='a') return 'link';
     if(tag==='button'||role==='button') return 'button';
+    // A submit, reset, image or button input is pressed, not typed into (win2 on #1009: "Send" read as a textbox).
+    if(tag==='input'&&/^(submit|reset|image|button)$/.test(el.type)) return 'button';
     if(tag==='input') return 'input['+(el.type||'text')+']';
     return tag;
   }

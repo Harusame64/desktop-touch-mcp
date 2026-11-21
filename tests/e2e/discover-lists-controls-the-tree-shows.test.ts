@@ -167,6 +167,11 @@ describe.skipIf(!CHROME)("desktop_discover's browser lane lists the controls the
     await clearAxMarks("cap", tabId, PORT);
   });
 
+  it("reads a submit input as a button named by its caption, not a textbox (win2 on #1009)", async () => {
+    await page(`<form><input type="submit" id="snd" value="Send"></form>`);
+    expect((await list()).find((r) => r.selector === "#snd")).toMatchObject({ role: "button", label: "Send", actions: "invoke/click" });
+  });
+
   it("names the attribute the page-side list reads as the one the tree marks with", () => {
     expect(interactiveScript("n0nce")).toContain(`[${AX_MARK_ATTR}*=`);
   });
