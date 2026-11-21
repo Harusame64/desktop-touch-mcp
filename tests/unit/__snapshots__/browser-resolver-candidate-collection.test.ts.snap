@@ -583,8 +583,10 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   const roleFilter = null;
   function roleMatches(el) {
     // internal #420 — an element the accessibility tree matched is filtered by the role the browser computed.
+    // Its attribute reading counts too, as before: role:'textbox' still takes a search field (searchbox) by its name
+    // (/code-review on #1008).
     const axr = axOf(el);
-    if (axr && axr.role) return axr.role === roleFilter;
+    if (axr && axr.role === roleFilter) return true;
     const explicit = (el.getAttribute('role') || '').toLowerCase();
     if (explicit === roleFilter) return true;
     const tg = el.tagName.toLowerCase();
@@ -615,7 +617,12 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
     }
     return false;
   }
-  const pool = roleFilter ? filtered.filter(function(e) { return roleMatchesChain(e.el); }) : filtered;
+  let pool = roleFilter ? filtered.filter(function(e) { return roleMatchesChain(e.el); }) : filtered;
+  // internal #420 — an equal accessible name wins over names containing it, among the matches seen and of the role
+  // asked for: a heading or a hidden copy named exactly so does not hide the button whose name contains it.
+  if (axMark !== null && pool.some(function(e) { const a = axOf(e.el); return !!a && a.score >= 0.95; })) {
+    pool = pool.filter(function(e) { const a = axOf(e.el); return !!a && a.score >= 0.95; });
+  }
   const top = pool.slice(0, N);
 
   // Physical-coord conversion constants (getElementScreenCoords formula,
@@ -1044,8 +1051,10 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   const roleFilter = null;
   function roleMatches(el) {
     // internal #420 — an element the accessibility tree matched is filtered by the role the browser computed.
+    // Its attribute reading counts too, as before: role:'textbox' still takes a search field (searchbox) by its name
+    // (/code-review on #1008).
     const axr = axOf(el);
-    if (axr && axr.role) return axr.role === roleFilter;
+    if (axr && axr.role === roleFilter) return true;
     const explicit = (el.getAttribute('role') || '').toLowerCase();
     if (explicit === roleFilter) return true;
     const tg = el.tagName.toLowerCase();
@@ -1076,7 +1085,12 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
     }
     return false;
   }
-  const pool = roleFilter ? filtered.filter(function(e) { return roleMatchesChain(e.el); }) : filtered;
+  let pool = roleFilter ? filtered.filter(function(e) { return roleMatchesChain(e.el); }) : filtered;
+  // internal #420 — an equal accessible name wins over names containing it, among the matches seen and of the role
+  // asked for: a heading or a hidden copy named exactly so does not hide the button whose name contains it.
+  if (axMark !== null && pool.some(function(e) { const a = axOf(e.el); return !!a && a.score >= 0.95; })) {
+    pool = pool.filter(function(e) { const a = axOf(e.el); return !!a && a.score >= 0.95; });
+  }
   const top = pool.slice(0, N);
   // ── ADR-023 Phase 1 PR4: by-axis fill ACT (deterministic re-gather + index). ──
   // IDENTITY GATE (Codex P1): the re-gather assumes the DOM is unchanged since the

@@ -243,6 +243,51 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect((await resolve({ by: "role", pattern: "listbox" })).kind).not.toBe("resolved");
   });
 
+  // ── /code-review high on #1008 (47116a56) ───────────────────────────────────────────────────────────────────────
+  it("keeps a button whose name contains the pattern when the equal name is a heading the role filter drops", async () => {
+    await page(`<h2 style="position:absolute;left:100px;top:40px">Settings</h2><button id="os" aria-label="Open settings" style="position:absolute;left:100px;top:120px">⚙</button>`);
+    expect(what(await resolve({ by: "ariaLabel", pattern: "Settings", role: "button" }))).toBe("button#os");
+    expect(await marks()).toBeGreaterThan(0); // resolved: the caller clears
+  });
+
+  it("keeps a containing name when the equal name is hidden (a collapsed copy)", async () => {
+    await page(`<button aria-label="Menu" style="position:absolute;left:100px;top:40px;opacity:0">≡</button><button id="om" aria-label="Open menu" style="position:absolute;left:100px;top:120px">≡</button>`);
+    expect(what(await resolve({ by: "ariaLabel", pattern: "Menu" }))).toBe("button#om");
+  });
+
+  it("fills a search field by its name with role textbox, as before (its attribute reading still counts)", async () => {
+    await page(`<input type="search" id="sf" aria-label="Search" style="position:absolute;left:100px;top:100px">`);
+    const { browserFillInputHandler } = await import("../../src/tools/browser.js");
+    const r = await browserFillInputHandler({ by: "ariaLabel", pattern: "Search", role: "textbox", value: "cats", port: PORT } as never);
+    expect((r.content[0] as { text: string }).text).toContain('"ok":true');
+    expect(await evaluateInTab("document.getElementById('sf').value", null, PORT)).toBe("cats");
+    expect(await marks()).toBe(0);
+  });
+
+  it("keeps the DOM reading when every mark is filtered out (a hidden element the tree names, a button under aria-hidden)", async () => {
+    await page(`<button aria-label="Close" style="position:absolute;left:100px;top:40px;opacity:0">x</button><div aria-hidden="true"><button id="cl" aria-label="Close" style="position:absolute;left:100px;top:120px">x</button></div>`);
+    expect(what(await resolve({ by: "ariaLabel", pattern: "Close" }))).toBe("button#cl");
+  });
+
+  it("marks nothing inside a same-origin frame (the gather reads the top document; nothing would clear it)", async () => {
+    await page(`<iframe id="fr" srcdoc="<button>Accept</button>" style="position:absolute;left:100px;top:100px;width:300px;height:100px"></iframe>`);
+    await sleep(300);
+    expect((await resolve({ by: "ariaLabel", pattern: "Accept" })).kind).not.toBe("resolved");
+    expect(await evaluateInTab("document.getElementById('fr').contentDocument.querySelectorAll('[data-dtm-ax]').length", null, PORT)).toBe(0);
+  });
+
+  it("still answers two matches below the fold as none actionable, not ambiguous (control for W11a)", async () => {
+    await page(`<div style="height:3000px"><button style="position:absolute;left:100px;top:2400px">Delete</button><button style="position:absolute;left:300px;top:2600px">Delete</button></div>`);
+    const r = await browserClickElementHandler({ by: "text", pattern: "Delete", port: PORT } as never);
+    const body = JSON.parse((r.content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { code?: string };
+    expect(body.code).toBe("BrowserNoActionableTarget");
+  });
+
+  it("says a 0x0 checkbox whose label is display: none is not rendered (a label with no box is not a way in)", async () => {
+    await page(`<input type="checkbox" id="zc" data-t="1" style="position:absolute;width:0;height:0;margin:0;opacity:0"><label for="zc" style="display:none">Hidden</label>`);
+    expect(await readPressLanding("[data-t]", null, PORT)).toMatchObject({ error: expect.stringContaining("zero size") });
+  });
+
   it("still says a 0x0 element with no label is not rendered (control)", async () => {
     await page(`<button id="nb" data-t="1" style="position:absolute;width:0;height:0;padding:0;border:0"></button>`);
     expect(await readPressLanding("[data-t]", null, PORT)).toMatchObject({ error: expect.stringContaining("zero size") });

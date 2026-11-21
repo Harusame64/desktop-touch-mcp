@@ -656,9 +656,9 @@ const AX_TEXT_ROLES = new Set(["StaticText", "InlineTextBox", "LineBreak", "Root
  * types and explicit roles all come out right; 0.1-0.4 s on a 12,500-element page).
  *
  * The tree under the page, or under `scope` when given, is asked: by:'role' for that role; by:'ariaLabel' for every
- * node, matched on its accessible name — equal names only when there is one (0.95), otherwise names containing the
- * pattern (0.7). Each match that is an element of the document (not in a shadow root, which the page-side gather
- * cannot see), not ignored and not a text run, is marked `data-dtm-ax="<nonce>:<score>:<c when a control>:<role>"`,
+ * node, matched on its accessible name — equal names (0.95) and names containing the pattern (0.7). Each match
+ * that is an element of the top document (not in a shadow root or a frame, which the page-side gather cannot see),
+ * not ignored and not a text run, is marked `data-dtm-ax="<nonce>:<score>:<c when a control>:<role>"`,
  * the best 200 first, so the page-side gather takes them as its candidates. A native multi-row select (role
  * listbox) is left out: a press on it picks the option under the centre. Answers how many were marked, or null when
  * the tree (or the scope) could not be read; with none marked, the caller keeps the DOM reading.
@@ -678,24 +678,26 @@ export async function markAxMatches(
       ignored?: boolean; role?: { value?: string }; name?: { value?: string }; backendDOMNodeId?: number;
       properties?: Array<{ name?: string; value?: { value?: unknown } }>;
     };
-    const { root } = (await s.send("DOM.getDocument", { depth: 0 })) as { root: { nodeId: number; backendNodeId: number } };
-    let from = root.backendNodeId;
-    if (opts.scope) {
-      const { nodeId } = (await s.send("DOM.querySelector", { nodeId: root.nodeId, selector: opts.scope })) as { nodeId: number };
-      if (!nodeId) return null;
-      from = ((await s.send("DOM.describeNode", { nodeId })) as { node: { backendNodeId: number } }).node.backendNodeId;
-    }
+    // The root (or the scope) by an object id, so no DOM domain is enabled on the shared session (/code-review on
+    // #1008), as inspectHitAtPoint does.
+    const rootObj = (await s.send("Runtime.evaluate", {
+      expression: opts.scope ? `document.querySelector(${JSON.stringify(opts.scope)})` : "document",
+      returnByValue: false,
+      objectGroup: group,
+    })) as { result?: { objectId?: string } };
+    const from = rootObj.result?.objectId;
+    if (!from) return null;
     const scored: Array<{ backend: number; score: number; control: boolean; role: string }> = [];
     if (opts.by === "role") {
       const role = opts.caseSensitive ? opts.pattern : opts.pattern.toLowerCase();
-      const nodes = ((await s.send("Accessibility.queryAXTree", { backendNodeId: from, role })) as { nodes: AxNode[] }).nodes;
+      const nodes = ((await s.send("Accessibility.queryAXTree", { objectId: from, role })) as { nodes: AxNode[] }).nodes;
       for (const n of nodes) {
         const r = n.role?.value ?? "";
         if (n.ignored || !n.backendDOMNodeId || AX_TEXT_ROLES.has(r)) continue;
         scored.push({ backend: n.backendDOMNodeId, score: 0.85, control: axIsControl(r, n), role: r });
       }
     } else {
-      const nodes = ((await s.send("Accessibility.queryAXTree", { backendNodeId: from })) as { nodes: AxNode[] }).nodes;
+      const nodes = ((await s.send("Accessibility.queryAXTree", { objectId: from })) as { nodes: AxNode[] }).nodes;
       const needle = opts.caseSensitive ? opts.pattern : opts.pattern.toLowerCase();
       const exact: typeof scored = [];
       const partial: typeof scored = [];
@@ -708,9 +710,10 @@ export async function markAxMatches(
         if (cmp === needle) exact.push({ ...hit, score: 0.95 });
         else if (cmp.includes(needle)) partial.push({ ...hit, score: 0.7 });
       }
-      // An equal name settles it, as a person reading the name would (/code-review on #1008: "Email" is the field
-      // named Email, not also a button reading "Email me updates").
-      scored.push(...(exact.length > 0 ? exact : partial));
+      // Both are marked, equal names first: the gather prefers an equal name among the matches it can see and the
+      // role allows ("Email" is the field named Email, not also a button reading "Email me updates"), and keeps a
+      // containing name when the equal one is a heading or hidden (/code-review on #1008).
+      scored.push(...exact, ...partial);
     }
     scored.sort((a, b) => b.score - a.score);
     const marks = scored.slice(0, 200);
@@ -723,7 +726,9 @@ export async function markAxMatches(
           returnByValue: true,
           arguments: [{ value: `${opts.nonce}:${m.score}:${m.control ? "c" : ""}:${m.role}` }, { value: m.role }],
           functionDeclaration: `function(v, role) {
-            if (this.nodeType !== 1 || this.getRootNode() !== document) return 0;
+            // Not in a shadow root or a frame: the gather reads the top document only, and only there are marks
+            // cleared (/code-review on #1008).
+            if (this.nodeType !== 1 || this.getRootNode() !== document || window !== window.top) return 0;
             if (role === 'listbox' && this.tagName === 'SELECT') return 0;
             this.setAttribute('${AX_MARK_ATTR}', v);
             return 1;

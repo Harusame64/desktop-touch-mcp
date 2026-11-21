@@ -369,8 +369,10 @@ function candidatePoolJs(args: ActionFactsArgs): string {
   const roleFilter = ${role ? JSON.stringify(role.toLowerCase()) : "null"};
   function roleMatches(el) {
     // internal #420 — an element the accessibility tree matched is filtered by the role the browser computed.
+    // Its attribute reading counts too, as before: role:'textbox' still takes a search field (searchbox) by its name
+    // (/code-review on #1008).
     const axr = axOf(el);
-    if (axr && axr.role) return axr.role === roleFilter;
+    if (axr && axr.role === roleFilter) return true;
     const explicit = (el.getAttribute('role') || '').toLowerCase();
     if (explicit === roleFilter) return true;
     const tg = el.tagName.toLowerCase();
@@ -401,7 +403,12 @@ function candidatePoolJs(args: ActionFactsArgs): string {
     }
     return false;
   }
-  const pool = roleFilter ? filtered.filter(function(e) { return roleMatchesChain(e.el); }) : filtered;
+  let pool = roleFilter ? filtered.filter(function(e) { return roleMatchesChain(e.el); }) : filtered;
+  // internal #420 — an equal accessible name wins over names containing it, among the matches seen and of the role
+  // asked for: a heading or a hidden copy named exactly so does not hide the button whose name contains it.
+  if (axMark !== null && pool.some(function(e) { const a = axOf(e.el); return !!a && a.score >= 0.95; })) {
+    pool = pool.filter(function(e) { const a = axOf(e.el); return !!a && a.score >= 0.95; });
+  }
   const top = pool.slice(0, N);`;
 }
 
@@ -1160,11 +1167,19 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
   if (args.by === "role" || args.by === "ariaLabel") {
     const nonce = randomUUID().slice(0, 8);
     const marked = await markAxMatches({ by: args.by, pattern: args.pattern, caseSensitive: args.caseSensitive ?? false, nonce, ...(args.scope && { scope: args.scope }) }, tab, args.port);
-    // None marked: the DOM reading answers, as before (an explicit role the browser computes as generic, a control
-    // under a misused aria-hidden): the tree adds what it finds, it does not take away what was found.
+    // None marked, or none left after the gather's filters: the DOM reading answers, as before (an explicit role the
+    // browser computes as generic, a control under a misused aria-hidden): the tree adds what it finds, it does not
+    // take away what was found.
     if (marked !== null && marked > 0) axMark = nonce;
   }
-  const outcome = await gatherAndDecide(args, tab, pageZoom, axMark);
+  let outcome = await gatherAndDecide(args, tab, pageZoom, axMark);
+  // Every mark filtered out (hidden, of another role): the DOM reading answers, as with none marked (/code-review on
+  // #1008: a close button under a misused aria-hidden beside a hidden element the tree names Close).
+  if (axMark !== undefined && outcome.kind === "noActionable" && outcome.total === 0) {
+    await clearAxMarks(axMark, tab, args.port);
+    axMark = undefined;
+    outcome = await gatherAndDecide(args, tab, pageZoom, undefined);
+  }
   // The marks stay for a resolved target's second read (the fill act, the click's mark): its caller clears them.
   if (axMark !== undefined && outcome.kind !== "resolved") await clearAxMarks(axMark, tab, args.port);
   return outcome;

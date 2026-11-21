@@ -1307,13 +1307,14 @@ async function readPressLandingAt(
  */
 async function screenPointForLanding(
   selector: string,
-  landing: { x: number; y: number },
+  landing: { x: number; y: number; how?: string },
   tabId: string | null,
   port: number,
 ): Promise<{ x: number; y: number; aim: PageAim | undefined; rect: { x: number; y: number; w: number; h: number } | undefined }> {
-  // A zero-size element has a point when the landing read gave one (a 0x0 radio pressed through its label: win2 on
-  // #1008, W11); only the viewport's place on the screen is read from it.
-  const at = await getElementScreenCoords(selector, tabId, port, { allowZeroSize: true });
+  // A zero-size element pressed through its label or the control in its place has its point (a 0x0 radio: win2 on
+  // #1008, W11); only the viewport's place on the screen is read from it. Any other element that is zero-size now
+  // collapsed after the read, and stops as before (/code-review on #1008).
+  const at = await getElementScreenCoords(selector, tabId, port, { allowZeroSize: landing.how === "own_label" || landing.how === "replacement" });
   const dpr = Number(await evaluateInTab("window.devicePixelRatio || 1", tabId, port)) || 1;
   const vp = at.viewport;
   if (vp === undefined) return { x: at.x, y: at.y, aim: undefined, rect: undefined };
@@ -1548,10 +1549,10 @@ async function handleBrowserFillByAxis(args: {
   );
   let actResult: { ok: boolean; error?: string; detail?: string; tag?: string; actual?: string; actualWithheld?: boolean; fullActualLen?: number; fullMatches?: boolean };
   try {
-    actResult = await evaluateInTab(actExpr, tabId ?? null, port) as typeof actResult;
+    actResult = await evaluateInTab(actExpr, outcome.tabId ?? tabId ?? null, port) as typeof actResult;
   } finally {
-    // internal #420 — the accessibility tree's marks the resolve left for this second read.
-    if (outcome.axMark !== undefined) await clearAxMarks(outcome.axMark, tabId ?? null, port);
+    // internal #420 — the accessibility tree's marks the resolve left for this second read, in the tab it read.
+    if (outcome.axMark !== undefined) await clearAxMarks(outcome.axMark, outcome.tabId ?? tabId ?? null, port);
   }
 
   if (!actResult.ok) {
@@ -2293,8 +2294,17 @@ async function clickByAxis(args: {
     });
     if (loose.kind === "resolved" && loose.axMark !== undefined) args.pendingMarks.set(loose.axMark, loose.tabId ?? tabId ?? null);
     // Several matches a person could each press (0x0 radios pressed through their labels) are a choice to make,
-    // not "none actionable" (win2 on #1008, W11a).
-    if (loose.kind === "ambiguous") looseAmbiguous = loose;
+    // not "none actionable" (win2 on #1008, W11a). Only matches the single road would take count: on the screen, or a
+    // control of 2px or less; matches off the screen stop as before (/code-review on #1008).
+    if (loose.kind === "ambiguous") {
+      const vp = (await evaluateInTab("[innerWidth, innerHeight]", tabId ?? null, port).catch(() => null)) as [number, number] | null;
+      const pressable = vp === null ? 0 : loose.candidates.filter((c) => {
+        const cx = c.rect.x + c.rect.w / 2;
+        const cy = c.rect.y + c.rect.h / 2;
+        return c.rect.w <= 2 || c.rect.h <= 2 || (cx >= 0 && cy >= 0 && cx < vp[0] && cy < vp[1]);
+      }).length;
+      if (pressable >= 2) looseAmbiguous = loose;
+    }
     if (loose.kind === "resolved") {
       const cx = loose.rect.x + loose.rect.w / 2;
       const cy = loose.rect.y + loose.rect.h / 2;
@@ -2387,7 +2397,7 @@ async function clickByAxis(args: {
         ({ x: pressX, y: pressY, aim: pressAim, rect: landedRect } = await screenPointForLanding(tagSel, landing, tab, port));
       } catch (e) {
         await settlePressScroll(true, tab, port);
-        // The page re-rendered the element after the read (the mark is on the old node):
+        // The page re-rendered the element after the read (the mark is on the old node, or it is now zero-size):
         // answered as the resolve's stop, never with the mark's selector, which names nothing the caller can use
         // (/code-review on #1006). Anything else (a closed tab, a lost connection) is answered as itself.
         if (e instanceof ElementZeroSizeError || (e instanceof Error && e.message.startsWith("Element not found:"))) return stop();
