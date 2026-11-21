@@ -4,9 +4,8 @@
  * A returned selector is passed on to browser_click or browser_fill, which press the first element it matches. A
  * selector that matches two elements presses the wrong one without a word: Select2's `span:nth-child(1) >
  * span:nth-child(1)`, a radio group's shared `input[name=size]`, an id the page repeats (win2 on #1011). browser_search
- * and browser_overview had a copy each, and only the first asked the document (internal #420). This is the one
- * definition, spliced into both scripts. desktop_discover's browser provider still builds its own, with neither this
- * identity check nor the climb to the root; moving it here is its own change (internal #420).
+ * and browser_overview had a copy each, and only the first asked the document (internal #420); desktop_discover's
+ * browser provider had a third. This is the one definition, spliced into all three scripts.
  *
  * An id, a name, an aria-label, a caller's own candidates (browser_overview's link paths), then data-testid or
  * data-asin: each is used only when the one element it matches in the document is this one. Otherwise the selector

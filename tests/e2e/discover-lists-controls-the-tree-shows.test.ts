@@ -185,6 +185,30 @@ describe.skipIf(!CHROME)("desktop_discover's browser lane lists the controls the
     expect(await evaluateInTab(`document.querySelectorAll(${JSON.stringify(sel)}).length===1 && document.querySelector(${JSON.stringify(sel)}).textContent`, tabId, PORT)).toBe("Second");
   });
 
+  // The selector each label reaches: how many elements match it, and the text, aria-label or value of the first.
+  const reach = async (rows: Row[]): Promise<Array<[string, number, string]>> =>
+    (await evaluateInTab(`(${JSON.stringify(rows.map((r) => [r.label, r.selector]))}).map(function(x){var l=document.querySelectorAll(x[1]),e=l[0];return [x[0],l.length,e?(e.getAttribute('aria-label')||e.textContent||'').trim():'']})`, tabId, PORT)) as Array<[string, number, string]>;
+
+  it("names blocks built alike deeper than eight levels apart: the path climbs to the root (internal #420, after #1012)", async () => {
+    // This copy stopped at eight levels and returned a path it knew matched both tiles.
+    const deep = (n: number, inner: string): string => (n === 0 ? inner : `<div>${deep(n - 1, inner)}</div>`);
+    await page(`<div>${deep(11, `<button>Tile</button>`)}</div><div>${deep(11, `<button>Tile 2</button>`)}</div>`);
+    expect(await reach(await list())).toEqual([["Tile", 1, "Tile"], ["Tile 2", 1, "Tile 2"]]);
+  });
+
+  it("keeps a selector only when its one match is this element: a name CSS reads as another's (/code-review on #1012)", async () => {
+    // JSON.stringify writes the line break as \n, which CSS reads as an escaped "n": input[name="a\nb"] matched the
+    // field named "anb" alone.
+    await page(`<input aria-label="Broken" name="a&#10;b"><input aria-label="Plain" name="anb">`);
+    expect(await reach(await list())).toEqual([["Broken", 1, "Broken"], ["Plain", 1, "Plain"]]);
+  });
+
+  it("anchors a path that climbs to the top: a widget a script appends to <html>, outside <body> (/code-review on #1012)", async () => {
+    await page(`<div></div><div></div><div><button>In body</button></div>`);
+    await evaluateInTab(`(function(){var d=document.createElement('div');d.innerHTML='<button>On html</button>';document.documentElement.appendChild(d);return true})()`, tabId, PORT);
+    expect(await reach(await list())).toEqual([["In body", 1, "In body"], ["On html", 1, "On html"]]);
+  });
+
   it("does not list a div slider it could not press", async () => {
     await page(`<div role="slider" id="vol" aria-label="Volume" tabindex="0" aria-valuenow="5" style="width:100px;height:10px;background:#ccc"></div>`);
     expect((await list()).find((r) => r.selector === "#vol")).toBeUndefined();
