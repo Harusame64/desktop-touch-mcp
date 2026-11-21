@@ -58,9 +58,15 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
   // A selector that matches this element alone in the document, past the scan's time budget too: the one definition
   // browser_overview shares (internal #420).
 
-  function __alone(sel) { try { return document.querySelectorAll(sel).length === 1; } catch (e) { return false; } }
+  // Matches one element, and that element is el: a link's path is built from el.href, which resolves against the page,
+  // while the selector matches the attribute, so an in-page "#History" link's a[href*="/wiki/Tokyo"] matched the
+  // permalink alone (/code-review on #1012).
+  function __alone(sel, el) {
+    try { const l = document.querySelectorAll(sel); return l.length === 1 && l[0] === el; } catch (e) { return false; }
+  }
   function __uniqueSelector(el, overdue, extra) {
-    if (overdue()) return __pathTo(el, false, overdue);
+    // Past the budget an id is still tried, one query, before the path that asks nothing (/code-review on #1012).
+    if (overdue()) return el.id && __alone('#' + CSS.escape(el.id), el) ? '#' + CSS.escape(el.id) : __pathTo(el, false, overdue);
     const tg = el.tagName.toLowerCase();
     const tries = [];
     if (el.id) tries.push('#' + CSS.escape(el.id));
@@ -73,7 +79,7 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
       const v = el.getAttribute(attr);
       if (v && v.length < 60) tries.push(tg + '[' + attr + '=' + JSON.stringify(v) + ']');
     }
-    for (const s of tries) if (__alone(s)) return s;
+    for (const s of tries) if (__alone(s, el)) return s;
     return __pathTo(el, true, overdue);
   }
   function __pathTo(el, ask, overdue) {
@@ -83,9 +89,9 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
       const idx = Array.from(p.children).indexOf(node) + 1;
       const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
       path = path ? seg + ' > ' + path : seg;
-      if (p.id && __alone('#' + CSS.escape(p.id))) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
+      if (p.id && __alone('#' + CSS.escape(p.id), p)) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
       node = p;
-      if (ask && depth >= 1 && __alone(path)) break;
+      if (ask && depth >= 1 && __alone(path, el)) break;
       if (depth >= 7 || overdue()) ask = false;
     }
     return path || el.tagName.toLowerCase();
@@ -392,9 +398,15 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   // A selector that matches this element alone in the document, past the scan's time budget too: the one definition
   // browser_overview shares (internal #420).
 
-  function __alone(sel) { try { return document.querySelectorAll(sel).length === 1; } catch (e) { return false; } }
+  // Matches one element, and that element is el: a link's path is built from el.href, which resolves against the page,
+  // while the selector matches the attribute, so an in-page "#History" link's a[href*="/wiki/Tokyo"] matched the
+  // permalink alone (/code-review on #1012).
+  function __alone(sel, el) {
+    try { const l = document.querySelectorAll(sel); return l.length === 1 && l[0] === el; } catch (e) { return false; }
+  }
   function __uniqueSelector(el, overdue, extra) {
-    if (overdue()) return __pathTo(el, false, overdue);
+    // Past the budget an id is still tried, one query, before the path that asks nothing (/code-review on #1012).
+    if (overdue()) return el.id && __alone('#' + CSS.escape(el.id), el) ? '#' + CSS.escape(el.id) : __pathTo(el, false, overdue);
     const tg = el.tagName.toLowerCase();
     const tries = [];
     if (el.id) tries.push('#' + CSS.escape(el.id));
@@ -407,7 +419,7 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
       const v = el.getAttribute(attr);
       if (v && v.length < 60) tries.push(tg + '[' + attr + '=' + JSON.stringify(v) + ']');
     }
-    for (const s of tries) if (__alone(s)) return s;
+    for (const s of tries) if (__alone(s, el)) return s;
     return __pathTo(el, true, overdue);
   }
   function __pathTo(el, ask, overdue) {
@@ -417,9 +429,9 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
       const idx = Array.from(p.children).indexOf(node) + 1;
       const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
       path = path ? seg + ' > ' + path : seg;
-      if (p.id && __alone('#' + CSS.escape(p.id))) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
+      if (p.id && __alone('#' + CSS.escape(p.id), p)) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
       node = p;
-      if (ask && depth >= 1 && __alone(path)) break;
+      if (ask && depth >= 1 && __alone(path, el)) break;
       if (depth >= 7 || overdue()) ask = false;
     }
     return path || el.tagName.toLowerCase();
@@ -893,9 +905,15 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   // A selector that matches this element alone in the document, past the scan's time budget too: the one definition
   // browser_overview shares (internal #420).
 
-  function __alone(sel) { try { return document.querySelectorAll(sel).length === 1; } catch (e) { return false; } }
+  // Matches one element, and that element is el: a link's path is built from el.href, which resolves against the page,
+  // while the selector matches the attribute, so an in-page "#History" link's a[href*="/wiki/Tokyo"] matched the
+  // permalink alone (/code-review on #1012).
+  function __alone(sel, el) {
+    try { const l = document.querySelectorAll(sel); return l.length === 1 && l[0] === el; } catch (e) { return false; }
+  }
   function __uniqueSelector(el, overdue, extra) {
-    if (overdue()) return __pathTo(el, false, overdue);
+    // Past the budget an id is still tried, one query, before the path that asks nothing (/code-review on #1012).
+    if (overdue()) return el.id && __alone('#' + CSS.escape(el.id), el) ? '#' + CSS.escape(el.id) : __pathTo(el, false, overdue);
     const tg = el.tagName.toLowerCase();
     const tries = [];
     if (el.id) tries.push('#' + CSS.escape(el.id));
@@ -908,7 +926,7 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
       const v = el.getAttribute(attr);
       if (v && v.length < 60) tries.push(tg + '[' + attr + '=' + JSON.stringify(v) + ']');
     }
-    for (const s of tries) if (__alone(s)) return s;
+    for (const s of tries) if (__alone(s, el)) return s;
     return __pathTo(el, true, overdue);
   }
   function __pathTo(el, ask, overdue) {
@@ -918,9 +936,9 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
       const idx = Array.from(p.children).indexOf(node) + 1;
       const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
       path = path ? seg + ' > ' + path : seg;
-      if (p.id && __alone('#' + CSS.escape(p.id))) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
+      if (p.id && __alone('#' + CSS.escape(p.id), p)) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
       node = p;
-      if (ask && depth >= 1 && __alone(path)) break;
+      if (ask && depth >= 1 && __alone(path, el)) break;
       if (depth >= 7 || overdue()) ask = false;
     }
     return path || el.tagName.toLowerCase();

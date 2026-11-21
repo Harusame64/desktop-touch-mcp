@@ -73,6 +73,16 @@ describe.skipIf(!CHROME)("browser_overview returns selectors that match one elem
     await expectEachAlone(items, ["Tokyo", "Kyoto", "Kyoto again", "Station"]);
   });
 
+  it("does not hand a link a path another link holds: an in-page or relative href resolves to the page's own path (/code-review on #1012)", async () => {
+    // el.href resolves against the page, so "#History" reads as /wiki/Tokyo#History, while the selector matches the
+    // attribute: a[href*="/wiki/Tokyo"] matched the permalink alone, and a click on History pressed it.
+    await page(`<base href="https://example.org/wiki/Tokyo"><a href="#History">History</a><a href="/wiki/Tokyo">Tokyo</a>`);
+    await expectEachAlone(await overview(), ["History", "Tokyo"]);
+    // A relative link reads the same way: "Kyoto" resolves to /wiki/Kyoto, which only the absolute link holds.
+    await page(`<base href="https://example.org/wiki/Tokyo"><a href="Kyoto">Kyoto</a><a href="https://example.org/wiki/Kyoto">Kyoto too</a>`);
+    await expectEachAlone(await overview(), ["Kyoto", "Kyoto too"]);
+  });
+
   it("lengthens a path of positions past two levels when blocks are built alike", async () => {
     const card = (t: string) => `<div><div><div><button>${t}</button></div></div></div>`;
     await page(`<section>${card("Buy")}${card("Buy later")}</section><section>${card("Sell")}${card("Sell later")}</section>`);

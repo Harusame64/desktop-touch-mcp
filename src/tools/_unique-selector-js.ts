@@ -8,9 +8,9 @@
  * definition, spliced into both scripts.
  *
  * An id, a name, an aria-label, a caller's own candidates (browser_overview's link paths), then data-testid or
- * data-asin: each is used only when the document has no other element it matches. Otherwise the selector is a path of
- * `:nth-child` steps, two at least, longer until it matches this element alone or reaches an ancestor with an id the
- * page does not repeat. The document is asked for paths of two to eight steps while the caller's time budget lasts
+ * data-asin: each is used only when the one element it matches in the document is this one. Otherwise the selector
+ * is a path of `:nth-child` steps, two at least, longer until it matches this element alone or reaches an ancestor
+ * with an id the page does not repeat. The document is asked for paths of two to eight steps while the caller's time budget lasts
  * (/code-review on #1011: a query per level and element). Past that, the path climbs on to <body> without asking: a
  * path of positions from <body> is unique by construction (win2 on #1011: blocks built alike matched twice at eight).
  *
@@ -18,9 +18,15 @@
  * prefixed `__` because they share an IIFE with each script's own functions.
  */
 export const UNIQUE_SELECTOR_JS = `
-  function __alone(sel) { try { return document.querySelectorAll(sel).length === 1; } catch (e) { return false; } }
+  // Matches one element, and that element is el: a link's path is built from el.href, which resolves against the page,
+  // while the selector matches the attribute, so an in-page "#History" link's a[href*="/wiki/Tokyo"] matched the
+  // permalink alone (/code-review on #1012).
+  function __alone(sel, el) {
+    try { const l = document.querySelectorAll(sel); return l.length === 1 && l[0] === el; } catch (e) { return false; }
+  }
   function __uniqueSelector(el, overdue, extra) {
-    if (overdue()) return __pathTo(el, false, overdue);
+    // Past the budget an id is still tried, one query, before the path that asks nothing (/code-review on #1012).
+    if (overdue()) return el.id && __alone('#' + CSS.escape(el.id), el) ? '#' + CSS.escape(el.id) : __pathTo(el, false, overdue);
     const tg = el.tagName.toLowerCase();
     const tries = [];
     if (el.id) tries.push('#' + CSS.escape(el.id));
@@ -33,7 +39,7 @@ export const UNIQUE_SELECTOR_JS = `
       const v = el.getAttribute(attr);
       if (v && v.length < 60) tries.push(tg + '[' + attr + '=' + JSON.stringify(v) + ']');
     }
-    for (const s of tries) if (__alone(s)) return s;
+    for (const s of tries) if (__alone(s, el)) return s;
     return __pathTo(el, true, overdue);
   }
   function __pathTo(el, ask, overdue) {
@@ -43,9 +49,9 @@ export const UNIQUE_SELECTOR_JS = `
       const idx = Array.from(p.children).indexOf(node) + 1;
       const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
       path = path ? seg + ' > ' + path : seg;
-      if (p.id && __alone('#' + CSS.escape(p.id))) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
+      if (p.id && __alone('#' + CSS.escape(p.id), p)) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
       node = p;
-      if (ask && depth >= 1 && __alone(path)) break;
+      if (ask && depth >= 1 && __alone(path, el)) break;
       if (depth >= 7 || overdue()) ask = false;
     }
     return path || el.tagName.toLowerCase();
