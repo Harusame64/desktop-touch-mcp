@@ -661,10 +661,11 @@ const AX_TEXT_ROLES = new Set(["StaticText", "InlineTextBox", "LineBreak", "Root
  * not ignored and not a text run, is marked `data-dtm-ax="<nonce>:<score>:<c when a control>:<role>"`,
  * the best 200 first, so the page-side gather takes them as its candidates. A native multi-row select (role
  * listbox) is left out: a press on it picks the option under the centre. Answers how many were marked, or null when
- * the tree (or the scope) could not be read; with none marked, the caller keeps the DOM reading.
+ * the tree (or the scope) could not be read; with none marked, the caller keeps the DOM reading. `by: "controls"`
+ * marks every control that is not a link or a button, for desktop_discover's list (PR-C2b).
  */
 export async function markAxMatches(
-  opts: { by: "role" | "ariaLabel"; pattern: string; caseSensitive: boolean; nonce: string; scope?: string },
+  opts: { by: "role" | "ariaLabel" | "controls"; pattern: string; caseSensitive: boolean; nonce: string; scope?: string },
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT,
 ): Promise<number | null> {
@@ -688,7 +689,17 @@ export async function markAxMatches(
     const from = rootObj.result?.objectId;
     if (!from) return null;
     const scored: Array<{ backend: number; score: number; control: boolean; role: string }> = [];
-    if (opts.by === "role") {
+    if (opts.by === "controls") {
+      // desktop_discover (internal #420, PR-C2b): every control the tree shows that is not a link or a button (the
+      // page-side list finds those by their tags and roles) — a checkbox drawn by a skin, Select2's combobox, Choices'
+      // popup listbox, a role=checkbox div — named or not.
+      const nodes = ((await s.send("Accessibility.queryAXTree", { objectId: from })) as { nodes: AxNode[] }).nodes;
+      for (const n of nodes) {
+        const r = n.role?.value ?? "";
+        if (n.ignored || !n.backendDOMNodeId || r === "link" || r === "button" || !axIsControl(r, n)) continue;
+        scored.push({ backend: n.backendDOMNodeId, score: 0.85, control: true, role: r });
+      }
+    } else if (opts.by === "role") {
       const role = opts.caseSensitive ? opts.pattern : opts.pattern.toLowerCase();
       const nodes = ((await s.send("Accessibility.queryAXTree", { objectId: from, role })) as { nodes: AxNode[] }).nodes;
       for (const n of nodes) {
