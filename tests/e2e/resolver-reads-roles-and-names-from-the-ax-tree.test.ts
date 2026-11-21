@@ -224,6 +224,15 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(body.code).not.toBe("BrowserPointCovered");
   });
 
+  it("answers several 0x0 radios pressed through their labels as ambiguous, not as none actionable (win2 on #1008, W11a)", async () => {
+    await page(`<input type="radio" name="c" id="g0" style="width:0;height:0;margin:0;padding:0;border:0;appearance:none"><label for="g0" style="display:inline-block;padding:6px 12px;margin:40px 4px">Red</label><input type="radio" name="c" id="g1" style="width:0;height:0;margin:0;padding:0;border:0;appearance:none"><label for="g1" style="display:inline-block;padding:6px 12px">Green</label>`);
+    const r = await browserClickElementHandler({ by: "role", pattern: "radio", port: PORT } as never);
+    const body = JSON.parse((r.content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { code?: string; context?: { total?: number } };
+    expect(body.code).toBe("BrowserAmbiguousTarget");
+    expect(body.context?.total).toBe(2);
+    expect(await marks()).toBe(0);
+  });
+
   it("presses Choices' select as it is: a listbox that opens a popup is a control (win2 on #1008, W6)", async () => {
     await page(`<div class="choices" id="chl" role="listbox" tabindex="0" aria-haspopup="true" aria-expanded="false" style="position:absolute;left:100px;top:100px;width:260px;height:40px;border:1px solid"><div class="choices__inner"><select id="fr" hidden><option>Apple</option></select><div class="choices__item">Apple</div></div><div class="choices__list--dropdown" style="visibility:hidden"><div role="listbox"><div role="option">Apple</div><div role="option">Banana</div></div></div></div>`);
     expect(what(await resolve({ by: "role", pattern: "listbox" }))).toBe("div#chl");

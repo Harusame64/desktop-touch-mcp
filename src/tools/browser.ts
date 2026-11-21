@@ -2286,11 +2286,15 @@ async function clickByAxis(args: {
   // Off-screen matches and several matches stop as before.
   let target: Extract<ResolveActionOutcome, { kind: "resolved" }> | null = outcome.kind === "resolved" ? outcome : null;
   let covered = false;
+  let looseAmbiguous: Extract<ResolveActionOutcome, { kind: "ambiguous" }> | null = null;
   if (outcome.kind === "noActionable") {
     const loose = await resolveBrowserActionTarget({
       by, pattern, role, scope, caseSensitive, action: "click", requireReceivesEvents: false, tabId: tabId ?? null, port,
     });
     if (loose.kind === "resolved" && loose.axMark !== undefined) args.pendingMarks.set(loose.axMark, loose.tabId ?? tabId ?? null);
+    // Several matches a person could each press (0x0 radios pressed through their labels) are a choice to make,
+    // not "none actionable" (win2 on #1008, W11a).
+    if (loose.kind === "ambiguous") looseAmbiguous = loose;
     if (loose.kind === "resolved") {
       const cx = loose.rect.x + loose.rect.w / 2;
       const cy = loose.rect.y + loose.rect.h / 2;
@@ -2326,7 +2330,7 @@ async function clickByAxis(args: {
       if (!covered) return browserModalBlockingFailure(verdict.blocker, verdict.signals, ctx);
     }
   }
-  if (target === null) return browserResolveStopToFailure(outcome as Exclude<ResolveActionOutcome, { kind: "resolved" | "error" }>, "browser_click", ctx);
+  if (target === null) return browserResolveStopToFailure(looseAmbiguous ?? (outcome as Exclude<ResolveActionOutcome, { kind: "resolved" | "error" }>), "browser_click", ctx);
 
   // Minimized-window guard: the gather eval's viewport origin is the Windows
   // -32000 parking marker → the physical point is a large negative point the OS
