@@ -667,7 +667,8 @@ const AX_TEXT_ROLES = new Set(["StaticText", "InlineTextBox", "LineBreak", "Root
  * the best 200 first, so the page-side gather takes them as its candidates. A native multi-row select (role
  * listbox) is left out: a press on it picks the option under the centre. Answers how many were marked, or null when
  * the tree (or the scope) could not be read; with none marked, the caller keeps the DOM reading. `by: "controls"`
- * marks every control that is not a link or a button, for desktop_discover's list (PR-C2b).
+ * marks the controls desktop_discover's list needs the tree for (PR-C2b): not links, buttons, text fields, sliders
+ * or spinbuttons.
  */
 export async function markAxMatches(
   opts: { by: "role" | "ariaLabel" | "controls"; pattern: string; caseSensitive: boolean; nonce: string; scope?: string },
@@ -701,8 +702,9 @@ export async function markAxMatches(
       const nodes = ((await s.send("Accessibility.queryAXTree", { objectId: from })) as { nodes: AxNode[] }).nodes;
       for (const n of nodes) {
         const r = n.role?.value ?? "";
-        // Links, buttons and fields the page-side list finds by their tags are left to it; a slider or spinbutton it
-        // could not press is not listed. The roles a widget draws in its own way come first (/code-review on #1009).
+        // Links, buttons and native fields are left to the page-side list, which finds them by their tags; a div the
+        // tree calls a textbox (the CDP fill cannot write to it), a slider or a spinbutton is not listed. The roles a
+        // widget draws in its own way come first (/code-review on #1009).
         if (n.ignored || !n.backendDOMNodeId || !axIsControl(r, n) || AX_LISTED_BY_TAG.has(r)) continue;
         scored.push({ backend: n.backendDOMNodeId, score: AX_DRAWN_ROLES.has(r) ? 0.9 : 0.85, control: true, role: r });
       }
@@ -734,7 +736,8 @@ export async function markAxMatches(
       scored.push(...exact, ...partial);
     }
     scored.sort((a, b) => b.score - a.score);
-    // desktop_discover reads the whole page, so its cap is wider; a by-axis question keeps its best 200.
+    // desktop_discover's list takes its first 60 in document order, so a control early in the page must not be
+    // crowded out of a score-sorted 200 by ones later; a by-axis question keeps its best 200.
     const marks = scored.slice(0, opts.by === "controls" ? 1000 : 200);
     const done = await Promise.all(marks.map(async (m) => {
       try {

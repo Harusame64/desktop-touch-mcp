@@ -136,6 +136,17 @@ describe.skipIf(!CHROME)("desktop_discover's browser lane lists the controls the
     expect(c.candidates.find((x) => x.label === "Country")?.value).toBe("Select an option");
   });
 
+  it("names Select2's multiple by its select's label, not by the search field inside it", async () => {
+    await page(`<label for="tg">Tags</label><select id="tg" multiple tabindex="-1" aria-hidden="true" style="position:absolute;width:1px;height:1px;clip:rect(0 0 0 0);overflow:hidden"><option>a</option></select><span class="select2" style="display:inline-block;width:200px"><span class="selection"><span class="select2-selection" role="combobox" aria-haspopup="true" aria-expanded="false" tabindex="-1" style="display:block;min-height:28px;border:1px solid #aaa"><ul><li><input class="select2-search__field" type="search" role="searchbox" tabindex="0"></li></ul></span></span></span>`);
+    expect((await list()).find((r) => r.role === "button" && r.label === "Tags")).toBeDefined();
+  });
+
+  it("does not report a label outside the widget as its value", async () => {
+    await page(`<span id="lbl">Country</span><div role="combobox" aria-haspopup="listbox" aria-expanded="false" tabindex="0" aria-labelledby="lbl" style="width:200px;height:28px;border:1px solid">Japan</div>`);
+    const c = (await fetchBrowserCandidates({ tabId } as never)).candidates.find((x) => x.label === "Country");
+    expect(c?.value).toBeUndefined();
+  });
+
   it("keeps the text field inside an ARIA 1.0 combobox as a textbox", async () => {
     await page(`<div role="combobox" aria-expanded="false" aria-haspopup="listbox" style="display:inline-block"><input type="text" id="q" aria-label="Search" aria-autocomplete="list"></div>`);
     expect((await list()).find((r) => r.selector === "#q")).toMatchObject({ role: "textbox", actions: "type/click" });

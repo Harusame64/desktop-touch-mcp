@@ -152,22 +152,24 @@ ${ELEMENT_NAME_JS}
     for(let a=el.parentElement; a; a=a.parentElement) { if(axRole(a)==='combobox') return true; }
     return false;
   }
-  // The control a widget stands for: the select or input inside it (Choices), or the one the page keeps from people
-  // just before the widget's box (Select2 puts its span after the select it hides).
+  // The control a widget stands for: a select inside it (Choices), or the select the page keeps from people (tabindex
+  // -1, aria-hidden) just before the widget's box (Select2 puts its span after the select it hides). A search field
+  // inside the widget (Select2's multiple) is not it, nor a hidden select a script fills for another field.
   function standsFor(el) {
-    const inner=el.querySelector('select, input'); if(inner) return inner;
+    const inner=el.querySelector('select'); if(inner) return inner;
     for(let a=el, d=0; a && d<4; a=a.parentElement, d++) {
       const prev=a.previousElementSibling;
-      if(prev && (prev.tagName==='SELECT'||prev.tagName==='INPUT') && (keptFromPeople(prev)||prev.hidden)) return prev;
+      if(prev && prev.tagName==='SELECT' && keptFromPeople(prev)) return prev;
     }
     return null;
   }
-  // The value a widget shows (Select2's rendered value, which its aria-labelledby points at).
+  // The value a widget shows: what its aria-labelledby points at inside the widget (Select2's rendered value); a
+  // label outside it is a name, not a value.
   function shownValue(el) {
     const ids=(el.getAttribute('aria-labelledby')||'').trim().split(/\\s+/).filter(Boolean);
-    return ids.map(function(id){const x=document.getElementById(id);return x&&!__isMasked(x)?(x.textContent||'').trim():'';}).filter(Boolean).join(' ').replace(/\\s+/g,' ').slice(0,80);
+    return ids.map(function(id){const x=document.getElementById(id);return x&&el.contains(x)&&!__isMasked(x)?(x.textContent||'').trim():'';}).filter(Boolean).join(' ').replace(/\\s+/g,' ').slice(0,80);
   }
-  // A widget's combobox is named as a field is (aria-label, aria-labelledby), then by the label of the control it
+  // A widget's combobox is named as a field is (aria-labelledby, aria-label), then by the label of the control it
   // stands for (a <label for> on the select it hides), then by the value it shows, then by its text. The label comes
   // before the value: two Select2 boxes showing "Select an option" stay two entities (/code-review on #1009).
   function widgetName(el) {
