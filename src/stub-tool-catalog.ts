@@ -559,7 +559,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             "ariaLabel",
             "selector"
           ],
-          "description": "Search axis: text/regex/role/ariaLabel/selector"
+          "description": "Search axis: text/regex/role/ariaLabel/selector. text/regex leave out a script's or style's source, a noscript's content while scripts run, a template's and <head>'s (scope:'head' with visibleOnly:false reaches the title); hidden text follows visibleOnly."
         },
         "pattern": {
           "type": "string",

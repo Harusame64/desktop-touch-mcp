@@ -8,6 +8,7 @@ import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chro
 import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll } from "../../src/engine/cdp-bridge.js";
 import { browserSearchHandler } from "../../src/tools/browser.js";
+import WebSocket from "ws";
 
 const PORT = 9240;
 const CHROME = tryFindChrome() !== null;
@@ -29,7 +30,7 @@ async function page(body: string): Promise<void> {
 }
 type Hit = { selector: string; role?: string; confidence: number; matchedBy: string };
 type Body = { ok?: boolean; code?: string; total?: number; returned?: number; truncated?: boolean; results?: Hit[] };
-async function search(a: { by: "role" | "ariaLabel" | "text"; pattern: string; scope?: string; visibleOnly?: boolean; inViewportOnly?: boolean; maxResults?: number; offset?: number; caseSensitive?: boolean }): Promise<Body> {
+async function search(a: { by: "role" | "ariaLabel" | "text" | "regex"; pattern: string; scope?: string; visibleOnly?: boolean; inViewportOnly?: boolean; maxResults?: number; offset?: number; caseSensitive?: boolean }): Promise<Body> {
   const r = await browserSearchHandler({
     maxResults: 50, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive: false, port: PORT, ...a,
   });
@@ -225,3 +226,90 @@ describe.skipIf(!CHROME)("browser_search by:'role' and by:'ariaLabel' read the a
     expect(sels(await search({ by: "text", pattern: "Accept terms" }))).toEqual(["body:nth-child(2) > label:nth-child(2)"]);
   });
 });
+
+describe.skipIf(!CHROME)("browser_search by:'text' and by:'regex' match what the page draws as text (internal #420)", () => {
+  it("does not list a script's, a style's or the title's text, even with visibleOnly:false (win2 on #1011: Amazon)", async () => {
+    await page(`<p id="shown">priceBlock 12</p><div hidden id="later">priceBlock 13</div>`);
+    await evaluateInTab(`(function(){document.title='priceBlock title';var s=document.createElement('script');s.type='application/json';s.textContent='{"priceBlock":1}';document.body.appendChild(s);var c=document.createElement('style');c.textContent='.priceBlock{color:red}';document.body.appendChild(c);var n=document.createElement('noscript');n.textContent='priceBlock';document.body.appendChild(n);return true})()`, null, PORT);
+    for (const by of ["text", "regex"] as const) {
+      const all = await search({ by, pattern: "priceBlock", visibleOnly: false });
+      expect(sels(all)).toEqual(["#later", "#shown"]);
+      expect(sels(await search({ by, pattern: "priceBlock" }))).toEqual(["#shown"]);
+    }
+  });
+
+  it("finds what the page does draw: a style shown with CSS (/code-review on #1015)", async () => {
+    // A style is judged by its own computed display: shown with CSS, it is drawn.
+    await page(`<style id="demo" style="display:block">.priceTag{color:red}</style>`);
+    for (const by of ["text", "regex"] as const) expect(sels(await search({ by, pattern: "priceTag" }))).toEqual(["#demo"]);
+  });
+
+  it("lists a shown style inside a hidden section as hidden text, as any hidden text (/code-review on #1015)", async () => {
+    // The section hides it, not the style: visibleOnly decides, as for <div hidden>priceTag 2</div> beside it.
+    await page(`<div hidden><style id="hs" style="display:block">.priceTag{}</style><p id="hp">priceTag 2</p></div><noembed id="ne">priceTag 3</noembed>`);
+    for (const by of ["text", "regex"] as const) {
+      expect(sels(await search({ by, pattern: "priceTag", visibleOnly: false }))).toEqual(["#hp", "#hs"]);
+      expect((await search({ by, pattern: "priceTag" })).code).toBe("BrowserSearchNoResults");
+    }
+  });
+
+  it("finds a noscript's content while scripts are blocked, also under display:contents (/code-review on #1015)", async () => {
+    const tabs = (await (await fetch(`http://127.0.0.1:${PORT}/json`)).json()) as Array<{ type: string; webSocketDebuggerUrl: string }>;
+    const ws = new WebSocket(tabs.find((t) => t.type === "page")!.webSocketDebuggerUrl);
+    await new Promise((r) => ws.once("open", r));
+    let id = 0;
+    // A CDP error or a stalled socket fails the cell here, not as an unrelated assertion later.
+    const send = (method: string, params: object) => new Promise((res, rej) => {
+      const n = ++id;
+      const t = setTimeout(() => { ws.off("message", on); rej(new Error(`${method}: no reply`)); }, 5000);
+      const on = (m: WebSocket.RawData) => {
+        const msg = JSON.parse(String(m)) as { id?: number; error?: { message: string } };
+        if (msg.id !== n) return;
+        clearTimeout(t); ws.off("message", on);
+        if (msg.error) rej(new Error(`${method}: ${msg.error.message}`)); else res(null);
+      };
+      ws.on("message", on);
+      ws.send(JSON.stringify({ id: n, method, params }));
+    });
+    try {
+      await send("Emulation.setScriptExecutionDisabled", { value: true });
+      // Under Trusted Types too: reading whether scripts run writes nothing to the page (/code-review on #1015).
+      const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="require-trusted-types-for 'script'"><style>.c{display:contents}</style></head><body><noscript><p id="a">Enable scripts to checkout</p></noscript><noscript class="c"><p id="b">Enable scripts to pay</p></noscript><svg width="1" height="1"><noscript>Enable scripts svg</noscript></svg></body></html>`;
+      await send("Page.navigate", { url: "data:text/html;charset=utf-8," + encodeURIComponent(html) });
+      await sleep(400);
+      for (const by of ["text", "regex"] as const) {
+        expect(sels(await search({ by, pattern: "Enable scripts" }))).toEqual(["#a", "#b"]);
+        // visibleOnly:false, so the SVG noscript is judged by the rule, not filtered as invisible.
+        expect(sels(await search({ by, pattern: "Enable scripts", visibleOnly: false }))).toEqual(["#a", "#b"]);
+      }
+    } finally {
+      // Back to a page without the policy, so the next document.write is allowed.
+      await send("Emulation.setScriptExecutionDisabled", { value: false });
+      await send("Page.navigate", { url: "about:blank" });
+      await sleep(300);
+      ws.close();
+    }
+    // Scripts running: the same noscripts draw nothing, and their markup is not matched.
+    await page(`<noscript><p>Enable scripts to checkout</p></noscript>`);
+    for (const by of ["text", "regex"] as const) expect((await search({ by, pattern: "Enable scripts", visibleOnly: false })).code).toBe("BrowserSearchNoResults");
+  });
+
+  it("leaves out a noscript's markup under a hidden parent, an SVG style's CSS, while scripts run (/code-review on #1015)", async () => {
+    await page(`<div hidden><noscript><img src="x.png" alt="Sign in"></noscript></div><svg width="10" height="10"><style>.cls-1{fill:red}</style><rect class="cls-1" width="10" height="10"/></svg><p id="real">Sign in fill</p>`);
+    for (const by of ["text", "regex"] as const) {
+      expect(sels(await search({ by, pattern: "Sign in", visibleOnly: false }))).toEqual(["#real"]);
+      expect(sels(await search({ by, pattern: "fill", visibleOnly: false }))).toEqual(["#real"]);
+    }
+  });
+
+  it("answers a search scoped into <head> as asked (/code-review on #1015)", async () => {
+    await page(`<p>other</p>`);
+    await evaluateInTab(`(function(){document.title='Checkout page';return true})()`, null, PORT);
+    for (const by of ["text", "regex"] as const) {
+      const b = await search({ by, pattern: "Checkout", scope: "head", visibleOnly: false });
+      expect(b.total).toBe(1);
+      expect(await evaluateInTab(`document.querySelector(${JSON.stringify(b.results![0].selector)}).tagName`, null, PORT)).toBe("TITLE");
+    }
+  });
+});
+
