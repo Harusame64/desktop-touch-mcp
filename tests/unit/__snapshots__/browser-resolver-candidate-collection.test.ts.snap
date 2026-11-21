@@ -91,10 +91,13 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
       path = path ? seg + ' > ' + path : seg;
       if (p.id && __alone('#' + CSS.escape(p.id), p)) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
       node = p;
-      if (ask && depth >= 1 && __alone(path, el)) break;
+      if (ask && depth >= 1 && __alone(path, el)) return path;
       if (depth >= 7 || overdue()) ask = false;
     }
-    return path || el.tagName.toLowerCase();
+    // Climbed to the top: the path is anchored to the root, so it is unique in fact. A step under <body> alone was
+    // not: a widget a script appends to <html>, outside <body>, matched the same path as one inside (/code-review on
+    // #1012).
+    return path && node === document.documentElement ? ':root > ' + path : path || el.tagName.toLowerCase();
   }
 
   function bestSelector(el) { return __uniqueSelector(el, () => nowFn() > deadline); }
@@ -431,10 +434,13 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
       path = path ? seg + ' > ' + path : seg;
       if (p.id && __alone('#' + CSS.escape(p.id), p)) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
       node = p;
-      if (ask && depth >= 1 && __alone(path, el)) break;
+      if (ask && depth >= 1 && __alone(path, el)) return path;
       if (depth >= 7 || overdue()) ask = false;
     }
-    return path || el.tagName.toLowerCase();
+    // Climbed to the top: the path is anchored to the root, so it is unique in fact. A step under <body> alone was
+    // not: a widget a script appends to <html>, outside <body>, matched the same path as one inside (/code-review on
+    // #1012).
+    return path && node === document.documentElement ? ':root > ' + path : path || el.tagName.toLowerCase();
   }
 
   function bestSelector(el) { return __uniqueSelector(el, () => nowFn() > deadline); }
@@ -938,10 +944,13 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
       path = path ? seg + ' > ' + path : seg;
       if (p.id && __alone('#' + CSS.escape(p.id), p)) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
       node = p;
-      if (ask && depth >= 1 && __alone(path, el)) break;
+      if (ask && depth >= 1 && __alone(path, el)) return path;
       if (depth >= 7 || overdue()) ask = false;
     }
-    return path || el.tagName.toLowerCase();
+    // Climbed to the top: the path is anchored to the root, so it is unique in fact. A step under <body> alone was
+    // not: a widget a script appends to <html>, outside <body>, matched the same path as one inside (/code-review on
+    // #1012).
+    return path && node === document.documentElement ? ':root > ' + path : path || el.tagName.toLowerCase();
   }
 
   function bestSelector(el) { return __uniqueSelector(el, () => nowFn() > deadline); }

@@ -95,6 +95,29 @@ describe.skipIf(!CHROME)("browser_overview returns selectors that match one elem
     await expectEachAlone(await overview(), ["Tile", "Tile 2"]);
   });
 
+  it("anchors a path that climbs to the top: a widget a script appends to <html>, outside <body> (/code-review on #1012)", async () => {
+    // Built alike under <body> and under <html>: div:nth-child(3) > button:nth-child(1) matches both.
+    await page(`<div></div><div></div><div><button>In body</button></div>`);
+    await evaluateInTab(`(function(){var h=document.documentElement;var d=document.createElement('div');d.innerHTML='<button>On html</button>';h.appendChild(d);return h.children.length})()`, null, PORT);
+    await expectEachAlone(await overview(), ["In body", "On html"]);
+  });
+
+  it("keeps each selector to one element past the time budget, and still uses an id the page has once (/code-review on #1012)", async () => {
+    // The clock answers 0 once, for the deadline the script sets, and an hour later from then on: every element is
+    // past the budget.
+    const card = (t: string) => `<div><div><button>${t}</button></div></div>`;
+    await page(`<button id="save">Save</button><span><button id="dup">One</button></span><span><button id="dup">Two</button></span>${card("A")}${card("B")}`);
+    await evaluateInTab(`(function(){var n=performance.now.bind(performance),c=0;window.__realNow=n;performance.now=function(){return c++?n()+3600000:n()};return true})()`, null, PORT);
+    try {
+      const items = await overview();
+      expect(items.find((i) => i.text === "Save")?.selector).toBe("#save");
+      expect(items.find((i) => i.text === "A")?.selector).toMatch(/^:root > body:nth-child\(2\) > /);
+      await expectEachAlone(items, ["Save", "One", "Two", "A", "B"]);
+    } finally {
+      await evaluateInTab(`(function(){performance.now=window.__realNow;return true})()`, null, PORT);
+    }
+  });
+
   it("names 200 alike buttons in a list with selectors that match one each", async () => {
     await page(`<ul>${Array.from({ length: 200 }, (_, i) => `<li><span><button data-testid="row">Row ${i}</button></span></li>`).join("")}</ul>`);
     const items = await overview();
