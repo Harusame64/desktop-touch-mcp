@@ -122,6 +122,13 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(await marks()).toBe(0);
   });
 
+  it("leaves no marks when the click stops before marking its target (a match off the screen)", async () => {
+    await page(`<div style="height:3000px"></div><input type="checkbox" id="far" aria-label="Far away">`);
+    const r = await browserClickElementHandler({ by: "ariaLabel", pattern: "Far away", port: PORT } as never);
+    expect((r.content[0] as { text: string }).text).toContain("BrowserNoActionableTarget");
+    expect(await marks()).toBe(0);
+  });
+
   it("takes browser_click by:'ariaLabel' on the sr-only checkbox to a press (its label), not a stop (#1006 X2a)", async () => {
     await page(SR);
     const r = await browserClickElementHandler({ by: "ariaLabel", pattern: "Accept terms", port: PORT } as never);
