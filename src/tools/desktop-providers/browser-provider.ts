@@ -15,7 +15,7 @@ import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.
 import { probeLane } from "../../engine/aim-probe.js";
 import { ELEMENT_NAME_JS } from "../_element-name-js.js";
 import { UNIQUE_SELECTOR_JS } from "../_unique-selector-js.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 /** The attribute markAxMatches marks with (cdp-bridge's AX_MARK_ATTR; cdp-bridge is loaded lazily here). */
 const AX_MARK_ATTR = "data-dtm-ax";
@@ -251,6 +251,19 @@ export async function fetchBrowserCandidates(
         observedAtMs: Date.now(),
         provisional: false,
       }));
+    // Controls that share a label are told apart by their selector. With no rect, the resolver keyed a CDP candidate
+    // by tab and label alone, so two rows' "Delete" were one entity and the second could not be reached (/code-review
+    // on #1013). A label the page has once keeps that key, so its entityId does not move. Not by order: one would take
+    // the other's identity when an earlier one went, as the macOS lane found (axDigest, gate 2 on #802).
+    const seen = new Map<string, number>();
+    for (const c of candidates) seen.set(c.label ?? "", (seen.get(c.label ?? "") ?? 0) + 1);
+    for (const c of candidates) {
+      if ((seen.get(c.label ?? "") ?? 0) < 2) continue;
+      c.digest = createHash("sha1")
+        .update(`cdp|browserTab:${tabId}|${c.label ?? ""}|${c.locator!.cdp!.selector}`)
+        .digest("hex")
+        .slice(0, 16);
+    }
 
     const warnings = candidates.length === 0 ? ["cdp_no_elements"] : [];
     // Counts only: a label on a page can carry anything the user has in front of them.

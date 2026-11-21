@@ -12,6 +12,7 @@ import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll, rememberTabPort, AX_MARK_ATTR } from "../../src/engine/cdp-bridge.js";
 import { fetchBrowserCandidates, interactiveScript } from "../../src/tools/desktop-providers/browser-provider.js";
 import { cdpDispatchClickAndVerify } from "../../src/tools/browser.js";
+import { resolveCandidates } from "../../src/engine/world-graph/resolver.js";
 
 const PORT = 9239;
 const CHROME = tryFindChrome() !== null;
@@ -207,6 +208,22 @@ describe.skipIf(!CHROME)("desktop_discover's browser lane lists the controls the
     await page(`<div></div><div></div><div><button>In body</button></div>`);
     await evaluateInTab(`(function(){var d=document.createElement('div');d.innerHTML='<button>On html</button>';document.documentElement.appendChild(d);return true})()`, tabId, PORT);
     expect(await reach(await list())).toEqual([["In body", 1, "In body"], ["On html", 1, "On html"]]);
+  });
+
+  it("keeps two controls with the same text as two entities, each reaching its own (/code-review on #1013)", async () => {
+    // A CDP candidate has no rect, so the resolver keyed it by tab and label: two rows' "Delete" were one entity, and
+    // the second row could not be reached.
+    await page(`<table><tr><td>A</td><td><button>Delete</button></td></tr><tr><td>B</td><td><button>Delete</button></td></tr></table><button>Save</button>`);
+    const before = await fetchBrowserCandidates({ tabId } as never);
+    const del = resolveCandidates(before.candidates, "g1").filter((e) => e.label === "Delete");
+    expect(del).toHaveLength(2);
+    expect(new Set(del.map((e) => e.entityId)).size).toBe(2);
+    const rows = (await evaluateInTab(`(${JSON.stringify(del.map((e) => e.locator!.cdp!.selector))}).map(function(s){var l=document.querySelectorAll(s);return l.length===1?l[0].closest('tr').cells[0].textContent:'count:'+l.length}).sort()`, tabId, PORT)) as string[];
+    expect(rows).toEqual(["A", "B"]);
+    // A label the page has once keeps the key it had: tab and label alone, as before.
+    const save = resolveCandidates(before.candidates, "g1").find((e) => e.label === "Save")!;
+    const legacy = resolveCandidates(before.candidates.filter((c) => c.label === "Save").map((c) => ({ ...c, digest: undefined })), "g1")[0];
+    expect(save.entityId).toBe(legacy.entityId);
   });
 
   it("does not list a div slider it could not press", async () => {
