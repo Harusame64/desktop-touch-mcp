@@ -19,15 +19,17 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
   function axOf(el) {
     if (axMark === null) return null;
     const v = (el.getAttribute('data-dtm-ax') || '').split(':');
-    return v[0] === axMark ? { score: parseFloat(v[1]) || 0.7, control: v[2] === 'c' } : null;
+    return v[0] === axMark ? { score: parseFloat(v[1]) || 0.7, control: v[2] === 'c', role: v[3] || '' } : null;
   }
   function isVisible(el) {
     const s = window.getComputedStyle(el);
     if (s.display === 'none' || s.visibility === 'hidden') return false;
-    // A control the tree exposes is there for a person, though the page draws it another way (iCheck's opacity: 0
-    // input under its skin, an sr-only checkbox beside its label): the landing read finds where to press it.
-    if (axOf(el)) return true;
-    if (s.opacity === '0') return false;
+    // A checkbox or radio the tree exposes is there for a person, though the page draws it another way (iCheck's
+    // opacity: 0 input under its skin): the landing read finds where to press it. It still needs a box: a 0x0
+    // control is not one a person can reach (/code-review on #1008: a honeypot field, collapsed palette radios).
+    const ax = axOf(el);
+    // Only a checkbox or radio is drawn another way like this; a text field at opacity 0 is a hidden one (a honeypot).
+    if (s.opacity === '0' && !(ax && ax.control && el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio'))) return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   }
@@ -302,15 +304,17 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   function axOf(el) {
     if (axMark === null) return null;
     const v = (el.getAttribute('data-dtm-ax') || '').split(':');
-    return v[0] === axMark ? { score: parseFloat(v[1]) || 0.7, control: v[2] === 'c' } : null;
+    return v[0] === axMark ? { score: parseFloat(v[1]) || 0.7, control: v[2] === 'c', role: v[3] || '' } : null;
   }
   function isVisible(el) {
     const s = window.getComputedStyle(el);
     if (s.display === 'none' || s.visibility === 'hidden') return false;
-    // A control the tree exposes is there for a person, though the page draws it another way (iCheck's opacity: 0
-    // input under its skin, an sr-only checkbox beside its label): the landing read finds where to press it.
-    if (axOf(el)) return true;
-    if (s.opacity === '0') return false;
+    // A checkbox or radio the tree exposes is there for a person, though the page draws it another way (iCheck's
+    // opacity: 0 input under its skin): the landing read finds where to press it. It still needs a box: a 0x0
+    // control is not one a person can reach (/code-review on #1008: a honeypot field, collapsed palette radios).
+    const ax = axOf(el);
+    // Only a checkbox or radio is drawn another way like this; a text field at opacity 0 is a hidden one (a honeypot).
+    if (s.opacity === '0' && !(ax && ax.control && el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio'))) return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   }
@@ -554,6 +558,9 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   // cap so total/candidates reflect the role-filtered pool (plan §S4 role combine).
   const roleFilter = null;
   function roleMatches(el) {
+    // internal #420 — an element the accessibility tree matched is filtered by the role the browser computed.
+    const axr = axOf(el);
+    if (axr && axr.role) return axr.role === roleFilter;
     const explicit = (el.getAttribute('role') || '').toLowerCase();
     if (explicit === roleFilter) return true;
     const tg = el.tagName.toLowerCase();
@@ -746,15 +753,17 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   function axOf(el) {
     if (axMark === null) return null;
     const v = (el.getAttribute('data-dtm-ax') || '').split(':');
-    return v[0] === axMark ? { score: parseFloat(v[1]) || 0.7, control: v[2] === 'c' } : null;
+    return v[0] === axMark ? { score: parseFloat(v[1]) || 0.7, control: v[2] === 'c', role: v[3] || '' } : null;
   }
   function isVisible(el) {
     const s = window.getComputedStyle(el);
     if (s.display === 'none' || s.visibility === 'hidden') return false;
-    // A control the tree exposes is there for a person, though the page draws it another way (iCheck's opacity: 0
-    // input under its skin, an sr-only checkbox beside its label): the landing read finds where to press it.
-    if (axOf(el)) return true;
-    if (s.opacity === '0') return false;
+    // A checkbox or radio the tree exposes is there for a person, though the page draws it another way (iCheck's
+    // opacity: 0 input under its skin): the landing read finds where to press it. It still needs a box: a 0x0
+    // control is not one a person can reach (/code-review on #1008: a honeypot field, collapsed palette radios).
+    const ax = axOf(el);
+    // Only a checkbox or radio is drawn another way like this; a text field at opacity 0 is a hidden one (a honeypot).
+    if (s.opacity === '0' && !(ax && ax.control && el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio'))) return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   }
@@ -998,6 +1007,9 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   // cap so total/candidates reflect the role-filtered pool (plan §S4 role combine).
   const roleFilter = null;
   function roleMatches(el) {
+    // internal #420 — an element the accessibility tree matched is filtered by the role the browser computed.
+    const axr = axOf(el);
+    if (axr && axr.role) return axr.role === roleFilter;
     const explicit = (el.getAttribute('role') || '').toLowerCase();
     if (explicit === roleFilter) return true;
     const tg = el.tagName.toLowerCase();

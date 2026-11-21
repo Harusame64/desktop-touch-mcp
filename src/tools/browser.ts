@@ -1549,7 +1549,7 @@ async function handleBrowserFillByAxis(args: {
     actResult = await evaluateInTab(actExpr, tabId ?? null, port) as typeof actResult;
   } finally {
     // internal #420 — the accessibility tree's marks the resolve left for this second read.
-    if (outcome.axMark !== undefined) await clearAxMarks(tabId ?? null, port);
+    if (outcome.axMark !== undefined) await clearAxMarks(outcome.axMark, tabId ?? null, port);
   }
 
   if (!actResult.ok) {
@@ -2199,16 +2199,19 @@ function browserModalBlockingFailure(
  * from the same gather eval, ADR §1.2 D1). Ambiguous / non-actionable / error
  * stop with a typed failure. Selector mode stays on the bit-equal path.
  */
-async function handleBrowserClickByAxis(args: Parameters<typeof clickByAxis>[0]): Promise<ToolResult> {
+async function handleBrowserClickByAxis(args: Omit<Parameters<typeof clickByAxis>[0], "pendingMarks">): Promise<ToolResult> {
+  // internal #420 — the accessibility-tree marks a resolve left and nothing cleared yet; whatever way the click ends,
+  // those are cleared (only those: a page call after a press that opened an alert would wait behind it).
+  const pendingMarks = new Map<string, string | null>();
   try {
-    return await clickByAxis(args);
+    return await clickByAxis({ ...args, pendingMarks });
   } finally {
-    // internal #420 — whatever way the click ends, no accessibility-tree mark stays in the page.
-    if (args.by === "role" || args.by === "ariaLabel") await clearAxMarks(args.tabId ?? null, args.port);
+    for (const [nonce, tab] of pendingMarks) await clearAxMarks(nonce, tab, args.port);
   }
 }
 
 async function clickByAxis(args: {
+  pendingMarks: Map<string, string | null>;
   by: "text" | "regex" | "role" | "ariaLabel";
   pattern: string;
   role?: string;
@@ -2272,6 +2275,7 @@ async function clickByAxis(args: {
   const outcome = await resolveBrowserActionTarget({
     by, pattern, role, scope, caseSensitive, action: "click", tabId: tabId ?? null, port,
   });
+  if (outcome.kind === "resolved" && outcome.axMark !== undefined) args.pendingMarks.set(outcome.axMark, outcome.tabId ?? tabId ?? null);
   const ctx = { by, pattern, ...(role ? { role } : {}), ...(scope ? { scope } : {}) };
   if (outcome.kind === "error") return browserResolveErrorToFailure(outcome, "browser_click", ctx);
   // internal #421 (PR-C) — a single match whose centre is covered in the page: resolved again without the hit-test
@@ -2284,6 +2288,7 @@ async function clickByAxis(args: {
     const loose = await resolveBrowserActionTarget({
       by, pattern, role, scope, caseSensitive, action: "click", requireReceivesEvents: false, tabId: tabId ?? null, port,
     });
+    if (loose.kind === "resolved" && loose.axMark !== undefined) args.pendingMarks.set(loose.axMark, loose.tabId ?? tabId ?? null);
     if (loose.kind === "resolved") {
       const cx = loose.rect.x + loose.rect.w / 2;
       const cy = loose.rect.y + loose.rect.h / 2;
@@ -2326,7 +2331,6 @@ async function clickByAxis(args: {
   // would clamp to (0,0). Stop before the OS click so we never trip the failsafe
   // (the resolve gather above is a pure CDP eval — no click happened yet).
   if (isOffscreenMinimized(target.viewport.screenX, target.viewport.screenY)) {
-    if (target.axMark !== undefined) await clearAxMarks(target.tabId ?? tabId ?? null, port);
     return browserMinimizedFailure(ctx, await minimizedBrowserFrame(port));
   }
 
@@ -2341,7 +2345,10 @@ async function clickByAxis(args: {
     tab, port,
   ).catch(() => null)) as { ok?: boolean } | null)?.ok === true;
   // internal #420 — the accessibility tree's marks are read for the last time just above.
-  if (target.axMark !== undefined) await clearAxMarks(tab, port);
+  if (target.axMark !== undefined) {
+    await clearAxMarks(target.axMark, tab, port);
+    args.pendingMarks.delete(target.axMark);
+  }
   const label = `The element found by ${by}:${JSON.stringify(pattern)}`;
   let clicked: Awaited<ReturnType<typeof osClickAndVerify>>;
   let pressedAt: "element" | "host" | "label" | "skin" | "replacement" = "element";

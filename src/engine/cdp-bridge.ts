@@ -643,15 +643,16 @@ const AX_TEXT_ROLES = new Set(["StaticText", "InlineTextBox", "LineBreak", "Root
  * (spike on internal #420: real Select2, Choices and iCheck, sr-only and opacity: 0 inputs, aria-labelledby, input
  * types and explicit roles all come out right; 0.1-0.4 s on a 12,500-element page).
  *
- * by:'role' asks `Accessibility.queryAXTree` for the role; by:'ariaLabel' reads the full tree and matches the
- * accessible name (equal 0.95, containing 0.7, as the attribute match scored). Each match that is an element, not
- * ignored and not a text run, is marked `data-dtm-ax="<nonce>:<score>:<c when its role is a control>"` (the first
- * 200), so the page-side gather takes them as its candidates (its scope, decision and climb unchanged). Older marks are
- * removed first. A native multi-row select (role listbox) is left out: a press on it picks the option under the
- * centre. Answers how many were marked, or null when the tree could not be read (the caller keeps the DOM reading).
+ * The tree under the page, or under `scope` when given, is asked: by:'role' for that role; by:'ariaLabel' for every
+ * node, matched on its accessible name — equal names only when there is one (0.95), otherwise names containing the
+ * pattern (0.7). Each match that is an element of the document (not in a shadow root, which the page-side gather
+ * cannot see), not ignored and not a text run, is marked `data-dtm-ax="<nonce>:<score>:<c when a control>:<role>"`,
+ * the best 200 first, so the page-side gather takes them as its candidates. A native multi-row select (role
+ * listbox) is left out: a press on it picks the option under the centre. Answers how many were marked, or null when
+ * the tree (or the scope) could not be read; with none marked, the caller keeps the DOM reading.
  */
 export async function markAxMatches(
-  opts: { by: "role" | "ariaLabel"; pattern: string; caseSensitive: boolean; nonce: string },
+  opts: { by: "role" | "ariaLabel"; pattern: string; caseSensitive: boolean; nonce: string; scope?: string },
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT,
 ): Promise<number | null> {
@@ -661,34 +662,42 @@ export async function markAxMatches(
     const tab = await resolveTab(tabId, port);
     session = await openSession(tab, port);
     const s = session;
-    await s.send("Runtime.evaluate", {
-      expression: `document.querySelectorAll('[${AX_MARK_ATTR}]').forEach(function(n){n.removeAttribute('${AX_MARK_ATTR}')});true`,
-      returnByValue: true,
-    });
     type AxNode = { ignored?: boolean; role?: { value?: string }; name?: { value?: string }; backendDOMNodeId?: number };
-    let nodes: AxNode[];
+    const { root } = (await s.send("DOM.getDocument", { depth: 0 })) as { root: { nodeId: number; backendNodeId: number } };
+    let from = root.backendNodeId;
+    if (opts.scope) {
+      const { nodeId } = (await s.send("DOM.querySelector", { nodeId: root.nodeId, selector: opts.scope })) as { nodeId: number };
+      if (!nodeId) return null;
+      from = ((await s.send("DOM.describeNode", { nodeId })) as { node: { backendNodeId: number } }).node.backendNodeId;
+    }
     const scored: Array<{ backend: number; score: number; control: boolean; role: string }> = [];
     if (opts.by === "role") {
-      const { root } = (await s.send("DOM.getDocument", { depth: 0 })) as { root: { backendNodeId: number } };
       const role = opts.caseSensitive ? opts.pattern : opts.pattern.toLowerCase();
-      nodes = ((await s.send("Accessibility.queryAXTree", { backendNodeId: root.backendNodeId, role })) as { nodes: AxNode[] }).nodes;
+      const nodes = ((await s.send("Accessibility.queryAXTree", { backendNodeId: from, role })) as { nodes: AxNode[] }).nodes;
       for (const n of nodes) {
         const r = n.role?.value ?? "";
         if (n.ignored || !n.backendDOMNodeId || AX_TEXT_ROLES.has(r)) continue;
         scored.push({ backend: n.backendDOMNodeId, score: 0.85, control: AX_CONTROL_ROLES.has(r), role: r });
       }
     } else {
-      nodes = ((await s.send("Accessibility.getFullAXTree", {})) as { nodes: AxNode[] }).nodes;
+      const nodes = ((await s.send("Accessibility.queryAXTree", { backendNodeId: from })) as { nodes: AxNode[] }).nodes;
       const needle = opts.caseSensitive ? opts.pattern : opts.pattern.toLowerCase();
+      const exact: typeof scored = [];
+      const partial: typeof scored = [];
       for (const n of nodes) {
         const r = n.role?.value ?? "";
         const name = String(n.name?.value ?? "").trim();
         if (n.ignored || !n.backendDOMNodeId || !name || AX_TEXT_ROLES.has(r)) continue;
         const cmp = opts.caseSensitive ? name : name.toLowerCase();
-        const score = cmp === needle ? 0.95 : cmp.includes(needle) ? 0.7 : 0;
-        if (score > 0) scored.push({ backend: n.backendDOMNodeId, score, control: AX_CONTROL_ROLES.has(r), role: r });
+        const hit = { backend: n.backendDOMNodeId, control: AX_CONTROL_ROLES.has(r), role: r };
+        if (cmp === needle) exact.push({ ...hit, score: 0.95 });
+        else if (cmp.includes(needle)) partial.push({ ...hit, score: 0.7 });
       }
+      // An equal name settles it, as a person reading the name would (/code-review on #1008: "Email" is the field
+      // named Email, not also a button reading "Email me updates").
+      scored.push(...(exact.length > 0 ? exact : partial));
     }
+    scored.sort((a, b) => b.score - a.score);
     const marks = scored.slice(0, 200);
     const done = await Promise.all(marks.map(async (m) => {
       try {
@@ -697,8 +706,13 @@ export async function markAxMatches(
         const r = (await s.send("Runtime.callFunctionOn", {
           objectId: object.objectId,
           returnByValue: true,
-          arguments: [{ value: `${opts.nonce}:${m.score}:${m.control ? "c" : ""}` }, { value: m.role }],
-          functionDeclaration: `function(v, role) { if (this.nodeType !== 1) return 0; if (role === 'listbox' && this.tagName === 'SELECT') return 0; this.setAttribute('${AX_MARK_ATTR}', v); return 1; }`,
+          arguments: [{ value: `${opts.nonce}:${m.score}:${m.control ? "c" : ""}:${m.role}` }, { value: m.role }],
+          functionDeclaration: `function(v, role) {
+            if (this.nodeType !== 1 || this.getRootNode() !== document) return 0;
+            if (role === 'listbox' && this.tagName === 'SELECT') return 0;
+            this.setAttribute('${AX_MARK_ATTR}', v);
+            return 1;
+          }`,
         })) as { result?: { value?: number } };
         return r.result?.value === 1 ? 1 : 0;
       } catch {
@@ -713,9 +727,12 @@ export async function markAxMatches(
   }
 }
 
-/** Remove the by-axis resolver's accessibility-tree marks ({@link markAxMatches}). */
-export async function clearAxMarks(tabId: string | null = null, port = DEFAULT_CDP_PORT): Promise<void> {
-  await evaluateInTab(`document.querySelectorAll('[${AX_MARK_ATTR}]').forEach(function(n){n.removeAttribute('${AX_MARK_ATTR}')});true`, tabId, port).catch(() => null);
+/** Remove one call's accessibility-tree marks ({@link markAxMatches}); another call's marks on the tab stay. */
+export async function clearAxMarks(nonce: string, tabId: string | null = null, port = DEFAULT_CDP_PORT): Promise<void> {
+  await evaluateInTab(
+    `document.querySelectorAll('[${AX_MARK_ATTR}^=' + ${JSON.stringify(JSON.stringify(nonce + ":"))} + ']').forEach(function(n){n.removeAttribute('${AX_MARK_ATTR}')});true`,
+    tabId, port,
+  ).catch(() => null);
 }
 
 export async function dispatchMouseMoveInTab(

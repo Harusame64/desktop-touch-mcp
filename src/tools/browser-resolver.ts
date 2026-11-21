@@ -16,7 +16,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { clearAxMarks, evaluateInTab, getPageZoom, markAxMatches, resolveTabId, viewportOriginJs } from "../engine/cdp-bridge.js";
+import { AX_MARK_ATTR, clearAxMarks, evaluateInTab, getPageZoom, markAxMatches, resolveTabId, viewportOriginJs } from "../engine/cdp-bridge.js";
 import { ELEMENT_NAME_JS } from "./_element-name-js.js";
 
 export interface CandidateCollectionArgs {
@@ -102,16 +102,18 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
   // internal #420 — the element the accessibility tree matched, and its score and whether its role is a control.
   function axOf(el) {
     if (axMark === null) return null;
-    const v = (el.getAttribute('${"data-dtm-ax"}') || '').split(':');
-    return v[0] === axMark ? { score: parseFloat(v[1]) || 0.7, control: v[2] === 'c' } : null;
+    const v = (el.getAttribute('${AX_MARK_ATTR}') || '').split(':');
+    return v[0] === axMark ? { score: parseFloat(v[1]) || 0.7, control: v[2] === 'c', role: v[3] || '' } : null;
   }
   function isVisible(el) {
     const s = window.getComputedStyle(el);
     if (s.display === 'none' || s.visibility === 'hidden') return false;
-    // A control the tree exposes is there for a person, though the page draws it another way (iCheck's opacity: 0
-    // input under its skin, an sr-only checkbox beside its label): the landing read finds where to press it.
-    if (axOf(el)) return true;
-    if (s.opacity === '0') return false;
+    // A checkbox or radio the tree exposes is there for a person, though the page draws it another way (iCheck's
+    // opacity: 0 input under its skin): the landing read finds where to press it. It still needs a box: a 0x0
+    // control is not one a person can reach (/code-review on #1008: a honeypot field, collapsed palette radios).
+    const ax = axOf(el);
+    // Only a checkbox or radio is drawn another way like this; a text field at opacity 0 is a hidden one (a honeypot).
+    if (s.opacity === '0' && !(ax && ax.control && el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio'))) return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   }
@@ -186,7 +188,7 @@ ${ELEMENT_NAME_JS}
 
   if (axMark !== null) {
     // internal #420 — by:'role' / by:'ariaLabel' from the browser's accessibility tree, marked before this gather.
-    const marked = root.querySelectorAll('[${"data-dtm-ax"}]');
+    const marked = root.querySelectorAll('[${AX_MARK_ATTR}]');
     for (let i = 0; i < marked.length; i++) {
       const ax = axOf(marked[i]);
       if (ax) record(marked[i], ax.score, by);
@@ -354,6 +356,9 @@ function candidatePoolJs(args: ActionFactsArgs): string {
   // cap so total/candidates reflect the role-filtered pool (plan §S4 role combine).
   const roleFilter = ${role ? JSON.stringify(role.toLowerCase()) : "null"};
   function roleMatches(el) {
+    // internal #420 — an element the accessibility tree matched is filtered by the role the browser computed.
+    const axr = axOf(el);
+    if (axr && axr.role) return axr.role === roleFilter;
     const explicit = (el.getAttribute('role') || '').toLowerCase();
     if (explicit === roleFilter) return true;
     const tg = el.tagName.toLowerCase();
@@ -1140,12 +1145,14 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
   let axMark: string | undefined;
   if (args.by === "role" || args.by === "ariaLabel") {
     const nonce = randomUUID().slice(0, 8);
-    const marked = await markAxMatches({ by: args.by, pattern: args.pattern, caseSensitive: args.caseSensitive ?? false, nonce }, tab, args.port);
-    if (marked !== null) axMark = nonce;
+    const marked = await markAxMatches({ by: args.by, pattern: args.pattern, caseSensitive: args.caseSensitive ?? false, nonce, ...(args.scope && { scope: args.scope }) }, tab, args.port);
+    // None marked: the DOM reading answers, as before (an explicit role the browser computes as generic, a control
+    // under a misused aria-hidden): the tree adds what it finds, it does not take away what was found.
+    if (marked !== null && marked > 0) axMark = nonce;
   }
   const outcome = await gatherAndDecide(args, tab, pageZoom, axMark);
   // The marks stay for a resolved target's second read (the fill act, the click's mark): its caller clears them.
-  if (axMark !== undefined && outcome.kind !== "resolved") await clearAxMarks(tab, args.port);
+  if (axMark !== undefined && outcome.kind !== "resolved") await clearAxMarks(axMark, tab, args.port);
   return outcome;
 }
 

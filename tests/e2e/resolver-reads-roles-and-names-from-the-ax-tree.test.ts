@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { sleep } from "./helpers/wait.js";
-import { evaluateInTab, disconnectAll } from "../../src/engine/cdp-bridge.js";
+import { evaluateInTab, disconnectAll, markAxMatches, clearAxMarks } from "../../src/engine/cdp-bridge.js";
 import { resolveBrowserActionTarget, type ResolveActionOutcome } from "../../src/tools/browser-resolver.js";
 import { browserClickElementHandler } from "../../src/tools/browser.js";
 
@@ -144,6 +144,54 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     const r = await browserFillInputHandler({ by: "role", pattern: "textbox", value: "hello", port: PORT } as never);
     expect((r.content[0] as { text: string }).text).toContain('"ok":true');
     expect(await evaluateInTab("document.getElementById('t').value", null, PORT)).toBe("hello");
+    expect(await marks()).toBe(0);
+  });
+
+  // ── /code-review on #1008 ─────────────────────────────────────────────────────────────────────────────────────
+  it("does not see a 0x0 or opacity: 0 honeypot text field: the one visible field is filled", async () => {
+    await page(`<input type="email" id="em" aria-label="Email" style="position:absolute;left:100px;top:100px"><input type="text" id="hp" name="website" style="opacity:0;position:absolute;width:0;height:0">`);
+    expect(what(await resolve({ by: "role", pattern: "textbox" }, false, "fill"))).toBe("input#em");
+  });
+
+  it("does not take three collapsed 0x0 radios for one target", async () => {
+    await page(`<input type="radio" name="p" id="r0" aria-label="Light" style="position:absolute;width:0;height:0;margin:0"><input type="radio" name="p" id="r1" aria-label="Dark" style="position:absolute;width:0;height:0;margin:0"><input type="radio" name="p" id="r2" aria-label="System" style="position:absolute;width:0;height:0;margin:0">`);
+    expect((await resolve({ by: "role", pattern: "radio" }, false)).kind).not.toBe("resolved");
+  });
+
+  it("lets an equal name win over names that contain it", async () => {
+    await page(`<input id="em" aria-label="Email" style="position:absolute;left:100px;top:100px"><button id="up" style="position:absolute;left:100px;top:200px">Email me updates</button>`);
+    expect(what(await resolve({ by: "ariaLabel", pattern: "Email" }))).toBe("input#em");
+  });
+
+  it("asks the tree inside the scope, so a scope's matches are not lost to a page full of others", async () => {
+    const many = Array.from({ length: 250 }, (_, i) => `<a href="#a${i}">Top ${i}</a> `).join("");
+    await page(`<div>${many}</div><footer id="footer" style="position:fixed;left:0;bottom:0"><a href="#imprint" id="imp">Imprint</a></footer>`);
+    expect(what(await resolve({ by: "role", pattern: "link", scope: "#footer" } as A))).toBe("a#imp");
+  });
+
+  it("marks nothing inside a shadow root (the gather cannot see it, and nothing could clear it)", async () => {
+    await page(`<div id="host"></div><button id="light" aria-label="Go" style="position:absolute;left:100px;top:200px">Go</button><script>var r=document.getElementById('host').attachShadow({mode:'open'});r.innerHTML='<button aria-label="Go">Go</button>';</script>`);
+    await resolve({ by: "ariaLabel", pattern: "Go" });
+    expect(await evaluateInTab("document.getElementById('host').shadowRoot.querySelector('button').hasAttribute('data-dtm-ax')", null, PORT)).toBe(false);
+  });
+
+  it("keeps the DOM reading when the tree finds nothing (a control under a misused aria-hidden, as before)", async () => {
+    await page(`<div aria-hidden="true"><button id="x" aria-label="Close panel" style="position:absolute;left:100px;top:100px">x</button></div>`);
+    expect(what(await resolve({ by: "ariaLabel", pattern: "Close panel" }))).toBe("button#x");
+  });
+
+  it("filters by the role the browser computes: a plain select named Fruit is role combobox", async () => {
+    await page(`<label for="f" style="position:absolute;left:100px;top:80px">Fruit</label><select id="f" style="position:absolute;left:100px;top:100px"><option>Apple</option></select>`);
+    expect(what(await resolve({ by: "ariaLabel", pattern: "Fruit", role: "combobox" }))).toBe("select#f");
+  });
+
+  it("clears only its own marks: another call's marks on the tab stay", async () => {
+    await page(`<button aria-label="One" style="position:absolute;left:100px;top:100px">1</button><button aria-label="Two" style="position:absolute;left:200px;top:100px">2</button>`);
+    expect(await markAxMatches({ by: "ariaLabel", pattern: "One", caseSensitive: false, nonce: "aaa" }, null, PORT)).toBe(1);
+    expect(await markAxMatches({ by: "ariaLabel", pattern: "Two", caseSensitive: false, nonce: "bbb" }, null, PORT)).toBe(1);
+    await clearAxMarks("aaa", null, PORT);
+    expect(await evaluateInTab("Array.from(document.querySelectorAll('[data-dtm-ax]')).map(function(n){return n.getAttribute('data-dtm-ax').split(':')[0]})", null, PORT)).toEqual(["bbb"]);
+    await clearAxMarks("bbb", null, PORT);
     expect(await marks()).toBe(0);
   });
 });
