@@ -167,7 +167,19 @@ ${ELEMENT_NAME_JS}
   // label outside it is a name, not a value.
   function shownValue(el) {
     const ids=(el.getAttribute('aria-labelledby')||'').trim().split(/\\s+/).filter(Boolean);
-    return ids.map(function(id){const x=document.getElementById(id);return x&&el.contains(x)&&!__isMasked(x)?(x.textContent||'').trim():'';}).filter(Boolean).join(' ').replace(/\\s+/g,' ').slice(0,80);
+    return ids.map(function(id){const x=document.getElementById(id);return x&&el.contains(x)?textUnmasked(x):'';}).filter(Boolean).join(' ').replace(/\\s+/g,' ').slice(0,80);
+  }
+  // Its text, leaving out any part the page masks (a descendant drawn as dots): the value is never read through a
+  // raw textContent (PR 側 codex on #1009, P1).
+  function textUnmasked(n) {
+    if (n.nodeType === 1 && __isMasked(n)) return '';
+    let out = '';
+    for (const c of n.childNodes) {
+      if (out.length > 400) break;
+      if (c.nodeType === 3) out += c.nodeValue;
+      else if (c.nodeType === 1) out += textUnmasked(c);
+    }
+    return out.trim();
   }
   // A widget's combobox is named as a field is (aria-labelledby, aria-label), then by the label of the control it
   // stands for (a <label for> on the select it hides), then by the value it shows, then by its text. The label comes
@@ -185,11 +197,16 @@ ${ELEMENT_NAME_JS}
     if(!isVisible(el)) continue;
     if(keptFromPeople(el)) continue;
     if(axRole(el)!==null && insideCombobox(el)) continue;
+    // The tree's controls join the list by their mark, past CSS_Q's :not([disabled]); a disabled one stays out as
+    // before (PR 側 codex on #1009).
+    if(axRole(el)!==null) { let off=false; try { off=el.matches(':disabled'); } catch(e) {} if(off||el.getAttribute('aria-disabled')==='true') continue; }
     const r=el.getBoundingClientRect();
     const inVP=r.top<window.innerHeight&&r.bottom>0&&r.left<window.innerWidth&&r.right>0;
     const type=elType(el);
     const widget=type==='button' && (axRole(el)==='combobox'||axRole(el)==='listbox');
-    const item={type:type,text:widget?widgetName(el):__elText(el),selector:bestSel(el),inViewport:inVP};
+    // A control the tree showed is named as the tree names it: aria-labelledby or aria-label before its text (a
+    // role=checkbox div named only by aria-label; PR 側 codex on #1009).
+    const item={type:type,text:widget?widgetName(el):(axRole(el)!==null?(__fieldName(el)||__elText(el)):__elText(el)),selector:bestSel(el),inViewport:inVP};
     if(el.tagName==='A') item.href=el.href;
     if((el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.tagName==='SELECT')&&!__isMasked(el)) item.value=el.value;
     else if(widget) { const v=shownValue(el); if(v) item.value=v; }

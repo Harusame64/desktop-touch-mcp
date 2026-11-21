@@ -147,6 +147,25 @@ describe.skipIf(!CHROME)("desktop_discover's browser lane lists the controls the
     expect(c?.value).toBeUndefined();
   });
 
+  it("never reads a masked part of the value a widget shows (PR codex P1)", async () => {
+    await page(`<label for="pw">Secret</label><select id="pw" tabindex="-1" aria-hidden="true" style="position:absolute;width:1px;height:1px;clip:rect(0 0 0 0);overflow:hidden"><option></option></select><span class="select2"><span class="selection"><span role="combobox" aria-haspopup="true" tabindex="0" aria-labelledby="pwc" style="display:block;width:200px;height:28px;border:1px solid"><span id="pwc" role="textbox" aria-readonly="true">Shown <span style="-webkit-text-security:disc">hunter2</span></span></span></span></span>`);
+    const c = (await fetchBrowserCandidates({ tabId } as never)).candidates.find((x) => x.label === "Secret");
+    expect(c?.value).toBe("Shown");
+    expect(JSON.stringify((await fetchBrowserCandidates({ tabId } as never)).candidates)).not.toContain("hunter2");
+  });
+
+  it("leaves out a disabled control the tree shows, as CSS_Q leaves out a disabled one (PR codex)", async () => {
+    await page(`<div role="checkbox" id="dis" aria-disabled="true" aria-checked="false" tabindex="0" style="display:inline-block;padding:4px">Off</div><label><input type="checkbox" id="dn" disabled> Nope</label>`);
+    const rows = await list();
+    expect(rows.find((r) => r.selector === "#dis")).toBeUndefined();
+    expect(rows.find((r) => r.selector === "#dn")).toBeUndefined();
+  });
+
+  it("names a role=checkbox div by its aria-label (PR codex)", async () => {
+    await page(`<div role="checkbox" id="nt" aria-label="Enable notifications" aria-checked="false" tabindex="0" style="display:inline-block;width:20px;height:20px;border:1px solid"></div>`);
+    expect((await list()).find((r) => r.selector === "#nt")).toMatchObject({ role: "button", label: "Enable notifications" });
+  });
+
   it("keeps the text field inside an ARIA 1.0 combobox as a textbox", async () => {
     await page(`<div role="combobox" aria-expanded="false" aria-haspopup="listbox" style="display:inline-block"><input type="text" id="q" aria-label="Search" aria-autocomplete="list"></div>`);
     expect((await list()).find((r) => r.selector === "#q")).toMatchObject({ role: "textbox", actions: "type/click" });
