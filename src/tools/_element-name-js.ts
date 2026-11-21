@@ -58,30 +58,37 @@
  *   Trusted Types). It follows CDP's setScriptExecutionDisabled and Chrome's JavaScript site setting (measured: mac,
  *   and win2 on #1015, where a Report-Only Trusted Types policy received no report from a search). A browser that
  *   knows the feature matches exactly one of its three values; a Chromium before 120 matches none of them (codex on
- *   #1015: 104-119 keep an unknown feature's text rather than reading "not all"), and there a fragment parse answers,
- *   on the same flag;
+ *   #1015: 104-119 keep an unknown feature's text rather than reading "not all"). There browser_search's text axes
+ *   parse a fragment, on the same flag; a name read takes it that scripts run and writes nothing (/code-review on
+ *   #1016);
  * - the rest, by a computed display of none: a style a page shows with CSS is drawn.
  */
 export const DRAWS_NOTHING_JS = `
-  const __NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
-  let __scriptsRun = null;
-  function __drawsNothing(a) {
+  // var, not const: spliced twice into one scope (ELEMENT_NAME_JS beside pressLandingRuleJs()), it stays valid.
+  var __NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
+  var __scriptsRun = null;
+  // The prototype's matches: a <form> exposes a control named "matches" as form.matches, and a custom element can
+  // define its own (/code-review on #1016: the walker threw and the whole script failed).
+  var __matches = Element.prototype.matches;
+  // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
+  // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
+  function __drawsNothing(a, probe) {
     if (a.namespaceURI === 'http://www.w3.org/2000/svg') return true;
     if (a.localName === 'noscript') {
-      if (__scriptsRun === null) {
-        try {
-          const none = matchMedia('(scripting: none)').matches;
-          const on = matchMedia('(scripting: enabled)').matches || matchMedia('(scripting: initial-only)').matches;
-          if (none || on) __scriptsRun = !none;
-          else { const d = document.createElement('div'); d.innerHTML = '<noscript><i></i></noscript>'; __scriptsRun = !d.querySelector('i'); }
-        } catch (e) { __scriptsRun = true; }
-      }
-      return __scriptsRun;
+      if (__scriptsRun !== null) return __scriptsRun;
+      try {
+        const none = matchMedia('(scripting: none)').matches;
+        const on = matchMedia('(scripting: enabled)').matches || matchMedia('(scripting: initial-only)').matches;
+        if (none || on) return (__scriptsRun = !none);
+        if (!probe) return true;
+        const d = document.createElement('div'); d.innerHTML = '<noscript><i></i></noscript>';
+        return (__scriptsRun = !d.querySelector('i'));
+      } catch (e) { return true; }
     }
     return getComputedStyle(a).display === 'none';
   }
-  // A child whose text the page never draws: skipped by every walker that collects an element's words.
-  function __skipsText(c) { return c.matches(__NOT_TEXT) && __drawsNothing(c); }
+  // An element whose text the page never draws: skipped by every walker that collects an element's words.
+  function __skipsText(c) { return __matches.call(c, __NOT_TEXT) && __drawsNothing(c, false); }
 `;
 
 export const ELEMENT_NAME_JS = `
@@ -110,7 +117,7 @@ ${DRAWS_NOTHING_JS}
     return role === 'textbox' || role === 'searchbox';
   }
   function __textWithoutFields(node) {
-    if (node.nodeType === 1 && (__isEntry(node) || __isMasked(node))) return '';
+    if (node.nodeType === 1 && (__isEntry(node) || __isMasked(node) || __skipsText(node))) return '';
     let out = '';
     (function walk(n) {
       for (const c of n.childNodes) {

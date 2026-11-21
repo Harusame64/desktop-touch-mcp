@@ -10,7 +10,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll } from "../../src/engine/cdp-bridge.js";
-import { browserGetInteractiveHandler } from "../../src/tools/browser.js";
+import { browserGetInteractiveHandler, browserGetFormHandler } from "../../src/tools/browser.js";
 
 const PORT = 9241;
 const CHROME = tryFindChrome() !== null;
@@ -121,6 +121,20 @@ describe.skipIf(!CHROME)("browser_overview returns selectors that match one elem
   it("lists an element's text without a script inside it (internal #420, after #1015)", async () => {
     await page(`<button id="buy">Buy<script>window.track=1</script> now</button>`);
     expect((await overview()).find((i) => i.selector === "#buy")?.text).toBe("Buy now");
+  });
+
+  it("still lists a page whose form has a control named \"matches\" (/code-review on #1016)", async () => {
+    // form.matches is that input, not the method: the text walker called it and the whole script threw.
+    await page(`<button id="open">Open <form><input name="matches" value="x"><span>inside</span></form></button>`);
+    expect((await overview()).find((i) => i.selector === "#open")?.text).toBe("Open inside");
+  });
+
+  it("reports a masked button with only a script inside as having no caption (/code-review on #1016)", async () => {
+    await page(`<form id="f"><button id="m" style="-webkit-text-security:disc"><script>window.t=1</script></button><button id="n" style="-webkit-text-security:disc">Pay</button></form>`);
+    const r = await browserGetFormHandler({ selector: "#f", includeHidden: false, maxResults: 50, port: PORT, includeContext: false });
+    const t = (r.content[0] as { text: string }).text;
+    const fields = (JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1)) as { fields: Array<{ id: string; hasValue?: boolean }> }).fields;
+    expect(fields.map((f) => [f.id, f.hasValue])).toEqual([["m", false], ["n", true]]);
   });
 
   it("names 200 alike buttons in a list with selectors that match one each", async () => {

@@ -154,7 +154,7 @@ ${ELEMENT_NAME_JS}
   // Its text, leaving out any part the page masks (a descendant drawn as dots): the value is never read through a
   // raw textContent (PR 側 codex on #1009, P1).
   function textUnmasked(n) {
-    if (n.nodeType === 1 && __isMasked(n)) return '';
+    if (n.nodeType === 1 && (__isMasked(n) || __skipsText(n))) return '';
     let out = '';
     for (const c of n.childNodes) {
       if (out.length > 400) break;

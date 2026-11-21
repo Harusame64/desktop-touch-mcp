@@ -195,7 +195,7 @@ ${ELEMENT_NAME_JS}
   function notDrawnText(el) {
     for (let a = el.closest(__NOT_TEXT); a; a = a.parentElement ? a.parentElement.closest(__NOT_TEXT) : null) {
       if (a === root || a.contains(root)) return false;
-      if (__drawsNothing(a)) return true;
+      if (__drawsNothing(a, true)) return true;
     }
     return false;
   }
