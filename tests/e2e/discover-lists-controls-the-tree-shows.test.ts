@@ -150,9 +150,9 @@ describe.skipIf(!CHROME)("desktop_discover's browser lane lists the controls the
   });
 
   it("does not lean on an id two elements share: the selector still names the element alone", async () => {
-    await page(`<div id="opts"><span>a</span><div role="listbox" tabindex="0" aria-haspopup="true" aria-label="First" style="width:100px;height:20px"></div></div><div id="opts"><span>b</span><div role="listbox" tabindex="0" aria-haspopup="true" aria-label="Second" style="width:100px;height:20px"></div></div>`);
+    await page(`<div id="opts"><span>a</span><div role="listbox" tabindex="0" aria-haspopup="true" style="width:100px;height:20px">First</div></div><div id="opts"><span>b</span><div role="listbox" tabindex="0" aria-haspopup="true" style="width:100px;height:20px">Second</div></div>`);
     const sel = (await list()).find((r) => r.label === "Second")!.selector;
-    expect(await evaluateInTab(`document.querySelectorAll(${JSON.stringify(sel)}).length===1 && document.querySelector(${JSON.stringify(sel)}).getAttribute('aria-label')`, tabId, PORT)).toBe("Second");
+    expect(await evaluateInTab(`document.querySelectorAll(${JSON.stringify(sel)}).length===1 && document.querySelector(${JSON.stringify(sel)}).textContent`, tabId, PORT)).toBe("Second");
   });
 
   it("does not list a div slider it could not press", async () => {

@@ -145,7 +145,8 @@ ${ELEMENT_NAME_JS}
   // aria-hidden) is not one a person uses; the widget drawn for it is listed instead.
   function keptFromPeople(el) { return el.getAttribute('aria-hidden')==='true' && el.getAttribute('tabindex')==='-1'; }
   // A part the tree shows inside a widget's combobox (Select2's rendered value, role textbox) is the combobox's. A
-  // real text field inside one (the ARIA 1.0 combobox) is still typed into, and stays (/code-review on #1009).
+  // real text field inside one (the ARIA 1.0 combobox) is still typed into, and stays (/code-review on #1009). Text
+  // fields are not marked in controls mode today, so this holds for one a later mode would mark.
   function insideCombobox(el) {
     if(el.tagName==='INPUT'||el.tagName==='TEXTAREA') return false;
     for(let a=el.parentElement; a; a=a.parentElement) { if(axRole(a)==='combobox') return true; }
