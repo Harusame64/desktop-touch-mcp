@@ -771,12 +771,15 @@ export async function markAxMatches(
     if (opts.by === "ariaLabel") {
       // The tree leaves out a select a widget hides (Select2, Choices), so its <label> names nothing a person can
       // press; the widget drawn for it is marked under that name (win2 on #1008, W12). Which widget stands for which
-      // select is read as desktop_discover reads it (browser-provider.ts, standsFor).
-      const r = (await s.send("Runtime.evaluate", {
-        expression: widgetsForLabelledSelectsJs(opts.nonce, opts.pattern, opts.caseSensitive, opts.scope ?? null),
-        returnByValue: true,
-      })) as { result?: { value?: number } };
-      count += typeof r.result?.value === "number" ? r.result.value : 0;
+      // select is read as desktop_discover reads it (browser-provider.ts, standsFor). A failure here keeps the tree's
+      // marks, which the caller clears (/code-review on #1010).
+      try {
+        const r = (await s.send("Runtime.evaluate", {
+          expression: widgetsForLabelledSelectsJs(opts.nonce, opts.pattern, opts.caseSensitive, opts.scope ?? null),
+          returnByValue: true,
+        })) as { result?: { value?: number } };
+        count += typeof r.result?.value === "number" ? r.result.value : 0;
+      } catch { /* keep the tree's answer */ }
     }
     return count;
   } catch {
@@ -787,11 +790,11 @@ export async function markAxMatches(
 }
 
 /**
- * internal #420 (W12) — page script: for each select the page keeps from people whose <label> text equals (0.95) or
- * contains (0.7) the pattern, mark the widget drawn for it (a role=combobox or role=listbox element) with this call's
- * token, as a control with the widget's own role. The widget is the combobox/listbox the select sits inside (Choices),
- * or one just after it, within four levels (Select2 puts its span after the select it hides, aria-hidden and
- * tabindex -1). Answers how many it marked.
+ * internal #420 (W12) — page script: for each select whose name (aria-labelledby, aria-label, its labels' own
+ * words) equals (0.95) or contains (0.7) the pattern, mark the widget drawn for it with this call's token and the
+ * widget's own role. The widget is the combobox/listbox a hidden select sits inside (Choices), or, for a select kept
+ * from people (aria-hidden, tabindex -1: Select2), one just after it within four levels. A listbox is a control only
+ * with a popup. Answers how many elements it newly marked.
  */
 function widgetsForLabelledSelectsJs(nonce: string, pattern: string, caseSensitive: boolean, scope: string | null): string {
   return `(function() {
@@ -799,10 +802,13 @@ function widgetsForLabelledSelectsJs(nonce: string, pattern: string, caseSensiti
   if (!root) return 0;
   var cs = ${JSON.stringify(caseSensitive)}, needle = cs ? ${JSON.stringify(pattern)} : ${JSON.stringify(pattern.toLowerCase())};
   var nonce = ${JSON.stringify(nonce)}, n = 0;
-  function kept(sel) { return sel.hidden || (sel.getAttribute('aria-hidden') === 'true' && sel.getAttribute('tabindex') === '-1'); }
+  // Kept from people as Select2 keeps its select: out of the tab order and the tree. A select merely hidden lends its
+  // name only to a widget it sits inside (Choices); one after it may be another field (/code-review on #1010).
+  function keptFromPeople(sel) { return sel.getAttribute('aria-hidden') === 'true' && sel.getAttribute('tabindex') === '-1'; }
   function widgetFor(sel) {
     var w = sel.parentElement && sel.parentElement.closest('[role=combobox],[role=listbox]');
-    if (w && w.querySelector('select') === sel) return w;
+    if (w && w.querySelector('select') === sel && (sel.hidden || keptFromPeople(sel))) return w;
+    if (!keptFromPeople(sel)) return null;
     var next = sel.nextElementSibling;
     if (!next) return null;
     var c = next.matches('[role=combobox],[role=listbox]') ? next : next.querySelector('[role=combobox],[role=listbox]');
@@ -810,21 +816,50 @@ function widgetsForLabelledSelectsJs(nonce: string, pattern: string, caseSensiti
     for (var a = c, d = 0; a && d < 4; a = a.parentElement, d++) if (a.previousElementSibling === sel) return c;
     return null;
   }
+  // A label's own words: not the options of a select it wraps, a widget's text, or a part the page masks.
+  function words(n) {
+    var out = '';
+    for (var c = n.firstChild; c; c = c.nextSibling) {
+      if (c.nodeType === 3) out += c.nodeValue;
+      else if (c.nodeType === 1) {
+        if (/^(SELECT|INPUT|TEXTAREA)$/.test(c.tagName) || c.matches('[role=combobox],[role=listbox]')) continue;
+        var sec = getComputedStyle(c).webkitTextSecurity;
+        if (sec && sec !== 'none') continue;
+        out += ' ' + words(c);
+      }
+    }
+    return out;
+  }
+  // The select's name as the tree would give it if it were shown: aria-labelledby, aria-label, then its labels.
+  function nameOf(sel) {
+    var ids = (sel.getAttribute('aria-labelledby') || '').trim().split(/\\s+/).filter(Boolean);
+    var t = ids.map(function(id) { var x = document.getElementById(id); return x ? words(x) : ''; }).join(' ');
+    if (!t.trim()) t = sel.getAttribute('aria-label') || '';
+    if (!t.trim() && sel.labels) t = Array.prototype.map.call(sel.labels, words).join(' ');
+    return t.trim().replace(/\\s+/g, ' ');
+  }
   var sels = root.querySelectorAll('select');
   for (var i = 0; i < sels.length; i++) {
     var sel = sels[i];
-    if (!kept(sel) || !sel.labels || sel.labels.length === 0) continue;
-    var name = Array.prototype.map.call(sel.labels, function(l) { return (l.textContent || '').trim(); }).join(' ').replace(/\\s+/g, ' ');
+    var name = nameOf(sel);
+    if (!name) continue;
     var cmp = cs ? name : name.toLowerCase();
     var score = cmp === needle ? 0.95 : cmp.indexOf(needle) >= 0 ? 0.7 : 0;
     if (!score) continue;
     var w = widgetFor(sel);
     if (!w || w.getRootNode() !== document) continue;
-    var tok = nonce + ':' + score + ':c:' + (w.getAttribute('role') || '').toLowerCase();
-    var keep = (w.getAttribute('${AX_MARK_ATTR}') || '').split(' ').filter(function(t) { return t && t.indexOf(nonce + ':') !== 0; });
-    keep.push(tok);
-    w.setAttribute('${AX_MARK_ATTR}', keep.join(' '));
-    n++;
+    // A listbox is pressed as it is only when it opens a popup, as the tree's reading has it (axIsControl).
+    var role = (w.getAttribute('role') || '').toLowerCase();
+    var hp = w.getAttribute('aria-haspopup');
+    var ctl = role === 'combobox' || (role === 'listbox' && hp !== null && hp !== 'false');
+    var toks = (w.getAttribute('${AX_MARK_ATTR}') || '').split(' ').filter(Boolean);
+    var mine = toks.filter(function(t) { return t.indexOf(nonce + ':') === 0; })[0];
+    // The tree's own mark on the widget stays when it is as good (its name, its role); it is counted once.
+    if (mine && parseFloat(mine.split(':')[1]) >= score) continue;
+    var others = toks.filter(function(t) { return t.indexOf(nonce + ':') !== 0; });
+    others.push(nonce + ':' + score + ':' + (ctl ? 'c' : '') + ':' + role);
+    w.setAttribute('${AX_MARK_ATTR}', others.join(' '));
+    if (!mine) n++;
   }
   return n;
 })()`;
