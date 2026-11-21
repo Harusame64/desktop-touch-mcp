@@ -190,16 +190,23 @@ ${ELEMENT_NAME_JS}
   const all = root.querySelectorAll('*');
   let candidates = [];
   // Text the page never draws: a script's or a style's source, a noscript's markup while scripts run, a template's,
-  // and what <head> holds (the title). The text axes leave it out, visibleOnly or not (win2 on #1011: by:'text' with
-  // visibleOnly:false listed Amazon's <script> JSON). Judged by whether the page lays it out, not by the tag
-  // (/code-review on #1015): a noscript is drawn when scripts are blocked, a style a page shows with CSS is drawn. Not
-  // by display: Chrome computes a noscript inline while scripts run and lays out nothing for it. A search the caller
-  // scoped into one of them (scope:'head') is answered as asked.
-  const NOT_TEXT = 'head, script, style, noscript, template';
+  // what <head> holds (the title), noembed and noframes. The text axes leave it out, visibleOnly or not (win2 on #1011:
+  // by:'text' with visibleOnly:false listed Amazon's <script> JSON). Judged by the element's own reason for drawing
+  // nothing, not by its tag (/code-review on #1015: a style a page shows with CSS is drawn, and so is a noscript while
+  // scripts are blocked), and not by whether a hidden ancestor hides it too: that text is hidden, which visibleOnly
+  // decides. A noscript's computed display is inline even while Chrome lays out nothing for it, so it is judged by
+  // boxes: none of its own or its children's while its parent has one. A search scoped into one of them (scope:'head')
+  // is answered as asked.
+  const NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
+  function boxed(n) { return !!n && n.getClientRects().length > 0; }
+  function drawsNothing(a) {
+    if (a.tagName === 'NOSCRIPT') return !boxed(a) && !Array.from(a.children).some(boxed) && boxed(a.parentElement);
+    return getComputedStyle(a).display === 'none';
+  }
   function notDrawnText(el) {
     for (let a = el.closest(NOT_TEXT); a; a = a.parentElement ? a.parentElement.closest(NOT_TEXT) : null) {
       if (a === root || a.contains(root)) return false;
-      if (a.getClientRects().length === 0) return true;
+      if (drawsNothing(a)) return true;
     }
     return false;
   }
@@ -236,10 +243,10 @@ ${ELEMENT_NAME_JS}
         .filter(n => n.nodeType === 3)
         .map(n => n.textContent || '')
         .join('').trim();
-      if (!direct || notDrawnText(el)) continue;
+      if (!direct) continue;
       const hay = cs ? direct : direct.toLowerCase();
       // What the page masks is not matched: a hit on hidden text would answer what the text says.
-      if (!hay.includes(needle) || __isMasked(el)) continue;
+      if (!hay.includes(needle) || __isMasked(el) || notDrawnText(el)) continue;
       if (hay === needle) record(el, 1.0, 'text');
       else record(el, 0.8, 'text');
     }
@@ -251,8 +258,8 @@ ${ELEMENT_NAME_JS}
     for (const el of all) {
       if (overBudget(i++)) { aborted = true; break; }
       const direct = Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent || '').join('').trim();
-      if (!direct || notDrawnText(el)) continue;
-      if (re.test(direct) && !__isMasked(el)) record(el, 0.9, 'regex');
+      if (!direct) continue;
+      if (re.test(direct) && !__isMasked(el) && !notDrawnText(el)) record(el, 0.9, 'regex');
     }
   } else if (by === 'role') {
     const needle = cs ? pat : pat.toLowerCase();

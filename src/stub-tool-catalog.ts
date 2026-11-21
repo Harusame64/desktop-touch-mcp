@@ -559,7 +559,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
             "ariaLabel",
             "selector"
           ],
-          "description": "Search axis: text/regex/role/ariaLabel/selector"
+          "description": "Search axis: text/regex/role/ariaLabel/selector. text/regex match text the page draws, not a script's or style's source, a noscript's while scripts run, or <head>'s, unless scope is <head> with visibleOnly:false."
         },
         "pattern": {
           "type": "string",
@@ -585,7 +585,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "maximum": 9007199254740991
         },
         "visibleOnly": {
-          "description": "Only visible elements (default true). Set false to include hidden ones with confidence penalty. text/regex never match a script's or style's source or what <head> holds, unless scope is inside it.",
+          "description": "Only visible elements (default true). Set false to include hidden ones with confidence penalty.",
           "type": "boolean",
           "default": true
         },

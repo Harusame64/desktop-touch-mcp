@@ -302,12 +302,12 @@ export const browserLaunchSchema = {
 
 export const browserSearchSchema = {
   by: z.enum(["text", "regex", "role", "ariaLabel", "selector"])
-    .describe("Search axis: text/regex/role/ariaLabel/selector"),
+    .describe("Search axis: text/regex/role/ariaLabel/selector. text/regex match text the page draws, not a script's or style's source, a noscript's while scripts run, or <head>'s, unless scope is <head> with visibleOnly:false."),
   pattern: z.string().min(1).describe("Pattern to match against the chosen axis."),
   scope: z.string().optional().describe("CSS selector to limit the search scope."),
   maxResults: z.coerce.number().int().min(1).max(200).default(50).describe("Max results returned (default 50)."),
   offset: z.coerce.number().int().min(0).default(0).describe("Offset into the result set (default 0)."),
-  visibleOnly: coercedBooleanWithDefault(true).describe("Only visible elements (default true). Set false to include hidden ones with confidence penalty. text/regex never match a script's or style's source or what <head> holds, unless scope is inside it."),
+  visibleOnly: coercedBooleanWithDefault(true).describe("Only visible elements (default true). Set false to include hidden ones with confidence penalty."),
   inViewportOnly: coercedBooleanWithDefault(false).describe("Only currently-in-viewport elements (default false)."),
   caseSensitive: coercedBooleanWithDefault(false).describe("Case-sensitive matching for text/regex (default false)."),
   tabId: tabIdParam,

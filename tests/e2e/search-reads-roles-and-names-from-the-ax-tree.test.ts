@@ -8,6 +8,7 @@ import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chro
 import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll } from "../../src/engine/cdp-bridge.js";
 import { browserSearchHandler } from "../../src/tools/browser.js";
+import WebSocket from "ws";
 
 const PORT = 9240;
 const CHROME = tryFindChrome() !== null;
@@ -241,6 +242,43 @@ describe.skipIf(!CHROME)("browser_search by:'text' and by:'regex' match what the
     // Judged by layout, which also lets a noscript through when scripts are blocked: its content is laid out then.
     await page(`<style id="demo" style="display:block">.priceTag{color:red}</style>`);
     for (const by of ["text", "regex"] as const) expect(sels(await search({ by, pattern: "priceTag" }))).toEqual(["#demo"]);
+  });
+
+  it("lists a shown style inside a hidden section as hidden text, as any hidden text (/code-review on #1015)", async () => {
+    // The section hides it, not the style: visibleOnly decides, as for <div hidden>priceTag 2</div> beside it.
+    await page(`<div hidden><style id="hs" style="display:block">.priceTag{}</style><p id="hp">priceTag 2</p></div><noembed id="ne">priceTag 3</noembed>`);
+    for (const by of ["text", "regex"] as const) {
+      expect(sels(await search({ by, pattern: "priceTag", visibleOnly: false }))).toEqual(["#hp", "#hs"]);
+      expect((await search({ by, pattern: "priceTag" })).code).toBe("BrowserSearchNoResults");
+    }
+  });
+
+  it("finds a noscript's content while scripts are blocked, also under display:contents (/code-review on #1015)", async () => {
+    const tabs = (await (await fetch(`http://127.0.0.1:${PORT}/json`)).json()) as Array<{ type: string; webSocketDebuggerUrl: string }>;
+    const ws = new WebSocket(tabs.find((t) => t.type === "page")!.webSocketDebuggerUrl);
+    await new Promise((r) => ws.once("open", r));
+    let id = 0;
+    const send = (method: string, params: object) => new Promise((r) => {
+      const n = ++id;
+      const on = (m: WebSocket.RawData) => { if ((JSON.parse(String(m)) as { id?: number }).id === n) { ws.off("message", on); r(null); } };
+      ws.on("message", on);
+      ws.send(JSON.stringify({ id: n, method, params }));
+    });
+    try {
+      await send("Emulation.setScriptExecutionDisabled", { value: true });
+      const html = `<!doctype html><html><head><meta charset="utf-8"><style>.c{display:contents}</style></head><body><noscript><p id="a">Enable scripts to checkout</p></noscript><noscript class="c"><p id="b">Enable scripts to pay</p></noscript></body></html>`;
+      await send("Page.navigate", { url: "data:text/html;charset=utf-8," + encodeURIComponent(html) });
+      await sleep(400);
+      expect(sels(await search({ by: "text", pattern: "Enable scripts" }))).toEqual(["#a", "#b"]);
+    } finally {
+      await send("Emulation.setScriptExecutionDisabled", { value: false });
+      ws.close();
+    }
+    // Scripts running: the same noscripts draw nothing, and their markup is not matched.
+    await evaluateInTab(`location.href='about:blank';true`, null, PORT).catch(() => undefined);
+    await sleep(300);
+    await page(`<noscript><p>Enable scripts to checkout</p></noscript>`);
+    expect((await search({ by: "text", pattern: "Enable scripts", visibleOnly: false })).code).toBe("BrowserSearchNoResults");
   });
 
   it("answers a search scoped into <head> as asked (/code-review on #1015)", async () => {
