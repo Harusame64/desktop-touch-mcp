@@ -1311,7 +1311,9 @@ async function screenPointForLanding(
   tabId: string | null,
   port: number,
 ): Promise<{ x: number; y: number; aim: PageAim | undefined; rect: { x: number; y: number; w: number; h: number } | undefined }> {
-  const at = await getElementScreenCoords(selector, tabId, port);
+  // A zero-size element has a point when the landing read gave one (a 0x0 radio pressed through its label: win2 on
+  // #1008, W11); only the viewport's place on the screen is read from it.
+  const at = await getElementScreenCoords(selector, tabId, port, { allowZeroSize: true });
   const dpr = Number(await evaluateInTab("window.devicePixelRatio || 1", tabId, port)) || 1;
   const vp = at.viewport;
   if (vp === undefined) return { x: at.x, y: at.y, aim: undefined, rect: undefined };
@@ -2381,7 +2383,7 @@ async function clickByAxis(args: {
         ({ x: pressX, y: pressY, aim: pressAim, rect: landedRect } = await screenPointForLanding(tagSel, landing, tab, port));
       } catch (e) {
         await settlePressScroll(true, tab, port);
-        // The page re-rendered the element after the read (the mark is on the old node, or it is now zero-size):
+        // The page re-rendered the element after the read (the mark is on the old node):
         // answered as the resolve's stop, never with the mark's selector, which names nothing the caller can use
         // (/code-review on #1006). Anything else (a closed tab, a lost connection) is answered as itself.
         if (e instanceof ElementZeroSizeError || (e instanceof Error && e.message.startsWith("Element not found:"))) return stop();

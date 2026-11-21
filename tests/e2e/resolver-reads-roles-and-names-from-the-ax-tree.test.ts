@@ -214,6 +214,26 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(await readPressLanding("[data-t]", null, PORT)).toMatchObject({ how: "own_label" });
   });
 
+  it("takes browser_click on a 0x0 radio named by its label to a press through the label, not a stop (win2 on #1008, W11)", async () => {
+    await page(`<input type="radio" name="c" id="g0" style="width:0;height:0;margin:0;padding:0;border:0;appearance:none"><label for="g0" style="display:inline-block;padding:6px 12px;margin:40px 4px">Red</label><input type="radio" name="c" id="g1" style="width:0;height:0;margin:0;padding:0;border:0;appearance:none"><label for="g1" style="display:inline-block;padding:6px 12px">Green</label>`);
+    const r = await browserClickElementHandler({ by: "ariaLabel", pattern: "Green", role: "radio", port: PORT } as never);
+    const body = JSON.parse((r.content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { code?: string; ok?: boolean };
+    expect(await marks()).toBe(0);
+    if (body.ok === true) return; // a machine that can press
+    expect(body.code).not.toBe("BrowserNoActionableTarget");
+    expect(body.code).not.toBe("BrowserPointCovered");
+  });
+
+  it("presses Choices' select as it is: a listbox that opens a popup is a control (win2 on #1008, W6)", async () => {
+    await page(`<div class="choices" id="chl" role="listbox" tabindex="0" aria-haspopup="true" aria-expanded="false" style="position:absolute;left:100px;top:100px;width:260px;height:40px;border:1px solid"><div class="choices__inner"><select id="fr" hidden><option>Apple</option></select><div class="choices__item">Apple</div></div><div class="choices__list--dropdown" style="visibility:hidden"><div role="listbox"><div role="option">Apple</div><div role="option">Banana</div></div></div></div>`);
+    expect(what(await resolve({ by: "role", pattern: "listbox" }))).toBe("div#chl");
+  });
+
+  it("still leaves a list of options (a listbox with no popup) for a press on an option (control)", async () => {
+    await page(`<div role="listbox" id="lb" tabindex="0" aria-label="Fruits" style="position:absolute;left:100px;top:100px;width:200px"><div role="option">Apple</div><div role="option">Banana</div></div>`);
+    expect((await resolve({ by: "role", pattern: "listbox" })).kind).not.toBe("resolved");
+  });
+
   it("still says a 0x0 element with no label is not rendered (control)", async () => {
     await page(`<button id="nb" data-t="1" style="position:absolute;width:0;height:0;padding:0;border:0"></button>`);
     expect(await readPressLanding("[data-t]", null, PORT)).toMatchObject({ error: expect.stringContaining("zero size") });

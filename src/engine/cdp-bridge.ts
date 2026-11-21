@@ -635,6 +635,18 @@ const AX_CONTROL_ROLES = new Set([
   "slider", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "treeitem",
 ]);
 
+/**
+ * A role the tree gives that a person presses as it is. A listbox is a list of options, pressed on an option, except
+ * one that says it opens a popup: Choices' select (role listbox, aria-haspopup) is pressed to open it (win2 on #1008).
+ */
+function axIsControl(role: string, n: { properties?: Array<{ name?: string; value?: { value?: unknown } }> }): boolean {
+  if (AX_CONTROL_ROLES.has(role)) return true;
+  if (role !== "listbox") return false;
+  const p = (n.properties ?? []).find((q) => q.name === "hasPopup");
+  const v = p?.value?.value;
+  return v !== undefined && v !== null && v !== false && v !== "false";
+}
+
 /** Marks never made: text runs of a name, not elements a person acts on. */
 const AX_TEXT_ROLES = new Set(["StaticText", "InlineTextBox", "LineBreak", "RootWebArea", "none"]);
 
@@ -662,7 +674,10 @@ export async function markAxMatches(
     const tab = await resolveTab(tabId, port);
     session = await openSession(tab, port);
     const s = session;
-    type AxNode = { ignored?: boolean; role?: { value?: string }; name?: { value?: string }; backendDOMNodeId?: number };
+    type AxNode = {
+      ignored?: boolean; role?: { value?: string }; name?: { value?: string }; backendDOMNodeId?: number;
+      properties?: Array<{ name?: string; value?: { value?: unknown } }>;
+    };
     const { root } = (await s.send("DOM.getDocument", { depth: 0 })) as { root: { nodeId: number; backendNodeId: number } };
     let from = root.backendNodeId;
     if (opts.scope) {
@@ -677,7 +692,7 @@ export async function markAxMatches(
       for (const n of nodes) {
         const r = n.role?.value ?? "";
         if (n.ignored || !n.backendDOMNodeId || AX_TEXT_ROLES.has(r)) continue;
-        scored.push({ backend: n.backendDOMNodeId, score: 0.85, control: AX_CONTROL_ROLES.has(r), role: r });
+        scored.push({ backend: n.backendDOMNodeId, score: 0.85, control: axIsControl(r, n), role: r });
       }
     } else {
       const nodes = ((await s.send("Accessibility.queryAXTree", { backendNodeId: from })) as { nodes: AxNode[] }).nodes;
@@ -689,7 +704,7 @@ export async function markAxMatches(
         const name = String(n.name?.value ?? "").trim();
         if (n.ignored || !n.backendDOMNodeId || !name || AX_TEXT_ROLES.has(r)) continue;
         const cmp = opts.caseSensitive ? name : name.toLowerCase();
-        const hit = { backend: n.backendDOMNodeId, control: AX_CONTROL_ROLES.has(r), role: r };
+        const hit = { backend: n.backendDOMNodeId, control: axIsControl(r, n), role: r };
         if (cmp === needle) exact.push({ ...hit, score: 0.95 });
         else if (cmp.includes(needle)) partial.push({ ...hit, score: 0.7 });
       }
@@ -1112,7 +1127,8 @@ export async function getPageZoom(tabId: string | null, port = DEFAULT_CDP_PORT)
 export async function getElementScreenCoords(
   selector: string,
   tabId: string | null = null,
-  port = DEFAULT_CDP_PORT
+  port = DEFAULT_CDP_PORT,
+  opts: { allowZeroSize?: boolean } = {},
 ): Promise<ElementCoords> {
   // One tab for both reads: the zoom and the coordinates (codex on #839).
   const tab = await resolveTabId(tabId, port);
@@ -1123,7 +1139,7 @@ export async function getElementScreenCoords(
   var el = document.querySelector(sel);
   if (!el) return JSON.stringify({ error: "Element not found: " + sel });
   var rect = el.getBoundingClientRect();
-  if (rect.width === 0 && rect.height === 0) {
+  if (rect.width === 0 && rect.height === 0 && !${JSON.stringify(opts.allowZeroSize === true)}) {
     // zeroSize discriminant (issue #441): lets getElementScreenCoords throw a
     // typed ElementZeroSizeError so the click handler can route to the rescue.
     return JSON.stringify({ error: "Element has zero size (hidden or not rendered): " + sel, zeroSize: true });
