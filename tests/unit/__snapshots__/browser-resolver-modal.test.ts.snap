@@ -662,9 +662,11 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   // #1015, three rounds: a box goes missing for a hidden ancestor and for display:contents too):
   // - an SVG element (script, style, or a noscript parsed into an <svg>) is never drawn: the SVG renderer has no place
   //   for it, and its display computes inline;
-  // - a noscript, by whether scripts run in this document, read once, when the first one is reached, from the
-  //   scripting media feature, which writes nothing to the page (/code-review on #1015: an innerHTML probe broke under
-  //   Trusted Types and ran on every call). It follows CDP's setScriptExecutionDisabled (measured, Chrome on macOS);
+  // - a noscript, by whether scripts run in this document, read at most once per search and only when a noscript is
+  //   reached, from the scripting media feature, which writes nothing to the page (/code-review on #1015: an innerHTML
+  //   probe broke under Trusted Types and wrote to the page on every axis). It follows CDP's
+  //   setScriptExecutionDisabled (measured, Chrome on macOS). A Chromium before 120 does not know the feature (the
+  //   query reads "not all"); there the fragment parse answers, which follows the same flag;
   // - the rest, by a computed display of none: a style a page shows with CSS is drawn.
   // A search scoped into one of them (scope:'head') is answered as asked.
   const NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
@@ -672,7 +674,13 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   function drawsNothing(a) {
     if (a.namespaceURI === 'http://www.w3.org/2000/svg') return true;
     if (a.localName === 'noscript') {
-      if (scriptsRun === null) { try { scriptsRun = !matchMedia('(scripting: none)').matches; } catch (e) { scriptsRun = true; } }
+      if (scriptsRun === null) {
+        try {
+          const mq = matchMedia('(scripting: none)');
+          if (mq.media !== 'not all') scriptsRun = !mq.matches;
+          else { const d = document.createElement('div'); d.innerHTML = '<noscript><i></i></noscript>'; scriptsRun = !d.querySelector('i'); }
+        } catch (e) { scriptsRun = true; }
+      }
       return scriptsRun;
     }
     return getComputedStyle(a).display === 'none';

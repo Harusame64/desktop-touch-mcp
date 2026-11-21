@@ -258,16 +258,23 @@ describe.skipIf(!CHROME)("browser_search by:'text' and by:'regex' match what the
     const ws = new WebSocket(tabs.find((t) => t.type === "page")!.webSocketDebuggerUrl);
     await new Promise((r) => ws.once("open", r));
     let id = 0;
-    const send = (method: string, params: object) => new Promise((r) => {
+    // A CDP error or a stalled socket fails the cell here, not as an unrelated assertion later.
+    const send = (method: string, params: object) => new Promise((res, rej) => {
       const n = ++id;
-      const on = (m: WebSocket.RawData) => { if ((JSON.parse(String(m)) as { id?: number }).id === n) { ws.off("message", on); r(null); } };
+      const t = setTimeout(() => { ws.off("message", on); rej(new Error(`${method}: no reply`)); }, 5000);
+      const on = (m: WebSocket.RawData) => {
+        const msg = JSON.parse(String(m)) as { id?: number; error?: { message: string } };
+        if (msg.id !== n) return;
+        clearTimeout(t); ws.off("message", on);
+        if (msg.error) rej(new Error(`${method}: ${msg.error.message}`)); else res(null);
+      };
       ws.on("message", on);
       ws.send(JSON.stringify({ id: n, method, params }));
     });
     try {
       await send("Emulation.setScriptExecutionDisabled", { value: true });
       // Under Trusted Types too: reading whether scripts run writes nothing to the page (/code-review on #1015).
-      const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="require-trusted-types-for 'script'"><style>.c{display:contents}</style></head><body><noscript><p id="a">Enable scripts to checkout</p></noscript><noscript class="c"><p id="b">Enable scripts to pay</p></noscript></body></html>`;
+      const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="require-trusted-types-for 'script'"><style>.c{display:contents}</style></head><body><noscript><p id="a">Enable scripts to checkout</p></noscript><noscript class="c"><p id="b">Enable scripts to pay</p></noscript><svg width="1" height="1"><noscript>Enable scripts svg</noscript></svg></body></html>`;
       await send("Page.navigate", { url: "data:text/html;charset=utf-8," + encodeURIComponent(html) });
       await sleep(400);
       for (const by of ["text", "regex"] as const) expect(sels(await search({ by, pattern: "Enable scripts" }))).toEqual(["#a", "#b"]);
