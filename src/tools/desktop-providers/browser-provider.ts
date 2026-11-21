@@ -58,7 +58,7 @@ function cdpActionability(type: string): Array<"click" | "invoke" | "type" | "re
  * a role=checkbox div (internal #420, PR-C2b).
  */
 export function interactiveScript(axNonce: string | null): string {
-  const axSel = axNonce === null ? "" : `, [${AX_MARK_ATTR}^=${JSON.stringify(axNonce + ":")}]`;
+  const axSel = axNonce === null ? "" : `, [${AX_MARK_ATTR}*=${JSON.stringify(axNonce + ":")}]`;
   return `
 (function() {
   const CSS_Q = "a[href], button:not([disabled]), [role='button'], input:not([type='hidden']):not([disabled]), select:not([disabled]), textarea:not([disabled]), [role='menuitem']:not([aria-disabled='true']), [role='tab']:not([aria-disabled='true']), [role='switch']:not([aria-disabled='true'])" + ${JSON.stringify(axSel)};
@@ -66,8 +66,9 @@ export function interactiveScript(axNonce: string | null): string {
   // The role the tree gave a marked element, or null.
   function axRole(el) {
     if (axNonce === null) return null;
-    const v = (el.getAttribute('${AX_MARK_ATTR}') || '').split(':');
-    return v[0] === axNonce ? (v[3] || null) : null;
+    const toks = (el.getAttribute('${AX_MARK_ATTR}') || '').split(' ');
+    for (let i=0;i<toks.length;i++) { const v = toks[i].split(':'); if (v[0] === axNonce) return v[3] || null; }
+    return null;
   }
   function isVisible(el) {
     const s = window.getComputedStyle(el);
@@ -89,23 +90,30 @@ export function interactiveScript(axNonce: string | null): string {
     const r = el.getBoundingClientRect();
     return r.width>0 && r.height>0;
   }
+  // A selector is kept only when it names this one element: a radio group shares its name, and a press on
+  // input[name=size] went to its first radio (/code-review on #1009).
+  function alone(sel) { try { return document.querySelectorAll(sel).length===1; } catch(e) { return false; } }
   function bestSel(el) {
-    if (el.id) return '#'+CSS.escape(el.id);
-    const n=el.getAttribute('name'); if(n) return el.tagName.toLowerCase()+'[name='+JSON.stringify(n)+']';
-    const al=el.getAttribute('aria-label'); if(al&&al.length<80) return el.tagName.toLowerCase()+'[aria-label='+JSON.stringify(al)+']';
-    const dt=el.getAttribute('data-testid'); if(dt&&dt.length<60) return el.tagName.toLowerCase()+'[data-testid='+JSON.stringify(dt)+']';
+    if (el.id && alone('#'+CSS.escape(el.id))) return '#'+CSS.escape(el.id);
+    const tg=el.tagName.toLowerCase();
+    const n=el.getAttribute('name'); if(n && alone(tg+'[name='+JSON.stringify(n)+']')) return tg+'[name='+JSON.stringify(n)+']';
+    const al=el.getAttribute('aria-label'); if(al&&al.length<80 && alone(tg+'[aria-label='+JSON.stringify(al)+']')) return tg+'[aria-label='+JSON.stringify(al)+']';
+    const dt=el.getAttribute('data-testid'); if(dt&&dt.length<60 && alone(tg+'[data-testid='+JSON.stringify(dt)+']')) return tg+'[data-testid='+JSON.stringify(dt)+']';
     // A path of :nth-child steps up to an ancestor with an id, as far as it takes to name this one element: one
     // step alone named the first such element of the page (Choices' unnamed div, internal #420 PR-C2b).
-    let node=el, path='';
+    let node=el, path='', sel='';
     for(let d=0; d<8 && node && node.parentElement; d++) {
       const p=node.parentElement, idx=Array.from(p.children).indexOf(node)+1;
       path=node.tagName.toLowerCase()+':nth-child('+idx+')'+(path?' > '+path:'');
-      const sel=(p.id?'#'+CSS.escape(p.id)+' > ':'')+path;
-      try { if(document.querySelectorAll(sel).length===1) return sel; } catch(e) {}
-      if(p.id) break;
+      // An ancestor id is used only when it is the page's one element with that id.
+      const pid=p.id && alone('#'+CSS.escape(p.id)) ? '#'+CSS.escape(p.id)+' > ' : '';
+      sel=pid+path;
+      if(alone(sel)) return sel;
+      if(pid) break;
       node=p;
     }
-    return path||el.tagName.toLowerCase();
+    // Nothing named it alone: the most specific path read, not a shorter one known to match more.
+    return sel||tg;
   }
   function elType(el) {
     const tag=el.tagName.toLowerCase(), role=el.getAttribute('role'), ax=axRole(el);
@@ -114,7 +122,6 @@ export function interactiveScript(axNonce: string | null): string {
     if(tag==='input'&&(el.type==='checkbox'||el.type==='radio')) return 'toggle['+el.type+']';
     if(ax==='treeitem') return 'treeitem';
     if((ax==='combobox'||ax==='listbox')&&tag!=='input'&&tag!=='select') return 'button';
-    if((ax==='textbox'||ax==='searchbox')&&tag!=='input'&&tag!=='textarea') return 'textbox';
     if(ax==='option'||ax==='tab') return ax;
     if(ax==='menuitem'||ax==='menuitemcheckbox'||ax==='menuitemradio') return 'menuitem';
     if(role==='tab') return 'tab';
@@ -130,25 +137,39 @@ ${ELEMENT_NAME_JS}
   // A control the page keeps out of the tab order and the accessibility tree (Select2's original select: tabindex -1,
   // aria-hidden) is not one a person uses; the widget drawn for it is listed instead.
   function keptFromPeople(el) { return el.getAttribute('aria-hidden')==='true' && el.getAttribute('tabindex')==='-1'; }
-  // A part the tree shows inside a widget's combobox (Select2's rendered value, role textbox) is the combobox's.
+  // A part the tree shows inside a widget's combobox (Select2's rendered value, role textbox) is the combobox's. A
+  // real text field inside one (the ARIA 1.0 combobox) is still typed into, and stays (/code-review on #1009).
   function insideCombobox(el) {
+    if(el.tagName==='INPUT'||el.tagName==='TEXTAREA') return false;
     for(let a=el.parentElement; a; a=a.parentElement) { if(axRole(a)==='combobox') return true; }
     return false;
   }
-  // A widget's combobox is named as a field is (aria-labelledby, aria-label), then by the label of the control it
-  // stands for (Choices' <label for> on its hidden select), then by its text.
+  // The control a widget stands for: the select or input inside it (Choices), or the one the page keeps from people
+  // just before the widget's box (Select2 puts its span after the select it hides).
+  function standsFor(el) {
+    const inner=el.querySelector('select, input'); if(inner) return inner;
+    for(let a=el, d=0; a && d<4; a=a.parentElement, d++) {
+      const prev=a.previousElementSibling;
+      if(prev && (prev.tagName==='SELECT'||prev.tagName==='INPUT') && (keptFromPeople(prev)||prev.hidden)) return prev;
+    }
+    return null;
+  }
+  // The value a widget shows (Select2's rendered value, which its aria-labelledby points at).
+  function shownValue(el) {
+    const ids=(el.getAttribute('aria-labelledby')||'').trim().split(/\\s+/).filter(Boolean);
+    return ids.map(function(id){const x=document.getElementById(id);return x&&!__isMasked(x)?(x.textContent||'').trim():'';}).filter(Boolean).join(' ').replace(/\\s+/g,' ').slice(0,80);
+  }
+  // A widget's combobox is named as a field is (aria-label, aria-labelledby), then by the label of the control it
+  // stands for (a <label for> on the select it hides), then by the value it shows, then by its text. The label comes
+  // before the value: two Select2 boxes showing "Select an option" stay two entities (/code-review on #1009).
   function widgetName(el) {
     const n=__fieldName(el); if(n) return n;
-    // aria-labelledby onto the value it shows (Select2's rendered value, itself a read-only textbox): its text.
-    const ids=(el.getAttribute('aria-labelledby')||'').trim().split(/\\s+/).filter(Boolean);
-    const shown=ids.map(function(id){const x=document.getElementById(id);return x&&!__isMasked(x)?(x.textContent||'').trim():'';}).filter(Boolean).join(' ');
-    if(shown) return shown.replace(/\\s+/g,' ').slice(0,80);
-    const inner=el.querySelector('select, input');
+    const inner=standsFor(el);
     if(inner && inner.labels && inner.labels.length) {
       const t=Array.from(inner.labels).map(function(l){return __textWithoutFields(l);}).filter(Boolean).join(' ');
       if(t) return t.slice(0,80);
     }
-    return __elText(el);
+    return shownValue(el) || __elText(el);
   }
   for(const el of document.querySelectorAll(CSS_Q)) {
     if(!isVisible(el)) continue;
@@ -161,6 +182,7 @@ ${ELEMENT_NAME_JS}
     const item={type:type,text:widget?widgetName(el):__elText(el),selector:bestSel(el),inViewport:inVP};
     if(el.tagName==='A') item.href=el.href;
     if((el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.tagName==='SELECT')&&!__isMasked(el)) item.value=el.value;
+    else if(widget) { const v=shownValue(el); if(v) item.value=v; }
     out.push(item);
     if(out.length>=60) break;
   }
@@ -207,7 +229,8 @@ export async function fetchBrowserCandidates(
       // resolved to one entity, and the second could not be reached (2ゲート目 on #623). This keeps
       // two fields apart only as far as `bestSel` does: its one-level `:nth-child` fallback can
       // repeat, and then the locator itself cannot reach the second field either — as before.
-      .filter((el) => el.text || el.href || isField(el.type))
+      // A checkbox or radio with no name (a table's row-select box) keeps its place the same way (/code-review on #1009).
+      .filter((el) => el.text || el.href || isField(el.type) || el.type.startsWith("toggle["))
       .map((el): UiEntityCandidate => ({
         source: "cdp",
         target: { kind: "browserTab", id: tabId },

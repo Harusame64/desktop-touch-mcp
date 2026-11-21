@@ -185,6 +185,17 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(what(await resolve({ by: "ariaLabel", pattern: "Fruit", role: "combobox" }))).toBe("select#f");
   });
 
+  it("keeps two calls' marks on the same element apart: neither overwrites the other (/code-review on #1009)", async () => {
+    await page(`<button aria-label="One" style="position:absolute;left:100px;top:100px">1</button>`);
+    expect(await markAxMatches({ by: "ariaLabel", pattern: "One", caseSensitive: false, nonce: "aaa" }, null, PORT)).toBe(1);
+    expect(await markAxMatches({ by: "role", pattern: "button", caseSensitive: false, nonce: "bbb" }, null, PORT)).toBe(1);
+    expect(await evaluateInTab("document.querySelector('button').getAttribute('data-dtm-ax').split(' ').map(function(t){return t.split(':')[0]})", null, PORT)).toEqual(["aaa", "bbb"]);
+    await clearAxMarks("aaa", null, PORT);
+    expect(await evaluateInTab("document.querySelector('button').getAttribute('data-dtm-ax').split(':')[0]", null, PORT)).toBe("bbb");
+    await clearAxMarks("bbb", null, PORT);
+    expect(await marks()).toBe(0);
+  });
+
   it("clears only its own marks: another call's marks on the tab stay", async () => {
     await page(`<button aria-label="One" style="position:absolute;left:100px;top:100px">1</button><button aria-label="Two" style="position:absolute;left:200px;top:100px">2</button>`);
     expect(await markAxMatches({ by: "ariaLabel", pattern: "One", caseSensitive: false, nonce: "aaa" }, null, PORT)).toBe(1);

@@ -2,8 +2,8 @@
  * internal #420 (PR-C2b) — desktop_discover's browser lane lists the controls the browser's accessibility tree shows,
  * as browser_click's by-axis road reads them since #1008: a checkbox under a skin (iCheck's opacity: 0 input), a 0x0
  * radio pressed through its label, Select2's combobox, Choices' select, a role=checkbox div. A checkbox or radio reads
- * as a button, as UIA's do; a widget's combobox is a button named by the value it shows or the label of the control it
- * stands for; the original a widget hides from people (tabindex -1, aria-hidden) is not listed. Before this, a native
+ * as a button, as UIA's do; a widget's combobox is a button named by the label of the control it stands for, then the
+ * value it shows; the original a widget hides from people (tabindex -1, aria-hidden) is not listed. Before this, a native
  * checkbox read "textbox" and none of these widgets were listed (win2 on #1003, #1002 note 5).
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -79,10 +79,10 @@ describe.skipIf(!CHROME)("desktop_discover's browser lane lists the controls the
     expect(rows.find((r) => r.selector === "#hp")).toBeUndefined();
   });
 
-  it("lists Select2's combobox as a button named by the value it shows, not its hidden select or its rendered text", async () => {
+  it("lists Select2's combobox as a button named by its select's label, not its hidden select or its rendered text", async () => {
     await page(SELECT2);
     const rows = await list();
-    const combo = rows.filter((r) => r.label === "Apple");
+    const combo = rows.filter((r) => r.label === "Fruit");
     expect(combo).toHaveLength(1);
     expect(combo[0]).toMatchObject({ role: "button", actions: "invoke/click" });
     expect(await one(combo[0]!.selector)).toBe("select2-selection");
@@ -116,7 +116,58 @@ describe.skipIf(!CHROME)("desktop_discover's browser lane lists the controls the
     expect(rows.find((r) => r.selector === "#cb")?.type).toBe("toggle[checkbox]");
   });
 
+  // ── /code-review high on #1009 ───────────────────────────────────────────────────────────────────────────────
+  it("keeps an unnamed checkbox (a table's row-select box) under its type and selector", async () => {
+    await page(`<table><tr><td><input type="checkbox" id="row1"></td><td>Alice</td></tr></table>`);
+    expect((await list()).find((r) => r.selector === "#row1")).toMatchObject({ role: "button", label: "toggle[checkbox] #row1" });
+  });
+
+  it("does not offer typing into a div the tree calls a textbox (the CDP fill writes only to inputs)", async () => {
+    await page(`<div role="textbox" contenteditable="true" tabindex="0" aria-label="Comment" id="ce" style="width:200px;height:40px;border:1px solid"></div>`);
+    expect((await list()).find((r) => r.selector === "#ce")).toBeUndefined();
+  });
+
+  it("names two Select2 boxes showing the same placeholder by their selects' labels, so they stay two", async () => {
+    const box = (id: string, label: string): string => `<label for="${id}">${label}</label><select id="${id}" tabindex="-1" aria-hidden="true" style="position:absolute;width:1px;height:1px;clip:rect(0 0 0 0);overflow:hidden"><option></option></select><span class="select2" style="display:inline-block;width:200px"><span class="selection"><span class="select2-selection" role="combobox" aria-haspopup="true" aria-expanded="false" tabindex="0" aria-labelledby="${id}-c" style="display:block;height:28px;border:1px solid #aaa"><span id="${id}-c" role="textbox" aria-readonly="true">Select an option</span></span></span></span>`;
+    await page(`<div>${box("country", "Country")}</div><div>${box("billing", "Billing country")}</div>`);
+    const rows = (await list()).filter((r) => r.role === "button");
+    expect(rows.map((r) => r.label).sort()).toEqual(["Billing country", "Country"]);
+    const c = await fetchBrowserCandidates({ tabId } as never);
+    expect(c.candidates.find((x) => x.label === "Country")?.value).toBe("Select an option");
+  });
+
+  it("keeps the text field inside an ARIA 1.0 combobox as a textbox", async () => {
+    await page(`<div role="combobox" aria-expanded="false" aria-haspopup="listbox" style="display:inline-block"><input type="text" id="q" aria-label="Search" aria-autocomplete="list"></div>`);
+    expect((await list()).find((r) => r.selector === "#q")).toMatchObject({ role: "textbox", actions: "type/click" });
+  });
+
+  it("gives each radio of a group a selector that names it alone (they share a name)", async () => {
+    await page(`<label><input type="radio" name="size" value="S"> S</label><label><input type="radio" name="size" value="M"> M</label>`);
+    const rows = await list();
+    const m = rows.find((r) => r.label === "M")!;
+    expect(m.selector).not.toBe('input[name="size"]');
+    expect(await evaluateInTab(`document.querySelectorAll(${JSON.stringify(m.selector)}).length===1 && document.querySelector(${JSON.stringify(m.selector)}).value`, tabId, PORT)).toBe("M");
+  });
+
+  it("does not lean on an id two elements share: the selector still names the element alone", async () => {
+    await page(`<div id="opts"><span>a</span><div role="listbox" tabindex="0" aria-haspopup="true" aria-label="First" style="width:100px;height:20px"></div></div><div id="opts"><span>b</span><div role="listbox" tabindex="0" aria-haspopup="true" aria-label="Second" style="width:100px;height:20px"></div></div>`);
+    const sel = (await list()).find((r) => r.label === "Second")!.selector;
+    expect(await evaluateInTab(`document.querySelectorAll(${JSON.stringify(sel)}).length===1 && document.querySelector(${JSON.stringify(sel)}).getAttribute('aria-label')`, tabId, PORT)).toBe("Second");
+  });
+
+  it("does not list a div slider it could not press", async () => {
+    await page(`<div role="slider" id="vol" aria-label="Volume" tabindex="0" aria-valuenow="5" style="width:100px;height:10px;background:#ccc"></div>`);
+    expect((await list()).find((r) => r.selector === "#vol")).toBeUndefined();
+  });
+
+  it("marks more than a by-axis question's 200 when the page has more checkboxes (discover reads the whole page)", async () => {
+    await page(Array.from({ length: 260 }, (_, i) => `<input type="checkbox" aria-label="c${i}">`).join(""));
+    const { markAxMatches, clearAxMarks } = await import("../../src/engine/cdp-bridge.js");
+    expect(await markAxMatches({ by: "controls", pattern: "", caseSensitive: false, nonce: "cap" }, tabId, PORT)).toBe(260);
+    await clearAxMarks("cap", tabId, PORT);
+  });
+
   it("names the attribute the page-side list reads as the one the tree marks with", () => {
-    expect(interactiveScript("n0nce")).toContain(`[${AX_MARK_ATTR}^=`);
+    expect(interactiveScript("n0nce")).toContain(`[${AX_MARK_ATTR}*=`);
   });
 });

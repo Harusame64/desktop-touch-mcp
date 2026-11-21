@@ -647,6 +647,11 @@ function axIsControl(role: string, n: { properties?: Array<{ name?: string; valu
   return v !== undefined && v !== null && v !== false && v !== "false";
 }
 
+/** desktop_discover's controls mode leaves these to the page-side list (or out: a slider it cannot press). */
+const AX_LISTED_BY_TAG = new Set(["link", "button", "textbox", "searchbox", "slider", "spinbutton"]);
+/** Roles a widget draws its own way (a skin, a replacement): marked first in controls mode. */
+const AX_DRAWN_ROLES = new Set(["checkbox", "radio", "switch", "combobox", "listbox"]);
+
 /** Marks never made: text runs of a name, not elements a person acts on. */
 const AX_TEXT_ROLES = new Set(["StaticText", "InlineTextBox", "LineBreak", "RootWebArea", "none"]);
 
@@ -696,8 +701,10 @@ export async function markAxMatches(
       const nodes = ((await s.send("Accessibility.queryAXTree", { objectId: from })) as { nodes: AxNode[] }).nodes;
       for (const n of nodes) {
         const r = n.role?.value ?? "";
-        if (n.ignored || !n.backendDOMNodeId || r === "link" || r === "button" || !axIsControl(r, n)) continue;
-        scored.push({ backend: n.backendDOMNodeId, score: 0.85, control: true, role: r });
+        // Links, buttons and fields the page-side list finds by their tags are left to it; a slider or spinbutton it
+        // could not press is not listed. The roles a widget draws in its own way come first (/code-review on #1009).
+        if (n.ignored || !n.backendDOMNodeId || !axIsControl(r, n) || AX_LISTED_BY_TAG.has(r)) continue;
+        scored.push({ backend: n.backendDOMNodeId, score: AX_DRAWN_ROLES.has(r) ? 0.9 : 0.85, control: true, role: r });
       }
     } else if (opts.by === "role") {
       const role = opts.caseSensitive ? opts.pattern : opts.pattern.toLowerCase();
@@ -727,7 +734,8 @@ export async function markAxMatches(
       scored.push(...exact, ...partial);
     }
     scored.sort((a, b) => b.score - a.score);
-    const marks = scored.slice(0, 200);
+    // desktop_discover reads the whole page, so its cap is wider; a by-axis question keeps its best 200.
+    const marks = scored.slice(0, opts.by === "controls" ? 1000 : 200);
     const done = await Promise.all(marks.map(async (m) => {
       try {
         const { object } = (await s.send("DOM.resolveNode", { backendNodeId: m.backend, objectGroup: group })) as { object: { objectId?: string } };
@@ -742,7 +750,12 @@ export async function markAxMatches(
             // test stays for one that does (/code-review on #1008).
             if (this.nodeType !== 1 || this.getRootNode() !== document || window !== window.top) return 0;
             if (role === 'listbox' && this.tagName === 'SELECT') return 0;
-            this.setAttribute('${AX_MARK_ATTR}', v);
+            // One token per call, beside other calls' tokens: a discover and a click on the same tab do not overwrite
+            // each other's marks (/code-review on #1009).
+            var mine = v.split(':')[0] + ':';
+            var keep = (this.getAttribute('${AX_MARK_ATTR}') || '').split(' ').filter(function(t) { return t && t.indexOf(mine) !== 0; });
+            keep.push(v);
+            this.setAttribute('${AX_MARK_ATTR}', keep.join(' '));
             return 1;
           }`,
         })) as { result?: { value?: number } };
@@ -762,7 +775,7 @@ export async function markAxMatches(
 /** Remove one call's accessibility-tree marks ({@link markAxMatches}); another call's marks on the tab stay. */
 export async function clearAxMarks(nonce: string, tabId: string | null = null, port = DEFAULT_CDP_PORT): Promise<void> {
   await evaluateInTab(
-    `document.querySelectorAll('[${AX_MARK_ATTR}^=' + ${JSON.stringify(JSON.stringify(nonce + ":"))} + ']').forEach(function(n){n.removeAttribute('${AX_MARK_ATTR}')});true`,
+    `(function(){var mine=${JSON.stringify(nonce + ":")};document.querySelectorAll('[${AX_MARK_ATTR}*=' + JSON.stringify(mine) + ']').forEach(function(n){var keep=(n.getAttribute('${AX_MARK_ATTR}')||'').split(' ').filter(function(t){return t&&t.indexOf(mine)!==0;});if(keep.length)n.setAttribute('${AX_MARK_ATTR}',keep.join(' '));else n.removeAttribute('${AX_MARK_ATTR}');});return true})()`,
     tabId, port,
   ).catch(() => null);
 }
