@@ -145,7 +145,8 @@ const byAxisParam = z
   .optional()
   .describe(
     "Semantic axis to target by INSTEAD of a CSS selector: 'text' (visible text), 'regex', " +
-    "'role' (ARIA/implicit role), 'ariaLabel'. Pair with `pattern`. The server resolves to a " +
+    "'role' (the role the browser computes: a search field is 'searchbox', a select 'combobox'), " +
+    "'ariaLabel' (the accessible name: aria-label, aria-labelledby or the control's <label>). Pair with `pattern`. The server resolves to a " +
     "SINGLE actionable element — climbing to a clickable ancestor up to 3 levels — and STOPS " +
     "with a candidate list (code:'BrowserAmbiguousTarget') if the match is ambiguous; it never guesses."
   );
