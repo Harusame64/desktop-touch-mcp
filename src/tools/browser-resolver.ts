@@ -200,8 +200,9 @@ ${ELEMENT_NAME_JS}
   //   reached, from the scripting media feature, which writes nothing to the page (/code-review on #1015: an innerHTML
   //   probe broke under Trusted Types and wrote to the page on every axis). It follows CDP's
   //   setScriptExecutionDisabled and Chrome's JavaScript site setting (measured: mac, and win2 on #1015, where a
-  //   Report-Only Trusted Types policy received no report from a search). A Chromium before 120 does not know the
-  //   feature (the query reads "not all"); there the fragment parse answers, which follows the same flag;
+  //   Report-Only Trusted Types policy received no report from a search). A browser that knows the feature matches
+  //   exactly one of its three values; a Chromium before 120 matches none of them (codex on #1015: 104-119 keep an
+  //   unknown feature's text rather than reading "not all"), and there the fragment parse answers, on the same flag;
   // - the rest, by a computed display of none: a style a page shows with CSS is drawn.
   // A search scoped into one of them (scope:'head') is answered as asked.
   const NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
@@ -211,8 +212,9 @@ ${ELEMENT_NAME_JS}
     if (a.localName === 'noscript') {
       if (scriptsRun === null) {
         try {
-          const mq = matchMedia('(scripting: none)');
-          if (mq.media !== 'not all') scriptsRun = !mq.matches;
+          const none = matchMedia('(scripting: none)').matches;
+          const on = matchMedia('(scripting: enabled)').matches || matchMedia('(scripting: initial-only)').matches;
+          if (none || on) scriptsRun = !none;
           else { const d = document.createElement('div'); d.innerHTML = '<noscript><i></i></noscript>'; scriptsRun = !d.querySelector('i'); }
         } catch (e) { scriptsRun = true; }
       }
