@@ -340,6 +340,11 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(await marks()).toBe(0);
   });
 
+  it("takes the tree's answer alone when it has one: a copy under aria-hidden does not make the click ambiguous (browser_search merges; a click does not)", async () => {
+    await page(`<div aria-hidden="true"><button id="c" aria-label="Close" style="position:absolute;left:10px;top:10px">×</button></div><button id="d" style="position:absolute;left:100px;top:100px">Close</button>`);
+    expect(what(await resolve({ by: "role", pattern: "button" }))).toBe("button#d");
+  });
+
   it("keeps the DOM reading when every mark is filtered out (a hidden element the tree names, a button under aria-hidden)", async () => {
     await page(`<button aria-label="Close" style="position:absolute;left:100px;top:40px;opacity:0">x</button><div aria-hidden="true"><button id="cl" aria-label="Close" style="position:absolute;left:100px;top:120px">x</button></div>`);
     expect(what(await resolve({ by: "ariaLabel", pattern: "Close" }))).toBe("button#cl");

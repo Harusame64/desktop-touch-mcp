@@ -804,7 +804,7 @@ Use this *before* `action:'js'` / `action:'dom'` on SPA pages where the HTML is 
 `Page.navigate` (CDP). Only `http://` / `https://` are accepted (`javascript:` / `file:` rejected). `waitForLoad:true` (default) blocks until `document.readyState === "complete"` and returns `{title, url, readyState, elapsedMs}`. On timeout the call stays `ok:true` with `hints.warnings:["NavigateTimeout"]` so callers can continue.
 
 #### `browser_search`
-Grep the DOM by text / regex / role / ariaLabel / CSS selector with confidence ranking. `scope` limits the search; `offset` / `maxResults` paginate.
+Grep the DOM by text / regex / role / ariaLabel / CSS selector with confidence ranking. `role` and `ariaLabel` match the role and accessible name the browser computes (a checkbox named by its `<label>`, a name from `aria-labelledby`), added to the `role` and `aria-label` attributes they matched before; `browser_click` prefers what the browser computes. `scope` limits the search; `offset` / `maxResults` paginate.
 
 **Response annotations shared by the DOM-touching tools**
 (`browser_eval` (any action) / `browser_locate` / `browser_overview`)

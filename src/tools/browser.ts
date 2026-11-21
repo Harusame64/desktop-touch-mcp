@@ -30,6 +30,7 @@ import {
   disconnectAll,
   getTabContext,
   clearAxMarks,
+  markAxMatches,
   isOffscreenMinimized,
   getTabWindowBounds,
   getBrowserProcessId,
@@ -3714,6 +3715,9 @@ export const browserOpenHandler = async ({
   return browserConnectHandler({ port });
 };
 
+/** internal #420 — the most elements one browser_search marks from the accessibility tree. */
+const AX_SEARCH_CAP = 1000;
+
 export const browserSearchHandler = async ({
   by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive, tabId, port,
 }: {
@@ -3734,10 +3738,29 @@ export const browserSearchHandler = async ({
     // tests/unit/browser-resolver-candidate-collection.test.ts). Later phases
     // layer actionability / climb / coords onto the same builder for by-axis
     // browser_click / browser_fill.
-    const expression = buildCandidateCollectionJs({
-      by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive,
-    });
-    const result = await evaluateInTab(expression, tabId ?? null, port);
+    // internal #420 — by:'role' and by:'ariaLabel' read the browser's accessibility tree, as browser_click does, so
+    // what a click finds by these words a search lists too. The DOM reading still runs beside it (the gather merges
+    // them): the tree adds, it takes nothing away. The marks are written on the page's elements and removed after,
+    // as a click's are, up to 1000: a smaller first cap only made a second pass when the tree found more (win2 and
+    // /code-review on #1011).
+    let tab: string | null = tabId ?? null;
+    let axMark: string | undefined;
+    let axFound = 0;
+    let axTriedAll = true;
+    if (by === "role" || by === "ariaLabel") {
+      try { tab = tab ?? await resolveTabId(null, port); } catch { /* the gather reports it */ }
+      const nonce = randomUUID().slice(0, 8);
+      const marked = await markAxMatches({ by, pattern, caseSensitive, nonce, cap: AX_SEARCH_CAP, keepNativeListbox: true, onFound: (n, all) => { axFound = n; axTriedAll = all; }, ...(scope && { scope }) }, tab, port);
+      if (marked !== null && marked > 0) axMark = nonce;
+    }
+    let result: unknown;
+    try {
+      result = await evaluateInTab(buildCandidateCollectionJs({
+        by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive, ...(axMark && { axMark }),
+      }), tab, port);
+    } finally {
+      if (axMark !== undefined) await clearAxMarks(axMark, tab, port);
+    }
     if (result && typeof result === "object" && "__error" in (result as object)) {
       const r = result as { __error: string; message?: string };
       const code = r.__error === "ScopeNotFound" ? "ScopeNotFound"
@@ -3759,6 +3782,9 @@ export const browserSearchHandler = async ({
       total: number; returned: number; truncated: boolean;
       results: Array<{ confidence: number; selector: string; text: string }>;
     };
+    // The cap filled before every node the tree matched was tried, and the total (what was marked, with what the DOM
+    // reading found) is below the tree's count: more results may exist than it says (/code-review on #1011).
+    if (!axTriedAll && payload.total < axFound) payload.truncated = true;
     if (payload.total === 0) {
       return failCode(
         "BrowserSearchNoResults",
@@ -3773,7 +3799,7 @@ export const browserSearchHandler = async ({
         },
       );
     }
-    const tabCtx = await getTabContext(tabId ?? null, port);
+    const tabCtx = await getTabContext(tab, port);
     return ok({ ...payload, activeTab: { id: tabCtx.id, title: tabCtx.title, url: tabCtx.url }, readyState: tabCtx.readyState });
   } catch (err) {
     return failWith(err, "browser_search", { by, pattern, scope });
@@ -4266,7 +4292,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_search",
-    "Grep-like element search across the current page. by: 'text' (literal substring), 'regex', 'role', 'ariaLabel', 'selector' (CSS). Returns results[] sorted by confidence descending — pass results[0].selector to browser_click. Pagination via offset/maxResults. Caveats: Use browser_overview for broad discovery; use browser_search when you know specific text or role to target. Typed errors: code:'BrowserSearchNoResults' (broaden the by:'text' substring or relax the by:'regex' pattern; switch to browser_overview to enumerate selectors), code:'BrowserSearchTimeout' (reduce maxResults / narrow scope), code:'ScopeNotFound' (the scope CSS selector did not match — verify the selector or omit scope), code:'BrowserNotConnected' (call browser_open first, or browser_open({launch:{}}) to auto-spawn).",
+    "Grep-like element search across the current page. by: 'text' (literal substring), 'regex', 'role', 'ariaLabel' (the role and accessible name the browser computes, added to the role and aria-label attributes; browser_click prefers what the browser computes), 'selector' (CSS). Returns results[] sorted by confidence descending — pass results[0].selector to browser_click. Pagination via offset/maxResults. Caveats: Use browser_overview for broad discovery; use browser_search when you know specific text or role to target. Typed errors: code:'BrowserSearchNoResults' (broaden the by:'text' substring or relax the by:'regex' pattern; switch to browser_overview to enumerate selectors), code:'BrowserSearchTimeout' (reduce maxResults / narrow scope), code:'ScopeNotFound' (the scope CSS selector did not match — verify the selector or omit scope), code:'BrowserNotConnected' (call browser_open first, or browser_open({launch:{}}) to auto-spawn).",
     browserSearchRegistrationSchema,
     browserSearchRegistrationHandler as typeof browserSearchHandler
   );

@@ -83,8 +83,8 @@ export interface ActionFactsArgs {
  * purpose — an element's name, and which values never leave the page, come from
  * `_element-name-js.ts` — and the snapshots were updated with it.
  */
-function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
-  const { by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive, axMark } = args;
+function candidateMatchingBodyJs(args: CandidateCollectionArgs & { axAlone?: boolean }): string {
+  const { by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive, axMark, axAlone } = args;
   return `
 (function() {
   const root = ${scope ? `document.querySelector(${JSON.stringify(scope)})` : "document"};
@@ -98,6 +98,7 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
   const maxN = ${JSON.stringify(maxResults + offset)};
   const offN = ${JSON.stringify(offset)};
   const axMark = ${JSON.stringify(axMark ?? null)};
+  const axAlone = ${JSON.stringify(axAlone === true)};
 
   // internal #420 — the element the accessibility tree matched, and its score and whether its role is a control.
   function axOf(el) {
@@ -138,25 +139,41 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
     return rect.top < window.innerHeight && rect.bottom > 0 &&
            rect.left < window.innerWidth && rect.right > 0;
   }
+  // A selector that matches this element alone in the document: a returned selector is passed to browser_click, so
+  // one matching two elements would press the first (win2 on #1011: Select2's span:nth-child(1) > span:nth-child(1)).
+  function alone(sel) { try { return document.querySelectorAll(sel).length === 1; } catch (e) { return false; } }
   function bestSelector(el) {
-    if (el.id) return '#' + CSS.escape(el.id);
+    // Past the scan's time budget nothing is asked: the path below climbs to <body>, unique by construction.
+    if (nowFn() > deadline) return pathTo(el, false);
+    if (el.id && alone('#' + CSS.escape(el.id))) return '#' + CSS.escape(el.id);
     const name = el.getAttribute('name');
-    if (name) return el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']';
+    if (name) { const s = el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']'; if (alone(s)) return s; }
     const aria = el.getAttribute('aria-label');
-    if (aria && aria.length < 80)
-      return el.tagName.toLowerCase() + '[aria-label=' + JSON.stringify(aria) + ']';
+    if (aria && aria.length < 80) {
+      const s = el.tagName.toLowerCase() + '[aria-label=' + JSON.stringify(aria) + ']';
+      if (alone(s)) return s;
+    }
     for (const attr of ['data-testid', 'data-asin']) {
       const v = el.getAttribute(attr);
-      if (v && v.length < 60) return el.tagName.toLowerCase() + '[' + attr + '=' + JSON.stringify(v) + ']';
+      if (v && v.length < 60) { const s = el.tagName.toLowerCase() + '[' + attr + '=' + JSON.stringify(v) + ']'; if (alone(s)) return s; }
     }
+    return pathTo(el, true);
+  }
+  // The path of positions: two segments, then more until it matches this element alone or reaches a unique id. The
+  // document is asked for paths of two to eight segments, while the scan's time budget lasts (/code-review on #1011:
+  // a query per level and result); past that, the path climbs on to <body>, unique by construction, asking only
+  // whether an ancestor's id is unique (win2 on #1011: pages built of alike blocks matched twice at eight levels).
+  function pathTo(el, ask) {
     let node = el; let path = '';
-    for (let depth = 0; depth < 2 && node.parentElement; depth++) {
+    for (let depth = 0; node.parentElement; depth++) {
       const p = node.parentElement;
       const idx = Array.from(p.children).indexOf(node) + 1;
       const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
       path = path ? seg + ' > ' + path : seg;
-      if (p.id) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
+      if (p.id && alone('#' + CSS.escape(p.id))) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
       node = p;
+      if (ask && depth >= 1 && alone(path)) break;
+      if (depth >= 7 || nowFn() > deadline) ask = false;
     }
     return path || el.tagName.toLowerCase();
   }
@@ -197,6 +214,9 @@ ${ELEMENT_NAME_JS}
   function record(el, score, by) {
     const prev = matchScore.get(el) || 0;
     if (score > prev) { matchScore.set(el, score); matchedByMap.set(el, by); }
+    // The DOM's more specific word for an equal score: a native button the tree also found is 'roleImplicit'
+    // (/code-review on #1011).
+    else if (score === prev && by === 'roleImplicit') matchedByMap.set(el, by);
     if (!pushed.has(el)) { candidates.push(el); pushed.add(el); }
   }
 
@@ -205,11 +225,20 @@ ${ELEMENT_NAME_JS}
 
   if (axMark !== null) {
     // internal #420 — by:'role' / by:'ariaLabel' from the browser's accessibility tree, marked before this gather.
+    // First, so equal scores keep the tree's document order (a result's place is what results[0] means).
     const marked = root.querySelectorAll('[${AX_MARK_ATTR}]');
     for (let i = 0; i < marked.length; i++) {
       const ax = axOf(marked[i]);
       if (ax) record(marked[i], ax.score, by);
     }
+  }
+
+  // browser_search adds the DOM reading to the tree's marks: what it found before stays found (a hidden element the
+  // tree leaves out, a control under a misused aria-hidden, a node a re-render replaced after the marking), and an
+  // element both found keeps the higher score. The action resolver takes the tree's answer alone (axAlone), and reads
+  // the DOM only when the tree's answer is empty (resolveBrowserActionTarget).
+  if (axMark !== null && axAlone) {
+    // the tree's answer alone
   } else if (by === 'selector') {
     const selectorMatches = Array.from(root.querySelectorAll(pat));
     for (let i = 0; i < selectorMatches.length; i++) {
@@ -313,7 +342,11 @@ export function buildCandidateCollectionJs(args: CandidateCollectionArgs): strin
     type: classify(el),
     text: elText(el),
     selector: bestSelector(el),
-    role: el.getAttribute('role') || undefined,
+    // internal #420 — the role the browser computed for an element the tree matched (a role attribute it ignored,
+    // role="presentation" on a button, or the first known of "switch checkbox", is not what it is), else the attribute.
+    // Only an ARIA role name (lowercase, doc-chapter too): Chrome's own names (LabelText, StaticText) are not roles a
+    // caller can ask for.
+    role: (/^[a-z]+(-[a-z]+)*$/.test((axOf(el) || {}).role || '') ? axOf(el).role : '') || el.getAttribute('role') || undefined,
     ariaLabel: el.getAttribute('aria-label') || undefined,
     matchedBy: matchedByMap.get(el),
     confidence: score(matchScore.get(el) || 0, visible),
@@ -364,7 +397,7 @@ function candidatePoolJs(args: ActionFactsArgs): string {
   // maxResults/offset are unused by the tails (they take top-N of the full sorted
   // set); fixed values keep the shared body's interpolation total. The resolver
   // always collects visible elements and lets receivesEvents gate the viewport.
-  return `${candidateMatchingBodyJs({ by, pattern, scope, maxResults: 200, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive, axMark })}
+  return `${candidateMatchingBodyJs({ by, pattern, scope, maxResults: 200, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive, axMark, axAlone: true })}
   // ── ADR-023 Phase 1: action-target candidate pool (top-N, role-filtered). ──
   const N = ${AMBIGUITY_CANDIDATE_CAP};
   const D = ${CLIMB_MAX_DEPTH};
