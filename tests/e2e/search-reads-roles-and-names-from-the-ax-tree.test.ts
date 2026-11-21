@@ -154,6 +154,35 @@ describe.skipIf(!CHROME)("browser_search by:'role' and by:'ariaLabel' read the a
     expect(await marks()).toBe(0);
   });
 
+  it("keeps matchedBy 'roleImplicit' for a native button the tree also found (/code-review on #1011)", async () => {
+    await page(`<button id="sv">Save</button>`);
+    expect((await search({ by: "role", pattern: "button" })).results?.[0]).toMatchObject({ selector: "#sv", matchedBy: "roleImplicit", role: "button" });
+  });
+
+  it("reports no Chrome-internal role name: a label named by aria-label has no role (/code-review on #1011)", async () => {
+    await page(`<label id="lt" aria-label="Terms">Terms</label>`);
+    const b = await search({ by: "ariaLabel", pattern: "Terms" });
+    expect(b.results?.find((h) => h.selector === "#lt")).toBeDefined();
+    expect(b.results?.find((h) => h.selector === "#lt")?.role).toBeUndefined();
+  });
+
+  it("returns a selector that matches inside an SVG foreignObject (Chrome matches the lowercased tag in an HTML document; control)", async () => {
+    // Two alike, so the path has to climb through foreignObject to tell them apart.
+    const FO = `<svg width="200" height="60"><foreignObject width="200" height="60"><div xmlns="http://www.w3.org/1999/xhtml"><span role="button" tabindex="0">In svg</span></div></foreignObject></svg>`;
+    await page(FO + FO);
+    const b = await search({ by: "role", pattern: "button" });
+    expect(b.total).toBe(2);
+    for (const h of b.results!) expect(await evaluateInTab(`document.querySelectorAll(${JSON.stringify(h.selector)}).length`, null, PORT)).toBe(1);
+  });
+
+  it("does not say truncated for links the tree found inside shadow roots and never marked (/code-review on #1011)", async () => {
+    await page(`<div id="host"></div>` + Array.from({ length: 10 }, (_, i) => `<a href="#${i}">L${i}</a> `).join(""));
+    await evaluateInTab(`(function(){var r=document.getElementById('host').attachShadow({mode:'open'});r.innerHTML=Array.from({length:1100},function(_,i){return '<a href="#s'+i+'">S'+i+'</a> '}).join('');return true})()`, null, PORT);
+    const b = await search({ by: "role", pattern: "link", maxResults: 50 });
+    expect([b.total, b.truncated]).toEqual([10, false]);
+    expect(await marks()).toBe(0);
+  });
+
   it("leaves by:'text' on DOM text (control)", async () => {
     await page(SR);
     expect(sels(await search({ by: "text", pattern: "Accept terms" }))).toEqual(["body:nth-child(2) > label:nth-child(2)"]);

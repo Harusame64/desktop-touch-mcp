@@ -155,16 +155,17 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs & { axAlone?: boo
       const v = el.getAttribute(attr);
       if (v && v.length < 60) { const s = el.tagName.toLowerCase() + '[' + attr + '=' + JSON.stringify(v) + ']'; if (alone(s)) return s; }
     }
-    // The path of positions: two levels, then more until it matches this element alone or reaches an id.
+    // The path of positions: two levels, then more until it matches this element alone or reaches an id, up to
+    // eight; past the scan's time budget, two levels as before (/code-review on #1011: a query per level and result).
     let node = el; let path = '';
-    for (let depth = 0; node.parentElement; depth++) {
+    for (let depth = 0; node.parentElement && depth < 8; depth++) {
       const p = node.parentElement;
       const idx = Array.from(p.children).indexOf(node) + 1;
       const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
       path = path ? seg + ' > ' + path : seg;
       if (p.id && alone('#' + CSS.escape(p.id))) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
       node = p;
-      if (depth >= 1 && alone(path)) break;
+      if (depth >= 1 && (nowFn() > deadline || alone(path))) break;
     }
     return path || el.tagName.toLowerCase();
   }
@@ -211,14 +212,6 @@ ${ELEMENT_NAME_JS}
   const all = root.querySelectorAll('*');
   let candidates = [];
 
-  if (axMark !== null) {
-    // internal #420 — by:'role' / by:'ariaLabel' from the browser's accessibility tree, marked before this gather.
-    const marked = root.querySelectorAll('[${AX_MARK_ATTR}]');
-    for (let i = 0; i < marked.length; i++) {
-      const ax = axOf(marked[i]);
-      if (ax) record(marked[i], ax.score, by);
-    }
-  }
   // browser_search adds the DOM reading to the tree's marks: what it found before stays found (a hidden element the
   // tree leaves out, a control under a misused aria-hidden, a node a re-render replaced after the marking), and an
   // element both found keeps the higher score. The action resolver takes the tree's answer alone (axAlone), and reads
@@ -285,6 +278,17 @@ ${ELEMENT_NAME_JS}
     }
   }
 
+  if (axMark !== null) {
+    // internal #420 — by:'role' / by:'ariaLabel' from the browser's accessibility tree, marked before this gather.
+    // After the DOM reading, so an element both found at the same score keeps the DOM's more specific matchedBy
+    // ('roleImplicit'; /code-review on #1011).
+    const marked = root.querySelectorAll('[${AX_MARK_ATTR}]');
+    for (let i = 0; i < marked.length; i++) {
+      const ax = axOf(marked[i]);
+      if (ax) record(marked[i], ax.score, by);
+    }
+  }
+
   // candidates already de-duplicated via the pushed Set in record()
 
   if (aborted && candidates.length === 0) {
@@ -330,7 +334,8 @@ export function buildCandidateCollectionJs(args: CandidateCollectionArgs): strin
     selector: bestSelector(el),
     // internal #420 — the role the browser computed for an element the tree matched (a role attribute it ignored,
     // role="presentation" on a button, or the first known of "switch checkbox", is not what it is), else the attribute.
-    role: (axOf(el) || {}).role || el.getAttribute('role') || undefined,
+    // Only an ARIA role name (lowercase): Chrome's own names (LabelText, StaticText) are not roles a caller can ask for.
+    role: (/^[a-z]+$/.test((axOf(el) || {}).role || '') ? axOf(el).role : '') || el.getAttribute('role') || undefined,
     ariaLabel: el.getAttribute('aria-label') || undefined,
     matchedBy: matchedByMap.get(el),
     confidence: score(matchScore.get(el) || 0, visible),

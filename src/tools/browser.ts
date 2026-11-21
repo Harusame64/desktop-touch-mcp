@@ -3741,24 +3741,18 @@ export const browserSearchHandler = async ({
     // internal #420 — by:'role' and by:'ariaLabel' read the browser's accessibility tree, as browser_click does, so
     // what a click finds by these words a search lists too. The DOM reading still runs beside it (the gather merges
     // them): the tree adds, it takes nothing away. The marks are written on the page's elements and removed after,
-    // as a click's are. As many are marked as the page asked for, with room for the filters; when the tree found
-    // more than that, up to 1000 (a total of 200 for 300 checkboxes, win2 on #1011).
+    // as a click's are, up to 1000: a smaller first cap only made a second pass when the tree found more (win2 and
+    // /code-review on #1011).
     let tab: string | null = tabId ?? null;
     let axMark: string | undefined;
     let axFound = 0;
+    let axMarked = 0;
     if (by === "role" || by === "ariaLabel") {
       try { tab = tab ?? await resolveTabId(null, port); } catch { /* the gather reports it */ }
       const nonce = randomUUID().slice(0, 8);
-      let found = 0;
-      const mark = (cap: number) => markAxMatches({ by, pattern, caseSensitive, nonce, cap, onFound: (n) => { found = n; }, ...(scope && { scope }) }, tab, port);
-      const cap = Math.min(AX_SEARCH_CAP, Math.max(200, 2 * (offset + maxResults)));
-      let marked = await mark(cap);
-      if (marked !== null && found > cap && cap < AX_SEARCH_CAP) {
-        await clearAxMarks(nonce, tab, port);
-        marked = await mark(AX_SEARCH_CAP);
-      }
+      const marked = await markAxMatches({ by, pattern, caseSensitive, nonce, cap: AX_SEARCH_CAP, onFound: (n) => { axFound = n; }, ...(scope && { scope }) }, tab, port);
       if (marked !== null && marked > 0) axMark = nonce;
-      axFound = found;
+      axMarked = marked ?? 0;
     }
     let result: unknown;
     try {
@@ -3789,9 +3783,10 @@ export const browserSearchHandler = async ({
       total: number; returned: number; truncated: boolean;
       results: Array<{ confidence: number; selector: string; text: string }>;
     };
-    // The tree matched more than its cap and the total (what was marked, with what the DOM reading found) is below
-    // that count: more results may exist than it says.
-    if (axFound > AX_SEARCH_CAP && payload.total < axFound) payload.truncated = true;
+    // The tree matched more than its cap, the cap was filled, and the total (what was marked, with what the DOM reading
+    // found) is below the tree's count: more results may exist than it says. A node never marked (in a shadow root or
+    // a frame) does not fill the cap (/code-review on #1011).
+    if (axFound > AX_SEARCH_CAP && axMarked >= AX_SEARCH_CAP && payload.total < axFound) payload.truncated = true;
     if (payload.total === 0) {
       return failCode(
         "BrowserSearchNoResults",
@@ -4299,7 +4294,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_search",
-    "Grep-like element search across the current page. by: 'text' (literal substring), 'regex', 'role', 'ariaLabel' (the role and accessible name the browser computes, as browser_click reads them), 'selector' (CSS). Returns results[] sorted by confidence descending — pass results[0].selector to browser_click. Pagination via offset/maxResults. Caveats: Use browser_overview for broad discovery; use browser_search when you know specific text or role to target. Typed errors: code:'BrowserSearchNoResults' (broaden the by:'text' substring or relax the by:'regex' pattern; switch to browser_overview to enumerate selectors), code:'BrowserSearchTimeout' (reduce maxResults / narrow scope), code:'ScopeNotFound' (the scope CSS selector did not match — verify the selector or omit scope), code:'BrowserNotConnected' (call browser_open first, or browser_open({launch:{}}) to auto-spawn).",
+    "Grep-like element search across the current page. by: 'text' (literal substring), 'regex', 'role', 'ariaLabel' (the role and accessible name the browser computes, added to the role and aria-label attributes; browser_click prefers what the browser computes), 'selector' (CSS). Returns results[] sorted by confidence descending — pass results[0].selector to browser_click. Pagination via offset/maxResults. Caveats: Use browser_overview for broad discovery; use browser_search when you know specific text or role to target. Typed errors: code:'BrowserSearchNoResults' (broaden the by:'text' substring or relax the by:'regex' pattern; switch to browser_overview to enumerate selectors), code:'BrowserSearchTimeout' (reduce maxResults / narrow scope), code:'ScopeNotFound' (the scope CSS selector did not match — verify the selector or omit scope), code:'BrowserNotConnected' (call browser_open first, or browser_open({launch:{}}) to auto-spawn).",
     browserSearchRegistrationSchema,
     browserSearchRegistrationHandler as typeof browserSearchHandler
   );
