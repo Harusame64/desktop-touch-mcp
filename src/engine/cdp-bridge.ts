@@ -767,12 +767,67 @@ export async function markAxMatches(
         return 0;
       }
     }));
-    return done.reduce<number>((a, b) => a + b, 0);
+    let count = done.reduce<number>((a, b) => a + b, 0);
+    if (opts.by === "ariaLabel") {
+      // The tree leaves out a select a widget hides (Select2, Choices), so its <label> names nothing a person can
+      // press; the widget drawn for it is marked under that name (win2 on #1008, W12). Which widget stands for which
+      // select is read as desktop_discover reads it (browser-provider.ts, standsFor).
+      const r = (await s.send("Runtime.evaluate", {
+        expression: widgetsForLabelledSelectsJs(opts.nonce, opts.pattern, opts.caseSensitive, opts.scope ?? null),
+        returnByValue: true,
+      })) as { result?: { value?: number } };
+      count += typeof r.result?.value === "number" ? r.result.value : 0;
+    }
+    return count;
   } catch {
     return null;
   } finally {
     try { await session?.send("Runtime.releaseObjectGroup", { objectGroup: group }); } catch { /* ignore */ }
   }
+}
+
+/**
+ * internal #420 (W12) — page script: for each select the page keeps from people whose <label> text equals (0.95) or
+ * contains (0.7) the pattern, mark the widget drawn for it (a role=combobox or role=listbox element) with this call's
+ * token, as a control with the widget's own role. The widget is the combobox/listbox the select sits inside (Choices),
+ * or one just after it, within four levels (Select2 puts its span after the select it hides, aria-hidden and
+ * tabindex -1). Answers how many it marked.
+ */
+function widgetsForLabelledSelectsJs(nonce: string, pattern: string, caseSensitive: boolean, scope: string | null): string {
+  return `(function() {
+  var root = ${scope === null ? "document" : `document.querySelector(${JSON.stringify(scope)})`};
+  if (!root) return 0;
+  var cs = ${JSON.stringify(caseSensitive)}, needle = cs ? ${JSON.stringify(pattern)} : ${JSON.stringify(pattern.toLowerCase())};
+  var nonce = ${JSON.stringify(nonce)}, n = 0;
+  function kept(sel) { return sel.hidden || (sel.getAttribute('aria-hidden') === 'true' && sel.getAttribute('tabindex') === '-1'); }
+  function widgetFor(sel) {
+    var w = sel.parentElement && sel.parentElement.closest('[role=combobox],[role=listbox]');
+    if (w && w.querySelector('select') === sel) return w;
+    var next = sel.nextElementSibling;
+    if (!next) return null;
+    var c = next.matches('[role=combobox],[role=listbox]') ? next : next.querySelector('[role=combobox],[role=listbox]');
+    if (!c) return null;
+    for (var a = c, d = 0; a && d < 4; a = a.parentElement, d++) if (a.previousElementSibling === sel) return c;
+    return null;
+  }
+  var sels = root.querySelectorAll('select');
+  for (var i = 0; i < sels.length; i++) {
+    var sel = sels[i];
+    if (!kept(sel) || !sel.labels || sel.labels.length === 0) continue;
+    var name = Array.prototype.map.call(sel.labels, function(l) { return (l.textContent || '').trim(); }).join(' ').replace(/\\s+/g, ' ');
+    var cmp = cs ? name : name.toLowerCase();
+    var score = cmp === needle ? 0.95 : cmp.indexOf(needle) >= 0 ? 0.7 : 0;
+    if (!score) continue;
+    var w = widgetFor(sel);
+    if (!w || w.getRootNode() !== document) continue;
+    var tok = nonce + ':' + score + ':c:' + (w.getAttribute('role') || '').toLowerCase();
+    var keep = (w.getAttribute('${AX_MARK_ATTR}') || '').split(' ').filter(function(t) { return t && t.indexOf(nonce + ':') !== 0; });
+    keep.push(tok);
+    w.setAttribute('${AX_MARK_ATTR}', keep.join(' '));
+    n++;
+  }
+  return n;
+})()`;
 }
 
 /** Remove one call's accessibility-tree marks ({@link markAxMatches}); another call's marks on the tab stay. */
