@@ -1,7 +1,7 @@
 /**
  * internal #420 — browser_search by:'role' and by:'ariaLabel' read the browser's accessibility tree, as browser_click
- * does (#1008, #1010), so a search and a click on the same words find the same elements. With nothing in the tree, the
- * DOM reading answers as before; visibleOnly:false adds what the tree leaves out (hidden elements).
+ * does (#1008, #1010), so what a click finds by these words a search lists too. The DOM reading still runs beside the
+ * tree and the two are merged: the tree adds, it takes nothing away (/code-review on this PR).
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
@@ -78,16 +78,29 @@ describe.skipIf(!CHROME)("browser_search by:'role' and by:'ariaLabel' read the a
     expect(await marks()).toBe(0);
   });
 
-  it("keeps the DOM reading when the tree finds nothing (a button under a misused aria-hidden, as before)", async () => {
+  it("keeps the DOM reading's answer when the tree finds nothing (a button under a misused aria-hidden, as before)", async () => {
     await page(`<div aria-hidden="true"><button id="c" aria-label="Close">×</button></div>`);
     expect(sels(await search({ by: "ariaLabel", pattern: "Close" }))).toEqual(["#c"]);
     expect(sels(await search({ by: "role", pattern: "button" }))).toEqual(["#c"]);
   });
 
-  it("keeps the DOM reading when every mark is filtered out (the tree's one match is off the viewport asked for)", async () => {
+  it("keeps what the DOM reading found beside the tree's matches: one filter or another, the same set (/code-review)", async () => {
     await page(`<div aria-hidden="true"><button id="c" aria-label="Close">×</button></div><button id="far" style="position:absolute;top:5000px">Close</button>`);
-    expect(sels(await search({ by: "ariaLabel", pattern: "Close" }))).toEqual(["#far"]);
+    expect(sels(await search({ by: "ariaLabel", pattern: "Close" }))).toEqual(["#c", "#far"]);
     expect(sels(await search({ by: "ariaLabel", pattern: "Close", inViewportOnly: true }))).toEqual(["#c"]);
+    expect(await marks()).toBe(0);
+  });
+
+  it("reports the role the browser computed, not a role attribute it ignored (/code-review)", async () => {
+    await page(`<button id="p" role="presentation">OK</button><div id="s" role="switch checkbox" tabindex="0" aria-checked="false">x</div>`);
+    expect((await search({ by: "role", pattern: "button" })).results?.find((h) => h.selector === "#p")?.role).toBe("button");
+    expect((await search({ by: "role", pattern: "switch" })).results?.find((h) => h.selector === "#s")?.role).toBe("switch");
+  });
+
+  it("counts every link past the marks' cap, as the DOM reading did (/code-review)", async () => {
+    await page(Array.from({ length: 1100 }, (_, i) => `<a href="#${i}" id="l${i}">L${i}</a> `).join(""));
+    const b = await search({ by: "role", pattern: "link", maxResults: 50, offset: 1050 });
+    expect([b.total, b.returned, b.truncated]).toEqual([1100, 50, false]);
     expect(await marks()).toBe(0);
   });
 

@@ -450,6 +450,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   const maxN = 200;
   const offN = 0;
   const axMark = null;
+  const axAlone = true;
 
   // internal #420 — the element the accessibility tree matched, and its score and whether its role is a control.
   function axOf(el) {
@@ -636,9 +637,11 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
       if (ax) record(marked[i], ax.score, by);
     }
   }
-  // The tree leaves out what is hidden, which visibleOnly:false asks for too (browser_search): the DOM reading adds
-  // it, and an element both found keeps the higher score.
-  if (axMark !== null && visibleOnly) {
+  // browser_search adds the DOM reading to the tree's marks: what it found before stays found (a hidden element the
+  // tree leaves out, a control under a misused aria-hidden, a node a re-render replaced after the marking), and an
+  // element both found keeps the higher score. The action resolver takes the tree's answer alone (axAlone), and reads
+  // the DOM only when the tree's answer is empty (resolveBrowserActionTarget).
+  if (axMark !== null && axAlone) {
     // the tree's answer alone
   } else if (by === 'selector') {
     const selectorMatches = Array.from(root.querySelectorAll(pat));

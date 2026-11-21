@@ -83,8 +83,8 @@ export interface ActionFactsArgs {
  * purpose — an element's name, and which values never leave the page, come from
  * `_element-name-js.ts` — and the snapshots were updated with it.
  */
-function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
-  const { by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive, axMark } = args;
+function candidateMatchingBodyJs(args: CandidateCollectionArgs & { axAlone?: boolean }): string {
+  const { by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive, axMark, axAlone } = args;
   return `
 (function() {
   const root = ${scope ? `document.querySelector(${JSON.stringify(scope)})` : "document"};
@@ -98,6 +98,7 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
   const maxN = ${JSON.stringify(maxResults + offset)};
   const offN = ${JSON.stringify(offset)};
   const axMark = ${JSON.stringify(axMark ?? null)};
+  const axAlone = ${JSON.stringify(axAlone === true)};
 
   // internal #420 — the element the accessibility tree matched, and its score and whether its role is a control.
   function axOf(el) {
@@ -211,9 +212,11 @@ ${ELEMENT_NAME_JS}
       if (ax) record(marked[i], ax.score, by);
     }
   }
-  // The tree leaves out what is hidden, which visibleOnly:false asks for too (browser_search): the DOM reading adds
-  // it, and an element both found keeps the higher score.
-  if (axMark !== null && visibleOnly) {
+  // browser_search adds the DOM reading to the tree's marks: what it found before stays found (a hidden element the
+  // tree leaves out, a control under a misused aria-hidden, a node a re-render replaced after the marking), and an
+  // element both found keeps the higher score. The action resolver takes the tree's answer alone (axAlone), and reads
+  // the DOM only when the tree's answer is empty (resolveBrowserActionTarget).
+  if (axMark !== null && axAlone) {
     // the tree's answer alone
   } else if (by === 'selector') {
     const selectorMatches = Array.from(root.querySelectorAll(pat));
@@ -318,8 +321,9 @@ export function buildCandidateCollectionJs(args: CandidateCollectionArgs): strin
     type: classify(el),
     text: elText(el),
     selector: bestSelector(el),
-    // internal #420 — the role the browser computed, for an element the tree matched with no role attribute.
-    role: el.getAttribute('role') || (axOf(el) || {}).role || undefined,
+    // internal #420 — the role the browser computed for an element the tree matched (a role attribute it ignored,
+    // role="presentation" on a button, or the first known of "switch checkbox", is not what it is), else the attribute.
+    role: (axOf(el) || {}).role || el.getAttribute('role') || undefined,
     ariaLabel: el.getAttribute('aria-label') || undefined,
     matchedBy: matchedByMap.get(el),
     confidence: score(matchScore.get(el) || 0, visible),
@@ -370,7 +374,7 @@ function candidatePoolJs(args: ActionFactsArgs): string {
   // maxResults/offset are unused by the tails (they take top-N of the full sorted
   // set); fixed values keep the shared body's interpolation total. The resolver
   // always collects visible elements and lets receivesEvents gate the viewport.
-  return `${candidateMatchingBodyJs({ by, pattern, scope, maxResults: 200, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive, axMark })}
+  return `${candidateMatchingBodyJs({ by, pattern, scope, maxResults: 200, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive, axMark, axAlone: true })}
   // ── ADR-023 Phase 1: action-target candidate pool (top-N, role-filtered). ──
   const N = ${AMBIGUITY_CANDIDATE_CAP};
   const D = ${CLIMB_MAX_DEPTH};

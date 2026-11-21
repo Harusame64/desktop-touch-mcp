@@ -3736,14 +3736,17 @@ export const browserSearchHandler = async ({
     // layer actionability / climb / coords onto the same builder for by-axis
     // browser_click / browser_fill.
     // internal #420 — by:'role' and by:'ariaLabel' read the browser's accessibility tree, as browser_click does, so
-    // a search and a click on the same words find the same elements. None marked, or none left after the filters:
-    // the DOM reading answers, as before.
+    // what a click finds by these words a search lists too. The DOM reading still runs beside it (the gather merges
+    // them): the tree adds, it takes nothing away. The marks are written on the page's elements and removed after,
+    // as a click's are. As many are marked as the page asked for, with room for the filters, up to 1000; the DOM
+    // reading counts the rest.
     let tab: string | null = tabId ?? null;
     let axMark: string | undefined;
     if (by === "role" || by === "ariaLabel") {
       try { tab = tab ?? await resolveTabId(null, port); } catch { /* the gather reports it */ }
       const nonce = randomUUID().slice(0, 8);
-      const marked = await markAxMatches({ by, pattern, caseSensitive, nonce, cap: 1000, ...(scope && { scope }) }, tab, port);
+      const cap = Math.min(1000, Math.max(200, 2 * (offset + maxResults)));
+      const marked = await markAxMatches({ by, pattern, caseSensitive, nonce, cap, ...(scope && { scope }) }, tab, port);
       if (marked !== null && marked > 0) axMark = nonce;
     }
     let result: unknown;
@@ -3751,13 +3754,6 @@ export const browserSearchHandler = async ({
       result = await evaluateInTab(buildCandidateCollectionJs({
         by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive, ...(axMark && { axMark }),
       }), tab, port);
-      if (axMark !== undefined && result && typeof result === "object" && (result as { total?: number }).total === 0) {
-        await clearAxMarks(axMark, tab, port);
-        axMark = undefined;
-        result = await evaluateInTab(buildCandidateCollectionJs({
-          by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive,
-        }), tab, port);
-      }
     } finally {
       if (axMark !== undefined) await clearAxMarks(axMark, tab, port);
     }
