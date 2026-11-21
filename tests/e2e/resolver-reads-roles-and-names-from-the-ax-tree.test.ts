@@ -79,7 +79,7 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
   });
 
   it("does not lend a hidden select's label to a widget that is not drawn for it (control)", async () => {
-    await page(`<label for="hs">Country</label><select id="hs" hidden><option>JP</option></select><div><span>gap</span></div><div role="combobox" id="other" tabindex="0" aria-label="State" style="position:absolute;left:100px;top:100px;width:200px;height:28px;border:1px solid">--</div>`);
+    await page(`<label for="hs">Country</label><select id="hs" hidden><option>JP</option></select><div class="row"><div><div><div><div><div role="combobox" id="other" tabindex="0" aria-label="State" style="position:absolute;left:100px;top:100px;width:200px;height:28px;border:1px solid">--</div></div></div></div></div></div>`);
     expect((await resolve({ by: "ariaLabel", pattern: "Country" })).kind).not.toBe("resolved");
     expect(await marks()).toBe(0);
   });
