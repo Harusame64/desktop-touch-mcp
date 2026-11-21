@@ -491,44 +491,52 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     return rect.top < window.innerHeight && rect.bottom > 0 &&
            rect.left < window.innerWidth && rect.right > 0;
   }
-  // A selector that matches this element alone in the document: a returned selector is passed to browser_click, so
-  // one matching two elements would press the first (win2 on #1011: Select2's span:nth-child(1) > span:nth-child(1)).
-  function alone(sel) { try { return document.querySelectorAll(sel).length === 1; } catch (e) { return false; } }
-  function bestSelector(el) {
-    // Past the scan's time budget nothing is asked: the path below climbs to <body>, unique by construction.
-    if (nowFn() > deadline) return pathTo(el, false);
-    if (el.id && alone('#' + CSS.escape(el.id))) return '#' + CSS.escape(el.id);
+  // A selector that matches this element alone in the document, past the scan's time budget too: the one definition
+  // browser_overview shares (internal #420).
+
+  // Matches one element, and that element is el: a link's path is built from el.href, which resolves against the page,
+  // while the selector matches the attribute, so an in-page "#History" link's a[href*="/wiki/Tokyo"] matched the
+  // permalink alone (/code-review on #1012).
+  function __alone(sel, el) {
+    try { const l = document.querySelectorAll(sel); return l.length === 1 && l[0] === el; } catch (e) { return false; }
+  }
+  function __uniqueSelector(el, overdue, extra) {
+    // Past the budget an id is still tried, one query, before the path that asks nothing (/code-review on #1012).
+    if (overdue()) return el.id && __alone('#' + CSS.escape(el.id), el) ? '#' + CSS.escape(el.id) : __pathTo(el, false, overdue);
+    const tg = el.tagName.toLowerCase();
+    const tries = [];
+    if (el.id) tries.push('#' + CSS.escape(el.id));
     const name = el.getAttribute('name');
-    if (name) { const s = el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']'; if (alone(s)) return s; }
+    if (name) tries.push(tg + '[name=' + JSON.stringify(name) + ']');
     const aria = el.getAttribute('aria-label');
-    if (aria && aria.length < 80) {
-      const s = el.tagName.toLowerCase() + '[aria-label=' + JSON.stringify(aria) + ']';
-      if (alone(s)) return s;
-    }
+    if (aria && aria.length < 80) tries.push(tg + '[aria-label=' + JSON.stringify(aria) + ']');
+    if (extra) for (const s of extra(el)) tries.push(s);
     for (const attr of ['data-testid', 'data-asin']) {
       const v = el.getAttribute(attr);
-      if (v && v.length < 60) { const s = el.tagName.toLowerCase() + '[' + attr + '=' + JSON.stringify(v) + ']'; if (alone(s)) return s; }
+      if (v && v.length < 60) tries.push(tg + '[' + attr + '=' + JSON.stringify(v) + ']');
     }
-    return pathTo(el, true);
+    for (const s of tries) if (__alone(s, el)) return s;
+    return __pathTo(el, true, overdue);
   }
-  // The path of positions: two segments, then more until it matches this element alone or reaches a unique id. The
-  // document is asked for paths of two to eight segments, while the scan's time budget lasts (/code-review on #1011:
-  // a query per level and result); past that, the path climbs on to <body>, unique by construction, asking only
-  // whether an ancestor's id is unique (win2 on #1011: pages built of alike blocks matched twice at eight levels).
-  function pathTo(el, ask) {
+  function __pathTo(el, ask, overdue) {
     let node = el; let path = '';
     for (let depth = 0; node.parentElement; depth++) {
       const p = node.parentElement;
       const idx = Array.from(p.children).indexOf(node) + 1;
       const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
       path = path ? seg + ' > ' + path : seg;
-      if (p.id && alone('#' + CSS.escape(p.id))) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
+      if (p.id && __alone('#' + CSS.escape(p.id), p)) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
       node = p;
-      if (ask && depth >= 1 && alone(path)) break;
-      if (depth >= 7 || nowFn() > deadline) ask = false;
+      if (ask && depth >= 1 && __alone(path, el)) return path;
+      if (depth >= 7 || overdue()) ask = false;
     }
-    return path || el.tagName.toLowerCase();
+    // Climbed to the top: the path is anchored to the root, so it is unique in fact. A step under <body> alone was
+    // not: a widget a script appends to <html>, outside <body>, matched the same path as one inside (/code-review on
+    // #1012).
+    return path && node === document.documentElement ? ':root > ' + path : path || el.tagName.toLowerCase();
   }
+
+  function bestSelector(el) { return __uniqueSelector(el, () => nowFn() > deadline); }
   function classify(el) {
     const tag = el.tagName.toLowerCase();
     if (tag === 'a') return 'link';

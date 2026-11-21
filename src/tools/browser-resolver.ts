@@ -18,6 +18,7 @@
 import { randomUUID } from "node:crypto";
 import { AX_MARK_ATTR, clearAxMarks, evaluateInTab, getPageZoom, markAxMatches, resolveTabId, viewportOriginJs } from "../engine/cdp-bridge.js";
 import { ELEMENT_NAME_JS } from "./_element-name-js.js";
+import { UNIQUE_SELECTOR_JS } from "./_unique-selector-js.js";
 
 export interface CandidateCollectionArgs {
   by: "text" | "regex" | "role" | "ariaLabel" | "selector";
@@ -139,44 +140,10 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs & { axAlone?: boo
     return rect.top < window.innerHeight && rect.bottom > 0 &&
            rect.left < window.innerWidth && rect.right > 0;
   }
-  // A selector that matches this element alone in the document: a returned selector is passed to browser_click, so
-  // one matching two elements would press the first (win2 on #1011: Select2's span:nth-child(1) > span:nth-child(1)).
-  function alone(sel) { try { return document.querySelectorAll(sel).length === 1; } catch (e) { return false; } }
-  function bestSelector(el) {
-    // Past the scan's time budget nothing is asked: the path below climbs to <body>, unique by construction.
-    if (nowFn() > deadline) return pathTo(el, false);
-    if (el.id && alone('#' + CSS.escape(el.id))) return '#' + CSS.escape(el.id);
-    const name = el.getAttribute('name');
-    if (name) { const s = el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']'; if (alone(s)) return s; }
-    const aria = el.getAttribute('aria-label');
-    if (aria && aria.length < 80) {
-      const s = el.tagName.toLowerCase() + '[aria-label=' + JSON.stringify(aria) + ']';
-      if (alone(s)) return s;
-    }
-    for (const attr of ['data-testid', 'data-asin']) {
-      const v = el.getAttribute(attr);
-      if (v && v.length < 60) { const s = el.tagName.toLowerCase() + '[' + attr + '=' + JSON.stringify(v) + ']'; if (alone(s)) return s; }
-    }
-    return pathTo(el, true);
-  }
-  // The path of positions: two segments, then more until it matches this element alone or reaches a unique id. The
-  // document is asked for paths of two to eight segments, while the scan's time budget lasts (/code-review on #1011:
-  // a query per level and result); past that, the path climbs on to <body>, unique by construction, asking only
-  // whether an ancestor's id is unique (win2 on #1011: pages built of alike blocks matched twice at eight levels).
-  function pathTo(el, ask) {
-    let node = el; let path = '';
-    for (let depth = 0; node.parentElement; depth++) {
-      const p = node.parentElement;
-      const idx = Array.from(p.children).indexOf(node) + 1;
-      const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
-      path = path ? seg + ' > ' + path : seg;
-      if (p.id && alone('#' + CSS.escape(p.id))) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
-      node = p;
-      if (ask && depth >= 1 && alone(path)) break;
-      if (depth >= 7 || nowFn() > deadline) ask = false;
-    }
-    return path || el.tagName.toLowerCase();
-  }
+  // A selector that matches this element alone in the document, past the scan's time budget too: the one definition
+  // browser_overview shares (internal #420).
+${UNIQUE_SELECTOR_JS}
+  function bestSelector(el) { return __uniqueSelector(el, () => nowFn() > deadline); }
   function classify(el) {
     const tag = el.tagName.toLowerCase();
     if (tag === 'a') return 'link';
