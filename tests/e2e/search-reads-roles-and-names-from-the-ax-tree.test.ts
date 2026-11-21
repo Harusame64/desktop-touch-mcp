@@ -225,3 +225,16 @@ describe.skipIf(!CHROME)("browser_search by:'role' and by:'ariaLabel' read the a
     expect(sels(await search({ by: "text", pattern: "Accept terms" }))).toEqual(["body:nth-child(2) > label:nth-child(2)"]);
   });
 });
+
+describe.skipIf(!CHROME)("browser_search by:'text' and by:'regex' match what the page draws as text (internal #420)", () => {
+  it("does not list a script's, a style's or the title's text, even with visibleOnly:false (win2 on #1011: Amazon)", async () => {
+    await page(`<p id="shown">priceBlock 12</p><div hidden id="later">priceBlock 13</div>`);
+    await evaluateInTab(`(function(){document.title='priceBlock title';var s=document.createElement('script');s.type='application/json';s.textContent='{"priceBlock":1}';document.body.appendChild(s);var c=document.createElement('style');c.textContent='.priceBlock{color:red}';document.body.appendChild(c);var n=document.createElement('noscript');n.textContent='priceBlock';document.body.appendChild(n);return true})()`, null, PORT);
+    for (const by of ["text", "regex"] as const) {
+      const all = await search({ by, pattern: "priceBlock", visibleOnly: false });
+      expect(sels(all)).toEqual(["#later", "#shown"]);
+      expect(sels(await search({ by, pattern: "priceBlock" }))).toEqual(["#shown"]);
+    }
+  });
+});
+

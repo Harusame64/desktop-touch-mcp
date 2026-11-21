@@ -189,6 +189,10 @@ ${ELEMENT_NAME_JS}
 
   const all = root.querySelectorAll('*');
   let candidates = [];
+  // Text the page never draws as text: a script's or a style's source, a noscript's markup while scripts run, a
+  // template's, and what <head> holds (the title). The text axes do not match it, visible or not (win2 on #1011:
+  // by:'text' with visibleOnly:false listed Amazon's <script> JSON).
+  function notDrawnText(el) { return !!el.closest('head, script, style, noscript, template'); }
 
   if (axMark !== null) {
     // internal #420 — by:'role' / by:'ariaLabel' from the browser's accessibility tree, marked before this gather.
@@ -217,6 +221,7 @@ ${ELEMENT_NAME_JS}
     let i = 0;
     for (const el of all) {
       if (overBudget(i++)) { aborted = true; break; }
+      if (notDrawnText(el)) continue;
       // Direct child text only (avoid double-counting parent matches via descendants)
       const direct = Array.from(el.childNodes)
         .filter(n => n.nodeType === 3)
@@ -236,6 +241,7 @@ ${ELEMENT_NAME_JS}
     let i = 0;
     for (const el of all) {
       if (overBudget(i++)) { aborted = true; break; }
+      if (notDrawnText(el)) continue;
       const direct = Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent || '').join('').trim();
       if (!direct) continue;
       if (re.test(direct) && !__isMasked(el)) record(el, 0.9, 'regex');
