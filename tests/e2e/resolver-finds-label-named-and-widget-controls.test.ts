@@ -164,4 +164,10 @@ describe.skipIf(!CHROME)("the by-axis resolver finds what a person sees and name
     const o = await resolveBrowserActionTarget({ by: "text", pattern: "Email", action: "fill", port: PORT, tabId: null });
     expect(o.kind === "resolved" ? o.matched.tag : o.kind).not.toBe("label");
   });
+
+  it("reads a name from aria-labelledby ids split by a newline (and ids holding an 's')", async () => {
+    await page(`<span id="first">Ship</span><span id="last">status</span><input type="checkbox" id="ss" aria-labelledby="first
+      last" style="position:absolute;left:100px;top:100px">`);
+    expect(await tagOf(await resolve({ by: "ariaLabel", pattern: "Ship status" }))).toBe("input#ss");
+  });
 });

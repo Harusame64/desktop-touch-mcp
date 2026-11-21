@@ -115,7 +115,7 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
     const by = el.getAttribute('aria-labelledby');
     if (by) {
       const parts = [];
-      for (const id of by.trim().split(/\s+/)) { const n = id && document.getElementById(id); if (n) parts.push(__textWithoutFields(n)); }
+      for (const id of by.trim().split(/\\s+/)) { const n = id && document.getElementById(id); if (n) parts.push(__textWithoutFields(n)); }
       const t = parts.filter(Boolean).join(' ');
       if (t) return t;
     }
