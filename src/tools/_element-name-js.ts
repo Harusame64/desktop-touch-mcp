@@ -45,7 +45,47 @@
  *
  * The helpers are prefixed `__` because they share an IIFE with each script's own functions.
  */
+/**
+ * Text the page never draws: a script's or a style's source, a noscript's content while scripts run, a template's,
+ * what <head> holds (the title), noembed and noframes. browser_search's text axes leave it out (#1015), and an
+ * element's text never carries it (internal #420: a container matched by its own words reported a script's source).
+ * Each element is judged by its own reason for drawing nothing, not by its tag or its layout box (/code-review on
+ * #1015, four rounds: a box goes missing for a hidden ancestor and for display:contents too):
+ * - an SVG element (script, style, or a noscript parsed into an <svg>) is never drawn: the SVG renderer has no place
+ *   for it, and its display computes inline;
+ * - a noscript, by whether scripts run in this document, read at most once per script and only when a noscript is
+ *   reached, from the scripting media feature, which writes nothing to the page (an innerHTML probe broke under
+ *   Trusted Types). It follows CDP's setScriptExecutionDisabled and Chrome's JavaScript site setting (measured: mac,
+ *   and win2 on #1015, where a Report-Only Trusted Types policy received no report from a search). A browser that
+ *   knows the feature matches exactly one of its three values; a Chromium before 120 matches none of them (codex on
+ *   #1015: 104-119 keep an unknown feature's text rather than reading "not all"), and there a fragment parse answers,
+ *   on the same flag;
+ * - the rest, by a computed display of none: a style a page shows with CSS is drawn.
+ */
+export const DRAWS_NOTHING_JS = `
+  const __NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
+  let __scriptsRun = null;
+  function __drawsNothing(a) {
+    if (a.namespaceURI === 'http://www.w3.org/2000/svg') return true;
+    if (a.localName === 'noscript') {
+      if (__scriptsRun === null) {
+        try {
+          const none = matchMedia('(scripting: none)').matches;
+          const on = matchMedia('(scripting: enabled)').matches || matchMedia('(scripting: initial-only)').matches;
+          if (none || on) __scriptsRun = !none;
+          else { const d = document.createElement('div'); d.innerHTML = '<noscript><i></i></noscript>'; __scriptsRun = !d.querySelector('i'); }
+        } catch (e) { __scriptsRun = true; }
+      }
+      return __scriptsRun;
+    }
+    return getComputedStyle(a).display === 'none';
+  }
+  // A child whose text the page never draws: skipped by every walker that collects an element's words.
+  function __skipsText(c) { return c.matches(__NOT_TEXT) && __drawsNothing(c); }
+`;
+
 export const ELEMENT_NAME_JS = `
+${DRAWS_NOTHING_JS}
   function __isMasked(el) {
     if (el.tagName === 'INPUT') {
       const t = (el.type || '').toLowerCase();
@@ -76,7 +116,7 @@ export const ELEMENT_NAME_JS = `
       for (const c of n.childNodes) {
         if (out.length > 400) return;
         if (c.nodeType === 3) out += c.nodeValue;
-        else if (c.nodeType === 1 && !__isEntry(c) && !__isMasked(c)) walk(c);
+        else if (c.nodeType === 1 && !__isEntry(c) && !__isMasked(c) && !__skipsText(c)) walk(c);
       }
     })(node);
     return out.trim().replace(/\\s+/g, ' ');

@@ -209,6 +209,11 @@ describe.skipIf(!CHROME)("desktop_discover's browser lane lists the controls the
     expect(await reach(await list())).toEqual([["In body", 1, "In body"], ["On html", 1, "On html"]]);
   });
 
+  it("labels a control by the words it draws, not a script inside it (internal #420, after #1015)", async () => {
+    await page(`<button id="buy">Buy<script>window.track=1</script><style>.z{}</style> now</button>`);
+    expect((await list()).find((r) => r.selector === "#buy")?.label).toBe("Buy now");
+  });
+
   it("does not list a div slider it could not press", async () => {
     await page(`<div role="slider" id="vol" aria-label="Volume" tabindex="0" aria-valuenow="5" style="width:100px;height:10px;background:#ccc"></div>`);
     expect((await list()).find((r) => r.selector === "#vol")).toBeUndefined();

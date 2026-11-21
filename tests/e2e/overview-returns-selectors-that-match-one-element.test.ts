@@ -118,6 +118,11 @@ describe.skipIf(!CHROME)("browser_overview returns selectors that match one elem
     }
   });
 
+  it("lists an element's text without a script inside it (internal #420, after #1015)", async () => {
+    await page(`<button id="buy">Buy<script>window.track=1</script> now</button>`);
+    expect((await overview()).find((i) => i.selector === "#buy")?.text).toBe("Buy now");
+  });
+
   it("names 200 alike buttons in a list with selectors that match one each", async () => {
     await page(`<ul>${Array.from({ length: 200 }, (_, i) => `<li><span><button data-testid="row">Row ${i}</button></span></li>`).join("")}</ul>`);
     const items = await overview();

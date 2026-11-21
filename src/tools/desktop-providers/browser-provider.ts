@@ -159,7 +159,7 @@ ${ELEMENT_NAME_JS}
     for (const c of n.childNodes) {
       if (out.length > 400) break;
       if (c.nodeType === 3) out += c.nodeValue;
-      else if (c.nodeType === 1) out += textUnmasked(c);
+      else if (c.nodeType === 1 && !__skipsText(c)) out += textUnmasked(c);
     }
     return out.trim();
   }
