@@ -14,6 +14,7 @@ import type { TargetSpec } from "../../engine/world-graph/session-registry.js";
 import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.js";
 import { probeLane } from "../../engine/aim-probe.js";
 import { ELEMENT_NAME_JS } from "../_element-name-js.js";
+import { UNIQUE_SELECTOR_JS } from "../_unique-selector-js.js";
 import { randomUUID } from "node:crypto";
 
 /** The attribute markAxMatches marks with (cdp-bridge's AX_MARK_ATTR; cdp-bridge is loaded lazily here). */
@@ -97,31 +98,12 @@ export function interactiveScript(axNonce: string | null): string {
     const r = el.getBoundingClientRect();
     return r.width>0 && r.height>0;
   }
-  // A selector is kept only when it names this one element: a radio group shares its name, and a press on
-  // input[name=size] went to its first radio (/code-review on #1009).
-  function alone(sel) { try { return document.querySelectorAll(sel).length===1; } catch(e) { return false; } }
-  function bestSel(el) {
-    if (el.id && alone('#'+CSS.escape(el.id))) return '#'+CSS.escape(el.id);
-    const tg=el.tagName.toLowerCase();
-    const n=el.getAttribute('name'); if(n && alone(tg+'[name='+JSON.stringify(n)+']')) return tg+'[name='+JSON.stringify(n)+']';
-    const al=el.getAttribute('aria-label'); if(al&&al.length<80 && alone(tg+'[aria-label='+JSON.stringify(al)+']')) return tg+'[aria-label='+JSON.stringify(al)+']';
-    const dt=el.getAttribute('data-testid'); if(dt&&dt.length<60 && alone(tg+'[data-testid='+JSON.stringify(dt)+']')) return tg+'[data-testid='+JSON.stringify(dt)+']';
-    // A path of :nth-child steps up to an ancestor with an id, as far as it takes to name this one element: one
-    // step alone named the first such element of the page (Choices' unnamed div, internal #420 PR-C2b).
-    let node=el, path='', sel='';
-    for(let d=0; d<8 && node && node.parentElement; d++) {
-      const p=node.parentElement, idx=Array.from(p.children).indexOf(node)+1;
-      path=node.tagName.toLowerCase()+':nth-child('+idx+')'+(path?' > '+path:'');
-      // An ancestor id is used only when it is the page's one element with that id.
-      const pid=p.id && alone('#'+CSS.escape(p.id)) ? '#'+CSS.escape(p.id)+' > ' : '';
-      sel=pid+path;
-      if(alone(sel)) return sel;
-      if(pid) break;
-      node=p;
-    }
-    // Nothing named it alone: the most specific path read, not a shorter one known to match more.
-    return sel||tg;
-  }
+  // A selector that matches this element alone, the one definition browser_search and browser_overview share. This
+  // copy had kept a selector whose one match was another element, and returned a path of eight levels it knew
+  // matched more than one (internal #420, after #1012).
+${UNIQUE_SELECTOR_JS}
+  const selDeadline = performance.now() + 3000;
+  function bestSel(el) { return __uniqueSelector(el, () => performance.now() > selDeadline); }
   function elType(el) {
     const tag=el.tagName.toLowerCase(), role=el.getAttribute('role'), ax=axRole(el);
     if(role==='switch'||role==='checkbox'||role==='radio') return 'toggle['+role+']';
@@ -253,9 +235,8 @@ export async function fetchBrowserCandidates(
       // A field with no name keeps its place under its type and selector. It used to borrow its
       // value for a name, which is how a password became a label. The selector is part of the label
       // because a CDP candidate has no rect: two unnamed password fields labelled by type alone
-      // resolved to one entity, and the second could not be reached (2ゲート目 on #623). This keeps
-      // two fields apart only as far as `bestSel` does: its one-level `:nth-child` fallback can
-      // repeat, and then the locator itself cannot reach the second field either — as before.
+      // resolved to one entity, and the second could not be reached (2ゲート目 on #623). `bestSel`
+      // gives each field a selector that matches it alone, so two fields stay apart.
       // A checkbox or radio with no name (a table's row-select box) keeps its place the same way (/code-review on #1009).
       .filter((el) => el.text || el.href || isField(el.type) || el.type.startsWith("toggle["))
       .map((el): UiEntityCandidate => ({
