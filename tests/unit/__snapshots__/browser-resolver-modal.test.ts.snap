@@ -491,25 +491,32 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     return rect.top < window.innerHeight && rect.bottom > 0 &&
            rect.left < window.innerWidth && rect.right > 0;
   }
+  // A selector that matches this element alone in the document: a returned selector is passed to browser_click, so
+  // one matching two elements would press the first (win2 on #1011: Select2's span:nth-child(1) > span:nth-child(1)).
+  function alone(sel) { try { return document.querySelectorAll(sel).length === 1; } catch (e) { return false; } }
   function bestSelector(el) {
-    if (el.id) return '#' + CSS.escape(el.id);
+    if (el.id && alone('#' + CSS.escape(el.id))) return '#' + CSS.escape(el.id);
     const name = el.getAttribute('name');
-    if (name) return el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']';
+    if (name) { const s = el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']'; if (alone(s)) return s; }
     const aria = el.getAttribute('aria-label');
-    if (aria && aria.length < 80)
-      return el.tagName.toLowerCase() + '[aria-label=' + JSON.stringify(aria) + ']';
+    if (aria && aria.length < 80) {
+      const s = el.tagName.toLowerCase() + '[aria-label=' + JSON.stringify(aria) + ']';
+      if (alone(s)) return s;
+    }
     for (const attr of ['data-testid', 'data-asin']) {
       const v = el.getAttribute(attr);
-      if (v && v.length < 60) return el.tagName.toLowerCase() + '[' + attr + '=' + JSON.stringify(v) + ']';
+      if (v && v.length < 60) { const s = el.tagName.toLowerCase() + '[' + attr + '=' + JSON.stringify(v) + ']'; if (alone(s)) return s; }
     }
+    // The path of positions: two levels, then more until it matches this element alone or reaches an id.
     let node = el; let path = '';
-    for (let depth = 0; depth < 2 && node.parentElement; depth++) {
+    for (let depth = 0; node.parentElement; depth++) {
       const p = node.parentElement;
       const idx = Array.from(p.children).indexOf(node) + 1;
       const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
       path = path ? seg + ' > ' + path : seg;
-      if (p.id) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
+      if (p.id && alone('#' + CSS.escape(p.id))) { path = '#' + CSS.escape(p.id) + ' > ' + path; break; }
       node = p;
+      if (depth >= 1 && alone(path)) break;
     }
     return path || el.tagName.toLowerCase();
   }

@@ -671,7 +671,7 @@ const AX_TEXT_ROLES = new Set(["StaticText", "InlineTextBox", "LineBreak", "Root
  * or spinbuttons.
  */
 export async function markAxMatches(
-  opts: { by: "role" | "ariaLabel" | "controls"; pattern: string; caseSensitive: boolean; nonce: string; scope?: string; cap?: number },
+  opts: { by: "role" | "ariaLabel" | "controls"; pattern: string; caseSensitive: boolean; nonce: string; scope?: string; cap?: number; onFound?: (n: number) => void },
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT,
 ): Promise<number | null> {
@@ -736,6 +736,7 @@ export async function markAxMatches(
       scored.push(...exact, ...partial);
     }
     scored.sort((a, b) => b.score - a.score);
+    opts.onFound?.(scored.length);
     // desktop_discover's list takes its first 60 in document order, so a control early in the page must not be
     // crowded out of a score-sorted 200 by ones later; a by-axis question keeps its best 200, unless the caller asks
     // for more (browser_search pages through up to 1000).

@@ -61,6 +61,19 @@ describe.skipIf(!CHROME)("browser_search by:'role' and by:'ariaLabel' read the a
     expect(sels(await search({ by: "ariaLabel", pattern: "Fruit" }))).toEqual(["#s2"]);
   });
 
+  it("returns a selector that matches the element alone: Select2 with no ids, a repeated id (win2 on #1011)", async () => {
+    await page(`<div><label for="fr">Fruit</label><select id="fr" class="sr" tabindex="-1" aria-hidden="true"><option>Apple</option></select><span class="select2"><span class="select2-selection" role="combobox" tabindex="0" aria-haspopup="true" aria-labelledby="r1"><span id="r1" role="textbox" aria-readonly="true">Apple</span></span></span></div>
+      <span><span id="dup" role="button" tabindex="0">One</span></span><span><span id="dup" role="button" tabindex="0">Two</span></span>`);
+    const one = async (sel: string) => (await evaluateInTab(`document.querySelectorAll(${JSON.stringify(sel)}).length`, null, PORT)) as number;
+    const w = await search({ by: "ariaLabel", pattern: "Fruit" });
+    expect(w.total).toBe(1);
+    expect(await one(w.results![0].selector)).toBe(1);
+    expect(await evaluateInTab(`document.querySelector(${JSON.stringify(w.results![0].selector)}).className`, null, PORT)).toBe("select2-selection");
+    const d = await search({ by: "role", pattern: "button" });
+    expect(d.total).toBe(2);
+    for (const h of d.results!) expect(await one(h.selector)).toBe(1);
+  });
+
   it("finds a name given by aria-labelledby, which the attribute reading never saw", async () => {
     await page(`<span id="lb">Close dialog</span><div role="button" id="x" tabindex="0" aria-labelledby="lb">×</div>`);
     const b = await search({ by: "ariaLabel", pattern: "Close dialog" });
@@ -124,6 +137,20 @@ describe.skipIf(!CHROME)("browser_search by:'role' and by:'ariaLabel' read the a
     await page(Array.from({ length: 300 }, (_, i) => `<input type="checkbox" id="c${i}">`).join(""));
     const b = await search({ by: "role", pattern: "checkbox", maxResults: 50, offset: 250 });
     expect([b.total, b.returned]).toEqual([300, 50]);
+    expect(await marks()).toBe(0);
+  });
+
+  it("counts all 300 on the first page too, when the tree found more than it first marked (win2 on #1011)", async () => {
+    await page(Array.from({ length: 300 }, (_, i) => `<input type="checkbox" id="c${i}">`).join(""));
+    const b = await search({ by: "role", pattern: "checkbox" });
+    expect([b.total, b.returned, b.truncated]).toEqual([300, 50, true]);
+    expect(await marks()).toBe(0);
+  });
+
+  it("says more may exist past the tree's 1000 (truncated), and leaves no marks", async () => {
+    await page(Array.from({ length: 1100 }, (_, i) => `<input type="checkbox" id="c${i}">`).join(""));
+    const b = await search({ by: "role", pattern: "checkbox", maxResults: 50, offset: 950 });
+    expect([b.total, b.returned, b.truncated]).toEqual([1000, 50, true]);
     expect(await marks()).toBe(0);
   });
 
