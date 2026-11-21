@@ -189,18 +189,24 @@ ${ELEMENT_NAME_JS}
 
   const all = root.querySelectorAll('*');
   let candidates = [];
-  // Text the page never draws: a script's or a style's source, a noscript's markup while scripts run, a template's,
+  // Text the page never draws: a script's or a style's source, a noscript's content while scripts run, a template's,
   // what <head> holds (the title), noembed and noframes. The text axes leave it out, visibleOnly or not (win2 on #1011:
-  // by:'text' with visibleOnly:false listed Amazon's <script> JSON). Judged by the element's own reason for drawing
-  // nothing, not by its tag (/code-review on #1015: a style a page shows with CSS is drawn, and so is a noscript while
-  // scripts are blocked), and not by whether a hidden ancestor hides it too: that text is hidden, which visibleOnly
-  // decides. A noscript's computed display is inline even while Chrome lays out nothing for it, so it is judged by
-  // boxes: none of its own or its children's while its parent has one. A search scoped into one of them (scope:'head')
-  // is answered as asked.
+  // by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is hidden text, which
+  // visibleOnly decides. Each element is judged by its own reason for drawing nothing, not by boxes (/code-review on
+  // #1015, three rounds: a box goes missing for a hidden ancestor and for display:contents too):
+  // - a noscript, by whether scripts run in this document: fragment parsing follows the document's scripting flag, so
+  //   a noscript parsed into a detached div holds raw text while scripts run and elements while they are blocked;
+  // - an SVG script or style is never drawn: the SVG renderer has no place for it, and its display computes inline;
+  // - the rest, by a computed display of none: a style a page shows with CSS is drawn.
+  // A search scoped into one of them (scope:'head') is answered as asked.
   const NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
-  function boxed(n) { return !!n && n.getClientRects().length > 0; }
+  const scriptsRun = (function() {
+    try { const d = document.createElement('div'); d.innerHTML = '<noscript><i></i></noscript>'; return !d.querySelector('i'); }
+    catch (e) { return true; }
+  })();
   function drawsNothing(a) {
-    if (a.tagName === 'NOSCRIPT') return !boxed(a) && !Array.from(a.children).some(boxed) && boxed(a.parentElement);
+    if (a.localName === 'noscript') return scriptsRun;
+    if (a.namespaceURI === 'http://www.w3.org/2000/svg') return true;
     return getComputedStyle(a).display === 'none';
   }
   function notDrawnText(el) {

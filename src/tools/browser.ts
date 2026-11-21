@@ -302,7 +302,7 @@ export const browserLaunchSchema = {
 
 export const browserSearchSchema = {
   by: z.enum(["text", "regex", "role", "ariaLabel", "selector"])
-    .describe("Search axis: text/regex/role/ariaLabel/selector. text/regex match text the page draws, not a script's or style's source, a noscript's while scripts run, or <head>'s, unless scope is <head> with visibleOnly:false."),
+    .describe("Search axis: text/regex/role/ariaLabel/selector. text/regex leave out a script's or style's source, a noscript's content while scripts run, a template's and <head>'s (scope:'head' with visibleOnly:false reaches the title); hidden text follows visibleOnly."),
   pattern: z.string().min(1).describe("Pattern to match against the chosen axis."),
   scope: z.string().optional().describe("CSS selector to limit the search scope."),
   maxResults: z.coerce.number().int().min(1).max(200).default(50).describe("Max results returned (default 50)."),

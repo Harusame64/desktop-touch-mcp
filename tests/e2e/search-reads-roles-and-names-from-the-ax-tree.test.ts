@@ -281,6 +281,14 @@ describe.skipIf(!CHROME)("browser_search by:'text' and by:'regex' match what the
     expect((await search({ by: "text", pattern: "Enable scripts", visibleOnly: false })).code).toBe("BrowserSearchNoResults");
   });
 
+  it("leaves out a noscript's markup under a hidden parent, an SVG style's CSS, while scripts run (/code-review on #1015)", async () => {
+    await page(`<div hidden><noscript><img src="x.png" alt="Sign in"></noscript></div><svg width="10" height="10"><style>.cls-1{fill:red}</style><rect class="cls-1" width="10" height="10"/></svg><p id="real">Sign in fill</p>`);
+    for (const by of ["text", "regex"] as const) {
+      expect(sels(await search({ by, pattern: "Sign in", visibleOnly: false }))).toEqual(["#real"]);
+      expect(sels(await search({ by, pattern: "fill", visibleOnly: false }))).toEqual(["#real"]);
+    }
+  });
+
   it("answers a search scoped into <head> as asked (/code-review on #1015)", async () => {
     await page(`<p>other</p>`);
     await evaluateInTab(`(function(){document.title='Checkout page';return true})()`, null, PORT);
