@@ -256,7 +256,7 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
   });
 
   it("fills a search field by its name with role textbox, as before (its attribute reading still counts)", async () => {
-    await page(`<input type="search" id="sf" aria-label="Search" style="position:absolute;left:100px;top:100px">`);
+    await page(`<input type="search" id="sf" aria-label="Search" style="position:absolute;left:100px;top:100px"><input type="text" id="sh" aria-label="Search history" style="position:absolute;left:100px;top:160px">`);
     const { browserFillInputHandler } = await import("../../src/tools/browser.js");
     const r = await browserFillInputHandler({ by: "ariaLabel", pattern: "Search", role: "textbox", value: "cats", port: PORT } as never);
     expect((r.content[0] as { text: string }).text).toContain('"ok":true');
@@ -269,7 +269,7 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(what(await resolve({ by: "ariaLabel", pattern: "Close" }))).toBe("button#cl");
   });
 
-  it("marks nothing inside a same-origin frame (the gather reads the top document; nothing would clear it)", async () => {
+  it("marks nothing inside a same-origin frame (the gather reads the top document; nothing would clear it) — the tree does not reach it today", async () => {
     await page(`<iframe id="fr" srcdoc="<button>Accept</button>" style="position:absolute;left:100px;top:100px;width:300px;height:100px"></iframe>`);
     await sleep(300);
     expect((await resolve({ by: "ariaLabel", pattern: "Accept" })).kind).not.toBe("resolved");

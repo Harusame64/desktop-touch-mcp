@@ -726,8 +726,9 @@ export async function markAxMatches(
           returnByValue: true,
           arguments: [{ value: `${opts.nonce}:${m.score}:${m.control ? "c" : ""}:${m.role}` }, { value: m.role }],
           functionDeclaration: `function(v, role) {
-            // Not in a shadow root or a frame: the gather reads the top document only, and only there are marks
-            // cleared (/code-review on #1008).
+            // Not in a shadow root, and not in a frame: the gather reads the top document only, and only there are
+            // marks cleared. queryAXTree did not walk into a same-origin frame when measured (Chrome 157); the frame
+            // test stays for one that does (/code-review on #1008).
             if (this.nodeType !== 1 || this.getRootNode() !== document || window !== window.top) return 0;
             if (role === 'listbox' && this.tagName === 'SELECT') return 0;
             this.setAttribute('${AX_MARK_ATTR}', v);
