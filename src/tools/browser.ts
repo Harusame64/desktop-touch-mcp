@@ -29,6 +29,7 @@ import {
   getDomHtml,
   disconnectAll,
   getTabContext,
+  clearAxMarks,
   isOffscreenMinimized,
   getTabWindowBounds,
   getBrowserProcessId,
@@ -1539,11 +1540,16 @@ async function handleBrowserFillByAxis(args: {
   // setter. No second querySelector / coordinate re-find (avoids re-non-uniqueness
   // / occlusion).
   const actExpr = buildFillActJs(
-    { by, pattern, role, scope, caseSensitive: caseSensitive ?? false },
+    { by, pattern, role, scope, caseSensitive: caseSensitive ?? false, ...(outcome.axMark !== undefined && { axMark: outcome.axMark }) },
     outcome.index, outcome.climbDepth, value, outcome.matched,
   );
-  const actResult = await evaluateInTab(actExpr, tabId ?? null, port) as
-    { ok: boolean; error?: string; detail?: string; tag?: string; actual?: string; actualWithheld?: boolean; fullActualLen?: number; fullMatches?: boolean };
+  let actResult: { ok: boolean; error?: string; detail?: string; tag?: string; actual?: string; actualWithheld?: boolean; fullActualLen?: number; fullMatches?: boolean };
+  try {
+    actResult = await evaluateInTab(actExpr, tabId ?? null, port) as typeof actResult;
+  } finally {
+    // internal #420 — the accessibility tree's marks the resolve left for this second read.
+    if (outcome.axMark !== undefined) await clearAxMarks(tabId ?? null, port);
+  }
 
   if (!actResult.ok) {
     if (actResult.error === "not_fillable") {
@@ -2192,7 +2198,16 @@ function browserModalBlockingFailure(
  * from the same gather eval, ADR §1.2 D1). Ambiguous / non-actionable / error
  * stop with a typed failure. Selector mode stays on the bit-equal path.
  */
-async function handleBrowserClickByAxis(args: {
+async function handleBrowserClickByAxis(args: Parameters<typeof clickByAxis>[0]): Promise<ToolResult> {
+  try {
+    return await clickByAxis(args);
+  } finally {
+    // internal #420 — whatever way the click ends, no accessibility-tree mark stays in the page.
+    if (args.by === "role" || args.by === "ariaLabel") await clearAxMarks(args.tabId ?? null, args.port);
+  }
+}
+
+async function clickByAxis(args: {
   by: "text" | "regex" | "role" | "ariaLabel";
   pattern: string;
   role?: string;
@@ -2273,7 +2288,11 @@ async function handleBrowserClickByAxis(args: {
       const cy = loose.rect.y + loose.rect.h / 2;
       const vw = loose.viewport.innerWidth;
       const vh = loose.viewport.innerHeight;
-      if (cx >= 0 && cy >= 0 && cx < vw && cy < vh) {
+      // A form control of 2px or less is hidden from people (an sr-only checkbox, often parked at -1,-1): wherever
+      // it sits, it is pressed through its label or the widget drawn in its place, which the landing read finds
+      // (internal #420, #1006 X2a).
+      const hidden = (loose.rect.w <= 2 || loose.rect.h <= 2) && /^(input|select|textarea)$/.test(loose.matched.tag);
+      if (hidden || (cx >= 0 && cy >= 0 && cx < vw && cy < vh)) {
         target = loose;
         covered = true;
       }
@@ -2306,6 +2325,7 @@ async function handleBrowserClickByAxis(args: {
   // would clamp to (0,0). Stop before the OS click so we never trip the failsafe
   // (the resolve gather above is a pure CDP eval — no click happened yet).
   if (isOffscreenMinimized(target.viewport.screenX, target.viewport.screenY)) {
+    if (target.axMark !== undefined) await clearAxMarks(target.tabId ?? tabId ?? null, port);
     return browserMinimizedFailure(ctx, await minimizedBrowserFrame(port));
   }
 
@@ -2316,9 +2336,11 @@ async function handleBrowserClickByAxis(args: {
   const nonce = randomUUID();
   const tagSel = `[${PRESS_TAG_ATTR}="${nonce}"]`;
   const tagged = ((await evaluateInTab(
-    buildTagResolvedJs({ by, pattern, role, scope, caseSensitive: caseSensitive ?? false }, target.index, target.climbDepth, target.matched, nonce),
+    buildTagResolvedJs({ by, pattern, role, scope, caseSensitive: caseSensitive ?? false, ...(target.axMark !== undefined && { axMark: target.axMark }) }, target.index, target.climbDepth, target.matched, nonce),
     tab, port,
   ).catch(() => null)) as { ok?: boolean } | null)?.ok === true;
+  // internal #420 — the accessibility tree's marks are read for the last time just above.
+  if (target.axMark !== undefined) await clearAxMarks(tab, port);
   const label = `The element found by ${by}:${JSON.stringify(pattern)}`;
   let clicked: Awaited<ReturnType<typeof osClickAndVerify>>;
   let pressedAt: "element" | "host" | "label" | "skin" | "replacement" = "element";

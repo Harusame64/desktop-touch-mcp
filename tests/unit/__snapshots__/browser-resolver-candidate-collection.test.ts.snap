@@ -13,10 +13,21 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
   const viewportOnly = false;
   const maxN = 20;
   const offN = 0;
+  const axMark = null;
 
+  // internal #420 — the element the accessibility tree matched, and its score and whether its role is a control.
+  function axOf(el) {
+    if (axMark === null) return null;
+    const v = (el.getAttribute('data-dtm-ax') || '').split(':');
+    return v[0] === axMark ? { score: parseFloat(v[1]) || 0.7, control: v[2] === 'c' } : null;
+  }
   function isVisible(el) {
     const s = window.getComputedStyle(el);
-    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+    if (s.display === 'none' || s.visibility === 'hidden') return false;
+    // A control the tree exposes is there for a person, though the page draws it another way (iCheck's opacity: 0
+    // input under its skin, an sr-only checkbox beside its label): the landing read finds where to press it.
+    if (axOf(el)) return true;
+    if (s.opacity === '0') return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   }
@@ -162,7 +173,14 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
   const all = root.querySelectorAll('*');
   let candidates = [];
 
-  if (by === 'selector') {
+  if (axMark !== null) {
+    // internal #420 — by:'role' / by:'ariaLabel' from the browser's accessibility tree, marked before this gather.
+    const marked = root.querySelectorAll('[data-dtm-ax]');
+    for (let i = 0; i < marked.length; i++) {
+      const ax = axOf(marked[i]);
+      if (ax) record(marked[i], ax.score, by);
+    }
+  } else if (by === 'selector') {
     const selectorMatches = Array.from(root.querySelectorAll(pat));
     for (let i = 0; i < selectorMatches.length; i++) {
       if (overBudget(i)) { aborted = true; break; }
@@ -278,10 +296,21 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   const viewportOnly = false;
   const maxN = 200;
   const offN = 0;
+  const axMark = null;
 
+  // internal #420 — the element the accessibility tree matched, and its score and whether its role is a control.
+  function axOf(el) {
+    if (axMark === null) return null;
+    const v = (el.getAttribute('data-dtm-ax') || '').split(':');
+    return v[0] === axMark ? { score: parseFloat(v[1]) || 0.7, control: v[2] === 'c' } : null;
+  }
   function isVisible(el) {
     const s = window.getComputedStyle(el);
-    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+    if (s.display === 'none' || s.visibility === 'hidden') return false;
+    // A control the tree exposes is there for a person, though the page draws it another way (iCheck's opacity: 0
+    // input under its skin, an sr-only checkbox beside its label): the landing read finds where to press it.
+    if (axOf(el)) return true;
+    if (s.opacity === '0') return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   }
@@ -427,7 +456,14 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   const all = root.querySelectorAll('*');
   let candidates = [];
 
-  if (by === 'selector') {
+  if (axMark !== null) {
+    // internal #420 — by:'role' / by:'ariaLabel' from the browser's accessibility tree, marked before this gather.
+    const marked = root.querySelectorAll('[data-dtm-ax]');
+    for (let i = 0; i < marked.length; i++) {
+      const ax = axOf(marked[i]);
+      if (ax) record(marked[i], ax.score, by);
+    }
+  } else if (by === 'selector') {
     const selectorMatches = Array.from(root.querySelectorAll(pat));
     for (let i = 0; i < selectorMatches.length; i++) {
       if (overBudget(i)) { aborted = true; break; }
@@ -567,7 +603,9 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   function actNode(el) {
     const cs2 = window.getComputedStyle(el);
     const r = el.getBoundingClientRect();
-    const vis = cs2.display !== 'none' && cs2.visibility !== 'hidden' && cs2.opacity !== '0' && r.width > 0 && r.height > 0;
+    // The candidate filter's reading (internal #420: an element the accessibility tree matched is seen though the
+    // page draws it another way).
+    const vis = isVisible(el);
     // :disabled is ancestor-aware — a control inside <fieldset disabled> has
     // el.disabled === false but is functionally disabled (Codex Round 2 P2).
     let disabled;
@@ -589,6 +627,8 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
       hasHref: el.tagName === 'A' && el.hasAttribute('href'),
       tabindex: ti,
       hasOnclick: el.hasAttribute('onclick'),
+      // internal #420 — the accessibility tree matched this element with a control role: pressable as it is.
+      axControl: !!(axOf(el) && axOf(el).control),
       cursorPointer: cs2.cursor === 'pointer',
       visible: vis,
       enabled: enabled,
@@ -700,10 +740,21 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   const viewportOnly = false;
   const maxN = 200;
   const offN = 0;
+  const axMark = null;
 
+  // internal #420 — the element the accessibility tree matched, and its score and whether its role is a control.
+  function axOf(el) {
+    if (axMark === null) return null;
+    const v = (el.getAttribute('data-dtm-ax') || '').split(':');
+    return v[0] === axMark ? { score: parseFloat(v[1]) || 0.7, control: v[2] === 'c' } : null;
+  }
   function isVisible(el) {
     const s = window.getComputedStyle(el);
-    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+    if (s.display === 'none' || s.visibility === 'hidden') return false;
+    // A control the tree exposes is there for a person, though the page draws it another way (iCheck's opacity: 0
+    // input under its skin, an sr-only checkbox beside its label): the landing read finds where to press it.
+    if (axOf(el)) return true;
+    if (s.opacity === '0') return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   }
@@ -849,7 +900,14 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   const all = root.querySelectorAll('*');
   let candidates = [];
 
-  if (by === 'selector') {
+  if (axMark !== null) {
+    // internal #420 — by:'role' / by:'ariaLabel' from the browser's accessibility tree, marked before this gather.
+    const marked = root.querySelectorAll('[data-dtm-ax]');
+    for (let i = 0; i < marked.length; i++) {
+      const ax = axOf(marked[i]);
+      if (ax) record(marked[i], ax.score, by);
+    }
+  } else if (by === 'selector') {
     const selectorMatches = Array.from(root.querySelectorAll(pat));
     for (let i = 0; i < selectorMatches.length; i++) {
       if (overBudget(i)) { aborted = true; break; }
