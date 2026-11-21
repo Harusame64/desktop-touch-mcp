@@ -29,6 +29,7 @@ import {
   getDomHtml,
   disconnectAll,
   getTabContext,
+  clearAxMarks,
   isOffscreenMinimized,
   getTabWindowBounds,
   getBrowserProcessId,
@@ -144,7 +145,8 @@ const byAxisParam = z
   .optional()
   .describe(
     "Semantic axis to target by INSTEAD of a CSS selector: 'text' (visible text), 'regex', " +
-    "'role' (ARIA/implicit role), 'ariaLabel'. Pair with `pattern`. The server resolves to a " +
+    "'role' (the role the browser computes: a search field is 'searchbox', a select 'combobox'), " +
+    "'ariaLabel' (the accessible name: aria-label, aria-labelledby or the control's <label>). Pair with `pattern`. The server resolves to a " +
     "SINGLE actionable element — climbing to a clickable ancestor up to 3 levels — and STOPS " +
     "with a candidate list (code:'BrowserAmbiguousTarget') if the match is ambiguous; it never guesses."
   );
@@ -1305,11 +1307,14 @@ async function readPressLandingAt(
  */
 async function screenPointForLanding(
   selector: string,
-  landing: { x: number; y: number },
+  landing: { x: number; y: number; how?: string },
   tabId: string | null,
   port: number,
 ): Promise<{ x: number; y: number; aim: PageAim | undefined; rect: { x: number; y: number; w: number; h: number } | undefined }> {
-  const at = await getElementScreenCoords(selector, tabId, port);
+  // A zero-size element pressed through its label, the control in its place or its skin has its point (a 0x0 radio: win2 on
+  // #1008, W11); only the viewport's place on the screen is read from it. Any other element that is zero-size now
+  // collapsed after the read, and stops as before (/code-review on #1008).
+  const at = await getElementScreenCoords(selector, tabId, port, { allowZeroSize: landing.how === "own_label" || landing.how === "replacement" || landing.how === "skin" });
   const dpr = Number(await evaluateInTab("window.devicePixelRatio || 1", tabId, port)) || 1;
   const vp = at.viewport;
   if (vp === undefined) return { x: at.x, y: at.y, aim: undefined, rect: undefined };
@@ -1539,11 +1544,16 @@ async function handleBrowserFillByAxis(args: {
   // setter. No second querySelector / coordinate re-find (avoids re-non-uniqueness
   // / occlusion).
   const actExpr = buildFillActJs(
-    { by, pattern, role, scope, caseSensitive: caseSensitive ?? false },
+    { by, pattern, role, scope, caseSensitive: caseSensitive ?? false, ...(outcome.axMark !== undefined && { axMark: outcome.axMark }) },
     outcome.index, outcome.climbDepth, value, outcome.matched,
   );
-  const actResult = await evaluateInTab(actExpr, tabId ?? null, port) as
-    { ok: boolean; error?: string; detail?: string; tag?: string; actual?: string; actualWithheld?: boolean; fullActualLen?: number; fullMatches?: boolean };
+  let actResult: { ok: boolean; error?: string; detail?: string; tag?: string; actual?: string; actualWithheld?: boolean; fullActualLen?: number; fullMatches?: boolean };
+  try {
+    actResult = await evaluateInTab(actExpr, outcome.tabId ?? tabId ?? null, port) as typeof actResult;
+  } finally {
+    // internal #420 — the accessibility tree's marks the resolve left for this second read, in the tab it read.
+    if (outcome.axMark !== undefined) await clearAxMarks(outcome.axMark, outcome.tabId ?? tabId ?? null, port);
+  }
 
   if (!actResult.ok) {
     if (actResult.error === "not_fillable") {
@@ -2192,7 +2202,19 @@ function browserModalBlockingFailure(
  * from the same gather eval, ADR §1.2 D1). Ambiguous / non-actionable / error
  * stop with a typed failure. Selector mode stays on the bit-equal path.
  */
-async function handleBrowserClickByAxis(args: {
+async function handleBrowserClickByAxis(args: Omit<Parameters<typeof clickByAxis>[0], "pendingMarks">): Promise<ToolResult> {
+  // internal #420 — the accessibility-tree marks a resolve left and nothing cleared yet; whatever way the click ends,
+  // those are cleared (only those: a page call after a press that opened an alert would wait behind it).
+  const pendingMarks = new Map<string, string | null>();
+  try {
+    return await clickByAxis({ ...args, pendingMarks });
+  } finally {
+    for (const [nonce, tab] of pendingMarks) await clearAxMarks(nonce, tab, args.port);
+  }
+}
+
+async function clickByAxis(args: {
+  pendingMarks: Map<string, string | null>;
   by: "text" | "regex" | "role" | "ariaLabel";
   pattern: string;
   role?: string;
@@ -2256,6 +2278,7 @@ async function handleBrowserClickByAxis(args: {
   const outcome = await resolveBrowserActionTarget({
     by, pattern, role, scope, caseSensitive, action: "click", tabId: tabId ?? null, port,
   });
+  if (outcome.kind === "resolved" && outcome.axMark !== undefined) args.pendingMarks.set(outcome.axMark, outcome.tabId ?? tabId ?? null);
   const ctx = { by, pattern, ...(role ? { role } : {}), ...(scope ? { scope } : {}) };
   if (outcome.kind === "error") return browserResolveErrorToFailure(outcome, "browser_click", ctx);
   // internal #421 (PR-C) — a single match whose centre is covered in the page: resolved again without the hit-test
@@ -2264,16 +2287,35 @@ async function handleBrowserClickByAxis(args: {
   // Off-screen matches and several matches stop as before.
   let target: Extract<ResolveActionOutcome, { kind: "resolved" }> | null = outcome.kind === "resolved" ? outcome : null;
   let covered = false;
+  let looseAmbiguous: Extract<ResolveActionOutcome, { kind: "ambiguous" }> | null = null;
   if (outcome.kind === "noActionable") {
     const loose = await resolveBrowserActionTarget({
       by, pattern, role, scope, caseSensitive, action: "click", requireReceivesEvents: false, tabId: tabId ?? null, port,
     });
+    if (loose.kind === "resolved" && loose.axMark !== undefined) args.pendingMarks.set(loose.axMark, loose.tabId ?? tabId ?? null);
+    // Several matches a person could each press (0x0 radios pressed through their labels) are a choice to make,
+    // not "none actionable" (win2 on #1008, W11a). Only matches the single road would take count: on the screen, or a
+    // control of 2px or less; matches off the screen stop as before (/code-review on #1008).
+    if (loose.kind === "ambiguous") {
+      const vp = (await evaluateInTab("[innerWidth, innerHeight]", tabId ?? null, port).catch(() => null)) as [number, number] | null;
+      const pressable = vp === null ? 0 : loose.candidates.filter((c) => {
+        if (!c.actionability.visible || !c.actionability.enabled) return false;
+        const cx = c.rect.x + c.rect.w / 2;
+        const cy = c.rect.y + c.rect.h / 2;
+        return c.rect.w <= 2 || c.rect.h <= 2 || (cx >= 0 && cy >= 0 && cx < vp[0] && cy < vp[1]);
+      }).length;
+      if (pressable >= 2) looseAmbiguous = loose;
+    }
     if (loose.kind === "resolved") {
       const cx = loose.rect.x + loose.rect.w / 2;
       const cy = loose.rect.y + loose.rect.h / 2;
       const vw = loose.viewport.innerWidth;
       const vh = loose.viewport.innerHeight;
-      if (cx >= 0 && cy >= 0 && cx < vw && cy < vh) {
+      // A form control of 2px or less is hidden from people (an sr-only checkbox, often parked at -1,-1): wherever
+      // it sits, it is pressed through its label or the widget drawn in its place, which the landing read finds
+      // (internal #420, #1006 X2a).
+      const hidden = (loose.rect.w <= 2 || loose.rect.h <= 2) && /^(input|select|textarea)$/.test(loose.matched.tag);
+      if (hidden || (cx >= 0 && cy >= 0 && cx < vw && cy < vh)) {
         target = loose;
         covered = true;
       }
@@ -2299,7 +2341,7 @@ async function handleBrowserClickByAxis(args: {
       if (!covered) return browserModalBlockingFailure(verdict.blocker, verdict.signals, ctx);
     }
   }
-  if (target === null) return browserResolveStopToFailure(outcome as Exclude<ResolveActionOutcome, { kind: "resolved" | "error" }>, "browser_click", ctx);
+  if (target === null) return browserResolveStopToFailure(looseAmbiguous ?? (outcome as Exclude<ResolveActionOutcome, { kind: "resolved" | "error" }>), "browser_click", ctx);
 
   // Minimized-window guard: the gather eval's viewport origin is the Windows
   // -32000 parking marker → the physical point is a large negative point the OS
@@ -2316,9 +2358,14 @@ async function handleBrowserClickByAxis(args: {
   const nonce = randomUUID();
   const tagSel = `[${PRESS_TAG_ATTR}="${nonce}"]`;
   const tagged = ((await evaluateInTab(
-    buildTagResolvedJs({ by, pattern, role, scope, caseSensitive: caseSensitive ?? false }, target.index, target.climbDepth, target.matched, nonce),
+    buildTagResolvedJs({ by, pattern, role, scope, caseSensitive: caseSensitive ?? false, ...(target.axMark !== undefined && { axMark: target.axMark }) }, target.index, target.climbDepth, target.matched, nonce),
     tab, port,
   ).catch(() => null)) as { ok?: boolean } | null)?.ok === true;
+  // internal #420 — the accessibility tree's marks are read for the last time just above.
+  if (target.axMark !== undefined) {
+    await clearAxMarks(target.axMark, tab, port);
+    args.pendingMarks.delete(target.axMark);
+  }
   const label = `The element found by ${by}:${JSON.stringify(pattern)}`;
   let clicked: Awaited<ReturnType<typeof osClickAndVerify>>;
   let pressedAt: "element" | "host" | "label" | "skin" | "replacement" = "element";

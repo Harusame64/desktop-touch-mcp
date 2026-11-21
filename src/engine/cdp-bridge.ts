@@ -626,6 +626,136 @@ export async function inspectHitAtPoint(
   }
 }
 
+/** internal #420 — the attribute the by-axis resolver marks the accessibility tree's matches with. */
+export const AX_MARK_ATTR = "data-dtm-ax";
+
+/** Roles a person acts on: an accessibility-tree match with one of these is pressable as it is, with no climb. */
+const AX_CONTROL_ROLES = new Set([
+  "button", "link", "checkbox", "radio", "switch", "combobox", "option", "textbox", "searchbox", "spinbutton",
+  "slider", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "treeitem",
+]);
+
+/**
+ * A role the tree gives that a person presses as it is. A listbox is a list of options, pressed on an option, except
+ * one that says it opens a popup: Choices' select (role listbox, aria-haspopup) is pressed to open it (win2 on #1008).
+ */
+function axIsControl(role: string, n: { properties?: Array<{ name?: string; value?: { value?: unknown } }> }): boolean {
+  if (AX_CONTROL_ROLES.has(role)) return true;
+  if (role !== "listbox") return false;
+  const p = (n.properties ?? []).find((q) => q.name === "hasPopup");
+  const v = p?.value?.value;
+  return v !== undefined && v !== null && v !== false && v !== "false";
+}
+
+/** Marks never made: text runs of a name, not elements a person acts on. */
+const AX_TEXT_ROLES = new Set(["StaticText", "InlineTextBox", "LineBreak", "RootWebArea", "none"]);
+
+/**
+ * internal #420 — the by-axis resolver's role and name questions answered by the browser's own accessibility tree
+ * (spike on internal #420: real Select2, Choices and iCheck, sr-only and opacity: 0 inputs, aria-labelledby, input
+ * types and explicit roles all come out right; 0.1-0.4 s on a 12,500-element page).
+ *
+ * The tree under the page, or under `scope` when given, is asked: by:'role' for that role; by:'ariaLabel' for every
+ * node, matched on its accessible name — equal names (0.95) and names containing the pattern (0.7). Each match
+ * that is an element of the top document (not in a shadow root or a frame, which the page-side gather cannot see),
+ * not ignored and not a text run, is marked `data-dtm-ax="<nonce>:<score>:<c when a control>:<role>"`,
+ * the best 200 first, so the page-side gather takes them as its candidates. A native multi-row select (role
+ * listbox) is left out: a press on it picks the option under the centre. Answers how many were marked, or null when
+ * the tree (or the scope) could not be read; with none marked, the caller keeps the DOM reading.
+ */
+export async function markAxMatches(
+  opts: { by: "role" | "ariaLabel"; pattern: string; caseSensitive: boolean; nonce: string; scope?: string },
+  tabId: string | null = null,
+  port = DEFAULT_CDP_PORT,
+): Promise<number | null> {
+  const group = "dtm-ax-mark";
+  let session: CdpSession | null = null;
+  try {
+    const tab = await resolveTab(tabId, port);
+    session = await openSession(tab, port);
+    const s = session;
+    type AxNode = {
+      ignored?: boolean; role?: { value?: string }; name?: { value?: string }; backendDOMNodeId?: number;
+      properties?: Array<{ name?: string; value?: { value?: unknown } }>;
+    };
+    // The root (or the scope) by an object id, so no DOM domain is enabled on the shared session (/code-review on
+    // #1008), as inspectHitAtPoint does.
+    const rootObj = (await s.send("Runtime.evaluate", {
+      expression: opts.scope ? `document.querySelector(${JSON.stringify(opts.scope)})` : "document",
+      returnByValue: false,
+      objectGroup: group,
+    })) as { result?: { objectId?: string } };
+    const from = rootObj.result?.objectId;
+    if (!from) return null;
+    const scored: Array<{ backend: number; score: number; control: boolean; role: string }> = [];
+    if (opts.by === "role") {
+      const role = opts.caseSensitive ? opts.pattern : opts.pattern.toLowerCase();
+      const nodes = ((await s.send("Accessibility.queryAXTree", { objectId: from, role })) as { nodes: AxNode[] }).nodes;
+      for (const n of nodes) {
+        const r = n.role?.value ?? "";
+        if (n.ignored || !n.backendDOMNodeId || AX_TEXT_ROLES.has(r)) continue;
+        scored.push({ backend: n.backendDOMNodeId, score: 0.85, control: axIsControl(r, n), role: r });
+      }
+    } else {
+      const nodes = ((await s.send("Accessibility.queryAXTree", { objectId: from })) as { nodes: AxNode[] }).nodes;
+      const needle = opts.caseSensitive ? opts.pattern : opts.pattern.toLowerCase();
+      const exact: typeof scored = [];
+      const partial: typeof scored = [];
+      for (const n of nodes) {
+        const r = n.role?.value ?? "";
+        const name = String(n.name?.value ?? "").trim();
+        if (n.ignored || !n.backendDOMNodeId || !name || AX_TEXT_ROLES.has(r)) continue;
+        const cmp = opts.caseSensitive ? name : name.toLowerCase();
+        const hit = { backend: n.backendDOMNodeId, control: axIsControl(r, n), role: r };
+        if (cmp === needle) exact.push({ ...hit, score: 0.95 });
+        else if (cmp.includes(needle)) partial.push({ ...hit, score: 0.7 });
+      }
+      // Both are marked, equal names first: the gather prefers a control with an equal name among the matches it can
+      // see and the role allows ("Email" is the field named Email, not also a button reading "Email me updates"), and
+      // keeps containing names beside an equal one that is hidden or not a control (/code-review on #1008).
+      scored.push(...exact, ...partial);
+    }
+    scored.sort((a, b) => b.score - a.score);
+    const marks = scored.slice(0, 200);
+    const done = await Promise.all(marks.map(async (m) => {
+      try {
+        const { object } = (await s.send("DOM.resolveNode", { backendNodeId: m.backend, objectGroup: group })) as { object: { objectId?: string } };
+        if (!object.objectId) return 0;
+        const r = (await s.send("Runtime.callFunctionOn", {
+          objectId: object.objectId,
+          returnByValue: true,
+          arguments: [{ value: `${opts.nonce}:${m.score}:${m.control ? "c" : ""}:${m.role}` }, { value: m.role }],
+          functionDeclaration: `function(v, role) {
+            // Not in a shadow root, and not in a frame: the gather reads the top document only, and only there are
+            // marks cleared. queryAXTree did not walk into a same-origin frame when measured (Chrome 157); the frame
+            // test stays for one that does (/code-review on #1008).
+            if (this.nodeType !== 1 || this.getRootNode() !== document || window !== window.top) return 0;
+            if (role === 'listbox' && this.tagName === 'SELECT') return 0;
+            this.setAttribute('${AX_MARK_ATTR}', v);
+            return 1;
+          }`,
+        })) as { result?: { value?: number } };
+        return r.result?.value === 1 ? 1 : 0;
+      } catch {
+        return 0;
+      }
+    }));
+    return done.reduce<number>((a, b) => a + b, 0);
+  } catch {
+    return null;
+  } finally {
+    try { await session?.send("Runtime.releaseObjectGroup", { objectGroup: group }); } catch { /* ignore */ }
+  }
+}
+
+/** Remove one call's accessibility-tree marks ({@link markAxMatches}); another call's marks on the tab stay. */
+export async function clearAxMarks(nonce: string, tabId: string | null = null, port = DEFAULT_CDP_PORT): Promise<void> {
+  await evaluateInTab(
+    `document.querySelectorAll('[${AX_MARK_ATTR}^=' + ${JSON.stringify(JSON.stringify(nonce + ":"))} + ']').forEach(function(n){n.removeAttribute('${AX_MARK_ATTR}')});true`,
+    tabId, port,
+  ).catch(() => null);
+}
+
 export async function dispatchMouseMoveInTab(
   x: number,
   y: number,
@@ -1003,7 +1133,8 @@ export async function getPageZoom(tabId: string | null, port = DEFAULT_CDP_PORT)
 export async function getElementScreenCoords(
   selector: string,
   tabId: string | null = null,
-  port = DEFAULT_CDP_PORT
+  port = DEFAULT_CDP_PORT,
+  opts: { allowZeroSize?: boolean } = {},
 ): Promise<ElementCoords> {
   // One tab for both reads: the zoom and the coordinates (codex on #839).
   const tab = await resolveTabId(tabId, port);
@@ -1014,7 +1145,7 @@ export async function getElementScreenCoords(
   var el = document.querySelector(sel);
   if (!el) return JSON.stringify({ error: "Element not found: " + sel });
   var rect = el.getBoundingClientRect();
-  if (rect.width === 0 && rect.height === 0) {
+  if (rect.width === 0 && rect.height === 0 && !${JSON.stringify(opts.allowZeroSize === true)}) {
     // zeroSize discriminant (issue #441): lets getElementScreenCoords throw a
     // typed ElementZeroSizeError so the click handler can route to the rescue.
     return JSON.stringify({ error: "Element has zero size (hidden or not rendered): " + sel, zeroSize: true });

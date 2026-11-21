@@ -15,7 +15,8 @@
  * Plan: desktop-touch-mcp-internal:docs/adr-023-phase-1-resolver-plan.md S1/S7.
  */
 
-import { evaluateInTab, getPageZoom, resolveTabId, viewportOriginJs } from "../engine/cdp-bridge.js";
+import { randomUUID } from "node:crypto";
+import { AX_MARK_ATTR, clearAxMarks, evaluateInTab, getPageZoom, markAxMatches, resolveTabId, viewportOriginJs } from "../engine/cdp-bridge.js";
 import { ELEMENT_NAME_JS } from "./_element-name-js.js";
 
 export interface CandidateCollectionArgs {
@@ -27,6 +28,11 @@ export interface CandidateCollectionArgs {
   visibleOnly: boolean;
   inViewportOnly: boolean;
   caseSensitive: boolean;
+  /**
+   * internal #420 — the nonce of the accessibility tree's marks (`markAxMatches`): when set, the candidates are the
+   * elements the tree matched for by:'role' / by:'ariaLabel', not a DOM reading of roles and names.
+   */
+  axMark?: string;
 }
 
 /** Args for the action-target fact gatherer (browser_click/fill by-axis, §2.bis). */
@@ -47,6 +53,8 @@ export interface ActionFactsArgs {
    * actionable target, not the matched leaf.
    */
   role?: string;
+  /** internal #420 — see `CandidateCollectionArgs.axMark` */
+  axMark?: string;
   /** The tab's page zoom (`getPageZoom`, internal #311); 1 when omitted. */
   pageZoom?: number;
   /**
@@ -76,7 +84,7 @@ export interface ActionFactsArgs {
  * `_element-name-js.ts` — and the snapshots were updated with it.
  */
 function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
-  const { by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive } = args;
+  const { by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive, axMark } = args;
   return `
 (function() {
   const root = ${scope ? `document.querySelector(${JSON.stringify(scope)})` : "document"};
@@ -89,10 +97,35 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs): string {
   const viewportOnly = ${JSON.stringify(inViewportOnly)};
   const maxN = ${JSON.stringify(maxResults + offset)};
   const offN = ${JSON.stringify(offset)};
+  const axMark = ${JSON.stringify(axMark ?? null)};
 
+  // internal #420 — the element the accessibility tree matched, and its score and whether its role is a control.
+  function axOf(el) {
+    if (axMark === null) return null;
+    const v = (el.getAttribute('${AX_MARK_ATTR}') || '').split(':');
+    return v[0] === axMark ? { score: parseFloat(v[1]) || 0.7, control: v[2] === 'c', role: v[3] || '' } : null;
+  }
   function isVisible(el) {
     const s = window.getComputedStyle(el);
-    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+    if (s.display === 'none' || s.visibility === 'hidden') return false;
+    // A checkbox, radio or select the tree exposes is one a page may draw another way: iCheck's opacity: 0 input under
+    // its skin, a select a widget replaces (Choices), a 0x0 radio whose <label> is the button (MkDocs' palette
+    // toggle). It is seen when it has a box of its own or a shown label; the landing read then finds where a person
+    // presses it (the skin, the label, the widget). Any other element at opacity 0 or with no box is hidden: a
+    // honeypot text field, collapsed radios with no label (/code-review and the deep check on #1008).
+    const ax = axOf(el);
+    if (ax && ax.control && ((el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) || el.tagName === 'SELECT')) {
+      const rb = el.getBoundingClientRect();
+      if (rb.width > 0 && rb.height > 0) return true;
+      const labs = el.labels || [];
+      for (let i = 0; i < labs.length; i++) {
+        const ls = window.getComputedStyle(labs[i]);
+        const lr = labs[i].getBoundingClientRect();
+        if (ls.display !== 'none' && ls.visibility !== 'hidden' && ls.opacity !== '0' && lr.width > 0 && lr.height > 0) return true;
+      }
+      return false;
+    }
+    if (s.opacity === '0') return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   }
@@ -165,7 +198,14 @@ ${ELEMENT_NAME_JS}
   const all = root.querySelectorAll('*');
   let candidates = [];
 
-  if (by === 'selector') {
+  if (axMark !== null) {
+    // internal #420 — by:'role' / by:'ariaLabel' from the browser's accessibility tree, marked before this gather.
+    const marked = root.querySelectorAll('[${AX_MARK_ATTR}]');
+    for (let i = 0; i < marked.length; i++) {
+      const ax = axOf(marked[i]);
+      if (ax) record(marked[i], ax.score, by);
+    }
+  } else if (by === 'selector') {
     const selectorMatches = Array.from(root.querySelectorAll(pat));
     for (let i = 0; i < selectorMatches.length; i++) {
       if (overBudget(i)) { aborted = true; break; }
@@ -315,11 +355,11 @@ export function buildCandidateCollectionJs(args: CandidateCollectionArgs): strin
  * (avoids re-non-uniqueness; plan §S5).
  */
 function candidatePoolJs(args: ActionFactsArgs): string {
-  const { by, pattern, scope, caseSensitive, role } = args;
+  const { by, pattern, scope, caseSensitive, role, axMark } = args;
   // maxResults/offset are unused by the tails (they take top-N of the full sorted
   // set); fixed values keep the shared body's interpolation total. The resolver
   // always collects visible elements and lets receivesEvents gate the viewport.
-  return `${candidateMatchingBodyJs({ by, pattern, scope, maxResults: 200, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive })}
+  return `${candidateMatchingBodyJs({ by, pattern, scope, maxResults: 200, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive, axMark })}
   // ── ADR-023 Phase 1: action-target candidate pool (top-N, role-filtered). ──
   const N = ${AMBIGUITY_CANDIDATE_CAP};
   const D = ${CLIMB_MAX_DEPTH};
@@ -328,6 +368,11 @@ function candidatePoolJs(args: ActionFactsArgs): string {
   // cap so total/candidates reflect the role-filtered pool (plan §S4 role combine).
   const roleFilter = ${role ? JSON.stringify(role.toLowerCase()) : "null"};
   function roleMatches(el) {
+    // internal #420 — an element the accessibility tree matched passes on the role the browser computed, or on the
+    // attribute reading below, as before #1008 (role:'textbox' still takes a search field, a searchbox, by its name);
+    // the computed role adds to the attribute reading, it does not narrow it (/code-review on #1008).
+    const axr = axOf(el);
+    if (axr && axr.role === roleFilter) return true;
     const explicit = (el.getAttribute('role') || '').toLowerCase();
     if (explicit === roleFilter) return true;
     const tg = el.tagName.toLowerCase();
@@ -358,7 +403,12 @@ function candidatePoolJs(args: ActionFactsArgs): string {
     }
     return false;
   }
-  const pool = roleFilter ? filtered.filter(function(e) { return roleMatchesChain(e.el); }) : filtered;
+  let pool = roleFilter ? filtered.filter(function(e) { return roleMatchesChain(e.el); }) : filtered;
+  // internal #420 — a control with an equal accessible name wins over names containing it, among the matches seen and
+  // of the role asked for. Only a control: a heading or a section named exactly so stays beside the field whose name
+  // contains it, so the field is still found (/code-review on #1008).
+  function axExactControl(e) { const a = axOf(e.el); return !!a && a.score >= 0.95 && a.control; }
+  if (axMark !== null && pool.some(axExactControl)) pool = pool.filter(axExactControl);
   const top = pool.slice(0, N);`;
 }
 
@@ -388,7 +438,9 @@ ${viewportOriginJs(args.pageZoom ?? 1)}
   function actNode(el) {
     const cs2 = window.getComputedStyle(el);
     const r = el.getBoundingClientRect();
-    const vis = cs2.display !== 'none' && cs2.visibility !== 'hidden' && cs2.opacity !== '0' && r.width > 0 && r.height > 0;
+    // The candidate filter's reading (internal #420: an element the accessibility tree matched is seen though the
+    // page draws it another way).
+    const vis = isVisible(el);
     // :disabled is ancestor-aware — a control inside <fieldset disabled> has
     // el.disabled === false but is functionally disabled (Codex Round 2 P2).
     let disabled;
@@ -410,6 +462,8 @@ ${viewportOriginJs(args.pageZoom ?? 1)}
       hasHref: el.tagName === 'A' && el.hasAttribute('href'),
       tabindex: ti,
       hasOnclick: el.hasAttribute('onclick'),
+      // internal #420 — the accessibility tree matched this element with a control role: pressable as it is.
+      axControl: !!(axOf(el) && axOf(el).control),
       cursorPointer: cs2.cursor === 'pointer',
       visible: vis,
       enabled: enabled,
@@ -687,6 +741,8 @@ export interface ClickableNode {
   tabindex: number | null;
   /** an `onclick` attribute is present */
   hasOnclick: boolean;
+  /** internal #420 — matched by the accessibility tree with a control role (absent from a DOM-read gather) */
+  axControl?: boolean;
   /** computed `cursor: pointer` */
   cursorPointer: boolean;
   /** display/visibility/opacity not hiding it AND size > 0 */
@@ -851,6 +907,8 @@ export function clickableStrength(n: ClickableNode): ClickableStrength {
   if (
     STRONG_TAGS.has(n.tag) ||
     (n.tag === "a" && n.hasHref) ||
+    // internal #420 — the browser's accessibility tree says it is a control (Select2's combobox, Choices' combobox).
+    n.axControl === true ||
     (n.role !== null && STRONG_ROLES.has(n.role))
   ) {
     return "strong";
@@ -961,7 +1019,9 @@ export function decideActionTarget(
   const distinct = new Map<string, (typeof resolved)[number]>();
   for (const r of resolved) {
     if (r.actionable && r.clickable) {
-      const key = rectKey(r.clickable.rect);
+      // A box with no area is no evidence of being the same target: 0x0 radios a page stacks at one place are three
+      // (internal #420, the deep check on #1008).
+      const key = r.clickable.rect.w === 0 || r.clickable.rect.h === 0 ? `#${r.f.index}` : rectKey(r.clickable.rect);
       if (!distinct.has(key)) distinct.set(key, r);
     }
   }
@@ -1025,6 +1085,11 @@ export type ResolveActionOutcome =
       /** 0 = matched element, 1..D = ancestor distance climbed */
       climbDepth: number;
       viewport: ViewportMetrics;
+      /**
+       * internal #420 — the accessibility tree's marks this target was found by; a second read of the same pool
+       * (the fill act, the click's mark) passes it on, and the caller clears the marks (`clearAxMarks`) after.
+       */
+      axMark?: string;
       /**
        * Identity of the MATCHED element (chain[0], i.e. top[index] before climb) +
        * the candidate-pool total. A by-axis fill re-gathers in a 2nd eval and must
@@ -1096,6 +1161,36 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
     }
   }
   const pageZoom = await getPageZoom(tab, args.port);
+  // internal #420 — by:'role' and by:'ariaLabel' are the browser's accessibility tree's answers, marked in the page
+  // for the gather below. A tree that cannot be read leaves the DOM reading, as before.
+  let axMark: string | undefined;
+  if (args.by === "role" || args.by === "ariaLabel") {
+    const nonce = randomUUID().slice(0, 8);
+    const marked = await markAxMatches({ by: args.by, pattern: args.pattern, caseSensitive: args.caseSensitive ?? false, nonce, ...(args.scope && { scope: args.scope }) }, tab, args.port);
+    // None marked, or none left after the gather's filters: the DOM reading answers, as before (an explicit role the
+    // browser computes as generic, a control under a misused aria-hidden): the tree adds what it finds, it does not
+    // take away what was found.
+    if (marked !== null && marked > 0) axMark = nonce;
+  }
+  let outcome = await gatherAndDecide(args, tab, pageZoom, axMark);
+  // Every mark filtered out (hidden, of another role): the DOM reading answers, as with none marked (/code-review on
+  // #1008: a close button under a misused aria-hidden beside a hidden element the tree names Close).
+  if (axMark !== undefined && outcome.kind === "noActionable" && outcome.total === 0) {
+    await clearAxMarks(axMark, tab, args.port);
+    axMark = undefined;
+    outcome = await gatherAndDecide(args, tab, pageZoom, undefined);
+  }
+  // The marks stay for a resolved target's second read (the fill act, the click's mark): its caller clears them.
+  if (axMark !== undefined && outcome.kind !== "resolved") await clearAxMarks(axMark, tab, args.port);
+  return outcome;
+}
+
+async function gatherAndDecide(
+  args: ResolveActionArgs,
+  tab: string | null,
+  pageZoom: number,
+  axMark: string | undefined,
+): Promise<ResolveActionOutcome> {
   const expr = buildActionCandidateFactsJs({
     pageZoom,
     by: args.by,
@@ -1103,6 +1198,7 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
     scope: args.scope,
     caseSensitive: args.caseSensitive ?? false,
     role: args.role,
+    ...(axMark !== undefined && { axMark }),
     // ADR-023 Phase 2b: only the click path needs the modal-blocking preflight;
     // fill leaves it off so its gather stays bit-equal with the Phase 1 snapshot.
     includeModal: args.action === "click",
@@ -1145,6 +1241,7 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
       ...(tab !== null && { tabId: tab }),
       climbDepth: decision.target.climbDepth,
       viewport: gathered.viewport,
+      ...(axMark !== undefined && { axMark }),
       matched: {
         name: f?.name ?? "",
         role: f?.role ?? null,
