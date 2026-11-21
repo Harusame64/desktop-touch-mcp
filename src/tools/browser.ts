@@ -30,6 +30,7 @@ import {
   disconnectAll,
   getTabContext,
   clearAxMarks,
+  markAxMatches,
   isOffscreenMinimized,
   getTabWindowBounds,
   getBrowserProcessId,
@@ -3734,10 +3735,32 @@ export const browserSearchHandler = async ({
     // tests/unit/browser-resolver-candidate-collection.test.ts). Later phases
     // layer actionability / climb / coords onto the same builder for by-axis
     // browser_click / browser_fill.
-    const expression = buildCandidateCollectionJs({
-      by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive,
-    });
-    const result = await evaluateInTab(expression, tabId ?? null, port);
+    // internal #420 — by:'role' and by:'ariaLabel' read the browser's accessibility tree, as browser_click does, so
+    // a search and a click on the same words find the same elements. None marked, or none left after the filters:
+    // the DOM reading answers, as before.
+    let tab: string | null = tabId ?? null;
+    let axMark: string | undefined;
+    if (by === "role" || by === "ariaLabel") {
+      try { tab = tab ?? await resolveTabId(null, port); } catch { /* the gather reports it */ }
+      const nonce = randomUUID().slice(0, 8);
+      const marked = await markAxMatches({ by, pattern, caseSensitive, nonce, cap: 1000, ...(scope && { scope }) }, tab, port);
+      if (marked !== null && marked > 0) axMark = nonce;
+    }
+    let result: unknown;
+    try {
+      result = await evaluateInTab(buildCandidateCollectionJs({
+        by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive, ...(axMark && { axMark }),
+      }), tab, port);
+      if (axMark !== undefined && result && typeof result === "object" && (result as { total?: number }).total === 0) {
+        await clearAxMarks(axMark, tab, port);
+        axMark = undefined;
+        result = await evaluateInTab(buildCandidateCollectionJs({
+          by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive,
+        }), tab, port);
+      }
+    } finally {
+      if (axMark !== undefined) await clearAxMarks(axMark, tab, port);
+    }
     if (result && typeof result === "object" && "__error" in (result as object)) {
       const r = result as { __error: string; message?: string };
       const code = r.__error === "ScopeNotFound" ? "ScopeNotFound"
@@ -3773,7 +3796,7 @@ export const browserSearchHandler = async ({
         },
       );
     }
-    const tabCtx = await getTabContext(tabId ?? null, port);
+    const tabCtx = await getTabContext(tab, port);
     return ok({ ...payload, activeTab: { id: tabCtx.id, title: tabCtx.title, url: tabCtx.url }, readyState: tabCtx.readyState });
   } catch (err) {
     return failWith(err, "browser_search", { by, pattern, scope });

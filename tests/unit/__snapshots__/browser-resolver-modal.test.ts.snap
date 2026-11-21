@@ -635,6 +635,11 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
       const ax = axOf(marked[i]);
       if (ax) record(marked[i], ax.score, by);
     }
+  }
+  // The tree leaves out what is hidden, which visibleOnly:false asks for too (browser_search): the DOM reading adds
+  // it, and an element both found keeps the higher score.
+  if (axMark !== null && visibleOnly) {
+    // the tree's answer alone
   } else if (by === 'selector') {
     const selectorMatches = Array.from(root.querySelectorAll(pat));
     for (let i = 0; i < selectorMatches.length; i++) {

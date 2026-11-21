@@ -199,6 +199,11 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
       const ax = axOf(marked[i]);
       if (ax) record(marked[i], ax.score, by);
     }
+  }
+  // The tree leaves out what is hidden, which visibleOnly:false asks for too (browser_search): the DOM reading adds
+  // it, and an element both found keeps the higher score.
+  if (axMark !== null && visibleOnly) {
+    // the tree's answer alone
   } else if (by === 'selector') {
     const selectorMatches = Array.from(root.querySelectorAll(pat));
     for (let i = 0; i < selectorMatches.length; i++) {
@@ -289,7 +294,8 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
     type: classify(el),
     text: elText(el),
     selector: bestSelector(el),
-    role: el.getAttribute('role') || undefined,
+    // internal #420 — the role the browser computed, for an element the tree matched with no role attribute.
+    role: el.getAttribute('role') || (axOf(el) || {}).role || undefined,
     ariaLabel: el.getAttribute('aria-label') || undefined,
     matchedBy: matchedByMap.get(el),
     confidence: score(matchScore.get(el) || 0, visible),
@@ -501,6 +507,11 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
       const ax = axOf(marked[i]);
       if (ax) record(marked[i], ax.score, by);
     }
+  }
+  // The tree leaves out what is hidden, which visibleOnly:false asks for too (browser_search): the DOM reading adds
+  // it, and an element both found keeps the higher score.
+  if (axMark !== null && visibleOnly) {
+    // the tree's answer alone
   } else if (by === 'selector') {
     const selectorMatches = Array.from(root.querySelectorAll(pat));
     for (let i = 0; i < selectorMatches.length; i++) {
@@ -974,6 +985,11 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
       const ax = axOf(marked[i]);
       if (ax) record(marked[i], ax.score, by);
     }
+  }
+  // The tree leaves out what is hidden, which visibleOnly:false asks for too (browser_search): the DOM reading adds
+  // it, and an element both found keeps the higher score.
+  if (axMark !== null && visibleOnly) {
+    // the tree's answer alone
   } else if (by === 'selector') {
     const selectorMatches = Array.from(root.querySelectorAll(pat));
     for (let i = 0; i < selectorMatches.length; i++) {
