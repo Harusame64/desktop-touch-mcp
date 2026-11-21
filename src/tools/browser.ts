@@ -3750,7 +3750,7 @@ export const browserSearchHandler = async ({
     if (by === "role" || by === "ariaLabel") {
       try { tab = tab ?? await resolveTabId(null, port); } catch { /* the gather reports it */ }
       const nonce = randomUUID().slice(0, 8);
-      const marked = await markAxMatches({ by, pattern, caseSensitive, nonce, cap: AX_SEARCH_CAP, onFound: (n, all) => { axFound = n; axTriedAll = all; }, ...(scope && { scope }) }, tab, port);
+      const marked = await markAxMatches({ by, pattern, caseSensitive, nonce, cap: AX_SEARCH_CAP, keepNativeListbox: true, onFound: (n, all) => { axFound = n; axTriedAll = all; }, ...(scope && { scope }) }, tab, port);
       if (marked !== null && marked > 0) axMark = nonce;
     }
     let result: unknown;

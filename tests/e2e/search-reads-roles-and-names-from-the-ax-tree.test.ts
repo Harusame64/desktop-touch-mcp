@@ -213,6 +213,13 @@ describe.skipIf(!CHROME)("browser_search by:'role' and by:'ariaLabel' read the a
     expect((await search({ by: "ariaLabel", pattern: "Chapter one" })).results?.find((h) => h.selector === "#ch")?.role).toBe("doc-chapter");
   });
 
+  it("lists a native multi-row select by role listbox and by its label's name; a click still leaves it out (codex on #1011)", async () => {
+    await page(`<label for="ms">Toppings</label><select id="ms" multiple><option>Cheese</option><option>Ham</option></select>`);
+    expect(sels(await search({ by: "role", pattern: "listbox" }))).toEqual(["#ms"]);
+    expect(sels(await search({ by: "ariaLabel", pattern: "Toppings" }))).toEqual(["#ms"]);
+    expect(await marks()).toBe(0);
+  });
+
   it("leaves by:'text' on DOM text (control)", async () => {
     await page(SR);
     expect(sels(await search({ by: "text", pattern: "Accept terms" }))).toEqual(["body:nth-child(2) > label:nth-child(2)"]);

@@ -671,7 +671,9 @@ const AX_TEXT_ROLES = new Set(["StaticText", "InlineTextBox", "LineBreak", "Root
  * or spinbuttons.
  */
 export async function markAxMatches(
-  opts: { by: "role" | "ariaLabel" | "controls"; pattern: string; caseSensitive: boolean; nonce: string; scope?: string; cap?: number; onFound?: (found: number, triedAll: boolean) => void },
+  opts: { by: "role" | "ariaLabel" | "controls"; pattern: string; caseSensitive: boolean; nonce: string; scope?: string; cap?: number; onFound?: (found: number, triedAll: boolean) => void;
+    /** browser_search lists a native multi-row select (role listbox); an action leaves it out (a press picks an option). */
+    keepNativeListbox?: boolean },
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT,
 ): Promise<number | null> {
@@ -747,13 +749,13 @@ export async function markAxMatches(
         const r = (await s.send("Runtime.callFunctionOn", {
           objectId: object.objectId,
           returnByValue: true,
-          arguments: [{ value: `${opts.nonce}:${m.score}:${m.control ? "c" : ""}:${m.role}` }, { value: m.role }],
-          functionDeclaration: `function(v, role) {
+          arguments: [{ value: `${opts.nonce}:${m.score}:${m.control ? "c" : ""}:${m.role}` }, { value: m.role }, { value: opts.keepNativeListbox === true }],
+          functionDeclaration: `function(v, role, keepNativeListbox) {
             // Not in a shadow root, and not in a frame: the gather reads the top document only, and only there are
             // marks cleared. queryAXTree did not walk into a same-origin frame when measured (Chrome 157); the frame
             // test stays for one that does (/code-review on #1008).
             if (this.nodeType !== 1 || this.getRootNode() !== document || window !== window.top) return 0;
-            if (role === 'listbox' && this.tagName === 'SELECT') return 0;
+            if (role === 'listbox' && this.tagName === 'SELECT' && !keepNativeListbox) return 0;
             // One token per call, beside other calls' tokens: a discover and a click on the same tab do not overwrite
             // each other's marks (/code-review on #1009).
             var mine = v.split(':')[0] + ':';
