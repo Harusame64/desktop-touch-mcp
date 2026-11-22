@@ -333,13 +333,15 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     // Listed with receivesEvents:false although a press on its label reaches it, as browser_click presses it.
     await page(`<input type="radio" name="c" id="z0" style="width:0;height:0;margin:0;padding:0;border:0;appearance:none"><label for="z0" style="display:inline-block;padding:6px 12px;margin:40px 4px">Zero</label>
       <input type="radio" name="c" id="p1" style="margin:20px"><label for="p1">Plain</label>
-      <div style="position:relative;display:inline-block;margin:20px"><input type="radio" name="c" id="cv" aria-label="Covered"><div style="position:absolute;inset:-4px;background:#fff"></div></div>`);
+      <div style="position:relative;display:inline-block;margin:20px"><input type="radio" name="c" id="cv" aria-label="Covered"><div style="position:absolute;inset:-4px;background:#fff"></div></div>
+      <div style="position:relative;display:inline-block;margin:20px"><input type="radio" name="c" id="zc" style="width:0;height:0;margin:0;padding:0;border:0;appearance:none"><label for="zc" style="display:inline-block;padding:6px 12px">Label covered</label><div style="position:absolute;inset:0;background:#fff"></div></div>`);
     // As browser_click asks first (no occlusion gate), so no press is made here.
     const o = await resolve({ by: "role", pattern: "radio" }, false);
     expect(o.kind).toBe("ambiguous");
     const cands = o.kind === "ambiguous" ? o.candidates : [];
     const got = Object.fromEntries(cands.map((c) => [c.name, c.actionability.receivesEvents]));
-    expect(got).toEqual({ Zero: true, Plain: true, Covered: false });
+    // A label under a cover is not a way in: the press lands on the cover.
+    expect(got).toEqual({ Zero: true, Plain: true, Covered: false, "Label covered": false });
     expect(await marks()).toBe(0);
   });
 
