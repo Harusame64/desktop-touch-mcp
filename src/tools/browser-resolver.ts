@@ -989,6 +989,7 @@ export const AMBIGUITY_NEXT_HINTS: readonly string[] = [
   "Narrow the search with a scope (CSS selector or landmark container).",
   "Add distinguishing words from nearestLabels to the pattern.",
   "Combine with role to filter (e.g. role:'button').",
+  "A candidate's name is the name a person reads (its accessible name); match it exactly with by:'ariaLabel'.",
 ];
 
 export const NO_ACTIONABLE_NEXT_HINTS: readonly string[] = [

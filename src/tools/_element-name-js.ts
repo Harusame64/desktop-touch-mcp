@@ -182,7 +182,7 @@ ${DRAWS_NOTHING_JS}
     if (__isEntry(el) || __isMasked(el)) return __fieldName(el);
     const lb = (el.getAttribute('aria-labelledby') || '').trim();
     if (lb) {
-      const t = lb.split(/\s+/).map(function(id) {
+      const t = lb.split(/\\s+/).map(function(id) {
         const n = document.getElementById(id);
         return n ? __textWithoutFields(n) : '';
       }).filter(Boolean).join(' ');
@@ -190,12 +190,13 @@ ${DRAWS_NOTHING_JS}
     }
     const aria = (el.getAttribute('aria-label') || '').trim();
     if (aria) return aria.slice(0, 80);
+    // The role as written: Chrome's tree does not read role="Combobox" as a combobox either (measured on #1017).
     if (/^(combobox|listbox)$/.test(el.getAttribute('role') || '')) {
+      // The select's own name, by the same rule as any field's: aria-labelledby, aria-label, then its <label>
+      // (/code-review on #1017: a select named by aria-label lent nothing).
       const inner = __standsFor(el);
-      if (inner && inner.labels && inner.labels.length) {
-        const t = Array.from(inner.labels).map(function(l) { return __textWithoutFields(l); }).filter(Boolean).join(' ');
-        if (t) return t.slice(0, 80);
-      }
+      const t = inner ? __fieldName(inner) : '';
+      if (t) return t;
     }
     return __elText(el);
   }

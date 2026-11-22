@@ -783,7 +783,7 @@ export async function markAxMatches(
     if (opts.by === "ariaLabel") {
       // The tree leaves out a select a widget hides (Select2, Choices), so its <label> names nothing a person can
       // press; the widget drawn for it is marked under that name (win2 on #1008, W12). Which widget stands for which
-      // select is read as desktop_discover reads it (browser-provider.ts, standsFor). A failure here keeps the tree's
+      // select is read close to how desktop_discover reads it (__standsFor in _element-name-js.ts; this copy also asks that the select be hidden). A failure here keeps the tree's
       // marks, which the caller clears (/code-review on #1010).
       try {
         const r = (await s.send("Runtime.evaluate", {

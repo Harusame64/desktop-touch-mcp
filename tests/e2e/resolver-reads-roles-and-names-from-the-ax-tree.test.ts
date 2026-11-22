@@ -314,11 +314,18 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     // Listed by their text, both read "X" (seen on main): the names a person hears are "Close dialog" and "Close panel".
     await page(`<button aria-label="Close dialog" style="margin:40px">X</button><button aria-label="Close panel">X</button>`);
     expect(await cand({ by: "role", pattern: "button" })).toEqual(["Close dialog", "Close panel"]);
+    // A name from aria-labelledby, by ids holding an "s" and listing two: the ids are split on whitespace.
+    await page(`<span id="ss-a">Save</span><span id="ss-b">settings</span><button aria-labelledby="ss-a ss-b" style="margin:40px">S</button><span id="sx">Send</span><button aria-labelledby="sx">S</button>`);
+    expect(await cand({ by: "role", pattern: "button" })).toEqual(["Save settings", "Send"]);
     // Two Select2 widgets found through the labels their hidden selects lend: listed with an empty name before.
     const s2 = (id: string, label: string, top: number) => `<label for="${id}" style="position:absolute;left:100px;top:${top}px">${label}</label><select id="${id}" class="sr" tabindex="-1" aria-hidden="true"><option>Apple</option></select><span class="select2" style="position:absolute;left:100px;top:${top + 30}px;width:240px"><span class="select2-selection" role="combobox" tabindex="0" aria-haspopup="true" aria-expanded="false" aria-labelledby="r-${id}" style="display:block;height:28px;border:1px solid #aaa"><span id="r-${id}" role="textbox" aria-readonly="true"></span></span></span>`;
     // Both only contain the pattern: an equal name would win alone (#1008).
     await page(s2("f1", "Fruit kind", 100) + s2("f2", "Fruit colour", 200));
     expect(await cand({ by: "ariaLabel", pattern: "Fruit" })).toEqual(["Fruit colour", "Fruit kind"]);
+    // A select named by aria-label lends that name too, and a role written "Combobox" is still a widget's.
+    const s2a = (id: string, label: string, top: number) => `<select id="${id}" aria-label="${label}" class="sr" tabindex="-1" aria-hidden="true"><option>Apple</option></select><span class="select2" style="position:absolute;left:100px;top:${top}px;width:240px"><span class="select2-selection" role="combobox" tabindex="0" aria-haspopup="true" aria-expanded="false" aria-labelledby="r-${id}" style="display:block;height:28px;border:1px solid #aaa"><span id="r-${id}" role="textbox" aria-readonly="true"></span></span></span>`;
+    await page(s2a("g1", "Veg kind", 100) + s2a("g2", "Veg colour", 200));
+    expect(await cand({ by: "ariaLabel", pattern: "Veg" })).toEqual(["Veg colour", "Veg kind"]);
     expect(await marks()).toBe(0);
   });
 
