@@ -333,6 +333,8 @@ describe.skipIf(!CHROME_AVAILABLE)("issue #441 — browser_click rescue stop bra
   it("zero-size first match + TWO visible duplicates → BrowserAmbiguousTarget + candidates (no auto-click)", async () => {
     // querySelector('[aria-label="Ambiguous Dup"]') matches the hidden div first
     // → ElementZeroSizeError → rescue → 2 visible actionable → ambiguous stop.
+    // The fills above focus inputs lower on the page and scroll it; the buttons are in view only at the top.
+    await evaluateInTab("scrollTo(0, 0); true", null, TEST_PORT);
     const result = await browserClickElementHandler({
       selector: '[aria-label="Ambiguous Dup"]',
       port: TEST_PORT,
@@ -346,6 +348,47 @@ describe.skipIf(!CHROME_AVAILABLE)("issue #441 — browser_click rescue stop bra
     expect(body.code).toBe("BrowserAmbiguousTarget");
     // The rescue surfaces the visible candidates so the agent can disambiguate.
     expect((body.context?.candidates ?? []).length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe.skipIf(!CHROME_AVAILABLE)("browser_click says when every match is only outside the viewport", () => {
+  it("answers ElementNotInViewport with the road's way to scroll, not 'no strong interactive element'", async () => {
+    type Body = { ok: boolean; code?: string; error?: string; suggest?: string[]; context?: { candidates?: unknown[] } };
+    try {
+    // The page scrolled past the two buttons (as a fill lower on the page does): the rescue road, two matches.
+    await evaluateInTab("scrollTo(0, document.getElementById('dup441-amb-b').getBoundingClientRect().bottom + scrollY + 50); true", null, TEST_PORT);
+    const two = parseFirstLine(await browserClickElementHandler({ selector: '[aria-label="Ambiguous Dup"]', port: TEST_PORT })) as Body;
+    expect(two.code).toBe("ElementNotInViewport");
+    expect(two.error).toMatch(/2 matching controls, all outside the viewport/);
+    expect(two.suggest?.[0]).toMatch(/^Pass scrollIntoView:true/);
+    expect(two.suggest?.some((h) => /^Several match/.test(h))).toBe(true);
+    expect(two.context?.candidates?.length).toBe(2);
+    // By-axis, the same two: that road's scroll step.
+    const ax = parseFirstLine(await browserClickElementHandler({ by: "ariaLabel", pattern: "Ambiguous Dup", port: TEST_PORT } as never)) as Body;
+    expect(ax.code).toBe("ElementNotInViewport");
+    expect(ax.suggest?.[0]).toMatch(/^Scroll it into view first/);
+    // With one of them left: one match, no 'several'.
+    await evaluateInTab("window.__dupB = document.getElementById('dup441-amb-b'); window.__dupB.remove(); true", null, TEST_PORT);
+    const one = parseFirstLine(await browserClickElementHandler({ selector: '[aria-label="Ambiguous Dup"]', port: TEST_PORT })) as Body;
+    expect(one.code).toBe("ElementNotInViewport");
+    expect(one.error).toMatch(/the match is outside the viewport/);
+    expect(one.suggest?.some((h) => /^Several match/.test(h))).toBe(false);
+    await evaluateInTab("document.getElementById('dup441-amb-a').after(window.__dupB); scrollTo(0, 0); true", null, TEST_PORT);
+    // In view: the ambiguity as before (control).
+    const back = parseFirstLine(await browserClickElementHandler({ selector: '[aria-label="Ambiguous Dup"]', port: TEST_PORT })) as Body;
+    expect(back.code).toBe("BrowserAmbiguousTarget");
+    // Where scrolling never shows it, the generic answer stays: a fixed element below the viewport (on a page tall
+    // enough to scroll past it), and one placed before the page's start (not fixed).
+    const NEVER = `<div id="nv" style="position:absolute;left:0;top:0;height:5000px;width:1px"></div><button id="fx" aria-label="Never shown" style="position:fixed;left:300px;top:3000px">Fixed</button><button id="ng" aria-label="Before the start" style="position:absolute;left:-600px;top:100px">Neg</button>`;
+    await evaluateInTab(`document.body.insertAdjacentHTML('beforeend', ${JSON.stringify(NEVER)}); scrollTo(0, 0); true`, null, TEST_PORT);
+    for (const pattern of ["Never shown", "Before the start"]) {
+      const r = parseFirstLine(await browserClickElementHandler({ by: "ariaLabel", pattern, port: TEST_PORT } as never)) as Body;
+      expect(r.code, pattern).toBe("BrowserNoActionableTarget");
+    }
+    } finally {
+      // The fixture is shared with the cells after this one: put it back whatever failed above.
+      await evaluateInTab("['nv','fx','ng'].forEach(function(i){var e=document.getElementById(i);if(e)e.remove()}); if(window.__dupB&&!document.getElementById('dup441-amb-b'))document.getElementById('dup441-amb-a').after(window.__dupB); scrollTo(0,0); true", null, TEST_PORT);
+    }
   });
 });
 

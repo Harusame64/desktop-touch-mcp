@@ -1864,6 +1864,39 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
         if (how === 'own_label') { reachedViaLabel = true; break; }
       }
     }
+    // Outside the viewport: can scrolling bring it in? Not when it or an ancestor (across shadow roots and slots) is
+    // fixed (a collapsed drawer at left:-9999px, a web component's bottom sheet), nor when it lies before the start or
+    // past the end of what scrolls: the page, or the nearest scroll container it sits in (an app shell's
+    // main{overflow:auto}). Issue #441's e2e: the answer says "scroll it in" only where scrolling can.
+    let scrollsIntoView;
+    if (!(cx >= 0 && cx < window.innerWidth && cy >= 0 && cy < window.innerHeight)) {
+      const up = function(n) {
+        if (n.assignedSlot) return n.assignedSlot;
+        const p = __parent(n);
+        if (p) return p;
+        const rn = n.getRootNode ? n.getRootNode() : null;
+        return rn && rn !== document && rn.host ? rn.host : null;
+      };
+      let fixed = false, box = null;
+      for (let n = el; n && n.nodeType === 1; n = up(n)) {
+        const st = window.getComputedStyle(n);
+        if (st.position === 'fixed') { fixed = true; break; }
+        if (!box && n !== el && /(auto|scroll|overlay)/.test(st.overflowY + ' ' + st.overflowX) &&
+            (n.scrollHeight > n.clientHeight || n.scrollWidth > n.clientWidth)) box = n;
+      }
+      let inRange;
+      if (box) {
+        const br = box.getBoundingClientRect();
+        const bx = r.left - br.left + box.scrollLeft, by = r.top - br.top + box.scrollTop;
+        inRange = bx + r.width > 0 && by + r.height > 0 && bx < box.scrollWidth && by < box.scrollHeight;
+      } else {
+        const de = document.documentElement;
+        const dx = r.left + window.scrollX, dy = r.top + window.scrollY;
+        inRange = dx + r.width > 0 && dy + r.height > 0 &&
+          dx < Math.max(de.scrollWidth, window.innerWidth) && dy < Math.max(de.scrollHeight, window.innerHeight);
+      }
+      scrollsIntoView = !fixed && inRange;
+    }
     const tiRaw = el.getAttribute('tabindex');
     const ti = (tiRaw !== null && tiRaw.trim() !== '' && !isNaN(Number(tiRaw))) ? Number(tiRaw) : null;
     const roleAttr = el.getAttribute('role');
@@ -1888,6 +1921,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
       // have admitted via a FARTHER role-matching ancestor — e.g. role:'button'
       // with an <a> nested in a div[role=button]).
       roleMatch: roleFilter ? roleMatches(el) : true,
+      scrollsIntoView: scrollsIntoView,
       rect: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) },
     };
   }

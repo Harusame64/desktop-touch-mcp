@@ -85,6 +85,7 @@ describe.skipIf(!CHROME_AVAILABLE)("browser_click by-axis — ambiguity & safety
   it("role filter narrows to the off-viewport link → BrowserNoActionableTarget", async () => {
     const r = await click({ by: "text", pattern: "Open Settings", role: "link" });
     expect(r.ok, JSON.stringify(r)).toBe(false);
+    // A collapsed drawer's link (fixed, left:-9999px): scrolling never shows it, so not "outside the viewport".
     expect(r.code).toBe("BrowserNoActionableTarget");
   });
 

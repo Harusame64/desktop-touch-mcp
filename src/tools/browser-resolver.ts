@@ -492,6 +492,39 @@ ${pressLandingRuleJs()}
         if (how === 'own_label') { reachedViaLabel = true; break; }
       }
     }
+    // Outside the viewport: can scrolling bring it in? Not when it or an ancestor (across shadow roots and slots) is
+    // fixed (a collapsed drawer at left:-9999px, a web component's bottom sheet), nor when it lies before the start or
+    // past the end of what scrolls: the page, or the nearest scroll container it sits in (an app shell's
+    // main{overflow:auto}). Issue #441's e2e: the answer says "scroll it in" only where scrolling can.
+    let scrollsIntoView;
+    if (!(cx >= 0 && cx < window.innerWidth && cy >= 0 && cy < window.innerHeight)) {
+      const up = function(n) {
+        if (n.assignedSlot) return n.assignedSlot;
+        const p = __parent(n);
+        if (p) return p;
+        const rn = n.getRootNode ? n.getRootNode() : null;
+        return rn && rn !== document && rn.host ? rn.host : null;
+      };
+      let fixed = false, box = null;
+      for (let n = el; n && n.nodeType === 1; n = up(n)) {
+        const st = window.getComputedStyle(n);
+        if (st.position === 'fixed') { fixed = true; break; }
+        if (!box && n !== el && /(auto|scroll|overlay)/.test(st.overflowY + ' ' + st.overflowX) &&
+            (n.scrollHeight > n.clientHeight || n.scrollWidth > n.clientWidth)) box = n;
+      }
+      let inRange;
+      if (box) {
+        const br = box.getBoundingClientRect();
+        const bx = r.left - br.left + box.scrollLeft, by = r.top - br.top + box.scrollTop;
+        inRange = bx + r.width > 0 && by + r.height > 0 && bx < box.scrollWidth && by < box.scrollHeight;
+      } else {
+        const de = document.documentElement;
+        const dx = r.left + window.scrollX, dy = r.top + window.scrollY;
+        inRange = dx + r.width > 0 && dy + r.height > 0 &&
+          dx < Math.max(de.scrollWidth, window.innerWidth) && dy < Math.max(de.scrollHeight, window.innerHeight);
+      }
+      scrollsIntoView = !fixed && inRange;
+    }
     const tiRaw = el.getAttribute('tabindex');
     const ti = (tiRaw !== null && tiRaw.trim() !== '' && !isNaN(Number(tiRaw))) ? Number(tiRaw) : null;
     const roleAttr = el.getAttribute('role');
@@ -516,6 +549,7 @@ ${pressLandingRuleJs()}
       // have admitted via a FARTHER role-matching ancestor — e.g. role:'button'
       // with an <a> nested in a div[role=button]).
       roleMatch: roleFilter ? roleMatches(el) : true,
+      scrollsIntoView: scrollsIntoView,
       rect: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) },
     };
   }
@@ -813,6 +847,8 @@ export interface ClickableNode {
   enabled: boolean;
   /** `document.elementFromPoint(center)` hit is this node or a descendant (not occluded). The click's strict gate. */
   receivesEvents: boolean;
+  /** Centre outside the viewport only: whether scrolling the page can bring it in (not fixed, inside the page). */
+  scrollsIntoView?: boolean;
   /**
    * A centre of one of its own labels reaches it (internal #420). Shown in the ambiguity list only, never the gate:
    * the loose pass and the landing read press the label.
@@ -958,6 +994,10 @@ export type ResolveDecision =
       truncated: boolean;
       candidates: AmbiguityCandidate[];
       next: string[];
+      /** Every match a person could press is only scrolled out of view (see decideActionTarget). */
+      offViewport?: true;
+      /** How many controls those matches are. */
+      offViewportCount?: number;
     };
 
 export type ClickableStrength = "strong" | "medium" | "weak" | "none";
@@ -1072,7 +1112,7 @@ export const NO_ACTIONABLE_NEXT_HINTS: readonly string[] = [
 export function decideActionTarget(
   facts: CandidateFacts[],
   totalMatches: number,
-  opts: { requireReceivesEvents?: boolean } = {},
+  opts: { requireReceivesEvents?: boolean; viewport?: { innerWidth: number; innerHeight: number } } = {},
 ): ResolveDecision {
   const requireReceivesEvents = opts.requireReceivesEvents ?? true;
   const resolved = facts.map((f) => {
@@ -1133,6 +1173,22 @@ export function decideActionTarget(
   const returned = facts.length;
   const truncated = totalMatches > returned;
   if (distinct.size === 0) {
+    // Only scrolled out of view: every match a person could press (visible, enabled, a clickable of the asked role) has
+    // its centre outside the viewport where scrolling brings it in, as after a fill scrolled the page. Matches with no
+    // clickable are not presses and do not count; a collapsed drawer's link does not count either (scrolling never shows
+    // it). Only when every match was read: a cut list may hold one in view (/code-review on the #441 fix).
+    const vp = opts.viewport;
+    const pressable = resolved.filter((r) => r.clickable && r.clickable.visible && r.clickable.enabled && r.clickable.roleMatch !== false);
+    const centreOutside = (q: RectXYWH): boolean => {
+      if (!vp || vp.innerWidth <= 0 || vp.innerHeight <= 0) return false;
+      const cx = q.x + q.w / 2, cy = q.y + q.h / 2;
+      return cx < 0 || cy < 0 || cx >= vp.innerWidth || cy >= vp.innerHeight;
+    };
+    if (!truncated && pressable.length > 0 && pressable.every((r) => centreOutside(r.clickable!.rect) && r.clickable!.scrollsIntoView === true)) {
+      // Matches that climb to one clickable are one control (as `distinct` counts them).
+      const offViewportCount = new Set(pressable.map((r) => r.clickable!.rect.w === 0 || r.clickable!.rect.h === 0 ? `#${r.f.index}` : rectKey(r.clickable!.rect))).size;
+      return { kind: "noActionable", total: totalMatches, returned, truncated, candidates, next: [], offViewport: true, offViewportCount };
+    }
     return { kind: "noActionable", total: totalMatches, returned, truncated, candidates, next: [...NO_ACTIONABLE_NEXT_HINTS] };
   }
   return { kind: "ambiguous", total: totalMatches, returned, truncated, candidates, next: [...AMBIGUITY_NEXT_HINTS] };
@@ -1205,6 +1261,8 @@ export type ResolveActionOutcome =
       truncated: boolean;
       candidates: AmbiguityCandidate[];
       next: string[];
+      offViewport?: true;
+      offViewportCount?: number;
       /**
        * ADR-023 Phase 2b (click only): page-level modal facts + the top
        * candidate's occluding dialog index, propagated from the gather so the
@@ -1323,6 +1381,7 @@ async function gatherAndDecide(
     // per-action default (fill = false, click = true). Issue #441 rescue 1st pass
     // passes false to resolve an off-viewport candidate before scrolling it in.
     requireReceivesEvents: args.requireReceivesEvents ?? (args.action !== "fill"),
+    viewport: gathered.viewport,
   });
   if (decision.kind === "resolved") {
     // Identity of the matched element (chain[0] = top[index] before climb) so a

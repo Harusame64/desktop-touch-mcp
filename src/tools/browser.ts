@@ -2148,6 +2148,19 @@ function browserResolveErrorToFailure(
   }
 }
 
+/** Next steps when every match is outside the viewport (fixed strings: CodeQL CWE-94). */
+const OFF_VIEWPORT_HINTS_SELECTOR: string[] = [
+  "Pass scrollIntoView:true to scroll it into view before the click, or scroll the page first",
+];
+const OFF_VIEWPORT_HINTS_BY_AXIS: string[] = [
+  "Scroll it into view first (scroll with action:'smart' and a CSS selector, or browser_eval scrollIntoView), then call again; by-axis presses only what is in the viewport",
+];
+const OFF_VIEWPORT_HINTS_SCROLLED: string[] = [
+  "Scrolling it into view was tried and it is still outside the viewport (the page moved it): look at the page with a screenshot or browser_eval before another call",
+];
+const OFF_VIEWPORT_HINTS_SEVERAL: string[] = [
+  "Several match: narrow the selector or the pattern so one is left, or scrolling will not pick one",
+];
 /**
  * Map a resolver ambiguous / noActionable stop to a typed tool failure. The
  * candidate fingerprints + fixed next-hints are surfaced so the agent can
@@ -2159,7 +2172,33 @@ function browserResolveStopToFailure(
   outcome: Extract<ResolveActionOutcome, { kind: "ambiguous" | "noActionable" }>,
   tool: string,
   ctx: Record<string, unknown>,
+  opts: { scrolled?: boolean } = {},
 ): ToolResult {
+  // Every match a person could press is only scrolled out of view: the selector road's answer for one element outside
+  // the viewport, with that road's way to scroll it in (issue #441's e2e, run after a fill had scrolled the page). A
+  // dialog over the page is the thing to deal with first (scrolling may be locked behind it); a scroll already tried is
+  // not offered again (/code-review on the #441 fix).
+  if (outcome.kind === "noActionable" && outcome.offViewport) {
+    if (outcome.modalFacts) {
+      const verdict = detectModal(outcome.modalFacts);
+      if (verdict.isModal && verdict.blocker) return browserModalBlockingFailure(verdict.blocker, verdict.signals, ctx);
+    }
+    const n = outcome.offViewportCount ?? 1;
+    const several = n > 1;
+    return failCode(
+      "ElementNotInViewport",
+      several
+        ? `${tool}: ${n} matching controls, all outside the viewport. Nothing was done.`
+        : `${tool}: the match is outside the viewport. Nothing was done.`,
+      {
+        suggest: [
+          ...(opts.scrolled ? OFF_VIEWPORT_HINTS_SCROLLED : "selector" in ctx ? OFF_VIEWPORT_HINTS_SELECTOR : OFF_VIEWPORT_HINTS_BY_AXIS),
+          ...(several ? OFF_VIEWPORT_HINTS_SEVERAL : []),
+        ],
+        context: { ...ctx, total: outcome.total, returned: outcome.returned, truncated: outcome.truncated, candidates: outcome.candidates },
+      },
+    );
+  }
   const code = outcome.kind === "ambiguous" ? "BrowserAmbiguousTarget" : "BrowserNoActionableTarget";
   const message =
     outcome.kind === "ambiguous"
@@ -2676,7 +2715,7 @@ async function attemptSelectorActionabilityRescue(args: {
       return browserModalBlockingFailure(verdict.blocker, verdict.signals, ctx);
     }
   }
-  if (outcome.kind !== "resolved") return browserResolveStopToFailure(outcome, "browser_click", ctx);
+  if (outcome.kind !== "resolved") return browserResolveStopToFailure(outcome, "browser_click", ctx, { scrolled: !!scrollIntoView });
 
   if (isOffscreenMinimized(outcome.viewport.screenX, outcome.viewport.screenY)) {
     return browserMinimizedFailure(ctx, await minimizedBrowserFrame(port));
@@ -4418,7 +4457,7 @@ export function registerBrowserTools(server: McpServer): void {
     "browser_click",
     {
       description:
-        "Click a DOM element in Chrome/Edge. Two ways to target: (1) selector — a CSS selector (combines browser_locate + mouse_click; stable across repaints); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern, for dynamic-class SPAs. by-axis resolves to a SINGLE actionable element (climbing up to 3 levels to a clickable ancestor) and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ actionable elements match, or code:'BrowserNoActionableTarget' when matches exist but none is clickable — it never guesses. If the target is behind a modal dialog blocking the page, BOTH targeting modes STOP with code:'BrowserModalBlocking' (context.blockingElement {name, role}; nothing clicked) — dismiss the dialog (its close button or Escape) and retry; a navigation drawer does not count. Both modes press past a label, a skin or a sticky header over the element (by-axis: a single match), and STOPS with code:'BrowserPointCovered' (coveredBy:'page', context.cover/offers; nothing clicked) when a banner, menu or overlay is in front; the reply's pressedAt says where it pressed. Right before the press it checks what is under the point and STOPS with code:'BrowserPointCovered' (nothing clicked; suggest names the next step) when another window, DevTools or a side panel is there, the page is not shown, or the tab is not in front; it also stops a press the page moved under (coveredBy:'page_stopped': the element was not clicked; check pageReacted). Optional role filter (by:'text',pattern:'Save',role:'button') and scope. Provide EITHER selector OR by+pattern (not both). Pass tabId+port to auto-guard (tab readyState and identity) and get post.perception.status; lensId is for pinned-tab workflows. Caveats: selector mode fails if the element is outside the visible viewport — scroll it into view with browser_eval(\"document.querySelector('sel').scrollIntoView()\") first (by-axis only resolves in-viewport actionable targets). hints.verifyDelivery:{status:'delivered'|'unverifiable', reason, observedSignals:{mutationCount,urlChanged,activeElementChanged}} reports the post-click observation in 2 values: 'delivered' only when mutationCount>0 OR urlChanged (a focus change alone is not delivery: every click on a focusable control moves focus); 'unverifiable' reason ∈ {'iframe_context_mismatch','no_dom_mutation','probe_install_failed','probe_read_failed'}. BrowserClickNotDelivered is reserved and never emitted: read 'unverifiable' instead.",
+        "Click a DOM element in Chrome/Edge. Two ways to target: (1) selector — a CSS selector (combines browser_locate + mouse_click; stable across repaints); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern, for dynamic-class SPAs. by-axis resolves to a SINGLE actionable element (climbing up to 3 levels to a clickable ancestor) and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ actionable elements match, or code:'BrowserNoActionableTarget' when matches exist but none is clickable — it never guesses. If the target is behind a modal dialog blocking the page, BOTH targeting modes STOP with code:'BrowserModalBlocking' (context.blockingElement {name, role}; nothing clicked) — dismiss the dialog (its close button or Escape) and retry; a navigation drawer does not count. Both modes press past a label, a skin or a sticky header over the element (by-axis: a single match), and STOPS with code:'BrowserPointCovered' (coveredBy:'page', context.cover/offers; nothing clicked) when a banner, menu or overlay is in front; the reply's pressedAt says where it pressed. Right before the press it checks what is under the point and STOPS with code:'BrowserPointCovered' (nothing clicked; suggest names the next step) when another window, DevTools or a side panel is there, the page is not shown, or the tab is not in front; it also stops a press the page moved under (coveredBy:'page_stopped': the element was not clicked; check pageReacted). Optional role filter (by:'text',pattern:'Save',role:'button') and scope. Provide EITHER selector OR by+pattern (not both). Pass tabId+port to auto-guard (tab readyState and identity) and get post.perception.status; lensId is for pinned-tab workflows. Caveats: selector mode fails if the element is outside the visible viewport — pass scrollIntoView:true or scroll it in first (by-axis presses only in-viewport targets; both answer ElementNotInViewport). hints.verifyDelivery:{status:'delivered'|'unverifiable', reason, observedSignals:{mutationCount,urlChanged,activeElementChanged}} reports the post-click observation in 2 values: 'delivered' only when mutationCount>0 OR urlChanged (a focus change alone is not delivery: every click on a focusable control moves focus); 'unverifiable' reason ∈ {'iframe_context_mismatch','no_dom_mutation','probe_install_failed','probe_read_failed'}. BrowserClickNotDelivered is reserved and never emitted: read 'unverifiable' instead.",
       inputSchema: browserClickRegistrationSchema,
     },
     browserClickRegistrationHandler as typeof browserClickElementHandler
