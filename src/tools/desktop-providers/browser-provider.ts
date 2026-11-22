@@ -15,7 +15,7 @@ import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.
 import { probeLane } from "../../engine/aim-probe.js";
 import { ELEMENT_NAME_JS } from "../_element-name-js.js";
 import { UNIQUE_SELECTOR_JS } from "../_unique-selector-js.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 /** The attribute markAxMatches marks with (cdp-bridge's AX_MARK_ATTR; cdp-bridge is loaded lazily here). */
 const AX_MARK_ATTR = "data-dtm-ax";
@@ -25,6 +25,8 @@ interface BrowserElement {
   text: string;
   selector: string;
   inViewport: boolean;
+  /** The words of the row or item it sits in, for telling repeats apart (rowText). */
+  row?: string;
   href?: string;
   value?: string;
 }
@@ -104,6 +106,22 @@ export function interactiveScript(axNonce: string | null): string {
 ${UNIQUE_SELECTOR_JS}
   const selDeadline = performance.now() + 3000;
   function bestSel(el) { return __uniqueSelector(el, () => performance.now() > selDeadline); }
+  // The words of the row or item a control sits in, beside its own: what a person reads to tell two "Delete" buttons
+  // apart (the user's decision, internal #420). A table row gives its other cells; a list item, a row or an article its
+  // text without the control's. Empty when the control sits in no such row.
+  function rowText(el) {
+    const row = __closest(el, 'tr,[role=row],li,[role=listitem],article,[role=article]');
+    if (!row) return '';
+    let t = '';
+    if (row.tagName === 'TR') {
+      t = Array.from(row.cells || []).filter(function(c) { return !__contains(c, el); }).map(function(c) { return __textWithoutFields(c); }).filter(Boolean).join(' ');
+    } else {
+      const own = __textWithoutFields(el);
+      t = __textWithoutFields(row);
+      if (own) t = t.replace(own, ' ');
+    }
+    return t.replace(/\\s+/g, ' ').trim().slice(0, 40);
+  }
   function elType(el) {
     const tag=el.tagName.toLowerCase(), role=el.getAttribute('role'), ax=axRole(el);
     if(role==='switch'||role==='checkbox'||role==='radio') return 'toggle['+role+']';
@@ -177,7 +195,7 @@ ${ELEMENT_NAME_JS}
     const widget=type==='button' && (axRole(el)==='combobox'||axRole(el)==='listbox');
     // A control the tree showed is named as the tree names it: aria-labelledby or aria-label before its text (a
     // role=checkbox div named only by aria-label; PR 側 codex on #1009).
-    const item={type:type,text:widget?widgetName(el):(axRole(el)!==null?(__fieldName(el)||__elText(el)):__elText(el)),selector:bestSel(el),inViewport:inVP};
+    const item={type:type,text:widget?widgetName(el):(axRole(el)!==null?(__fieldName(el)||__elText(el)):__elText(el)),selector:bestSel(el),inViewport:inVP,row:rowText(el)};
     if(el.tagName==='A') item.href=el.href;
     if((el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.tagName==='SELECT')&&!__isMasked(el)) item.value=el.value;
     else if(widget) { const v=shownValue(el); if(v) item.value=v; }
@@ -220,14 +238,15 @@ export async function fetchBrowserCandidates(
       return probeLane("cdp", "failed", { tabId, why: "not_an_array" }, { candidates: [], warnings: ["cdp_provider_failed"] });
     }
 
-    const candidates: UiEntityCandidate[] = elements
+    const kept = elements
       // A field with no name keeps its place under its type and selector. It used to borrow its
       // value for a name, which is how a password became a label. The selector is part of the label
       // because a CDP candidate has no rect: two unnamed password fields labelled by type alone
       // resolved to one entity, and the second could not be reached (2ゲート目 on #623). `bestSel`
       // gives each field a selector that matches it alone, so two fields stay apart.
       // A checkbox or radio with no name (a table's row-select box) keeps its place the same way (/code-review on #1009).
-      .filter((el) => el.text || el.href || isField(el.type) || el.type.startsWith("toggle["))
+      .filter((el) => el.text || el.href || isField(el.type) || el.type.startsWith("toggle["));
+    const candidates: UiEntityCandidate[] = kept
       .map((el): UiEntityCandidate => ({
         source: "cdp",
         target: { kind: "browserTab", id: tabId },
@@ -240,6 +259,25 @@ export async function fetchBrowserCandidates(
         observedAtMs: Date.now(),
         provisional: false,
       }));
+    // Controls that share a label are named by their row, as a person tells them apart: "Delete — Beta" (the user's
+    // decision, internal #420). A CDP candidate has no rect, so the resolver keys it by tab and label: the row's words
+    // keep each its own entity, and keep it when another row goes. A label the page has once is left as it is. Rows
+    // alike in their words too fall back to the selector, which matches the control alone.
+    const tally = (): Map<string, number> => {
+      const m = new Map<string, number>();
+      for (const c of candidates) m.set(c.label ?? "", (m.get(c.label ?? "") ?? 0) + 1);
+      return m;
+    };
+    const first = tally();
+    candidates.forEach((c, i) => {
+      const row = kept[i].row ?? "";
+      if ((first.get(c.label ?? "") ?? 0) > 1 && row && row !== c.label) c.label = `${c.label} — ${row}`;
+    });
+    const second = tally();
+    for (const c of candidates) {
+      if ((second.get(c.label ?? "") ?? 0) < 2) continue;
+      c.digest = createHash("sha1").update(`cdp|browserTab:${tabId}|${c.label ?? ""}|${c.locator!.cdp!.selector}`).digest("hex").slice(0, 16);
+    }
 
     const warnings = candidates.length === 0 ? ["cdp_no_elements"] : [];
     // Counts only: a label on a page can carry anything the user has in front of them.

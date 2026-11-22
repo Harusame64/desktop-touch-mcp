@@ -12,6 +12,7 @@ import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll, rememberTabPort, AX_MARK_ATTR } from "../../src/engine/cdp-bridge.js";
 import { fetchBrowserCandidates, interactiveScript } from "../../src/tools/desktop-providers/browser-provider.js";
 import { cdpDispatchClickAndVerify } from "../../src/tools/browser.js";
+import { resolveCandidates } from "../../src/engine/world-graph/resolver.js";
 import { jsLiteral } from "../../src/utils/js-literal.js";
 
 const PORT = 9239;
@@ -218,6 +219,32 @@ describe.skipIf(!CHROME)("desktop_discover's browser lane lists the controls the
   it("does not name a control by a script its aria-labelledby points at (/code-review on #1016)", async () => {
     await page(`<div role="checkbox" id="cb" tabindex="0" aria-checked="false" aria-labelledby="tpl">Remember me</div><script type="text/x-template" id="tpl">{{label}}</script>`);
     expect((await list()).find((r) => r.selector === "#cb")?.label).toBe("Remember me");
+  });
+
+  it("names controls that share a label by their row, so each is listed and told apart (the user's decision, internal #420)", async () => {
+    // A table of three rows with a "Delete" each: one entity before (only row A's could be reached).
+    const rows = (names: string[]) => `<table>${names.map((n) => `<tr><td>${n}</td><td><button>Delete</button></td></tr>`).join("")}</table><button>Save</button>`;
+    await page(rows(["Alpha", "Beta", "Gamma"]));
+    const ents = resolveCandidates((await fetchBrowserCandidates({ tabId } as never)).candidates, "g1");
+    const del = ents.filter((e) => e.label.startsWith("Delete")).map((e) => e.label).sort();
+    expect(del).toEqual(["Delete — Alpha", "Delete — Beta", "Delete — Gamma"]);
+    // A label the page has once keeps its name.
+    expect(ents.some((e) => e.label === "Save")).toBe(true);
+    // Each name reaches its own row's button.
+    for (const e of ents.filter((x) => x.label.startsWith("Delete"))) {
+      const row = await evaluateInTab(`document.querySelector(${JSON.stringify(e.locator!.cdp!.selector)}).closest('tr').cells[0].textContent`, tabId, PORT);
+      expect(e.label).toBe(`Delete — ${row}`);
+    }
+    // Removing row Alpha keeps Beta's entity as it was: the name comes from the row, not its place.
+    const betaId = ents.find((e) => e.label === "Delete — Beta")!.entityId;
+    await page(rows(["Beta", "Gamma"]));
+    const after = resolveCandidates((await fetchBrowserCandidates({ tabId } as never)).candidates, "g2");
+    expect(after.find((e) => e.label === "Delete — Beta")?.entityId).toBe(betaId);
+    // Rows alike in their text too: still listed apart.
+    await page(rows(["Same", "Same"]));
+    const twins = resolveCandidates((await fetchBrowserCandidates({ tabId } as never)).candidates, "g3").filter((e) => e.label.startsWith("Delete"));
+    expect(twins).toHaveLength(2);
+    expect(new Set(twins.map((e) => e.entityId)).size).toBe(2);
   });
 
   it("does not list a div slider it could not press", async () => {
