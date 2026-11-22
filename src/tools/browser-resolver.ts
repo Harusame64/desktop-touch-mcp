@@ -19,7 +19,7 @@ import { randomUUID } from "node:crypto";
 import { AX_MARK_ATTR, clearAxMarks, evaluateInTab, getPageZoom, markAxMatches, resolveTabId, viewportOriginJs } from "../engine/cdp-bridge.js";
 import { ELEMENT_NAME_JS, SAFE_DOM_JS } from "./_element-name-js.js";
 import { UNIQUE_SELECTOR_JS } from "./_unique-selector-js.js";
-import { jsLiteral } from "./_js-literal.js";
+import { jsLiteral } from "../utils/js-literal.js";
 import { pressLandingRuleJs } from "./press-landing.js";
 
 export interface CandidateCollectionArgs {

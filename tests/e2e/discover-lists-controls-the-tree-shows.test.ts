@@ -12,7 +12,7 @@ import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll, rememberTabPort, AX_MARK_ATTR } from "../../src/engine/cdp-bridge.js";
 import { fetchBrowserCandidates, interactiveScript } from "../../src/tools/desktop-providers/browser-provider.js";
 import { cdpDispatchClickAndVerify } from "../../src/tools/browser.js";
-import { jsLiteral } from "../../src/tools/_js-literal.js";
+import { jsLiteral } from "../../src/utils/js-literal.js";
 
 const PORT = 9239;
 const CHROME = tryFindChrome() !== null;

@@ -12,7 +12,7 @@
 import WebSocket from "ws";
 import { getCdpPort } from "../utils/desktop-config.js";
 import { defaultPageTab } from "./cdp-default-tab.js";
-import { jsLiteral } from "../tools/_js-literal.js";
+import { jsLiteral } from "../utils/js-literal.js";
 
 export const DEFAULT_CDP_PORT = 9222;
 // Exported so callers that surface a CDP-timeout-derived hint (e.g.
