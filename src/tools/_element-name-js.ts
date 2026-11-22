@@ -194,6 +194,27 @@ ${DRAWS_NOTHING_JS}
     }
     return null;
   }
+  // The widget drawn in place of a native select, the inverse of __standsFor: a combobox or listbox that holds it
+  // (Choices), or one just after it (Select2 puts its span after the select it hides). Only for a select a person does
+  // not see (hidden, no box, transparent, or kept from people): a shown select beside an unrelated widget is its own
+  // control (codex on #1024). Null when nothing stands in: an opacity:0 select laid over a styled label, with no widget,
+  // is pressed and picked as it is (/code-review on #1024).
+  function __standInFor(sel) {
+    const sr = sel.getBoundingClientRect(), scs = getComputedStyle(sel);
+    const unseen = sel.hidden || sr.width * sr.height < 4 || scs.opacity === '0' || scs.visibility === 'hidden' || __keptFromPeople(sel);
+    if (!unseen) return null;
+    const holder = __closest(sel, '[role~=combobox i],[role~=listbox i]');
+    if (holder && holder !== sel) return holder;
+    for (let a = sel, d = 0; a && d < 4; a = __parent(a), d++) {
+      const next = a.nextElementSibling;
+      if (!next) continue;
+      if (__matches(next, '[role~=combobox i],[role~=listbox i]')) return next;
+      const inner = next.querySelector ? next.querySelector('[role~=combobox i],[role~=listbox i]') : null;
+      if (inner) return inner;
+      break;
+    }
+    return null;
+  }
   // The name a person reads for a control, to list it among others (internal #420): aria-labelledby, then aria-label,
   // then, for a widget (a combobox or listbox), the label of the select it stands for, then the words it draws. A
   // button "X" with aria-label "Close dialog" is "Close dialog"; Select2's box is its select's label. A field keeps its
