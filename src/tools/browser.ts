@@ -1810,7 +1810,14 @@ ${ELEMENT_NAME_JS}
     // caption (PR 側 codex on e83cb56). One bit either way: the dots are on the screen.
     if (withheld) {
       field.valueWithheld = 'masked';
-      field.hasValue = tagName === 'button' ? (el.textContent || '').trim() !== ''
+      // A button's caption is the text it draws: a script or style inside it is not one (/code-review on #1016).
+      field.hasValue = tagName === 'button' ? (function drawn(n) {
+          for (const c of n.childNodes) {
+            if (c.nodeType === 3 && c.nodeValue.trim()) return true;
+            if (c.nodeType === 1 && !__skipsText(c) && drawn(c)) return true;
+          }
+          return false;
+        })(el)
         : (tagName === 'input' && (el.type === 'submit' || el.type === 'reset') && !el.hasAttribute('value')) || !!el.value;
     }
     fields.push(field);

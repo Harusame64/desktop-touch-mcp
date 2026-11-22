@@ -28,7 +28,7 @@ async function page(body: string): Promise<void> {
   await evaluateInTab(`document.open();document.write(${JSON.stringify(html)});document.close();scrollTo(0,0);true`, null, PORT);
   await sleep(150);
 }
-type Hit = { selector: string; role?: string; confidence: number; matchedBy: string };
+type Hit = { selector: string; role?: string; confidence: number; matchedBy: string; text?: string };
 type Body = { ok?: boolean; code?: string; total?: number; returned?: number; truncated?: boolean; results?: Hit[] };
 async function search(a: { by: "role" | "ariaLabel" | "text" | "regex"; pattern: string; scope?: string; visibleOnly?: boolean; inViewportOnly?: boolean; maxResults?: number; offset?: number; caseSensitive?: boolean }): Promise<Body> {
   const r = await browserSearchHandler({
@@ -300,6 +300,13 @@ describe.skipIf(!CHROME)("browser_search by:'text' and by:'regex' match what the
       expect(sels(await search({ by, pattern: "Sign in", visibleOnly: false }))).toEqual(["#real"]);
       expect(sels(await search({ by, pattern: "fill", visibleOnly: false }))).toEqual(["#real"]);
     }
+  });
+
+  it("reports an element's text without a script, style or noscript inside it (internal #420, after #1015)", async () => {
+    // A container matched by its own words reported a script's source as its text (Amazon's add-to-cart blocks).
+    await page(`<div id="c">Add to Cart<script>P.when('A').execute(function(){window.x=1})</script><style>.y{}</style><noscript>&lt;img alt=n&gt;</noscript> now</div>`);
+    const b = await search({ by: "text", pattern: "Add to Cart" });
+    expect(b.results?.map((h) => [h.selector, h.text])).toEqual([["#c", "Add to Cart now"]]);
   });
 
   it("answers a search scoped into <head> as asked (/code-review on #1015)", async () => {

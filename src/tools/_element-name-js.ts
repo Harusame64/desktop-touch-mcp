@@ -45,7 +45,55 @@
  *
  * The helpers are prefixed `__` because they share an IIFE with each script's own functions.
  */
+/**
+ * Text the page never draws: a script's or a style's source, a noscript's content while scripts run, a template's,
+ * what <head> holds (the title), noembed and noframes. browser_search's text axes leave it out (#1015), and an
+ * element's text never carries it (internal #420: a container matched by its own words reported a script's source).
+ * Each element is judged by its own reason for drawing nothing, not by its tag or its layout box (/code-review on
+ * #1015, four rounds: a box goes missing for a hidden ancestor and for display:contents too):
+ * - an SVG element (script, style, or a noscript parsed into an <svg>) is never drawn: the SVG renderer has no place
+ *   for it, and its display computes inline;
+ * - a noscript, by whether scripts run in this document, read at most once per script and only when a noscript is
+ *   reached, from the scripting media feature, which writes nothing to the page (an innerHTML probe broke under
+ *   Trusted Types). It follows CDP's setScriptExecutionDisabled and Chrome's JavaScript site setting (measured: mac,
+ *   and win2 on #1015, where a Report-Only Trusted Types policy received no report from a search). A browser that
+ *   knows the feature matches exactly one of its three values; a Chromium before 120 matches none of them (codex on
+ *   #1015: 104-119 keep an unknown feature's text rather than reading "not all"). There browser_search's text axes
+ *   parse a fragment, on the same flag; a name read takes it that scripts run and writes nothing (/code-review on
+ *   #1016);
+ * - the rest, by a computed display of none: a style a page shows with CSS is drawn.
+ */
+export const DRAWS_NOTHING_JS = `
+  // var, not const: spliced twice into one scope (ELEMENT_NAME_JS beside pressLandingRuleJs()), it stays valid.
+  var __NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
+  var __scriptsRun = null;
+  // The prototype's matches: a <form> exposes a control named "matches" as form.matches, and a custom element can
+  // define its own (/code-review on #1016: the walker threw and the whole script failed). Looked up when called, and
+  // the element's own where there is no Element (the unit tests' fake DOM).
+  function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
+  // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
+  // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
+  function __drawsNothing(a, probe) {
+    if (a.namespaceURI === 'http://www.w3.org/2000/svg') return true;
+    if (a.localName === 'noscript') {
+      if (__scriptsRun !== null) return __scriptsRun;
+      try {
+        const none = matchMedia('(scripting: none)').matches;
+        const on = matchMedia('(scripting: enabled)').matches || matchMedia('(scripting: initial-only)').matches;
+        if (none || on) return (__scriptsRun = !none);
+        if (!probe) return true;
+        const d = document.createElement('div'); d.innerHTML = '<noscript><i></i></noscript>';
+        return (__scriptsRun = !d.querySelector('i'));
+      } catch (e) { return true; }
+    }
+    return getComputedStyle(a).display === 'none';
+  }
+  // An element whose text the page never draws: skipped by every walker that collects an element's words.
+  function __skipsText(c) { return __matches(c, __NOT_TEXT) && __drawsNothing(c, false); }
+`;
+
 export const ELEMENT_NAME_JS = `
+${DRAWS_NOTHING_JS}
   function __isMasked(el) {
     if (el.tagName === 'INPUT') {
       const t = (el.type || '').toLowerCase();
@@ -70,13 +118,13 @@ export const ELEMENT_NAME_JS = `
     return role === 'textbox' || role === 'searchbox';
   }
   function __textWithoutFields(node) {
-    if (node.nodeType === 1 && (__isEntry(node) || __isMasked(node))) return '';
+    if (node.nodeType === 1 && (__isEntry(node) || __isMasked(node) || __skipsText(node))) return '';
     let out = '';
     (function walk(n) {
       for (const c of n.childNodes) {
         if (out.length > 400) return;
         if (c.nodeType === 3) out += c.nodeValue;
-        else if (c.nodeType === 1 && !__isEntry(c) && !__isMasked(c)) walk(c);
+        else if (c.nodeType === 1 && !__isEntry(c) && !__isMasked(c) && !__skipsText(c)) walk(c);
       }
     })(node);
     return out.trim().replace(/\\s+/g, ' ');

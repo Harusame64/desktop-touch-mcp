@@ -189,43 +189,13 @@ ${ELEMENT_NAME_JS}
 
   const all = root.querySelectorAll('*');
   let candidates = [];
-  // Text the page never draws: a script's or a style's source, a noscript's content while scripts run, a template's,
-  // what <head> holds (the title), noembed and noframes. The text axes leave it out, visibleOnly or not (win2 on #1011:
-  // by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is hidden text, which
-  // visibleOnly decides. Each element is judged by its own reason for drawing nothing, not by boxes (/code-review on
-  // #1015, three rounds: a box goes missing for a hidden ancestor and for display:contents too):
-  // - an SVG element (script, style, or a noscript parsed into an <svg>) is never drawn: the SVG renderer has no place
-  //   for it, and its display computes inline;
-  // - a noscript, by whether scripts run in this document, read at most once per search and only when a noscript is
-  //   reached, from the scripting media feature, which writes nothing to the page (/code-review on #1015: an innerHTML
-  //   probe broke under Trusted Types and wrote to the page on every axis). It follows CDP's
-  //   setScriptExecutionDisabled and Chrome's JavaScript site setting (measured: mac, and win2 on #1015, where a
-  //   Report-Only Trusted Types policy received no report from a search). A browser that knows the feature matches
-  //   exactly one of its three values; a Chromium before 120 matches none of them (codex on #1015: 104-119 keep an
-  //   unknown feature's text rather than reading "not all"), and there the fragment parse answers, on the same flag;
-  // - the rest, by a computed display of none: a style a page shows with CSS is drawn.
-  // A search scoped into one of them (scope:'head') is answered as asked.
-  const NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
-  let scriptsRun = null;
-  function drawsNothing(a) {
-    if (a.namespaceURI === 'http://www.w3.org/2000/svg') return true;
-    if (a.localName === 'noscript') {
-      if (scriptsRun === null) {
-        try {
-          const none = matchMedia('(scripting: none)').matches;
-          const on = matchMedia('(scripting: enabled)').matches || matchMedia('(scripting: initial-only)').matches;
-          if (none || on) scriptsRun = !none;
-          else { const d = document.createElement('div'); d.innerHTML = '<noscript><i></i></noscript>'; scriptsRun = !d.querySelector('i'); }
-        } catch (e) { scriptsRun = true; }
-      }
-      return scriptsRun;
-    }
-    return getComputedStyle(a).display === 'none';
-  }
+  // Text the page never draws (DRAWS_NOTHING_JS in _element-name-js.ts): the text axes leave it out, visibleOnly or not
+  // (win2 on #1011: by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is
+  // hidden text, which visibleOnly decides. A search scoped into one of them (scope:'head') is answered as asked.
   function notDrawnText(el) {
-    for (let a = el.closest(NOT_TEXT); a; a = a.parentElement ? a.parentElement.closest(NOT_TEXT) : null) {
+    for (let a = el.closest(__NOT_TEXT); a; a = a.parentElement ? a.parentElement.closest(__NOT_TEXT) : null) {
       if (a === root || a.contains(root)) return false;
-      if (drawsNothing(a)) return true;
+      if (__drawsNothing(a, true)) return true;
     }
     return false;
   }
