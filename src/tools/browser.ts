@@ -1615,11 +1615,12 @@ const FILL_HINTS_SELECT_MULTIPLE: string[] = [
 const FILL_HINTS_SELECT_DISABLED: string[] = [
   "The <select> or that option is disabled, so a person cannot choose it",
 ];
-/** A native select the selector road refused, untouched (internal #420, /code-review on #1024). */
+/** A native select browser_fill refused, on either road (internal #420, /code-review on #1024 and #1025). */
 function selectRefusal(err: string, context: Record<string, unknown>): ToolResult {
   const ctx = { context };
   if (err === "select_multiple") return failCode("BrowserNoActionableTarget", "browser_fill: this <select> takes several options. Nothing was changed.", { suggest: FILL_HINTS_SELECT_MULTIPLE, ...ctx });
   if (err === "select_unseen") return failCode("BrowserNoActionableTarget", "browser_fill: this <select> is not shown; a widget stands in its place. Nothing was changed.", { suggest: FILL_HINTS_CHOICE_WIDGET, ...ctx });
+  if (err === "options_changed") return failCode("BrowserNoActionableTarget", "browser_fill: this <select>'s options changed when it took focus; the option asked for is gone. Nothing was chosen.", { suggest: FILL_HINTS_SELECT_NO_OPTION, ...ctx });
   if (err === "select_disabled" || err === "option_disabled") return failCode("BrowserNoActionableTarget", "browser_fill: that choice is disabled. Nothing was changed.", { suggest: FILL_HINTS_SELECT_DISABLED, ...ctx });
   const why = err === "option_value_repeats" ? "several options have that value"
     : err === "option_text_repeats" ? "several options show that text"
@@ -1724,19 +1725,7 @@ ${ELEMENT_NAME_JS}
 ${SELECT_PICK_JS}
     const pk = __pickOption(el, ${jsLiteral(value)});
     if (pk.error) return { ok: false, selectError: pk.error };
-    // The option itself, kept: a change handler may add or remove options, and an index read after it would not be
-    // the one chosen (/code-review on #1024).
-    const chosen = pk.opt.value;
-    el.focus();
-    if (el.selectedIndex !== pk.idx) {
-      const sd = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'selectedIndex');
-      if (sd && sd.set) sd.set.call(el, pk.idx); else el.selectedIndex = pk.idx;
-      el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-    const smasked = maskedBefore || __isMasked(el);
-    return { ok: true, actual: smasked ? undefined : (el.value || '').slice(0, 100), actualWithheld: smasked || undefined,
-      fullActualLen: (el.value || '').length, fullMatches: el.value === chosen, chose: smasked ? undefined : chosen, select: true };
+    return __setPickedOption(el, pk, maskedBefore);
   }
   el.focus();
   // Select all existing content before replacing
@@ -4443,7 +4432,7 @@ export function registerBrowserTools(server: McpServer): void {
     "browser_fill",
     {
       description:
-        "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Two ways to target: (1) selector — a CSS selector (use browser_overview / browser_locate to find one); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern (e.g. by:'ariaLabel', pattern:'Email address', or by:'role', pattern:'textbox'), so you do not have to build a CSS selector. by-axis resolves to a SINGLE fillable element and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ match, or code:'BrowserNoActionableTarget' when the match is not a fillable input/textarea/contenteditable — it never guesses. Optionally add role to filter and scope to narrow. Provide EITHER selector OR by+pattern (not both). Use this over browser_eval when setting a controlled input's value via JS does not update framework state. A native <select> takes the option whose value is value, else the one option showing that text (chose names it); a value no option has, a disabled or multiple select, or one a widget stands in for is refused untouched. Caveats: Requires browser_open (CDP active). actual in the response shows the element's value after fill; verify it matches the intended value (for a field the page masks, such as a password, neither the value you passed nor the one read back is echoed — valueWithheld:'masked' — and the match is still checked, in the page). Typed errors: code:'BrowserFillNotDelivered' on post-fill value mismatch — note the false-positive case where a React controlled input's onChange transforms the value (delivery actually succeeded; hints.verifyDelivery.subReason:'controlled_input_transform' for that case; the actual value is authoritative).",
+        "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Two ways to target: (1) selector — a CSS selector (use browser_overview / browser_locate to find one); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern (e.g. by:'ariaLabel', pattern:'Email address', or by:'role', pattern:'textbox'), so you do not have to build a CSS selector. by-axis resolves to a SINGLE fillable element and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ match, or code:'BrowserNoActionableTarget' when the match is not a fillable input/textarea/contenteditable/select — it never guesses. Optionally add role to filter and scope to narrow. Provide EITHER selector OR by+pattern (not both). Use this over browser_eval when setting a controlled input's value via JS does not update framework state. A native <select> takes the option whose value is value, else the one option showing that text (chose names it); a value no option has, a disabled or multiple select, or one a widget stands in for is refused untouched. Caveats: Requires browser_open (CDP active). actual in the response shows the element's value after fill; verify it matches the intended value (for a field the page masks, such as a password, neither the value you passed nor the one read back is echoed — valueWithheld:'masked' — and the match is still checked, in the page). Typed errors: code:'BrowserFillNotDelivered' on post-fill value mismatch — note the false-positive case where a React controlled input's onChange transforms the value (delivery actually succeeded; hints.verifyDelivery.subReason:'controlled_input_transform' for that case; the actual value is authoritative).",
       inputSchema: browserFillRegistrationSchema,
     },
     browserFillRegistrationHandler as typeof browserFillInputHandler

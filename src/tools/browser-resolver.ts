@@ -651,15 +651,17 @@ export function buildUntagJs(nonce: string): string {
  * re-runs the SAME candidate matching/pool as the gather eval (deterministic —
  * identical querySelectorAll order + scoring), re-selects `top[index]`, climbs
  * `climbDepth` ancestors to the resolved element, verifies it is fillable
- * (input / textarea / contenteditable), focuses it, sets the value via the native
+ * (input / textarea / contenteditable; a native select is set by SELECT_PICK_JS's
+ * rule instead, as the selector road sets it), focuses it, sets the value via the native
  * prototype setter + dispatches InputEvent/'change' (React/Vue-compatible — the
  * same path as the selector fill), and reads `element.value` back.
  *
  * Re-gather+index is used (NOT a fresh querySelector or an elementFromPoint
  * coordinate re-find) so a GSC dynamic class cannot re-match differently
  * (re-non-uniqueness) and an overlay cannot be mis-targeted (occlusion). Returns
- * `{ ok:true, actual, fullActualLen, fullMatches }` or `{ ok:false, error }`
- * (index_out_of_range / resolved_element_lost / not_fillable). Pinned by snapshot.
+ * `{ ok:true, actual, fullActualLen, fullMatches }` (and `chose`, `select` for a select) or `{ ok:false, error }`
+ * (index_out_of_range / resolved_element_lost / not_fillable) or `{ ok:false, selectError }` for a select refused
+ * untouched. Pinned by snapshot.
  */
 export function buildFillActJs(
   args: ActionFactsArgs,
@@ -710,18 +712,7 @@ export function buildFillActJs(
 ${SELECT_PICK_JS}
     const pk = __pickOption(el, ${jsLiteral(value)});
     if (pk.error) return { ok: false, selectError: pk.error };
-    const smaskedBefore = __isMasked(el);
-    const chosen = pk.opt.value;
-    el.focus();
-    if (el.selectedIndex !== pk.idx) {
-      const sd = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'selectedIndex');
-      if (sd && sd.set) sd.set.call(el, pk.idx); else el.selectedIndex = pk.idx;
-      el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-    const smasked = smaskedBefore || __isMasked(el);
-    return { ok: true, actual: smasked ? undefined : (el.value || '').slice(0, 100), actualWithheld: smasked || undefined,
-      fullActualLen: (el.value || '').length, fullMatches: el.value === chosen, chose: smasked ? undefined : chosen, select: true };
+    return __setPickedOption(el, pk, __isMasked(el));
   }
   if (!isTextInput && !isTextArea && !isEditable) {
     // What it is, for the next steps (internal #420): an option, a toggle, a

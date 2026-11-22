@@ -460,6 +460,23 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(await byAxis("Small")).toMatchObject({ ok: true, chose: "s" });
     expect((await byAxis("Large")).code).toBe("InvalidArgs");
     expect(await evaluateInTab("document.getElementById('ns').value", null, PORT)).toBe("s");
+    // As the selector road (/code-review on #1025): a re-pick fires nothing; a refusal leaves focus where it was; a
+    // focus handler that rebuilds the list does not move the choice to another option; a mask put on at focus holds.
+    await evaluateInTab(`(function(){var s=document.getElementById('ns');window.ch=0;s.addEventListener('change',function(){window.ch++});document.body.insertAdjacentHTML('beforeend','<input id="other" style="margin:40px">');document.getElementById('other').focus();return true})()`, null, PORT);
+    expect((await byAxis("Huge")).code).toBe("InvalidArgs");
+    expect(await evaluateInTab("JSON.stringify([document.activeElement.id, window.ch])", null, PORT)).toBe(JSON.stringify(["other", 0]));
+    expect((await byAxis("s")).ok).toBe(true);
+    expect(await evaluateInTab("window.ch", null, PORT)).toBe(0);
+    await page(`<label for="rb">Tier</label><select id="rb" style="margin:40px"><option value="b">Bronze</option><option value="g">Gold</option></select>`);
+    // Headless Chrome fires no focus event (the page has no focus), so what a focus handler does is put in focus() itself.
+    await evaluateInTab(`(function(){var s=document.getElementById('rb');s.focus=function(){HTMLElement.prototype.focus.call(this);if(!this.querySelector('option[value=""]'))this.insertAdjacentHTML('afterbegin','<option value="">Choose…</option>');};return true})()`, null, PORT);
+    const rb = JSON.parse(((await browserFillInputHandler({ by: "ariaLabel", pattern: "Tier", value: "g", port: PORT, includeContext: false } as never)).content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { ok?: boolean };
+    expect(rb.ok).toBe(true);
+    expect(await evaluateInTab("JSON.stringify([document.getElementById('rb').value, document.getElementById('rb').options.length])", null, PORT)).toBe(JSON.stringify(["g", 3]));
+    await page(`<label for="pm">PIN</label><select id="pm" style="margin:40px"><option value="k1">Key one</option><option value="k2">Key two</option></select>`);
+    await evaluateInTab(`(function(){var s=document.getElementById('pm');s.focus=function(){HTMLElement.prototype.focus.call(this);this.style.setProperty('-webkit-text-security','disc');};return true})()`, null, PORT);
+    const pm = (await browserFillInputHandler({ by: "ariaLabel", pattern: "PIN", value: "Key two", port: PORT, includeContext: false } as never)).content[0] as { text: string };
+    expect(pm.text).not.toContain("k2");
     // A select a person does not see stands behind a widget (Choices): the widget's next steps, not the select's.
     await page(`<label for="hs">Flavour</label><select id="hs" style="position:absolute;opacity:0;width:200px"><option value="v">Vanilla</option></select><span role="combobox" tabindex="0" style="display:inline-block;margin-left:220px">Vanilla</span>`);
     expect((await fill({ by: "ariaLabel", pattern: "Flavour" })).suggest?.[0]).toMatch(/^A choice widget/);

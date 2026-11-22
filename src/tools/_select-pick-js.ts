@@ -1,6 +1,7 @@
 /**
  * _select-pick-js.ts — which option of a native <select> a fill takes, shared by browser_fill's selector road and its
- * by-axis road (internal #420). It needs ELEMENT_NAME_JS (for __standInFor) spliced into the same script.
+ * by-axis road (internal #420), and the write that sets it. It needs ELEMENT_NAME_JS (for __standInFor and __isMasked)
+ * spliced into the same script.
  */
 /**
  * Which option of a native <select> a fill takes, as a person picks one (internal #420, /code-review on #1024): the
@@ -38,5 +39,24 @@ export const SELECT_PICK_JS = `
     // A hidden option is one a person never sees to pick (a "Choose…" placeholder with hidden).
     if (o.hidden || getComputedStyle(o).display === 'none') return { error: 'no_such_option' };
     return { idx: idx, opt: o };
+  }
+  // Set the picked option and read it back, the one write both roads use (/code-review on #1025: two copies drifted).
+  // Focus first, as a person's pick; then the kept option's index again, since a focus handler can rebuild the list
+  // (refused, unset, if the option is gone); the mask read after focus too, as the text road does.
+  function __setPickedOption(el, pk, maskedBefore) {
+    el.focus();
+    const idx = Array.prototype.indexOf.call(el.options, pk.opt);
+    if (idx < 0) return { ok: false, selectError: 'options_changed' };
+    const maskedAfterFocus = __isMasked(el);
+    const chosen = pk.opt.value;
+    if (el.selectedIndex !== idx) {
+      const sd = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'selectedIndex');
+      if (sd && sd.set) sd.set.call(el, idx); else el.selectedIndex = idx;
+      el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    const masked = maskedBefore || maskedAfterFocus || __isMasked(el);
+    return { ok: true, actual: masked ? undefined : (el.value || '').slice(0, 100), actualWithheld: masked || undefined,
+      fullActualLen: (el.value || '').length, fullMatches: el.value === chosen, chose: masked ? undefined : chosen, select: true };
   }
 `;
