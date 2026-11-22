@@ -11,6 +11,7 @@ import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll, markAxMatches, clearAxMarks } from "../../src/engine/cdp-bridge.js";
 import { resolveBrowserActionTarget, type ResolveActionOutcome } from "../../src/tools/browser-resolver.js";
 import { browserClickElementHandler, readPressLanding } from "../../src/tools/browser.js";
+import { buildPressPointJs, buildCoverJs } from "../../src/tools/press-landing.js";
 
 const PORT = 9238;
 const CHROME = tryFindChrome() !== null;
@@ -361,6 +362,17 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(o.kind).toBe("resolved");
     if (o.kind === "resolved" && o.axMark !== undefined) await clearAxMarks(o.axMark, null, PORT);
     expect(await marks()).toBe(0);
+  });
+
+  it("reads a press point and a cover on a page that shadows closest, matches and contains (win2 on #1018)", async () => {
+    // A click-through label sends the hit test to the <form>, whose closest, matches and contains are its controls:
+    // the press rule threw "hit.closest is not a function" on main and failed the click with ToolError.
+    await page(`<form id="fc" style="padding:40px"><input name="closest"><input name="matches"><input name="contains"><input type="radio" id="rc" style="width:0;height:0;margin:0;padding:0;border:0;appearance:none"><label for="rc" style="display:inline-block;padding:6px 12px;pointer-events:none">Closest radio</label></form>`);
+    expect(await evaluateInTab("typeof document.getElementById('fc').closest", null, PORT)).toBe("object");
+    const point = (await evaluateInTab(buildPressPointJs("#rc"), null, PORT)) as Record<string, unknown>;
+    expect(point.error ?? null).toBeNull();
+    const cover = (await evaluateInTab(buildCoverJs("#rc"), null, PORT)) as Record<string, unknown>;
+    expect(typeof cover).toBe("object");
   });
 
   it("presses Choices' select as it is: a listbox that opens a popup is a control (win2 on #1008, W6)", async () => {
