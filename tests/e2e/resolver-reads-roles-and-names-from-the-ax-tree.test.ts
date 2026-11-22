@@ -342,6 +342,13 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     const got = Object.fromEntries(cands.map((c) => [c.name, c.actionability.receivesEvents]));
     // A label under a cover is not a way in: the press lands on the cover.
     expect(got).toEqual({ Zero: true, Plain: true, Covered: false, "Label covered": false });
+    // Shown, never the gate: the strict pass still refuses the 0x0 radio, so browser_click's loose pass and landing
+    // read press its label, not its own 0x0 point (/code-review on #1018).
+    expect((await resolve({ by: "ariaLabel", pattern: "Zero", role: "radio" }, true)).kind).toBe("noActionable");
+    // A resolved answer leaves its mark for the caller to clear, as browser_click does.
+    const loose = await resolve({ by: "ariaLabel", pattern: "Zero", role: "radio" }, false);
+    expect(loose.kind).toBe("resolved");
+    if (loose.kind === "resolved" && loose.axMark !== undefined) await clearAxMarks(loose.axMark, null, PORT);
     expect(await marks()).toBe(0);
   });
 

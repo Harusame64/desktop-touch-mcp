@@ -63,8 +63,8 @@ export interface ActionFactsArgs {
    * ADR-023 Phase 2b: when true, the gather ALSO embeds page-level `ModalFacts`
    * (for `detectModal`) + a per-candidate `occludedByDialogIndex` (which modal
    * dialog/backdrop, if any, occludes the candidate). Set only for `action:'click'`
-   * (the modal-blocking preflight); `action:'fill'` leaves it off so the fill
-   * gather stays bit-equal with the Phase 1 snapshot.
+   * (the modal-blocking preflight); `action:'fill'` leaves it off. (Both gathers now
+   * also carry the press rule from press-landing.ts for `reachedViaLabel`, #1018.)
    */
   includeModal?: boolean;
 }
@@ -471,15 +471,21 @@ ${pressLandingRuleJs()}
       const hit = document.elementFromPoint(cx, cy);
       receivesEvents = !!hit && (hit === el || el.contains(hit));
     }
-    // A control a person presses through its own <label> (a 0x0 radio, an sr-only checkbox) receives a press there,
-    // as browser_click's press path finds it (internal #420: listed receivesEvents:false in an ambiguity list).
+    // A control a person presses through its own <label> (a 0x0 radio, an sr-only checkbox) is reached there, as
+    // browser_click's press path finds it (internal #420: listed receivesEvents:false in an ambiguity list). Shown in
+    // the list only, never the gate: a control the centre test refuses goes to the loose pass and the landing read,
+    // which presses the label; feeding this into the gate made the strict pass press the control's own 0x0 point
+    // (/code-review on #1018).
+    let reachedViaLabel = false;
     if (!receivesEvents && el.labels) {
       for (const lab of Array.from(el.labels)) {
         const lr = lab.getBoundingClientRect();
         if (lr.width === 0 || lr.height === 0) continue;
         const lx = lr.left + lr.width / 2, ly = lr.top + lr.height / 2;
         if (lx < 0 || ly < 0 || lx >= window.innerWidth || ly >= window.innerHeight) continue;
-        if (__dtmLandsOn(el, document.elementFromPoint(lx, ly)).how === 'own_label') { receivesEvents = true; break; }
+        // On its own label, or on the control itself inside a wrapping label (/code-review on #1018).
+        const how = __dtmLandsOn(el, document.elementFromPoint(lx, ly)).how;
+        if (how === 'own_label' || how === 'self' || how === 'inside') { reachedViaLabel = true; break; }
       }
     }
     const tiRaw = el.getAttribute('tabindex');
@@ -497,6 +503,7 @@ ${pressLandingRuleJs()}
       visible: vis,
       enabled: enabled,
       receivesEvents: receivesEvents,
+      reachedViaLabel: reachedViaLabel,
       // Role-filter match for THIS node (uses the same roleMatches predicate that
       // builds the pool, so input type is available). true when no role filter is
       // set. decideActionTarget gates the climb-resolved clickable on this so a
@@ -781,8 +788,13 @@ export interface ClickableNode {
   visible: boolean;
   /** not `:disabled` (ancestor-aware — includes `<fieldset disabled>` descendants) and `aria-disabled !== "true"` */
   enabled: boolean;
-  /** `document.elementFromPoint(center)` hit is this node or a descendant (not occluded) */
+  /** `document.elementFromPoint(center)` hit is this node or a descendant (not occluded). The click's strict gate. */
   receivesEvents: boolean;
+  /**
+   * A centre of one of its own labels reaches it (internal #420). Shown in the ambiguity list only, never the gate:
+   * the loose pass and the landing read press the label.
+   */
+  reachedViaLabel?: boolean;
   /**
    * Role-filter match for this node: `false` ONLY when a `role` filter was given
    * AND this node's role does not satisfy it (computed in the gatherer via the
@@ -989,7 +1001,8 @@ function toFingerprint(f: CandidateFacts, clickable: ClickableNode | null): Ambi
     index: f.index,
     role: f.role,
     name: f.shownName || f.name,
-    actionability: { visible: n.visible, enabled: n.enabled, receivesEvents: n.receivesEvents },
+    // What the agent reads: a press on its own label reaches it too (internal #420).
+    actionability: { visible: n.visible, enabled: n.enabled, receivesEvents: n.receivesEvents || !!n.reachedViaLabel },
     rect: n.rect,
     nearestLabels: f.nearestLabels,
     containerHint: f.containerHint,
@@ -1235,7 +1248,7 @@ async function gatherAndDecide(
     role: args.role,
     ...(axMark !== undefined && { axMark }),
     // ADR-023 Phase 2b: only the click path needs the modal-blocking preflight;
-    // fill leaves it off so its gather stays bit-equal with the Phase 1 snapshot.
+    // fill leaves it off.
     includeModal: args.action === "click",
   });
   let raw: unknown;
