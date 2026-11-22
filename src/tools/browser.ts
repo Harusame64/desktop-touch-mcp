@@ -2201,6 +2201,39 @@ function browserResolveStopToFailure(
       },
     );
   }
+  // No match left: said by what the pool left out, not "a match is there but cannot be pressed — target a parent"
+  // (internal #420: a scope that matches the control itself, or the second element of a comma scope on main, read as a
+  // match nobody could press). Each answer states only what was counted: nothing matched, the matches are hidden, the
+  // role filter left none, or the scan stopped early (/code-review on this answer). The code stays, so a caller's
+  // handling does not change.
+  if (outcome.kind === "noActionable" && outcome.total === 0 && outcome.seen) {
+    const seen = outcome.seen;
+    const byAxis = !("selector" in ctx);
+    const context = { ...ctx, total: 0, matched: seen.matched, hidden: seen.hidden, offRole: seen.offRole, cut: seen.cut, returned: outcome.returned, truncated: outcome.truncated, candidates: outcome.candidates };
+    const stop = (message: string, suggest: string[]) => failCode("BrowserNoActionableTarget", `${tool}: ${message} Nothing was done.`, { suggest, context });
+    const cutNote = seen.cut ? " The search stopped before reading every match." : "";
+    const cutHint = seen.cut && byAxis ? ["Narrow the search with a scope (a CSS selector for the part of the page that holds it)"] : [];
+    if (seen.matched === 0) {
+      return stop(`nothing matches.${cutNote}`, [
+        ...cutHint,
+        byAxis
+          ? "Check the pattern and the axis: browser_search with the same by/pattern lists what matches, and browser_overview lists the page's controls"
+          : "Check the selector: browser_overview lists the page's controls with a selector for each",
+        ...("scope" in ctx
+          ? ["scope searches inside every element it matches, not those elements themselves: widen it, or drop it to search the whole page"]
+          : []),
+      ]);
+    }
+    const parts: string[] = [];
+    if (seen.hidden > 0) parts.push(`${seen.hidden} hidden (no box, or display/visibility/opacity hides it)`);
+    if (seen.offRole > 0) parts.push(`${seen.offRole} not of role '${String(ctx.role)}'`);
+    return stop(`${seen.matched} match(es), none to act on: ${parts.join("; ")}.${cutNote}`, [
+      ...cutHint,
+      byAxis
+        ? "browser_search with the same by/pattern and visibleOnly:false lists these matches, hidden ones too, with each one's role"
+        : "browser_eval can read the matches' styles and boxes",
+    ]);
+  }
   const code = outcome.kind === "ambiguous" ? "BrowserAmbiguousTarget" : "BrowserNoActionableTarget";
   const message =
     outcome.kind === "ambiguous"
@@ -2440,10 +2473,14 @@ async function clickByAxis(args: {
   let target: Extract<ResolveActionOutcome, { kind: "resolved" }> | null = outcome.kind === "resolved" ? outcome : null;
   let covered = false;
   let looseAmbiguous: Extract<ResolveActionOutcome, { kind: "ambiguous" }> | null = null;
+  let looseKind: ResolveActionOutcome["kind"] | null = null;
+  let looseTotal = 0;
   if (outcome.kind === "noActionable") {
     const loose = await resolveBrowserActionTarget({
       by, pattern, role, scope, caseSensitive, action: "click", requireReceivesEvents: false, tabId: tabId ?? null, port,
     });
+    looseKind = loose.kind;
+    looseTotal = loose.kind === "noActionable" || loose.kind === "ambiguous" ? loose.total : 0;
     if (loose.kind === "resolved" && loose.axMark !== undefined) args.pendingMarks.set(loose.axMark, loose.tabId ?? tabId ?? null);
     // Several matches a person could each press (0x0 radios pressed through their labels) are a choice to make,
     // not "none actionable" (win2 on #1008, W11a). Only matches the single road would take count: on the screen, or a
@@ -2493,7 +2530,14 @@ async function clickByAxis(args: {
       if (!covered) return browserModalBlockingFailure(verdict.blocker, verdict.signals, ctx);
     }
   }
-  if (target === null) return browserResolveStopToFailure(looseAmbiguous ?? (outcome as Exclude<ResolveActionOutcome, { kind: "resolved" | "error" }>), "browser_click", ctx);
+  if (target === null) {
+    const strict = outcome as Exclude<ResolveActionOutcome, { kind: "resolved" | "error" }>;
+    // A loose read that found matches the strict one did not (the page drew them between the reads): not "nothing
+    // matches"; the plain stop, as before (/code-review on the zero-match answer).
+    const looseSaw = looseKind !== null && looseKind !== "error" && !(looseKind === "noActionable" && looseTotal === 0);
+    const stopWith = strict.kind === "noActionable" && looseSaw ? { ...strict, seen: undefined } : strict;
+    return browserResolveStopToFailure(looseAmbiguous ?? stopWith, "browser_click", ctx);
+  }
 
   // Minimized-window guard: the gather eval's viewport origin is the Windows
   // -32000 parking marker → the physical point is a large negative point the OS
@@ -2529,12 +2573,16 @@ async function clickByAxis(args: {
     let pressAim: PageAim | undefined = aimFromViewportRect(target.rect, target.viewport);
     let scrollHeld = false;
     if (covered) {
+      // The loose read found the match this stop is about: a strict read that saw none (the page drew it between the
+      // two reads) is not answered "nothing matches"; the stop is the plain one, as before (/code-review on the
+      // zero-match answer).
+      const strict = outcome as Extract<ResolveActionOutcome, { kind: "noActionable" }>;
+      const stop = () => browserResolveStopToFailure({ ...strict, seen: undefined }, "browser_click", ctx);
       if (!tagged) {
         if (modal) return browserModalBlockingFailure(modal.blocker, signals ?? ({} as ModalVerdict["signals"]), ctx);
-        return browserResolveStopToFailure(outcome as Exclude<ResolveActionOutcome, { kind: "resolved" | "error" }>, "browser_click", ctx);
+        return stop();
       }
       const landing = await readPressLanding(tagSel, tab, port, { holdScroll: true });
-      const stop = () => browserResolveStopToFailure(outcome as Exclude<ResolveActionOutcome, { kind: "resolved" | "error" }>, "browser_click", ctx);
       if ("error" in landing) {
         if (landing.outside === true) {
           return failCode("ElementNotInViewport", `browser_click: ${label} is outside the viewport and could not be scrolled into it. Nothing was clicked.`, {
@@ -4470,7 +4518,7 @@ export function registerBrowserTools(server: McpServer): void {
     "browser_click",
     {
       description:
-        "Click a DOM element in Chrome/Edge. Two ways to target: (1) selector — a CSS selector (combines browser_locate + mouse_click; stable across repaints); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern, for dynamic-class SPAs. by-axis resolves to a SINGLE actionable element (climbing up to 3 levels to a clickable ancestor) and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ actionable elements match, or code:'BrowserNoActionableTarget' when matches exist but none is clickable — it never guesses. If the target is behind a modal dialog blocking the page, BOTH targeting modes STOP with code:'BrowserModalBlocking' (context.blockingElement {name, role}; nothing clicked) — dismiss the dialog (its close button or Escape) and retry; a navigation drawer does not count. Both modes press past a label, a skin or a sticky header over the element (by-axis: a single match), and STOPS with code:'BrowserPointCovered' (coveredBy:'page', context.cover/offers; nothing clicked) when a banner, menu or overlay is in front; the reply's pressedAt says where it pressed. Right before the press it checks what is under the point and STOPS with code:'BrowserPointCovered' (nothing clicked; suggest names the next step) when another window, DevTools or a side panel is there, the page is not shown, or the tab is not in front; it also stops a press the page moved under (coveredBy:'page_stopped': the element was not clicked; check pageReacted). Optional role filter (by:'text',pattern:'Save',role:'button') and scope. Provide EITHER selector OR by+pattern (not both). Pass tabId+port to auto-guard (tab readyState and identity) and get post.perception.status; lensId is for pinned-tab workflows. Caveats: selector mode fails if the element is outside the visible viewport — pass scrollIntoView:true or scroll it in first (by-axis presses only in-viewport targets; both answer ElementNotInViewport). hints.verifyDelivery:{status:'delivered'|'unverifiable', reason, observedSignals:{mutationCount,urlChanged,activeElementChanged}} reports the post-click observation in 2 values: 'delivered' only when mutationCount>0 OR urlChanged (a focus change alone is not delivery: every click on a focusable control moves focus); 'unverifiable' reason ∈ {'iframe_context_mismatch','no_dom_mutation','probe_install_failed','probe_read_failed'}. BrowserClickNotDelivered is reserved and never emitted: read 'unverifiable' instead.",
+        "Click a DOM element in Chrome/Edge. Two ways to target: (1) selector — a CSS selector (combines browser_locate + mouse_click; stable across repaints); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern, for dynamic-class SPAs. by-axis resolves to a SINGLE actionable element (climbing up to 3 levels to a clickable ancestor) and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ actionable elements match, or code:'BrowserNoActionableTarget' when none is clickable, none matches, or all are hidden or of another role — it never guesses. If the target is behind a modal dialog blocking the page, BOTH targeting modes STOP with code:'BrowserModalBlocking' (context.blockingElement {name, role}; nothing clicked) — dismiss the dialog (its close button or Escape) and retry; a navigation drawer does not count. Both modes press past a label, a skin or a sticky header over the element (by-axis: a single match), and STOPS with code:'BrowserPointCovered' (coveredBy:'page', context.cover/offers; nothing clicked) when a banner, menu or overlay is in front; the reply's pressedAt says where it pressed. Right before the press it checks what is under the point and STOPS with code:'BrowserPointCovered' (nothing clicked; suggest names the next step) when another window, DevTools or a side panel is there, the page is not shown, or the tab is not in front; it also stops a press the page moved under (coveredBy:'page_stopped': the element was not clicked; check pageReacted). Optional role filter (by:'text',pattern:'Save',role:'button') and scope. Provide EITHER selector OR by+pattern (not both). Pass tabId+port to auto-guard (tab readyState and identity) and get post.perception.status; lensId is for pinned-tab workflows. Caveats: selector mode fails if the element is outside the visible viewport — pass scrollIntoView:true or scroll it in first (by-axis presses only in-viewport targets; both answer ElementNotInViewport). hints.verifyDelivery:{status:'delivered'|'unverifiable', reason, observedSignals:{mutationCount,urlChanged,activeElementChanged}} reports the post-click observation in 2 values: 'delivered' only when mutationCount>0 OR urlChanged (a focus change alone is not delivery: every click on a focusable control moves focus); 'unverifiable' reason ∈ {'iframe_context_mismatch','no_dom_mutation','probe_install_failed','probe_read_failed'}. BrowserClickNotDelivered is reserved and never emitted: read 'unverifiable' instead.",
       inputSchema: browserClickRegistrationSchema,
     },
     browserClickRegistrationHandler as typeof browserClickElementHandler
@@ -4516,7 +4564,7 @@ export function registerBrowserTools(server: McpServer): void {
     "browser_fill",
     {
       description:
-        "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Two ways to target: (1) selector — a CSS selector (use browser_overview / browser_locate to find one); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern (e.g. by:'ariaLabel', pattern:'Email address', or by:'role', pattern:'textbox'), so you do not have to build a CSS selector. by-axis resolves to a SINGLE fillable element and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ match, or code:'BrowserNoActionableTarget' when the match is not a fillable input/textarea/contenteditable/select — it never guesses. Optionally add role to filter and scope to narrow. Provide EITHER selector OR by+pattern (not both). Use this over browser_eval when setting a controlled input's value via JS does not update framework state. A native <select> takes the option whose value is value, else the one option showing that text (chose names it); a value no option has, a disabled or multiple select, or one a widget stands in for is refused untouched, as is a read-only input of a choice widget (choose by pressing). Caveats: Requires browser_open (CDP active). actual in the response shows the element's value after fill; verify it matches the intended value (for a field the page masks, such as a password, neither the value you passed nor the one read back is echoed — valueWithheld:'masked' — and the match is still checked, in the page). Typed errors: code:'BrowserFillNotDelivered' on post-fill value mismatch — note the false-positive case where a React controlled input's onChange transforms the value (delivery actually succeeded; hints.verifyDelivery.subReason:'controlled_input_transform' for that case; the actual value is authoritative).",
+        "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Two ways to target: (1) selector — a CSS selector (use browser_overview / browser_locate to find one); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern (e.g. by:'ariaLabel', pattern:'Email address', or by:'role', pattern:'textbox'), so you do not have to build a CSS selector. by-axis resolves to a SINGLE fillable element and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ match, or code:'BrowserNoActionableTarget' when the match is not a fillable input/textarea/contenteditable/select, nothing matches, or every match is hidden or of another role — it never guesses. Optionally add role to filter and scope to narrow. Provide EITHER selector OR by+pattern (not both). Use this over browser_eval when setting a controlled input's value via JS does not update framework state. A native <select> takes the option whose value is value, else the one option showing that text (chose names it); a value no option has, a disabled or multiple select, or one a widget stands in for is refused untouched, as is a read-only input of a choice widget (choose by pressing). Caveats: Requires browser_open (CDP active). actual in the response shows the element's value after fill; verify it matches the intended value (for a field the page masks, such as a password, neither the value you passed nor the one read back is echoed — valueWithheld:'masked' — and the match is still checked, in the page). Typed errors: code:'BrowserFillNotDelivered' on post-fill value mismatch — note the false-positive case where a React controlled input's onChange transforms the value (delivery actually succeeded; hints.verifyDelivery.subReason:'controlled_input_transform' for that case; the actual value is authoritative).",
       inputSchema: browserFillRegistrationSchema,
     },
     browserFillRegistrationHandler as typeof browserFillInputHandler

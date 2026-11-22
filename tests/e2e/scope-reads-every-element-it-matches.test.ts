@@ -176,3 +176,69 @@ describe.skipIf(!CHROME)("a scope reads every element it matches (internal #420)
     expect((JSON.parse(nt.slice(nt.indexOf("["), nt.lastIndexOf("]") + 1)) as Array<{ text: string }>).map((i) => i.text)).toEqual(["Go"]);
   });
 });
+
+describe.skipIf(!CHROME)("nothing matching is said as such (internal #420)", () => {
+  it("a scope that matches the control itself finds nothing inside it, and says so with the scope's rule", async () => {
+    await page(`<button class="save" id="a">Save</button>`);
+    const r = await click({ by: "role", pattern: "button", scope: "button.save" });
+    expect(r.code, JSON.stringify(r)).toBe("BrowserNoActionableTarget");
+    expect(r.error).toBe("browser_click: nothing matches. Nothing was done.");
+    expect((r.suggest as string[]).some((x) => x.startsWith("scope searches inside every element it matches"))).toBe(true);
+    expect(await pressed()).toEqual([]);
+  });
+
+  it("without a scope, the answer leaves the scope's rule out; browser_fill says the same", async () => {
+    await page(`<button id="a">Save</button>`);
+    const r = await click({ by: "text", pattern: "No such words" });
+    expect(r.error, JSON.stringify(r)).toBe("browser_click: nothing matches. Nothing was done.");
+    expect((r.suggest as string[]).some((x) => x.includes("scope"))).toBe(false);
+    const f = payload(await browserFillInputHandler({ by: "ariaLabel", pattern: "No such field", value: "x", includeContext: false, port: PORT } as Parameters<typeof browserFillInputHandler>[0]));
+    expect(f.error, JSON.stringify(f)).toBe("browser_fill: nothing matches. Nothing was done.");
+  });
+
+  it("matches that are all hidden are said to be hidden, not missing; the answer states counts, not what to show", async () => {
+    await page(`<a id="set" href="#s" style="display:none">Settings</a>`);
+    const r = await click({ by: "text", pattern: "Settings" });
+    expect(r.error, JSON.stringify(r)).toBe("browser_click: 1 match(es), none to act on: 1 hidden (no box, or display/visibility/opacity hides it). Nothing was done.");
+    expect(r.suggest).toEqual(["browser_search with the same by/pattern and visibleOnly:false lists these matches, hidden ones too, with each one's role"]);
+    expect((r.context as { matched: number; hidden: number; offRole: number }).hidden).toBe(1);
+  });
+
+  it("matches of another role are counted on both tests", async () => {
+    await page(`<button id="a">Save</button><span id="h" style="display:none">Save</span>`);
+    const r = await click({ by: "text", pattern: "Save", role: "link" });
+    expect(r.error, JSON.stringify(r)).toBe("browser_click: 2 match(es), none to act on: 1 hidden (no box, or display/visibility/opacity hides it); 2 not of role 'link'. Nothing was done.");
+    expect(r.suggest).toEqual(["browser_search with the same by/pattern and visibleOnly:false lists these matches, hidden ones too, with each one's role"]);
+  });
+
+  it("the tree's road keeps its own count when the DOM reading finds none either", async () => {
+    // Named by its <label>, which only the tree reads; hidden (opacity 0), so the tree's match is filtered out and the
+    // DOM reading, which reads aria-label, finds nothing.
+    await page(`<label for="e">Email</label><input id="e" style="opacity:0">`);
+    const f = payload(await browserFillInputHandler({ by: "ariaLabel", pattern: "Email", value: "x", includeContext: false, port: PORT } as Parameters<typeof browserFillInputHandler>[0]));
+    expect(f.error, JSON.stringify(f)).toBe("browser_fill: 1 match(es), none to act on: 1 hidden (no box, or display/visibility/opacity hides it). Nothing was done.");
+    expect(await evaluateInTab("document.getElementById('e').value", null, PORT)).toBe("");
+  });
+
+  it("a count from the tree's list that reached its cap says not every match was read", async () => {
+    const fields = Array.from({ length: 230 }, (_, i) => `<label for="f${i}">Item ${i}</label><input id="f${i}" style="opacity:0">`).join("");
+    await page(fields);
+    const f = payload(await browserFillInputHandler({ by: "ariaLabel", pattern: "Item", value: "x", includeContext: false, port: PORT } as Parameters<typeof browserFillInputHandler>[0]));
+    expect(f.error, JSON.stringify(f).slice(0, 400)).toBe("browser_fill: 200 match(es), none to act on: 200 hidden (no box, or display/visibility/opacity hides it). The search stopped before reading every match. Nothing was done.");
+    expect((f.suggest as string[])[0]).toMatch(/^Narrow the search with a scope/);
+  }, 30_000);
+
+  it("the selector road's hidden match is said to be hidden, not that the selector matches nothing", async () => {
+    await page(`<button class="save" id="a" style="display:none">Save</button>`);
+    const r = await click({ selector: "button.save" });
+    expect(r.code, JSON.stringify(r)).toBe("BrowserNoActionableTarget");
+    expect(r.error).toBe("browser_click: 1 match(es), none to act on: 1 hidden (no box, or display/visibility/opacity hides it). Nothing was done.");
+  });
+
+  it("a match that cannot be pressed keeps its own answer", async () => {
+    await page(`<p id="t">Just a label</p>`);
+    const r = await click({ by: "text", pattern: "Just a label" });
+    expect(r.code, JSON.stringify(r)).toBe("BrowserNoActionableTarget");
+    expect(r.error).toBe("browser_click: 1 match(es) found but none is an auto-actionable target.");
+  });
+});
