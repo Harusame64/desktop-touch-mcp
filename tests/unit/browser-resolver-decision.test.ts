@@ -329,3 +329,45 @@ describe("ElementZeroSizeError (issue #441 — cdp-bridge typed zero-size error)
     expect(e.message).toMatch(/zero size|hidden/i);
   });
 });
+
+describe("decideActionTarget: every match only outside the viewport (issue #441's e2e after a fill)", () => {
+  const VP = { innerWidth: 800, innerHeight: 600 };
+  const btn = (i: number, rect: { x: number; y: number; w: number; h: number }, p: Partial<ClickableNode> = {}) =>
+    facts({ index: i, chain: [node({ tag: "button", receivesEvents: false, scrollsIntoView: true, rect, ...p })] });
+  const above = { x: 300, y: -300, w: 100, h: 20 };
+  const below = { x: 300, y: 900, w: 100, h: 20 };
+  it("says so, with no generic hints, when each pressable match lies wholly outside", () => {
+    const d = decideActionTarget([btn(0, above), btn(1, below)], 2, { viewport: VP });
+    expect(d).toMatchObject({ kind: "noActionable", offViewport: true });
+    if (d.kind === "noActionable") expect(d.next).toEqual([]);
+  });
+  it("keeps the generic answer when one press is in view (covered), one scrolling never shows, or no viewport is known", () => {
+    for (const fs of [
+      [btn(0, above), btn(1, { x: 300, y: 580, w: 100, h: 20 })],
+      [btn(0, above), btn(1, { x: -9999, y: 0, w: 100, h: 20 }, { scrollsIntoView: false })],
+    ]) {
+      const d = decideActionTarget(fs, 2, { viewport: VP });
+      expect(d.kind).toBe("noActionable");
+      expect(d.kind === "noActionable" && d.offViewport).toBeFalsy();
+      if (d.kind === "noActionable") expect(d.next).toEqual([...NO_ACTIONABLE_NEXT_HINTS]);
+    }
+    const none = decideActionTarget([btn(0, above)], 1);
+    expect(none.kind === "noActionable" && none.offViewport).toBeFalsy();
+    // A cut list (more matches than were read) may hold one in view (/code-review on the #441 fix).
+    const cut = decideActionTarget([btn(0, above), btn(1, below)], 12, { viewport: VP });
+    expect(cut.kind === "noActionable" && cut.offViewport).toBeFalsy();
+  });
+  it("counts controls, not matches, ignores matches that are no press, and reads the centre", () => {
+    // A button and its own label span climb to one button: one control.
+    const twice = decideActionTarget([btn(0, below), btn(1, below)], 2, { viewport: VP });
+    expect(twice).toMatchObject({ kind: "noActionable", offViewport: true, offViewportCount: 1 });
+    // A disabled button is no press either.
+    expect(decideActionTarget([btn(0, above), btn(1, below, { enabled: false })], 2, { viewport: VP })).toMatchObject({ offViewport: true, offViewportCount: 1 });
+    // A paragraph with no clickable beside the off-screen button is not a press.
+    const text = decideActionTarget([btn(0, below), facts({ index: 1, chain: [node({ receivesEvents: false, rect: { x: 0, y: 100, w: 200, h: 20 } })] })], 2, { viewport: VP });
+    expect(text).toMatchObject({ kind: "noActionable", offViewport: true, offViewportCount: 1 });
+    // Its top edge in view, its centre below the edge.
+    const edge = decideActionTarget([btn(0, { x: 300, y: 590, w: 100, h: 40 })], 1, { viewport: VP });
+    expect(edge).toMatchObject({ kind: "noActionable", offViewport: true });
+  });
+});

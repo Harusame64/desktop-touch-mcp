@@ -70,7 +70,9 @@ describe.skipIf(!CHROME)("browser_click by-axis: a covered match is read like th
   it("still stops a covered match that is off the screen as before (control: no scrolling hunt)", async () => {
     await page(`<button data-n="far" style="position:absolute;left:300px;top:1700px">Faraway</button><div style="position:absolute;left:0;top:1650px;width:800px;height:120px;background:#eee;z-index:5">Cover</div>`);
     const r = await click({ by: "text", pattern: "Faraway" });
-    expect(r.code).toBe("BrowserNoActionableTarget");
+    // Not pressed and not scrolled to; since issue #441's e2e fix it says it is outside the viewport (it was
+    // BrowserNoActionableTarget, "no strong interactive element", which was false).
+    expect(r.code).toBe("ElementNotInViewport");
     expect(await marks()).toBe(0);
   });
 

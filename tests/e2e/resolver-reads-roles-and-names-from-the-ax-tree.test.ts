@@ -186,7 +186,7 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
   it("leaves no marks when the click stops before marking its target (a match off the screen)", async () => {
     await page(`<div style="height:3000px"></div><input type="checkbox" id="far" aria-label="Far away">`);
     const r = await browserClickElementHandler({ by: "ariaLabel", pattern: "Far away", port: PORT } as never);
-    expect((r.content[0] as { text: string }).text).toContain("BrowserNoActionableTarget");
+    expect((r.content[0] as { text: string }).text).toContain("ElementNotInViewport");
     expect(await marks()).toBe(0);
   });
 
@@ -704,11 +704,42 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(await evaluateInTab("document.getElementById('fr').contentDocument.querySelectorAll('[data-dtm-ax]').length", null, PORT)).toBe(0);
   });
 
-  it("still answers two matches below the fold as none actionable, not ambiguous (control for W11a)", async () => {
+  it("says a match is outside the viewport where an inner scroller would show it, not inside a fixed panel in a shadow root (/code-review on the #441 fix)", async () => {
+    const code = async (pattern: string) => (JSON.parse(((await browserClickElementHandler({ by: "text", pattern, port: PORT } as never)).content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { code?: string }).code;
+    // An app shell: the page does not scroll, main does.
+    await page(`<style>html,body{height:100%;overflow:hidden}</style><main style="overflow:auto;height:100%"><div style="height:3000px;position:relative"><button style="position:absolute;top:2000px">Save draft</button></div></main>`);
+    expect(await code("Save draft")).toBe("ElementNotInViewport");
+    // A web component's fixed sheet, its link slotted from the light DOM, on a page taller than the viewport.
+    await page(`<div style="height:4000px"></div><x-sheet><a href="#n">Sheet link</a></x-sheet>`);
+    await evaluateInTab(`(function(){customElements.define('x-sheet', class extends HTMLElement { constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<div style="position:fixed;left:0;top:100%;width:300px"><slot></slot></div>';} });return true})()`, null, PORT);
+    await sleep(50);
+    expect(await code("Sheet link")).toBe("BrowserNoActionableTarget");
+  });
+
+  it("puts a dialog over the page first, and does not offer a scroll that was already tried (/code-review on the #441 fix)", async () => {
+    const body = async (a: Record<string, unknown>) => JSON.parse(((await browserClickElementHandler({ ...a, port: PORT } as never)).content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { code?: string; suggest?: string[] };
+    // Scrolled past the button, with a modal dialog open: the dialog is the thing to deal with.
+    await page(`<button style="margin:40px">Top action</button><div style="height:4000px"></div><div role="dialog" aria-modal="true" aria-label="Terms" style="position:fixed;inset:0;background:rgba(0,0,0,.4)"><button>Accept</button></div>`);
+    await evaluateInTab("scrollTo(0, 2000); true", null, PORT);
+    expect((await body({ by: "text", pattern: "Top action" })).code).toBe("BrowserModalBlocking");
+    // The dialog's own button, below the fold inside a tall scrolling dialog: scroll within it, not dismiss it (codex on
+    // #1028).
+    await page(`<div role="dialog" aria-modal="true" aria-label="Terms" style="position:fixed;inset:0;overflow:auto;background:#fff"><div style="height:3000px;position:relative"><button style="position:absolute;top:2500px">I agree</button></div></div>`);
+    expect((await body({ by: "text", pattern: "I agree" })).code).toBe("ElementNotInViewport");
+    // A page that jumps back to the top whenever it is scrolled: scrollIntoView:true was tried, so it is not offered.
+    await page(`<div data-go="1" style="display:none">Go</div><div style="height:4000px"></div><button data-go="1">Go</button>`);
+    await evaluateInTab("addEventListener('scroll', function(){ if (scrollY) scrollTo(0, 0); }); true", null, PORT);
+    const r = await body({ selector: '[data-go="1"]', scrollIntoView: true });
+    expect(r.code).toBe("ElementNotInViewport");
+    expect(r.suggest?.[0]).toMatch(/^Scrolling it into view was tried/);
+  });
+
+  it("still answers two matches below the fold as not pressable here, not ambiguous (control for W11a)", async () => {
     await page(`<div style="height:3000px"><button style="position:absolute;left:100px;top:2400px">Delete</button><button style="position:absolute;left:300px;top:2600px">Delete</button></div>`);
     const r = await browserClickElementHandler({ by: "text", pattern: "Delete", port: PORT } as never);
     const body = JSON.parse((r.content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { code?: string };
-    expect(body.code).toBe("BrowserNoActionableTarget");
+    // Outside the viewport, said so since issue #441's e2e fix (was BrowserNoActionableTarget).
+    expect(body.code).toBe("ElementNotInViewport");
   });
 
   it("says a 0x0 checkbox whose label is display: none is not rendered (a label with no box is not a way in)", async () => {
