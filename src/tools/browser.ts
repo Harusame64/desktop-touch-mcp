@@ -1729,7 +1729,7 @@ ${ELEMENT_NAME_JS}
   const FIELD_SEL = 'input, select, textarea, button';
   // The prototype's matches: a form with a control named "matches" (/code-review on #1019).
   const isSelf = __matches(scope, FIELD_SEL);
-  const children = Array.from(scope.querySelectorAll(FIELD_SEL));
+  const children = Array.from(__qsa(scope, FIELD_SEL));
   const elements = isSelf ? [scope, ...children] : children;
   const includeHidden = ${includeHidden};
   const maxResults = ${maxResults};

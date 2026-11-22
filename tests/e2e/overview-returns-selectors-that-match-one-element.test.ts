@@ -138,11 +138,11 @@ describe.skipIf(!CHROME)("browser_overview returns selectors that match one elem
   });
 
   it("reads a form's fields when the form has a control named \"matches\" (/code-review on #1019)", async () => {
-    await page(`<form id="lg"><input name="matches" id="mm" value="a"><input name="user" id="uu"></form>`);
+    await page(`<form id="lg"><input name="matches" id="mm" value="a"><input name="querySelectorAll" id="qq"><input name="user" id="uu"></form>`);
     const r = await browserGetFormHandler({ selector: "#lg", includeHidden: false, maxResults: 50, port: PORT, includeContext: false });
     const t = (r.content[0] as { text: string }).text;
     const fields = (JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1)) as { fields: Array<{ id: string }> }).fields;
-    expect(fields.map((f) => f.id)).toEqual(["mm", "uu"]);
+    expect(fields.map((f) => f.id)).toEqual(["mm", "qq", "uu"]);
   });
 
   it("names 200 alike buttons in a list with selectors that match one each", async () => {

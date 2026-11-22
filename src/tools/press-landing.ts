@@ -38,10 +38,10 @@ export function pressLandingRuleJs(): string {
 ${ELEMENT_NAME_JS}
   // The prototype's closest, matches and contains: a <form> exposes a control named so as form.closest (and a custom
   // element can define its own), and a call on it threw "hit.closest is not a function" (win2 on #1018).
-  // Looked up when called, and the element's own where there is no Element (the unit tests' fake DOM), as #1016.
-  function __dtmClosest(n, s) { return (typeof Element !== 'undefined' ? Element.prototype.closest : n.closest).call(n, s); }
-  function __dtmMatches(n, s) { return (typeof Element !== 'undefined' ? Element.prototype.matches : n.matches).call(n, s); }
-  function __dtmContains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
+  // SAFE_DOM_JS's, which ELEMENT_NAME_JS above brings (one definition: /code-review on #1019).
+  function __dtmClosest(n, s) { return __closest(n, s); }
+  function __dtmMatches(n, s) { return __matches(n, s); }
+  function __dtmContains(a, b) { return __contains(a, b); }
   var __DTM_INTERACTIVE = 'a[href],button,input,select,textarea,summary,[contenteditable=""],[contenteditable=true],[role=button],[role=link],[role=checkbox],[role=radio],[role=switch],[role=tab],[role=menuitem],[role=option],[role=combobox],[role=textbox],[tabindex]:not([tabindex="-1"])';
   var __DTM_DIALOG = 'dialog,[role=dialog],[role=alertdialog],[aria-modal=true]';
   function __dtmArea(n) { var r = n.getBoundingClientRect(); return r.width * r.height; }
@@ -327,9 +327,9 @@ export function buildCoverJs(selector: string): string {
     }
   }
   var root = d;
-  // Capped: a form whose control is named parentElement turns this walk into a loop (form → input → form…;
-  // /code-review on #1019).
-  if (!root) { root = hit; for (var up2 = 0; up2 < 64 && root.parentElement && root.parentElement !== document.body && !__dtmContains(root.parentElement, el); up2++) root = root.parentElement; }
+  // Capped, far above a real page's depth: a form whose control is named parentElement turns this walk into a loop
+  // (form → input → form…; /code-review on #1019).
+  if (!root) { root = hit; for (var up2 = 0; up2 < 1000 && root.parentElement && root.parentElement !== document.body && !__dtmContains(root.parentElement, el); up2++) root = root.parentElement; }
   var offers = [];
   var cands = root.querySelectorAll(__DTM_INTERACTIVE);
   for (var j = 0; j < cands.length && offers.length < 6; j++) {

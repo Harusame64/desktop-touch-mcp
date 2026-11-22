@@ -379,7 +379,11 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     const o = await resolve({ by: "role", pattern: "radio" }, false);
     expect(o.kind).toBe("resolved");
     if (o.kind === "resolved" && o.axMark !== undefined) await clearAxMarks(o.axMark, null, PORT);
-    expect((await resolve({ by: "text", pattern: "Closest radio" }, false)).kind).not.toBe("error");
+    // A text hit on the form itself: its own words, so the text axes judge the form (notDrawnText on it).
+    await evaluateInTab(`document.getElementById('fc').insertAdjacentText('afterbegin', 'Shadowing form words ');true`, null, PORT);
+    const t = await resolve({ by: "text", pattern: "Shadowing form words" }, false);
+    expect(t.kind === "error" ? t.message : t.kind).not.toMatch(/is not a function/);
+    expect(t.kind).not.toBe("error");
     expect(await marks()).toBe(0);
   });
 
