@@ -329,6 +329,40 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(await marks()).toBe(0);
   });
 
+  it("reads a 0x0 radio pressed through its own label as receiving events, a covered one as not (internal #420)", async () => {
+    // Listed with receivesEvents:false although a press on its label reaches it, as browser_click presses it.
+    await page(`<input type="radio" name="c" id="z0" style="width:0;height:0;margin:0;padding:0;border:0;appearance:none"><label for="z0" style="display:inline-block;padding:6px 12px;margin:40px 4px">Zero</label>
+      <input type="radio" name="c" id="p1" style="margin:20px"><label for="p1">Plain</label>
+      <div style="position:relative;display:inline-block;margin:20px"><input type="radio" name="c" id="cv" aria-label="Covered"><div style="position:absolute;inset:-4px;background:#fff"></div></div>
+      <div style="position:relative;display:inline-block;margin:20px"><input type="radio" name="c" id="zc" style="width:0;height:0;margin:0;padding:0;border:0;appearance:none"><label for="zc" style="display:inline-block;padding:6px 12px">Label covered</label><div style="position:absolute;inset:0;background:#fff"></div></div>`);
+    // As browser_click asks first (no occlusion gate), so no press is made here.
+    const o = await resolve({ by: "role", pattern: "radio" }, false);
+    expect(o.kind).toBe("ambiguous");
+    const cands = o.kind === "ambiguous" ? o.candidates : [];
+    // receivesEvents stays the centre test the gate used; viaLabel says a press on its own label reaches it, so a
+    // refusal and its list agree (/code-review on #1018). A label under a cover is not a way in.
+    const got = Object.fromEntries(cands.map((c) => [c.name, [c.actionability.receivesEvents, c.actionability.viaLabel ?? false]]));
+    expect(got).toEqual({ Zero: [false, true], Plain: [true, false], Covered: [false, false], "Label covered": [false, false] });
+    // Shown, never the gate: the strict pass still refuses the 0x0 radio, so browser_click's loose pass and landing
+    // read press its label, not its own 0x0 point (/code-review on #1018).
+    expect((await resolve({ by: "ariaLabel", pattern: "Zero", role: "radio" }, true)).kind).toBe("noActionable");
+    // A resolved answer leaves its mark for the caller to clear, as browser_click does.
+    const loose = await resolve({ by: "ariaLabel", pattern: "Zero", role: "radio" }, false);
+    expect(loose.kind).toBe("resolved");
+    if (loose.kind === "resolved" && loose.axMark !== undefined) await clearAxMarks(loose.axMark, null, PORT);
+    expect(await marks()).toBe(0);
+  });
+
+  it("still gathers on a page that shadows closest: the label probe's failure leaves viaLabel unsaid (/code-review on #1018)", async () => {
+    // A click-through label over a form whose control is named "closest": the probe's hit is the form, and
+    // form.closest is that control.
+    await page(`<form id="f" style="padding:40px"><input name="closest" aria-label="Closest field"><input type="radio" id="zr" style="width:0;height:0;margin:0;padding:0;border:0;appearance:none"><label for="zr" style="display:inline-block;padding:6px 12px;pointer-events:none">Zed</label></form>`);
+    const o = await resolve({ by: "role", pattern: "radio" }, false);
+    expect(o.kind).toBe("resolved");
+    if (o.kind === "resolved" && o.axMark !== undefined) await clearAxMarks(o.axMark, null, PORT);
+    expect(await marks()).toBe(0);
+  });
+
   it("presses Choices' select as it is: a listbox that opens a popup is a control (win2 on #1008, W6)", async () => {
     await page(`<div class="choices" id="chl" role="listbox" tabindex="0" aria-haspopup="true" aria-expanded="false" style="position:absolute;left:100px;top:100px;width:260px;height:40px;border:1px solid"><div class="choices__inner"><select id="fr" hidden><option>Apple</option></select><div class="choices__item">Apple</div></div><div class="choices__list--dropdown" style="visibility:hidden"><div role="listbox"><div role="option">Apple</div><div role="option">Banana</div></div></div></div>`);
     expect(what(await resolve({ by: "role", pattern: "listbox" }))).toBe("div#chl");

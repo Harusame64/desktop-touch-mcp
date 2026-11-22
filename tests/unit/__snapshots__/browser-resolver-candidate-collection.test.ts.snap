@@ -882,6 +882,299 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   var chromeW = Math.round((window.outerWidth - innerWidthDip) / 2);
   var chromeH = window.outerHeight - innerHeightDip - (window.outerWidth - innerWidthDip <= 32 ? chromeW : 0);
 
+  // The press rule browser_click's press path uses (press-landing.ts), for a 0x0 control pressed through its label.
+
+
+
+  // var, not const: spliced twice into one scope (ELEMENT_NAME_JS beside pressLandingRuleJs()), it stays valid.
+  var __NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
+  var __scriptsRun = null;
+  // The prototype's matches: a <form> exposes a control named "matches" as form.matches, and a custom element can
+  // define its own (/code-review on #1016: the walker threw and the whole script failed). Looked up when called, and
+  // the element's own where there is no Element (the unit tests' fake DOM).
+  function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
+  // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
+  // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
+  function __drawsNothing(a, probe) {
+    if (a.namespaceURI === 'http://www.w3.org/2000/svg') return true;
+    if (a.localName === 'noscript') {
+      if (__scriptsRun !== null) return __scriptsRun;
+      try {
+        const none = matchMedia('(scripting: none)').matches;
+        const on = matchMedia('(scripting: enabled)').matches || matchMedia('(scripting: initial-only)').matches;
+        if (none || on) return (__scriptsRun = !none);
+        if (!probe) return true;
+        const d = document.createElement('div'); d.innerHTML = '<noscript><i></i></noscript>';
+        return (__scriptsRun = !d.querySelector('i'));
+      } catch (e) { return true; }
+    }
+    return getComputedStyle(a).display === 'none';
+  }
+  // An element whose text the page never draws: skipped by every walker that collects an element's words.
+  function __skipsText(c) { return __matches(c, __NOT_TEXT) && __drawsNothing(c, false); }
+
+  function __isMasked(el) {
+    if (el.tagName === 'INPUT') {
+      const t = (el.type || '').toLowerCase();
+      if (t === 'password') return true;
+      // An input that draws no text has nothing for the style to hide; an inherited one had
+      // withheld a hidden input's value and a checkbox's state (2ゲート目 on #623). A file input
+      // draws the chosen file's name, so it stays under the style (win's outside read).
+      if (/^(hidden|checkbox|radio|range|color|image)$/.test(t)) return false;
+    }
+    try {
+      const s = window.getComputedStyle(el);
+      const sec = s.webkitTextSecurity || s.getPropertyValue('-webkit-text-security');
+      return !!sec && sec !== 'none';
+    } catch (e) { return false; }
+  }
+  function __isEntry(el) {
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
+    // The editing host, not everything inside it: isContentEditable is true for every descendant,
+    // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
+    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    return role === 'textbox' || role === 'searchbox';
+  }
+  function __textWithoutFields(node) {
+    if (node.nodeType === 1 && (__isEntry(node) || __isMasked(node) || __skipsText(node))) return '';
+    let out = '';
+    (function walk(n) {
+      for (const c of n.childNodes) {
+        if (out.length > 400) return;
+        if (c.nodeType === 3) out += c.nodeValue;
+        else if (c.nodeType === 1 && !__isEntry(c) && !__isMasked(c) && !__skipsText(c)) walk(c);
+      }
+    })(node);
+    return out.trim().replace(/\\s+/g, ' ');
+  }
+  function __fieldName(el) {
+    const lb = el.getAttribute('aria-labelledby');
+    if (lb) {
+      const t = lb.trim().split(/\\s+/).map(function(id) {
+        const n = document.getElementById(id);
+        return n ? __textWithoutFields(n) : '';
+      }).filter(Boolean).join(' ');
+      if (t) return t.slice(0, 80);
+    }
+    const aria = (el.getAttribute('aria-label') || '').trim();
+    if (aria) return aria.slice(0, 80);
+    if (el.labels && el.labels.length) {
+      const t = Array.from(el.labels).map(function(l) { return __textWithoutFields(l); }).filter(Boolean).join(' ');
+      if (t) return t.slice(0, 80);
+    }
+    const type = el.tagName === 'INPUT' ? (el.getAttribute('type') || '').toLowerCase() : '';
+    const pressable = /^(button|submit|reset|image)$/.test(type);
+    if (type === 'image') {
+      const alt = (el.getAttribute('alt') || '').trim();
+      if (alt) return alt.slice(0, 80);
+    } else if (pressable && !__isMasked(el)) {
+      // A caption the page draws as dots is withheld like any other masked text (PR 側 codex on #623).
+      const caption = (el.value || '').trim();
+      if (caption) return caption.slice(0, 80);
+    }
+    for (const attr of pressable ? ['title'] : ['title', 'placeholder', 'aria-placeholder']) {
+      const v = (el.getAttribute(attr) || '').trim();
+      if (v) return v.slice(0, 80);
+    }
+    return '';
+  }
+  // A control the page keeps out of the tab order and the accessibility tree (Select2's original select: tabindex -1,
+  // aria-hidden): not one a person uses; the widget drawn for it stands in.
+  function __keptFromPeople(el) { return el.getAttribute('aria-hidden') === 'true' && el.getAttribute('tabindex') === '-1'; }
+  // The control a widget stands for: a select inside it (Choices), or the select the page keeps from people just before
+  // the widget's box (Select2 puts its span after the select it hides). A search field inside the widget (Select2's
+  // multiple) is not it, nor a hidden select a script fills for another field.
+  function __standsFor(el) {
+    const inner = el.querySelector('select'); if (inner) return inner;
+    for (let a = el, d = 0; a && d < 4; a = a.parentElement, d++) {
+      const prev = a.previousElementSibling;
+      if (prev && prev.tagName === 'SELECT' && __keptFromPeople(prev)) return prev;
+    }
+    return null;
+  }
+  // The name a person reads for a control, to list it among others (internal #420): aria-labelledby, then aria-label,
+  // then, for a widget (a combobox or listbox), the label of the select it stands for, then the words it draws. A
+  // button "X" with aria-label "Close dialog" is "Close dialog"; Select2's box is its select's label. A field keeps its
+  // field name, never its value.
+  function __personName(el) {
+    if (__isEntry(el) || __isMasked(el)) return __fieldName(el);
+    const lb = (el.getAttribute('aria-labelledby') || '').trim();
+    if (lb) {
+      const t = lb.split(/\\s+/).map(function(id) {
+        const n = document.getElementById(id);
+        return n ? __textWithoutFields(n) : '';
+      }).filter(Boolean).join(' ');
+      if (t) return t.slice(0, 80);
+    }
+    const aria = (el.getAttribute('aria-label') || '').trim();
+    if (aria) return aria.slice(0, 80);
+    // The role as written: Chrome's tree does not read role="Combobox" as a combobox either (measured on #1017).
+    if (/^(combobox|listbox)$/.test(el.getAttribute('role') || '')) {
+      // The select's own name, by the same rule as any field's: aria-labelledby, aria-label, then its <label>
+      // (/code-review on #1017: a select named by aria-label lent nothing).
+      const inner = __standsFor(el);
+      const t = inner ? __fieldName(inner) : '';
+      if (t) return t;
+    }
+    return __elText(el);
+  }
+  function __elText(el) {
+    // A <select>'s text is its options, which the page wrote; it keeps the name it had.
+    if (el.tagName === 'SELECT' && !__isMasked(el)) return (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
+    if (__isEntry(el) || __isMasked(el)) return __fieldName(el);
+    return __textWithoutFields(el).slice(0, 80);
+  }
+
+  var __DTM_INTERACTIVE = 'a[href],button,input,select,textarea,summary,[contenteditable=""],[contenteditable=true],[role=button],[role=link],[role=checkbox],[role=radio],[role=switch],[role=tab],[role=menuitem],[role=option],[role=combobox],[role=textbox],[tabindex]:not([tabindex="-1"])';
+  var __DTM_DIALOG = 'dialog,[role=dialog],[role=alertdialog],[aria-modal=true]';
+  function __dtmArea(n) { var r = n.getBoundingClientRect(); return r.width * r.height; }
+  // A dialog counts only while it is drawn: an open <dialog>, or any other with a box and not hidden by CSS
+  // (/code-review on #1004: a hidden Bootstrap .modal named a loading spinner a dialog).
+  function __dtmHiddenFromPeople(n) {
+    if (n.getAttribute('aria-hidden') === 'true') return true;
+    var r = n.getBoundingClientRect(); if (r.width <= 2 && r.height <= 2) return true;
+    return getComputedStyle(n).opacity === '0';
+  }
+  function __dtmRoles(n) {
+    var r = n.getAttribute('role'); if (r) return [r];
+    var t = n.tagName, ty = (n.getAttribute('type') || '').toLowerCase();
+    if (t === 'SELECT') return ['combobox', 'listbox'];
+    if (t === 'INPUT' && ty === 'checkbox') return ['checkbox', 'switch'];
+    if (t === 'INPUT' && ty === 'radio') return ['radio'];
+    if (t === 'TEXTAREA' || (t === 'INPUT' && ['', 'text', 'search', 'email', 'url', 'tel', 'number'].indexOf(ty) >= 0)) return ['textbox', 'searchbox', 'combobox'];
+    return [];
+  }
+  // The controls of the element's kind drawn beside it in its parent (outside the element), which stand for it while
+  // it is hidden from people. The press goes to such a control's own point: Select2 opens on its combobox, and a
+  // press on the widget's outer wrapper does nothing (win2 on #1004, db867002).
+  function __dtmSameKindControls(el) {
+    var want = __dtmRoles(el), parent = el.parentElement, out = [];
+    if (want.length === 0 || !parent || !__dtmHiddenFromPeople(el)) return out;
+    var nodes = parent.querySelectorAll('[role]');
+    for (var i = 0; i < nodes.length && out.length < 4; i++) {
+      if (nodes[i] === el || el.contains(nodes[i]) || nodes[i].contains(el)) continue;
+      if (want.indexOf(nodes[i].getAttribute('role')) >= 0) out.push(nodes[i]);
+    }
+    return out;
+  }
+  function __dtmShown(d) {
+    if (!d || !d.getBoundingClientRect) return false;
+    if (d.tagName === 'DIALOG' && !d.open) return false;
+    var r = d.getBoundingClientRect(); if (r.width === 0 || r.height === 0) return false;
+    var cs = getComputedStyle(d); return cs.display !== 'none' && cs.visibility !== 'hidden';
+  }
+  function __dtmModal(d) {
+    if (!d || !d.matches) return false;
+    if (d.getAttribute('aria-modal') === 'true') return true;
+    try { return d.tagName === 'DIALOG' && d.matches(':modal'); } catch (e) { return false; }
+  }
+  // A modal dialog that is shown and does not hold the element: a person answers it first.
+  // A shown modal that does not hold the element and is in front of it: when the element is itself inside a shown
+  // modal (a second modal opened over the first), a modal counts only if what is at the element's centre is in it
+  // (/code-review on #1004: modal A under a modal B holding the element is not in front of it).
+  function __dtmModalAgainst(el) {
+    var all = document.querySelectorAll(__DTM_DIALOG), mine = false, i;
+    for (i = 0; i < all.length; i++) if (__dtmModal(all[i]) && __dtmShown(all[i]) && all[i].contains(el)) mine = true;
+    var r = el.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    for (i = 0; i < all.length; i++) {
+      if (!__dtmModal(all[i]) || !__dtmShown(all[i]) || all[i].contains(el)) continue;
+      if (!mine || (hit && all[i].contains(hit))) return all[i];
+    }
+    return null;
+  }
+  function __dtmShownDialogIn(root) {
+    if (!root || !root.querySelectorAll) return null;
+    var all = root.querySelectorAll(__DTM_DIALOG);
+    for (var i = 0; i < all.length; i++) if (__dtmShown(all[i])) return all[i];
+    return null;
+  }
+  // Names come from the one naming every CDP script shares (ELEMENT_NAME_JS): an entry's value is never a name, and
+  // what the page masks is never read out — a password field over the element, or in what is in front of it, is
+  // named by its label, never by what was typed into it (codex on #1004, P1).
+  function __dtmName(n) {
+    if (!n || !n.getAttribute) return '';
+    var v = '';
+    if (__isEntry(n) || __isMasked(n)) v = __fieldName(n);
+    else {
+      v = (n.getAttribute('aria-label') || '').trim();
+      if (!v) {
+        var lb = n.getAttribute('aria-labelledby');
+        if (lb) v = lb.trim().split(/\\s+/).map(function(id) { var t = document.getElementById(id); return t ? __textWithoutFields(t) : ''; }).join(' ').trim();
+      }
+      if (!v) v = (n.getAttribute('title') || n.getAttribute('alt') || '').trim();
+      if (!v) v = __textWithoutFields(n);
+    }
+    return String(v || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
+  }
+  function __dtmLandsOn(el, hit) {
+    if (!hit) return { ok: false, how: 'nothing' };
+    if (hit === el) return { ok: true, how: 'self' };
+    if (el.contains(hit)) return { ok: true, how: 'inside' };
+    // An element inside a button or a link is pressed as that button or link, as Playwright retargets its target
+    // ('button-link'): an icon with pointer-events: none inside a close button is pressed through the button, which
+    // is where a person's press goes (/code-review on #1005: the old browser_click road clicked it so).
+    // Only an element that is not itself a control (Playwright keeps a button, a link or a field as it is), and only
+    // a hit with no other control or label between it and the host: a press on another button in the same card is
+    // not a press on this one (/code-review on #1005, round 2).
+    var host = !el.matches(__DTM_INTERACTIVE) && el.parentElement && el.parentElement.closest ? el.parentElement.closest('a[href],button,[role=button],[role=link]') : null;
+    if (host && (hit === host || host.contains(hit))) {
+      // A node that holds the element (a focusable wrapper inside the link) is the element's own way to the host, not
+      // a control beside it (round 3).
+      for (var hn = hit; hn && hn !== host; hn = hn.parentElement) if (!hn.contains(el) && (hn.matches(__DTM_INTERACTIVE) || hn.tagName === 'LABEL')) return { ok: false, how: 'covered' };
+      return { ok: true, how: 'host' };
+    }
+    var lab = hit.closest ? hit.closest('label') : null;
+    if (lab) {
+      if (lab.control === el) {
+        // Interactive content inside the label (a "Terms" link in "I agree to the Terms") does not activate the
+        // control; a press there follows the link (/code-review on #1004).
+        for (var m = hit; m && m !== lab; m = m.parentElement) if (m !== el && m.matches(__DTM_INTERACTIVE)) return { ok: false, how: 'covered' };
+        return { ok: true, how: 'own_label' };
+      }
+      if (lab.control) return { ok: false, how: 'other_label' };
+    }
+    // A hit that holds the element (its wrapper, with the element taking no pointer input) is not a skin of it.
+    if (hit.contains(el)) return { ok: false, how: 'container' };
+    // A replacement: the element is hidden from people (aria-hidden, a 1-2px box, or fully transparent) and the hit
+    // is a control in the element's own parent — Select2 hides the native <select> (aria-hidden, clipped) and draws
+    // its combobox beside it. A person presses the widget they see; so does this (win2 on #1004, R12: discover
+    // lists the hidden select, and main pressed the widget).
+    // It has to be a control of the same kind as the element — a combobox or listbox for a <select>, a checkbox or
+    // switch for a checkbox, a radio for a radio — and the hit has to be in that control itself. A control that
+    // merely shares a parent with a hidden input (a submit button, a link) is not its replacement (codex on #1004),
+    // and nor is the widget's outer wrapper, which Select2 does not open on (win2). Not an id: Select2 gives an
+    // id-less select a random token the select does not carry.
+    var kin = __dtmSameKindControls(el);
+    for (var z = 0; z < kin.length; z++) if (kin[z] === hit || kin[z].contains(hit)) return { ok: true, how: 'replacement' };
+    // A skin candidate: a layer drawn right over the element — its box inside the element's box grown by 24px or
+    // half the element's size, whichever is more — in the element's parent or grandparent, and nothing from the
+    // hit up to that wrapper has text, a name, an interactive role, or is a dialog or a label. The browser confirms
+    // it before the press (inspectHitAtPoint). The box test is what keeps a backdrop out: win2 measured a modal
+    // backdrop pressed as a skin when the app root held both it and the target (#1004, R1).
+    var er = el.getBoundingClientRect(), hr = hit.getBoundingClientRect();
+    var grow = Math.max(24, Math.max(er.width, er.height) / 2);
+    var over = hr.left >= er.left - grow && hr.top >= er.top - grow && hr.right <= er.right + grow && hr.bottom <= er.bottom + grow;
+    var wrap = el.parentElement, up = 0;
+    while (wrap && up < 1 && !wrap.contains(hit)) { wrap = wrap.parentElement; up++; }
+    if (over && wrap && wrap.contains(hit)) {
+      for (var n = hit; n && n !== wrap; n = n.parentElement) {
+        if (__dtmName(n) !== '' || n.matches(__DTM_INTERACTIVE) || n.matches(__DTM_DIALOG) || n.tagName === 'LABEL') return { ok: false, how: 'covered' };
+      }
+      return { ok: true, how: 'skin' };
+    }
+    return { ok: false, how: 'covered' };
+  }
+  function __dtmDescribe(n) {
+    if (!n || !n.tagName) return String(n);
+    var s = n.tagName.toLowerCase();
+    if (n.id) s += '#' + n.id;
+    var c = (typeof n.className === 'string' ? n.className : '').trim().split(/\\s+/).filter(Boolean).slice(0, 2);
+    if (c.length) s += '.' + c.join('.');
+    var role = n.getAttribute('role'); if (role) s += '[role=' + role + ']';
+    var name = __dtmName(n); if (name) s += ' "' + name + '"';
+    return s;
+  }
   function actNode(el) {
     const cs2 = window.getComputedStyle(el);
     const r = el.getBoundingClientRect();
@@ -900,6 +1193,25 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
       const hit = document.elementFromPoint(cx, cy);
       receivesEvents = !!hit && (hit === el || el.contains(hit));
     }
+    // A control a person presses through its own <label> (a 0x0 radio, an sr-only checkbox) is reached there, as
+    // browser_click's press path finds it (internal #420: listed receivesEvents:false in an ambiguity list). Shown in
+    // the list only, never the gate: a control the centre test refuses goes to the loose pass and the landing read,
+    // which presses the label; feeding this into the gate made the strict pass press the control's own 0x0 point
+    // (/code-review on #1018).
+    let reachedViaLabel = false;
+    if (!receivesEvents && el.labels) {
+      for (const lab of Array.from(el.labels)) {
+        const lr = lab.getBoundingClientRect();
+        if (lr.width === 0 || lr.height === 0) continue;
+        const lx = lr.left + lr.width / 2, ly = lr.top + lr.height / 2;
+        if (lx < 0 || ly < 0 || lx >= window.innerWidth || ly >= window.innerHeight) continue;
+        // A page that shadows closest or matches (a form control named so) must not fail the gather: the reach is
+        // then left unsaid (/code-review on #1018).
+        let how = '';
+        try { how = __dtmLandsOn(el, document.elementFromPoint(lx, ly)).how; } catch (e) { how = ''; }
+        if (how === 'own_label') { reachedViaLabel = true; break; }
+      }
+    }
     const tiRaw = el.getAttribute('tabindex');
     const ti = (tiRaw !== null && tiRaw.trim() !== '' && !isNaN(Number(tiRaw))) ? Number(tiRaw) : null;
     const roleAttr = el.getAttribute('role');
@@ -915,6 +1227,7 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
       visible: vis,
       enabled: enabled,
       receivesEvents: receivesEvents,
+      reachedViaLabel: reachedViaLabel,
       // Role-filter match for THIS node (uses the same roleMatches predicate that
       // builds the pool, so input type is available). true when no role filter is
       // set. decideActionTarget gates the climb-resolved clickable on this so a
