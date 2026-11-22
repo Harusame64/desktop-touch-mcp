@@ -30,18 +30,18 @@ describe("ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extr
     expect(js).toMatchSnapshot();
   });
 
-  it("interpolates scope into document.querySelector, omits to document when absent", () => {
+  it("interpolates scope into __scopeRoots (every element it matches), null for the document when absent", () => {
     const withScope = buildCandidateCollectionJs({
       by: "text", pattern: "x", scope: "#s",
       maxResults: 5, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive: false,
     });
-    expect(withScope).toContain('const root = document.querySelector("#s");');
+    expect(withScope).toContain('const roots = __scopeRoots("#s");');
 
     const noScope = buildCandidateCollectionJs({
       by: "text", pattern: "x",
       maxResults: 5, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive: false,
     });
-    expect(noScope).toContain("const root = document;");
+    expect(noScope).toContain("const roots = __scopeRoots(null);");
   });
 
   it("JSON-encodes by / pattern / caseSensitive and derives maxN=maxResults+offset, offN=offset", () => {
@@ -130,8 +130,8 @@ describe("ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snap
 
   it("shares the collection error returns (ScopeNotFound / Timeout) via the body", () => {
     const js = buildActionCandidateFactsJs({ by: "text", pattern: "x", scope: "#nope", caseSensitive: false });
-    expect(js).toContain('document.querySelector("#nope")');
-    expect(js).toContain('return { __error: "ScopeNotFound" };');
+    expect(js).toContain('__scopeRoots("#nope")');
+    expect(js).toContain('if (roots.length === 0) return { __error: "ScopeNotFound" };');
     expect(js).toContain('__error: "Timeout"');
   });
 });

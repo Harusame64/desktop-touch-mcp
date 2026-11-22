@@ -18,6 +18,7 @@
 import { randomUUID } from "node:crypto";
 import { AX_MARK_ATTR, clearAxMarks, evaluateInTab, getPageZoom, markAxMatches, resolveTabId, viewportOriginJs } from "../engine/cdp-bridge.js";
 import { ELEMENT_NAME_JS, SAFE_DOM_JS } from "./_element-name-js.js";
+import { SCOPE_ROOTS_JS } from "./_scope-roots-js.js";
 import { UNIQUE_SELECTOR_JS } from "./_unique-selector-js.js";
 import { jsLiteral } from "../utils/js-literal.js";
 import { SELECT_PICK_JS } from "./_select-pick-js.js";
@@ -92,8 +93,10 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs & { axAlone?: boo
   const { by, pattern, scope, maxResults, offset, visibleOnly, inViewportOnly, caseSensitive, axMark, axAlone } = args;
   return `
 (function() {
-  const root = ${scope ? `document.querySelector(${JSON.stringify(scope)})` : "document"};
-  if (!root) return { __error: "ScopeNotFound" };
+${SCOPE_ROOTS_JS}
+  // Every element the scope matches, not only the first (internal #420, win2 on #1022: "#s1, #s2" searched #s1 alone).
+  const roots = __scopeRoots(${scope ? jsLiteral(scope) : "null"});
+  if (roots.length === 0) return { __error: "ScopeNotFound" };
 
   const by = ${JSON.stringify(by)};
   const pat = ${JSON.stringify(pattern)};
@@ -191,14 +194,14 @@ ${ELEMENT_NAME_JS}
     if (!pushed.has(el)) { candidates.push(el); pushed.add(el); }
   }
 
-  const all = root.querySelectorAll('*');
+  const all = __qsaIn(roots, '*');
   let candidates = [];
   // Text the page never draws (DRAWS_NOTHING_JS in _element-name-js.ts): the text axes leave it out, visibleOnly or not
   // (win2 on #1011: by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is
   // hidden text, which visibleOnly decides. A search scoped into one of them (scope:'head') is answered as asked.
   function notDrawnText(el) {
     for (let a = __closest(el, __NOT_TEXT); a; a = __parent(a) ? __closest(__parent(a), __NOT_TEXT) : null) {
-      if (a === root || __contains(a, root)) return false;
+      if (roots.some(function(r) { return a === r || __contains(a, r); })) return false;
       if (__drawsNothing(a, true)) return true;
     }
     return false;
@@ -207,7 +210,7 @@ ${ELEMENT_NAME_JS}
   if (axMark !== null) {
     // internal #420 — by:'role' / by:'ariaLabel' from the browser's accessibility tree, marked before this gather.
     // First, so equal scores keep the tree's document order (a result's place is what results[0] means).
-    const marked = root.querySelectorAll('[${AX_MARK_ATTR}]');
+    const marked = __qsaIn(roots, '[${AX_MARK_ATTR}]');
     for (let i = 0; i < marked.length; i++) {
       const ax = axOf(marked[i]);
       if (ax) record(marked[i], ax.score, by);
@@ -221,7 +224,7 @@ ${ELEMENT_NAME_JS}
   if (axMark !== null && axAlone) {
     // the tree's answer alone
   } else if (by === 'selector') {
-    const selectorMatches = Array.from(root.querySelectorAll(pat));
+    const selectorMatches = __qsaIn(roots, pat);
     for (let i = 0; i < selectorMatches.length; i++) {
       if (overBudget(i)) { aborted = true; break; }
       record(selectorMatches[i], 1.0, 'selector');
@@ -264,9 +267,9 @@ ${ELEMENT_NAME_JS}
       if (cmp === needle) record(el, 0.75, 'role');
     }
     // Implicit roles — score slightly higher because they're guaranteed by tag.
-    if (!aborted && needle === 'button')  for (const el of root.querySelectorAll('button')) record(el, 0.85, 'roleImplicit');
-    if (!aborted && needle === 'link')    for (const el of root.querySelectorAll('a[href]')) record(el, 0.85, 'roleImplicit');
-    if (!aborted && needle === 'heading') for (const el of root.querySelectorAll('h1,h2,h3,h4,h5,h6')) record(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'button')  for (const el of __qsaIn(roots, 'button')) record(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'link')    for (const el of __qsaIn(roots, 'a[href]')) record(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'heading') for (const el of __qsaIn(roots, 'h1,h2,h3,h4,h5,h6')) record(el, 0.85, 'roleImplicit');
   } else if (by === 'ariaLabel') {
     const needle = cs ? pat : pat.toLowerCase();
     let i = 0;

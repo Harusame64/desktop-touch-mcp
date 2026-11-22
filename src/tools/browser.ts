@@ -51,6 +51,7 @@ import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/re
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 import { prepareBrowserEvalExpression } from "./browser-eval-helpers.js";
 import { ELEMENT_NAME_JS } from "./_element-name-js.js";
+import { SCOPE_ROOTS_JS } from "./_scope-roots-js.js";
 import { jsLiteral } from "../utils/js-literal.js";
 import { SELECT_PICK_JS } from "./_select-pick-js.js";
 import { FILL_KIND_JS } from "./_fill-kind-js.js";
@@ -167,7 +168,7 @@ const byRoleParam = z
 const byScopeParam = z
   .string()
   .optional()
-  .describe("Optional CSS selector to limit the `by`-axis search scope (disambiguation).");
+  .describe("Optional CSS selector to limit the `by`-axis search to every element it matches (disambiguation).");
 const byCaseSensitiveParam = coercedBoolean()
   .optional()
   .describe("Case-sensitive matching for by:'text'/'regex' (default false).");
@@ -307,7 +308,7 @@ export const browserSearchSchema = {
   by: z.enum(["text", "regex", "role", "ariaLabel", "selector"])
     .describe("Search axis: text/regex/role/ariaLabel/selector. text/regex leave out a script's or style's source, a noscript's content while scripts run, a template's and <head>'s (scope:'head' with visibleOnly:false reaches the title); hidden text follows visibleOnly."),
   pattern: z.string().min(1).describe("Pattern to match against the chosen axis."),
-  scope: z.string().optional().describe("CSS selector to limit the search scope."),
+  scope: z.string().optional().describe("CSS selector to limit the search to every element it matches."),
   maxResults: z.coerce.number().int().min(1).max(200).default(50).describe("Max results returned (default 50)."),
   offset: z.coerce.number().int().min(0).default(0).describe("Offset into the result set (default 0)."),
   visibleOnly: coercedBooleanWithDefault(true).describe("Only visible elements (default true). Set false to include hidden ones with confidence penalty."),
@@ -361,7 +362,7 @@ export const browserGetInteractiveSchema = {
     .string()
     .optional()
     .describe(
-      "CSS selector to limit the search scope (e.g. '.s-main-slot', '#nav-search-form'). " +
+      "CSS selector to limit the search to every element it matches (e.g. '.s-main-slot', '#nav-search-form'). " +
       "Omit to scan the full page."
     ),
   types: z
@@ -3490,7 +3491,11 @@ export const browserGetInteractiveHandler = async ({
 
     const expression = `
 (function() {
-  const root = ${scope ? `document.querySelector(${JSON.stringify(scope)})` : "document"} || document;
+${SCOPE_ROOTS_JS}
+  // Every element the scope matches, not only the first; a scope that matches nothing is said, not read as the whole
+  // page (internal #420).
+  const roots = __scopeRoots(${scope ? jsLiteral(scope) : "null"});
+  if (roots.length === 0) return { scopeNotFound: true };
   const viewportOnly = ${JSON.stringify(inViewportOnly)};
   const maxN = ${JSON.stringify(maxResults)};
   const cssQ = ${JSON.stringify(cssQuery)};
@@ -3576,7 +3581,7 @@ ${ELEMENT_NAME_JS}
   }
 
   const out = [];
-  for (const el of root.querySelectorAll(cssQ)) {
+  for (const el of __qsaIn(roots, cssQ)) {
     if (!isVisible(el)) continue;
     const rect = el.getBoundingClientRect();
     const vp = inViewportRect(rect);
@@ -3599,7 +3604,14 @@ ${ELEMENT_NAME_JS}
     const resultObj = (result && typeof result === "object" ? result : {}) as {
       items?: unknown;
       modalFacts?: ModalFacts;
+      scopeNotFound?: boolean;
     };
+    if (resultObj.scopeNotFound) {
+      return failCode("ScopeNotFound", `browser_overview: scope selector matched no element ("${scope}")`, {
+        suggest: ["Verify the scope CSS selector matches at least one element", "Omit scope to list the whole page"],
+        context: { scope },
+      });
+    }
     const items = Array.isArray(resultObj.items) ? resultObj.items : [];
     // ADR-023 Phase 2 (PR-2a): pure detectModal runs in node on the gathered facts.
     // The modal section is ALWAYS emitted (isModal:false when none) so AC-7's
@@ -4430,7 +4442,7 @@ export function registerBrowserTools(server: McpServer): void {
 
   server.tool(
     "browser_overview",
-    "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text (an input's name — never what is typed in it), and viewport status — use before browser_click to discover selectors (each matches its element alone), and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Also returns a modal: section — whether a true modal dialog is blocking the page (isModal + blocker {name, role} + the signals it was judged on); it is ALWAYS present (isModal:false when no modal), and a navigation drawer is NOT reported as a modal (only an aria-modal / alertdialog / native showModal dialog, or a backdrop-backed dialog that locks the page, is treated as modal). Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. An input's text is its name — from aria-labelledby, aria-label, its <label>, title, then its hint text — never what is typed in it: read values with browser_form, which withholds the value of a field the page masks (a password). Typed errors: code:'BrowserNotConnected' (CDP not attached — call browser_open or browser_open({launch:{}})). Note: a non-matching scope CSS selector silently falls back to the full document (does not raise an error) — verify the selector via browser_eval if scoped enumeration is required.",
+    "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text (an input's name — never what is typed in it), and viewport status — use before browser_click to discover selectors (each matches its element alone), and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to every element a CSS selector matches (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Also returns a modal: section — whether a true modal dialog is blocking the page (isModal + blocker {name, role} + the signals it was judged on); it is ALWAYS present (isModal:false when no modal), and a navigation drawer is NOT reported as a modal (only an aria-modal / alertdialog / native showModal dialog, or a backdrop-backed dialog that locks the page, is treated as modal). Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. An input's text is its name — from aria-labelledby, aria-label, its <label>, title, then its hint text — never what is typed in it: read values with browser_form, which withholds the value of a field the page masks (a password). Typed errors: code:'BrowserNotConnected' (CDP not attached — call browser_open or browser_open({launch:{}})), code:'ScopeNotFound' (scope matched no element).",
     browserOverviewRegistrationSchema,
     browserOverviewRegistrationHandler as typeof browserGetInteractiveHandler
   );
