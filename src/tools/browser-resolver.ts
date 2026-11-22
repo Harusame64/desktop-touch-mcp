@@ -505,12 +505,17 @@ ${pressLandingRuleJs()}
         const rn = n.getRootNode ? n.getRootNode() : null;
         return rn && rn !== document && rn.host ? rn.host : null;
       };
+      // The nearest scroll container that is on screen decides (a tall dialog that scrolls, itself fixed); a fixed
+      // element or ancestor below it, or with none, cannot be scrolled to.
       let fixed = false, box = null;
       for (let n = el; n && n.nodeType === 1; n = up(n)) {
         const st = window.getComputedStyle(n);
+        if (n !== el && /(auto|scroll|overlay)/.test(st.overflowY + ' ' + st.overflowX) &&
+            (n.scrollHeight > n.clientHeight || n.scrollWidth > n.clientWidth)) {
+          const nr = n.getBoundingClientRect();
+          if (nr.right > 0 && nr.bottom > 0 && nr.left < window.innerWidth && nr.top < window.innerHeight) { box = n; break; }
+        }
         if (st.position === 'fixed') { fixed = true; break; }
-        if (!box && n !== el && /(auto|scroll|overlay)/.test(st.overflowY + ' ' + st.overflowX) &&
-            (n.scrollHeight > n.clientHeight || n.scrollWidth > n.clientWidth)) box = n;
       }
       let inRange;
       if (box) {
@@ -524,6 +529,11 @@ ${pressLandingRuleJs()}
           dx < Math.max(de.scrollWidth, window.innerWidth) && dy < Math.max(de.scrollHeight, window.innerHeight);
       }
       scrollsIntoView = !fixed && inRange;
+    }
+    // Inside a modal dialog (its own contents, which the dialog does not block: codex on #1028).
+    let inModal;
+    if (scrollsIntoView !== undefined) {
+      try { inModal = !!__closest(el, 'dialog:modal,[aria-modal=true i]'); } catch (e) { inModal = !!__closest(el, '[aria-modal=true i]'); }
     }
     const tiRaw = el.getAttribute('tabindex');
     const ti = (tiRaw !== null && tiRaw.trim() !== '' && !isNaN(Number(tiRaw))) ? Number(tiRaw) : null;
@@ -550,6 +560,7 @@ ${pressLandingRuleJs()}
       // with an <a> nested in a div[role=button]).
       roleMatch: roleFilter ? roleMatches(el) : true,
       scrollsIntoView: scrollsIntoView,
+      inModal: inModal,
       rect: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) },
     };
   }
@@ -849,6 +860,8 @@ export interface ClickableNode {
   receivesEvents: boolean;
   /** Centre outside the viewport only: whether scrolling the page can bring it in (not fixed, inside the page). */
   scrollsIntoView?: boolean;
+  /** Centre outside the viewport only: whether it sits inside a modal dialog (one the dialog does not block). */
+  inModal?: boolean;
   /**
    * A centre of one of its own labels reaches it (internal #420). Shown in the ambiguity list only, never the gate:
    * the loose pass and the landing read press the label.
@@ -998,6 +1011,8 @@ export type ResolveDecision =
       offViewport?: true;
       /** How many controls those matches are. */
       offViewportCount?: number;
+      /** Every one of them sits inside a modal dialog: scrolled out of view within it, not blocked by it. */
+      offViewportInModal?: true;
     };
 
 export type ClickableStrength = "strong" | "medium" | "weak" | "none";
@@ -1187,7 +1202,8 @@ export function decideActionTarget(
     if (!truncated && pressable.length > 0 && pressable.every((r) => centreOutside(r.clickable!.rect) && r.clickable!.scrollsIntoView === true)) {
       // Matches that climb to one clickable are one control (as `distinct` counts them).
       const offViewportCount = new Set(pressable.map((r) => r.clickable!.rect.w === 0 || r.clickable!.rect.h === 0 ? `#${r.f.index}` : rectKey(r.clickable!.rect))).size;
-      return { kind: "noActionable", total: totalMatches, returned, truncated, candidates, next: [], offViewport: true, offViewportCount };
+      const inModal = pressable.every((r) => r.clickable!.inModal === true);
+      return { kind: "noActionable", total: totalMatches, returned, truncated, candidates, next: [], offViewport: true, offViewportCount, ...(inModal && { offViewportInModal: true as const }) };
     }
     return { kind: "noActionable", total: totalMatches, returned, truncated, candidates, next: [...NO_ACTIONABLE_NEXT_HINTS] };
   }
@@ -1263,6 +1279,7 @@ export type ResolveActionOutcome =
       next: string[];
       offViewport?: true;
       offViewportCount?: number;
+      offViewportInModal?: true;
       /**
        * ADR-023 Phase 2b (click only): page-level modal facts + the top
        * candidate's occluding dialog index, propagated from the gather so the

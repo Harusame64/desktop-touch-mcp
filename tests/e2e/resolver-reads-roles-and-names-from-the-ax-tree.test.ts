@@ -722,6 +722,10 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     await page(`<button style="margin:40px">Top action</button><div style="height:4000px"></div><div role="dialog" aria-modal="true" aria-label="Terms" style="position:fixed;inset:0;background:rgba(0,0,0,.4)"><button>Accept</button></div>`);
     await evaluateInTab("scrollTo(0, 2000); true", null, PORT);
     expect((await body({ by: "text", pattern: "Top action" })).code).toBe("BrowserModalBlocking");
+    // The dialog's own button, below the fold inside a tall scrolling dialog: scroll within it, not dismiss it (codex on
+    // #1028).
+    await page(`<div role="dialog" aria-modal="true" aria-label="Terms" style="position:fixed;inset:0;overflow:auto;background:#fff"><div style="height:3000px;position:relative"><button style="position:absolute;top:2500px">I agree</button></div></div>`);
+    expect((await body({ by: "text", pattern: "I agree" })).code).toBe("ElementNotInViewport");
     // A page that jumps back to the top whenever it is scrolled: scrollIntoView:true was tried, so it is not offered.
     await page(`<div data-go="1" style="display:none">Go</div><div style="height:4000px"></div><button data-go="1">Go</button>`);
     await evaluateInTab("addEventListener('scroll', function(){ if (scrollY) scrollTo(0, 0); }); true", null, PORT);

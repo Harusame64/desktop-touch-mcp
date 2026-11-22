@@ -2179,7 +2179,8 @@ function browserResolveStopToFailure(
   // dialog over the page is the thing to deal with first (scrolling may be locked behind it); a scroll already tried is
   // not offered again (/code-review on the #441 fix).
   if (outcome.kind === "noActionable" && outcome.offViewport) {
-    if (outcome.modalFacts) {
+    // A modal's own contents, scrolled out of view inside it, are not blocked by it (codex on #1028).
+    if (outcome.modalFacts && !outcome.offViewportInModal) {
       const verdict = detectModal(outcome.modalFacts);
       if (verdict.isModal && verdict.blocker) return browserModalBlockingFailure(verdict.blocker, verdict.signals, ctx);
     }
