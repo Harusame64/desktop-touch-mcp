@@ -1024,6 +1024,7 @@ export const AMBIGUITY_NEXT_HINTS: readonly string[] = [
   "Narrow the search with a scope (CSS selector or landmark container).",
   "Add distinguishing words from nearestLabels to the pattern.",
   "Combine with role to filter (e.g. role:'button').",
+  "A candidate with viaLabel:true is a choice too: a press on its own label reaches it, though its own point does not.",
   "A candidate's name is the name a person reads (its accessible name); match it exactly with by:'ariaLabel'.",
 ];
 
@@ -1082,7 +1083,27 @@ export function decideActionTarget(
     }
   }
 
-  if (distinct.size === 1) {
+  // A match the strict centre test refuses but a press on its own label reaches (a 0x0 radio, an sr-only checkbox) is
+  // still a choice a person sees. With one other match passing the test, pressing that one is a guess (internal #420:
+  // by:'role' radio pressed the plain radio beside two label-pressed ones, win2 on #1018). Only on the strict pass;
+  // the loose pass counts them already.
+  // A hidden control whose centre lies inside the passing match's box is the one that match is drawn for (Choices'
+  // opacity:0 select under its div[role=combobox], a skin over an sr-only checkbox): one control a person sees, not two
+  // (/code-review on #1022).
+  let viaLabelChoices = 0;
+  if (requireReceivesEvents && distinct.size === 1) {
+    const passing = [...distinct.values()][0].clickable!.rect;
+    const inside = (q: RectXYWH): boolean => {
+      const cx = q.x + q.w / 2, cy = q.y + q.h / 2;
+      return cx >= passing.x && cx <= passing.x + passing.w && cy >= passing.y && cy <= passing.y + passing.h;
+    };
+    for (const r of resolved) {
+      const n = r.clickable;
+      if (!r.actionable && n && n.visible && n.enabled && n.roleMatch !== false && n.reachedViaLabel && !inside(n.rect)) viaLabelChoices++;
+    }
+  }
+
+  if (distinct.size === 1 && viaLabelChoices === 0) {
     const r = [...distinct.values()][0];
     return { kind: "resolved", target: { index: r.f.index, rect: r.clickable!.rect, climbDepth: r.depth } };
   }

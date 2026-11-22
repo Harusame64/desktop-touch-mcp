@@ -418,6 +418,29 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(Array.isArray((r as { ancestors?: unknown[] }).ancestors)).toBe(true);
   }, 60_000);
 
+  it("does not guess one of several radios a person can each press: two are pressed through their labels (win2 on #1018)", async () => {
+    // main pressed the plain radio: the strict pass saw only it pass the centre test.
+    const z = (id: string, t: string) => `<input type="radio" name="g" id="${id}" style="width:0;height:0;margin:0;padding:0;border:0;appearance:none"><label for="${id}" style="display:inline-block;padding:6px 12px;margin:20px">${t}</label>`;
+    await page(z("ga", "Alpha") + z("gb", "Beta") + `<input type="radio" name="g" id="gp" style="margin:20px"><label for="gp">Plain</label>`);
+    const o = await resolve({ by: "role", pattern: "radio" });
+    expect(o.kind).toBe("ambiguous");
+    // A checkbox shown beside an sr-only one with a label: two choices, not the shown one alone.
+    await page(`<input type="checkbox" id="srx" class="sr"><label for="srx" style="display:inline-block;margin:40px">Accept terms</label><input type="checkbox" id="shown" style="margin:20px"><label for="shown">Subscribe</label>`);
+    expect((await resolve({ by: "role", pattern: "checkbox" })).kind).toBe("ambiguous");
+    // A widget drawn over the hidden select it stands for, which has its own <label>: one control a person sees
+    // (/code-review on #1022).
+    await page(`<label for="fl2" style="position:absolute;left:100px;top:80px">Flavour</label><select id="fl2" style="position:absolute;left:100px;top:100px;width:200px;opacity:0"><option>Vanilla</option></select><div role="combobox" id="cb2" tabindex="0" style="position:absolute;left:100px;top:100px;width:200px;height:30px;background:#fff;border:1px solid">Vanilla</div>`);
+    const w = await resolve({ by: "role", pattern: "combobox" });
+    expect(what(w)).toBe("div#cb2");
+    if (w.kind === "resolved" && w.axMark !== undefined) await clearAxMarks(w.axMark, null, PORT);
+    // One plain radio and a covered one: still the plain one alone.
+    await page(`<input type="radio" name="h" id="hp" style="margin:20px"><label for="hp">Plain</label><div style="position:relative;display:inline-block;margin:20px"><input type="radio" name="h" id="hc" aria-label="Covered"><div style="position:absolute;inset:-4px;background:#fff"></div></div>`);
+    const one = await resolve({ by: "role", pattern: "radio" });
+    expect(one.kind).toBe("resolved");
+    if (one.kind === "resolved" && one.axMark !== undefined) await clearAxMarks(one.axMark, null, PORT);
+    expect(await marks()).toBe(0);
+  });
+
   it("presses Choices' select as it is: a listbox that opens a popup is a control (win2 on #1008, W6)", async () => {
     await page(`<div class="choices" id="chl" role="listbox" tabindex="0" aria-haspopup="true" aria-expanded="false" style="position:absolute;left:100px;top:100px;width:260px;height:40px;border:1px solid"><div class="choices__inner"><select id="fr" hidden><option>Apple</option></select><div class="choices__item">Apple</div></div><div class="choices__list--dropdown" style="visibility:hidden"><div role="listbox"><div role="option">Apple</div><div role="option">Banana</div></div></div></div>`);
     expect(what(await resolve({ by: "role", pattern: "listbox" }))).toBe("div#chl");

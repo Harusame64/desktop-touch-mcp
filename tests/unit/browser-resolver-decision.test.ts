@@ -117,6 +117,34 @@ describe("climbToClickable (ADR §1.2 D4, depth D=3)", () => {
   });
 });
 
+describe("decideActionTarget does not guess among controls a person can each press (internal #420)", () => {
+  // A plain radio passes the centre test; two 0x0 radios are pressed through their own labels. A person sees three
+  // choices; the strict pass saw one and pressed it (win2 on #1018: by:'role' radio pressed the plain one).
+  const plain = facts({ index: 0, chain: [node({ tag: "input", rect: { x: 0, y: 0, w: 13, h: 13 } })] });
+  const zero = (i: number) => facts({ index: i, chain: [node({ tag: "input", receivesEvents: false, reachedViaLabel: true, rect: { x: 40 * i, y: 0, w: 0, h: 0 } })] });
+  it("is ambiguous when other matches are reached through their own labels", () => {
+    expect(decideActionTarget([plain, zero(1), zero(2)], 3).kind).toBe("ambiguous");
+  });
+  it("still resolves one match that passes the centre test when the others cannot be pressed (covered, no label)", () => {
+    const covered = facts({ index: 1, chain: [node({ tag: "input", receivesEvents: false, rect: { x: 40, y: 0, w: 13, h: 13 } })] });
+    expect(decideActionTarget([plain, covered], 2).kind).toBe("resolved");
+  });
+  it("still resolves a widget drawn over the hidden control it stands for (/code-review on #1022)", () => {
+    // Choices: an opacity:0 select with its own <label>, under the div[role=combobox] drawn in its place.
+    const widget = facts({ index: 0, chain: [node({ tag: "div", role: "combobox", axControl: true, rect: { x: 100, y: 100, w: 240, h: 40 } })] });
+    const hiddenSelect = facts({ index: 1, chain: [node({ tag: "select", receivesEvents: false, reachedViaLabel: true, rect: { x: 100, y: 100, w: 240, h: 40 } })] });
+    expect(decideActionTarget([widget, hiddenSelect], 2).kind).toBe("resolved");
+  });
+  it("leaves the loose pass as it was: the gate there is off", () => {
+    expect(decideActionTarget([plain, zero(1)], 2, { requireReceivesEvents: false }).kind).toBe("ambiguous");
+  });
+  it("does not count a label-reached match that is disabled or of another role", () => {
+    const off = facts({ index: 1, chain: [node({ tag: "input", enabled: false, receivesEvents: false, reachedViaLabel: true, rect: { x: 40, y: 0, w: 0, h: 0 } })] });
+    const wrongRole = facts({ index: 2, chain: [node({ tag: "input", receivesEvents: false, reachedViaLabel: true, roleMatch: false, rect: { x: 80, y: 0, w: 0, h: 0 } })] });
+    expect(decideActionTarget([plain, off, wrongRole], 3).kind).toBe("resolved");
+  });
+});
+
 describe("decideActionTarget (ADR §1.2 D3 uniqueness contract)", () => {
   it("resolves when exactly one actionable strong candidate", () => {
     const d = decideActionTarget([facts({ index: 0, chain: [node({ tag: "button", rect: { x: 5, y: 6, w: 7, h: 8 } })] })], 1);
