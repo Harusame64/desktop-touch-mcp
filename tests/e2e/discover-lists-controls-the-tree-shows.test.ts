@@ -256,9 +256,16 @@ describe.skipIf(!CHROME)("desktop_discover's browser lane lists the controls the
     await page(card("USB-C Cable 2m") + card("USB-C Cable 1m"));
     expect((await names()).filter((l) => l.startsWith("Add to cart"))).toEqual(["Add to cart — USB-C Cable 1m", "Add to cart — USB-C Cable 2m"]);
     // Examples with no name of their own take the heading before them (win2 on #1026: Bootstrap's checks).
-    const ex = (h: string, id: string) => `<h3>${h}</h3><div class="example"><input type="radio" id="${id}" name="${id}"><label for="${id}">Default radio</label></div>`;
+    const ex = (h: string, id: string) => `<h3>${h}</h3><div class="example"><input type="radio" id="${id}" name="${id}"><label for="${id}">Default radio</label><pre><code>&lt;div class="form-check"&gt;</code></pre></div>`;
     await page(ex("Radios", "r1") + ex("Inline", "r2"));
     expect((await names()).filter((l) => l.startsWith("Default radio"))).toEqual(["Default radio — Inline", "Default radio — Radios"]);
+    // Links of one name: to one place they are one target and keep their name; to different places, the heading before
+    // their block names each, not the link beside them (win2 on #1026: footer links).
+    await page(`<nav><a href="/help">Help</a><a href="/lists">Your Lists</a></nav><footer><h4>Support</h4><div><a href="/help2">Help</a><a href="/about">About</a></div></footer>`);
+    const links = (await names()).filter((l) => l.startsWith("Help"));
+    expect(links).toEqual(["Help — Support", "Help — navigation"]);
+    await page(`<a href="/same">Home</a><div><a href="/same">Home</a></div>`);
+    expect((await names()).filter((l) => l.startsWith("Home"))).toEqual(["Home"]);
   });
 
   it("does not list a div slider it could not press", async () => {

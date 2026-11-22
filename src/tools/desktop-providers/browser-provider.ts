@@ -108,8 +108,8 @@ ${UNIQUE_SELECTOR_JS}
   function bestSel(el) { return __uniqueSelector(el, () => performance.now() > selDeadline); }
   // What tells controls that share a name apart, as a person reads it (the user's decision, internal #420): the
   // smallest block that holds this control and none of its namesakes (a table row, a product card, an example's box),
-  // named by its heading, else its first link, else its words; a block with none of those takes the heading before it
-  // (Bootstrap's examples). Read node by node: the control itself and its own labels left out, and nothing the page
+  // named by its heading; a row or an item by its words; any other block by the heading before it (Bootstrap's
+  // examples), else the landmark it sits in, else its words. Read node by node: the control itself and its own labels left out, and nothing the page
   // does not show as text: an entry, a masked part, a script or style, an element hidden (hidden, display none,
   // visibility hidden) (/code-review on #1026: a secret in a display:none span was read into a label). Words of
   // separate elements are kept apart, and the result is cut at a word, not mid-word (win2 on #1026).
@@ -128,6 +128,8 @@ ${UNIQUE_SELECTOR_JS}
         if (c.nodeType !== 1 || c === skip) continue;
         if (c.tagName === 'LABEL' && skip && c.control === skip) continue;
         if (__isEntry(c) || __isMasked(c) || __skipsText(c) || !__shownEl(c)) continue;
+        // A code sample is page text, but its source is not a name (win2 on #1026: Bootstrap's snippets).
+        if (c.tagName === 'PRE' || c.tagName === 'CODE') continue;
         walk(c);
       }
     })(node);
@@ -156,13 +158,29 @@ ${UNIQUE_SELECTOR_JS}
       }
       return '';
     };
-    let t = shownIn('h1,h2,h3,h4,h5,h6,[role=heading]') || shownIn('a[href]') || wordsOf(unit, el);
-    if (!t) {
+    const before = function() {
       const hs = __qsa(document, 'h1,h2,h3,h4,h5,h6,[role=heading]');
       for (let i = hs.length - 1; i >= 0; i--) {
-        if (hs[i].compareDocumentPosition(unit) & Node.DOCUMENT_POSITION_FOLLOWING) { t = wordsOf(hs[i], el); if (t) break; }
+        if (hs[i].compareDocumentPosition(unit) & Node.DOCUMENT_POSITION_FOLLOWING) { const h = wordsOf(hs[i], el); if (h) return h; }
       }
-    }
+      return '';
+    };
+    // Its heading; for a row or an item, its words; for any other block, the heading before it, then its words. Not a
+    // neighbouring link: that read as another target (win2 on #1026: footer links named by the link beside them).
+    // The landmark the block sits in, by its name or its kind: "navigation", "footer" (a nav's links beside each other
+    // are not names for one another).
+    const landmark = function() {
+      const lm = __closest(unit, 'nav,header,footer,aside,main,[role=navigation],[role=banner],[role=contentinfo],[role=complementary],[role=main]');
+      if (!lm) return '';
+      const named = (lm.getAttribute('aria-label') || '').trim();
+      if (named) return named;
+      const role = (lm.getAttribute('role') || '').toLowerCase();
+      const kinds = { nav: 'navigation', header: 'header', footer: 'footer', aside: 'sidebar', main: 'main',
+        navigation: 'navigation', banner: 'header', contentinfo: 'footer', complementary: 'sidebar' };
+      return kinds[role] || kinds[lm.tagName.toLowerCase()] || '';
+    };
+    const isRow = __matches(unit, 'tr,[role=row],li,[role=listitem],article,[role=article],[role=option]');
+    const t = shownIn('h1,h2,h3,h4,h5,h6,[role=heading]') || (isRow ? wordsOf(unit, el) : '') || before() || landmark() || wordsOf(unit, el);
     return cutAtWord(t, 48);
   }
   function elType(el) {
@@ -246,11 +264,14 @@ ${ELEMENT_NAME_JS}
     out.push(item);
     if(out.length>=60) break;
   }
-  // Names for the controls that share one, over what is listed (its cap: 60).
+  // Names for the controls that share one, over what this script lists (its cap: 60; desktop_discover may show fewer,
+  // so a namesake past what it shows still counts).
   const byName = new Map();
   out.forEach(function(it) { const k = it.text || it.href || ''; if (k) byName.set(k, (byName.get(k) || []).concat([it])); });
   byName.forEach(function(group) {
     if (group.length < 2) return;
+    // Links of one name that go to one place are one target: nothing to tell apart.
+    if (group.every(function(it) { return it.href && it.href === group[0].href; })) return;
     const els = group.map(function(it) { return it.__el; });
     group.forEach(function(it) {
       const ctx = blockName(it.__el, els.filter(function(o) { return o !== it.__el; }));
@@ -327,10 +348,13 @@ export async function fetchBrowserCandidates(
       c.label = `${c.label} — ${ctx}`;
       c.labelContext = ctx;
     });
-    const groupsLeft = new Map<string, UiEntityCandidate[]>();
-    for (const c of candidates) groupsLeft.set(c.label ?? "", [...(groupsLeft.get(c.label ?? "") ?? []), c]);
-    for (const g of groupsLeft.values()) {
-      if (g.length < 2) continue;
+    const groupsLeft = new Map<string, number[]>();
+    candidates.forEach((c, i) => groupsLeft.set(c.label ?? "", [...(groupsLeft.get(c.label ?? "") ?? []), i]));
+    for (const idxs of groupsLeft.values()) {
+      if (idxs.length < 2) continue;
+      // Links of one name to one place are one target, merged as before.
+      if (idxs.every((i) => kept[i].href && kept[i].href === kept[idxs[0]].href)) continue;
+      const g = idxs.map((i) => candidates[i]);
       g.forEach((c, n) => {
         c.digest = createHash("sha1").update(`cdp|browserTab:${tabId}|${c.label ?? ""}|${c.locator!.cdp!.selector}`).digest("hex").slice(0, 16);
         const nth = `(${n + 1} of ${g.length})`;
