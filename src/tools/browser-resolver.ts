@@ -555,6 +555,9 @@ ${viewportOriginJs(args.pageZoom ?? 1)}
       chain: chainOf(el),
       type: classify(el),
       name: elText(el),
+      // What a candidate is listed as: the name a person reads (internal #420). name stays the identity the act
+      // gate compares, read the same way at act time.
+      shownName: __personName(el),
       role: roleAttr || null,
       ariaLabel: el.getAttribute('aria-label') || null,
       // Stable and not secret — for the by-axis fill's identity gate (buildFillActJs).
@@ -791,8 +794,10 @@ export interface CandidateFacts {
   chain: ClickableNode[];
   /** classify(): link / button / input / heading / text / other */
   type: string;
-  /** accessible-ish name (text / aria-label / placeholder); gatherer caps to 80 */
+  /** accessible-ish name (text / aria-label / placeholder); gatherer caps to 80. The act gate's identity. */
   name: string;
+  /** The name a person reads (aria-labelledby, aria-label, a widget's lent label, then text); what a candidate shows. */
+  shownName?: string;
   role: string | null;
   ariaLabel: string | null;
   /** The element's id and form `name` attribute — stable, not secret; the by-axis fill's identity gate */
@@ -969,7 +974,7 @@ function toFingerprint(f: CandidateFacts, clickable: ClickableNode | null): Ambi
   return {
     index: f.index,
     role: f.role,
-    name: f.name,
+    name: f.shownName || f.name,
     actionability: { visible: n.visible, enabled: n.enabled, receivesEvents: n.receivesEvents },
     rect: n.rect,
     nearestLabels: f.nearestLabels,

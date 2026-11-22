@@ -123,9 +123,8 @@ ${UNIQUE_SELECTOR_JS}
   // Names, and which values are never read, come from the one definition every CDP script shares.
 ${ELEMENT_NAME_JS}
   const out=[];
-  // A control the page keeps out of the tab order and the accessibility tree (Select2's original select: tabindex -1,
-  // aria-hidden) is not one a person uses; the widget drawn for it is listed instead.
-  function keptFromPeople(el) { return el.getAttribute('aria-hidden')==='true' && el.getAttribute('tabindex')==='-1'; }
+  // Shared with the resolver's candidate names (_element-name-js.ts).
+  const keptFromPeople = __keptFromPeople;
   // A part the tree shows inside a widget's combobox (Select2's rendered value, role textbox) is the combobox's. A
   // real text field inside one (the ARIA 1.0 combobox) is still typed into, and stays (/code-review on #1009). Text
   // fields are not marked in controls mode today, so this holds for one a later mode would mark.
@@ -134,17 +133,7 @@ ${ELEMENT_NAME_JS}
     for(let a=el.parentElement; a; a=a.parentElement) { if(axRole(a)==='combobox') return true; }
     return false;
   }
-  // The control a widget stands for: a select inside it (Choices), or the select the page keeps from people (tabindex
-  // -1, aria-hidden) just before the widget's box (Select2 puts its span after the select it hides). A search field
-  // inside the widget (Select2's multiple) is not it, nor a hidden select a script fills for another field.
-  function standsFor(el) {
-    const inner=el.querySelector('select'); if(inner) return inner;
-    for(let a=el, d=0; a && d<4; a=a.parentElement, d++) {
-      const prev=a.previousElementSibling;
-      if(prev && prev.tagName==='SELECT' && keptFromPeople(prev)) return prev;
-    }
-    return null;
-  }
+  const standsFor = __standsFor;
   // The value a widget shows: what its aria-labelledby points at inside the widget (Select2's rendered value); a
   // label outside it is a name, not a value.
   function shownValue(el) {
