@@ -68,8 +68,9 @@ export const DRAWS_NOTHING_JS = `
   var __NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
   var __scriptsRun = null;
   // The prototype's matches: a <form> exposes a control named "matches" as form.matches, and a custom element can
-  // define its own (/code-review on #1016: the walker threw and the whole script failed).
-  var __matches = Element.prototype.matches;
+  // define its own (/code-review on #1016: the walker threw and the whole script failed). Looked up when called, and
+  // the element's own where there is no Element (the unit tests' fake DOM).
+  function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
   function __drawsNothing(a, probe) {
@@ -88,7 +89,7 @@ export const DRAWS_NOTHING_JS = `
     return getComputedStyle(a).display === 'none';
   }
   // An element whose text the page never draws: skipped by every walker that collects an element's words.
-  function __skipsText(c) { return __matches.call(c, __NOT_TEXT) && __drawsNothing(c, false); }
+  function __skipsText(c) { return __matches(c, __NOT_TEXT) && __drawsNothing(c, false); }
 `;
 
 export const ELEMENT_NAME_JS = `
