@@ -2227,11 +2227,19 @@ function browserResolveStopToFailure(
     const parts: string[] = [];
     if (seen.hidden > 0) parts.push(`${seen.hidden} hidden (no box, or display/visibility/opacity hides it)`);
     if (seen.offRole > 0) parts.push(`${seen.offRole} not of role '${String(ctx.role)}'`);
-    return stop(`${seen.matched} match(es), none to act on: ${parts.join("; ")}.${cutNote}`, [
+    // One match can be both hidden and of another role: said, so the counts are not read as adding up (win2 on #1030).
+    const both = seen.hidden > 0 && seen.offRole > 0 ? " (a match can be counted in both)" : "";
+    // Text a page hides inside a shown control (a mobile-only label, a dialog's heading) does not name that control to
+    // a by:'text' search; by:'ariaLabel' reads the name the browser gives it (win2 on #1030, getbootstrap.com).
+    const nameHint = seen.hidden > 0 && (ctx.by === "text" || ctx.by === "regex")
+      ? ["by:'ariaLabel' matches a control by the name the browser gives it (aria-label, its label), which text hidden inside it does not change"]
+      : [];
+    return stop(`${seen.matched} match(es), none to act on: ${parts.join("; ")}${both}.${cutNote}`, [
       ...cutHint,
       byAxis
         ? "browser_search with the same by/pattern and visibleOnly:false lists these matches, hidden ones too, with each one's role"
         : "browser_eval can read the matches' styles and boxes",
+      ...nameHint,
     ]);
   }
   const code = outcome.kind === "ambiguous" ? "BrowserAmbiguousTarget" : "BrowserNoActionableTarget";

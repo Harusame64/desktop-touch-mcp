@@ -200,15 +200,23 @@ describe.skipIf(!CHROME)("nothing matching is said as such (internal #420)", () 
     await page(`<a id="set" href="#s" style="display:none">Settings</a>`);
     const r = await click({ by: "text", pattern: "Settings" });
     expect(r.error, JSON.stringify(r)).toBe("browser_click: 1 match(es), none to act on: 1 hidden (no box, or display/visibility/opacity hides it). Nothing was done.");
-    expect(r.suggest).toEqual(["browser_search with the same by/pattern and visibleOnly:false lists these matches, hidden ones too, with each one's role"]);
+    expect(r.suggest).toEqual(["browser_search with the same by/pattern and visibleOnly:false lists these matches, hidden ones too, with each one's role", "by:'ariaLabel' matches a control by the name the browser gives it (aria-label, its label), which text hidden inside it does not change"]);
     expect((r.context as { matched: number; hidden: number; offRole: number }).hidden).toBe(1);
+  });
+
+  it("a label hidden inside a shown button points at by:'ariaLabel', which names the button", async () => {
+    await page(`<button id="sb" aria-label="Search docs"><svg width="16" height="16"></svg><span style="display:none">Search docs</span></button>`);
+    const r = await click({ by: "text", pattern: "Search docs" });
+    expect(r.error, JSON.stringify(r)).toBe("browser_click: 1 match(es), none to act on: 1 hidden (no box, or display/visibility/opacity hides it). Nothing was done.");
+    expect((r.suggest as string[]).at(-1)).toBe("by:'ariaLabel' matches a control by the name the browser gives it (aria-label, its label), which text hidden inside it does not change");
+    expect(await presses({ by: "ariaLabel", pattern: "Search docs", scope: "body" })).toBe("#sb");
   });
 
   it("matches of another role are counted on both tests", async () => {
     await page(`<button id="a">Save</button><span id="h" style="display:none">Save</span>`);
     const r = await click({ by: "text", pattern: "Save", role: "link" });
-    expect(r.error, JSON.stringify(r)).toBe("browser_click: 2 match(es), none to act on: 1 hidden (no box, or display/visibility/opacity hides it); 2 not of role 'link'. Nothing was done.");
-    expect(r.suggest).toEqual(["browser_search with the same by/pattern and visibleOnly:false lists these matches, hidden ones too, with each one's role"]);
+    expect(r.error, JSON.stringify(r)).toBe("browser_click: 2 match(es), none to act on: 1 hidden (no box, or display/visibility/opacity hides it); 2 not of role 'link' (a match can be counted in both). Nothing was done.");
+    expect(r.suggest).toEqual(["browser_search with the same by/pattern and visibleOnly:false lists these matches, hidden ones too, with each one's role", "by:'ariaLabel' matches a control by the name the browser gives it (aria-label, its label), which text hidden inside it does not change"]);
   });
 
   it("the tree's road keeps its own count when the DOM reading finds none either", async () => {
@@ -217,6 +225,7 @@ describe.skipIf(!CHROME)("nothing matching is said as such (internal #420)", () 
     await page(`<label for="e">Email</label><input id="e" style="opacity:0">`);
     const f = payload(await browserFillInputHandler({ by: "ariaLabel", pattern: "Email", value: "x", includeContext: false, port: PORT } as Parameters<typeof browserFillInputHandler>[0]));
     expect(f.error, JSON.stringify(f)).toBe("browser_fill: 1 match(es), none to act on: 1 hidden (no box, or display/visibility/opacity hides it). Nothing was done.");
+    expect(f.suggest).toEqual(["browser_search with the same by/pattern and visibleOnly:false lists these matches, hidden ones too, with each one's role"]);
     expect(await evaluateInTab("document.getElementById('e').value", null, PORT)).toBe("");
   });
 
