@@ -95,7 +95,7 @@ function candidateMatchingBodyJs(args: CandidateCollectionArgs & { axAlone?: boo
 (function() {
 ${SCOPE_ROOTS_JS}
   // Every element the scope matches, not only the first (internal #420, win2 on #1022: "#s1, #s2" searched #s1 alone).
-  const roots = __scopeRoots(${scope ? JSON.stringify(scope) : "null"});
+  const roots = __scopeRoots(${scope ? jsLiteral(scope) : "null"});
   if (roots.length === 0) return { __error: "ScopeNotFound" };
 
   const by = ${JSON.stringify(by)};

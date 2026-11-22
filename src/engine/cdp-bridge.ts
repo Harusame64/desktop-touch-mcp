@@ -692,7 +692,7 @@ export async function markAxMatches(
     // The root (or each element the scope matches, internal #420) by an object id, so no DOM domain is enabled on
     // the shared session (/code-review on #1008), as inspectHitAtPoint does.
     const rootsObj = (await s.send("Runtime.evaluate", {
-      expression: `(function() {${SCOPE_ROOTS_JS} return __scopeRoots(${opts.scope ? JSON.stringify(opts.scope) : "null"}); })()`,
+      expression: `(function() {${SCOPE_ROOTS_JS} return __scopeRoots(${opts.scope ? jsLiteral(opts.scope) : "null"}); })()`,
       returnByValue: false,
       objectGroup: group,
     })) as { result?: { objectId?: string } };
@@ -842,7 +842,7 @@ export async function markAxMatches(
 function widgetsForLabelledSelectsJs(nonce: string, pattern: string, caseSensitive: boolean, scope: string | null): string {
   return `(function() {
 ${SCOPE_ROOTS_JS}
-  var roots = __scopeRoots(${scope === null ? "null" : JSON.stringify(scope)});
+  var roots = __scopeRoots(${scope === null ? "null" : jsLiteral(scope)});
   if (roots.length === 0) return 0;
   var cs = ${JSON.stringify(caseSensitive)}, needle = cs ? ${JSON.stringify(pattern)} : ${JSON.stringify(pattern.toLowerCase())};
   var nonce = ${JSON.stringify(nonce)}, n = 0;

@@ -3494,7 +3494,7 @@ export const browserGetInteractiveHandler = async ({
 ${SCOPE_ROOTS_JS}
   // Every element the scope matches, not only the first; a scope that matches nothing is said, not read as the whole
   // page (internal #420).
-  const roots = __scopeRoots(${scope ? JSON.stringify(scope) : "null"});
+  const roots = __scopeRoots(${scope ? jsLiteral(scope) : "null"});
   if (roots.length === 0) return { scopeNotFound: true };
   const viewportOnly = ${JSON.stringify(inViewportOnly)};
   const maxN = ${JSON.stringify(maxResults)};
