@@ -429,8 +429,7 @@ function candidatePoolJs(args: ActionFactsArgs): string {
 }
 
 export function buildActionCandidateFactsJs(args: ActionFactsArgs): string {
-  // ADR-023 Phase 2b: click-only modal block (kept off for fill so its gather +
-  // the Phase 1 snapshot stay bit-equal). __modal = page-level ModalFacts;
+  // ADR-023 Phase 2b: click-only modal block (kept off for fill). __modal = page-level ModalFacts;
   // __occludedDialogIndexForEl maps a candidate to the modal/backdrop occluding it.
   const modalSetup = args.includeModal
     ? `
@@ -483,9 +482,11 @@ ${pressLandingRuleJs()}
         if (lr.width === 0 || lr.height === 0) continue;
         const lx = lr.left + lr.width / 2, ly = lr.top + lr.height / 2;
         if (lx < 0 || ly < 0 || lx >= window.innerWidth || ly >= window.innerHeight) continue;
-        // On its own label, or on the control itself inside a wrapping label (/code-review on #1018).
-        const how = __dtmLandsOn(el, document.elementFromPoint(lx, ly)).how;
-        if (how === 'own_label' || how === 'self' || how === 'inside') { reachedViaLabel = true; break; }
+        // A page that shadows closest or matches (a form control named so) must not fail the gather: the reach is
+        // then left unsaid (/code-review on #1018).
+        let how = '';
+        try { how = __dtmLandsOn(el, document.elementFromPoint(lx, ly)).how; } catch (e) { how = ''; }
+        if (how === 'own_label') { reachedViaLabel = true; break; }
       }
     }
     const tiRaw = el.getAttribute('tabindex');
@@ -890,6 +891,11 @@ export interface Actionability {
   visible: boolean;
   enabled: boolean;
   receivesEvents: boolean;
+  /**
+   * Present (true) when a press on one of its own labels reaches it though its centre does not: a 0x0 radio, an
+   * sr-only checkbox (internal #420). receivesEvents stays the centre test the gate used (/code-review on #1018).
+   */
+  viaLabel?: true;
 }
 
 export interface ResolvedActionTarget {
@@ -1001,8 +1007,9 @@ function toFingerprint(f: CandidateFacts, clickable: ClickableNode | null): Ambi
     index: f.index,
     role: f.role,
     name: f.shownName || f.name,
-    // What the agent reads: a press on its own label reaches it too (internal #420).
-    actionability: { visible: n.visible, enabled: n.enabled, receivesEvents: n.receivesEvents || !!n.reachedViaLabel },
+    // A press on its own label reaches it: said beside receivesEvents, which stays the centre test the gate used, so a
+    // refusal and its list agree (internal #420, /code-review on #1018).
+    actionability: { visible: n.visible, enabled: n.enabled, receivesEvents: n.receivesEvents, ...(n.reachedViaLabel ? { viaLabel: true as const } : {}) },
     rect: n.rect,
     nearestLabels: f.nearestLabels,
     containerHint: f.containerHint,
@@ -1022,7 +1029,7 @@ export const AMBIGUITY_NEXT_HINTS: readonly string[] = [
 export const NO_ACTIONABLE_NEXT_HINTS: readonly string[] = [
   "Matches were found but none is an auto-clickable target (no strong interactive element within climb depth 3).",
   "Target a parent button/link, or use browser_click with a precise CSS selector.",
-  "Verify the element is on-screen and not covered by an overlay (receivesEvents=false means it is occluded or off-viewport).",
+  "Verify the element is on-screen and not covered by an overlay (receivesEvents=false means it is occluded or off-viewport; viaLabel:true means a press on its own label reaches it).",
 ];
 
 /**

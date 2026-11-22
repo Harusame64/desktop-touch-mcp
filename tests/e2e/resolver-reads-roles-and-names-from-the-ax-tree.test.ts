@@ -339,9 +339,10 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     const o = await resolve({ by: "role", pattern: "radio" }, false);
     expect(o.kind).toBe("ambiguous");
     const cands = o.kind === "ambiguous" ? o.candidates : [];
-    const got = Object.fromEntries(cands.map((c) => [c.name, c.actionability.receivesEvents]));
-    // A label under a cover is not a way in: the press lands on the cover.
-    expect(got).toEqual({ Zero: true, Plain: true, Covered: false, "Label covered": false });
+    // receivesEvents stays the centre test the gate used; viaLabel says a press on its own label reaches it, so a
+    // refusal and its list agree (/code-review on #1018). A label under a cover is not a way in.
+    const got = Object.fromEntries(cands.map((c) => [c.name, [c.actionability.receivesEvents, c.actionability.viaLabel ?? false]]));
+    expect(got).toEqual({ Zero: [false, true], Plain: [true, false], Covered: [false, false], "Label covered": [false, false] });
     // Shown, never the gate: the strict pass still refuses the 0x0 radio, so browser_click's loose pass and landing
     // read press its label, not its own 0x0 point (/code-review on #1018).
     expect((await resolve({ by: "ariaLabel", pattern: "Zero", role: "radio" }, true)).kind).toBe("noActionable");
@@ -349,6 +350,16 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     const loose = await resolve({ by: "ariaLabel", pattern: "Zero", role: "radio" }, false);
     expect(loose.kind).toBe("resolved");
     if (loose.kind === "resolved" && loose.axMark !== undefined) await clearAxMarks(loose.axMark, null, PORT);
+    expect(await marks()).toBe(0);
+  });
+
+  it("still gathers on a page that shadows closest: the label probe's failure leaves viaLabel unsaid (/code-review on #1018)", async () => {
+    // A click-through label over a form whose control is named "closest": the probe's hit is the form, and
+    // form.closest is that control.
+    await page(`<form id="f" style="padding:40px"><input name="closest" aria-label="Closest field"><input type="radio" id="zr" style="width:0;height:0;margin:0;padding:0;border:0;appearance:none"><label for="zr" style="display:inline-block;padding:6px 12px;pointer-events:none">Zed</label></form>`);
+    const o = await resolve({ by: "role", pattern: "radio" }, false);
+    expect(o.kind).toBe("resolved");
+    if (o.kind === "resolved" && o.axMark !== undefined) await clearAxMarks(o.axMark, null, PORT);
     expect(await marks()).toBe(0);
   });
 

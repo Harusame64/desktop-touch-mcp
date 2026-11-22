@@ -1205,9 +1205,11 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
         if (lr.width === 0 || lr.height === 0) continue;
         const lx = lr.left + lr.width / 2, ly = lr.top + lr.height / 2;
         if (lx < 0 || ly < 0 || lx >= window.innerWidth || ly >= window.innerHeight) continue;
-        // On its own label, or on the control itself inside a wrapping label (/code-review on #1018).
-        const how = __dtmLandsOn(el, document.elementFromPoint(lx, ly)).how;
-        if (how === 'own_label' || how === 'self' || how === 'inside') { reachedViaLabel = true; break; }
+        // A page that shadows closest or matches (a form control named so) must not fail the gather: the reach is
+        // then left unsaid (/code-review on #1018).
+        let how = '';
+        try { how = __dtmLandsOn(el, document.elementFromPoint(lx, ly)).how; } catch (e) { how = ''; }
+        if (how === 'own_label') { reachedViaLabel = true; break; }
       }
     }
     const tiRaw = el.getAttribute('tabindex');
