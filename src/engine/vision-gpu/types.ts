@@ -85,6 +85,11 @@ export interface UiEntityCandidate {
    * still addressed by its AutomationId.
    */
   labelInferred?: boolean;
+  /**
+   * internal #420 — the words of the control's row added to `label` to tell controls with the same name apart
+   * ("Delete — Beta"). A `query` matches the label without them, the control's own name.
+   */
+  labelContext?: string;
   value?: string;
   rect?: Rect;
   /**

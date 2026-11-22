@@ -15,7 +15,7 @@ import type { ProviderResult } from "../../engine/world-graph/candidate-ingress.
 import { probeLane } from "../../engine/aim-probe.js";
 import { ELEMENT_NAME_JS } from "../_element-name-js.js";
 import { UNIQUE_SELECTOR_JS } from "../_unique-selector-js.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 /** The attribute markAxMatches marks with (cdp-bridge's AX_MARK_ATTR; cdp-bridge is loaded lazily here). */
 const AX_MARK_ATTR = "data-dtm-ax";
@@ -25,6 +25,8 @@ interface BrowserElement {
   text: string;
   selector: string;
   inViewport: boolean;
+  /** What tells it apart from controls that share its name (blockName), when one does. */
+  ctx?: string;
   href?: string;
   value?: string;
 }
@@ -104,6 +106,98 @@ export function interactiveScript(axNonce: string | null): string {
 ${UNIQUE_SELECTOR_JS}
   const selDeadline = performance.now() + 3000;
   function bestSel(el) { return __uniqueSelector(el, () => performance.now() > selDeadline); }
+  // What tells controls that share a name apart, as a person reads it (the user's decision, internal #420): the
+  // smallest block that holds this control and none of its namesakes (a table row, a product card, an example's box),
+  // named by its heading; a row or an item by its words; a block in a nav, header, footer or sidebar by that landmark;
+  // any other block by the heading before it (Bootstrap's examples), else its landmark, else its words. Words all its
+  // namesakes share are left off. Read node by node: the control itself and its own labels left out, and nothing the page
+  // does not show as text: an entry, a masked part, a script or style, an element hidden (hidden, display none,
+  // visibility hidden) (/code-review on #1026: a secret in a display:none span was read into a label). Words of
+  // separate elements are kept apart, and the result is cut at a word, not mid-word (win2 on #1026).
+  const __shownEl = function(n) {
+    if (n.hidden) return false;
+    const cs = getComputedStyle(n);
+    return cs.display !== 'none' && cs.visibility !== 'hidden';
+  };
+  // A text root a person can read: shown with every ancestor (checkVisibility), not an entry, not masked, not a script
+  // or style. The walk below checks the children; this checks the root, a heading taken from elsewhere included
+  // (codex on #1026: a preceding <h3 hidden> or a masked heading gave its text to a name).
+  const __readable = function(n) {
+    if (__isEntry(n) || __isMasked(n) || __skipsText(n)) return false;
+    if (typeof n.checkVisibility === 'function') return n.checkVisibility({ visibilityProperty: true });
+    for (let a = n; a && a.nodeType === 1; a = __parent(a)) if (!__shownEl(a)) return false;
+    return true;
+  };
+  function wordsOf(node, skip) {
+    if (!__readable(node)) return '';
+    const out = [];
+    let len = 0;
+    (function walk(n) {
+      for (const c of n.childNodes) {
+        if (len > 120) return;
+        if (c.nodeType === 3) { const t = c.nodeValue.trim(); if (t) { out.push(t); len += t.length + 1; } continue; }
+        if (c.nodeType !== 1 || c === skip) continue;
+        if (c.tagName === 'LABEL' && skip && c.control === skip) continue;
+        if (__isEntry(c) || __isMasked(c) || __skipsText(c) || !__shownEl(c)) continue;
+        // A code sample is page text, but its source is not a name (win2 on #1026: Bootstrap's snippets).
+        if (c.tagName === 'PRE' || c.tagName === 'CODE') continue;
+        walk(c);
+      }
+    })(node);
+    return out.join(' ').replace(/\\s+/g, ' ').trim();
+  }
+  function cutAtWord(t, max) {
+    if (t.length <= max) return t;
+    const cut = t.slice(0, max);
+    const sp = cut.lastIndexOf(' ');
+    return (sp > max / 2 ? cut.slice(0, sp) : cut) + '…';
+  }
+  function blockName(el, others) {
+    let unit = el;
+    for (let p = __parent(el); p && p !== document.body; p = __parent(p)) {
+      if (others.some(function(o) { return __contains(p, o); })) break;
+      unit = p;
+    }
+    if (unit === el) return '';
+    const shownIn = function(sel) {
+      const list = __qsa(unit, sel);
+      for (let i = 0; i < list.length; i++) {
+        const n = list[i];
+        if (n === el || __contains(n, el) || __contains(el, n) || !__shownEl(n)) continue;
+        const t = wordsOf(n, el);
+        if (t) return t;
+      }
+      return '';
+    };
+    const before = function() {
+      const hs = __qsa(document, 'h1,h2,h3,h4,h5,h6,[role=heading]');
+      for (let i = hs.length - 1; i >= 0; i--) {
+        if (hs[i].compareDocumentPosition(unit) & Node.DOCUMENT_POSITION_FOLLOWING) { const h = wordsOf(hs[i], el); if (h) return h; }
+      }
+      return '';
+    };
+    // Its heading; for a row or an item, its words; for any other block, the heading before it, then its words. Not a
+    // neighbouring link: that read as another target (win2 on #1026: footer links named by the link beside them).
+    // The landmark the block sits in, by its name or its kind: "navigation", "footer" (a nav's links beside each other
+    // are not names for one another).
+    const landmark = function() {
+      const lm = __closest(unit, 'nav,header,footer,aside,main,[role=navigation],[role=banner],[role=contentinfo],[role=complementary],[role=main]');
+      if (!lm) return '';
+      const named = (lm.getAttribute('aria-label') || '').trim();
+      if (named) return named;
+      const role = (lm.getAttribute('role') || '').toLowerCase();
+      const kinds = { nav: 'navigation', header: 'header', footer: 'footer', aside: 'sidebar', main: 'main',
+        navigation: 'navigation', banner: 'header', contentinfo: 'footer', complementary: 'sidebar' };
+      return kinds[role] || kinds[lm.tagName.toLowerCase()] || '';
+    };
+    const isRow = __matches(unit, 'tr,[role=row],li,[role=listitem],article,[role=article],[role=option]');
+    // A block in a nav, header, footer or sidebar takes that landmark before a heading above it, which belongs to the
+    // content and not to the landmark (win2 on #1026: a nav link named by a product card's heading).
+    const inChrome = !!__closest(unit, 'nav,header,footer,aside,[role=navigation],[role=banner],[role=contentinfo],[role=complementary]');
+    const t = shownIn('h1,h2,h3,h4,h5,h6,[role=heading]') || (isRow ? wordsOf(unit, el) : '')
+      || (inChrome ? landmark() : '') || before() || landmark() || wordsOf(unit, el);
+    return cutAtWord(t, 48);
+  }
   function elType(el) {
     const tag=el.tagName.toLowerCase(), role=el.getAttribute('role'), ax=axRole(el);
     if(role==='switch'||role==='checkbox'||role==='radio') return 'toggle['+role+']';
@@ -178,12 +272,31 @@ ${ELEMENT_NAME_JS}
     // A control the tree showed is named as the tree names it: aria-labelledby or aria-label before its text (a
     // role=checkbox div named only by aria-label; PR 側 codex on #1009).
     const item={type:type,text:widget?widgetName(el):(axRole(el)!==null?(__fieldName(el)||__elText(el)):__elText(el)),selector:bestSel(el),inViewport:inVP};
+    item.__el=el;
     if(el.tagName==='A') item.href=el.href;
     if((el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.tagName==='SELECT')&&!__isMasked(el)) item.value=el.value;
     else if(widget) { const v=shownValue(el); if(v) item.value=v; }
     out.push(item);
     if(out.length>=60) break;
   }
+  // Names for the controls that share one, over what this script lists (its cap: 60; desktop_discover may show fewer,
+  // so a namesake past what it shows still counts).
+  const byName = new Map();
+  out.forEach(function(it) { const k = it.text || it.href || ''; if (k) byName.set(k, (byName.get(k) || []).concat([it])); });
+  byName.forEach(function(group) {
+    if (group.length < 2) return;
+    // Links of one name that go to one place are one target: nothing to tell apart.
+    if (group.every(function(it) { return it.href && it.href === group[0].href; })) return;
+    const els = group.map(function(it) { return it.__el; });
+    group.forEach(function(it) {
+      const ctx = blockName(it.__el, els.filter(function(o) { return o !== it.__el; }));
+      if (ctx && ctx !== (it.text || it.href)) it.ctx = ctx;
+    });
+    // Words every namesake shares tell none apart (two heading-less blocks after one heading): left off, so the reader
+    // sees the numbering alone, not a borrowed heading (win2 on #1026).
+    if (group.every(function(it) { return it.ctx && it.ctx === group[0].ctx; })) group.forEach(function(it) { delete it.ctx; });
+  });
+  out.forEach(function(it) { delete it.__el; });
   return out;
 })()
 `;
@@ -220,14 +333,15 @@ export async function fetchBrowserCandidates(
       return probeLane("cdp", "failed", { tabId, why: "not_an_array" }, { candidates: [], warnings: ["cdp_provider_failed"] });
     }
 
-    const candidates: UiEntityCandidate[] = elements
+    const kept = elements
       // A field with no name keeps its place under its type and selector. It used to borrow its
       // value for a name, which is how a password became a label. The selector is part of the label
       // because a CDP candidate has no rect: two unnamed password fields labelled by type alone
       // resolved to one entity, and the second could not be reached (2ゲート目 on #623). `bestSel`
       // gives each field a selector that matches it alone, so two fields stay apart.
       // A checkbox or radio with no name (a table's row-select box) keeps its place the same way (/code-review on #1009).
-      .filter((el) => el.text || el.href || isField(el.type) || el.type.startsWith("toggle["))
+      .filter((el) => el.text || el.href || isField(el.type) || el.type.startsWith("toggle["));
+    const candidates: UiEntityCandidate[] = kept
       .map((el): UiEntityCandidate => ({
         source: "cdp",
         target: { kind: "browserTab", id: tabId },
@@ -240,6 +354,32 @@ export async function fetchBrowserCandidates(
         observedAtMs: Date.now(),
         provisional: false,
       }));
+    // Controls that share a label get what tells them apart, as a person reads it: "Delete — Beta", "Add to cart —
+    // <product>" (the user's decision, internal #420; blockName in the page). A CDP candidate has no rect, so the
+    // resolver keys it by tab and label: these words keep each its own entity, and keep it when another goes. A label
+    // the page has once is left as it is. The words are kept beside the label (labelContext), so a query matches the
+    // control's own name. Controls still alike after that are numbered in page order for the reader ("(2 of 2)") and
+    // keyed by their selector, which matches the control alone.
+    candidates.forEach((c, i) => {
+      const ctx = kept[i].ctx;
+      if (!ctx) return;
+      c.label = `${c.label} — ${ctx}`;
+      c.labelContext = ctx;
+    });
+    const groupsLeft = new Map<string, number[]>();
+    candidates.forEach((c, i) => groupsLeft.set(c.label ?? "", [...(groupsLeft.get(c.label ?? "") ?? []), i]));
+    for (const idxs of groupsLeft.values()) {
+      if (idxs.length < 2) continue;
+      // Links of one name to one place are one target, merged as before.
+      if (idxs.every((i) => kept[i].href && kept[i].href === kept[idxs[0]].href)) continue;
+      const g = idxs.map((i) => candidates[i]);
+      g.forEach((c, n) => {
+        c.digest = createHash("sha1").update(`cdp|browserTab:${tabId}|${c.label ?? ""}|${c.locator!.cdp!.selector}`).digest("hex").slice(0, 16);
+        const nth = `(${n + 1} of ${g.length})`;
+        c.labelContext = c.labelContext ? `${c.labelContext} ${nth}` : nth;
+        c.label = `${c.label}${c.label?.endsWith(nth) ? "" : (c.label?.includes(" — ") ? " " : " — ") + nth}`;
+      });
+    }
 
     const warnings = candidates.length === 0 ? ["cdp_no_elements"] : [];
     // Counts only: a label on a page can carry anything the user has in front of them.

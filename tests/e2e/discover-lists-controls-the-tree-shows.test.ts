@@ -12,6 +12,7 @@ import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll, rememberTabPort, AX_MARK_ATTR } from "../../src/engine/cdp-bridge.js";
 import { fetchBrowserCandidates, interactiveScript } from "../../src/tools/desktop-providers/browser-provider.js";
 import { cdpDispatchClickAndVerify } from "../../src/tools/browser.js";
+import { resolveCandidates } from "../../src/engine/world-graph/resolver.js";
 import { jsLiteral } from "../../src/utils/js-literal.js";
 
 const PORT = 9239;
@@ -218,6 +219,62 @@ describe.skipIf(!CHROME)("desktop_discover's browser lane lists the controls the
   it("does not name a control by a script its aria-labelledby points at (/code-review on #1016)", async () => {
     await page(`<div role="checkbox" id="cb" tabindex="0" aria-checked="false" aria-labelledby="tpl">Remember me</div><script type="text/x-template" id="tpl">{{label}}</script>`);
     expect((await list()).find((r) => r.selector === "#cb")?.label).toBe("Remember me");
+  });
+
+  it("names controls that share a label by their row, so each is listed and told apart (the user's decision, internal #420)", async () => {
+    // A table of three rows with a "Delete" each: one entity before (only row A's could be reached).
+    const rows = (names: string[]) => `<table>${names.map((n) => `<tr><td>${n}</td><td><button>Delete</button></td></tr>`).join("")}</table><button>Save</button>`;
+    await page(rows(["Alpha", "Beta", "Gamma"]));
+    const ents = resolveCandidates((await fetchBrowserCandidates({ tabId } as never)).candidates, "g1");
+    const del = ents.filter((e) => e.label.startsWith("Delete")).map((e) => e.label).sort();
+    expect(del).toEqual(["Delete — Alpha", "Delete — Beta", "Delete — Gamma"]);
+    // A label the page has once keeps its name.
+    expect(ents.some((e) => e.label === "Save")).toBe(true);
+    // Each name reaches its own row's button.
+    for (const e of ents.filter((x) => x.label.startsWith("Delete"))) {
+      const row = await evaluateInTab(`document.querySelector(${JSON.stringify(e.locator!.cdp!.selector)}).closest('tr').cells[0].textContent`, tabId, PORT);
+      expect(e.label).toBe(`Delete — ${row}`);
+    }
+    // Removing row Alpha keeps Beta's entity as it was: the name comes from the row, not its place.
+    const betaId = ents.find((e) => e.label === "Delete — Beta")!.entityId;
+    await page(rows(["Beta", "Gamma"]));
+    const after = resolveCandidates((await fetchBrowserCandidates({ tabId } as never)).candidates, "g2");
+    expect(after.find((e) => e.label === "Delete — Beta")?.entityId).toBe(betaId);
+    // Rows alike in their text too: their shared words tell nothing apart, so they are listed apart by number.
+    await page(rows(["Same", "Same"]));
+    const twins = resolveCandidates((await fetchBrowserCandidates({ tabId } as never)).candidates, "g3").filter((e) => e.label.startsWith("Delete"));
+    expect(twins.map((e) => e.label).sort()).toEqual(["Delete — (1 of 2)", "Delete — (2 of 2)"]);
+    expect(new Set(twins.map((e) => e.entityId)).size).toBe(2);
+    const names = async (): Promise<string[]> => resolveCandidates((await fetchBrowserCandidates({ tabId } as never)).candidates, "g").map((e) => e.label).sort();
+    // A secret the page hides beside its dots is not read into a name (/code-review on #1026).
+    await page(`<table>${["Prod", "Test"].map((n) => `<tr><td>${n}</td><td><span>••••</span><span style="display:none">sk_live_${n}</span></td><td><button>Copy</button></td></tr>`).join("")}</table>`);
+    const keys = await names();
+    expect(keys.filter((l) => l.startsWith("Copy"))).toEqual(["Copy — Prod ••••", "Copy — Test ••••"]);
+    expect(keys.join(" ")).not.toContain("sk_live");
+    // Product cards: the card's heading names it, not the ad disclosure its text starts with (win2 on #1026: Amazon).
+    const card = (t: string) => `<div class="card"><span>Sponsored</span><h2><a href="#${t}">${t}</a></h2><p>4.6 out of 5 stars</p><button>Add to cart</button></div>`;
+    await page(card("USB-C Cable 2m") + card("USB-C Cable 1m"));
+    expect((await names()).filter((l) => l.startsWith("Add to cart"))).toEqual(["Add to cart — USB-C Cable 1m", "Add to cart — USB-C Cable 2m"]);
+    // Examples with no name of their own take the heading before them (win2 on #1026: Bootstrap's checks).
+    const ex = (h: string, id: string) => `<h3>${h}</h3><div class="example"><input type="radio" id="${id}" name="${id}"><label for="${id}">Default radio</label><pre><code>&lt;div class="form-check"&gt;</code></pre></div>`;
+    await page(ex("Radios", "r1") + ex("Inline", "r2"));
+    expect((await names()).filter((l) => l.startsWith("Default radio"))).toEqual(["Default radio — Inline", "Default radio — Radios"]);
+    // Links of one name: to one place they are one target and keep their name; to different places, the heading before
+    // their block names each, not the link beside them (win2 on #1026: footer links).
+    await page(`<h2>Products</h2><nav aria-label="Main menu"><a href="/help">Help</a><a href="/lists">Your Lists</a></nav><h2>Security</h2><footer><div><a href="/help2">Help</a><a href="/about">About</a></div></footer>`);
+    const links = (await names()).filter((l) => l.startsWith("Help"));
+    // The landmark, not the heading above it, which belongs to the content (win2 on #1026).
+    expect(links).toEqual(["Help — Main menu", "Help — footer"]);
+    // A heading a person cannot read gives no name: hidden, under a hidden ancestor, or masked (codex on #1026).
+    await page(`<h3>Shown one</h3><h3 hidden>secret-a</h3><div class="x"><input type="radio" id="q1" name="q1"><label for="q1">Pick</label></div>
+      <h3>Shown two</h3><div style="display:none"><h3>secret-b</h3></div><h3 style="-webkit-text-security:disc">secret-c</h3><div class="x"><input type="radio" id="q2" name="q2"><label for="q2">Pick</label></div>`);
+    const picks = (await names()).filter((l) => l.startsWith("Pick"));
+    expect(picks).toEqual(["Pick — Shown one", "Pick — Shown two"]);
+    // Two heading-less blocks after one heading: the shared heading tells them apart from nothing, so only numbers.
+    await page(`<h2>Security</h2><div><button>Read</button><span>A</span></div><div><button>Read</button><span>B</span></div>`);
+    expect((await names()).filter((l) => l.startsWith("Read"))).toEqual(["Read — (1 of 2)", "Read — (2 of 2)"]);
+    await page(`<a href="/same">Home</a><div><a href="/same">Home</a></div>`);
+    expect((await names()).filter((l) => l.startsWith("Home"))).toEqual(["Home"]);
   });
 
   it("does not list a div slider it could not press", async () => {
