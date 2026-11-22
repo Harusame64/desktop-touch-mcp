@@ -100,7 +100,8 @@ ${ELEMENT_NAME_JS}
     return null;
   }
   function __dtmShownDialogIn(root) {
-    if (!root || (root.nodeType !== 1 && root.nodeType !== 9 && root.nodeType !== 11)) return null;
+    // An element, a document or a shadow root (where there is no Element, the unit tests' fake DOM: any with the method).
+    if (!root || (typeof Element !== 'undefined' ? !(root instanceof Element || root instanceof Document || root instanceof DocumentFragment) : !root.querySelectorAll)) return null;
     var all = __qsa(root, __DTM_DIALOG);
     for (var i = 0; i < all.length; i++) if (__dtmShown(all[i])) return all[i];
     return null;
@@ -327,8 +328,8 @@ export function buildCoverJs(selector: string): string {
     }
   }
   var root = d;
-  // Capped, far above a real page's depth: a form whose control is named parentElement turns this walk into a loop
-  // (form → input → form…; /code-review on #1019).
+  // Capped far above a real page's depth, as a backstop: __parent reads the real parent, so a form whose control is
+  // named parentElement no longer loops it (#1019, #1020).
   if (!root) { root = hit; for (var up2 = 0; up2 < 1000 && __parent(root) && __parent(root) !== document.body && !__dtmContains(__parent(root), el); up2++) root = __parent(root); }
   var offers = [];
   var cands = __qsa(root, __DTM_INTERACTIVE);

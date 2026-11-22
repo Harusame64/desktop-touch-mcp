@@ -1519,7 +1519,12 @@ export async function getScrollAncestorsCdp(
   const ancestors = [];
   const warnings = [];
   let depth = 0;
-  let cur = el.parentNode;
+  // parentNode from Node's own getter, and the walk capped: a form whose control is named parentNode made the input
+  // the form's parent and the form the input's, and the walk ran to the CDP timeout (/code-review on #1020).
+  const __pnGet = Object.getOwnPropertyDescriptor(Node.prototype, 'parentNode').get;
+  const pn = function(n) { return __pnGet.call(n); };
+  let steps = 0;
+  let cur = pn(el);
 
   function getHost(node) {
     try {
@@ -1538,7 +1543,7 @@ export async function getScrollAncestorsCdp(
     return tag + (classes || '');
   }
 
-  while (cur && depth < MAXDEPTH) {
+  while (cur && depth < MAXDEPTH && steps++ < 10000) {
     // Shadow DOM: skip to host
     const host = getHost(cur);
     if (host) { cur = host; continue; }
@@ -1555,7 +1560,7 @@ export async function getScrollAncestorsCdp(
     }
 
     if (cur === document.documentElement || cur === document.body || !cur.tagName) {
-      cur = cur.parentNode;
+      cur = pn(cur);
       continue;
     }
 
@@ -1591,7 +1596,7 @@ export async function getScrollAncestorsCdp(
       depth++;
     }
 
-    cur = cur.parentNode;
+    cur = pn(cur);
   }
 
   return { ancestors, warnings };

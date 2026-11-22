@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { sleep } from "./helpers/wait.js";
-import { evaluateInTab, disconnectAll, markAxMatches, clearAxMarks } from "../../src/engine/cdp-bridge.js";
+import { evaluateInTab, disconnectAll, markAxMatches, clearAxMarks, getScrollAncestorsCdp } from "../../src/engine/cdp-bridge.js";
 import { resolveBrowserActionTarget, type ResolveActionOutcome } from "../../src/tools/browser-resolver.js";
 import { browserClickElementHandler, readPressLanding } from "../../src/tools/browser.js";
 import { buildPressPointJs, buildCoverJs, buildSaveScrollJs } from "../../src/tools/press-landing.js";
@@ -405,6 +405,17 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
       expect(typeof cover?.cover).toBe("string");
       expect(await marks()).toBe(0);
     }
+  }, 60_000);
+
+  it("reads an element's scroll ancestors inside a form with a control named parentNode (/code-review on #1020)", async () => {
+    // form.parentNode is the input, and the walk (smart scroll) ran to the CDP timeout: nothing scrolls, so depth
+    // never rose.
+    await page(`<form id="fn"><input name="parentNode"><div id="tn">target</div></form>`);
+    expect(await evaluateInTab("document.getElementById('fn').parentNode.tagName", null, PORT)).toBe("INPUT");
+    const t0 = Date.now();
+    const r = await getScrollAncestorsCdp("#tn", null, PORT);
+    expect(Date.now() - t0).toBeLessThan(5000);
+    expect(Array.isArray((r as { ancestors?: unknown[] }).ancestors)).toBe(true);
   }, 60_000);
 
   it("presses Choices' select as it is: a listbox that opens a popup is a control (win2 on #1008, W6)", async () => {

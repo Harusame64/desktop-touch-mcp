@@ -67,23 +67,23 @@
  * closest, matches and contains, called from the prototype. A <form> exposes a control named so as form.closest (and a
  * custom element can define its own), and a call on it threw: the text walker on #1016, the press rule and the gather
  * on #1018/#1019. Looked up when called, and the element's own method where there is no Element (the unit tests'
- * fake DOM). Function declarations only, so a script may splice it more than once.
+ * fake DOM). Function declarations and one var, so a script may splice it more than once.
  */
 export const SAFE_DOM_JS = `
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
   function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
-  // A document or a shadow root is not an Element: its own querySelectorAll, which a form cannot shadow.
+  // A document or a shadow root is not an Element: Document's or DocumentFragment's own (a document's named properties
+  // shadow too: an <img name="querySelectorAll">).
   function __qsa(n, sel) {
-    if (n.nodeType === 9 || n.nodeType === 11) return n.querySelectorAll(sel);
+    if (typeof Document !== 'undefined' && n instanceof Document) return Document.prototype.querySelectorAll.call(n, sel);
+    if (typeof DocumentFragment !== 'undefined' && n instanceof DocumentFragment) return DocumentFragment.prototype.querySelectorAll.call(n, sel);
     return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel);
   }
   // The parent, from Node's own getter: a form whose control is named parentElement turned every walk up the tree into
-  // a loop (form → input → form…), which hung the page script (win2 on #1019).
-  function __parent(n) {
-    var g = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement') : null;
-    return g ? g.get.call(n) : n.parentElement;
-  }
+  // a loop (form → input → form…), which hung the page script (win2 on #1019). The getter is looked up once per splice.
+  var __PARENT_GET = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement').get : null;
+  function __parent(n) { return __PARENT_GET ? __PARENT_GET.call(n) : n.parentElement; }
 `;
 
 export const DRAWS_NOTHING_JS = `

@@ -120,17 +120,17 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
   function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
-  // A document or a shadow root is not an Element: its own querySelectorAll, which a form cannot shadow.
+  // A document or a shadow root is not an Element: Document's or DocumentFragment's own (a document's named properties
+  // shadow too: an <img name="querySelectorAll">).
   function __qsa(n, sel) {
-    if (n.nodeType === 9 || n.nodeType === 11) return n.querySelectorAll(sel);
+    if (typeof Document !== 'undefined' && n instanceof Document) return Document.prototype.querySelectorAll.call(n, sel);
+    if (typeof DocumentFragment !== 'undefined' && n instanceof DocumentFragment) return DocumentFragment.prototype.querySelectorAll.call(n, sel);
     return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel);
   }
   // The parent, from Node's own getter: a form whose control is named parentElement turned every walk up the tree into
-  // a loop (form → input → form…), which hung the page script (win2 on #1019).
-  function __parent(n) {
-    var g = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement') : null;
-    return g ? g.get.call(n) : n.parentElement;
-  }
+  // a loop (form → input → form…), which hung the page script (win2 on #1019). The getter is looked up once per splice.
+  var __PARENT_GET = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement').get : null;
+  function __parent(n) { return __PARENT_GET ? __PARENT_GET.call(n) : n.parentElement; }
 
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
@@ -553,17 +553,17 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
   function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
-  // A document or a shadow root is not an Element: its own querySelectorAll, which a form cannot shadow.
+  // A document or a shadow root is not an Element: Document's or DocumentFragment's own (a document's named properties
+  // shadow too: an <img name="querySelectorAll">).
   function __qsa(n, sel) {
-    if (n.nodeType === 9 || n.nodeType === 11) return n.querySelectorAll(sel);
+    if (typeof Document !== 'undefined' && n instanceof Document) return Document.prototype.querySelectorAll.call(n, sel);
+    if (typeof DocumentFragment !== 'undefined' && n instanceof DocumentFragment) return DocumentFragment.prototype.querySelectorAll.call(n, sel);
     return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel);
   }
   // The parent, from Node's own getter: a form whose control is named parentElement turned every walk up the tree into
-  // a loop (form → input → form…), which hung the page script (win2 on #1019).
-  function __parent(n) {
-    var g = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement') : null;
-    return g ? g.get.call(n) : n.parentElement;
-  }
+  // a loop (form → input → form…), which hung the page script (win2 on #1019). The getter is looked up once per splice.
+  var __PARENT_GET = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement').get : null;
+  function __parent(n) { return __PARENT_GET ? __PARENT_GET.call(n) : n.parentElement; }
 
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
@@ -917,17 +917,17 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
   function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
-  // A document or a shadow root is not an Element: its own querySelectorAll, which a form cannot shadow.
+  // A document or a shadow root is not an Element: Document's or DocumentFragment's own (a document's named properties
+  // shadow too: an <img name="querySelectorAll">).
   function __qsa(n, sel) {
-    if (n.nodeType === 9 || n.nodeType === 11) return n.querySelectorAll(sel);
+    if (typeof Document !== 'undefined' && n instanceof Document) return Document.prototype.querySelectorAll.call(n, sel);
+    if (typeof DocumentFragment !== 'undefined' && n instanceof DocumentFragment) return DocumentFragment.prototype.querySelectorAll.call(n, sel);
     return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel);
   }
   // The parent, from Node's own getter: a form whose control is named parentElement turned every walk up the tree into
-  // a loop (form → input → form…), which hung the page script (win2 on #1019).
-  function __parent(n) {
-    var g = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement') : null;
-    return g ? g.get.call(n) : n.parentElement;
-  }
+  // a loop (form → input → form…), which hung the page script (win2 on #1019). The getter is looked up once per splice.
+  var __PARENT_GET = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement').get : null;
+  function __parent(n) { return __PARENT_GET ? __PARENT_GET.call(n) : n.parentElement; }
 
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
@@ -1126,7 +1126,8 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
     return null;
   }
   function __dtmShownDialogIn(root) {
-    if (!root || (root.nodeType !== 1 && root.nodeType !== 9 && root.nodeType !== 11)) return null;
+    // An element, a document or a shadow root (where there is no Element, the unit tests' fake DOM: any with the method).
+    if (!root || (typeof Element !== 'undefined' ? !(root instanceof Element || root instanceof Document || root instanceof DocumentFragment) : !root.querySelectorAll)) return null;
     var all = __qsa(root, __DTM_DIALOG);
     for (var i = 0; i < all.length; i++) if (__dtmShown(all[i])) return all[i];
     return null;
@@ -1487,17 +1488,17 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
   function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
-  // A document or a shadow root is not an Element: its own querySelectorAll, which a form cannot shadow.
+  // A document or a shadow root is not an Element: Document's or DocumentFragment's own (a document's named properties
+  // shadow too: an <img name="querySelectorAll">).
   function __qsa(n, sel) {
-    if (n.nodeType === 9 || n.nodeType === 11) return n.querySelectorAll(sel);
+    if (typeof Document !== 'undefined' && n instanceof Document) return Document.prototype.querySelectorAll.call(n, sel);
+    if (typeof DocumentFragment !== 'undefined' && n instanceof DocumentFragment) return DocumentFragment.prototype.querySelectorAll.call(n, sel);
     return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel);
   }
   // The parent, from Node's own getter: a form whose control is named parentElement turned every walk up the tree into
-  // a loop (form → input → form…), which hung the page script (win2 on #1019).
-  function __parent(n) {
-    var g = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement') : null;
-    return g ? g.get.call(n) : n.parentElement;
-  }
+  // a loop (form → input → form…), which hung the page script (win2 on #1019). The getter is looked up once per splice.
+  var __PARENT_GET = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement').get : null;
+  function __parent(n) { return __PARENT_GET ? __PARENT_GET.call(n) : n.parentElement; }
 
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
