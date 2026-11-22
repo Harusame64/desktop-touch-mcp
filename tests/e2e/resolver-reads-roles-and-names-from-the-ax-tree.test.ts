@@ -371,8 +371,16 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(await evaluateInTab("typeof document.getElementById('fc').closest", null, PORT)).toBe("object");
     const point = (await evaluateInTab(buildPressPointJs("#rc"), null, PORT)) as Record<string, unknown>;
     expect(point.error ?? null).toBeNull();
-    const cover = (await evaluateInTab(buildCoverJs("#rc"), null, PORT)) as Record<string, unknown>;
-    expect(typeof cover).toBe("object");
+    const cover = (await evaluateInTab(buildCoverJs("#rc"), null, PORT)) as Record<string, unknown> | null;
+    // The hit is the form, which holds the radio (typeof null is "object", so the value is asked for).
+    expect(cover).toMatchObject({ container: true });
+    // A real by-axis click reaches the press rule through the gather, which climbs to the form and called
+    // form.contains (/code-review on #1019): it resolves now, and a text search over the form's words works.
+    const o = await resolve({ by: "role", pattern: "radio" }, false);
+    expect(o.kind).toBe("resolved");
+    if (o.kind === "resolved" && o.axMark !== undefined) await clearAxMarks(o.axMark, null, PORT);
+    expect((await resolve({ by: "text", pattern: "Closest radio" }, false)).kind).not.toBe("error");
+    expect(await marks()).toBe(0);
   });
 
   it("presses Choices' select as it is: a listbox that opens a popup is a control (win2 on #1008, W6)", async () => {

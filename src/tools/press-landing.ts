@@ -327,7 +327,9 @@ export function buildCoverJs(selector: string): string {
     }
   }
   var root = d;
-  if (!root) { root = hit; while (root.parentElement && root.parentElement !== document.body && !__dtmContains(root.parentElement, el)) root = root.parentElement; }
+  // Capped: a form whose control is named parentElement turns this walk into a loop (form → input → form…;
+  // /code-review on #1019).
+  if (!root) { root = hit; for (var up2 = 0; up2 < 64 && root.parentElement && root.parentElement !== document.body && !__dtmContains(root.parentElement, el); up2++) root = root.parentElement; }
   var offers = [];
   var cands = root.querySelectorAll(__DTM_INTERACTIVE);
   for (var j = 0; j < cands.length && offers.length < 6; j++) {

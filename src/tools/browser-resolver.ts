@@ -17,7 +17,7 @@
 
 import { randomUUID } from "node:crypto";
 import { AX_MARK_ATTR, clearAxMarks, evaluateInTab, getPageZoom, markAxMatches, resolveTabId, viewportOriginJs } from "../engine/cdp-bridge.js";
-import { ELEMENT_NAME_JS } from "./_element-name-js.js";
+import { ELEMENT_NAME_JS, SAFE_DOM_JS } from "./_element-name-js.js";
 import { UNIQUE_SELECTOR_JS } from "./_unique-selector-js.js";
 import { pressLandingRuleJs } from "./press-landing.js";
 
@@ -194,8 +194,8 @@ ${ELEMENT_NAME_JS}
   // (win2 on #1011: by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is
   // hidden text, which visibleOnly decides. A search scoped into one of them (scope:'head') is answered as asked.
   function notDrawnText(el) {
-    for (let a = el.closest(__NOT_TEXT); a; a = a.parentElement ? a.parentElement.closest(__NOT_TEXT) : null) {
-      if (a === root || a.contains(root)) return false;
+    for (let a = __closest(el, __NOT_TEXT); a; a = a.parentElement ? __closest(a.parentElement, __NOT_TEXT) : null) {
+      if (a === root || __contains(a, root)) return false;
       if (__drawsNothing(a, true)) return true;
     }
     return false;
@@ -461,14 +461,14 @@ ${pressLandingRuleJs()}
     // :disabled is ancestor-aware — a control inside <fieldset disabled> has
     // el.disabled === false but is functionally disabled (Codex Round 2 P2).
     let disabled;
-    try { disabled = el.matches(':disabled'); } catch (e) { disabled = !!el.disabled; }
+    try { disabled = __matches(el, ':disabled'); } catch (e) { disabled = !!el.disabled; }
     const enabled = !disabled && el.getAttribute('aria-disabled') !== 'true';
     let receivesEvents = false;
     const cx = r.left + r.width / 2;
     const cy = r.top + r.height / 2;
     if (cx >= 0 && cx < window.innerWidth && cy >= 0 && cy < window.innerHeight) {
       const hit = document.elementFromPoint(cx, cy);
-      receivesEvents = !!hit && (hit === el || el.contains(hit));
+      receivesEvents = !!hit && (hit === el || __contains(el, hit));
     }
     // A control a person presses through its own <label> (a 0x0 radio, an sr-only checkbox) is reached there, as
     // browser_click's press path finds it (internal #420: listed receivesEvents:false in an ambiguity list). Shown in
@@ -539,7 +539,7 @@ ${pressLandingRuleJs()}
     const lb = el.getAttribute('aria-labelledby');
     if (lb) for (const id of lb.split(/\\s+/)) { const n = document.getElementById(id); if (n) add(__textWithoutFields(n)); }
     if (el.id) { try { for (const lab of document.querySelectorAll('label[for=' + JSON.stringify(el.id) + ']')) add(__textWithoutFields(lab)); } catch (e) {} }
-    const wrapLabel = el.closest && el.closest('label');
+    const wrapLabel = el.nodeType === 1 ? __closest(el, 'label') : null;
     if (wrapLabel) add(__textWithoutFields(wrapLabel));
     let prev = el.previousElementSibling;
     let hops = 0;
@@ -1563,7 +1563,7 @@ ${ELEMENT_NAME_JS}
     return (r.width * r.height) >= vpArea * 0.8;
   }
   function hasBackdropFor(el) {
-    try { if (el.matches(':modal')) return true; } catch (e) {}
+    try { if (__matches(el, ':modal')) return true; } catch (e) {}
     // A viewport-covering fixed/absolute sibling layer (of the dialog or an ancestor
     // up to 4 levels) that does NOT contain the dialog = a backdrop/scrim.
     let node = el, guard = 0;
@@ -1571,7 +1571,7 @@ ${ELEMENT_NAME_JS}
       const parent = node.parentElement;
       if (parent) {
         for (const s of parent.children) {
-          if (s === node || s.contains(el)) continue;
+          if (s === node || __contains(s, el)) continue;
           if (isBackdropLike(s)) return true;
         }
       }
@@ -1582,7 +1582,7 @@ ${ELEMENT_NAME_JS}
   function siblingsInertFor(el) {
     if (!document.body) return false;
     for (const c of document.body.children) {
-      if (c.contains(el)) continue;
+      if (__contains(c, el)) continue;
       if (c.hasAttribute('inert') || c.getAttribute('aria-hidden') === 'true') {
         const r = c.getBoundingClientRect();
         if (r.width > 0 && r.height > 0) return true;
@@ -1601,10 +1601,10 @@ ${ELEMENT_NAME_JS}
     const visible = cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0' && br.width > 0 && br.height > 0;
     const tag = el.tagName.toLowerCase();
     let nativeModal = false;
-    if (tag === 'dialog' && el.open === true) { try { nativeModal = el.matches(':modal'); } catch (e) { nativeModal = true; } }
+    if (tag === 'dialog' && el.open === true) { try { nativeModal = __matches(el, ':modal'); } catch (e) { nativeModal = true; } }
     const tr = cs.transform && cs.transform !== 'none';
     const offscreen = !!tr && (rect.x + rect.w <= 0 || rect.x >= VW || rect.y + rect.h <= 0 || rect.y >= VH);
-    if (ae && el.contains(ae)) activeInDialog = true;
+    if (ae && __contains(el, ae)) activeInDialog = true;
     cands.push({
       role: (el.getAttribute('role') || '').toLowerCase() || null,
       tag: tag,
@@ -1741,7 +1741,7 @@ export function detectModal(facts: ModalFacts): ModalVerdict {
  * scrim (library modals put it in a sibling element, outside the dialog subtree).
  */
 function occluderIndexHelperJs(): string {
-  return `  const __mNodes = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog'));
+  return `${SAFE_DOM_JS}  const __mNodes = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog'));
   function __mBackdrops(d) {
     const out = [];
     let node = d, guard = 0;
@@ -1749,7 +1749,7 @@ function occluderIndexHelperJs(): string {
       const parent = node.parentElement;
       if (parent) {
         for (const s of parent.children) {
-          if (s === node || s.contains(d)) continue;
+          if (s === node || __contains(s, d)) continue;
           try {
             const cs = window.getComputedStyle(s);
             if ((cs.position === 'fixed' || cs.position === 'absolute') && cs.display !== 'none' && cs.visibility !== 'hidden') {
@@ -1768,9 +1768,9 @@ function occluderIndexHelperJs(): string {
     if (!hit) return null;
     for (let i = 0; i < __mNodes.length; i++) {
       const d = __mNodes[i];
-      if (d === hit || d.contains(hit)) return i;
+      if (d === hit || __contains(d, hit)) return i;
       const bds = __mBd[i];
-      for (let j = 0; j < bds.length; j++) { if (bds[j] === hit || bds[j].contains(hit)) return i; }
+      for (let j = 0; j < bds.length; j++) { if (bds[j] === hit || __contains(bds[j], hit)) return i; }
     }
     return null;
   }
@@ -1779,7 +1779,7 @@ function occluderIndexHelperJs(): string {
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     if (cx < 0 || cx >= window.innerWidth || cy < 0 || cy >= window.innerHeight) return null;
     const hit = document.elementFromPoint(cx, cy);
-    if (!hit || hit === el || el.contains(hit)) return null;
+    if (!hit || hit === el || __contains(el, hit)) return null;
     return __occluderDialogIndex(hit);
   }`;
 }
@@ -1800,7 +1800,7 @@ export function buildModalOccluderProbeJs(selector: string): string {
   const __modal = ${buildPageLevelModalFactsJs()};
 ${occluderIndexHelperJs()}
   const insideDialogIndices = [];
-  for (let i = 0; i < __mNodes.length; i++) { if (__mNodes[i].contains(el)) insideDialogIndices.push(i); }
+  for (let i = 0; i < __mNodes.length; i++) { if (__contains(__mNodes[i], el)) insideDialogIndices.push(i); }
   return { found: true, occludedByDialogIndex: __occludedDialogIndexForEl(el), insideDialogIndices: insideDialogIndices, modalFacts: __modal };
   } catch (e) { return { found: false }; }
 })()`;

@@ -1727,7 +1727,8 @@ ${ELEMENT_NAME_JS}
   const scope = document.querySelector(${JSON.stringify(selector)});
   if (!scope) return { ok: false, error: 'element not found' };
   const FIELD_SEL = 'input, select, textarea, button';
-  const isSelf = scope.matches(FIELD_SEL);
+  // The prototype's matches: a form with a control named "matches" (/code-review on #1019).
+  const isSelf = __matches(scope, FIELD_SEL);
   const children = Array.from(scope.querySelectorAll(FIELD_SEL));
   const elements = isSelf ? [scope, ...children] : children;
   const includeHidden = ${includeHidden};

@@ -818,12 +818,12 @@ function widgetsForLabelledSelectsJs(nonce: string, pattern: string, caseSensiti
   // name only to a widget it sits inside (Choices); one after it may be another field (/code-review on #1010).
   function keptFromPeople(sel) { return sel.getAttribute('aria-hidden') === 'true' && sel.getAttribute('tabindex') === '-1'; }
   function widgetFor(sel) {
-    var w = sel.parentElement && sel.parentElement.closest('[role=combobox],[role=listbox]');
+    var w = sel.parentElement && Element.prototype.closest.call(sel.parentElement, '[role=combobox],[role=listbox]');
     if (w && w.querySelector('select') === sel && (sel.hidden || keptFromPeople(sel))) return w;
     if (!keptFromPeople(sel)) return null;
     var next = sel.nextElementSibling;
     if (!next) return null;
-    var c = next.matches('[role=combobox],[role=listbox]') ? next : next.querySelector('[role=combobox],[role=listbox]');
+    var c = Element.prototype.matches.call(next, '[role=combobox],[role=listbox]') ? next : next.querySelector('[role=combobox],[role=listbox]');
     if (!c) return null;
     for (var a = c, d = 0; a && d < 4; a = a.parentElement, d++) if (a.previousElementSibling === sel) return c;
     return null;
@@ -834,7 +834,7 @@ function widgetsForLabelledSelectsJs(nonce: string, pattern: string, caseSensiti
     for (var c = n.firstChild; c; c = c.nextSibling) {
       if (c.nodeType === 3) out += c.nodeValue;
       else if (c.nodeType === 1) {
-        if (/^(SELECT|INPUT|TEXTAREA)$/.test(c.tagName) || c.matches('[role=combobox],[role=listbox]')) continue;
+        if (/^(SELECT|INPUT|TEXTAREA)$/.test(c.tagName) || Element.prototype.matches.call(c, '[role=combobox],[role=listbox]')) continue;
         var sec = getComputedStyle(c).webkitTextSecurity;
         if (sec && sec !== 'none') continue;
         out += ' ' + words(c);
@@ -1318,7 +1318,7 @@ ${viewportOriginJs(zoom)}
       var cy = rect.top  + rect.height / 2;
       if (cx < 0 || cx >= window.innerWidth || cy < 0 || cy >= window.innerHeight) return false;
       var hit = document.elementFromPoint(cx, cy);
-      return !!(hit && hit !== el && !el.contains(hit));
+      return !!(hit && hit !== el && !Node.prototype.contains.call(el, hit));
     })(),
   });
 })()`;
@@ -1652,7 +1652,7 @@ export async function detectStickyHeaderCdp(
   const midX = rect.left + rect.width / 2;
   const probeY = 4;
   const header = document.elementFromPoint(midX, probeY);
-  if (!header || el.contains(header) || header.contains(el)) return { occluded: false };
+  if (!header || Node.prototype.contains.call(el, header) || Node.prototype.contains.call(header, el)) return { occluded: false };
   const hs = getComputedStyle(header);
   const position = hs.position;
   if (position !== 'sticky' && position !== 'fixed') return { occluded: false };

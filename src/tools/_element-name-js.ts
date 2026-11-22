@@ -63,14 +63,23 @@
  *   #1016);
  * - the rest, by a computed display of none: a style a page shows with CSS is drawn.
  */
+/**
+ * closest, matches and contains, called from the prototype. A <form> exposes a control named so as form.closest (and a
+ * custom element can define its own), and a call on it threw: the text walker on #1016, the press rule and the gather
+ * on #1018/#1019. Looked up when called, and the element's own method where there is no Element (the unit tests'
+ * fake DOM). Function declarations only, so a script may splice it more than once.
+ */
+export const SAFE_DOM_JS = `
+  function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
+  function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
+  function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
+`;
+
 export const DRAWS_NOTHING_JS = `
   // var, not const: spliced twice into one scope (ELEMENT_NAME_JS beside pressLandingRuleJs()), it stays valid.
   var __NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
   var __scriptsRun = null;
-  // The prototype's matches: a <form> exposes a control named "matches" as form.matches, and a custom element can
-  // define its own (/code-review on #1016: the walker threw and the whole script failed). Looked up when called, and
-  // the element's own where there is no Element (the unit tests' fake DOM).
-  function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
+${SAFE_DOM_JS}
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
   function __drawsNothing(a, probe) {

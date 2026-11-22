@@ -137,6 +137,14 @@ describe.skipIf(!CHROME)("browser_overview returns selectors that match one elem
     expect(fields.map((f) => [f.id, f.hasValue])).toEqual([["m", false], ["n", true]]);
   });
 
+  it("reads a form's fields when the form has a control named \"matches\" (/code-review on #1019)", async () => {
+    await page(`<form id="lg"><input name="matches" id="mm" value="a"><input name="user" id="uu"></form>`);
+    const r = await browserGetFormHandler({ selector: "#lg", includeHidden: false, maxResults: 50, port: PORT, includeContext: false });
+    const t = (r.content[0] as { text: string }).text;
+    const fields = (JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1)) as { fields: Array<{ id: string }> }).fields;
+    expect(fields.map((f) => f.id)).toEqual(["mm", "uu"]);
+  });
+
   it("names 200 alike buttons in a list with selectors that match one each", async () => {
     await page(`<ul>${Array.from({ length: 200 }, (_, i) => `<li><span><button data-testid="row">Row ${i}</button></span></li>`).join("")}</ul>`);
     const items = await overview();

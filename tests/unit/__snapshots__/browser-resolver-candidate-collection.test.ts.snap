@@ -116,10 +116,11 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
   // var, not const: spliced twice into one scope (ELEMENT_NAME_JS beside pressLandingRuleJs()), it stays valid.
   var __NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
   var __scriptsRun = null;
-  // The prototype's matches: a <form> exposes a control named "matches" as form.matches, and a custom element can
-  // define its own (/code-review on #1016: the walker threw and the whole script failed). Looked up when called, and
-  // the element's own where there is no Element (the unit tests' fake DOM).
+
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
+  function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
+  function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
+
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
   function __drawsNothing(a, probe) {
@@ -291,8 +292,8 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
   // (win2 on #1011: by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is
   // hidden text, which visibleOnly decides. A search scoped into one of them (scope:'head') is answered as asked.
   function notDrawnText(el) {
-    for (let a = el.closest(__NOT_TEXT); a; a = a.parentElement ? a.parentElement.closest(__NOT_TEXT) : null) {
-      if (a === root || a.contains(root)) return false;
+    for (let a = __closest(el, __NOT_TEXT); a; a = a.parentElement ? __closest(a.parentElement, __NOT_TEXT) : null) {
+      if (a === root || __contains(a, root)) return false;
       if (__drawsNothing(a, true)) return true;
     }
     return false;
@@ -537,10 +538,11 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   // var, not const: spliced twice into one scope (ELEMENT_NAME_JS beside pressLandingRuleJs()), it stays valid.
   var __NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
   var __scriptsRun = null;
-  // The prototype's matches: a <form> exposes a control named "matches" as form.matches, and a custom element can
-  // define its own (/code-review on #1016: the walker threw and the whole script failed). Looked up when called, and
-  // the element's own where there is no Element (the unit tests' fake DOM).
+
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
+  function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
+  function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
+
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
   function __drawsNothing(a, probe) {
@@ -712,8 +714,8 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   // (win2 on #1011: by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is
   // hidden text, which visibleOnly decides. A search scoped into one of them (scope:'head') is answered as asked.
   function notDrawnText(el) {
-    for (let a = el.closest(__NOT_TEXT); a; a = a.parentElement ? a.parentElement.closest(__NOT_TEXT) : null) {
-      if (a === root || a.contains(root)) return false;
+    for (let a = __closest(el, __NOT_TEXT); a; a = a.parentElement ? __closest(a.parentElement, __NOT_TEXT) : null) {
+      if (a === root || __contains(a, root)) return false;
       if (__drawsNothing(a, true)) return true;
     }
     return false;
@@ -889,10 +891,11 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   // var, not const: spliced twice into one scope (ELEMENT_NAME_JS beside pressLandingRuleJs()), it stays valid.
   var __NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
   var __scriptsRun = null;
-  // The prototype's matches: a <form> exposes a control named "matches" as form.matches, and a custom element can
-  // define its own (/code-review on #1016: the walker threw and the whole script failed). Looked up when called, and
-  // the element's own where there is no Element (the unit tests' fake DOM).
+
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
+  function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
+  function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
+
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
   function __drawsNothing(a, probe) {
@@ -1190,14 +1193,14 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
     // :disabled is ancestor-aware — a control inside <fieldset disabled> has
     // el.disabled === false but is functionally disabled (Codex Round 2 P2).
     let disabled;
-    try { disabled = el.matches(':disabled'); } catch (e) { disabled = !!el.disabled; }
+    try { disabled = __matches(el, ':disabled'); } catch (e) { disabled = !!el.disabled; }
     const enabled = !disabled && el.getAttribute('aria-disabled') !== 'true';
     let receivesEvents = false;
     const cx = r.left + r.width / 2;
     const cy = r.top + r.height / 2;
     if (cx >= 0 && cx < window.innerWidth && cy >= 0 && cy < window.innerHeight) {
       const hit = document.elementFromPoint(cx, cy);
-      receivesEvents = !!hit && (hit === el || el.contains(hit));
+      receivesEvents = !!hit && (hit === el || __contains(el, hit));
     }
     // A control a person presses through its own <label> (a 0x0 radio, an sr-only checkbox) is reached there, as
     // browser_click's press path finds it (internal #420: listed receivesEvents:false in an ambiguity list). Shown in
@@ -1268,7 +1271,7 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
     const lb = el.getAttribute('aria-labelledby');
     if (lb) for (const id of lb.split(/\\s+/)) { const n = document.getElementById(id); if (n) add(__textWithoutFields(n)); }
     if (el.id) { try { for (const lab of document.querySelectorAll('label[for=' + JSON.stringify(el.id) + ']')) add(__textWithoutFields(lab)); } catch (e) {} }
-    const wrapLabel = el.closest && el.closest('label');
+    const wrapLabel = el.nodeType === 1 ? __closest(el, 'label') : null;
     if (wrapLabel) add(__textWithoutFields(wrapLabel));
     let prev = el.previousElementSibling;
     let hops = 0;
@@ -1447,10 +1450,11 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   // var, not const: spliced twice into one scope (ELEMENT_NAME_JS beside pressLandingRuleJs()), it stays valid.
   var __NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
   var __scriptsRun = null;
-  // The prototype's matches: a <form> exposes a control named "matches" as form.matches, and a custom element can
-  // define its own (/code-review on #1016: the walker threw and the whole script failed). Looked up when called, and
-  // the element's own where there is no Element (the unit tests' fake DOM).
+
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
+  function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
+  function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
+
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
   function __drawsNothing(a, probe) {
@@ -1622,8 +1626,8 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   // (win2 on #1011: by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is
   // hidden text, which visibleOnly decides. A search scoped into one of them (scope:'head') is answered as asked.
   function notDrawnText(el) {
-    for (let a = el.closest(__NOT_TEXT); a; a = a.parentElement ? a.parentElement.closest(__NOT_TEXT) : null) {
-      if (a === root || a.contains(root)) return false;
+    for (let a = __closest(el, __NOT_TEXT); a; a = a.parentElement ? __closest(a.parentElement, __NOT_TEXT) : null) {
+      if (a === root || __contains(a, root)) return false;
       if (__drawsNothing(a, true)) return true;
     }
     return false;
