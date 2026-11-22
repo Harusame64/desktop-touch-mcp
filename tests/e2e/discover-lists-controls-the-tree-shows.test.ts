@@ -12,6 +12,7 @@ import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll, rememberTabPort, AX_MARK_ATTR } from "../../src/engine/cdp-bridge.js";
 import { fetchBrowserCandidates, interactiveScript } from "../../src/tools/desktop-providers/browser-provider.js";
 import { cdpDispatchClickAndVerify } from "../../src/tools/browser.js";
+import { jsLiteral } from "../../src/utils/js-literal.js";
 
 const PORT = 9239;
 const CHROME = tryFindChrome() !== null;
@@ -42,7 +43,7 @@ async function list(): Promise<Row[]> {
 }
 const marks = async (): Promise<number> => (await evaluateInTab("document.querySelectorAll('[data-dtm-ax]').length", tabId, PORT)) as number;
 const one = async (selector: string): Promise<string> =>
-  (await evaluateInTab(`(function(){var n=document.querySelectorAll(${JSON.stringify(selector)});return n.length===1?(n[0].id||n[0].className||n[0].tagName):'count:'+n.length})()`, tabId, PORT)) as string;
+  (await evaluateInTab(`(function(){var n=document.querySelectorAll(${jsLiteral(selector)});return n.length===1?(n[0].id||n[0].className||n[0].tagName):'count:'+n.length})()`, tabId, PORT)) as string;
 
 const ICHECK = `<div style="position:relative;display:inline-block;width:22px;height:22px;margin:40px"><input type="checkbox" id="ic" style="position:absolute;top:-20%;left:-20%;width:140%;height:140%;opacity:0;margin:0;padding:0;border:0"><ins style="position:absolute;inset:0;border:2px solid #333"></ins></div><label for="ic">Subscribe</label>`;
 const SELECT2 = `<label for="fr">Fruit</label><select id="fr" tabindex="-1" aria-hidden="true" style="position:absolute;width:1px;height:1px;clip:rect(0 0 0 0);overflow:hidden"><option>Apple</option><option>Banana</option></select>

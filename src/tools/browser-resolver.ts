@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import { AX_MARK_ATTR, clearAxMarks, evaluateInTab, getPageZoom, markAxMatches, resolveTabId, viewportOriginJs } from "../engine/cdp-bridge.js";
 import { ELEMENT_NAME_JS, SAFE_DOM_JS } from "./_element-name-js.js";
 import { UNIQUE_SELECTOR_JS } from "./_unique-selector-js.js";
+import { jsLiteral } from "../utils/js-literal.js";
 import { pressLandingRuleJs } from "./press-landing.js";
 
 export interface CandidateCollectionArgs {
@@ -625,22 +626,22 @@ export function buildTagResolvedJs(
   if (pool.length !== ${expect.total}) return { ok: false, error: 'identity_changed' };
   if (top.length <= ${index}) return { ok: false, error: 'index_out_of_range' };
   const matched = top[${index}].el;
-  if (elText(matched) !== ${JSON.stringify(expect.name)} || (matched.getAttribute('role') || null) !== ${JSON.stringify(expect.role)} ||
-      (matched.getAttribute('aria-label') || null) !== ${JSON.stringify(expect.ariaLabel)} || matched.tagName.toLowerCase() !== ${JSON.stringify(expect.tag)} ||
-      (matched.id || null) !== ${JSON.stringify(expect.id)} || (matched.getAttribute('name') || null) !== ${JSON.stringify(expect.formName)}) {
+  if (elText(matched) !== ${jsLiteral(expect.name)} || (matched.getAttribute('role') || null) !== ${jsLiteral(expect.role)} ||
+      (matched.getAttribute('aria-label') || null) !== ${jsLiteral(expect.ariaLabel)} || matched.tagName.toLowerCase() !== ${jsLiteral(expect.tag)} ||
+      (matched.id || null) !== ${jsLiteral(expect.id)} || (matched.getAttribute('name') || null) !== ${jsLiteral(expect.formName)}) {
     return { ok: false, error: 'identity_changed' };
   }
   let el = matched;
   for (let d = 0; d < ${climbDepth} && el; d++) el = __parent(el);
   if (!el) return { ok: false, error: 'resolved_element_lost' };
-  el.setAttribute('${PRESS_TAG_ATTR}', ${JSON.stringify(nonce)});
+  el.setAttribute('${PRESS_TAG_ATTR}', ${jsLiteral(nonce)});
   return { ok: true };
 })()`;
 }
 
 /** Remove the by-axis click's mark (`buildTagResolvedJs`). */
 export function buildUntagJs(nonce: string): string {
-  return `(function() { document.querySelectorAll('[${PRESS_TAG_ATTR}="' + ${JSON.stringify(nonce)} + '"]').forEach(function(n) { n.removeAttribute('${PRESS_TAG_ATTR}'); }); return true; })()`;
+  return `(function() { document.querySelectorAll('[${PRESS_TAG_ATTR}="' + ${jsLiteral(nonce)} + '"]').forEach(function(n) { n.removeAttribute('${PRESS_TAG_ATTR}'); }); return true; })()`;
 }
 
 /**
@@ -686,7 +687,7 @@ export function buildFillActJs(
   // neither is secret (PR 側 codex on #623's e83cb56).
   const mId = matched.id || null;
   const mForm = matched.getAttribute('name') || null;
-  if (mName !== ${JSON.stringify(expect.name)} || mRole !== ${JSON.stringify(expect.role)} || mAria !== ${JSON.stringify(expect.ariaLabel)} || mTag !== ${JSON.stringify(expect.tag)} || mId !== ${JSON.stringify(expect.id)} || mForm !== ${JSON.stringify(expect.formName)}) {
+  if (mName !== ${jsLiteral(expect.name)} || mRole !== ${jsLiteral(expect.role)} || mAria !== ${jsLiteral(expect.ariaLabel)} || mTag !== ${jsLiteral(expect.tag)} || mId !== ${jsLiteral(expect.id)} || mForm !== ${jsLiteral(expect.formName)}) {
     return { ok: false, error: 'identity_changed', detail: 'signature' };
   }
   let el = matched;
@@ -715,7 +716,7 @@ export function buildFillActJs(
   // mask (PR 側 codex on #623's 122185e). browser_fill by selector focuses in an evaluate of its own
   // before its first read, so this is the road that needed it.
   const maskedAfterFocus = __isMasked(el);
-  const val = ${JSON.stringify(value)};
+  const val = ${jsLiteral(value)};
   if (isTextInput || isTextArea) {
     if (typeof el.select === 'function') el.select();
     let proto = null;
