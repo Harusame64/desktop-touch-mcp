@@ -531,6 +531,20 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     await page(`<div class="ant-select" role="combobox" aria-haspopup="listbox" style="margin:40px"><span><input id="ro" readonly value="Apple"></span></div>`);
     expect((await out({ selector: "#ro" })).code).toBe("BrowserNoActionableTarget");
     expect(await val()).toBe("Apple");
+    // Vuetify 3's v-select (win2 on #1027, R2): the input asks for no keyboard (inputmode=none, not read-only), and the
+    // combobox is the field around it. On the PR's first head it was written and its text cleared.
+    await page(`<div class="v-field" role="combobox" aria-haspopup="listbox" style="margin:40px"><div class="v-select__selection">Apple</div><input id="ro" inputmode="none" aria-label="Open" value="Apple"></div>`);
+    expect((await out({ selector: "#ro" })).code).toBe("BrowserNoActionableTarget");
+    expect(await val()).toBe("Apple");
+    // The box around Ant's input (.ant-select-selector) is the widget's: the widget's next steps, not "name the field"
+    // (R5b). A box holding two widgets, or a widget and a text field, is not one widget (controls).
+    const ANT = (id: string) => `<div class="ant-select-selector" id="${id}"><span><input role="combobox" readonly aria-haspopup="listbox" value="Apple"></span><span>Apple</span></div>`;
+    await page(`<div style="margin:40px">${ANT("box")}</div>`);
+    expect((await out({ selector: "#box" })).suggest?.[0]).toMatch(/^A choice widget/);
+    await page(`<div id="two" style="margin:40px">${ANT("a")}${ANT("b")}</div>`);
+    expect((await out({ selector: "#two" })).suggest?.[0]).toMatch(/^The match takes no text/);
+    await page(`<div id="mix" style="margin:40px">${ANT("a")}<input id="nm2"></div>`);
+    expect((await out({ selector: "#mix" })).suggest?.[0]).toMatch(/^The match takes no text/);
     // Read-only only to assistive technology (aria-readonly): the same.
     await page(`<label for="ro">Fruit</label><input id="ro" role="combobox" aria-readonly="true" value="Apple" style="margin:40px">`);
     expect((await out({ selector: "#ro" })).code).toBe("BrowserNoActionableTarget");

@@ -10,7 +10,7 @@
  * button or div[role=button] with aria-haspopup=listbox a combobox (measured on #1023).
  *
  * `__choiceInput(el, axRole)`: a read-only <input> that is a choice widget (Ant Design's Select, Vuetify's v-select, a
- * read-only MUI Autocomplete), read-only natively or by aria-readonly. A person cannot type into it; writing its value changes the text and not the widget's
+ * read-only MUI Autocomplete), read-only natively, by aria-readonly, or by inputmode=none (Vuetify 3). A person cannot type into it; writing its value changes the text and not the widget's
  * choice, and the read-back matched, so it was reported filled (/code-review on #1023).
  */
 export const FILL_KIND_JS = `
@@ -25,12 +25,29 @@ export const FILL_KIND_JS = `
     if (tag === 'INPUT' && /^(checkbox|radio)$/.test(ty) || hasRole('checkbox') || hasRole('radio') || hasRole('switch')) return 'toggle';
     if (hasRole('combobox') || popup === 'listbox') return 'widget';
     if (__closest(el, '[role~=combobox i],[aria-haspopup=listbox i]')) return 'widget';
+    // The box around a widget's own input (Ant Design's .ant-select-selector): a choice widget when the one control
+    // inside it is that combobox, not a form that holds one among others (win2 on #1027, R5b).
+    const W = '[role~=combobox i],[aria-haspopup=listbox i]';
+    const inner = Array.prototype.slice.call(__qsa(el, 'input,select,textarea,button,[contenteditable],' + W));
+    let one = null;
+    if (inner.length > 0 && inner.every(function(n) {
+      const c = __matches(n, W) ? n : __closest(n, W);
+      if (!c || c === el || !__contains(el, c)) return false;
+      // The outermost widget inside the box: one widget, not two side by side.
+      let top = c;
+      for (let up = __parent(c); up && up !== el; up = __parent(up)) if (__matches(up, W)) top = up;
+      if (one === null) one = top;
+      return one === top;
+    })) return 'widget';
     if (hasRole('textbox') || hasRole('searchbox')) return 'textlike';
     return 'other';
   }
   function __choiceInput(el, axRole) {
-    // Read-only natively, or only to assistive technology (a widget that blocks keys in script).
-    const ro = el.readOnly === true || (el.getAttribute('aria-readonly') || '').toLowerCase() === 'true';
+    // Read-only natively, only to assistive technology (a widget that blocks keys in script), or an input that asks for
+    // no keyboard inside a choice widget (Vuetify 3's v-select: inputmode=none, the combobox on the field around it,
+    // win2 on #1027, R2).
+    const ro = el.readOnly === true || (el.getAttribute('aria-readonly') || '').toLowerCase() === 'true' ||
+      (el.getAttribute('inputmode') || '').toLowerCase() === 'none';
     return el.tagName === 'INPUT' && ro && __fillKind(el, axRole) === 'widget';
   }
 `;
