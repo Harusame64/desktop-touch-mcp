@@ -1978,21 +1978,29 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
     if (o.hidden || getComputedStyle(o).display === 'none') return { error: 'no_such_option' };
     return { idx: idx, opt: o };
   }
-
-    const pk = __pickOption(el, "user@example.com");
-    if (pk.error) return { ok: false, selectError: pk.error };
-    const smaskedBefore = __isMasked(el);
-    const chosen = pk.opt.value;
+  // Set the picked option and read it back, the one write both roads use (/code-review on #1025: two copies drifted).
+  // Focus first, as a person's pick; then the kept option's index again, since a focus handler can rebuild the list
+  // (refused, unset, if the option is gone); the mask read after focus too, as the text road does.
+  function __setPickedOption(el, pk, maskedBefore) {
     el.focus();
-    if (el.selectedIndex !== pk.idx) {
+    const idx = Array.prototype.indexOf.call(el.options, pk.opt);
+    if (idx < 0) return { ok: false, selectError: 'options_changed' };
+    const maskedAfterFocus = __isMasked(el);
+    const chosen = pk.opt.value;
+    if (el.selectedIndex !== idx) {
       const sd = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'selectedIndex');
-      if (sd && sd.set) sd.set.call(el, pk.idx); else el.selectedIndex = pk.idx;
+      if (sd && sd.set) sd.set.call(el, idx); else el.selectedIndex = idx;
       el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     }
-    const smasked = smaskedBefore || __isMasked(el);
-    return { ok: true, actual: smasked ? undefined : (el.value || '').slice(0, 100), actualWithheld: smasked || undefined,
-      fullActualLen: (el.value || '').length, fullMatches: el.value === chosen, chose: smasked ? undefined : chosen, select: true };
+    const masked = maskedBefore || maskedAfterFocus || __isMasked(el);
+    return { ok: true, actual: masked ? undefined : (el.value || '').slice(0, 100), actualWithheld: masked || undefined,
+      fullActualLen: (el.value || '').length, fullMatches: el.value === chosen, chose: masked ? undefined : chosen, select: true };
+  }
+
+    const pk = __pickOption(el, "user@example.com");
+    if (pk.error) return { ok: false, selectError: pk.error };
+    return __setPickedOption(el, pk, __isMasked(el));
   }
   if (!isTextInput && !isTextArea && !isEditable) {
     // What it is, for the next steps (internal #420): an option, a toggle, a

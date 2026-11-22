@@ -474,7 +474,9 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(rb.ok).toBe(true);
     expect(await evaluateInTab("JSON.stringify([document.getElementById('rb').value, document.getElementById('rb').options.length])", null, PORT)).toBe(JSON.stringify(["g", 3]));
     await page(`<label for="pm">PIN</label><select id="pm" style="margin:40px"><option value="k1">Key one</option><option value="k2">Key two</option></select>`);
-    await evaluateInTab(`(function(){var s=document.getElementById('pm');s.focus=function(){HTMLElement.prototype.focus.call(this);this.style.setProperty('-webkit-text-security','disc');};return true})()`, null, PORT);
+    // Masked at focus, and replaced by its change handler: the detached element reads unmasked after the events, so only
+    // the read right after focus withholds the value (/code-review on #1025).
+    await evaluateInTab(`(function(){var s=document.getElementById('pm');s.focus=function(){HTMLElement.prototype.focus.call(this);this.style.setProperty('-webkit-text-security','disc');};s.addEventListener('change',function(e){var n=e.target.cloneNode(true);n.id='pm2';e.target.replaceWith(n);});return true})()`, null, PORT);
     const pm = (await browserFillInputHandler({ by: "ariaLabel", pattern: "PIN", value: "Key two", port: PORT, includeContext: false } as never)).content[0] as { text: string };
     expect(pm.text).not.toContain("k2");
     // A select a person does not see stands behind a widget (Choices): the widget's next steps, not the select's.
