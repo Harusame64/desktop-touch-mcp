@@ -11,7 +11,17 @@ exports[`ADR-023 Phase 2 (PR-2a): buildPageLevelModalFactsJs — gather JS > emi
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
   function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
-  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
+  // A document or a shadow root is not an Element: Document's or DocumentFragment's own (a document's named properties
+  // shadow too: an <img name="querySelectorAll">).
+  function __qsa(n, sel) {
+    if (typeof Document !== 'undefined' && n instanceof Document) return Document.prototype.querySelectorAll.call(n, sel);
+    if (typeof DocumentFragment !== 'undefined' && n instanceof DocumentFragment) return DocumentFragment.prototype.querySelectorAll.call(n, sel);
+    return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel);
+  }
+  // The parent, from Node's own getter: a form whose control is named parentElement turned every walk up the tree into
+  // a loop (form → input → form…), which hung the page script (win2 on #1019). The getter is looked up once per splice.
+  var __PARENT_GET = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement').get : null;
+  function __parent(n) { return __PARENT_GET ? __PARENT_GET.call(n) : n.parentElement; }
 
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
@@ -52,7 +62,7 @@ exports[`ADR-023 Phase 2 (PR-2a): buildPageLevelModalFactsJs — gather JS > emi
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
     // The editing host, not everything inside it: isContentEditable is true for every descendant,
     // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
-    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
+    if (el.isContentEditable && !(__parent(el) && __parent(el).isContentEditable)) return true;
     const role = (el.getAttribute('role') || '').toLowerCase();
     return role === 'textbox' || role === 'searchbox';
   }
@@ -107,7 +117,7 @@ exports[`ADR-023 Phase 2 (PR-2a): buildPageLevelModalFactsJs — gather JS > emi
   // multiple) is not it, nor a hidden select a script fills for another field.
   function __standsFor(el) {
     const inner = el.querySelector('select'); if (inner) return inner;
-    for (let a = el, d = 0; a && d < 4; a = a.parentElement, d++) {
+    for (let a = el, d = 0; a && d < 4; a = __parent(a), d++) {
       const prev = a.previousElementSibling;
       if (prev && prev.tagName === 'SELECT' && __keptFromPeople(prev)) return prev;
     }
@@ -174,7 +184,7 @@ exports[`ADR-023 Phase 2 (PR-2a): buildPageLevelModalFactsJs — gather JS > emi
       const tg = node.tagName ? node.tagName.toLowerCase() : '';
       if (tg === 'nav') return 'navigation';
       if (tg === 'aside') return 'complementary';
-      node = node.parentElement; guard++;
+      node = __parent(node); guard++;
     }
     return null;
   }
@@ -192,7 +202,7 @@ exports[`ADR-023 Phase 2 (PR-2a): buildPageLevelModalFactsJs — gather JS > emi
     // up to 4 levels) that does NOT contain the dialog = a backdrop/scrim.
     let node = el, guard = 0;
     while (node && node !== document.body && guard < 4) {
-      const parent = node.parentElement;
+      const parent = __parent(node);
       if (parent) {
         for (const s of parent.children) {
           if (s === node || __contains(s, el)) continue;
@@ -278,7 +288,17 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
   function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
-  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
+  // A document or a shadow root is not an Element: Document's or DocumentFragment's own (a document's named properties
+  // shadow too: an <img name="querySelectorAll">).
+  function __qsa(n, sel) {
+    if (typeof Document !== 'undefined' && n instanceof Document) return Document.prototype.querySelectorAll.call(n, sel);
+    if (typeof DocumentFragment !== 'undefined' && n instanceof DocumentFragment) return DocumentFragment.prototype.querySelectorAll.call(n, sel);
+    return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel);
+  }
+  // The parent, from Node's own getter: a form whose control is named parentElement turned every walk up the tree into
+  // a loop (form → input → form…), which hung the page script (win2 on #1019). The getter is looked up once per splice.
+  var __PARENT_GET = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement').get : null;
+  function __parent(n) { return __PARENT_GET ? __PARENT_GET.call(n) : n.parentElement; }
 
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
@@ -319,7 +339,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
     // The editing host, not everything inside it: isContentEditable is true for every descendant,
     // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
-    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
+    if (el.isContentEditable && !(__parent(el) && __parent(el).isContentEditable)) return true;
     const role = (el.getAttribute('role') || '').toLowerCase();
     return role === 'textbox' || role === 'searchbox';
   }
@@ -374,7 +394,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   // multiple) is not it, nor a hidden select a script fills for another field.
   function __standsFor(el) {
     const inner = el.querySelector('select'); if (inner) return inner;
-    for (let a = el, d = 0; a && d < 4; a = a.parentElement, d++) {
+    for (let a = el, d = 0; a && d < 4; a = __parent(a), d++) {
       const prev = a.previousElementSibling;
       if (prev && prev.tagName === 'SELECT' && __keptFromPeople(prev)) return prev;
     }
@@ -441,7 +461,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
       const tg = node.tagName ? node.tagName.toLowerCase() : '';
       if (tg === 'nav') return 'navigation';
       if (tg === 'aside') return 'complementary';
-      node = node.parentElement; guard++;
+      node = __parent(node); guard++;
     }
     return null;
   }
@@ -459,7 +479,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     // up to 4 levels) that does NOT contain the dialog = a backdrop/scrim.
     let node = el, guard = 0;
     while (node && node !== document.body && guard < 4) {
-      const parent = node.parentElement;
+      const parent = __parent(node);
       if (parent) {
         for (const s of parent.children) {
           if (s === node || __contains(s, el)) continue;
@@ -532,13 +552,23 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
   function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
-  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
+  // A document or a shadow root is not an Element: Document's or DocumentFragment's own (a document's named properties
+  // shadow too: an <img name="querySelectorAll">).
+  function __qsa(n, sel) {
+    if (typeof Document !== 'undefined' && n instanceof Document) return Document.prototype.querySelectorAll.call(n, sel);
+    if (typeof DocumentFragment !== 'undefined' && n instanceof DocumentFragment) return DocumentFragment.prototype.querySelectorAll.call(n, sel);
+    return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel);
+  }
+  // The parent, from Node's own getter: a form whose control is named parentElement turned every walk up the tree into
+  // a loop (form → input → form…), which hung the page script (win2 on #1019). The getter is looked up once per splice.
+  var __PARENT_GET = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement').get : null;
+  function __parent(n) { return __PARENT_GET ? __PARENT_GET.call(n) : n.parentElement; }
   const __mNodes = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog'));
   function __mBackdrops(d) {
     const out = [];
     let node = d, guard = 0;
     while (node && node !== document.body && guard < 4) {
-      const parent = node.parentElement;
+      const parent = __parent(node);
       if (parent) {
         for (const s of parent.children) {
           if (s === node || __contains(s, d)) continue;
@@ -665,8 +695,8 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   }
   function __pathTo(el, ask, overdue) {
     let node = el; let path = '';
-    for (let depth = 0; node.parentElement; depth++) {
-      const p = node.parentElement;
+    for (let depth = 0; __parent(node); depth++) {
+      const p = __parent(node);
       const idx = Array.from(p.children).indexOf(node) + 1;
       const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
       path = path ? seg + ' > ' + path : seg;
@@ -701,7 +731,17 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
   function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
-  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
+  // A document or a shadow root is not an Element: Document's or DocumentFragment's own (a document's named properties
+  // shadow too: an <img name="querySelectorAll">).
+  function __qsa(n, sel) {
+    if (typeof Document !== 'undefined' && n instanceof Document) return Document.prototype.querySelectorAll.call(n, sel);
+    if (typeof DocumentFragment !== 'undefined' && n instanceof DocumentFragment) return DocumentFragment.prototype.querySelectorAll.call(n, sel);
+    return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel);
+  }
+  // The parent, from Node's own getter: a form whose control is named parentElement turned every walk up the tree into
+  // a loop (form → input → form…), which hung the page script (win2 on #1019). The getter is looked up once per splice.
+  var __PARENT_GET = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement').get : null;
+  function __parent(n) { return __PARENT_GET ? __PARENT_GET.call(n) : n.parentElement; }
 
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
@@ -742,7 +782,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
     // The editing host, not everything inside it: isContentEditable is true for every descendant,
     // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
-    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
+    if (el.isContentEditable && !(__parent(el) && __parent(el).isContentEditable)) return true;
     const role = (el.getAttribute('role') || '').toLowerCase();
     return role === 'textbox' || role === 'searchbox';
   }
@@ -797,7 +837,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   // multiple) is not it, nor a hidden select a script fills for another field.
   function __standsFor(el) {
     const inner = el.querySelector('select'); if (inner) return inner;
-    for (let a = el, d = 0; a && d < 4; a = a.parentElement, d++) {
+    for (let a = el, d = 0; a && d < 4; a = __parent(a), d++) {
       const prev = a.previousElementSibling;
       if (prev && prev.tagName === 'SELECT' && __keptFromPeople(prev)) return prev;
     }
@@ -874,7 +914,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   // (win2 on #1011: by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is
   // hidden text, which visibleOnly decides. A search scoped into one of them (scope:'head') is answered as asked.
   function notDrawnText(el) {
-    for (let a = __closest(el, __NOT_TEXT); a; a = a.parentElement ? __closest(a.parentElement, __NOT_TEXT) : null) {
+    for (let a = __closest(el, __NOT_TEXT); a; a = __parent(a) ? __closest(__parent(a), __NOT_TEXT) : null) {
       if (a === root || __contains(a, root)) return false;
       if (__drawsNothing(a, true)) return true;
     }
@@ -1019,7 +1059,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     let node = el;
     for (let d = 0; node && d <= D; d++) {
       if (roleMatches(node)) return true;
-      node = node.parentElement;
+      node = __parent(node);
     }
     return false;
   }
@@ -1040,7 +1080,17 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
   function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
-  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
+  // A document or a shadow root is not an Element: Document's or DocumentFragment's own (a document's named properties
+  // shadow too: an <img name="querySelectorAll">).
+  function __qsa(n, sel) {
+    if (typeof Document !== 'undefined' && n instanceof Document) return Document.prototype.querySelectorAll.call(n, sel);
+    if (typeof DocumentFragment !== 'undefined' && n instanceof DocumentFragment) return DocumentFragment.prototype.querySelectorAll.call(n, sel);
+    return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel);
+  }
+  // The parent, from Node's own getter: a form whose control is named parentElement turned every walk up the tree into
+  // a loop (form → input → form…), which hung the page script (win2 on #1019). The getter is looked up once per splice.
+  var __PARENT_GET = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement').get : null;
+  function __parent(n) { return __PARENT_GET ? __PARENT_GET.call(n) : n.parentElement; }
 
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
@@ -1081,7 +1131,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
     // The editing host, not everything inside it: isContentEditable is true for every descendant,
     // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
-    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
+    if (el.isContentEditable && !(__parent(el) && __parent(el).isContentEditable)) return true;
     const role = (el.getAttribute('role') || '').toLowerCase();
     return role === 'textbox' || role === 'searchbox';
   }
@@ -1136,7 +1186,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   // multiple) is not it, nor a hidden select a script fills for another field.
   function __standsFor(el) {
     const inner = el.querySelector('select'); if (inner) return inner;
-    for (let a = el, d = 0; a && d < 4; a = a.parentElement, d++) {
+    for (let a = el, d = 0; a && d < 4; a = __parent(a), d++) {
       const prev = a.previousElementSibling;
       if (prev && prev.tagName === 'SELECT' && __keptFromPeople(prev)) return prev;
     }
@@ -1203,7 +1253,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
       const tg = node.tagName ? node.tagName.toLowerCase() : '';
       if (tg === 'nav') return 'navigation';
       if (tg === 'aside') return 'complementary';
-      node = node.parentElement; guard++;
+      node = __parent(node); guard++;
     }
     return null;
   }
@@ -1221,7 +1271,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     // up to 4 levels) that does NOT contain the dialog = a backdrop/scrim.
     let node = el, guard = 0;
     while (node && node !== document.body && guard < 4) {
-      const parent = node.parentElement;
+      const parent = __parent(node);
       if (parent) {
         for (const s of parent.children) {
           if (s === node || __contains(s, el)) continue;
@@ -1294,13 +1344,23 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
   function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
-  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
+  // A document or a shadow root is not an Element: Document's or DocumentFragment's own (a document's named properties
+  // shadow too: an <img name="querySelectorAll">).
+  function __qsa(n, sel) {
+    if (typeof Document !== 'undefined' && n instanceof Document) return Document.prototype.querySelectorAll.call(n, sel);
+    if (typeof DocumentFragment !== 'undefined' && n instanceof DocumentFragment) return DocumentFragment.prototype.querySelectorAll.call(n, sel);
+    return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel);
+  }
+  // The parent, from Node's own getter: a form whose control is named parentElement turned every walk up the tree into
+  // a loop (form → input → form…), which hung the page script (win2 on #1019). The getter is looked up once per splice.
+  var __PARENT_GET = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement').get : null;
+  function __parent(n) { return __PARENT_GET ? __PARENT_GET.call(n) : n.parentElement; }
   const __mNodes = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog'));
   function __mBackdrops(d) {
     const out = [];
     let node = d, guard = 0;
     while (node && node !== document.body && guard < 4) {
-      const parent = node.parentElement;
+      const parent = __parent(node);
       if (parent) {
         for (const s of parent.children) {
           if (s === node || __contains(s, d)) continue;
@@ -1361,7 +1421,17 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
   function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
-  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
+  // A document or a shadow root is not an Element: Document's or DocumentFragment's own (a document's named properties
+  // shadow too: an <img name="querySelectorAll">).
+  function __qsa(n, sel) {
+    if (typeof Document !== 'undefined' && n instanceof Document) return Document.prototype.querySelectorAll.call(n, sel);
+    if (typeof DocumentFragment !== 'undefined' && n instanceof DocumentFragment) return DocumentFragment.prototype.querySelectorAll.call(n, sel);
+    return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel);
+  }
+  // The parent, from Node's own getter: a form whose control is named parentElement turned every walk up the tree into
+  // a loop (form → input → form…), which hung the page script (win2 on #1019). The getter is looked up once per splice.
+  var __PARENT_GET = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement').get : null;
+  function __parent(n) { return __PARENT_GET ? __PARENT_GET.call(n) : n.parentElement; }
 
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
@@ -1402,7 +1472,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
     // The editing host, not everything inside it: isContentEditable is true for every descendant,
     // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
-    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
+    if (el.isContentEditable && !(__parent(el) && __parent(el).isContentEditable)) return true;
     const role = (el.getAttribute('role') || '').toLowerCase();
     return role === 'textbox' || role === 'searchbox';
   }
@@ -1457,7 +1527,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   // multiple) is not it, nor a hidden select a script fills for another field.
   function __standsFor(el) {
     const inner = el.querySelector('select'); if (inner) return inner;
-    for (let a = el, d = 0; a && d < 4; a = a.parentElement, d++) {
+    for (let a = el, d = 0; a && d < 4; a = __parent(a), d++) {
       const prev = a.previousElementSibling;
       if (prev && prev.tagName === 'SELECT' && __keptFromPeople(prev)) return prev;
     }
@@ -1525,9 +1595,9 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   // it is hidden from people. The press goes to such a control's own point: Select2 opens on its combobox, and a
   // press on the widget's outer wrapper does nothing (win2 on #1004, db867002).
   function __dtmSameKindControls(el) {
-    var want = __dtmRoles(el), parent = el.parentElement, out = [];
+    var want = __dtmRoles(el), parent = __parent(el), out = [];
     if (want.length === 0 || !parent || !__dtmHiddenFromPeople(el)) return out;
-    var nodes = parent.querySelectorAll('[role]');
+    var nodes = __qsa(parent, '[role]');
     for (var i = 0; i < nodes.length && out.length < 4; i++) {
       if (nodes[i] === el || __dtmContains(el, nodes[i]) || __dtmContains(nodes[i], el)) continue;
       if (want.indexOf(nodes[i].getAttribute('role')) >= 0) out.push(nodes[i]);
@@ -1560,8 +1630,9 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     return null;
   }
   function __dtmShownDialogIn(root) {
-    if (!root || !root.querySelectorAll) return null;
-    var all = root.querySelectorAll(__DTM_DIALOG);
+    // An element, a document or a shadow root (where there is no Element, the unit tests' fake DOM: any with the method).
+    if (!root || (typeof Element !== 'undefined' ? !(root instanceof Element || root instanceof Document || root instanceof DocumentFragment) : !root.querySelectorAll)) return null;
+    var all = __qsa(root, __DTM_DIALOG);
     for (var i = 0; i < all.length; i++) if (__dtmShown(all[i])) return all[i];
     return null;
   }
@@ -1593,11 +1664,11 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     // Only an element that is not itself a control (Playwright keeps a button, a link or a field as it is), and only
     // a hit with no other control or label between it and the host: a press on another button in the same card is
     // not a press on this one (/code-review on #1005, round 2).
-    var host = !__dtmMatches(el, __DTM_INTERACTIVE) && el.parentElement ? __dtmClosest(el.parentElement, 'a[href],button,[role=button],[role=link]') : null;
+    var host = !__dtmMatches(el, __DTM_INTERACTIVE) && __parent(el) ? __dtmClosest(__parent(el), 'a[href],button,[role=button],[role=link]') : null;
     if (host && (hit === host || __dtmContains(host, hit))) {
       // A node that holds the element (a focusable wrapper inside the link) is the element's own way to the host, not
       // a control beside it (round 3).
-      for (var hn = hit; hn && hn !== host; hn = hn.parentElement) if (!__dtmContains(hn, el) && (__dtmMatches(hn, __DTM_INTERACTIVE) || hn.tagName === 'LABEL')) return { ok: false, how: 'covered' };
+      for (var hn = hit; hn && hn !== host; hn = __parent(hn)) if (!__dtmContains(hn, el) && (__dtmMatches(hn, __DTM_INTERACTIVE) || hn.tagName === 'LABEL')) return { ok: false, how: 'covered' };
       return { ok: true, how: 'host' };
     }
     var lab = hit.nodeType === 1 ? __dtmClosest(hit, 'label') : null;
@@ -1605,7 +1676,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
       if (lab.control === el) {
         // Interactive content inside the label (a "Terms" link in "I agree to the Terms") does not activate the
         // control; a press there follows the link (/code-review on #1004).
-        for (var m = hit; m && m !== lab; m = m.parentElement) if (m !== el && __dtmMatches(m, __DTM_INTERACTIVE)) return { ok: false, how: 'covered' };
+        for (var m = hit; m && m !== lab; m = __parent(m)) if (m !== el && __dtmMatches(m, __DTM_INTERACTIVE)) return { ok: false, how: 'covered' };
         return { ok: true, how: 'own_label' };
       }
       if (lab.control) return { ok: false, how: 'other_label' };
@@ -1631,10 +1702,10 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     var er = el.getBoundingClientRect(), hr = hit.getBoundingClientRect();
     var grow = Math.max(24, Math.max(er.width, er.height) / 2);
     var over = hr.left >= er.left - grow && hr.top >= er.top - grow && hr.right <= er.right + grow && hr.bottom <= er.bottom + grow;
-    var wrap = el.parentElement, up = 0;
-    while (wrap && up < 1 && !__dtmContains(wrap, hit)) { wrap = wrap.parentElement; up++; }
+    var wrap = __parent(el), up = 0;
+    while (wrap && up < 1 && !__dtmContains(wrap, hit)) { wrap = __parent(wrap); up++; }
     if (over && wrap && __dtmContains(wrap, hit)) {
-      for (var n = hit; n && n !== wrap; n = n.parentElement) {
+      for (var n = hit; n && n !== wrap; n = __parent(n)) {
         if (__dtmName(n) !== '' || __dtmMatches(n, __DTM_INTERACTIVE) || __dtmMatches(n, __DTM_DIALOG) || n.tagName === 'LABEL') return { ok: false, how: 'covered' };
       }
       return { ok: true, how: 'skin' };
@@ -1721,7 +1792,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     let node = el;
     for (let d = 0; d <= D && node; d++) {
       chain.push(actNode(node));
-      node = node.parentElement;
+      node = __parent(node);
     }
     return chain;
   }
@@ -1751,7 +1822,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   }
 
   function hintOf(el) {
-    let node = el.parentElement;
+    let node = __parent(el);
     let guard = 0;
     while (node && node !== document.body && guard < 40) {
       const r = node.getAttribute('role');
@@ -1763,7 +1834,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
         const an = node.getAttribute('aria-label');
         return (lm + (an ? ' "' + an + '"' : '')).slice(0, 40);
       }
-      node = node.parentElement; guard++;
+      node = __parent(node); guard++;
     }
     return null;
   }

@@ -14,6 +14,8 @@
  * (/code-review on #1011: a query per level and element). Past that, the path climbs on to the root without asking:
  * a path of positions from `:root` is unique by construction (win2 on #1011: blocks built alike matched twice at eight).
  *
+ * It reads parents through SAFE_DOM_JS's __parent: a script that splices it splices ELEMENT_NAME_JS (or SAFE_DOM_JS) too.
+ *
  * `overdue` is the caller's clock: a function that answers true once its time budget is spent. The helpers are
  * prefixed `__` because they share an IIFE with each script's own functions.
  */
@@ -44,8 +46,8 @@ export const UNIQUE_SELECTOR_JS = `
   }
   function __pathTo(el, ask, overdue) {
     let node = el; let path = '';
-    for (let depth = 0; node.parentElement; depth++) {
-      const p = node.parentElement;
+    for (let depth = 0; __parent(node); depth++) {
+      const p = __parent(node);
       const idx = Array.from(p.children).indexOf(node) + 1;
       const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
       path = path ? seg + ' > ' + path : seg;

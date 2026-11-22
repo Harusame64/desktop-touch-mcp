@@ -145,6 +145,15 @@ describe.skipIf(!CHROME)("browser_overview returns selectors that match one elem
     expect(fields.map((f) => f.id)).toEqual(["mm", "qq", "uu"]);
   });
 
+  it("lists and reads a form whose control is named parentElement without hanging (win2 on #1019)", async () => {
+    await page(`<form id="pe"><input name="parentElement" id="p1"><button id="pb">Go</button></form>`);
+    const items = await overview();
+    expect(items.find((i) => i.text === "Go")?.selector).toBe("#pb");
+    const r = await browserGetFormHandler({ selector: "#pe", includeHidden: false, maxResults: 50, port: PORT, includeContext: false });
+    const t = (r.content[0] as { text: string }).text;
+    expect((JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1)) as { fields: Array<{ id: string }> }).fields.map((f) => f.id)).toEqual(["p1", "pb"]);
+  }, 60_000);
+
   it("names 200 alike buttons in a list with selectors that match one each", async () => {
     await page(`<ul>${Array.from({ length: 200 }, (_, i) => `<li><span><button data-testid="row">Row ${i}</button></span></li>`).join("")}</ul>`);
     const items = await overview();

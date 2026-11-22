@@ -30,7 +30,7 @@
  * guard, none of them changed.
  */
 
-import { ELEMENT_NAME_JS } from "./_element-name-js.js";
+import { ELEMENT_NAME_JS, SAFE_DOM_JS } from "./_element-name-js.js";
 
 /** The landing rule, as page script: `__dtmLandsOn(el, hit)`, `__dtmDescribe(n)`, `__dtmName(n)`. */
 export function pressLandingRuleJs(): string {
@@ -65,9 +65,9 @@ ${ELEMENT_NAME_JS}
   // it is hidden from people. The press goes to such a control's own point: Select2 opens on its combobox, and a
   // press on the widget's outer wrapper does nothing (win2 on #1004, db867002).
   function __dtmSameKindControls(el) {
-    var want = __dtmRoles(el), parent = el.parentElement, out = [];
+    var want = __dtmRoles(el), parent = __parent(el), out = [];
     if (want.length === 0 || !parent || !__dtmHiddenFromPeople(el)) return out;
-    var nodes = parent.querySelectorAll('[role]');
+    var nodes = __qsa(parent, '[role]');
     for (var i = 0; i < nodes.length && out.length < 4; i++) {
       if (nodes[i] === el || __dtmContains(el, nodes[i]) || __dtmContains(nodes[i], el)) continue;
       if (want.indexOf(nodes[i].getAttribute('role')) >= 0) out.push(nodes[i]);
@@ -100,8 +100,9 @@ ${ELEMENT_NAME_JS}
     return null;
   }
   function __dtmShownDialogIn(root) {
-    if (!root || !root.querySelectorAll) return null;
-    var all = root.querySelectorAll(__DTM_DIALOG);
+    // An element, a document or a shadow root (where there is no Element, the unit tests' fake DOM: any with the method).
+    if (!root || (typeof Element !== 'undefined' ? !(root instanceof Element || root instanceof Document || root instanceof DocumentFragment) : !root.querySelectorAll)) return null;
+    var all = __qsa(root, __DTM_DIALOG);
     for (var i = 0; i < all.length; i++) if (__dtmShown(all[i])) return all[i];
     return null;
   }
@@ -133,11 +134,11 @@ ${ELEMENT_NAME_JS}
     // Only an element that is not itself a control (Playwright keeps a button, a link or a field as it is), and only
     // a hit with no other control or label between it and the host: a press on another button in the same card is
     // not a press on this one (/code-review on #1005, round 2).
-    var host = !__dtmMatches(el, __DTM_INTERACTIVE) && el.parentElement ? __dtmClosest(el.parentElement, 'a[href],button,[role=button],[role=link]') : null;
+    var host = !__dtmMatches(el, __DTM_INTERACTIVE) && __parent(el) ? __dtmClosest(__parent(el), 'a[href],button,[role=button],[role=link]') : null;
     if (host && (hit === host || __dtmContains(host, hit))) {
       // A node that holds the element (a focusable wrapper inside the link) is the element's own way to the host, not
       // a control beside it (round 3).
-      for (var hn = hit; hn && hn !== host; hn = hn.parentElement) if (!__dtmContains(hn, el) && (__dtmMatches(hn, __DTM_INTERACTIVE) || hn.tagName === 'LABEL')) return { ok: false, how: 'covered' };
+      for (var hn = hit; hn && hn !== host; hn = __parent(hn)) if (!__dtmContains(hn, el) && (__dtmMatches(hn, __DTM_INTERACTIVE) || hn.tagName === 'LABEL')) return { ok: false, how: 'covered' };
       return { ok: true, how: 'host' };
     }
     var lab = hit.nodeType === 1 ? __dtmClosest(hit, 'label') : null;
@@ -145,7 +146,7 @@ ${ELEMENT_NAME_JS}
       if (lab.control === el) {
         // Interactive content inside the label (a "Terms" link in "I agree to the Terms") does not activate the
         // control; a press there follows the link (/code-review on #1004).
-        for (var m = hit; m && m !== lab; m = m.parentElement) if (m !== el && __dtmMatches(m, __DTM_INTERACTIVE)) return { ok: false, how: 'covered' };
+        for (var m = hit; m && m !== lab; m = __parent(m)) if (m !== el && __dtmMatches(m, __DTM_INTERACTIVE)) return { ok: false, how: 'covered' };
         return { ok: true, how: 'own_label' };
       }
       if (lab.control) return { ok: false, how: 'other_label' };
@@ -171,10 +172,10 @@ ${ELEMENT_NAME_JS}
     var er = el.getBoundingClientRect(), hr = hit.getBoundingClientRect();
     var grow = Math.max(24, Math.max(er.width, er.height) / 2);
     var over = hr.left >= er.left - grow && hr.top >= er.top - grow && hr.right <= er.right + grow && hr.bottom <= er.bottom + grow;
-    var wrap = el.parentElement, up = 0;
-    while (wrap && up < 1 && !__dtmContains(wrap, hit)) { wrap = wrap.parentElement; up++; }
+    var wrap = __parent(el), up = 0;
+    while (wrap && up < 1 && !__dtmContains(wrap, hit)) { wrap = __parent(wrap); up++; }
     if (over && wrap && __dtmContains(wrap, hit)) {
-      for (var n = hit; n && n !== wrap; n = n.parentElement) {
+      for (var n = hit; n && n !== wrap; n = __parent(n)) {
         if (__dtmName(n) !== '' || __dtmMatches(n, __DTM_INTERACTIVE) || __dtmMatches(n, __DTM_DIALOG) || n.tagName === 'LABEL') return { ok: false, how: 'covered' };
       }
       return { ok: true, how: 'skin' };
@@ -322,16 +323,16 @@ export function buildCoverJs(selector: string): string {
       var all = document.querySelectorAll(__DTM_DIALOG);
       for (var i = 0; i < all.length && !d; i++) {
         if (!__dtmShown(all[i]) || __dtmContains(all[i], el)) continue;
-        for (var a = all[i]; a && !d; a = a.parentElement) if (a.parentElement === hit.parentElement && a !== hit) d = all[i];
+        for (var a = all[i]; a && !d; a = __parent(a)) if (__parent(a) === __parent(hit) && a !== hit) d = all[i];
       }
     }
   }
   var root = d;
-  // Capped, far above a real page's depth: a form whose control is named parentElement turns this walk into a loop
-  // (form → input → form…; /code-review on #1019).
-  if (!root) { root = hit; for (var up2 = 0; up2 < 1000 && root.parentElement && root.parentElement !== document.body && !__dtmContains(root.parentElement, el); up2++) root = root.parentElement; }
+  // Capped far above a real page's depth, as a backstop: __parent reads the real parent, so a form whose control is
+  // named parentElement no longer loops it (#1019, #1020).
+  if (!root) { root = hit; for (var up2 = 0; up2 < 1000 && __parent(root) && __parent(root) !== document.body && !__dtmContains(__parent(root), el); up2++) root = __parent(root); }
   var offers = [];
-  var cands = root.querySelectorAll(__DTM_INTERACTIVE);
+  var cands = __qsa(root, __DTM_INTERACTIVE);
   for (var j = 0; j < cands.length && offers.length < 6; j++) {
     var cr = cands[j].getBoundingClientRect(); if (cr.width === 0 || cr.height === 0) continue;
     var nm = __dtmName(cands[j]); if (nm && offers.indexOf(nm) < 0) offers.push(nm);
@@ -421,9 +422,10 @@ export function coverSentence(selector: string, c: PageCover, tool: "desktop_act
  */
 export function buildSaveScrollJs(selector: string): string {
   return `(function() {
+${SAFE_DOM_JS}
   var el = document.querySelector(${JSON.stringify(selector)});
   var out = [];
-  for (var n = el ? el.parentElement : null; n; n = n.parentElement) {
+  for (var n = el ? __parent(el) : null; n; n = __parent(n)) {
     if (n.scrollTop !== 0 || n.scrollLeft !== 0 || n.scrollHeight > n.clientHeight || n.scrollWidth > n.clientWidth) out.push([n, n.scrollLeft, n.scrollTop]);
   }
   out.push([null, scrollX, scrollY]);

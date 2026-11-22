@@ -194,7 +194,7 @@ ${ELEMENT_NAME_JS}
   // (win2 on #1011: by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is
   // hidden text, which visibleOnly decides. A search scoped into one of them (scope:'head') is answered as asked.
   function notDrawnText(el) {
-    for (let a = __closest(el, __NOT_TEXT); a; a = a.parentElement ? __closest(a.parentElement, __NOT_TEXT) : null) {
+    for (let a = __closest(el, __NOT_TEXT); a; a = __parent(a) ? __closest(__parent(a), __NOT_TEXT) : null) {
       if (a === root || __contains(a, root)) return false;
       if (__drawsNothing(a, true)) return true;
     }
@@ -415,7 +415,7 @@ function candidatePoolJs(args: ActionFactsArgs): string {
     let node = el;
     for (let d = 0; node && d <= D; d++) {
       if (roleMatches(node)) return true;
-      node = node.parentElement;
+      node = __parent(node);
     }
     return false;
   }
@@ -522,7 +522,7 @@ ${pressLandingRuleJs()}
     let node = el;
     for (let d = 0; d <= D && node; d++) {
       chain.push(actNode(node));
-      node = node.parentElement;
+      node = __parent(node);
     }
     return chain;
   }
@@ -552,7 +552,7 @@ ${pressLandingRuleJs()}
   }
 
   function hintOf(el) {
-    let node = el.parentElement;
+    let node = __parent(el);
     let guard = 0;
     while (node && node !== document.body && guard < 40) {
       const r = node.getAttribute('role');
@@ -564,7 +564,7 @@ ${pressLandingRuleJs()}
         const an = node.getAttribute('aria-label');
         return (lm + (an ? ' "' + an + '"' : '')).slice(0, 40);
       }
-      node = node.parentElement; guard++;
+      node = __parent(node); guard++;
     }
     return null;
   }
@@ -631,7 +631,7 @@ export function buildTagResolvedJs(
     return { ok: false, error: 'identity_changed' };
   }
   let el = matched;
-  for (let d = 0; d < ${climbDepth} && el; d++) el = el.parentElement;
+  for (let d = 0; d < ${climbDepth} && el; d++) el = __parent(el);
   if (!el) return { ok: false, error: 'resolved_element_lost' };
   el.setAttribute('${PRESS_TAG_ATTR}', ${JSON.stringify(nonce)});
   return { ok: true };
@@ -690,7 +690,7 @@ export function buildFillActJs(
     return { ok: false, error: 'identity_changed', detail: 'signature' };
   }
   let el = matched;
-  for (let d = 0; d < ${climbDepth} && el; d++) el = el.parentElement;
+  for (let d = 0; d < ${climbDepth} && el; d++) el = __parent(el);
   if (!el) return { ok: false, error: 'resolved_element_lost' };
 
   const tag = el.tagName;
@@ -1550,7 +1550,7 @@ ${ELEMENT_NAME_JS}
       const tg = node.tagName ? node.tagName.toLowerCase() : '';
       if (tg === 'nav') return 'navigation';
       if (tg === 'aside') return 'complementary';
-      node = node.parentElement; guard++;
+      node = __parent(node); guard++;
     }
     return null;
   }
@@ -1568,7 +1568,7 @@ ${ELEMENT_NAME_JS}
     // up to 4 levels) that does NOT contain the dialog = a backdrop/scrim.
     let node = el, guard = 0;
     while (node && node !== document.body && guard < 4) {
-      const parent = node.parentElement;
+      const parent = __parent(node);
       if (parent) {
         for (const s of parent.children) {
           if (s === node || __contains(s, el)) continue;
@@ -1746,7 +1746,7 @@ function occluderIndexHelperJs(): string {
     const out = [];
     let node = d, guard = 0;
     while (node && node !== document.body && guard < 4) {
-      const parent = node.parentElement;
+      const parent = __parent(node);
       if (parent) {
         for (const s of parent.children) {
           if (s === node || __contains(s, d)) continue;
