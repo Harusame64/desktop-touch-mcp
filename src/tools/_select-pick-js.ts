@@ -41,12 +41,16 @@ export const SELECT_PICK_JS = `
     return { idx: idx, opt: o };
   }
   // Set the picked option and read it back, the one write both roads use (/code-review on #1025: two copies drifted).
-  // Focus first, as a person's pick; then the kept option's index again, since a focus handler can rebuild the list
-  // (refused, unset, if the option is gone); the mask read after focus too, as the text road does.
-  function __setPickedOption(el, pk, maskedBefore) {
+  // Focus first, as a person's pick; then the pick again, since a focus handler can rebuild the list or change the
+  // option (refused, unset, unless it picks the same option); the mask read after focus too, as the text road does.
+  function __setPickedOption(el, pk, maskedBefore, want) {
     el.focus();
-    const idx = Array.prototype.indexOf.call(el.options, pk.opt);
-    if (idx < 0) return { ok: false, selectError: 'options_changed' };
+    // The whole pick again, after focus: a handler can rebuild the list, change the option's value or disable it
+    // (codex on #1025). Written only when it still picks the same option.
+    const again = __pickOption(el, want);
+    if (again.error) return { ok: false, selectError: again.error };
+    if (again.opt !== pk.opt) return { ok: false, selectError: 'options_changed' };
+    const idx = again.idx;
     const maskedAfterFocus = __isMasked(el);
     const chosen = pk.opt.value;
     if (el.selectedIndex !== idx) {

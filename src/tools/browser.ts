@@ -1725,7 +1725,7 @@ ${ELEMENT_NAME_JS}
 ${SELECT_PICK_JS}
     const pk = __pickOption(el, ${jsLiteral(value)});
     if (pk.error) return { ok: false, selectError: pk.error };
-    return __setPickedOption(el, pk, maskedBefore);
+    return __setPickedOption(el, pk, maskedBefore, ${jsLiteral(value)});
   }
   el.focus();
   // Select all existing content before replacing

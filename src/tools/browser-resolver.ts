@@ -712,7 +712,7 @@ export function buildFillActJs(
 ${SELECT_PICK_JS}
     const pk = __pickOption(el, ${jsLiteral(value)});
     if (pk.error) return { ok: false, selectError: pk.error };
-    return __setPickedOption(el, pk, __isMasked(el));
+    return __setPickedOption(el, pk, __isMasked(el), ${jsLiteral(value)});
   }
   if (!isTextInput && !isTextArea && !isEditable) {
     // What it is, for the next steps (internal #420): an option, a toggle, a

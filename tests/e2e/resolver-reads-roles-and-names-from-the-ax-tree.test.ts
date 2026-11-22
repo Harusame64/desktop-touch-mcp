@@ -473,6 +473,13 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     const rb = JSON.parse(((await browserFillInputHandler({ by: "ariaLabel", pattern: "Tier", value: "g", port: PORT, includeContext: false } as never)).content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { ok?: boolean };
     expect(rb.ok).toBe(true);
     expect(await evaluateInTab("JSON.stringify([document.getElementById('rb').value, document.getElementById('rb').options.length])", null, PORT)).toBe(JSON.stringify(["g", 3]));
+    // A focus that changes the asked-for option's value: the pick again after focus no longer finds it, refused unset
+    // (codex on #1025).
+    await page(`<label for="cv">Plan</label><select id="cv" style="margin:40px"><option value="a">Alpha</option><option value="c">Charlie</option></select>`);
+    await evaluateInTab(`(function(){var s=document.getElementById('cv');s.focus=function(){HTMLElement.prototype.focus.call(this);this.options[1].value='d';};return true})()`, null, PORT);
+    const cvr = JSON.parse(((await browserFillInputHandler({ by: "ariaLabel", pattern: "Plan", value: "c", port: PORT, includeContext: false } as never)).content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { ok?: boolean; code?: string };
+    expect(cvr.code).toBe("InvalidArgs");
+    expect(await evaluateInTab("document.getElementById('cv').value", null, PORT)).toBe("a");
     await page(`<label for="pm">PIN</label><select id="pm" style="margin:40px"><option value="k1">Key one</option><option value="k2">Key two</option></select>`);
     // Masked at focus, and replaced by its change handler: the detached element reads unmasked after the events, so only
     // the read right after focus withholds the value (/code-review on #1025).
