@@ -160,6 +160,46 @@ ${DRAWS_NOTHING_JS}
     }
     return '';
   }
+  // A control the page keeps out of the tab order and the accessibility tree (Select2's original select: tabindex -1,
+  // aria-hidden): not one a person uses; the widget drawn for it stands in.
+  function __keptFromPeople(el) { return el.getAttribute('aria-hidden') === 'true' && el.getAttribute('tabindex') === '-1'; }
+  // The control a widget stands for: a select inside it (Choices), or the select the page keeps from people just before
+  // the widget's box (Select2 puts its span after the select it hides). A search field inside the widget (Select2's
+  // multiple) is not it, nor a hidden select a script fills for another field.
+  function __standsFor(el) {
+    const inner = el.querySelector('select'); if (inner) return inner;
+    for (let a = el, d = 0; a && d < 4; a = a.parentElement, d++) {
+      const prev = a.previousElementSibling;
+      if (prev && prev.tagName === 'SELECT' && __keptFromPeople(prev)) return prev;
+    }
+    return null;
+  }
+  // The name a person reads for a control, to list it among others (internal #420): aria-labelledby, then aria-label,
+  // then, for a widget (a combobox or listbox), the label of the select it stands for, then the words it draws. A
+  // button "X" with aria-label "Close dialog" is "Close dialog"; Select2's box is its select's label. A field keeps its
+  // field name, never its value.
+  function __personName(el) {
+    if (__isEntry(el) || __isMasked(el)) return __fieldName(el);
+    const lb = (el.getAttribute('aria-labelledby') || '').trim();
+    if (lb) {
+      const t = lb.split(/\\s+/).map(function(id) {
+        const n = document.getElementById(id);
+        return n ? __textWithoutFields(n) : '';
+      }).filter(Boolean).join(' ');
+      if (t) return t.slice(0, 80);
+    }
+    const aria = (el.getAttribute('aria-label') || '').trim();
+    if (aria) return aria.slice(0, 80);
+    // The role as written: Chrome's tree does not read role="Combobox" as a combobox either (measured on #1017).
+    if (/^(combobox|listbox)$/.test(el.getAttribute('role') || '')) {
+      // The select's own name, by the same rule as any field's: aria-labelledby, aria-label, then its <label>
+      // (/code-review on #1017: a select named by aria-label lent nothing).
+      const inner = __standsFor(el);
+      const t = inner ? __fieldName(inner) : '';
+      if (t) return t;
+    }
+    return __elText(el);
+  }
   function __elText(el) {
     // A <select>'s text is its options, which the page wrote; it keeps the name it had.
     if (el.tagName === 'SELECT' && !__isMasked(el)) return (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
