@@ -12,6 +12,7 @@
 import WebSocket from "ws";
 import { getCdpPort } from "../utils/desktop-config.js";
 import { defaultPageTab } from "./cdp-default-tab.js";
+import { jsLiteral } from "../tools/_js-literal.js";
 
 export const DEFAULT_CDP_PORT = 9222;
 // Exported so callers that surface a CDP-timeout-derived hint (e.g.
@@ -880,7 +881,7 @@ function widgetsForLabelledSelectsJs(nonce: string, pattern: string, caseSensiti
 /** Remove one call's accessibility-tree marks ({@link markAxMatches}); another call's marks on the tab stay. */
 export async function clearAxMarks(nonce: string, tabId: string | null = null, port = DEFAULT_CDP_PORT): Promise<void> {
   await evaluateInTab(
-    `(function(){var mine=${JSON.stringify(nonce + ":")};document.querySelectorAll('[${AX_MARK_ATTR}*=' + JSON.stringify(mine) + ']').forEach(function(n){var keep=(n.getAttribute('${AX_MARK_ATTR}')||'').split(' ').filter(function(t){return t&&t.indexOf(mine)!==0;});if(keep.length)n.setAttribute('${AX_MARK_ATTR}',keep.join(' '));else n.removeAttribute('${AX_MARK_ATTR}');});return true})()`,
+    `(function(){var mine=${jsLiteral(nonce + ":")};document.querySelectorAll('[${AX_MARK_ATTR}*=' + JSON.stringify(mine) + ']').forEach(function(n){var keep=(n.getAttribute('${AX_MARK_ATTR}')||'').split(' ').filter(function(t){return t&&t.indexOf(mine)!==0;});if(keep.length)n.setAttribute('${AX_MARK_ATTR}',keep.join(' '));else n.removeAttribute('${AX_MARK_ATTR}');});return true})()`,
     tabId, port,
   ).catch(() => null);
 }
