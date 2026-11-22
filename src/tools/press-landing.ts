@@ -36,6 +36,12 @@ import { ELEMENT_NAME_JS } from "./_element-name-js.js";
 export function pressLandingRuleJs(): string {
   return `
 ${ELEMENT_NAME_JS}
+  // The prototype's closest, matches and contains: a <form> exposes a control named so as form.closest (and a custom
+  // element can define its own), and a call on it threw "hit.closest is not a function" (win2 on #1018).
+  // SAFE_DOM_JS's, which ELEMENT_NAME_JS above brings (one definition: /code-review on #1019).
+  function __dtmClosest(n, s) { return __closest(n, s); }
+  function __dtmMatches(n, s) { return __matches(n, s); }
+  function __dtmContains(a, b) { return __contains(a, b); }
   var __DTM_INTERACTIVE = 'a[href],button,input,select,textarea,summary,[contenteditable=""],[contenteditable=true],[role=button],[role=link],[role=checkbox],[role=radio],[role=switch],[role=tab],[role=menuitem],[role=option],[role=combobox],[role=textbox],[tabindex]:not([tabindex="-1"])';
   var __DTM_DIALOG = 'dialog,[role=dialog],[role=alertdialog],[aria-modal=true]';
   function __dtmArea(n) { var r = n.getBoundingClientRect(); return r.width * r.height; }
@@ -63,7 +69,7 @@ ${ELEMENT_NAME_JS}
     if (want.length === 0 || !parent || !__dtmHiddenFromPeople(el)) return out;
     var nodes = parent.querySelectorAll('[role]');
     for (var i = 0; i < nodes.length && out.length < 4; i++) {
-      if (nodes[i] === el || el.contains(nodes[i]) || nodes[i].contains(el)) continue;
+      if (nodes[i] === el || __dtmContains(el, nodes[i]) || __dtmContains(nodes[i], el)) continue;
       if (want.indexOf(nodes[i].getAttribute('role')) >= 0) out.push(nodes[i]);
     }
     return out;
@@ -77,7 +83,7 @@ ${ELEMENT_NAME_JS}
   function __dtmModal(d) {
     if (!d || !d.matches) return false;
     if (d.getAttribute('aria-modal') === 'true') return true;
-    try { return d.tagName === 'DIALOG' && d.matches(':modal'); } catch (e) { return false; }
+    try { return d.tagName === 'DIALOG' && __dtmMatches(d, ':modal'); } catch (e) { return false; }
   }
   // A modal dialog that is shown and does not hold the element: a person answers it first.
   // A shown modal that does not hold the element and is in front of it: when the element is itself inside a shown
@@ -85,11 +91,11 @@ ${ELEMENT_NAME_JS}
   // (/code-review on #1004: modal A under a modal B holding the element is not in front of it).
   function __dtmModalAgainst(el) {
     var all = document.querySelectorAll(__DTM_DIALOG), mine = false, i;
-    for (i = 0; i < all.length; i++) if (__dtmModal(all[i]) && __dtmShown(all[i]) && all[i].contains(el)) mine = true;
+    for (i = 0; i < all.length; i++) if (__dtmModal(all[i]) && __dtmShown(all[i]) && __dtmContains(all[i], el)) mine = true;
     var r = el.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
     for (i = 0; i < all.length; i++) {
-      if (!__dtmModal(all[i]) || !__dtmShown(all[i]) || all[i].contains(el)) continue;
-      if (!mine || (hit && all[i].contains(hit))) return all[i];
+      if (!__dtmModal(all[i]) || !__dtmShown(all[i]) || __dtmContains(all[i], el)) continue;
+      if (!mine || (hit && __dtmContains(all[i], hit))) return all[i];
     }
     return null;
   }
@@ -120,32 +126,32 @@ ${ELEMENT_NAME_JS}
   function __dtmLandsOn(el, hit) {
     if (!hit) return { ok: false, how: 'nothing' };
     if (hit === el) return { ok: true, how: 'self' };
-    if (el.contains(hit)) return { ok: true, how: 'inside' };
+    if (__dtmContains(el, hit)) return { ok: true, how: 'inside' };
     // An element inside a button or a link is pressed as that button or link, as Playwright retargets its target
     // ('button-link'): an icon with pointer-events: none inside a close button is pressed through the button, which
     // is where a person's press goes (/code-review on #1005: the old browser_click road clicked it so).
     // Only an element that is not itself a control (Playwright keeps a button, a link or a field as it is), and only
     // a hit with no other control or label between it and the host: a press on another button in the same card is
     // not a press on this one (/code-review on #1005, round 2).
-    var host = !el.matches(__DTM_INTERACTIVE) && el.parentElement && el.parentElement.closest ? el.parentElement.closest('a[href],button,[role=button],[role=link]') : null;
-    if (host && (hit === host || host.contains(hit))) {
+    var host = !__dtmMatches(el, __DTM_INTERACTIVE) && el.parentElement ? __dtmClosest(el.parentElement, 'a[href],button,[role=button],[role=link]') : null;
+    if (host && (hit === host || __dtmContains(host, hit))) {
       // A node that holds the element (a focusable wrapper inside the link) is the element's own way to the host, not
       // a control beside it (round 3).
-      for (var hn = hit; hn && hn !== host; hn = hn.parentElement) if (!hn.contains(el) && (hn.matches(__DTM_INTERACTIVE) || hn.tagName === 'LABEL')) return { ok: false, how: 'covered' };
+      for (var hn = hit; hn && hn !== host; hn = hn.parentElement) if (!__dtmContains(hn, el) && (__dtmMatches(hn, __DTM_INTERACTIVE) || hn.tagName === 'LABEL')) return { ok: false, how: 'covered' };
       return { ok: true, how: 'host' };
     }
-    var lab = hit.closest ? hit.closest('label') : null;
+    var lab = hit.nodeType === 1 ? __dtmClosest(hit, 'label') : null;
     if (lab) {
       if (lab.control === el) {
         // Interactive content inside the label (a "Terms" link in "I agree to the Terms") does not activate the
         // control; a press there follows the link (/code-review on #1004).
-        for (var m = hit; m && m !== lab; m = m.parentElement) if (m !== el && m.matches(__DTM_INTERACTIVE)) return { ok: false, how: 'covered' };
+        for (var m = hit; m && m !== lab; m = m.parentElement) if (m !== el && __dtmMatches(m, __DTM_INTERACTIVE)) return { ok: false, how: 'covered' };
         return { ok: true, how: 'own_label' };
       }
       if (lab.control) return { ok: false, how: 'other_label' };
     }
     // A hit that holds the element (its wrapper, with the element taking no pointer input) is not a skin of it.
-    if (hit.contains(el)) return { ok: false, how: 'container' };
+    if (__dtmContains(hit, el)) return { ok: false, how: 'container' };
     // A replacement: the element is hidden from people (aria-hidden, a 1-2px box, or fully transparent) and the hit
     // is a control in the element's own parent — Select2 hides the native <select> (aria-hidden, clipped) and draws
     // its combobox beside it. A person presses the widget they see; so does this (win2 on #1004, R12: discover
@@ -156,7 +162,7 @@ ${ELEMENT_NAME_JS}
     // and nor is the widget's outer wrapper, which Select2 does not open on (win2). Not an id: Select2 gives an
     // id-less select a random token the select does not carry.
     var kin = __dtmSameKindControls(el);
-    for (var z = 0; z < kin.length; z++) if (kin[z] === hit || kin[z].contains(hit)) return { ok: true, how: 'replacement' };
+    for (var z = 0; z < kin.length; z++) if (kin[z] === hit || __dtmContains(kin[z], hit)) return { ok: true, how: 'replacement' };
     // A skin candidate: a layer drawn right over the element — its box inside the element's box grown by 24px or
     // half the element's size, whichever is more — in the element's parent or grandparent, and nothing from the
     // hit up to that wrapper has text, a name, an interactive role, or is a dialog or a label. The browser confirms
@@ -166,10 +172,10 @@ ${ELEMENT_NAME_JS}
     var grow = Math.max(24, Math.max(er.width, er.height) / 2);
     var over = hr.left >= er.left - grow && hr.top >= er.top - grow && hr.right <= er.right + grow && hr.bottom <= er.bottom + grow;
     var wrap = el.parentElement, up = 0;
-    while (wrap && up < 1 && !wrap.contains(hit)) { wrap = wrap.parentElement; up++; }
-    if (over && wrap && wrap.contains(hit)) {
+    while (wrap && up < 1 && !__dtmContains(wrap, hit)) { wrap = wrap.parentElement; up++; }
+    if (over && wrap && __dtmContains(wrap, hit)) {
       for (var n = hit; n && n !== wrap; n = n.parentElement) {
-        if (__dtmName(n) !== '' || n.matches(__DTM_INTERACTIVE) || n.matches(__DTM_DIALOG) || n.tagName === 'LABEL') return { ok: false, how: 'covered' };
+        if (__dtmName(n) !== '' || __dtmMatches(n, __DTM_INTERACTIVE) || __dtmMatches(n, __DTM_DIALOG) || n.tagName === 'LABEL') return { ok: false, how: 'covered' };
       }
       return { ok: true, how: 'skin' };
     }
@@ -302,12 +308,12 @@ export function buildCoverJs(selector: string): string {
   if (!hit) return null;
   // The hit holds the element: the element does not take the press at its own point (pointer-events: none, or a
   // container's ::before/::after drawn over it). Nothing is in front of it to name (/code-review on #1004).
-  if (hit.contains(el)) return { cover: __dtmDescribe(hit), dialog: null, offers: [], emptyOverlay: false, container: true };
+  if (__dtmContains(hit, el)) return { cover: __dtmDescribe(hit), dialog: null, offers: [], emptyOverlay: false, container: true };
   // A dialog that holds the element is not in front of it: a part of the element's own dialog covers it.
-  function notMine(d) { return d && !d.contains(el) ? d : null; }
+  function notMine(d) { return d && !__dtmContains(d, el) ? d : null; }
   // What is in front: the dialog the cover is in, holds, or is the backdrop of; otherwise the topmost ancestor of
   // the cover that does not hold the element (Playwright's "from <root> subtree").
-  var d = notMine(hit.closest(__DTM_DIALOG));
+  var d = notMine(__dtmClosest(hit, __DTM_DIALOG));
   if (d && !__dtmShown(d)) d = null;
   if (!d) d = notMine(__dtmShownDialogIn(hit));
   if (!d) {
@@ -315,13 +321,15 @@ export function buildCoverJs(selector: string): string {
     if ((cs.position === 'fixed' || cs.position === 'absolute') && __dtmArea(hit) >= innerWidth * innerHeight * 0.8) {
       var all = document.querySelectorAll(__DTM_DIALOG);
       for (var i = 0; i < all.length && !d; i++) {
-        if (!__dtmShown(all[i]) || all[i].contains(el)) continue;
+        if (!__dtmShown(all[i]) || __dtmContains(all[i], el)) continue;
         for (var a = all[i]; a && !d; a = a.parentElement) if (a.parentElement === hit.parentElement && a !== hit) d = all[i];
       }
     }
   }
   var root = d;
-  if (!root) { root = hit; while (root.parentElement && root.parentElement !== document.body && !root.parentElement.contains(el)) root = root.parentElement; }
+  // Capped, far above a real page's depth: a form whose control is named parentElement turns this walk into a loop
+  // (form → input → form…; /code-review on #1019).
+  if (!root) { root = hit; for (var up2 = 0; up2 < 1000 && root.parentElement && root.parentElement !== document.body && !__dtmContains(root.parentElement, el); up2++) root = root.parentElement; }
   var offers = [];
   var cands = root.querySelectorAll(__DTM_INTERACTIVE);
   for (var j = 0; j < cands.length && offers.length < 6; j++) {

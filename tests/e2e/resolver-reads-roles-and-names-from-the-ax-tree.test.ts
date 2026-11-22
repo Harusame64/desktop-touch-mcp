@@ -11,6 +11,7 @@ import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll, markAxMatches, clearAxMarks } from "../../src/engine/cdp-bridge.js";
 import { resolveBrowserActionTarget, type ResolveActionOutcome } from "../../src/tools/browser-resolver.js";
 import { browserClickElementHandler, readPressLanding } from "../../src/tools/browser.js";
+import { buildPressPointJs, buildCoverJs } from "../../src/tools/press-landing.js";
 
 const PORT = 9238;
 const CHROME = tryFindChrome() !== null;
@@ -360,6 +361,29 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     const o = await resolve({ by: "role", pattern: "radio" }, false);
     expect(o.kind).toBe("resolved");
     if (o.kind === "resolved" && o.axMark !== undefined) await clearAxMarks(o.axMark, null, PORT);
+    expect(await marks()).toBe(0);
+  });
+
+  it("reads a press point and a cover on a page that shadows closest, matches and contains (win2 on #1018)", async () => {
+    // A click-through label sends the hit test to the <form>, whose closest, matches and contains are its controls:
+    // the press rule threw "hit.closest is not a function" on main and failed the click with ToolError.
+    await page(`<form id="fc" style="padding:40px"><input name="closest"><input name="matches"><input name="contains"><input type="radio" id="rc" style="width:0;height:0;margin:0;padding:0;border:0;appearance:none"><label for="rc" style="display:inline-block;padding:6px 12px;pointer-events:none">Closest radio</label></form>`);
+    expect(await evaluateInTab("typeof document.getElementById('fc').closest", null, PORT)).toBe("object");
+    const point = (await evaluateInTab(buildPressPointJs("#rc"), null, PORT)) as Record<string, unknown>;
+    expect(point.error ?? null).toBeNull();
+    const cover = (await evaluateInTab(buildCoverJs("#rc"), null, PORT)) as Record<string, unknown> | null;
+    // The hit is the form, which holds the radio (typeof null is "object", so the value is asked for).
+    expect(cover).toMatchObject({ container: true });
+    // A real by-axis click reaches the press rule through the gather, which climbs to the form and called
+    // form.contains (/code-review on #1019): it resolves now, and a text search over the form's words works.
+    const o = await resolve({ by: "role", pattern: "radio" }, false);
+    expect(o.kind).toBe("resolved");
+    if (o.kind === "resolved" && o.axMark !== undefined) await clearAxMarks(o.axMark, null, PORT);
+    // A text hit on the form itself: its own words, so the text axes judge the form (notDrawnText on it).
+    await evaluateInTab(`document.getElementById('fc').insertAdjacentText('afterbegin', 'Shadowing form words ');true`, null, PORT);
+    const t = await resolve({ by: "text", pattern: "Shadowing form words" }, false);
+    expect(t.kind === "error" ? t.message : t.kind).not.toMatch(/is not a function/);
+    expect(t.kind).not.toBe("error");
     expect(await marks()).toBe(0);
   });
 

@@ -7,10 +7,12 @@ exports[`ADR-023 Phase 2 (PR-2a): buildPageLevelModalFactsJs — gather JS > emi
   // var, not const: spliced twice into one scope (ELEMENT_NAME_JS beside pressLandingRuleJs()), it stays valid.
   var __NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
   var __scriptsRun = null;
-  // The prototype's matches: a <form> exposes a control named "matches" as form.matches, and a custom element can
-  // define its own (/code-review on #1016: the walker threw and the whole script failed). Looked up when called, and
-  // the element's own where there is no Element (the unit tests' fake DOM).
+
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
+  function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
+  function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
+  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
+
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
   function __drawsNothing(a, probe) {
@@ -185,7 +187,7 @@ exports[`ADR-023 Phase 2 (PR-2a): buildPageLevelModalFactsJs — gather JS > emi
     return (r.width * r.height) >= vpArea * 0.8;
   }
   function hasBackdropFor(el) {
-    try { if (el.matches(':modal')) return true; } catch (e) {}
+    try { if (__matches(el, ':modal')) return true; } catch (e) {}
     // A viewport-covering fixed/absolute sibling layer (of the dialog or an ancestor
     // up to 4 levels) that does NOT contain the dialog = a backdrop/scrim.
     let node = el, guard = 0;
@@ -193,7 +195,7 @@ exports[`ADR-023 Phase 2 (PR-2a): buildPageLevelModalFactsJs — gather JS > emi
       const parent = node.parentElement;
       if (parent) {
         for (const s of parent.children) {
-          if (s === node || s.contains(el)) continue;
+          if (s === node || __contains(s, el)) continue;
           if (isBackdropLike(s)) return true;
         }
       }
@@ -204,7 +206,7 @@ exports[`ADR-023 Phase 2 (PR-2a): buildPageLevelModalFactsJs — gather JS > emi
   function siblingsInertFor(el) {
     if (!document.body) return false;
     for (const c of document.body.children) {
-      if (c.contains(el)) continue;
+      if (__contains(c, el)) continue;
       if (c.hasAttribute('inert') || c.getAttribute('aria-hidden') === 'true') {
         const r = c.getBoundingClientRect();
         if (r.width > 0 && r.height > 0) return true;
@@ -223,10 +225,10 @@ exports[`ADR-023 Phase 2 (PR-2a): buildPageLevelModalFactsJs — gather JS > emi
     const visible = cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0' && br.width > 0 && br.height > 0;
     const tag = el.tagName.toLowerCase();
     let nativeModal = false;
-    if (tag === 'dialog' && el.open === true) { try { nativeModal = el.matches(':modal'); } catch (e) { nativeModal = true; } }
+    if (tag === 'dialog' && el.open === true) { try { nativeModal = __matches(el, ':modal'); } catch (e) { nativeModal = true; } }
     const tr = cs.transform && cs.transform !== 'none';
     const offscreen = !!tr && (rect.x + rect.w <= 0 || rect.x >= VW || rect.y + rect.h <= 0 || rect.y >= VH);
-    if (ae && el.contains(ae)) activeInDialog = true;
+    if (ae && __contains(el, ae)) activeInDialog = true;
     cands.push({
       role: (el.getAttribute('role') || '').toLowerCase() || null,
       tag: tag,
@@ -272,10 +274,12 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   // var, not const: spliced twice into one scope (ELEMENT_NAME_JS beside pressLandingRuleJs()), it stays valid.
   var __NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
   var __scriptsRun = null;
-  // The prototype's matches: a <form> exposes a control named "matches" as form.matches, and a custom element can
-  // define its own (/code-review on #1016: the walker threw and the whole script failed). Looked up when called, and
-  // the element's own where there is no Element (the unit tests' fake DOM).
+
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
+  function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
+  function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
+  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
+
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
   function __drawsNothing(a, probe) {
@@ -450,7 +454,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     return (r.width * r.height) >= vpArea * 0.8;
   }
   function hasBackdropFor(el) {
-    try { if (el.matches(':modal')) return true; } catch (e) {}
+    try { if (__matches(el, ':modal')) return true; } catch (e) {}
     // A viewport-covering fixed/absolute sibling layer (of the dialog or an ancestor
     // up to 4 levels) that does NOT contain the dialog = a backdrop/scrim.
     let node = el, guard = 0;
@@ -458,7 +462,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
       const parent = node.parentElement;
       if (parent) {
         for (const s of parent.children) {
-          if (s === node || s.contains(el)) continue;
+          if (s === node || __contains(s, el)) continue;
           if (isBackdropLike(s)) return true;
         }
       }
@@ -469,7 +473,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   function siblingsInertFor(el) {
     if (!document.body) return false;
     for (const c of document.body.children) {
-      if (c.contains(el)) continue;
+      if (__contains(c, el)) continue;
       if (c.hasAttribute('inert') || c.getAttribute('aria-hidden') === 'true') {
         const r = c.getBoundingClientRect();
         if (r.width > 0 && r.height > 0) return true;
@@ -488,10 +492,10 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     const visible = cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0' && br.width > 0 && br.height > 0;
     const tag = el.tagName.toLowerCase();
     let nativeModal = false;
-    if (tag === 'dialog' && el.open === true) { try { nativeModal = el.matches(':modal'); } catch (e) { nativeModal = true; } }
+    if (tag === 'dialog' && el.open === true) { try { nativeModal = __matches(el, ':modal'); } catch (e) { nativeModal = true; } }
     const tr = cs.transform && cs.transform !== 'none';
     const offscreen = !!tr && (rect.x + rect.w <= 0 || rect.x >= VW || rect.y + rect.h <= 0 || rect.y >= VH);
-    if (ae && el.contains(ae)) activeInDialog = true;
+    if (ae && __contains(el, ae)) activeInDialog = true;
     cands.push({
       role: (el.getAttribute('role') || '').toLowerCase() || null,
       tag: tag,
@@ -524,6 +528,11 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     return { viewport: { innerWidth: window.innerWidth || 0, innerHeight: window.innerHeight || 0 }, bodyScrollLock: false, activeElement: null, dialogCandidates: [] };
   }
 })();
+
+  function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
+  function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
+  function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
+  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
   const __mNodes = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog'));
   function __mBackdrops(d) {
     const out = [];
@@ -532,7 +541,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
       const parent = node.parentElement;
       if (parent) {
         for (const s of parent.children) {
-          if (s === node || s.contains(d)) continue;
+          if (s === node || __contains(s, d)) continue;
           try {
             const cs = window.getComputedStyle(s);
             if ((cs.position === 'fixed' || cs.position === 'absolute') && cs.display !== 'none' && cs.visibility !== 'hidden') {
@@ -551,9 +560,9 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     if (!hit) return null;
     for (let i = 0; i < __mNodes.length; i++) {
       const d = __mNodes[i];
-      if (d === hit || d.contains(hit)) return i;
+      if (d === hit || __contains(d, hit)) return i;
       const bds = __mBd[i];
-      for (let j = 0; j < bds.length; j++) { if (bds[j] === hit || bds[j].contains(hit)) return i; }
+      for (let j = 0; j < bds.length; j++) { if (bds[j] === hit || __contains(bds[j], hit)) return i; }
     }
     return null;
   }
@@ -562,11 +571,11 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     if (cx < 0 || cx >= window.innerWidth || cy < 0 || cy >= window.innerHeight) return null;
     const hit = document.elementFromPoint(cx, cy);
-    if (!hit || hit === el || el.contains(hit)) return null;
+    if (!hit || hit === el || __contains(el, hit)) return null;
     return __occluderDialogIndex(hit);
   }
   const insideDialogIndices = [];
-  for (let i = 0; i < __mNodes.length; i++) { if (__mNodes[i].contains(el)) insideDialogIndices.push(i); }
+  for (let i = 0; i < __mNodes.length; i++) { if (__contains(__mNodes[i], el)) insideDialogIndices.push(i); }
   return { found: true, occludedByDialogIndex: __occludedDialogIndexForEl(el), insideDialogIndices: insideDialogIndices, modalFacts: __modal };
   } catch (e) { return { found: false }; }
 })()"
@@ -688,10 +697,12 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   // var, not const: spliced twice into one scope (ELEMENT_NAME_JS beside pressLandingRuleJs()), it stays valid.
   var __NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
   var __scriptsRun = null;
-  // The prototype's matches: a <form> exposes a control named "matches" as form.matches, and a custom element can
-  // define its own (/code-review on #1016: the walker threw and the whole script failed). Looked up when called, and
-  // the element's own where there is no Element (the unit tests' fake DOM).
+
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
+  function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
+  function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
+  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
+
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
   function __drawsNothing(a, probe) {
@@ -863,8 +874,8 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   // (win2 on #1011: by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is
   // hidden text, which visibleOnly decides. A search scoped into one of them (scope:'head') is answered as asked.
   function notDrawnText(el) {
-    for (let a = el.closest(__NOT_TEXT); a; a = a.parentElement ? a.parentElement.closest(__NOT_TEXT) : null) {
-      if (a === root || a.contains(root)) return false;
+    for (let a = __closest(el, __NOT_TEXT); a; a = a.parentElement ? __closest(a.parentElement, __NOT_TEXT) : null) {
+      if (a === root || __contains(a, root)) return false;
       if (__drawsNothing(a, true)) return true;
     }
     return false;
@@ -1025,10 +1036,12 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   // var, not const: spliced twice into one scope (ELEMENT_NAME_JS beside pressLandingRuleJs()), it stays valid.
   var __NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
   var __scriptsRun = null;
-  // The prototype's matches: a <form> exposes a control named "matches" as form.matches, and a custom element can
-  // define its own (/code-review on #1016: the walker threw and the whole script failed). Looked up when called, and
-  // the element's own where there is no Element (the unit tests' fake DOM).
+
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
+  function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
+  function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
+  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
+
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
   function __drawsNothing(a, probe) {
@@ -1203,7 +1216,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     return (r.width * r.height) >= vpArea * 0.8;
   }
   function hasBackdropFor(el) {
-    try { if (el.matches(':modal')) return true; } catch (e) {}
+    try { if (__matches(el, ':modal')) return true; } catch (e) {}
     // A viewport-covering fixed/absolute sibling layer (of the dialog or an ancestor
     // up to 4 levels) that does NOT contain the dialog = a backdrop/scrim.
     let node = el, guard = 0;
@@ -1211,7 +1224,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
       const parent = node.parentElement;
       if (parent) {
         for (const s of parent.children) {
-          if (s === node || s.contains(el)) continue;
+          if (s === node || __contains(s, el)) continue;
           if (isBackdropLike(s)) return true;
         }
       }
@@ -1222,7 +1235,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   function siblingsInertFor(el) {
     if (!document.body) return false;
     for (const c of document.body.children) {
-      if (c.contains(el)) continue;
+      if (__contains(c, el)) continue;
       if (c.hasAttribute('inert') || c.getAttribute('aria-hidden') === 'true') {
         const r = c.getBoundingClientRect();
         if (r.width > 0 && r.height > 0) return true;
@@ -1241,10 +1254,10 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     const visible = cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0' && br.width > 0 && br.height > 0;
     const tag = el.tagName.toLowerCase();
     let nativeModal = false;
-    if (tag === 'dialog' && el.open === true) { try { nativeModal = el.matches(':modal'); } catch (e) { nativeModal = true; } }
+    if (tag === 'dialog' && el.open === true) { try { nativeModal = __matches(el, ':modal'); } catch (e) { nativeModal = true; } }
     const tr = cs.transform && cs.transform !== 'none';
     const offscreen = !!tr && (rect.x + rect.w <= 0 || rect.x >= VW || rect.y + rect.h <= 0 || rect.y >= VH);
-    if (ae && el.contains(ae)) activeInDialog = true;
+    if (ae && __contains(el, ae)) activeInDialog = true;
     cands.push({
       role: (el.getAttribute('role') || '').toLowerCase() || null,
       tag: tag,
@@ -1277,6 +1290,11 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     return { viewport: { innerWidth: window.innerWidth || 0, innerHeight: window.innerHeight || 0 }, bodyScrollLock: false, activeElement: null, dialogCandidates: [] };
   }
 })();
+
+  function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
+  function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
+  function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
+  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
   const __mNodes = Array.prototype.slice.call(document.querySelectorAll('[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog'));
   function __mBackdrops(d) {
     const out = [];
@@ -1285,7 +1303,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
       const parent = node.parentElement;
       if (parent) {
         for (const s of parent.children) {
-          if (s === node || s.contains(d)) continue;
+          if (s === node || __contains(s, d)) continue;
           try {
             const cs = window.getComputedStyle(s);
             if ((cs.position === 'fixed' || cs.position === 'absolute') && cs.display !== 'none' && cs.visibility !== 'hidden') {
@@ -1304,9 +1322,9 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     if (!hit) return null;
     for (let i = 0; i < __mNodes.length; i++) {
       const d = __mNodes[i];
-      if (d === hit || d.contains(hit)) return i;
+      if (d === hit || __contains(d, hit)) return i;
       const bds = __mBd[i];
-      for (let j = 0; j < bds.length; j++) { if (bds[j] === hit || bds[j].contains(hit)) return i; }
+      for (let j = 0; j < bds.length; j++) { if (bds[j] === hit || __contains(bds[j], hit)) return i; }
     }
     return null;
   }
@@ -1315,7 +1333,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     if (cx < 0 || cx >= window.innerWidth || cy < 0 || cy >= window.innerHeight) return null;
     const hit = document.elementFromPoint(cx, cy);
-    if (!hit || hit === el || el.contains(hit)) return null;
+    if (!hit || hit === el || __contains(el, hit)) return null;
     return __occluderDialogIndex(hit);
   }
 
@@ -1339,10 +1357,12 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   // var, not const: spliced twice into one scope (ELEMENT_NAME_JS beside pressLandingRuleJs()), it stays valid.
   var __NOT_TEXT = 'head, script, style, noscript, template, noembed, noframes';
   var __scriptsRun = null;
-  // The prototype's matches: a <form> exposes a control named "matches" as form.matches, and a custom element can
-  // define its own (/code-review on #1016: the walker threw and the whole script failed). Looked up when called, and
-  // the element's own where there is no Element (the unit tests' fake DOM).
+
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
+  function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
+  function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
+  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
+
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
   function __drawsNothing(a, probe) {
@@ -1476,6 +1496,12 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     return __textWithoutFields(el).slice(0, 80);
   }
 
+  // The prototype's closest, matches and contains: a <form> exposes a control named so as form.closest (and a custom
+  // element can define its own), and a call on it threw "hit.closest is not a function" (win2 on #1018).
+  // SAFE_DOM_JS's, which ELEMENT_NAME_JS above brings (one definition: /code-review on #1019).
+  function __dtmClosest(n, s) { return __closest(n, s); }
+  function __dtmMatches(n, s) { return __matches(n, s); }
+  function __dtmContains(a, b) { return __contains(a, b); }
   var __DTM_INTERACTIVE = 'a[href],button,input,select,textarea,summary,[contenteditable=""],[contenteditable=true],[role=button],[role=link],[role=checkbox],[role=radio],[role=switch],[role=tab],[role=menuitem],[role=option],[role=combobox],[role=textbox],[tabindex]:not([tabindex="-1"])';
   var __DTM_DIALOG = 'dialog,[role=dialog],[role=alertdialog],[aria-modal=true]';
   function __dtmArea(n) { var r = n.getBoundingClientRect(); return r.width * r.height; }
@@ -1503,7 +1529,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     if (want.length === 0 || !parent || !__dtmHiddenFromPeople(el)) return out;
     var nodes = parent.querySelectorAll('[role]');
     for (var i = 0; i < nodes.length && out.length < 4; i++) {
-      if (nodes[i] === el || el.contains(nodes[i]) || nodes[i].contains(el)) continue;
+      if (nodes[i] === el || __dtmContains(el, nodes[i]) || __dtmContains(nodes[i], el)) continue;
       if (want.indexOf(nodes[i].getAttribute('role')) >= 0) out.push(nodes[i]);
     }
     return out;
@@ -1517,7 +1543,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   function __dtmModal(d) {
     if (!d || !d.matches) return false;
     if (d.getAttribute('aria-modal') === 'true') return true;
-    try { return d.tagName === 'DIALOG' && d.matches(':modal'); } catch (e) { return false; }
+    try { return d.tagName === 'DIALOG' && __dtmMatches(d, ':modal'); } catch (e) { return false; }
   }
   // A modal dialog that is shown and does not hold the element: a person answers it first.
   // A shown modal that does not hold the element and is in front of it: when the element is itself inside a shown
@@ -1525,11 +1551,11 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   // (/code-review on #1004: modal A under a modal B holding the element is not in front of it).
   function __dtmModalAgainst(el) {
     var all = document.querySelectorAll(__DTM_DIALOG), mine = false, i;
-    for (i = 0; i < all.length; i++) if (__dtmModal(all[i]) && __dtmShown(all[i]) && all[i].contains(el)) mine = true;
+    for (i = 0; i < all.length; i++) if (__dtmModal(all[i]) && __dtmShown(all[i]) && __dtmContains(all[i], el)) mine = true;
     var r = el.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
     for (i = 0; i < all.length; i++) {
-      if (!__dtmModal(all[i]) || !__dtmShown(all[i]) || all[i].contains(el)) continue;
-      if (!mine || (hit && all[i].contains(hit))) return all[i];
+      if (!__dtmModal(all[i]) || !__dtmShown(all[i]) || __dtmContains(all[i], el)) continue;
+      if (!mine || (hit && __dtmContains(all[i], hit))) return all[i];
     }
     return null;
   }
@@ -1560,32 +1586,32 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
   function __dtmLandsOn(el, hit) {
     if (!hit) return { ok: false, how: 'nothing' };
     if (hit === el) return { ok: true, how: 'self' };
-    if (el.contains(hit)) return { ok: true, how: 'inside' };
+    if (__dtmContains(el, hit)) return { ok: true, how: 'inside' };
     // An element inside a button or a link is pressed as that button or link, as Playwright retargets its target
     // ('button-link'): an icon with pointer-events: none inside a close button is pressed through the button, which
     // is where a person's press goes (/code-review on #1005: the old browser_click road clicked it so).
     // Only an element that is not itself a control (Playwright keeps a button, a link or a field as it is), and only
     // a hit with no other control or label between it and the host: a press on another button in the same card is
     // not a press on this one (/code-review on #1005, round 2).
-    var host = !el.matches(__DTM_INTERACTIVE) && el.parentElement && el.parentElement.closest ? el.parentElement.closest('a[href],button,[role=button],[role=link]') : null;
-    if (host && (hit === host || host.contains(hit))) {
+    var host = !__dtmMatches(el, __DTM_INTERACTIVE) && el.parentElement ? __dtmClosest(el.parentElement, 'a[href],button,[role=button],[role=link]') : null;
+    if (host && (hit === host || __dtmContains(host, hit))) {
       // A node that holds the element (a focusable wrapper inside the link) is the element's own way to the host, not
       // a control beside it (round 3).
-      for (var hn = hit; hn && hn !== host; hn = hn.parentElement) if (!hn.contains(el) && (hn.matches(__DTM_INTERACTIVE) || hn.tagName === 'LABEL')) return { ok: false, how: 'covered' };
+      for (var hn = hit; hn && hn !== host; hn = hn.parentElement) if (!__dtmContains(hn, el) && (__dtmMatches(hn, __DTM_INTERACTIVE) || hn.tagName === 'LABEL')) return { ok: false, how: 'covered' };
       return { ok: true, how: 'host' };
     }
-    var lab = hit.closest ? hit.closest('label') : null;
+    var lab = hit.nodeType === 1 ? __dtmClosest(hit, 'label') : null;
     if (lab) {
       if (lab.control === el) {
         // Interactive content inside the label (a "Terms" link in "I agree to the Terms") does not activate the
         // control; a press there follows the link (/code-review on #1004).
-        for (var m = hit; m && m !== lab; m = m.parentElement) if (m !== el && m.matches(__DTM_INTERACTIVE)) return { ok: false, how: 'covered' };
+        for (var m = hit; m && m !== lab; m = m.parentElement) if (m !== el && __dtmMatches(m, __DTM_INTERACTIVE)) return { ok: false, how: 'covered' };
         return { ok: true, how: 'own_label' };
       }
       if (lab.control) return { ok: false, how: 'other_label' };
     }
     // A hit that holds the element (its wrapper, with the element taking no pointer input) is not a skin of it.
-    if (hit.contains(el)) return { ok: false, how: 'container' };
+    if (__dtmContains(hit, el)) return { ok: false, how: 'container' };
     // A replacement: the element is hidden from people (aria-hidden, a 1-2px box, or fully transparent) and the hit
     // is a control in the element's own parent — Select2 hides the native <select> (aria-hidden, clipped) and draws
     // its combobox beside it. A person presses the widget they see; so does this (win2 on #1004, R12: discover
@@ -1596,7 +1622,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     // and nor is the widget's outer wrapper, which Select2 does not open on (win2). Not an id: Select2 gives an
     // id-less select a random token the select does not carry.
     var kin = __dtmSameKindControls(el);
-    for (var z = 0; z < kin.length; z++) if (kin[z] === hit || kin[z].contains(hit)) return { ok: true, how: 'replacement' };
+    for (var z = 0; z < kin.length; z++) if (kin[z] === hit || __dtmContains(kin[z], hit)) return { ok: true, how: 'replacement' };
     // A skin candidate: a layer drawn right over the element — its box inside the element's box grown by 24px or
     // half the element's size, whichever is more — in the element's parent or grandparent, and nothing from the
     // hit up to that wrapper has text, a name, an interactive role, or is a dialog or a label. The browser confirms
@@ -1606,10 +1632,10 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     var grow = Math.max(24, Math.max(er.width, er.height) / 2);
     var over = hr.left >= er.left - grow && hr.top >= er.top - grow && hr.right <= er.right + grow && hr.bottom <= er.bottom + grow;
     var wrap = el.parentElement, up = 0;
-    while (wrap && up < 1 && !wrap.contains(hit)) { wrap = wrap.parentElement; up++; }
-    if (over && wrap && wrap.contains(hit)) {
+    while (wrap && up < 1 && !__dtmContains(wrap, hit)) { wrap = wrap.parentElement; up++; }
+    if (over && wrap && __dtmContains(wrap, hit)) {
       for (var n = hit; n && n !== wrap; n = n.parentElement) {
-        if (__dtmName(n) !== '' || n.matches(__DTM_INTERACTIVE) || n.matches(__DTM_DIALOG) || n.tagName === 'LABEL') return { ok: false, how: 'covered' };
+        if (__dtmName(n) !== '' || __dtmMatches(n, __DTM_INTERACTIVE) || __dtmMatches(n, __DTM_DIALOG) || n.tagName === 'LABEL') return { ok: false, how: 'covered' };
       }
       return { ok: true, how: 'skin' };
     }
@@ -1634,14 +1660,14 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     // :disabled is ancestor-aware — a control inside <fieldset disabled> has
     // el.disabled === false but is functionally disabled (Codex Round 2 P2).
     let disabled;
-    try { disabled = el.matches(':disabled'); } catch (e) { disabled = !!el.disabled; }
+    try { disabled = __matches(el, ':disabled'); } catch (e) { disabled = !!el.disabled; }
     const enabled = !disabled && el.getAttribute('aria-disabled') !== 'true';
     let receivesEvents = false;
     const cx = r.left + r.width / 2;
     const cy = r.top + r.height / 2;
     if (cx >= 0 && cx < window.innerWidth && cy >= 0 && cy < window.innerHeight) {
       const hit = document.elementFromPoint(cx, cy);
-      receivesEvents = !!hit && (hit === el || el.contains(hit));
+      receivesEvents = !!hit && (hit === el || __contains(el, hit));
     }
     // A control a person presses through its own <label> (a 0x0 radio, an sr-only checkbox) is reached there, as
     // browser_click's press path finds it (internal #420: listed receivesEvents:false in an ambiguity list). Shown in
@@ -1712,7 +1738,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     const lb = el.getAttribute('aria-labelledby');
     if (lb) for (const id of lb.split(/\\s+/)) { const n = document.getElementById(id); if (n) add(__textWithoutFields(n)); }
     if (el.id) { try { for (const lab of document.querySelectorAll('label[for=' + JSON.stringify(el.id) + ']')) add(__textWithoutFields(lab)); } catch (e) {} }
-    const wrapLabel = el.closest && el.closest('label');
+    const wrapLabel = el.nodeType === 1 ? __closest(el, 'label') : null;
     if (wrapLabel) add(__textWithoutFields(wrapLabel));
     let prev = el.previousElementSibling;
     let hops = 0;

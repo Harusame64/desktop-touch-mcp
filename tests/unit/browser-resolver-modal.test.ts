@@ -218,7 +218,7 @@ describe("ADR-023 Phase 2 (PR-2a): buildPageLevelModalFactsJs — gather JS", ()
     const js = buildPageLevelModalFactsJs();
     expect(js).toContain(`querySelectorAll('[role="dialog"],[role="alertdialog"],[aria-modal="true"],dialog')`);
     expect(js).toContain("function hasBackdropFor(el)");
-    expect(js).toContain("el.matches(':modal')"); // native modal detection
+    expect(js).toContain("__matches(el, ':modal')"); // native modal detection, via the prototype's matches (#1019)
     expect(js).toContain("dialogCandidates: cands");
     expect(js).toContain("bodyScrollLock:");
     // structural only — no class-name heuristics (plan §5.1)

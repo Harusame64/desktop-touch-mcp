@@ -138,7 +138,7 @@ ${ELEMENT_NAME_JS}
   // label outside it is a name, not a value.
   function shownValue(el) {
     const ids=(el.getAttribute('aria-labelledby')||'').trim().split(/\\s+/).filter(Boolean);
-    return ids.map(function(id){const x=document.getElementById(id);return x&&el.contains(x)?textUnmasked(x):'';}).filter(Boolean).join(' ').replace(/\\s+/g,' ').slice(0,80);
+    return ids.map(function(id){const x=document.getElementById(id);return x&&__contains(el, x)?textUnmasked(x):'';}).filter(Boolean).join(' ').replace(/\\s+/g,' ').slice(0,80);
   }
   // Its text, leaving out any part the page masks (a descendant drawn as dots): the value is never read through a
   // raw textContent (PR 側 codex on #1009, P1).
@@ -170,7 +170,7 @@ ${ELEMENT_NAME_JS}
     if(axRole(el)!==null && insideCombobox(el)) continue;
     // The tree's controls join the list by their mark, past CSS_Q's :not([disabled]); a disabled one stays out as
     // before (PR 側 codex on #1009).
-    if(axRole(el)!==null) { let off=false; try { off=el.matches(':disabled'); } catch(e) {} if(off||el.getAttribute('aria-disabled')==='true') continue; }
+    if(axRole(el)!==null) { let off=false; try { off=__matches(el, ':disabled'); } catch(e) {} if(off||el.getAttribute('aria-disabled')==='true') continue; }
     const r=el.getBoundingClientRect();
     const inVP=r.top<window.innerHeight&&r.bottom>0&&r.left<window.innerWidth&&r.right>0;
     const type=elType(el);
