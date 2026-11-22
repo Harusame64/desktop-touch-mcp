@@ -718,9 +718,9 @@ export function buildFillActJs(
     // person does not see (hidden, no box, transparent) stands behind a widget: setting it changed Choices' select but
     // not what the widget shows (win2 on #1023), so it gets the widget's next steps.
     if (tag === 'SELECT') {
-      const sr = el.getBoundingClientRect(), scs = getComputedStyle(el);
-      const unseen = el.hidden || sr.width * sr.height < 4 || scs.opacity === '0' || scs.visibility === 'hidden';
-      kind = unseen ? 'widget' : 'select';
+      // Behind a widget only when one stands in for it (an opacity:0 select over a styled label is set as it is), and
+      // in the order the selector road's pick rule uses (/code-review on #1024).
+      kind = __standInFor(el) ? 'widget' : el.multiple ? 'multi' : 'select';
     }
     else if (hasRole('option') || hasRole('menuitem') || hasRole('menuitemradio') || hasRole('menuitemcheckbox')) kind = 'option';
     else if (tag === 'INPUT' && /^(checkbox|radio)$/.test(ty) || hasRole('checkbox') || hasRole('radio') || hasRole('switch')) kind = 'toggle';

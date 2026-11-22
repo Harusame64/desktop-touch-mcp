@@ -462,7 +462,7 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect((set.content[0] as { text: string }).text).toMatch(/"ok":true/);
     expect(await evaluateInTab("document.getElementById('ns').value", null, PORT)).toBe("m");
     // A select a person does not see stands behind a widget (Choices): the widget's next steps, not the select's.
-    await page(`<label for="hs">Flavour</label><select id="hs" style="position:absolute;opacity:0;width:200px"><option value="v">Vanilla</option></select>`);
+    await page(`<label for="hs">Flavour</label><select id="hs" style="position:absolute;opacity:0;width:200px"><option value="v">Vanilla</option></select><span role="combobox" tabindex="0" style="display:inline-block;margin-left:220px">Vanilla</span>`);
     expect((await fill({ by: "ariaLabel", pattern: "Flavour" })).suggest?.[0]).toMatch(/^A choice widget/);
     // A button that opens a list (Headless UI / MUI: aria-haspopup, no role attribute): a choice widget.
     await page(`<button aria-haspopup="listbox" aria-label="Country" style="margin:40px">Japan</button>`);
@@ -480,11 +480,71 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     await page(`<div role="textbox" tabindex="0" aria-label="Notes" style="margin:40px;width:200px;height:40px;border:1px solid">x</div>`);
     expect((await fill({ by: "ariaLabel", pattern: "Notes" })).suggest?.[0]).toMatch(/^It is named a text field/);
     await page(`<select multiple aria-label="Fruits" style="margin:40px"><option value="b">Banana</option><option value="c">Cherry</option></select>`);
-    expect((await fill({ by: "text", pattern: "Banana" } as never)).suggest?.[0]).toMatch(/^A native <select>/);
+    expect((await fill({ by: "text", pattern: "Banana" } as never)).suggest?.[0]).toMatch(/^A multiple-choice <select>/);
     // Anything else: a neutral next step, no role named.
     await page(`<button style="margin:40px">Send</button>`);
     expect((await fill({ by: "ariaLabel", pattern: "Send" })).suggest?.[0]).toMatch(/^The match takes no text/);
     expect(await marks()).toBe(0);
+  });
+
+  it("sets a native select as a person picks an option, and leaves it alone otherwise (internal #420, /code-review on #1024)", async () => {
+    // A value no option has used to clear the choice (selectedIndex -1) and fire change (measured on #1023).
+    await page(`<input id="em" aria-label="Email" style="margin:40px"><select id="sz" onchange="window.ch=(window.ch||0)+1" style="margin:40px"><option value="s">Small</option><option value="m" selected>Medium</option><option value="l" label="Large">L size</option><option value="d1">Same</option><option value="d2">Same</option><option value="x" disabled>Sold out</option><option value="2">1</option><option value="1">One</option></select>
+      <select id="mu" multiple style="margin:40px"><option value="a" selected>A</option><option value="b" selected>B</option></select>
+      <select id="hid" style="position:absolute;opacity:0"><option value="v">Vanilla</option></select>`);
+    const set = async (sel: string, value: string) => JSON.parse(((await browserFillInputHandler({ selector: sel, value, port: PORT, includeContext: false } as never)).content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { ok?: boolean; code?: string; chose?: string; actual?: string };
+    const state = async () => evaluateInTab("JSON.stringify([document.getElementById('sz').value, window.ch||0, document.activeElement && document.activeElement.id])", null, PORT);
+    expect((await set("#sz", "s")).ok).toBe(true);
+    expect(await state()).toBe(JSON.stringify(["s", 1, "sz"]));
+    // By shown text, the label attribute when there is one; actual is the option's value, said as chose.
+    expect(await set("#sz", "Large")).toMatchObject({ ok: true, actual: "l", chose: "l" });
+    expect(await set("#sz", "Medium")).toMatchObject({ ok: true, chose: "m" });
+    expect(await state()).toBe(JSON.stringify(["m", 3, "sz"]));
+    // A re-pick of the chosen option fires nothing.
+    expect((await set("#sz", "m")).ok).toBe(true);
+    expect(await state()).toBe(JSON.stringify(["m", 3, "sz"]));
+    // Refused, untouched, and focus left where it was: no option, repeated text, disabled, value one and text another.
+    await evaluateInTab("document.getElementById('em').focus();true", null, PORT);
+    for (const [v, code] of [["Huge", "InvalidArgs"], ["Same", "InvalidArgs"], ["Sold out", "BrowserNoActionableTarget"], ["1", "InvalidArgs"]] as const) {
+      expect((await set("#sz", v)).code).toBe(code);
+    }
+    expect(await state()).toBe(JSON.stringify(["m", 3, "em"]));
+    // A multiple-choice select keeps its choices.
+    expect((await set("#mu", "a")).code).toBe("BrowserNoActionableTarget");
+    expect(await evaluateInTab("Array.from(document.getElementById('mu').selectedOptions).map(function(o){return o.value}).join()", null, PORT)).toBe("a,b");
+    // An opacity:0 select with no widget in its place (over a styled label) is set as it is (/code-review on #1024).
+    expect((await set("#hid", "v")).ok).toBe(true);
+    // Refused untouched: a select a widget stands in for (Choices holds it), one in a disabled fieldset, a hidden option.
+    await page(`<div role="combobox" tabindex="0" style="margin:40px"><select id="inw" style="opacity:0"><option value="a">A</option><option value="b">B</option></select><span>A</span></div>
+      <fieldset disabled><select id="fs"><option value="a">A</option><option value="b">B</option></select></fieldset>
+      <select id="ho"><option value="" hidden>Choose…</option><option value="a">A</option></select>`);
+    expect((await set("#inw", "b")).code).toBe("BrowserNoActionableTarget");
+    expect((await set("#fs", "b")).code).toBe("BrowserNoActionableTarget");
+    expect((await set("#ho", "Choose…")).code).toBe("InvalidArgs");
+    // A value whose own option shows it, beside another option showing it: ambiguous (codex on #1024).
+    await evaluateInTab(`document.body.insertAdjacentHTML('beforeend', '<select id="vs" style="margin:40px"><option value="x">X</option><option value="Same">Same</option><option value="other">Same</option></select>');true`, null, PORT);
+    expect((await set("#vs", "Same")).code).toBe("InvalidArgs");
+    expect(await evaluateInTab("document.getElementById('vs').value", null, PORT)).toBe("x");
+    // A shown select followed by an unrelated widget is its own control (codex on #1024).
+    await evaluateInTab(`document.body.insertAdjacentHTML('beforeend', '<div><select id="cty" style="margin:40px"><option value="jp">Japan</option><option value="fr">France</option></select><span role="combobox" tabindex="0">State</span></div>');true`, null, PORT);
+    expect((await set("#cty", "fr")).ok).toBe(true);
+    expect(await evaluateInTab("[document.getElementById('inw').value, document.getElementById('fs').value].join()", null, PORT)).toBe("a,a");
+    // A change handler that drops the placeholder: the kept option, not an index read after it, decides delivery.
+    await page(`<select id="ph" style="margin:40px"><option value="">Choose…</option><option value="s">Small</option><option value="m">Medium</option></select>`);
+    await evaluateInTab(`document.getElementById('ph').addEventListener('change', function(e){ var o=e.target.querySelector('option[value=""]'); if (o) o.remove(); });true`, null, PORT);
+    expect(await set("#ph", "s")).toMatchObject({ ok: true, actual: "s" });
+    // A page that sets the choice back: not kept, said so, not called a controlled-input transform.
+    await page(`<select id="rv" style="margin:40px"><option value="m">Medium</option><option value="l">Large</option></select>`);
+    await evaluateInTab(`document.getElementById('rv').addEventListener('change', function(e){ e.target.value='m'; });true`, null, PORT);
+    const rv = JSON.parse(((await browserFillInputHandler({ selector: "#rv", value: "Large", port: PORT, includeContext: false } as never)).content[0] as { text: string }).text.replace(/^[^{]*/, "")) as Record<string, unknown>;
+    expect(JSON.stringify(rv)).toContain("value_not_retained");
+    expect(JSON.stringify(rv)).toContain('"chose":"l"');
+    // A select the page masks: chosen, and its value not echoed.
+    await page(`<select id="pin" style="-webkit-text-security:disc;margin:40px"><option value="k1">Key one</option><option value="k2">Key two</option></select>`);
+    const m = await set("#pin", "Key two");
+    expect(m.ok).toBe(true);
+    expect(JSON.stringify(m)).not.toContain("k2");
+    expect(await evaluateInTab("document.getElementById('pin').value", null, PORT)).toBe("k2");
   });
 
   it("presses Choices' select as it is: a listbox that opens a popup is a control (win2 on #1008, W6)", async () => {
