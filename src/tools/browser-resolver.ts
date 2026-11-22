@@ -1082,7 +1082,19 @@ export function decideActionTarget(
     }
   }
 
-  if (distinct.size === 1) {
+  // A match the strict centre test refuses but a press on its own label reaches (a 0x0 radio, an sr-only checkbox) is
+  // still a choice a person sees. With one other match passing the test, pressing that one is a guess (internal #420:
+  // by:'role' radio pressed the plain radio beside two label-pressed ones, win2 on #1018). Only on the strict pass;
+  // the loose pass counts them already.
+  let viaLabelChoices = 0;
+  if (requireReceivesEvents) {
+    for (const r of resolved) {
+      const n = r.clickable;
+      if (!r.actionable && n && n.visible && n.enabled && n.roleMatch !== false && n.reachedViaLabel) viaLabelChoices++;
+    }
+  }
+
+  if (distinct.size === 1 && viaLabelChoices === 0) {
     const r = [...distinct.values()][0];
     return { kind: "resolved", target: { index: r.f.index, rect: r.clickable!.rect, climbDepth: r.depth } };
   }
