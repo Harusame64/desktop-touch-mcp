@@ -10,7 +10,7 @@ import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chro
 import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll, markAxMatches, clearAxMarks, getScrollAncestorsCdp } from "../../src/engine/cdp-bridge.js";
 import { resolveBrowserActionTarget, type ResolveActionOutcome } from "../../src/tools/browser-resolver.js";
-import { browserClickElementHandler, readPressLanding, browserFillInputHandler, browserSearchHandler } from "../../src/tools/browser.js";
+import { browserClickElementHandler, readPressLanding, browserFillInputHandler } from "../../src/tools/browser.js";
 import { buildPressPointJs, buildCoverJs, buildSaveScrollJs } from "../../src/tools/press-landing.js";
 
 const PORT = 9238;
@@ -451,16 +451,41 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     const w = await fill({ by: "ariaLabel", pattern: "Fruit" });
     expect(w.code).toBe("BrowserNoActionableTarget");
     expect(w.suggest?.[0]).toMatch(/^A choice widget/);
-    // A native <select>: one of its options. The hint's road works as written: its selector from browser_search, then
-    // browser_fill({selector, value: an option's value}) (/code-review on #1023: the first hint denied this road).
+    // A native <select> found by its name is set in one call, by the selector road's pick rule (the user's decision
+    // after #1024): by an option's value, or by the shown text of one option; a value no option has is refused untouched.
     await page(`<label for="ns">Size</label><select id="ns" style="margin:40px"><option value="s">Small</option><option value="m">Medium</option></select>`);
-    const n = await fill({ by: "ariaLabel", pattern: "Size" });
-    expect(n.code).toBe("BrowserNoActionableTarget");
-    expect(n.suggest?.[0]).toMatch(/^A native <select>/);
-    const found = JSON.parse(((await browserSearchHandler({ by: "ariaLabel", pattern: "Size", maxResults: 5, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive: false, port: PORT } as never)).content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { results: Array<{ selector: string }> };
-    const set = await browserFillInputHandler({ selector: found.results[0].selector, value: "m", port: PORT, includeContext: false } as never);
-    expect((set.content[0] as { text: string }).text).toMatch(/"ok":true/);
+    const byAxis = async (value: string) => JSON.parse(((await browserFillInputHandler({ by: "ariaLabel", pattern: "Size", value, port: PORT, includeContext: false } as never)).content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { ok?: boolean; code?: string; chose?: string };
+    expect((await byAxis("m")).ok).toBe(true);
     expect(await evaluateInTab("document.getElementById('ns').value", null, PORT)).toBe("m");
+    expect(await byAxis("Small")).toMatchObject({ ok: true, chose: "s" });
+    expect((await byAxis("Large")).code).toBe("InvalidArgs");
+    expect(await evaluateInTab("document.getElementById('ns').value", null, PORT)).toBe("s");
+    // As the selector road (/code-review on #1025): a re-pick fires nothing; a refusal leaves focus where it was; a
+    // focus handler that rebuilds the list does not move the choice to another option; a mask put on at focus holds.
+    await evaluateInTab(`(function(){var s=document.getElementById('ns');window.ch=0;s.addEventListener('change',function(){window.ch++});document.body.insertAdjacentHTML('beforeend','<input id="other" style="margin:40px">');document.getElementById('other').focus();return true})()`, null, PORT);
+    expect((await byAxis("Huge")).code).toBe("InvalidArgs");
+    expect(await evaluateInTab("JSON.stringify([document.activeElement.id, window.ch])", null, PORT)).toBe(JSON.stringify(["other", 0]));
+    expect((await byAxis("s")).ok).toBe(true);
+    expect(await evaluateInTab("window.ch", null, PORT)).toBe(0);
+    await page(`<label for="rb">Tier</label><select id="rb" style="margin:40px"><option value="b">Bronze</option><option value="g">Gold</option></select>`);
+    // Headless Chrome fires no focus event (the page has no focus), so what a focus handler does is put in focus() itself.
+    await evaluateInTab(`(function(){var s=document.getElementById('rb');s.focus=function(){HTMLElement.prototype.focus.call(this);if(!this.querySelector('option[value=""]'))this.insertAdjacentHTML('afterbegin','<option value="">Choose…</option>');};return true})()`, null, PORT);
+    const rb = JSON.parse(((await browserFillInputHandler({ by: "ariaLabel", pattern: "Tier", value: "g", port: PORT, includeContext: false } as never)).content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { ok?: boolean };
+    expect(rb.ok).toBe(true);
+    expect(await evaluateInTab("JSON.stringify([document.getElementById('rb').value, document.getElementById('rb').options.length])", null, PORT)).toBe(JSON.stringify(["g", 3]));
+    // A focus that changes the asked-for option's value: the pick again after focus no longer finds it, refused unset
+    // (codex on #1025).
+    await page(`<label for="cv">Plan</label><select id="cv" style="margin:40px"><option value="a">Alpha</option><option value="c">Charlie</option></select>`);
+    await evaluateInTab(`(function(){var s=document.getElementById('cv');s.focus=function(){HTMLElement.prototype.focus.call(this);this.options[1].value='d';};return true})()`, null, PORT);
+    const cvr = JSON.parse(((await browserFillInputHandler({ by: "ariaLabel", pattern: "Plan", value: "c", port: PORT, includeContext: false } as never)).content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { ok?: boolean; code?: string };
+    expect(cvr.code).toBe("InvalidArgs");
+    expect(await evaluateInTab("document.getElementById('cv').value", null, PORT)).toBe("a");
+    await page(`<label for="pm">PIN</label><select id="pm" style="margin:40px"><option value="k1">Key one</option><option value="k2">Key two</option></select>`);
+    // Masked at focus, and replaced by its change handler: the detached element reads unmasked after the events, so only
+    // the read right after focus withholds the value (/code-review on #1025).
+    await evaluateInTab(`(function(){var s=document.getElementById('pm');s.focus=function(){HTMLElement.prototype.focus.call(this);this.style.setProperty('-webkit-text-security','disc');};s.addEventListener('change',function(e){var n=e.target.cloneNode(true);n.id='pm2';e.target.replaceWith(n);});return true})()`, null, PORT);
+    const pm = (await browserFillInputHandler({ by: "ariaLabel", pattern: "PIN", value: "Key two", port: PORT, includeContext: false } as never)).content[0] as { text: string };
+    expect(pm.text).not.toContain("k2");
     // A select a person does not see stands behind a widget (Choices): the widget's next steps, not the select's.
     await page(`<label for="hs">Flavour</label><select id="hs" style="position:absolute;opacity:0;width:200px"><option value="v">Vanilla</option></select><span role="combobox" tabindex="0" style="display:inline-block;margin-left:220px">Vanilla</span>`);
     expect((await fill({ by: "ariaLabel", pattern: "Flavour" })).suggest?.[0]).toMatch(/^A choice widget/);
