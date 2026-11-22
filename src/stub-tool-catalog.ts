@@ -55,7 +55,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "type": "string"
         },
         "scope": {
-          "description": "Optional CSS selector to limit the `by`-axis search scope (disambiguation).",
+          "description": "Optional CSS selector to limit the `by`-axis search to every element it matches (disambiguation).",
           "type": "string"
         },
         "caseSensitive": {
@@ -223,7 +223,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "type": "string"
         },
         "scope": {
-          "description": "Optional CSS selector to limit the `by`-axis search scope (disambiguation).",
+          "description": "Optional CSS selector to limit the `by`-axis search to every element it matches (disambiguation).",
           "type": "string"
         },
         "caseSensitive": {
@@ -481,12 +481,12 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
   },
   {
     "name": "browser_overview",
-    "description": "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text (an input's name — never what is typed in it), and viewport status — use before browser_click to discover selectors (each matches its element alone), and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to a CSS subsection (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Also returns a modal: section — whether a true modal dialog is blocking the page (isModal + blocker {name, role} + the signals it was judged on); it is ALWAYS present (isModal:false when no modal), and a navigation drawer is NOT reported as a modal (only an aria-modal / alertdialog / native showModal dialog, or a backdrop-backed dialog that locks the page, is treated as modal). Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. An input's text is its name — from aria-labelledby, aria-label, its <label>, title, then its hint text — never what is typed in it: read values with browser_form, which withholds the value of a field the page masks (a password). Typed errors: code:'BrowserNotConnected' (CDP not attached — call browser_open or browser_open({launch:{}})). Note: a non-matching scope CSS selector silently falls back to the full document (does not raise an error) — verify the selector via browser_eval if scoped enumeration is required.",
+    "description": "List all interactive elements (links, buttons, inputs, ARIA controls) on the current page with CSS selectors, visible text (an input's name — never what is typed in it), and viewport status — use before browser_click to discover selectors (each matches its element alone), and prefer this over screenshot when verifying button/toggle state after submission (no image tokens, structured output). scope limits to every element a CSS selector matches (e.g. '.sidebar'). Returns state (checked/pressed/selected/expanded) for ARIA custom controls. Also returns a modal: section — whether a true modal dialog is blocking the page (isModal + blocker {name, role} + the signals it was judged on); it is ALWAYS present (isModal:false when no modal), and a navigation drawer is NOT reported as a modal (only an aria-modal / alertdialog / native showModal dialog, or a backdrop-backed dialog that locks the page, is treated as modal). Caveats: Selectors are CDP-generated snapshots — re-call after page navigates or re-renders. An input's text is its name — from aria-labelledby, aria-label, its <label>, title, then its hint text — never what is typed in it: read values with browser_form, which withholds the value of a field the page masks (a password). Typed errors: code:'BrowserNotConnected' (CDP not attached — call browser_open or browser_open({launch:{}})), code:'ScopeNotFound' (scope matched no element).",
     "inputSchema": {
       "type": "object",
       "properties": {
         "scope": {
-          "description": "CSS selector to limit the search scope (e.g. '.s-main-slot', '#nav-search-form'). Omit to scan the full page.",
+          "description": "CSS selector to limit the search to every element it matches (e.g. '.s-main-slot', '#nav-search-form'). Omit to scan the full page.",
           "type": "string"
         },
         "types": {
@@ -567,7 +567,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "description": "Pattern to match against the chosen axis."
         },
         "scope": {
-          "description": "CSS selector to limit the search scope.",
+          "description": "CSS selector to limit the search to every element it matches.",
           "type": "string"
         },
         "maxResults": {

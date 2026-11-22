@@ -13,6 +13,7 @@ import WebSocket from "ws";
 import { getCdpPort } from "../utils/desktop-config.js";
 import { defaultPageTab } from "./cdp-default-tab.js";
 import { jsLiteral } from "../utils/js-literal.js";
+import { SCOPE_ROOTS_JS } from "../tools/_scope-roots-js.js";
 
 export const DEFAULT_CDP_PORT = 9222;
 // Exported so callers that surface a CDP-timeout-derived hint (e.g.
@@ -688,21 +689,50 @@ export async function markAxMatches(
       ignored?: boolean; role?: { value?: string }; name?: { value?: string }; backendDOMNodeId?: number;
       properties?: Array<{ name?: string; value?: { value?: unknown } }>;
     };
-    // The root (or the scope) by an object id, so no DOM domain is enabled on the shared session (/code-review on
-    // #1008), as inspectHitAtPoint does.
-    const rootObj = (await s.send("Runtime.evaluate", {
-      expression: opts.scope ? `document.querySelector(${JSON.stringify(opts.scope)})` : "document",
+    // The root (or each element the scope matches, internal #420) by an object id, so no DOM domain is enabled on
+    // the shared session (/code-review on #1008), as inspectHitAtPoint does.
+    const rootsObj = (await s.send("Runtime.evaluate", {
+      expression: `(function() {${SCOPE_ROOTS_JS} return __scopeRoots(${opts.scope ? JSON.stringify(opts.scope) : "null"}); })()`,
       returnByValue: false,
       objectGroup: group,
     })) as { result?: { objectId?: string } };
-    const from = rootObj.result?.objectId;
-    if (!from) return null;
+    if (!rootsObj.result?.objectId) return null;
+    const props = (await s.send("Runtime.getProperties", { objectId: rootsObj.result.objectId, ownProperties: true })) as {
+      result?: Array<{ name: string; value?: { objectId?: string } }>;
+    };
+    const roots = (props.result ?? [])
+      .filter((p) => /^\d+$/.test(p.name) && p.value?.objectId)
+      .sort((a, b) => Number(a.name) - Number(b.name))
+      .map((p) => p.value!.objectId!);
+    if (roots.length === 0) return null;
+    // The tree under each root, asked together (a class scope can match hundreds), kept in the roots' order: the roots
+    // are disjoint and in document order, so the nodes are too. A root the tree cannot answer for is left out, not the
+    // others (/code-review on this change); with none answered, the tree could not be read. A node that aria-owns
+    // places under two roots is kept once.
+    const queryTree = async (role?: string): Promise<AxNode[]> => {
+      const per = await Promise.all(roots.map((objectId) =>
+        (s.send("Accessibility.queryAXTree", role === undefined ? { objectId } : { objectId, role }) as Promise<{ nodes: AxNode[] }>)
+          .then((r) => r.nodes, () => null)));
+      if (per.every((n) => n === null)) throw new Error("the tree could not be read under any root of the scope");
+      const seen = new Set<number>();
+      const out: AxNode[] = [];
+      for (const nodes of per) {
+        for (const n of nodes ?? []) {
+          if (n.backendDOMNodeId !== undefined) {
+            if (seen.has(n.backendDOMNodeId)) continue;
+            seen.add(n.backendDOMNodeId);
+          }
+          out.push(n);
+        }
+      }
+      return out;
+    };
     const scored: Array<{ backend: number; score: number; control: boolean; role: string }> = [];
     if (opts.by === "controls") {
       // desktop_discover (internal #420, PR-C2b): every control the tree shows that is not a link or a button (the
       // page-side list finds those by their tags and roles) — a checkbox drawn by a skin, Select2's combobox, Choices'
       // popup listbox, a role=checkbox div — named or not.
-      const nodes = ((await s.send("Accessibility.queryAXTree", { objectId: from })) as { nodes: AxNode[] }).nodes;
+      const nodes = await queryTree();
       for (const n of nodes) {
         const r = n.role?.value ?? "";
         // Links, buttons and native fields are left to the page-side list, which finds them by their tags; a div the
@@ -713,14 +743,14 @@ export async function markAxMatches(
       }
     } else if (opts.by === "role") {
       const role = opts.caseSensitive ? opts.pattern : opts.pattern.toLowerCase();
-      const nodes = ((await s.send("Accessibility.queryAXTree", { objectId: from, role })) as { nodes: AxNode[] }).nodes;
+      const nodes = await queryTree(role);
       for (const n of nodes) {
         const r = n.role?.value ?? "";
         if (n.ignored || !n.backendDOMNodeId || AX_TEXT_ROLES.has(r)) continue;
         scored.push({ backend: n.backendDOMNodeId, score: 0.85, control: axIsControl(r, n), role: r });
       }
     } else {
-      const nodes = ((await s.send("Accessibility.queryAXTree", { objectId: from })) as { nodes: AxNode[] }).nodes;
+      const nodes = await queryTree();
       const needle = opts.caseSensitive ? opts.pattern : opts.pattern.toLowerCase();
       const exact: typeof scored = [];
       const partial: typeof scored = [];
@@ -811,8 +841,9 @@ export async function markAxMatches(
  */
 function widgetsForLabelledSelectsJs(nonce: string, pattern: string, caseSensitive: boolean, scope: string | null): string {
   return `(function() {
-  var root = ${scope === null ? "document" : `document.querySelector(${JSON.stringify(scope)})`};
-  if (!root) return 0;
+${SCOPE_ROOTS_JS}
+  var roots = __scopeRoots(${scope === null ? "null" : JSON.stringify(scope)});
+  if (roots.length === 0) return 0;
   var cs = ${JSON.stringify(caseSensitive)}, needle = cs ? ${JSON.stringify(pattern)} : ${JSON.stringify(pattern.toLowerCase())};
   var nonce = ${JSON.stringify(nonce)}, n = 0;
   // Kept from people as Select2 keeps its select: out of the tab order and the tree. A select merely hidden lends its
@@ -851,7 +882,7 @@ function widgetsForLabelledSelectsJs(nonce: string, pattern: string, caseSensiti
     if (!t.trim() && sel.labels) t = Array.prototype.map.call(sel.labels, words).join(' ');
     return t.trim().replace(/\\s+/g, ' ');
   }
-  var sels = root.querySelectorAll('select');
+  var sels = __qsaIn(roots, 'select');
   for (var i = 0; i < sels.length; i++) {
     var sel = sels[i];
     var name = nameOf(sel);

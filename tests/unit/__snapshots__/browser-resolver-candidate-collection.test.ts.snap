@@ -3,8 +3,35 @@
 exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extraction > emits the full IIFE for a representative by:text + scope query (snapshot) 1`] = `
 "
 (function() {
-  const root = document.querySelector("#checkout");
-  if (!root) return { __error: "ScopeNotFound" };
+
+  function __scopeRoots(sel) {
+    if (sel === null) return [document];
+    const docQsa = typeof Document !== 'undefined' ? Document.prototype.querySelectorAll : document.querySelectorAll;
+    const found = Array.prototype.slice.call(docQsa.call(document, sel));
+    const inSet = new Set(found);
+    const parentGet = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentNode').get : null;
+    const parentOf = function(n) { return parentGet ? parentGet.call(n) : n.parentElement; };
+    return found.filter(function(el) {
+      for (let a = parentOf(el); a; a = parentOf(a)) if (inSet.has(a)) return false;
+      return true;
+    });
+  }
+  function __qsaIn(roots, q) {
+    const out = [];
+    for (let i = 0; i < roots.length; i++) {
+      const r = roots[i];
+      const qsa = r === document
+        ? (typeof Document !== 'undefined' ? Document.prototype.querySelectorAll : r.querySelectorAll)
+        : (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : r.querySelectorAll);
+      const list = qsa.call(r, q);
+      for (let j = 0; j < list.length; j++) out.push(list[j]);
+    }
+    return out;
+  }
+
+  // Every element the scope matches, not only the first (internal #420, win2 on #1022: "#s1, #s2" searched #s1 alone).
+  const roots = __scopeRoots("#checkout");
+  if (roots.length === 0) return { __error: "ScopeNotFound" };
 
   const by = "text";
   const pat = "Submit";
@@ -318,14 +345,14 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
     if (!pushed.has(el)) { candidates.push(el); pushed.add(el); }
   }
 
-  const all = root.querySelectorAll('*');
+  const all = __qsaIn(roots, '*');
   let candidates = [];
   // Text the page never draws (DRAWS_NOTHING_JS in _element-name-js.ts): the text axes leave it out, visibleOnly or not
   // (win2 on #1011: by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is
   // hidden text, which visibleOnly decides. A search scoped into one of them (scope:'head') is answered as asked.
   function notDrawnText(el) {
     for (let a = __closest(el, __NOT_TEXT); a; a = __parent(a) ? __closest(__parent(a), __NOT_TEXT) : null) {
-      if (a === root || __contains(a, root)) return false;
+      if (roots.some(function(r) { return a === r || __contains(a, r); })) return false;
       if (__drawsNothing(a, true)) return true;
     }
     return false;
@@ -334,7 +361,7 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
   if (axMark !== null) {
     // internal #420 — by:'role' / by:'ariaLabel' from the browser's accessibility tree, marked before this gather.
     // First, so equal scores keep the tree's document order (a result's place is what results[0] means).
-    const marked = root.querySelectorAll('[data-dtm-ax]');
+    const marked = __qsaIn(roots, '[data-dtm-ax]');
     for (let i = 0; i < marked.length; i++) {
       const ax = axOf(marked[i]);
       if (ax) record(marked[i], ax.score, by);
@@ -348,7 +375,7 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
   if (axMark !== null && axAlone) {
     // the tree's answer alone
   } else if (by === 'selector') {
-    const selectorMatches = Array.from(root.querySelectorAll(pat));
+    const selectorMatches = __qsaIn(roots, pat);
     for (let i = 0; i < selectorMatches.length; i++) {
       if (overBudget(i)) { aborted = true; break; }
       record(selectorMatches[i], 1.0, 'selector');
@@ -391,9 +418,9 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
       if (cmp === needle) record(el, 0.75, 'role');
     }
     // Implicit roles — score slightly higher because they're guaranteed by tag.
-    if (!aborted && needle === 'button')  for (const el of root.querySelectorAll('button')) record(el, 0.85, 'roleImplicit');
-    if (!aborted && needle === 'link')    for (const el of root.querySelectorAll('a[href]')) record(el, 0.85, 'roleImplicit');
-    if (!aborted && needle === 'heading') for (const el of root.querySelectorAll('h1,h2,h3,h4,h5,h6')) record(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'button')  for (const el of __qsaIn(roots, 'button')) record(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'link')    for (const el of __qsaIn(roots, 'a[href]')) record(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'heading') for (const el of __qsaIn(roots, 'h1,h2,h3,h4,h5,h6')) record(el, 0.85, 'roleImplicit');
   } else if (by === 'ariaLabel') {
     const needle = cs ? pat : pat.toLowerCase();
     let i = 0;
@@ -457,8 +484,35 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
 exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snapshot) > emits the full fact-gather IIFE for a representative by:text query (snapshot) 1`] = `
 "
 (function() {
-  const root = document.querySelector("#app");
-  if (!root) return { __error: "ScopeNotFound" };
+
+  function __scopeRoots(sel) {
+    if (sel === null) return [document];
+    const docQsa = typeof Document !== 'undefined' ? Document.prototype.querySelectorAll : document.querySelectorAll;
+    const found = Array.prototype.slice.call(docQsa.call(document, sel));
+    const inSet = new Set(found);
+    const parentGet = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentNode').get : null;
+    const parentOf = function(n) { return parentGet ? parentGet.call(n) : n.parentElement; };
+    return found.filter(function(el) {
+      for (let a = parentOf(el); a; a = parentOf(a)) if (inSet.has(a)) return false;
+      return true;
+    });
+  }
+  function __qsaIn(roots, q) {
+    const out = [];
+    for (let i = 0; i < roots.length; i++) {
+      const r = roots[i];
+      const qsa = r === document
+        ? (typeof Document !== 'undefined' ? Document.prototype.querySelectorAll : r.querySelectorAll)
+        : (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : r.querySelectorAll);
+      const list = qsa.call(r, q);
+      for (let j = 0; j < list.length; j++) out.push(list[j]);
+    }
+    return out;
+  }
+
+  // Every element the scope matches, not only the first (internal #420, win2 on #1022: "#s1, #s2" searched #s1 alone).
+  const roots = __scopeRoots("#app");
+  if (roots.length === 0) return { __error: "ScopeNotFound" };
 
   const by = "text";
   const pat = "Save";
@@ -772,14 +826,14 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
     if (!pushed.has(el)) { candidates.push(el); pushed.add(el); }
   }
 
-  const all = root.querySelectorAll('*');
+  const all = __qsaIn(roots, '*');
   let candidates = [];
   // Text the page never draws (DRAWS_NOTHING_JS in _element-name-js.ts): the text axes leave it out, visibleOnly or not
   // (win2 on #1011: by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is
   // hidden text, which visibleOnly decides. A search scoped into one of them (scope:'head') is answered as asked.
   function notDrawnText(el) {
     for (let a = __closest(el, __NOT_TEXT); a; a = __parent(a) ? __closest(__parent(a), __NOT_TEXT) : null) {
-      if (a === root || __contains(a, root)) return false;
+      if (roots.some(function(r) { return a === r || __contains(a, r); })) return false;
       if (__drawsNothing(a, true)) return true;
     }
     return false;
@@ -788,7 +842,7 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   if (axMark !== null) {
     // internal #420 — by:'role' / by:'ariaLabel' from the browser's accessibility tree, marked before this gather.
     // First, so equal scores keep the tree's document order (a result's place is what results[0] means).
-    const marked = root.querySelectorAll('[data-dtm-ax]');
+    const marked = __qsaIn(roots, '[data-dtm-ax]');
     for (let i = 0; i < marked.length; i++) {
       const ax = axOf(marked[i]);
       if (ax) record(marked[i], ax.score, by);
@@ -802,7 +856,7 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   if (axMark !== null && axAlone) {
     // the tree's answer alone
   } else if (by === 'selector') {
-    const selectorMatches = Array.from(root.querySelectorAll(pat));
+    const selectorMatches = __qsaIn(roots, pat);
     for (let i = 0; i < selectorMatches.length; i++) {
       if (overBudget(i)) { aborted = true; break; }
       record(selectorMatches[i], 1.0, 'selector');
@@ -845,9 +899,9 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
       if (cmp === needle) record(el, 0.75, 'role');
     }
     // Implicit roles — score slightly higher because they're guaranteed by tag.
-    if (!aborted && needle === 'button')  for (const el of root.querySelectorAll('button')) record(el, 0.85, 'roleImplicit');
-    if (!aborted && needle === 'link')    for (const el of root.querySelectorAll('a[href]')) record(el, 0.85, 'roleImplicit');
-    if (!aborted && needle === 'heading') for (const el of root.querySelectorAll('h1,h2,h3,h4,h5,h6')) record(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'button')  for (const el of __qsaIn(roots, 'button')) record(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'link')    for (const el of __qsaIn(roots, 'a[href]')) record(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'heading') for (const el of __qsaIn(roots, 'h1,h2,h3,h4,h5,h6')) record(el, 0.85, 'roleImplicit');
   } else if (by === 'ariaLabel') {
     const needle = cs ? pat : pat.toLowerCase();
     let i = 0;
@@ -1479,8 +1533,35 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
 exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > emits the full fill-act IIFE for a representative by:ariaLabel target (snapshot) 1`] = `
 "
 (function() {
-  const root = document;
-  if (!root) return { __error: "ScopeNotFound" };
+
+  function __scopeRoots(sel) {
+    if (sel === null) return [document];
+    const docQsa = typeof Document !== 'undefined' ? Document.prototype.querySelectorAll : document.querySelectorAll;
+    const found = Array.prototype.slice.call(docQsa.call(document, sel));
+    const inSet = new Set(found);
+    const parentGet = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentNode').get : null;
+    const parentOf = function(n) { return parentGet ? parentGet.call(n) : n.parentElement; };
+    return found.filter(function(el) {
+      for (let a = parentOf(el); a; a = parentOf(a)) if (inSet.has(a)) return false;
+      return true;
+    });
+  }
+  function __qsaIn(roots, q) {
+    const out = [];
+    for (let i = 0; i < roots.length; i++) {
+      const r = roots[i];
+      const qsa = r === document
+        ? (typeof Document !== 'undefined' ? Document.prototype.querySelectorAll : r.querySelectorAll)
+        : (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : r.querySelectorAll);
+      const list = qsa.call(r, q);
+      for (let j = 0; j < list.length; j++) out.push(list[j]);
+    }
+    return out;
+  }
+
+  // Every element the scope matches, not only the first (internal #420, win2 on #1022: "#s1, #s2" searched #s1 alone).
+  const roots = __scopeRoots(null);
+  if (roots.length === 0) return { __error: "ScopeNotFound" };
 
   const by = "ariaLabel";
   const pat = "Email address";
@@ -1794,14 +1875,14 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
     if (!pushed.has(el)) { candidates.push(el); pushed.add(el); }
   }
 
-  const all = root.querySelectorAll('*');
+  const all = __qsaIn(roots, '*');
   let candidates = [];
   // Text the page never draws (DRAWS_NOTHING_JS in _element-name-js.ts): the text axes leave it out, visibleOnly or not
   // (win2 on #1011: by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is
   // hidden text, which visibleOnly decides. A search scoped into one of them (scope:'head') is answered as asked.
   function notDrawnText(el) {
     for (let a = __closest(el, __NOT_TEXT); a; a = __parent(a) ? __closest(__parent(a), __NOT_TEXT) : null) {
-      if (a === root || __contains(a, root)) return false;
+      if (roots.some(function(r) { return a === r || __contains(a, r); })) return false;
       if (__drawsNothing(a, true)) return true;
     }
     return false;
@@ -1810,7 +1891,7 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   if (axMark !== null) {
     // internal #420 — by:'role' / by:'ariaLabel' from the browser's accessibility tree, marked before this gather.
     // First, so equal scores keep the tree's document order (a result's place is what results[0] means).
-    const marked = root.querySelectorAll('[data-dtm-ax]');
+    const marked = __qsaIn(roots, '[data-dtm-ax]');
     for (let i = 0; i < marked.length; i++) {
       const ax = axOf(marked[i]);
       if (ax) record(marked[i], ax.score, by);
@@ -1824,7 +1905,7 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   if (axMark !== null && axAlone) {
     // the tree's answer alone
   } else if (by === 'selector') {
-    const selectorMatches = Array.from(root.querySelectorAll(pat));
+    const selectorMatches = __qsaIn(roots, pat);
     for (let i = 0; i < selectorMatches.length; i++) {
       if (overBudget(i)) { aborted = true; break; }
       record(selectorMatches[i], 1.0, 'selector');
@@ -1867,9 +1948,9 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
       if (cmp === needle) record(el, 0.75, 'role');
     }
     // Implicit roles — score slightly higher because they're guaranteed by tag.
-    if (!aborted && needle === 'button')  for (const el of root.querySelectorAll('button')) record(el, 0.85, 'roleImplicit');
-    if (!aborted && needle === 'link')    for (const el of root.querySelectorAll('a[href]')) record(el, 0.85, 'roleImplicit');
-    if (!aborted && needle === 'heading') for (const el of root.querySelectorAll('h1,h2,h3,h4,h5,h6')) record(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'button')  for (const el of __qsaIn(roots, 'button')) record(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'link')    for (const el of __qsaIn(roots, 'a[href]')) record(el, 0.85, 'roleImplicit');
+    if (!aborted && needle === 'heading') for (const el of __qsaIn(roots, 'h1,h2,h3,h4,h5,h6')) record(el, 0.85, 'roleImplicit');
   } else if (by === 'ariaLabel') {
     const needle = cs ? pat : pat.toLowerCase();
     let i = 0;
