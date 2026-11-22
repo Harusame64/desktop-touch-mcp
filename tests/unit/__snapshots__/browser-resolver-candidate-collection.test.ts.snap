@@ -1863,7 +1863,35 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   const isTextArea = tag === 'TEXTAREA';
   const isEditable = el.isContentEditable === true;
   if (!isTextInput && !isTextArea && !isEditable) {
-    return { ok: false, error: 'not_fillable', tag: tag.toLowerCase() + (ty ? '[type=' + ty + ']' : '') };
+    // What it is, for the next steps (internal #420): a native select (an <option> climbs to it), an option, a toggle, a
+    // choice widget that opens a list, something named a text field, or anything else. A list shown as it is never
+    // resolves: its options are what a press takes (#1008). Roles: every token of the attribute and the tree's
+    // computed role; a part inside a widget (Select2's rendered value, role textbox) is the widget's.
+    const roleToks = (el.getAttribute('role') || '').toLowerCase().split(/\\s+/).filter(Boolean);
+    const ax = typeof axOf === 'function' ? axOf(el) : null;
+    if (ax && ax.role) roleToks.push(ax.role);
+    const hasRole = function(r) { return roleToks.indexOf(r) >= 0; };
+    const popup = (el.getAttribute('aria-haspopup') || '').toLowerCase();
+    let kind = 'other';
+    // An <option> of a listbox select climbs to its select, which is what resolves (measured on #1023). A select a
+    // person does not see (hidden, no box, transparent) stands behind a widget: setting it changed Choices' select but
+    // not what the widget shows (win2 on #1023), so it gets the widget's next steps.
+    if (tag === 'SELECT') {
+      const sr = el.getBoundingClientRect(), scs = getComputedStyle(el);
+      const unseen = el.hidden || sr.width * sr.height < 4 || scs.opacity === '0' || scs.visibility === 'hidden';
+      kind = unseen ? 'widget' : 'select';
+    }
+    else if (hasRole('option') || hasRole('menuitem') || hasRole('menuitemradio') || hasRole('menuitemcheckbox')) kind = 'option';
+    else if (tag === 'INPUT' && /^(checkbox|radio)$/.test(ty) || hasRole('checkbox') || hasRole('radio') || hasRole('switch')) kind = 'toggle';
+    // A menu holds commands, not choices: only a list popup or a combobox is a choice widget (/code-review on #1023).
+    // Chrome's tree already calls a button or div[role=button] with aria-haspopup=listbox a combobox (measured on
+    // #1023); the attribute decides when the tree was not read and only the DOM reading resolved it (no cell).
+    else if (hasRole('combobox') || popup === 'listbox') kind = 'widget';
+    else if (__closest(el, '[role~=combobox i],[aria-haspopup=listbox i]')) kind = 'widget';
+    // Named a text field, but takes no text here (an editor surface writing to a hidden textarea): the textbox hint
+    // would send the same call again (/code-review on #1023).
+    else if (hasRole('textbox') || hasRole('searchbox')) kind = 'textlike';
+    return { ok: false, error: 'not_fillable', tag: tag.toLowerCase() + (ty ? '[type=' + ty + ']' : ''), kind: kind };
   }
 
   // Read before any page handler runs: one can replace the element, and a detached element has no

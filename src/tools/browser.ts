@@ -1549,7 +1549,7 @@ async function handleBrowserFillByAxis(args: {
     { by, pattern, role, scope, caseSensitive: caseSensitive ?? false, ...(outcome.axMark !== undefined && { axMark: outcome.axMark }) },
     outcome.index, outcome.climbDepth, value, outcome.matched,
   );
-  let actResult: { ok: boolean; error?: string; detail?: string; tag?: string; actual?: string; actualWithheld?: boolean; fullActualLen?: number; fullMatches?: boolean };
+  let actResult: { ok: boolean; error?: string; detail?: string; tag?: string; kind?: string; actual?: string; actualWithheld?: boolean; fullActualLen?: number; fullMatches?: boolean };
   try {
     actResult = await evaluateInTab(actExpr, outcome.tabId ?? tabId ?? null, port) as typeof actResult;
   } finally {
@@ -1563,10 +1563,13 @@ async function handleBrowserFillByAxis(args: {
         "BrowserNoActionableTarget",
         `browser_fill: the resolved <${actResult.tag ?? "element"}> is not a fillable input/textarea/contenteditable.`,
         {
-          suggest: [
-            "Target the input directly with by:'ariaLabel' or by:'role' (role:'textbox')",
-            "Or pass a precise CSS selector",
-          ],
+          // A choice is not typed (internal #420: a select widget was pointed at role:'textbox'). Fixed strings only.
+          suggest: actResult.kind === "select" ? FILL_HINTS_NATIVE_SELECT
+            : actResult.kind === "widget" ? FILL_HINTS_CHOICE_WIDGET
+            : actResult.kind === "option" ? FILL_HINTS_OPTION
+            : actResult.kind === "toggle" ? FILL_HINTS_TOGGLE
+            : actResult.kind === "textlike" ? FILL_HINTS_TEXTLIKE
+            : FILL_HINTS_NOT_FILLABLE,
           context: ctx,
         },
       );
@@ -1583,6 +1586,33 @@ async function handleBrowserFillByAxis(args: {
 
   return await finalizeFillResult(actResult, value, { filled: { by, pattern, ...(role ? { role } : {}) } }, includeContext, tabId, port);
 }
+
+/**
+ * browser_fill's next steps when the resolved element takes no text, by what it is (internal #420; fixed strings:
+ * CodeQL CWE-94). Each claim is one the tools keep: browser_fill's selector road sets a native select to an option's
+ * value (measured on #1023), and a by-axis call needs a pattern.
+ */
+const FILL_HINTS_NOT_FILLABLE: string[] = [
+  "The match takes no text: name the field you mean with by:'ariaLabel' (role:'textbox' filters to text fields), or pass a precise CSS selector",
+];
+const FILL_HINTS_NATIVE_SELECT: string[] = [
+  "A native <select> takes one of its options: browser_fill({selector, value}) sets it when value is an option's value (its value attribute, or its text when it has none); a value no option has clears the choice",
+  "Get its selector with browser_search (the same by and pattern), and list its options with browser_eval",
+];
+const FILL_HINTS_CHOICE_WIDGET: string[] = [
+  "A choice widget opens a list: press it with browser_click, then press the option with browser_click by:'text'",
+  "If the option is not shown once it is open, type part of its text into the widget's search field first (the open list may sit elsewhere in the page)",
+];
+const FILL_HINTS_OPTION: string[] = [
+  "An option is pressed, not typed into: press it with browser_click",
+];
+const FILL_HINTS_TOGGLE: string[] = [
+  "A checkbox, radio or switch is pressed, not typed into: press it with browser_click",
+];
+const FILL_HINTS_TEXTLIKE: string[] = [
+  "It is named a text field but does not take text here (an editor surface, a read-only display): press it with browser_click, then type with keyboard",
+  "Or find the field it writes to (often a hidden textarea) with browser_eval",
+];
 
 export const browserFillInputHandler = async ({
   selector,
