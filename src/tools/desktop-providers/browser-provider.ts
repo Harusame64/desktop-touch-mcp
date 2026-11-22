@@ -119,7 +119,17 @@ ${UNIQUE_SELECTOR_JS}
     const cs = getComputedStyle(n);
     return cs.display !== 'none' && cs.visibility !== 'hidden';
   };
+  // A text root a person can read: shown with every ancestor (checkVisibility), not an entry, not masked, not a script
+  // or style. The walk below checks the children; this checks the root, a heading taken from elsewhere included
+  // (codex on #1026: a preceding <h3 hidden> or a masked heading gave its text to a name).
+  const __readable = function(n) {
+    if (__isEntry(n) || __isMasked(n) || __skipsText(n)) return false;
+    if (typeof n.checkVisibility === 'function') return n.checkVisibility({ visibilityProperty: true });
+    for (let a = n; a && a.nodeType === 1; a = __parent(a)) if (!__shownEl(a)) return false;
+    return true;
+  };
   function wordsOf(node, skip) {
+    if (!__readable(node)) return '';
     const out = [];
     let len = 0;
     (function walk(n) {

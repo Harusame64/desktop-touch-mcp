@@ -265,6 +265,11 @@ describe.skipIf(!CHROME)("desktop_discover's browser lane lists the controls the
     const links = (await names()).filter((l) => l.startsWith("Help"));
     // The landmark, not the heading above it, which belongs to the content (win2 on #1026).
     expect(links).toEqual(["Help — Main menu", "Help — footer"]);
+    // A heading a person cannot read gives no name: hidden, under a hidden ancestor, or masked (codex on #1026).
+    await page(`<h3>Shown one</h3><h3 hidden>secret-a</h3><div class="x"><input type="radio" id="q1" name="q1"><label for="q1">Pick</label></div>
+      <h3>Shown two</h3><div style="display:none"><h3>secret-b</h3></div><h3 style="-webkit-text-security:disc">secret-c</h3><div class="x"><input type="radio" id="q2" name="q2"><label for="q2">Pick</label></div>`);
+    const picks = (await names()).filter((l) => l.startsWith("Pick"));
+    expect(picks).toEqual(["Pick — Shown one", "Pick — Shown two"]);
     // Two heading-less blocks after one heading: the shared heading tells them apart from nothing, so only numbers.
     await page(`<h2>Security</h2><div><button>Read</button><span>A</span></div><div><button>Read</button><span>B</span></div>`);
     expect((await names()).filter((l) => l.startsWith("Read"))).toEqual(["Read — (1 of 2)", "Read — (2 of 2)"]);
