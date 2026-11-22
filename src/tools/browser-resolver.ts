@@ -21,6 +21,7 @@ import { ELEMENT_NAME_JS, SAFE_DOM_JS } from "./_element-name-js.js";
 import { UNIQUE_SELECTOR_JS } from "./_unique-selector-js.js";
 import { jsLiteral } from "../utils/js-literal.js";
 import { SELECT_PICK_JS } from "./_select-pick-js.js";
+import { FILL_KIND_JS } from "./_fill-kind-js.js";
 import { pressLandingRuleJs } from "./press-landing.js";
 
 export interface CandidateCollectionArgs {
@@ -714,29 +715,15 @@ ${SELECT_PICK_JS}
     if (pk.error) return { ok: false, selectError: pk.error };
     return __setPickedOption(el, pk, __isMasked(el), ${jsLiteral(value)});
   }
-  if (!isTextInput && !isTextArea && !isEditable) {
-    // What it is, for the next steps (internal #420): an option, a toggle, a
-    // choice widget that opens a list, something named a text field, or anything else. A list shown as it is never
-    // resolves: its options are what a press takes (#1008). Roles: every token of the attribute and the tree's
-    // computed role; a part inside a widget (Select2's rendered value, role textbox) is the widget's.
-    const roleToks = (el.getAttribute('role') || '').toLowerCase().split(/\\s+/).filter(Boolean);
-    const ax = typeof axOf === 'function' ? axOf(el) : null;
-    if (ax && ax.role) roleToks.push(ax.role);
-    const hasRole = function(r) { return roleToks.indexOf(r) >= 0; };
-    const popup = (el.getAttribute('aria-haspopup') || '').toLowerCase();
-    let kind = 'other';
+${FILL_KIND_JS}
+  const ax = typeof axOf === 'function' ? axOf(el) : null;
+  const axRole = ax && ax.role ? ax.role : null;
+  // What it is, for the next steps (internal #420): an option, a toggle, a choice widget that opens a list, something
+  // named a text field, or anything else (FILL_KIND_JS). A list shown as it is never resolves: its options are what a
+  // press takes (#1008). A read-only input that is a choice widget takes no text either, before focus moves.
+  if ((!isTextInput && !isTextArea && !isEditable) || __choiceInput(el, axRole)) {
     // A native select never reaches here: it is set above, or refused by the pick rule.
-    if (hasRole('option') || hasRole('menuitem') || hasRole('menuitemradio') || hasRole('menuitemcheckbox')) kind = 'option';
-    else if (tag === 'INPUT' && /^(checkbox|radio)$/.test(ty) || hasRole('checkbox') || hasRole('radio') || hasRole('switch')) kind = 'toggle';
-    // A menu holds commands, not choices: only a list popup or a combobox is a choice widget (/code-review on #1023).
-    // Chrome's tree already calls a button or div[role=button] with aria-haspopup=listbox a combobox (measured on
-    // #1023); the attribute decides when the tree was not read and only the DOM reading resolved it (no cell).
-    else if (hasRole('combobox') || popup === 'listbox') kind = 'widget';
-    else if (__closest(el, '[role~=combobox i],[aria-haspopup=listbox i]')) kind = 'widget';
-    // Named a text field, but takes no text here (an editor surface writing to a hidden textarea): the textbox hint
-    // would send the same call again (/code-review on #1023).
-    else if (hasRole('textbox') || hasRole('searchbox')) kind = 'textlike';
-    return { ok: false, error: 'not_fillable', tag: tag.toLowerCase() + (ty ? '[type=' + ty + ']' : ''), kind: kind };
+    return { ok: false, error: 'not_fillable', tag: tag.toLowerCase() + (ty ? '[type=' + ty + ']' : ''), kind: __fillKind(el, axRole), readOnlyChoice: __choiceInput(el, axRole) || undefined };
   }
 
   // Read before any page handler runs: one can replace the element, and a detached element has no
@@ -748,6 +735,8 @@ ${SELECT_PICK_JS}
   // mask (PR 側 codex on #623's 122185e). browser_fill by selector focuses in an evaluate of its own
   // before its first read, so this is the road that needed it.
   const maskedAfterFocus = __isMasked(el);
+  // A page can make it read-only as it takes focus: nothing is written, and the answer says focus moved.
+  if (__choiceInput(el, axRole)) return { ok: false, error: 'not_fillable', tag: tag.toLowerCase() + (ty ? '[type=' + ty + ']' : ''), kind: 'widget', readOnlyChoice: true, afterFocus: true };
   const val = ${jsLiteral(value)};
   if (isTextInput || isTextArea) {
     if (typeof el.select === 'function') el.select();
