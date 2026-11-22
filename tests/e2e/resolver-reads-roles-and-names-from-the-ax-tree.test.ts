@@ -427,6 +427,12 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     // A checkbox shown beside an sr-only one with a label: two choices, not the shown one alone.
     await page(`<input type="checkbox" id="srx" class="sr"><label for="srx" style="display:inline-block;margin:40px">Accept terms</label><input type="checkbox" id="shown" style="margin:20px"><label for="shown">Subscribe</label>`);
     expect((await resolve({ by: "role", pattern: "checkbox" })).kind).toBe("ambiguous");
+    // A widget drawn over the hidden select it stands for, which has its own <label>: one control a person sees
+    // (/code-review on #1022).
+    await page(`<label for="fl2" style="position:absolute;left:100px;top:80px">Flavour</label><select id="fl2" style="position:absolute;left:100px;top:100px;width:200px;opacity:0"><option>Vanilla</option></select><div role="combobox" id="cb2" tabindex="0" style="position:absolute;left:100px;top:100px;width:200px;height:30px;background:#fff;border:1px solid">Vanilla</div>`);
+    const w = await resolve({ by: "role", pattern: "combobox" });
+    expect(what(w)).toBe("div#cb2");
+    if (w.kind === "resolved" && w.axMark !== undefined) await clearAxMarks(w.axMark, null, PORT);
     // One plain radio and a covered one: still the plain one alone.
     await page(`<input type="radio" name="h" id="hp" style="margin:20px"><label for="hp">Plain</label><div style="position:relative;display:inline-block;margin:20px"><input type="radio" name="h" id="hc" aria-label="Covered"><div style="position:absolute;inset:-4px;background:#fff"></div></div>`);
     const one = await resolve({ by: "role", pattern: "radio" });
