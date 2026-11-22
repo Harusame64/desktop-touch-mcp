@@ -10,7 +10,7 @@ import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chro
 import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll, markAxMatches, clearAxMarks, getScrollAncestorsCdp } from "../../src/engine/cdp-bridge.js";
 import { resolveBrowserActionTarget, type ResolveActionOutcome } from "../../src/tools/browser-resolver.js";
-import { browserClickElementHandler, readPressLanding } from "../../src/tools/browser.js";
+import { browserClickElementHandler, readPressLanding, browserFillInputHandler, browserSearchHandler } from "../../src/tools/browser.js";
 import { buildPressPointJs, buildCoverJs, buildSaveScrollJs } from "../../src/tools/press-landing.js";
 
 const PORT = 9238;
@@ -438,6 +438,52 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     const one = await resolve({ by: "role", pattern: "radio" });
     expect(one.kind).toBe("resolved");
     if (one.kind === "resolved" && one.axMark !== undefined) await clearAxMarks(one.axMark, null, PORT);
+    expect(await marks()).toBe(0);
+  });
+
+  it("points a fill on a choice at choosing, not at role:'textbox' (internal #420)", async () => {
+    const fill = async (a: { by: "ariaLabel"; pattern: string }) => {
+      const r = await browserFillInputHandler({ ...a, value: "Banana", port: PORT, includeContext: false } as never);
+      return JSON.parse((r.content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { code?: string; suggest?: string[] };
+    };
+    // Select2's combobox, found by the label its hidden select lends: a widget that opens a list.
+    await page(SELECT2);
+    const w = await fill({ by: "ariaLabel", pattern: "Fruit" });
+    expect(w.code).toBe("BrowserNoActionableTarget");
+    expect(w.suggest?.[0]).toMatch(/^A choice widget/);
+    // A native <select>: one of its options. The hint's road works as written: its selector from browser_search, then
+    // browser_fill({selector, value: an option's value}) (/code-review on #1023: the first hint denied this road).
+    await page(`<label for="ns">Size</label><select id="ns" style="margin:40px"><option value="s">Small</option><option value="m">Medium</option></select>`);
+    const n = await fill({ by: "ariaLabel", pattern: "Size" });
+    expect(n.code).toBe("BrowserNoActionableTarget");
+    expect(n.suggest?.[0]).toMatch(/^A native <select>/);
+    const found = JSON.parse(((await browserSearchHandler({ by: "ariaLabel", pattern: "Size", maxResults: 5, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive: false, port: PORT } as never)).content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { results: Array<{ selector: string }> };
+    const set = await browserFillInputHandler({ selector: found.results[0].selector, value: "m", port: PORT, includeContext: false } as never);
+    expect((set.content[0] as { text: string }).text).toMatch(/"ok":true/);
+    expect(await evaluateInTab("document.getElementById('ns').value", null, PORT)).toBe("m");
+    // A select a person does not see stands behind a widget (Choices): the widget's next steps, not the select's.
+    await page(`<label for="hs">Flavour</label><select id="hs" style="position:absolute;opacity:0;width:200px"><option value="v">Vanilla</option></select>`);
+    expect((await fill({ by: "ariaLabel", pattern: "Flavour" })).suggest?.[0]).toMatch(/^A choice widget/);
+    // A button that opens a list (Headless UI / MUI: aria-haspopup, no role attribute): a choice widget.
+    await page(`<button aria-haspopup="listbox" aria-label="Country" style="margin:40px">Japan</button>`);
+    expect((await fill({ by: "ariaLabel", pattern: "Country" })).suggest?.[0]).toMatch(/^A choice widget/);
+    // MUI v4's select: a div role=button with aria-haspopup, which the tree still calls a button.
+    await page(`<div role="button" tabindex="0" aria-haspopup="listbox" aria-label="Region" style="margin:40px">Kanto</div>`);
+    expect((await fill({ by: "ariaLabel", pattern: "Region" })).suggest?.[0]).toMatch(/^A choice widget/);
+    // An option itself, in a list shown as it is.
+    await page(`<div role="listbox" aria-label="Colours" tabindex="0" style="margin:40px"><div role="option" aria-selected="false" tabindex="-1">Red</div><div role="option" aria-selected="false" tabindex="-1">Green</div></div>`);
+    expect((await fill({ by: "ariaLabel", pattern: "Red" } as never)).suggest?.[0]).toMatch(/^An option is pressed/);
+    // A toggle is pressed; something named a text field that takes no text is not sent back to role textbox; an option
+    // of a listbox select is the select's (/code-review on #1023).
+    await page(`<input type="checkbox" aria-label="Accept terms" style="margin:40px">`);
+    expect((await fill({ by: "ariaLabel", pattern: "Accept terms" })).suggest?.[0]).toMatch(/^A checkbox, radio or switch/);
+    await page(`<div role="textbox" tabindex="0" aria-label="Notes" style="margin:40px;width:200px;height:40px;border:1px solid">x</div>`);
+    expect((await fill({ by: "ariaLabel", pattern: "Notes" })).suggest?.[0]).toMatch(/^It is named a text field/);
+    await page(`<select multiple aria-label="Fruits" style="margin:40px"><option value="b">Banana</option><option value="c">Cherry</option></select>`);
+    expect((await fill({ by: "text", pattern: "Banana" } as never)).suggest?.[0]).toMatch(/^A native <select>/);
+    // Anything else: a neutral next step, no role named.
+    await page(`<button style="margin:40px">Send</button>`);
+    expect((await fill({ by: "ariaLabel", pattern: "Send" })).suggest?.[0]).toMatch(/^The match takes no text/);
     expect(await marks()).toBe(0);
   });
 
