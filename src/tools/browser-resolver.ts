@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import { AX_MARK_ATTR, clearAxMarks, evaluateInTab, getPageZoom, markAxMatches, resolveTabId, viewportOriginJs } from "../engine/cdp-bridge.js";
 import { ELEMENT_NAME_JS } from "./_element-name-js.js";
 import { UNIQUE_SELECTOR_JS } from "./_unique-selector-js.js";
+import { pressLandingRuleJs } from "./press-landing.js";
 
 export interface CandidateCollectionArgs {
   by: "text" | "regex" | "role" | "ariaLabel" | "selector";
@@ -450,6 +451,8 @@ ${occluderIndexHelperJs()}`
   const sy = window.screenY;
 ${viewportOriginJs(args.pageZoom ?? 1)}
 
+  // The press rule browser_click's press path uses (press-landing.ts), for a 0x0 control pressed through its label.
+${pressLandingRuleJs()}
   function actNode(el) {
     const cs2 = window.getComputedStyle(el);
     const r = el.getBoundingClientRect();
@@ -467,6 +470,17 @@ ${viewportOriginJs(args.pageZoom ?? 1)}
     if (cx >= 0 && cx < window.innerWidth && cy >= 0 && cy < window.innerHeight) {
       const hit = document.elementFromPoint(cx, cy);
       receivesEvents = !!hit && (hit === el || el.contains(hit));
+    }
+    // A control a person presses through its own <label> (a 0x0 radio, an sr-only checkbox) receives a press there,
+    // as browser_click's press path finds it (internal #420: listed receivesEvents:false in an ambiguity list).
+    if (!receivesEvents && el.labels) {
+      for (const lab of Array.from(el.labels)) {
+        const lr = lab.getBoundingClientRect();
+        if (lr.width === 0 || lr.height === 0) continue;
+        const lx = lr.left + lr.width / 2, ly = lr.top + lr.height / 2;
+        if (lx < 0 || ly < 0 || lx >= window.innerWidth || ly >= window.innerHeight) continue;
+        if (__dtmLandsOn(el, document.elementFromPoint(lx, ly)).how === 'own_label') { receivesEvents = true; break; }
+      }
     }
     const tiRaw = el.getAttribute('tabindex');
     const ti = (tiRaw !== null && tiRaw.trim() !== '' && !isNaN(Number(tiRaw))) ? Number(tiRaw) : null;

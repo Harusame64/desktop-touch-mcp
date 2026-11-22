@@ -329,6 +329,20 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(await marks()).toBe(0);
   });
 
+  it("reads a 0x0 radio pressed through its own label as receiving events, a covered one as not (internal #420)", async () => {
+    // Listed with receivesEvents:false although a press on its label reaches it, as browser_click presses it.
+    await page(`<input type="radio" name="c" id="z0" style="width:0;height:0;margin:0;padding:0;border:0;appearance:none"><label for="z0" style="display:inline-block;padding:6px 12px;margin:40px 4px">Zero</label>
+      <input type="radio" name="c" id="p1" style="margin:20px"><label for="p1">Plain</label>
+      <div style="position:relative;display:inline-block;margin:20px"><input type="radio" name="c" id="cv" aria-label="Covered"><div style="position:absolute;inset:-4px;background:#fff"></div></div>`);
+    // As browser_click asks first (no occlusion gate), so no press is made here.
+    const o = await resolve({ by: "role", pattern: "radio" }, false);
+    expect(o.kind).toBe("ambiguous");
+    const cands = o.kind === "ambiguous" ? o.candidates : [];
+    const got = Object.fromEntries(cands.map((c) => [c.name, c.actionability.receivesEvents]));
+    expect(got).toEqual({ Zero: true, Plain: true, Covered: false });
+    expect(await marks()).toBe(0);
+  });
+
   it("presses Choices' select as it is: a listbox that opens a popup is a control (win2 on #1008, W6)", async () => {
     await page(`<div class="choices" id="chl" role="listbox" tabindex="0" aria-haspopup="true" aria-expanded="false" style="position:absolute;left:100px;top:100px;width:260px;height:40px;border:1px solid"><div class="choices__inner"><select id="fr" hidden><option>Apple</option></select><div class="choices__item">Apple</div></div><div class="choices__list--dropdown" style="visibility:hidden"><div role="listbox"><div role="option">Apple</div><div role="option">Banana</div></div></div></div>`);
     expect(what(await resolve({ by: "role", pattern: "listbox" }))).toBe("div#chl");
