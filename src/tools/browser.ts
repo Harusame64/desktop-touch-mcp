@@ -1773,14 +1773,14 @@ ${ELEMENT_NAME_JS}
       if (labelEl) label = __textWithoutFields(labelEl) || null;
     }
     if (!label) {
-      let p = el.parentElement;
+      let p = __parent(el);
       while (p) {
         if (p.tagName === 'LABEL') {
           // Read on the live node: a detached clone has no computed style, so masking would not show.
           label = __textWithoutFields(p) || null;
           break;
         }
-        p = p.parentElement;
+        p = __parent(p);
       }
     }
     if (!label) {

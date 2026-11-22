@@ -44,8 +44,8 @@ export const UNIQUE_SELECTOR_JS = `
   }
   function __pathTo(el, ask, overdue) {
     let node = el; let path = '';
-    for (let depth = 0; node.parentElement; depth++) {
-      const p = node.parentElement;
+    for (let depth = 0; __parent(node); depth++) {
+      const p = __parent(node);
       const idx = Array.from(p.children).indexOf(node) + 1;
       const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
       path = path ? seg + ' > ' + path : seg;

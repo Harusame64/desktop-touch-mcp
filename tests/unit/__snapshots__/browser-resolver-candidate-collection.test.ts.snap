@@ -84,8 +84,8 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
   }
   function __pathTo(el, ask, overdue) {
     let node = el; let path = '';
-    for (let depth = 0; node.parentElement; depth++) {
-      const p = node.parentElement;
+    for (let depth = 0; __parent(node); depth++) {
+      const p = __parent(node);
       const idx = Array.from(p.children).indexOf(node) + 1;
       const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
       path = path ? seg + ' > ' + path : seg;
@@ -120,7 +120,17 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
   function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
-  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
+  // A document or a shadow root is not an Element: its own querySelectorAll, which a form cannot shadow.
+  function __qsa(n, sel) {
+    if (n.nodeType === 9 || n.nodeType === 11) return n.querySelectorAll(sel);
+    return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel);
+  }
+  // The parent, from Node's own getter: a form whose control is named parentElement turned every walk up the tree into
+  // a loop (form → input → form…), which hung the page script (win2 on #1019).
+  function __parent(n) {
+    var g = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement') : null;
+    return g ? g.get.call(n) : n.parentElement;
+  }
 
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
@@ -161,7 +171,7 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
     // The editing host, not everything inside it: isContentEditable is true for every descendant,
     // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
-    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
+    if (el.isContentEditable && !(__parent(el) && __parent(el).isContentEditable)) return true;
     const role = (el.getAttribute('role') || '').toLowerCase();
     return role === 'textbox' || role === 'searchbox';
   }
@@ -216,7 +226,7 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
   // multiple) is not it, nor a hidden select a script fills for another field.
   function __standsFor(el) {
     const inner = el.querySelector('select'); if (inner) return inner;
-    for (let a = el, d = 0; a && d < 4; a = a.parentElement, d++) {
+    for (let a = el, d = 0; a && d < 4; a = __parent(a), d++) {
       const prev = a.previousElementSibling;
       if (prev && prev.tagName === 'SELECT' && __keptFromPeople(prev)) return prev;
     }
@@ -293,7 +303,7 @@ exports[`ADR-023 Phase 1 (S1/S7): buildCandidateCollectionJs — bit-equal extra
   // (win2 on #1011: by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is
   // hidden text, which visibleOnly decides. A search scoped into one of them (scope:'head') is answered as asked.
   function notDrawnText(el) {
-    for (let a = __closest(el, __NOT_TEXT); a; a = a.parentElement ? __closest(a.parentElement, __NOT_TEXT) : null) {
+    for (let a = __closest(el, __NOT_TEXT); a; a = __parent(a) ? __closest(__parent(a), __NOT_TEXT) : null) {
       if (a === root || __contains(a, root)) return false;
       if (__drawsNothing(a, true)) return true;
     }
@@ -507,8 +517,8 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   }
   function __pathTo(el, ask, overdue) {
     let node = el; let path = '';
-    for (let depth = 0; node.parentElement; depth++) {
-      const p = node.parentElement;
+    for (let depth = 0; __parent(node); depth++) {
+      const p = __parent(node);
       const idx = Array.from(p.children).indexOf(node) + 1;
       const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
       path = path ? seg + ' > ' + path : seg;
@@ -543,7 +553,17 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
   function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
-  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
+  // A document or a shadow root is not an Element: its own querySelectorAll, which a form cannot shadow.
+  function __qsa(n, sel) {
+    if (n.nodeType === 9 || n.nodeType === 11) return n.querySelectorAll(sel);
+    return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel);
+  }
+  // The parent, from Node's own getter: a form whose control is named parentElement turned every walk up the tree into
+  // a loop (form → input → form…), which hung the page script (win2 on #1019).
+  function __parent(n) {
+    var g = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement') : null;
+    return g ? g.get.call(n) : n.parentElement;
+  }
 
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
@@ -584,7 +604,7 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
     // The editing host, not everything inside it: isContentEditable is true for every descendant,
     // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
-    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
+    if (el.isContentEditable && !(__parent(el) && __parent(el).isContentEditable)) return true;
     const role = (el.getAttribute('role') || '').toLowerCase();
     return role === 'textbox' || role === 'searchbox';
   }
@@ -639,7 +659,7 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   // multiple) is not it, nor a hidden select a script fills for another field.
   function __standsFor(el) {
     const inner = el.querySelector('select'); if (inner) return inner;
-    for (let a = el, d = 0; a && d < 4; a = a.parentElement, d++) {
+    for (let a = el, d = 0; a && d < 4; a = __parent(a), d++) {
       const prev = a.previousElementSibling;
       if (prev && prev.tagName === 'SELECT' && __keptFromPeople(prev)) return prev;
     }
@@ -716,7 +736,7 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   // (win2 on #1011: by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is
   // hidden text, which visibleOnly decides. A search scoped into one of them (scope:'head') is answered as asked.
   function notDrawnText(el) {
-    for (let a = __closest(el, __NOT_TEXT); a; a = a.parentElement ? __closest(a.parentElement, __NOT_TEXT) : null) {
+    for (let a = __closest(el, __NOT_TEXT); a; a = __parent(a) ? __closest(__parent(a), __NOT_TEXT) : null) {
       if (a === root || __contains(a, root)) return false;
       if (__drawsNothing(a, true)) return true;
     }
@@ -861,7 +881,7 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
     let node = el;
     for (let d = 0; node && d <= D; d++) {
       if (roleMatches(node)) return true;
-      node = node.parentElement;
+      node = __parent(node);
     }
     return false;
   }
@@ -897,7 +917,17 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
   function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
-  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
+  // A document or a shadow root is not an Element: its own querySelectorAll, which a form cannot shadow.
+  function __qsa(n, sel) {
+    if (n.nodeType === 9 || n.nodeType === 11) return n.querySelectorAll(sel);
+    return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel);
+  }
+  // The parent, from Node's own getter: a form whose control is named parentElement turned every walk up the tree into
+  // a loop (form → input → form…), which hung the page script (win2 on #1019).
+  function __parent(n) {
+    var g = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement') : null;
+    return g ? g.get.call(n) : n.parentElement;
+  }
 
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
@@ -938,7 +968,7 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
     // The editing host, not everything inside it: isContentEditable is true for every descendant,
     // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
-    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
+    if (el.isContentEditable && !(__parent(el) && __parent(el).isContentEditable)) return true;
     const role = (el.getAttribute('role') || '').toLowerCase();
     return role === 'textbox' || role === 'searchbox';
   }
@@ -993,7 +1023,7 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   // multiple) is not it, nor a hidden select a script fills for another field.
   function __standsFor(el) {
     const inner = el.querySelector('select'); if (inner) return inner;
-    for (let a = el, d = 0; a && d < 4; a = a.parentElement, d++) {
+    for (let a = el, d = 0; a && d < 4; a = __parent(a), d++) {
       const prev = a.previousElementSibling;
       if (prev && prev.tagName === 'SELECT' && __keptFromPeople(prev)) return prev;
     }
@@ -1061,9 +1091,9 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   // it is hidden from people. The press goes to such a control's own point: Select2 opens on its combobox, and a
   // press on the widget's outer wrapper does nothing (win2 on #1004, db867002).
   function __dtmSameKindControls(el) {
-    var want = __dtmRoles(el), parent = el.parentElement, out = [];
+    var want = __dtmRoles(el), parent = __parent(el), out = [];
     if (want.length === 0 || !parent || !__dtmHiddenFromPeople(el)) return out;
-    var nodes = parent.querySelectorAll('[role]');
+    var nodes = __qsa(parent, '[role]');
     for (var i = 0; i < nodes.length && out.length < 4; i++) {
       if (nodes[i] === el || __dtmContains(el, nodes[i]) || __dtmContains(nodes[i], el)) continue;
       if (want.indexOf(nodes[i].getAttribute('role')) >= 0) out.push(nodes[i]);
@@ -1096,8 +1126,8 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
     return null;
   }
   function __dtmShownDialogIn(root) {
-    if (!root || !root.querySelectorAll) return null;
-    var all = root.querySelectorAll(__DTM_DIALOG);
+    if (!root || (root.nodeType !== 1 && root.nodeType !== 9 && root.nodeType !== 11)) return null;
+    var all = __qsa(root, __DTM_DIALOG);
     for (var i = 0; i < all.length; i++) if (__dtmShown(all[i])) return all[i];
     return null;
   }
@@ -1129,11 +1159,11 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
     // Only an element that is not itself a control (Playwright keeps a button, a link or a field as it is), and only
     // a hit with no other control or label between it and the host: a press on another button in the same card is
     // not a press on this one (/code-review on #1005, round 2).
-    var host = !__dtmMatches(el, __DTM_INTERACTIVE) && el.parentElement ? __dtmClosest(el.parentElement, 'a[href],button,[role=button],[role=link]') : null;
+    var host = !__dtmMatches(el, __DTM_INTERACTIVE) && __parent(el) ? __dtmClosest(__parent(el), 'a[href],button,[role=button],[role=link]') : null;
     if (host && (hit === host || __dtmContains(host, hit))) {
       // A node that holds the element (a focusable wrapper inside the link) is the element's own way to the host, not
       // a control beside it (round 3).
-      for (var hn = hit; hn && hn !== host; hn = hn.parentElement) if (!__dtmContains(hn, el) && (__dtmMatches(hn, __DTM_INTERACTIVE) || hn.tagName === 'LABEL')) return { ok: false, how: 'covered' };
+      for (var hn = hit; hn && hn !== host; hn = __parent(hn)) if (!__dtmContains(hn, el) && (__dtmMatches(hn, __DTM_INTERACTIVE) || hn.tagName === 'LABEL')) return { ok: false, how: 'covered' };
       return { ok: true, how: 'host' };
     }
     var lab = hit.nodeType === 1 ? __dtmClosest(hit, 'label') : null;
@@ -1141,7 +1171,7 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
       if (lab.control === el) {
         // Interactive content inside the label (a "Terms" link in "I agree to the Terms") does not activate the
         // control; a press there follows the link (/code-review on #1004).
-        for (var m = hit; m && m !== lab; m = m.parentElement) if (m !== el && __dtmMatches(m, __DTM_INTERACTIVE)) return { ok: false, how: 'covered' };
+        for (var m = hit; m && m !== lab; m = __parent(m)) if (m !== el && __dtmMatches(m, __DTM_INTERACTIVE)) return { ok: false, how: 'covered' };
         return { ok: true, how: 'own_label' };
       }
       if (lab.control) return { ok: false, how: 'other_label' };
@@ -1167,10 +1197,10 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
     var er = el.getBoundingClientRect(), hr = hit.getBoundingClientRect();
     var grow = Math.max(24, Math.max(er.width, er.height) / 2);
     var over = hr.left >= er.left - grow && hr.top >= er.top - grow && hr.right <= er.right + grow && hr.bottom <= er.bottom + grow;
-    var wrap = el.parentElement, up = 0;
-    while (wrap && up < 1 && !__dtmContains(wrap, hit)) { wrap = wrap.parentElement; up++; }
+    var wrap = __parent(el), up = 0;
+    while (wrap && up < 1 && !__dtmContains(wrap, hit)) { wrap = __parent(wrap); up++; }
     if (over && wrap && __dtmContains(wrap, hit)) {
-      for (var n = hit; n && n !== wrap; n = n.parentElement) {
+      for (var n = hit; n && n !== wrap; n = __parent(n)) {
         if (__dtmName(n) !== '' || __dtmMatches(n, __DTM_INTERACTIVE) || __dtmMatches(n, __DTM_DIALOG) || n.tagName === 'LABEL') return { ok: false, how: 'covered' };
       }
       return { ok: true, how: 'skin' };
@@ -1257,7 +1287,7 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
     let node = el;
     for (let d = 0; d <= D && node; d++) {
       chain.push(actNode(node));
-      node = node.parentElement;
+      node = __parent(node);
     }
     return chain;
   }
@@ -1287,7 +1317,7 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
   }
 
   function hintOf(el) {
-    let node = el.parentElement;
+    let node = __parent(el);
     let guard = 0;
     while (node && node !== document.body && guard < 40) {
       const r = node.getAttribute('role');
@@ -1299,7 +1329,7 @@ exports[`ADR-023 Phase 1 PR2: buildActionCandidateFactsJs — gather tail (snaps
         const an = node.getAttribute('aria-label');
         return (lm + (an ? ' "' + an + '"' : '')).slice(0, 40);
       }
-      node = node.parentElement; guard++;
+      node = __parent(node); guard++;
     }
     return null;
   }
@@ -1421,8 +1451,8 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   }
   function __pathTo(el, ask, overdue) {
     let node = el; let path = '';
-    for (let depth = 0; node.parentElement; depth++) {
-      const p = node.parentElement;
+    for (let depth = 0; __parent(node); depth++) {
+      const p = __parent(node);
       const idx = Array.from(p.children).indexOf(node) + 1;
       const seg = node.tagName.toLowerCase() + ':nth-child(' + idx + ')';
       path = path ? seg + ' > ' + path : seg;
@@ -1457,7 +1487,17 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
   function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
-  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
+  // A document or a shadow root is not an Element: its own querySelectorAll, which a form cannot shadow.
+  function __qsa(n, sel) {
+    if (n.nodeType === 9 || n.nodeType === 11) return n.querySelectorAll(sel);
+    return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel);
+  }
+  // The parent, from Node's own getter: a form whose control is named parentElement turned every walk up the tree into
+  // a loop (form → input → form…), which hung the page script (win2 on #1019).
+  function __parent(n) {
+    var g = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement') : null;
+    return g ? g.get.call(n) : n.parentElement;
+  }
 
   // probe: whether a browser without the scripting feature may parse a fragment to find out. Only browser_search's
   // text axes ask for it; a name read answers that scripts run, without writing to the page (/code-review on #1016).
@@ -1498,7 +1538,7 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
     // The editing host, not everything inside it: isContentEditable is true for every descendant,
     // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
-    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
+    if (el.isContentEditable && !(__parent(el) && __parent(el).isContentEditable)) return true;
     const role = (el.getAttribute('role') || '').toLowerCase();
     return role === 'textbox' || role === 'searchbox';
   }
@@ -1553,7 +1593,7 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   // multiple) is not it, nor a hidden select a script fills for another field.
   function __standsFor(el) {
     const inner = el.querySelector('select'); if (inner) return inner;
-    for (let a = el, d = 0; a && d < 4; a = a.parentElement, d++) {
+    for (let a = el, d = 0; a && d < 4; a = __parent(a), d++) {
       const prev = a.previousElementSibling;
       if (prev && prev.tagName === 'SELECT' && __keptFromPeople(prev)) return prev;
     }
@@ -1630,7 +1670,7 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   // (win2 on #1011: by:'text' with visibleOnly:false listed Amazon's <script> JSON). Text a hidden ancestor hides is
   // hidden text, which visibleOnly decides. A search scoped into one of them (scope:'head') is answered as asked.
   function notDrawnText(el) {
-    for (let a = __closest(el, __NOT_TEXT); a; a = a.parentElement ? __closest(a.parentElement, __NOT_TEXT) : null) {
+    for (let a = __closest(el, __NOT_TEXT); a; a = __parent(a) ? __closest(__parent(a), __NOT_TEXT) : null) {
       if (a === root || __contains(a, root)) return false;
       if (__drawsNothing(a, true)) return true;
     }
@@ -1775,7 +1815,7 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
     let node = el;
     for (let d = 0; node && d <= D; d++) {
       if (roleMatches(node)) return true;
-      node = node.parentElement;
+      node = __parent(node);
     }
     return false;
   }
@@ -1809,7 +1849,7 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
     return { ok: false, error: 'identity_changed', detail: 'signature' };
   }
   let el = matched;
-  for (let d = 0; d < 0 && el; d++) el = el.parentElement;
+  for (let d = 0; d < 0 && el; d++) el = __parent(el);
   if (!el) return { ok: false, error: 'resolved_element_lost' };
 
   const tag = el.tagName;

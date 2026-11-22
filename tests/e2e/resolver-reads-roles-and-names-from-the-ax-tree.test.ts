@@ -11,7 +11,7 @@ import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll, markAxMatches, clearAxMarks } from "../../src/engine/cdp-bridge.js";
 import { resolveBrowserActionTarget, type ResolveActionOutcome } from "../../src/tools/browser-resolver.js";
 import { browserClickElementHandler, readPressLanding } from "../../src/tools/browser.js";
-import { buildPressPointJs, buildCoverJs } from "../../src/tools/press-landing.js";
+import { buildPressPointJs, buildCoverJs, buildSaveScrollJs } from "../../src/tools/press-landing.js";
 
 const PORT = 9238;
 const CHROME = tryFindChrome() !== null;
@@ -386,6 +386,26 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(t.kind).not.toBe("error");
     expect(await marks()).toBe(0);
   });
+
+  it("answers on a page whose form has controls named parentElement and querySelectorAll (win2 on #1019)", async () => {
+    // form.parentElement is the input and the input's parent is the form again: every walk up the tree looped and
+    // the page script hung until the CDP timeout (main too). form.querySelectorAll is an input: the press rule threw.
+    for (const lab of ["", "pointer-events:none"]) {
+      await page(`<form id="fp" style="padding:40px"><input name="parentElement"><input name="querySelectorAll"><input type="radio" id="rp" style="width:0;height:0;margin:0;padding:0;border:0;appearance:none"><label for="rp" style="display:inline-block;padding:6px 12px;${lab}">Parent radio</label></form>`);
+      expect(await evaluateInTab("document.getElementById('fp').parentElement.tagName", null, PORT)).toBe("INPUT");
+      const o = await resolve({ by: "role", pattern: "radio" }, false);
+      expect(o.kind).toBe("resolved");
+      if (o.kind === "resolved" && o.axMark !== undefined) await clearAxMarks(o.axMark, null, PORT);
+      const point = (await evaluateInTab(buildPressPointJs("#rp"), null, PORT)) as Record<string, unknown>;
+      expect(point.error ?? null).toBeNull();
+      // The scroll saved before a press walks every ancestor: on main it ran until the 15 s CDP timeout here.
+      expect(await evaluateInTab(buildSaveScrollJs("#rp"), null, PORT)).toBe(true);
+      // The cover read answers with what is at the point: the label, or the form under a click-through one.
+      const cover = (await evaluateInTab(buildCoverJs("#rp"), null, PORT)) as { cover?: unknown } | null;
+      expect(typeof cover?.cover).toBe("string");
+      expect(await marks()).toBe(0);
+    }
+  }, 60_000);
 
   it("presses Choices' select as it is: a listbox that opens a popup is a control (win2 on #1008, W6)", async () => {
     await page(`<div class="choices" id="chl" role="listbox" tabindex="0" aria-haspopup="true" aria-expanded="false" style="position:absolute;left:100px;top:100px;width:260px;height:40px;border:1px solid"><div class="choices__inner"><select id="fr" hidden><option>Apple</option></select><div class="choices__item">Apple</div></div><div class="choices__list--dropdown" style="visibility:hidden"><div role="listbox"><div role="option">Apple</div><div role="option">Banana</div></div></div></div>`);

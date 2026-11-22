@@ -73,7 +73,17 @@ export const SAFE_DOM_JS = `
   function __matches(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.matches : c.matches).call(c, sel); }
   function __closest(c, sel) { return (typeof Element !== 'undefined' ? Element.prototype.closest : c.closest).call(c, sel); }
   function __contains(a, b) { return (typeof Node !== 'undefined' ? Node.prototype.contains : a.contains).call(a, b); }
-  function __qsa(n, sel) { return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel); }
+  // A document or a shadow root is not an Element: its own querySelectorAll, which a form cannot shadow.
+  function __qsa(n, sel) {
+    if (n.nodeType === 9 || n.nodeType === 11) return n.querySelectorAll(sel);
+    return (typeof Element !== 'undefined' ? Element.prototype.querySelectorAll : n.querySelectorAll).call(n, sel);
+  }
+  // The parent, from Node's own getter: a form whose control is named parentElement turned every walk up the tree into
+  // a loop (form → input → form…), which hung the page script (win2 on #1019).
+  function __parent(n) {
+    var g = typeof Node !== 'undefined' ? Object.getOwnPropertyDescriptor(Node.prototype, 'parentElement') : null;
+    return g ? g.get.call(n) : n.parentElement;
+  }
 `;
 
 export const DRAWS_NOTHING_JS = `
@@ -123,7 +133,7 @@ ${DRAWS_NOTHING_JS}
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
     // The editing host, not everything inside it: isContentEditable is true for every descendant,
     // and a draft's headings and links are named by the text the screen shows (2ゲート目 on #623).
-    if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return true;
+    if (el.isContentEditable && !(__parent(el) && __parent(el).isContentEditable)) return true;
     const role = (el.getAttribute('role') || '').toLowerCase();
     return role === 'textbox' || role === 'searchbox';
   }
@@ -178,7 +188,7 @@ ${DRAWS_NOTHING_JS}
   // multiple) is not it, nor a hidden select a script fills for another field.
   function __standsFor(el) {
     const inner = el.querySelector('select'); if (inner) return inner;
-    for (let a = el, d = 0; a && d < 4; a = a.parentElement, d++) {
+    for (let a = el, d = 0; a && d < 4; a = __parent(a), d++) {
       const prev = a.previousElementSibling;
       if (prev && prev.tagName === 'SELECT' && __keptFromPeople(prev)) return prev;
     }

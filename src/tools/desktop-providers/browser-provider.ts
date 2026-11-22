@@ -130,7 +130,7 @@ ${ELEMENT_NAME_JS}
   // fields are not marked in controls mode today, so this holds for one a later mode would mark.
   function insideCombobox(el) {
     if(el.tagName==='INPUT'||el.tagName==='TEXTAREA') return false;
-    for(let a=el.parentElement; a; a=a.parentElement) { if(axRole(a)==='combobox') return true; }
+    for(let a=__parent(el); a; a=__parent(a)) { if(axRole(a)==='combobox') return true; }
     return false;
   }
   const standsFor = __standsFor;
