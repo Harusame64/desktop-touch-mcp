@@ -53,6 +53,7 @@ import { prepareBrowserEvalExpression } from "./browser-eval-helpers.js";
 import { ELEMENT_NAME_JS } from "./_element-name-js.js";
 import { jsLiteral } from "../utils/js-literal.js";
 import { SELECT_PICK_JS } from "./_select-pick-js.js";
+import { FILL_KIND_JS } from "./_fill-kind-js.js";
 import { UNIQUE_SELECTOR_JS } from "./_unique-selector-js.js";
 import { buildPressPointJs, buildCoverJs, buildPressGuardJs, buildReadPressGuardJs, buildSaveScrollJs, buildRestoreScrollJs, coverSentence, type PageCover, type PressPoint } from "./press-landing.js";
 import { buildCandidateCollectionJs, buildTagResolvedJs, buildUntagJs, PRESS_TAG_ATTR, resolveBrowserActionTarget, scrollResolvedCandidateIntoView, buildFillActJs, buildPageLevelModalFactsJs, detectModal, probeSelectorModalOcclusion, type ResolveActionOutcome, type ModalFacts, type ModalVerdict } from "./browser-resolver.js";
@@ -1554,7 +1555,7 @@ async function handleBrowserFillByAxis(args: {
     { by, pattern, role, scope, caseSensitive: caseSensitive ?? false, ...(outcome.axMark !== undefined && { axMark: outcome.axMark }) },
     outcome.index, outcome.climbDepth, value, outcome.matched,
   );
-  let actResult: { ok: boolean; error?: string; detail?: string; tag?: string; kind?: string; selectError?: string; actual?: string; actualWithheld?: boolean; fullActualLen?: number; fullMatches?: boolean; chose?: string; select?: boolean };
+  let actResult: { ok: boolean; error?: string; detail?: string; tag?: string; kind?: string; readOnlyChoice?: boolean; afterFocus?: boolean; selectError?: string; actual?: string; actualWithheld?: boolean; fullActualLen?: number; fullMatches?: boolean; chose?: string; select?: boolean };
   try {
     actResult = await evaluateInTab(actExpr, outcome.tabId ?? tabId ?? null, port) as typeof actResult;
   } finally {
@@ -1565,21 +1566,7 @@ async function handleBrowserFillByAxis(args: {
   // A native select the by-axis road refused, untouched: the selector road's answers (internal #420).
   if (!actResult.ok && actResult.selectError) return selectRefusal(actResult.selectError, ctx);
   if (!actResult.ok) {
-    if (actResult.error === "not_fillable") {
-      return failCode(
-        "BrowserNoActionableTarget",
-        `browser_fill: the resolved <${actResult.tag ?? "element"}> is not a fillable input/textarea/contenteditable.`,
-        {
-          // A choice is not typed (internal #420: a select widget was pointed at role:'textbox'). Fixed strings only.
-          suggest: actResult.kind === "widget" ? FILL_HINTS_CHOICE_WIDGET
-            : actResult.kind === "option" ? FILL_HINTS_OPTION
-            : actResult.kind === "toggle" ? FILL_HINTS_TOGGLE
-            : actResult.kind === "textlike" ? FILL_HINTS_TEXTLIKE
-            : FILL_HINTS_NOT_FILLABLE,
-          context: ctx,
-        },
-      );
-    }
+    if (actResult.error === "not_fillable") return notFillable(actResult, ctx);
     // identity_changed / index_out_of_range / resolved_element_lost: the DOM
     // mutated between the resolve gather and the act re-gather — fail WITHOUT
     // writing so we never fill the wrong field.
@@ -1615,6 +1602,28 @@ const FILL_HINTS_SELECT_MULTIPLE: string[] = [
 const FILL_HINTS_SELECT_DISABLED: string[] = [
   "The <select> or that option is disabled, so a person cannot choose it",
 ];
+/**
+ * An element browser_fill does not type into, on either road (internal #420): its next steps by what it is. A choice is
+ * not typed (a select widget was pointed at role:'textbox'). A read-only input of a choice widget says so; refused after
+ * its focus, the answer says focus moved (the page may have opened its list). Fixed strings only.
+ */
+function notFillable(
+  r: { tag?: string; kind?: string; readOnlyChoice?: boolean; afterFocus?: boolean },
+  context: Record<string, unknown>,
+): ToolResult {
+  const what = r.readOnlyChoice
+    ? `browser_fill: the resolved <${r.tag ?? "input"}> is a read-only input of a choice widget; it takes no text.` +
+      (r.afterFocus ? " It took focus first, so its list may be open." : " Nothing was changed.")
+    : `browser_fill: the resolved <${r.tag ?? "element"}> is not a fillable input/textarea/contenteditable.`;
+  return failCode("BrowserNoActionableTarget", what, {
+    suggest: r.kind === "widget" ? FILL_HINTS_CHOICE_WIDGET
+      : r.kind === "option" ? FILL_HINTS_OPTION
+      : r.kind === "toggle" ? FILL_HINTS_TOGGLE
+      : r.kind === "textlike" ? FILL_HINTS_TEXTLIKE
+      : FILL_HINTS_NOT_FILLABLE,
+    context,
+  });
+}
 /** A native select browser_fill refused, on either road (internal #420, /code-review on #1024 and #1025). */
 function selectRefusal(err: string, context: Record<string, unknown>): ToolResult {
   const ctx = { context };
@@ -1687,13 +1696,23 @@ export const browserFillInputHandler = async ({
 ${ELEMENT_NAME_JS}
 ${SELECT_PICK_JS}
   if (el.tagName === 'SELECT') { const pk = __pickOption(el, ${jsLiteral(value)}); if (pk.error) return { ok: false, selectError: pk.error }; }
+  // A read-only input that is a choice widget takes no text, as on the by-axis road (/code-review on #1023).
+${FILL_KIND_JS}
+  const __ty = (el.getAttribute('type') || '').toLowerCase();
+  const __tagTy = el.tagName.toLowerCase() + (__ty ? '[type=' + __ty + ']' : '');
+  if (__choiceInput(el, null)) return { ok: false, notFillable: true, tag: __tagTy, kind: 'widget', readOnlyChoice: true };
+  // An element with no value to set and no editable text (a div, a span, a widget's box) was given a value expando that
+  // read back as a match: reported filled, nothing changed (/code-review on this PR). A custom element with a value
+  // property (Shoelace, Material Web) still takes it.
+  if (!el.isContentEditable && !('value' in el)) return { ok: false, notFillable: true, tag: __tagTy, kind: __fillKind(el, null) };
   el.focus();
   const tag = el.tagName.toLowerCase();
   const type = el.getAttribute('type') || '';
   return { ok: true, tag, type };
 })()`;
-    const focusResult = await evaluateInTab(focusExpr, tabId ?? null, port) as { ok: boolean; error?: string; selectError?: string; tag?: string; type?: string };
+    const focusResult = await evaluateInTab(focusExpr, tabId ?? null, port) as { ok: boolean; error?: string; selectError?: string; notFillable?: boolean; tag?: string; kind?: string; readOnlyChoice?: boolean; afterFocus?: boolean; type?: string };
     if (!focusResult.ok && focusResult.selectError) return selectRefusal(focusResult.selectError, { selector });
+    if (!focusResult.ok && focusResult.notFillable) return notFillable(focusResult, { selector });
     if (!focusResult.ok) {
       return failWith(focusResult.error ?? "browser_fill: focus failed", "browser_fill");
     }
@@ -1727,7 +1746,19 @@ ${SELECT_PICK_JS}
     if (pk.error) return { ok: false, selectError: pk.error };
     return __setPickedOption(el, pk, maskedBefore, ${jsLiteral(value)});
   }
+  // Read-only and a choice widget once the page's focus handlers ran: nothing is written.
+${FILL_KIND_JS}
+  if (__choiceInput(el, null)) return { ok: false, notFillable: true, tag: 'input' + (el.getAttribute('type') ? '[type=' + el.getAttribute('type').toLowerCase() + ']' : ''), kind: 'widget', readOnlyChoice: true, afterFocus: true };
   el.focus();
+  // A contenteditable with no value property takes its text, as on the by-axis road: a value expando changed nothing
+  // and read back as a match (/code-review on this PR).
+  if (el.isContentEditable && !('value' in el)) {
+    el.textContent = ${jsLiteral(value)};
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: ${jsLiteral(value)} }));
+    const ceText = el.textContent || '';
+    const ceMasked = maskedBefore || __isMasked(el);
+    return { ok: true, actual: ceMasked ? undefined : ceText.slice(0, 100), actualWithheld: ceMasked || undefined, fullActualLen: ceText.length, fullMatches: ceText === ${jsLiteral(value)} };
+  }
   // Select all existing content before replacing
   if (typeof el.select === 'function') {
     el.select();
@@ -1763,8 +1794,9 @@ ${SELECT_PICK_JS}
   };
 })()`;
     const fillResult = await evaluateInTab(fillExpr, tabId ?? null, port) as
-      { ok: boolean; error?: string; selectError?: string; actual?: string; actualWithheld?: boolean; fullActualLen?: number; fullMatches?: boolean; chose?: string; select?: boolean };
+      { ok: boolean; error?: string; selectError?: string; notFillable?: boolean; tag?: string; kind?: string; readOnlyChoice?: boolean; afterFocus?: boolean; actual?: string; actualWithheld?: boolean; fullActualLen?: number; fullMatches?: boolean; chose?: string; select?: boolean };
     if (!fillResult.ok && fillResult.selectError) return selectRefusal(fillResult.selectError, { selector });
+    if (!fillResult.ok && fillResult.notFillable) return notFillable(fillResult, { selector });
     // Verify + shape the result (shared with the by-axis path). `identity` =
     // { selector } so the failure context + success response keep the exact
     // selector-mode keys/order (bit-equal, AC-9).
@@ -4432,7 +4464,7 @@ export function registerBrowserTools(server: McpServer): void {
     "browser_fill",
     {
       description:
-        "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Two ways to target: (1) selector — a CSS selector (use browser_overview / browser_locate to find one); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern (e.g. by:'ariaLabel', pattern:'Email address', or by:'role', pattern:'textbox'), so you do not have to build a CSS selector. by-axis resolves to a SINGLE fillable element and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ match, or code:'BrowserNoActionableTarget' when the match is not a fillable input/textarea/contenteditable/select — it never guesses. Optionally add role to filter and scope to narrow. Provide EITHER selector OR by+pattern (not both). Use this over browser_eval when setting a controlled input's value via JS does not update framework state. A native <select> takes the option whose value is value, else the one option showing that text (chose names it); a value no option has, a disabled or multiple select, or one a widget stands in for is refused untouched. Caveats: Requires browser_open (CDP active). actual in the response shows the element's value after fill; verify it matches the intended value (for a field the page masks, such as a password, neither the value you passed nor the one read back is echoed — valueWithheld:'masked' — and the match is still checked, in the page). Typed errors: code:'BrowserFillNotDelivered' on post-fill value mismatch — note the false-positive case where a React controlled input's onChange transforms the value (delivery actually succeeded; hints.verifyDelivery.subReason:'controlled_input_transform' for that case; the actual value is authoritative).",
+        "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Two ways to target: (1) selector — a CSS selector (use browser_overview / browser_locate to find one); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern (e.g. by:'ariaLabel', pattern:'Email address', or by:'role', pattern:'textbox'), so you do not have to build a CSS selector. by-axis resolves to a SINGLE fillable element and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ match, or code:'BrowserNoActionableTarget' when the match is not a fillable input/textarea/contenteditable/select — it never guesses. Optionally add role to filter and scope to narrow. Provide EITHER selector OR by+pattern (not both). Use this over browser_eval when setting a controlled input's value via JS does not update framework state. A native <select> takes the option whose value is value, else the one option showing that text (chose names it); a value no option has, a disabled or multiple select, or one a widget stands in for is refused untouched, as is a read-only input of a choice widget (choose by pressing). Caveats: Requires browser_open (CDP active). actual in the response shows the element's value after fill; verify it matches the intended value (for a field the page masks, such as a password, neither the value you passed nor the one read back is echoed — valueWithheld:'masked' — and the match is still checked, in the page). Typed errors: code:'BrowserFillNotDelivered' on post-fill value mismatch — note the false-positive case where a React controlled input's onChange transforms the value (delivery actually succeeded; hints.verifyDelivery.subReason:'controlled_input_transform' for that case; the actual value is authoritative).",
       inputSchema: browserFillRegistrationSchema,
     },
     browserFillRegistrationHandler as typeof browserFillInputHandler

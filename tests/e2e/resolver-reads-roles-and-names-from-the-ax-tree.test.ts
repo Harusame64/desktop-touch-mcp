@@ -512,6 +512,71 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     expect(await marks()).toBe(0);
   });
 
+  it("does not type into a read-only input that is a choice widget, on either road (internal #420, /code-review on #1023)", async () => {
+    const out = async (a: Record<string, unknown>) => JSON.parse(((await browserFillInputHandler({ ...a, value: "Banana", port: PORT, includeContext: false } as never)).content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { ok?: boolean; code?: string; suggest?: string[] };
+    const val = () => evaluateInTab("document.getElementById('ro').value", null, PORT);
+    // Vuetify / MUI: a read-only input the tree calls a combobox. On main both roads wrote "Banana" and said delivered.
+    // Refused before focus moves: focus stays where it was.
+    const RO = `<label for="ro">Fruit</label><input id="ro" role="combobox" readonly aria-expanded="false" value="Apple" style="margin:40px"><button id="other" style="margin:40px">Other</button>`;
+    for (const a of [{ selector: "#ro" }, { by: "ariaLabel", pattern: "Fruit" }]) {
+      await page(RO);
+      await evaluateInTab("document.getElementById('other').focus();true", null, PORT);
+      const r = await out(a);
+      expect(r.code).toBe("BrowserNoActionableTarget");
+      expect(r.suggest?.[0]).toMatch(/^A choice widget/);
+      expect(await val()).toBe("Apple");
+      expect(await evaluateInTab("document.activeElement.id", null, PORT)).toBe("other");
+    }
+    // Ant Design: the read-only search input inside the selector, which opens a listbox; no role on the input itself.
+    await page(`<div class="ant-select" role="combobox" aria-haspopup="listbox" style="margin:40px"><span><input id="ro" readonly value="Apple"></span></div>`);
+    expect((await out({ selector: "#ro" })).code).toBe("BrowserNoActionableTarget");
+    expect(await val()).toBe("Apple");
+    // Read-only only to assistive technology (aria-readonly): the same.
+    await page(`<label for="ro">Fruit</label><input id="ro" role="combobox" aria-readonly="true" value="Apple" style="margin:40px">`);
+    expect((await out({ selector: "#ro" })).code).toBe("BrowserNoActionableTarget");
+    expect((await out({ by: "ariaLabel", pattern: "Fruit" })).code).toBe("BrowserNoActionableTarget");
+    expect(await val()).toBe("Apple");
+    // A page that makes it read-only when it takes focus is caught after focus, before the write, on both roads; the
+    // answer says it took focus.
+    for (const a of [{ selector: "#ro" }, { by: "ariaLabel", pattern: "Fruit" }]) {
+      await page(`<label for="ro">Fruit</label><input id="ro" role="combobox" value="Apple" style="margin:40px">`);
+      await evaluateInTab(`(function(){var i=document.getElementById('ro');i.focus=function(){HTMLElement.prototype.focus.call(this);this.readOnly=true;};return true})()`, null, PORT);
+      const r = await out(a) as { code?: string; error?: string };
+      expect(r.code).toBe("BrowserNoActionableTarget");
+      expect(r.error).toMatch(/read-only input of a choice widget.*took focus/);
+      expect(await val()).toBe("Apple");
+    }
+    // role:'textbox' does not count it as a text field (the tree calls it a combobox): the one name field is filled.
+    await page(`<label for="nm">Name</label><input id="nm" style="margin:40px"><label for="ro">Fruit</label><input id="ro" role="combobox" readonly value="Apple" style="margin:40px">`);
+    expect((await out({ by: "role", pattern: "textbox" })).ok).toBe(true);
+    expect(await evaluateInTab("document.getElementById('nm').value", null, PORT)).toBe("Banana");
+    // The selector road no longer reports a value set on an element that holds none (a div widget's box): refused with
+    // the widget's steps. A contenteditable takes its text, as on the by-axis road; a custom element with a value
+    // property still takes the value (controls).
+    await page(`<div id="aw" role="combobox" aria-haspopup="listbox" tabindex="0" style="margin:40px">Apple</div>`);
+    const aw = await out({ selector: "#aw" });
+    expect(aw.code).toBe("BrowserNoActionableTarget");
+    expect(aw.suggest?.[0]).toMatch(/^A choice widget/);
+    expect(await evaluateInTab("'value' in document.getElementById('aw')", null, PORT)).toBe(false);
+    await page(`<div id="ce" contenteditable="true" style="margin:40px">old</div>`);
+    expect((await out({ selector: "#ce" })).ok).toBe(true);
+    expect(await evaluateInTab("document.getElementById('ce').textContent", null, PORT)).toBe("Banana");
+    await page(`<x-field id="xf" style="display:block;margin:40px"></x-field>`);
+    await evaluateInTab(`(function(){customElements.define('x-field', class extends HTMLElement { get value(){return this._v||''} set value(v){this._v=String(v)} });return true})()`, null, PORT);
+    expect((await out({ selector: "#xf" })).ok).toBe(true);
+    expect(await evaluateInTab("document.getElementById('xf').value", null, PORT)).toBe("Banana");
+    // Controls, unchanged: a combobox a person types into (an autocomplete) is filled on both roads, and a read-only
+    // input that opens no list is written as before.
+    for (const a of [{ selector: "#ro" }, { by: "ariaLabel", pattern: "Fruit" }]) {
+      await page(`<label for="ro">Fruit</label><input id="ro" role="combobox" aria-autocomplete="list" value="" style="margin:40px">`);
+      expect((await out(a)).ok).toBe(true);
+      expect(await val()).toBe("Banana");
+    }
+    await page(`<label for="ro">Fruit</label><input id="ro" readonly value="Apple" style="margin:40px">`);
+    expect((await out({ selector: "#ro" })).ok).toBe(true);
+    expect(await marks()).toBe(0);
+  });
+
   it("sets a native select as a person picks an option, and leaves it alone otherwise (internal #420, /code-review on #1024)", async () => {
     // A value no option has used to clear the choice (selectedIndex -1) and fire change (measured on #1023).
     await page(`<input id="em" aria-label="Email" style="margin:40px"><select id="sz" onchange="window.ch=(window.ch||0)+1" style="margin:40px"><option value="s">Small</option><option value="m" selected>Medium</option><option value="l" label="Large">L size</option><option value="d1">Same</option><option value="d2">Same</option><option value="x" disabled>Sold out</option><option value="2">1</option><option value="1">One</option></select>
