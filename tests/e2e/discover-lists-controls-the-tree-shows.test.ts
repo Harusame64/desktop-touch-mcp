@@ -240,10 +240,10 @@ describe.skipIf(!CHROME)("desktop_discover's browser lane lists the controls the
     await page(rows(["Beta", "Gamma"]));
     const after = resolveCandidates((await fetchBrowserCandidates({ tabId } as never)).candidates, "g2");
     expect(after.find((e) => e.label === "Delete — Beta")?.entityId).toBe(betaId);
-    // Rows alike in their text too: listed apart, numbered for the reader.
+    // Rows alike in their text too: their shared words tell nothing apart, so they are listed apart by number.
     await page(rows(["Same", "Same"]));
     const twins = resolveCandidates((await fetchBrowserCandidates({ tabId } as never)).candidates, "g3").filter((e) => e.label.startsWith("Delete"));
-    expect(twins.map((e) => e.label).sort()).toEqual(["Delete — Same (1 of 2)", "Delete — Same (2 of 2)"]);
+    expect(twins.map((e) => e.label).sort()).toEqual(["Delete — (1 of 2)", "Delete — (2 of 2)"]);
     expect(new Set(twins.map((e) => e.entityId)).size).toBe(2);
     const names = async (): Promise<string[]> => resolveCandidates((await fetchBrowserCandidates({ tabId } as never)).candidates, "g").map((e) => e.label).sort();
     // A secret the page hides beside its dots is not read into a name (/code-review on #1026).
@@ -261,9 +261,13 @@ describe.skipIf(!CHROME)("desktop_discover's browser lane lists the controls the
     expect((await names()).filter((l) => l.startsWith("Default radio"))).toEqual(["Default radio — Inline", "Default radio — Radios"]);
     // Links of one name: to one place they are one target and keep their name; to different places, the heading before
     // their block names each, not the link beside them (win2 on #1026: footer links).
-    await page(`<nav><a href="/help">Help</a><a href="/lists">Your Lists</a></nav><footer><h4>Support</h4><div><a href="/help2">Help</a><a href="/about">About</a></div></footer>`);
+    await page(`<h2>Products</h2><nav aria-label="Main menu"><a href="/help">Help</a><a href="/lists">Your Lists</a></nav><h2>Security</h2><footer><div><a href="/help2">Help</a><a href="/about">About</a></div></footer>`);
     const links = (await names()).filter((l) => l.startsWith("Help"));
-    expect(links).toEqual(["Help — Support", "Help — navigation"]);
+    // The landmark, not the heading above it, which belongs to the content (win2 on #1026).
+    expect(links).toEqual(["Help — Main menu", "Help — footer"]);
+    // Two heading-less blocks after one heading: the shared heading tells them apart from nothing, so only numbers.
+    await page(`<h2>Security</h2><div><button>Read</button><span>A</span></div><div><button>Read</button><span>B</span></div>`);
+    expect((await names()).filter((l) => l.startsWith("Read"))).toEqual(["Read — (1 of 2)", "Read — (2 of 2)"]);
     await page(`<a href="/same">Home</a><div><a href="/same">Home</a></div>`);
     expect((await names()).filter((l) => l.startsWith("Home"))).toEqual(["Home"]);
   });

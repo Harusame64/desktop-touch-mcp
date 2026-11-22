@@ -108,8 +108,9 @@ ${UNIQUE_SELECTOR_JS}
   function bestSel(el) { return __uniqueSelector(el, () => performance.now() > selDeadline); }
   // What tells controls that share a name apart, as a person reads it (the user's decision, internal #420): the
   // smallest block that holds this control and none of its namesakes (a table row, a product card, an example's box),
-  // named by its heading; a row or an item by its words; any other block by the heading before it (Bootstrap's
-  // examples), else the landmark it sits in, else its words. Read node by node: the control itself and its own labels left out, and nothing the page
+  // named by its heading; a row or an item by its words; a block in a nav, header, footer or sidebar by that landmark;
+  // any other block by the heading before it (Bootstrap's examples), else its landmark, else its words. Words all its
+  // namesakes share are left off. Read node by node: the control itself and its own labels left out, and nothing the page
   // does not show as text: an entry, a masked part, a script or style, an element hidden (hidden, display none,
   // visibility hidden) (/code-review on #1026: a secret in a display:none span was read into a label). Words of
   // separate elements are kept apart, and the result is cut at a word, not mid-word (win2 on #1026).
@@ -180,7 +181,11 @@ ${UNIQUE_SELECTOR_JS}
       return kinds[role] || kinds[lm.tagName.toLowerCase()] || '';
     };
     const isRow = __matches(unit, 'tr,[role=row],li,[role=listitem],article,[role=article],[role=option]');
-    const t = shownIn('h1,h2,h3,h4,h5,h6,[role=heading]') || (isRow ? wordsOf(unit, el) : '') || before() || landmark() || wordsOf(unit, el);
+    // A block in a nav, header, footer or sidebar takes that landmark before a heading above it, which belongs to the
+    // content and not to the landmark (win2 on #1026: a nav link named by a product card's heading).
+    const inChrome = !!__closest(unit, 'nav,header,footer,aside,[role=navigation],[role=banner],[role=contentinfo],[role=complementary]');
+    const t = shownIn('h1,h2,h3,h4,h5,h6,[role=heading]') || (isRow ? wordsOf(unit, el) : '')
+      || (inChrome ? landmark() : '') || before() || landmark() || wordsOf(unit, el);
     return cutAtWord(t, 48);
   }
   function elType(el) {
@@ -277,6 +282,9 @@ ${ELEMENT_NAME_JS}
       const ctx = blockName(it.__el, els.filter(function(o) { return o !== it.__el; }));
       if (ctx && ctx !== (it.text || it.href)) it.ctx = ctx;
     });
+    // Words every namesake shares tell none apart (two heading-less blocks after one heading): left off, so the reader
+    // sees the numbering alone, not a borrowed heading (win2 on #1026).
+    if (group.every(function(it) { return it.ctx && it.ctx === group[0].ctx; })) group.forEach(function(it) { delete it.ctx; });
   });
   out.forEach(function(it) { delete it.__el; });
   return out;
