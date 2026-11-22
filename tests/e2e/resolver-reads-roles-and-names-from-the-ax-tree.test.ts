@@ -10,7 +10,7 @@ import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chro
 import { sleep } from "./helpers/wait.js";
 import { evaluateInTab, disconnectAll, markAxMatches, clearAxMarks, getScrollAncestorsCdp } from "../../src/engine/cdp-bridge.js";
 import { resolveBrowserActionTarget, type ResolveActionOutcome } from "../../src/tools/browser-resolver.js";
-import { browserClickElementHandler, readPressLanding, browserFillInputHandler, browserSearchHandler } from "../../src/tools/browser.js";
+import { browserClickElementHandler, readPressLanding, browserFillInputHandler } from "../../src/tools/browser.js";
 import { buildPressPointJs, buildCoverJs, buildSaveScrollJs } from "../../src/tools/press-landing.js";
 
 const PORT = 9238;
@@ -451,16 +451,15 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     const w = await fill({ by: "ariaLabel", pattern: "Fruit" });
     expect(w.code).toBe("BrowserNoActionableTarget");
     expect(w.suggest?.[0]).toMatch(/^A choice widget/);
-    // A native <select>: one of its options. The hint's road works as written: its selector from browser_search, then
-    // browser_fill({selector, value: an option's value}) (/code-review on #1023: the first hint denied this road).
+    // A native <select> found by its name is set in one call, by the selector road's pick rule (the user's decision
+    // after #1024): by an option's value, or by the shown text of one option; a value no option has is refused untouched.
     await page(`<label for="ns">Size</label><select id="ns" style="margin:40px"><option value="s">Small</option><option value="m">Medium</option></select>`);
-    const n = await fill({ by: "ariaLabel", pattern: "Size" });
-    expect(n.code).toBe("BrowserNoActionableTarget");
-    expect(n.suggest?.[0]).toMatch(/^A native <select>/);
-    const found = JSON.parse(((await browserSearchHandler({ by: "ariaLabel", pattern: "Size", maxResults: 5, offset: 0, visibleOnly: true, inViewportOnly: false, caseSensitive: false, port: PORT } as never)).content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { results: Array<{ selector: string }> };
-    const set = await browserFillInputHandler({ selector: found.results[0].selector, value: "m", port: PORT, includeContext: false } as never);
-    expect((set.content[0] as { text: string }).text).toMatch(/"ok":true/);
+    const byAxis = async (value: string) => JSON.parse(((await browserFillInputHandler({ by: "ariaLabel", pattern: "Size", value, port: PORT, includeContext: false } as never)).content[0] as { text: string }).text.replace(/^[^{]*/, "")) as { ok?: boolean; code?: string; chose?: string };
+    expect((await byAxis("m")).ok).toBe(true);
     expect(await evaluateInTab("document.getElementById('ns').value", null, PORT)).toBe("m");
+    expect(await byAxis("Small")).toMatchObject({ ok: true, chose: "s" });
+    expect((await byAxis("Large")).code).toBe("InvalidArgs");
+    expect(await evaluateInTab("document.getElementById('ns').value", null, PORT)).toBe("s");
     // A select a person does not see stands behind a widget (Choices): the widget's next steps, not the select's.
     await page(`<label for="hs">Flavour</label><select id="hs" style="position:absolute;opacity:0;width:200px"><option value="v">Vanilla</option></select><span role="combobox" tabindex="0" style="display:inline-block;margin-left:220px">Vanilla</span>`);
     expect((await fill({ by: "ariaLabel", pattern: "Flavour" })).suggest?.[0]).toMatch(/^A choice widget/);

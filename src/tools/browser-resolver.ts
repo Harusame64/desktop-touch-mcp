@@ -20,6 +20,7 @@ import { AX_MARK_ATTR, clearAxMarks, evaluateInTab, getPageZoom, markAxMatches, 
 import { ELEMENT_NAME_JS, SAFE_DOM_JS } from "./_element-name-js.js";
 import { UNIQUE_SELECTOR_JS } from "./_unique-selector-js.js";
 import { jsLiteral } from "../utils/js-literal.js";
+import { SELECT_PICK_JS } from "./_select-pick-js.js";
 import { pressLandingRuleJs } from "./press-landing.js";
 
 export interface CandidateCollectionArgs {
@@ -703,8 +704,27 @@ export function buildFillActJs(
   const isTextInput = tag === 'INPUT' && !/^(button|submit|reset|checkbox|radio|range|color|file|image|hidden)$/.test(ty);
   const isTextArea = tag === 'TEXTAREA';
   const isEditable = el.isContentEditable === true;
+  // A native <select> is set as the selector road sets it, by the same pick rule (the user's decision on #1024's
+  // follow-up: the by-axis call takes it in one step, not three). Refusals come back as selectError, untouched.
+  if (tag === 'SELECT') {
+${SELECT_PICK_JS}
+    const pk = __pickOption(el, ${jsLiteral(value)});
+    if (pk.error) return { ok: false, selectError: pk.error };
+    const smaskedBefore = __isMasked(el);
+    const chosen = pk.opt.value;
+    el.focus();
+    if (el.selectedIndex !== pk.idx) {
+      const sd = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'selectedIndex');
+      if (sd && sd.set) sd.set.call(el, pk.idx); else el.selectedIndex = pk.idx;
+      el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    const smasked = smaskedBefore || __isMasked(el);
+    return { ok: true, actual: smasked ? undefined : (el.value || '').slice(0, 100), actualWithheld: smasked || undefined,
+      fullActualLen: (el.value || '').length, fullMatches: el.value === chosen, chose: smasked ? undefined : chosen, select: true };
+  }
   if (!isTextInput && !isTextArea && !isEditable) {
-    // What it is, for the next steps (internal #420): a native select (an <option> climbs to it), an option, a toggle, a
+    // What it is, for the next steps (internal #420): an option, a toggle, a
     // choice widget that opens a list, something named a text field, or anything else. A list shown as it is never
     // resolves: its options are what a press takes (#1008). Roles: every token of the attribute and the tree's
     // computed role; a part inside a widget (Select2's rendered value, role textbox) is the widget's.
@@ -714,15 +734,8 @@ export function buildFillActJs(
     const hasRole = function(r) { return roleToks.indexOf(r) >= 0; };
     const popup = (el.getAttribute('aria-haspopup') || '').toLowerCase();
     let kind = 'other';
-    // An <option> of a listbox select climbs to its select, which is what resolves (measured on #1023). A select a
-    // person does not see (hidden, no box, transparent) stands behind a widget: setting it changed Choices' select but
-    // not what the widget shows (win2 on #1023), so it gets the widget's next steps.
-    if (tag === 'SELECT') {
-      // Behind a widget only when one stands in for it (an opacity:0 select over a styled label is set as it is), and
-      // in the order the selector road's pick rule uses (/code-review on #1024).
-      kind = __standInFor(el) ? 'widget' : el.multiple ? 'multi' : 'select';
-    }
-    else if (hasRole('option') || hasRole('menuitem') || hasRole('menuitemradio') || hasRole('menuitemcheckbox')) kind = 'option';
+    // A native select never reaches here: it is set above, or refused by the pick rule.
+    if (hasRole('option') || hasRole('menuitem') || hasRole('menuitemradio') || hasRole('menuitemcheckbox')) kind = 'option';
     else if (tag === 'INPUT' && /^(checkbox|radio)$/.test(ty) || hasRole('checkbox') || hasRole('radio') || hasRole('switch')) kind = 'toggle';
     // A menu holds commands, not choices: only a list popup or a combobox is a choice widget (/code-review on #1023).
     // Chrome's tree already calls a button or div[role=button] with aria-haspopup=listbox a combobox (measured on
