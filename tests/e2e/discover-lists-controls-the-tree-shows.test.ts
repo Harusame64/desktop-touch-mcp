@@ -240,11 +240,25 @@ describe.skipIf(!CHROME)("desktop_discover's browser lane lists the controls the
     await page(rows(["Beta", "Gamma"]));
     const after = resolveCandidates((await fetchBrowserCandidates({ tabId } as never)).candidates, "g2");
     expect(after.find((e) => e.label === "Delete — Beta")?.entityId).toBe(betaId);
-    // Rows alike in their text too: still listed apart.
+    // Rows alike in their text too: listed apart, numbered for the reader.
     await page(rows(["Same", "Same"]));
     const twins = resolveCandidates((await fetchBrowserCandidates({ tabId } as never)).candidates, "g3").filter((e) => e.label.startsWith("Delete"));
-    expect(twins).toHaveLength(2);
+    expect(twins.map((e) => e.label).sort()).toEqual(["Delete — Same (1 of 2)", "Delete — Same (2 of 2)"]);
     expect(new Set(twins.map((e) => e.entityId)).size).toBe(2);
+    const names = async (): Promise<string[]> => resolveCandidates((await fetchBrowserCandidates({ tabId } as never)).candidates, "g").map((e) => e.label).sort();
+    // A secret the page hides beside its dots is not read into a name (/code-review on #1026).
+    await page(`<table>${["Prod", "Test"].map((n) => `<tr><td>${n}</td><td><span>••••</span><span style="display:none">sk_live_${n}</span></td><td><button>Copy</button></td></tr>`).join("")}</table>`);
+    const keys = await names();
+    expect(keys.filter((l) => l.startsWith("Copy"))).toEqual(["Copy — Prod ••••", "Copy — Test ••••"]);
+    expect(keys.join(" ")).not.toContain("sk_live");
+    // Product cards: the card's heading names it, not the ad disclosure its text starts with (win2 on #1026: Amazon).
+    const card = (t: string) => `<div class="card"><span>Sponsored</span><h2><a href="#${t}">${t}</a></h2><p>4.6 out of 5 stars</p><button>Add to cart</button></div>`;
+    await page(card("USB-C Cable 2m") + card("USB-C Cable 1m"));
+    expect((await names()).filter((l) => l.startsWith("Add to cart"))).toEqual(["Add to cart — USB-C Cable 1m", "Add to cart — USB-C Cable 2m"]);
+    // Examples with no name of their own take the heading before them (win2 on #1026: Bootstrap's checks).
+    const ex = (h: string, id: string) => `<h3>${h}</h3><div class="example"><input type="radio" id="${id}" name="${id}"><label for="${id}">Default radio</label></div>`;
+    await page(ex("Radios", "r1") + ex("Inline", "r2"));
+    expect((await names()).filter((l) => l.startsWith("Default radio"))).toEqual(["Default radio — Inline", "Default radio — Radios"]);
   });
 
   it("does not list a div slider it could not press", async () => {

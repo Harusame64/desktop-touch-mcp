@@ -26,6 +26,17 @@ import { bakeEntityCapabilities } from "../capabilities/registry.js";
 import { isUiaCacheStale } from "../engine/identity-tracker.js";
 import type { AttentionState } from "../engine/perception/types.js";
 
+
+/**
+ * Whether a desktop_discover `query` (lowercased) matches an entity: its label, or for a Word page body the lines
+ * visible on it (internal #217 part 2). A label with its row's words added (labelContext) is matched by the control's
+ * own name: a query for a row's name ("Beta") does not return that row's "Delete" (internal #420, /code-review on #1026).
+ */
+export function entityMatchesQuery(e: UiEntity, q: string): boolean {
+  const own = e.labelContext && e.label?.endsWith(` — ${e.labelContext}`) ? e.label.slice(0, -(e.labelContext.length + 3)) : e.label;
+  return !!(own?.toLowerCase().includes(q) || e.locator?.uia?.visibleText?.toLowerCase().includes(q));
+}
+
 export type { ViewConstraints, EntityCapabilities };
 
 // ── Input / Output types ──────────────────────────────────────────────────────
@@ -718,8 +729,7 @@ export class DesktopFacade {
       const q = input.query.toLowerCase();
       const read = resolved.length;
       // internal #217 part 2 — a Word page body also by the lines visible on it; its label is its name.
-      resolved = resolved.filter((e) =>
-        e.label?.toLowerCase().includes(q) || e.locator?.uia?.visibleText?.toLowerCase().includes(q));
+      resolved = resolved.filter((e) => entityMatchesQuery(e, q));
       queryFoundNothing = read > 0 && resolved.length === 0;
     }
 

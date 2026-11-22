@@ -169,6 +169,8 @@ export interface UiEntity {
    * still addressed by its AutomationId.
    */
   labelInferred?: boolean;
+  /** internal #420 — the row words added to `label` to tell same-named controls apart; a query leaves them out. */
+  labelContext?: string;
 
   /**
    * Current value of the entity (UIA ValuePattern, CDP el.value, terminal prompt text).

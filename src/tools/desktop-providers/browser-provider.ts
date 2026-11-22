@@ -25,8 +25,8 @@ interface BrowserElement {
   text: string;
   selector: string;
   inViewport: boolean;
-  /** The words of the row or item it sits in, for telling repeats apart (rowText). */
-  row?: string;
+  /** What tells it apart from controls that share its name (blockName), when one does. */
+  ctx?: string;
   href?: string;
   value?: string;
 }
@@ -106,21 +106,64 @@ export function interactiveScript(axNonce: string | null): string {
 ${UNIQUE_SELECTOR_JS}
   const selDeadline = performance.now() + 3000;
   function bestSel(el) { return __uniqueSelector(el, () => performance.now() > selDeadline); }
-  // The words of the row or item a control sits in, beside its own: what a person reads to tell two "Delete" buttons
-  // apart (the user's decision, internal #420). A table row gives its other cells; a list item, a row or an article its
-  // text without the control's. Empty when the control sits in no such row.
-  function rowText(el) {
-    const row = __closest(el, 'tr,[role=row],li,[role=listitem],article,[role=article]');
-    if (!row) return '';
-    let t = '';
-    if (row.tagName === 'TR') {
-      t = Array.from(row.cells || []).filter(function(c) { return !__contains(c, el); }).map(function(c) { return __textWithoutFields(c); }).filter(Boolean).join(' ');
-    } else {
-      const own = __textWithoutFields(el);
-      t = __textWithoutFields(row);
-      if (own) t = t.replace(own, ' ');
+  // What tells controls that share a name apart, as a person reads it (the user's decision, internal #420): the
+  // smallest block that holds this control and none of its namesakes (a table row, a product card, an example's box),
+  // named by its heading, else its first link, else its words; a block with none of those takes the heading before it
+  // (Bootstrap's examples). Read node by node: the control itself and its own labels left out, and nothing the page
+  // does not show as text: an entry, a masked part, a script or style, an element hidden (hidden, display none,
+  // visibility hidden) (/code-review on #1026: a secret in a display:none span was read into a label). Words of
+  // separate elements are kept apart, and the result is cut at a word, not mid-word (win2 on #1026).
+  const __shownEl = function(n) {
+    if (n.hidden) return false;
+    const cs = getComputedStyle(n);
+    return cs.display !== 'none' && cs.visibility !== 'hidden';
+  };
+  function wordsOf(node, skip) {
+    const out = [];
+    let len = 0;
+    (function walk(n) {
+      for (const c of n.childNodes) {
+        if (len > 120) return;
+        if (c.nodeType === 3) { const t = c.nodeValue.trim(); if (t) { out.push(t); len += t.length + 1; } continue; }
+        if (c.nodeType !== 1 || c === skip) continue;
+        if (c.tagName === 'LABEL' && skip && c.control === skip) continue;
+        if (__isEntry(c) || __isMasked(c) || __skipsText(c) || !__shownEl(c)) continue;
+        walk(c);
+      }
+    })(node);
+    return out.join(' ').replace(/\\s+/g, ' ').trim();
+  }
+  function cutAtWord(t, max) {
+    if (t.length <= max) return t;
+    const cut = t.slice(0, max);
+    const sp = cut.lastIndexOf(' ');
+    return (sp > max / 2 ? cut.slice(0, sp) : cut) + '…';
+  }
+  function blockName(el, others) {
+    let unit = el;
+    for (let p = __parent(el); p && p !== document.body; p = __parent(p)) {
+      if (others.some(function(o) { return __contains(p, o); })) break;
+      unit = p;
     }
-    return t.replace(/\\s+/g, ' ').trim().slice(0, 40);
+    if (unit === el) return '';
+    const shownIn = function(sel) {
+      const list = __qsa(unit, sel);
+      for (let i = 0; i < list.length; i++) {
+        const n = list[i];
+        if (n === el || __contains(n, el) || __contains(el, n) || !__shownEl(n)) continue;
+        const t = wordsOf(n, el);
+        if (t) return t;
+      }
+      return '';
+    };
+    let t = shownIn('h1,h2,h3,h4,h5,h6,[role=heading]') || shownIn('a[href]') || wordsOf(unit, el);
+    if (!t) {
+      const hs = __qsa(document, 'h1,h2,h3,h4,h5,h6,[role=heading]');
+      for (let i = hs.length - 1; i >= 0; i--) {
+        if (hs[i].compareDocumentPosition(unit) & Node.DOCUMENT_POSITION_FOLLOWING) { t = wordsOf(hs[i], el); if (t) break; }
+      }
+    }
+    return cutAtWord(t, 48);
   }
   function elType(el) {
     const tag=el.tagName.toLowerCase(), role=el.getAttribute('role'), ax=axRole(el);
@@ -195,13 +238,26 @@ ${ELEMENT_NAME_JS}
     const widget=type==='button' && (axRole(el)==='combobox'||axRole(el)==='listbox');
     // A control the tree showed is named as the tree names it: aria-labelledby or aria-label before its text (a
     // role=checkbox div named only by aria-label; PR 側 codex on #1009).
-    const item={type:type,text:widget?widgetName(el):(axRole(el)!==null?(__fieldName(el)||__elText(el)):__elText(el)),selector:bestSel(el),inViewport:inVP,row:rowText(el)};
+    const item={type:type,text:widget?widgetName(el):(axRole(el)!==null?(__fieldName(el)||__elText(el)):__elText(el)),selector:bestSel(el),inViewport:inVP};
+    item.__el=el;
     if(el.tagName==='A') item.href=el.href;
     if((el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.tagName==='SELECT')&&!__isMasked(el)) item.value=el.value;
     else if(widget) { const v=shownValue(el); if(v) item.value=v; }
     out.push(item);
     if(out.length>=60) break;
   }
+  // Names for the controls that share one, over what is listed (its cap: 60).
+  const byName = new Map();
+  out.forEach(function(it) { const k = it.text || it.href || ''; if (k) byName.set(k, (byName.get(k) || []).concat([it])); });
+  byName.forEach(function(group) {
+    if (group.length < 2) return;
+    const els = group.map(function(it) { return it.__el; });
+    group.forEach(function(it) {
+      const ctx = blockName(it.__el, els.filter(function(o) { return o !== it.__el; }));
+      if (ctx && ctx !== (it.text || it.href)) it.ctx = ctx;
+    });
+  });
+  out.forEach(function(it) { delete it.__el; });
   return out;
 })()
 `;
@@ -259,24 +315,28 @@ export async function fetchBrowserCandidates(
         observedAtMs: Date.now(),
         provisional: false,
       }));
-    // Controls that share a label are named by their row, as a person tells them apart: "Delete — Beta" (the user's
-    // decision, internal #420). A CDP candidate has no rect, so the resolver keys it by tab and label: the row's words
-    // keep each its own entity, and keep it when another row goes. A label the page has once is left as it is. Rows
-    // alike in their words too fall back to the selector, which matches the control alone.
-    const tally = (): Map<string, number> => {
-      const m = new Map<string, number>();
-      for (const c of candidates) m.set(c.label ?? "", (m.get(c.label ?? "") ?? 0) + 1);
-      return m;
-    };
-    const first = tally();
+    // Controls that share a label get what tells them apart, as a person reads it: "Delete — Beta", "Add to cart —
+    // <product>" (the user's decision, internal #420; blockName in the page). A CDP candidate has no rect, so the
+    // resolver keys it by tab and label: these words keep each its own entity, and keep it when another goes. A label
+    // the page has once is left as it is. The words are kept beside the label (labelContext), so a query matches the
+    // control's own name. Controls still alike after that are numbered in page order for the reader ("(2 of 2)") and
+    // keyed by their selector, which matches the control alone.
     candidates.forEach((c, i) => {
-      const row = kept[i].row ?? "";
-      if ((first.get(c.label ?? "") ?? 0) > 1 && row && row !== c.label) c.label = `${c.label} — ${row}`;
+      const ctx = kept[i].ctx;
+      if (!ctx) return;
+      c.label = `${c.label} — ${ctx}`;
+      c.labelContext = ctx;
     });
-    const second = tally();
-    for (const c of candidates) {
-      if ((second.get(c.label ?? "") ?? 0) < 2) continue;
-      c.digest = createHash("sha1").update(`cdp|browserTab:${tabId}|${c.label ?? ""}|${c.locator!.cdp!.selector}`).digest("hex").slice(0, 16);
+    const groupsLeft = new Map<string, UiEntityCandidate[]>();
+    for (const c of candidates) groupsLeft.set(c.label ?? "", [...(groupsLeft.get(c.label ?? "") ?? []), c]);
+    for (const g of groupsLeft.values()) {
+      if (g.length < 2) continue;
+      g.forEach((c, n) => {
+        c.digest = createHash("sha1").update(`cdp|browserTab:${tabId}|${c.label ?? ""}|${c.locator!.cdp!.selector}`).digest("hex").slice(0, 16);
+        const nth = `(${n + 1} of ${g.length})`;
+        c.labelContext = c.labelContext ? `${c.labelContext} ${nth}` : nth;
+        c.label = `${c.label}${c.label?.endsWith(nth) ? "" : (c.label?.includes(" — ") ? " " : " — ") + nth}`;
+      });
     }
 
     const warnings = candidates.length === 0 ? ["cdp_no_elements"] : [];

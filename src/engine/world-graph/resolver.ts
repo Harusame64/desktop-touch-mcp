@@ -46,8 +46,8 @@ function snapRect(n: number, px = 8): number {
 /**
  * Derive a cross-source identity key for a candidate.
  *
- * When a `digest` is present (set by CandidateProducer), use it directly — it
- * already incorporates source, targetId, label, and rect bucket.
+ * When a `digest` is present (set by CandidateProducer, the macOS AX lane, and the CDP lane for controls alike in
+ * name and row: browser-provider.ts), use it directly — it already incorporates the source and what tells it apart.
  *
  * Fallback: omit `source` so that UIA + visual_gpu observations for the same
  * label+rect merge into one entity. Rect is quantized to ±8px to tolerate
@@ -224,9 +224,9 @@ export function resolveCandidates(
     //
     // The three above cannot meet, each for its own reason. (1) vs (2): `candidateKey` returns the
     // producer's `digest` when there is one and `CandidateProducer` — the adapter's road — always
-    // sets it, over a string starting with the literal source `visual_gpu`; every other lane has no
-    // digest and falls to the source-OMITTING fallback key, so those two key differently by
-    // construction. (1) vs (3): they never meet in one call — ROI candidates reach
+    // sets it, over a string starting with the literal source `visual_gpu`; the CDP lane's rare digest
+    // (controls alike in name and row) starts with `cdp|`, and other lanes have none and fall to the
+    // source-OMITTING fallback key, so those key differently by construction. (1) vs (3): they never meet in one call — ROI candidates reach
     // `resolveCandidates` only as a standalone list (`buildFoldPostSnapshot` → `guarded-touch.ts`),
     // every member stamped with the same `String(hwnd)`, and the ingress cache REPLACES per pass.
     //
@@ -271,6 +271,7 @@ export function resolveCandidates(
       role: normalizeRole(primary.role),
       label: primary.label,
       ...(primary.labelInferred === true && { labelInferred: true }),
+      ...(primary.labelContext !== undefined && { labelContext: primary.labelContext }),
       value: primary.value,
       rect: primary.rect,
       confidence,
