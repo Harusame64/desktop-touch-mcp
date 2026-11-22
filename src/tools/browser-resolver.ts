@@ -16,7 +16,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { AX_MARK_ATTR, clearAxMarks, evaluateInTab, getPageZoom, markAxMatches, resolveTabId, viewportOriginJs } from "../engine/cdp-bridge.js";
+import { AX_MARK_ATTR, AX_MARK_CAP, clearAxMarks, evaluateInTab, getPageZoom, markAxMatches, resolveTabId, viewportOriginJs } from "../engine/cdp-bridge.js";
 import { ELEMENT_NAME_JS, SAFE_DOM_JS } from "./_element-name-js.js";
 import { SCOPE_ROOTS_JS } from "./_scope-roots-js.js";
 import { UNIQUE_SELECTOR_JS } from "./_unique-selector-js.js";
@@ -426,6 +426,20 @@ function candidatePoolJs(args: ActionFactsArgs): string {
     return false;
   }
   let pool = roleFilter ? filtered.filter(function(e) { return roleMatchesChain(e.el); }) : filtered;
+  // What an empty pool left out, for its answer (internal #420): it is not "nothing matches" when every match was
+  // hidden, of another role, or the scan stopped early (/code-review on the zero-match answer). Each match is counted
+  // on both tests, and the answer states the counts only, not what would make a match pressable. Counted only for an
+  // empty pool.
+  let seen = null;
+  if (pool.length === 0) {
+    const shown = new Set(filtered.map(function(e) { return e.el; }));
+    let hidden = 0, offRole = 0;
+    for (let i = 0; i < candidates.length; i++) {
+      if (!shown.has(candidates[i])) hidden++;
+      if (roleFilter && !roleMatchesChain(candidates[i])) offRole++;
+    }
+    seen = { matched: candidates.length, hidden: hidden, offRole: offRole, cut: aborted };
+  }
   // internal #420 — a control with an equal accessible name wins over names containing it, among the matches seen and
   // of the role asked for. Only a control: a heading or a section named exactly so stays beside the field whose name
   // contains it, so the field is still found (/code-review on #1008).
@@ -645,6 +659,7 @@ ${pressLandingRuleJs()}
 
   return {
     total: pool.length,
+    ...(seen && { seen: seen }),
     returned: factsList.length,
     viewport: { screenX: sx, screenY: sy, dpr: dpr, monitorScale: monitorScale, chromeH: chromeH, chromeW: chromeW, innerWidth: window.innerWidth, innerHeight: window.innerHeight },
     candidates: factsList,${modalReturn}
@@ -943,12 +958,26 @@ export interface ViewportMetrics {
   innerHeight: number;
 }
 
+/** What a gather's pool left out (internal #420), so an empty pool is answered by what was there. */
+export interface PoolSeen {
+  /** matches found (before the visibility and role tests) */
+  matched: number;
+  /** of them, hidden: no box, or display / visibility / opacity hides them */
+  hidden: number;
+  /** of them, not of the role asked (role filter only) */
+  offRole: number;
+  /** not every match was read: the scan's time budget ran out, or the tree's list stopped at its cap */
+  cut: boolean;
+}
+
 /** Full return shape of `buildActionCandidateFactsJs` (success path). */
 export interface GatheredFacts {
   /** total matches in the full collection (may exceed candidates.length) */
   total: number;
   /** number of candidate facts returned (≤ AMBIGUITY_CANDIDATE_CAP) */
   returned: number;
+  /** What the pool left out: matches found, hidden ones, ones of another role, and whether the scan stopped early. */
+  seen?: PoolSeen;
   viewport: ViewportMetrics;
   candidates: CandidateFacts[];
   /** ADR-023 Phase 2b: page-level modal facts (present only on the click gather, `includeModal`). */
@@ -1283,6 +1312,8 @@ export type ResolveActionOutcome =
       offViewport?: true;
       offViewportCount?: number;
       offViewportInModal?: true;
+      /** With no match left (total 0): what the pool left out (internal #420). */
+      seen?: PoolSeen;
       /**
        * ADR-023 Phase 2b (click only): page-level modal facts + the top
        * candidate's occluding dialog index, propagated from the gather so the
@@ -1340,6 +1371,7 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
   // internal #420 — by:'role' and by:'ariaLabel' are the browser's accessibility tree's answers, marked in the page
   // for the gather below. A tree that cannot be read leaves the DOM reading, as before.
   let axMark: string | undefined;
+  let treeCut = false;
   if (args.by === "role" || args.by === "ariaLabel") {
     const nonce = randomUUID().slice(0, 8);
     const marked = await markAxMatches({ by: args.by, pattern: args.pattern, caseSensitive: args.caseSensitive ?? false, nonce, ...(args.scope && { scope: args.scope }) }, tab, args.port);
@@ -1347,6 +1379,8 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
     // browser computes as generic, a control under a misused aria-hidden): the tree adds what it finds, it does not
     // take away what was found.
     if (marked !== null && marked > 0) axMark = nonce;
+    // The tree's list stops at its cap (markAxMatches): a count read from it is not every match.
+    treeCut = marked !== null && marked >= AX_MARK_CAP;
   }
   let outcome = await gatherAndDecide(args, tab, pageZoom, axMark);
   // Every mark filtered out (hidden, of another role): the DOM reading answers, as with none marked (/code-review on
@@ -1354,7 +1388,14 @@ export async function resolveBrowserActionTarget(args: ResolveActionArgs): Promi
   if (axMark !== undefined && outcome.kind === "noActionable" && outcome.total === 0) {
     await clearAxMarks(axMark, tab, args.port);
     axMark = undefined;
+    const tree = treeCut && outcome.seen ? { ...outcome, seen: { ...outcome.seen, cut: true } } : outcome;
     outcome = await gatherAndDecide(args, tab, pageZoom, undefined);
+    // The DOM reading found none either, or ran out of time finding none: the answer is the tree's, which counted the
+    // matches it filtered out (a hidden field named by its <label> reads as "nothing matches" to the DOM reading;
+    // /code-review on this answer).
+    const domNone = (outcome.kind === "noActionable" && outcome.total === 0) || (outcome.kind === "error" && outcome.code === "Timeout");
+    const domMatched = outcome.kind === "noActionable" ? (outcome.seen?.matched ?? 0) : 0;
+    if (domNone && (tree.seen?.matched ?? 0) > domMatched) outcome = tree;
   }
   // The marks stay for a resolved target's second read (the fill act, the click's mark): its caller clears them.
   if (axMark !== undefined && outcome.kind !== "resolved") await clearAxMarks(axMark, tab, args.port);
@@ -1435,6 +1476,8 @@ async function gatherAndDecide(
   // against the modal blocker (Round 3 P1-R3-1). Reconstruct the outcome (decision
   // is a ResolveDecision, which has no modal fields) — ResolveDecision stays
   // unchanged; only ResolveActionOutcome.noActionable carries these (Round 4 P1).
+  // An empty pool carries what it left out, for the answer's words (internal #420).
+  const seen = decision.kind === "noActionable" && decision.total === 0 && gathered.seen ? { seen: gathered.seen } : {};
   if (decision.kind === "noActionable" && gathered.modalFacts) {
     // Use the TOP candidate (score order) as the representative occluded target
     // (plan §2.4). If the top candidate is not modal-occluded but a lower-ranked
@@ -1443,11 +1486,12 @@ async function gatherAndDecide(
     // intended target is the top match and a modal covers it) escalates correctly.
     return {
       ...decision,
+      ...seen,
       modalFacts: gathered.modalFacts,
       occludedTopByDialogIndex: gathered.candidates[0]?.occludedByDialogIndex ?? null,
     };
   }
-  return decision;
+  return decision.kind === "noActionable" ? { ...decision, ...seen } : decision;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

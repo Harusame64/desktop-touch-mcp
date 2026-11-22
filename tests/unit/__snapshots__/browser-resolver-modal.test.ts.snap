@@ -1154,6 +1154,20 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
     return false;
   }
   let pool = roleFilter ? filtered.filter(function(e) { return roleMatchesChain(e.el); }) : filtered;
+  // What an empty pool left out, for its answer (internal #420): it is not "nothing matches" when every match was
+  // hidden, of another role, or the scan stopped early (/code-review on the zero-match answer). Each match is counted
+  // on both tests, and the answer states the counts only, not what would make a match pressable. Counted only for an
+  // empty pool.
+  let seen = null;
+  if (pool.length === 0) {
+    const shown = new Set(filtered.map(function(e) { return e.el; }));
+    let hidden = 0, offRole = 0;
+    for (let i = 0; i < candidates.length; i++) {
+      if (!shown.has(candidates[i])) hidden++;
+      if (roleFilter && !roleMatchesChain(candidates[i])) offRole++;
+    }
+    seen = { matched: candidates.length, hidden: hidden, offRole: offRole, cut: aborted };
+  }
   // internal #420 — a control with an equal accessible name wins over names containing it, among the matches seen and
   // of the role asked for. Only a control: a heading or a section named exactly so stays beside the field whose name
   // contains it, so the field is still found (/code-review on #1008).
@@ -2042,6 +2056,7 @@ exports[`ADR-023 Phase 2b: gather modal gating (includeModal) + occluder probe >
 
   return {
     total: pool.length,
+    ...(seen && { seen: seen }),
     returned: factsList.length,
     viewport: { screenX: sx, screenY: sy, dpr: dpr, monitorScale: monitorScale, chromeH: chromeH, chromeW: chromeW, innerWidth: window.innerWidth, innerHeight: window.innerHeight },
     candidates: factsList,

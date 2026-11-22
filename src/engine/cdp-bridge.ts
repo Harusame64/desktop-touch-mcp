@@ -672,6 +672,9 @@ const AX_TEXT_ROLES = new Set(["StaticText", "InlineTextBox", "LineBreak", "Root
  * marks the controls desktop_discover's list needs the tree for (PR-C2b): not links, buttons, text fields, sliders
  * or spinbuttons.
  */
+/** How many tree matches a by-axis question marks by default (its best ones): a list that reaches it may hold more. */
+export const AX_MARK_CAP = 200;
+
 export async function markAxMatches(
   opts: { by: "role" | "ariaLabel" | "controls"; pattern: string; caseSensitive: boolean; nonce: string; scope?: string; cap?: number; onFound?: (found: number, triedAll: boolean) => void;
     /** browser_search lists a native multi-row select (role listbox); an action leaves it out (a press picks an option). */
@@ -772,7 +775,7 @@ export async function markAxMatches(
     // desktop_discover's list takes its first 60 in document order, so a control early in the page must not be
     // crowded out of a score-sorted 200 by ones later; a by-axis question keeps its best 200, unless the caller asks
     // for more (browser_search pages through up to 1000).
-    const cap = opts.cap ?? (opts.by === "controls" ? 1000 : 200);
+    const cap = opts.cap ?? (opts.by === "controls" ? 1000 : AX_MARK_CAP);
     const markOne = async (m: (typeof scored)[number]): Promise<number> => {
       try {
         const { object } = (await s.send("DOM.resolveNode", { backendNodeId: m.backend, objectGroup: group })) as { object: { objectId?: string } };
