@@ -575,7 +575,8 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     await page(`<div id="ce" contenteditable="true" style="margin:40px">old</div>`);
     expect((await out({ selector: "#ce" })).ok).toBe(true);
     expect(await evaluateInTab("document.getElementById('ce').textContent", null, PORT)).toBe("Banana");
-    await page(`<x-field id="xf" style="display:block;margin:40px"></x-field>`);
+    // It takes focus, as Shoelace's and Material Web's do: browser_fill types only into what holds focus (internal #420).
+    await page(`<x-field id="xf" tabindex="0" style="display:block;margin:40px"></x-field>`);
     await evaluateInTab(`(function(){customElements.define('x-field', class extends HTMLElement { get value(){return this._v||''} set value(v){this._v=String(v)} });return true})()`, null, PORT);
     expect((await out({ selector: "#xf" })).ok).toBe(true);
     expect(await evaluateInTab("document.getElementById('xf').value", null, PORT)).toBe("Banana");

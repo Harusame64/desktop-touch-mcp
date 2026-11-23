@@ -119,7 +119,8 @@ class FakeEl {
     const p = this.parentElement;
     if (p) { p.childNodes = p.childNodes.filter((c) => c !== this); this.parentElement = null; }
   }
-  focus(): void { if (this.maskOnFocus) this.attrs.style = "-webkit-text-security: disc"; }
+  // Focus lands on the field, as in a real page: browser_fill writes only into the field that holds it (internal #420).
+  focus(): void { if (this.maskOnFocus) this.attrs.style = "-webkit-text-security: disc"; if (focusedDocument) focusedDocument.activeElement = this; }
   select(): void {}
   scrollIntoView(): void {}
   dispatchEvent(event?: { type?: string }): boolean {
@@ -185,6 +186,8 @@ interface Page {
   document: Record<string, unknown>;
 }
 
+/** The document of the page last built: a field's focus() sets its activeElement. */
+let focusedDocument: { activeElement: FakeEl | null } | null = null;
 function pageWith(body: FakeEl, activeElement: FakeEl | null = null): Page {
   const all = (): FakeEl[] => [body, ...body.descendants()];
   const style = (el: { attrs?: Record<string, string> }) => {
@@ -211,7 +214,7 @@ function pageWith(body: FakeEl, activeElement: FakeEl | null = null): Page {
       screenX: 0, screenY: 0, scrollY: 0, devicePixelRatio: 1,
       getComputedStyle: style,
     },
-    document: {
+    document: (focusedDocument = {
       body,
       documentElement: { scrollHeight: 1000 },
       activeElement,
@@ -219,7 +222,7 @@ function pageWith(body: FakeEl, activeElement: FakeEl | null = null): Page {
       querySelector: (s: string) => body.querySelector(s),
       getElementById: (id: string) => all().find((e) => e.id === id) ?? null,
       elementFromPoint: () => null,
-    },
+    }),
   };
 }
 

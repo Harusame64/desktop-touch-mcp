@@ -50,4 +50,51 @@ export const FILL_KIND_JS = `
       (el.getAttribute('inputmode') || '').toLowerCase() === 'none';
     return el.tagName === 'INPUT' && ro && __fillKind(el, axRole) === 'widget';
   }
+  // Whether a person could type into el once it was focused (internal #420): null when they could, else why not. A
+  // disabled or read-only field takes no typing. Otherwise the browser's focus decides: the focused element, through
+  // open shadow roots, must be el or inside it (a custom element that hands focus to its own input), or the editing
+  // host around el. Behind a modal dialog or under inert, focus stays where it was; a field that hands
+  // focus on takes no typing either. The getters are the prototypes': a page's <img name="activeElement"> shadows
+  // document.activeElement.
+  function __typingRefused(el) {
+    // Disabled by itself or by a <fieldset disabled> around it.
+    let off = el.disabled === true;
+    try { off = off || __matches(el, ':disabled'); } catch (e) { }
+    if (off) return { why: 'disabled' };
+    // Read-only is read once the page's focus handlers ran: a field can drop readonly as it takes focus (a guard
+    // against autofill). A page without focus (a hidden tab) runs them only when it gets focus, so there the field is
+    // written as before.
+    if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.readOnly === true &&
+      (typeof Document !== 'undefined' ? Document.prototype.hasFocus.call(document) : !!(document.hasFocus && document.hasFocus()))) return { why: 'read_only' };
+    const getter = function(C, k) { return typeof C !== 'undefined' ? Object.getOwnPropertyDescriptor(C.prototype, k).get : null; };
+    const docAct = getter(typeof Document !== 'undefined' ? Document : undefined, 'activeElement');
+    const srAct = getter(typeof ShadowRoot !== 'undefined' ? ShadowRoot : undefined, 'activeElement');
+    const srGet = getter(typeof Element !== 'undefined' ? Element : undefined, 'shadowRoot');
+    const deep = function() {
+      let a = docAct ? docAct.call(document) : document.activeElement;
+      const sr = function(n) { return srGet ? srGet.call(n) : n.shadowRoot; };
+      for (let r = a && sr(a); r && (srAct ? srAct.call(r) : r.activeElement); r = a && sr(a)) a = srAct ? srAct.call(r) : r.activeElement;
+      return a;
+    };
+    // A part inside a contenteditable (a paragraph) takes no focus of its own; a person's click puts the caret in the
+    // editing host around it, so the host is focused.
+    if (el.isContentEditable) {
+      let host = el;
+      while (__parent(host) && __parent(host).isContentEditable) host = __parent(host);
+      if (host !== el && deep() !== host) host.focus();
+    }
+    const a = deep();
+    if (a && a.isContentEditable && __contains(a, el)) return null;
+    // Up the composed tree from the focused element: el itself, a control inside it (Vaadin's slotted <input>), or one
+    // in its shadow tree (Shoelace, Material Web: delegatesFocus).
+    for (let n = a, d = 0; n && d < 64; d++) {
+      if (n === el) return null;
+      const p = __parent(n);
+      if (p) { n = p; continue; }
+      const root = typeof Node !== 'undefined' ? Node.prototype.getRootNode.call(n) : (n.getRootNode ? n.getRootNode() : null);
+      n = root && root.nodeType === 11 && root.host ? root.host : null;
+    }
+    const at = a && a !== document.body && a !== document.documentElement ? a : null;
+    return { why: 'no_focus', focusAt: at ? { name: __personName(at), tag: at.tagName.toLowerCase() } : null };
+  }
 `;
