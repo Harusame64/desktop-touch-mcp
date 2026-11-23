@@ -1,7 +1,7 @@
 /**
  * _select-pick-js.ts — which option of a native <select> a fill takes, shared by browser_fill's selector road and its
  * by-axis road (internal #420), and the write that sets it. It needs ELEMENT_NAME_JS (for __standInFor and __isMasked)
- * spliced into the same script.
+ * and FILL_KIND_JS (for __typingRefused, which __setPickedOption calls) spliced into the same script.
  */
 /**
  * Which option of a native <select> a fill takes, as a person picks one (internal #420, /code-review on #1024): the
@@ -44,7 +44,14 @@ export const SELECT_PICK_JS = `
   // Focus first, as a person's pick; then the pick again, since a focus handler can rebuild the list or change the
   // option (refused, unset, unless it picks the same option); the mask read after focus too, as the text road does.
   function __setPickedOption(el, pk, maskedBefore, want) {
+    // A select a person could not reach (behind a modal dialog, under inert) is not changed, as a text field is not,
+    // and is not focused first (internal #420). __typingRefused is FILL_KIND_JS's: every caller splices it.
+    const refused = __typingRefused(el);
+    if (refused) return { ok: false, typingRefused: refused };
     el.focus();
+    // Again once focused: its focus handler can open a modal dialog.
+    const refusedAfterFocus = __typingRefused(el);
+    if (refusedAfterFocus) return { ok: false, typingRefused: refusedAfterFocus };
     // The whole pick again, after focus: a handler can rebuild the list, change the option's value or disable it
     // (codex on #1025). Written only when it still picks the same option.
     const again = __pickOption(el, want);

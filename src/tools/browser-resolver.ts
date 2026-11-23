@@ -757,7 +757,7 @@ export function buildUntagJs(nonce: string): string {
  * (re-non-uniqueness) and an overlay cannot be mis-targeted (occlusion). Returns
  * `{ ok:true, actual, fullActualLen, fullMatches }` (and `chose`, `select` for a select) or `{ ok:false, error }`
  * (index_out_of_range / resolved_element_lost / not_fillable) or `{ ok:false, selectError }` for a select refused
- * untouched. Pinned by snapshot.
+ * untouched, or `{ ok:false, typingRefused }` for a field a person could not reach (internal #420). Pinned by snapshot.
  */
 export function buildFillActJs(
   args: ActionFactsArgs,
@@ -821,6 +821,10 @@ ${FILL_KIND_JS}
     return { ok: false, error: 'not_fillable', tag: tag.toLowerCase() + (ty ? '[type=' + ty + ']' : ''), kind: __fillKind(el, axRole), readOnlyChoice: __choiceInput(el, axRole) || undefined };
   }
 
+  // A field a person could not reach (disabled, not shown, under inert, outside an open modal dialog) is not written,
+  // nor focused first (internal #420).
+  const refused = __typingRefused(el);
+  if (refused) return { ok: false, typingRefused: refused };
   // Read before any page handler runs: one can replace the element, and a detached element has no
   // computed style left to show that it was masked (PR 側 codex on #623).
   const maskedBefore = __isMasked(el);
@@ -832,6 +836,9 @@ ${FILL_KIND_JS}
   const maskedAfterFocus = __isMasked(el);
   // A page can make it read-only as it takes focus: nothing is written, and the answer says focus moved.
   if (__choiceInput(el, axRole)) return { ok: false, error: 'not_fillable', tag: tag.toLowerCase() + (ty ? '[type=' + ty + ']' : ''), kind: 'widget', readOnlyChoice: true, afterFocus: true };
+  // ...and again once focus has arrived: its focus handler can open a modal dialog, which typing would then go to.
+  const refusedAfterFocus = __typingRefused(el);
+  if (refusedAfterFocus) return { ok: false, typingRefused: refusedAfterFocus };
   const val = ${jsLiteral(value)};
   if (isTextInput || isTextArea) {
     if (typeof el.select === 'function') el.select();
