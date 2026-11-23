@@ -832,13 +832,10 @@ ${FILL_KIND_JS}
   const maskedAfterFocus = __isMasked(el);
   // A page can make it read-only as it takes focus: nothing is written, and the answer says focus moved.
   if (__choiceInput(el, axRole)) return { ok: false, error: 'not_fillable', tag: tag.toLowerCase() + (ty ? '[type=' + ty + ']' : ''), kind: 'widget', readOnlyChoice: true, afterFocus: true };
-  // A field a person could not type into once focused (behind a modal dialog, inert, read-only, or one that hands
-  // focus on) is not written (internal #420).
+  // A field a person could not reach (disabled, not shown, under inert, outside an open modal dialog) is not written
+  // (internal #420).
   const refused = __typingRefused(el);
   if (refused) return { ok: false, typingRefused: refused };
-  // ...and once more after that check: it can focus the editing host or an inner control, whose focus handler can
-  // mask the field (codex on #1036).
-  const maskedAfterCheck = __isMasked(el);
   const val = ${jsLiteral(value)};
   if (isTextInput || isTextArea) {
     if (typeof el.select === 'function') el.select();
@@ -852,16 +849,16 @@ ${FILL_KIND_JS}
     el.dispatchEvent(new Event('change', { bubbles: true }));
     const fullActual = el.value !== undefined ? el.value : '';
     // A masked field's value never leaves the page; the comparison is made here, in the page.
-    const masked = maskedBefore || maskedAfterFocus || maskedAfterCheck || __isMasked(el);
-    return { ok: true, actual: masked ? undefined : (fullActual || '').slice(0, 100), actualWithheld: masked || undefined, fullActualLen: fullActual.length, fullMatches: fullActual === val, pageFocused: __pageHasFocus() ? undefined : false };
+    const masked = maskedBefore || maskedAfterFocus || __isMasked(el);
+    return { ok: true, actual: masked ? undefined : (fullActual || '').slice(0, 100), actualWithheld: masked || undefined, fullActualLen: fullActual.length, fullMatches: fullActual === val };
   }
   // contenteditable
   el.textContent = val;
   el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: val }));
   const fullActual = el.textContent || '';
   // A PIN pad can be a contenteditable the page masks; its text stays in the page as well.
-  const maskedEditable = maskedBefore || maskedAfterFocus || maskedAfterCheck || __isMasked(el);
-  return { ok: true, actual: maskedEditable ? undefined : (fullActual || '').slice(0, 100), actualWithheld: maskedEditable || undefined, fullActualLen: fullActual.length, fullMatches: fullActual === val, pageFocused: __pageHasFocus() ? undefined : false };
+  const maskedEditable = maskedBefore || maskedAfterFocus || __isMasked(el);
+  return { ok: true, actual: maskedEditable ? undefined : (fullActual || '').slice(0, 100), actualWithheld: maskedEditable || undefined, fullActualLen: fullActual.length, fullMatches: fullActual === val };
 })()
 `;
 }

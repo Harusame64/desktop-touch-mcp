@@ -575,23 +575,19 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     await page(`<div id="ce" contenteditable="true" style="margin:40px">old</div>`);
     expect((await out({ selector: "#ce" })).ok).toBe(true);
     expect(await evaluateInTab("document.getElementById('ce').textContent", null, PORT)).toBe("Banana");
-    // It takes focus, as Shoelace's and Material Web's do: browser_fill types only into what holds focus (internal #420).
-    await page(`<x-field id="xf" tabindex="0" style="display:block;margin:40px"></x-field>`);
+    await page(`<x-field id="xf" style="display:block;margin:40px"></x-field>`);
     await evaluateInTab(`(function(){customElements.define('x-field', class extends HTMLElement { get value(){return this._v||''} set value(v){this._v=String(v)} });return true})()`, null, PORT);
     expect((await out({ selector: "#xf" })).ok).toBe(true);
     expect(await evaluateInTab("document.getElementById('xf').value", null, PORT)).toBe("Banana");
     // Controls, unchanged: a combobox a person types into (an autocomplete) is filled on both roads, and a read-only
-    // input that opens no list is written as before on a page without focus (headless), which says pageFocused:false
-    // (internal #420: its focus handler, which may lift readonly, has not run).
+    // input that opens no list is written as before.
     for (const a of [{ selector: "#ro" }, { by: "ariaLabel", pattern: "Fruit" }]) {
       await page(`<label for="ro">Fruit</label><input id="ro" role="combobox" aria-autocomplete="list" value="" style="margin:40px">`);
       expect((await out(a)).ok).toBe(true);
       expect(await val()).toBe("Banana");
     }
     await page(`<label for="ro">Fruit</label><input id="ro" readonly value="Apple" style="margin:40px">`);
-    const roOut = await out({ selector: "#ro" }) as { ok?: boolean; pageFocused?: boolean };
-    expect(roOut.ok).toBe(true);
-    expect(roOut.pageFocused).toBe(false);
+    expect((await out({ selector: "#ro" })).ok).toBe(true);
     expect(await marks()).toBe(0);
   });
 

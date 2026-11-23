@@ -1,12 +1,12 @@
 /**
- * internal #420 — browser_fill wrote into fields a person could not type into and answered ok:true "delivered": a field
- * behind a modal <dialog> or under inert (focus stays where it was; booking.com's sign-in prompt, measured by win2), a
- * read-only field, a disabled one (by selector), a field that hands focus on to another. Both roads now focus the field,
- * then write only if it holds focus and is not read-only or disabled; otherwise nothing is written and context.focusAt
- * names where focus is.
+ * internal #420 — browser_fill wrote into fields a person could not reach and answered ok:true "delivered": a field
+ * behind a modal <dialog> or inside a part of the page marked inert (booking.com's sign-in prompt, measured by win2), a
+ * disabled one (by selector), one not shown. Both roads now refuse those, by what the page's structure says, and write
+ * nothing; context.focusAt names where focus is. Nothing that waits on a page's focus handler is judged: a read-only
+ * field and one that hands focus on are written as before (a separate item).
  *
- * Headless Chrome gives the page no focus, as a hidden tab or a window behind has: its focus handlers do not run.
- * `focused()` turns on CDP's focus emulation from outside, as a window in front has, for the cells that need it.
+ * Headless Chrome gives the page no focus, as a hidden tab or a window behind has. `focused()` turns on CDP's focus
+ * emulation from outside, as a window in front has: the structural answers are the same either way.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import WebSocket from "ws";
@@ -38,6 +38,10 @@ async function page(extra: string, open = ""): Promise<void> {
 }
 const val = async (id: string): Promise<unknown> => evaluateInTab(`document.getElementById(${JSON.stringify(id)}).value`, null, PORT);
 const inputs = async (): Promise<string[]> => (await evaluateInTab("window.__ev", null, PORT)) as string[];
+// A modal dialog holding a field, opened with showModal: its field has focus. The body by Document's own getter: a
+// cell's <img name="body"> shadows document.body.
+const openModal = (inner = `<input id="inner" aria-label="Inner field">`) =>
+  evaluateInTab(`Object.getOwnPropertyDescriptor(Document.prototype,'body').get.call(document).insertAdjacentHTML('beforeend',${JSON.stringify(`<dialog id="dlg">${inner}</dialog>`)});document.getElementById('dlg').showModal();true`, null, PORT);
 
 function payload(r: { content: Array<{ type: string; text?: string }> }): Record<string, unknown> {
   const text = r.content[0]?.type === "text" ? r.content[0].text ?? "{}" : "{}";
@@ -46,15 +50,15 @@ function payload(r: { content: Array<{ type: string; text?: string }> }): Record
 async function fill(args: Record<string, unknown>) {
   return payload(await browserFillInputHandler({ port: PORT, includeContext: false, value: "SPK", ...args } as Parameters<typeof browserFillInputHandler>[0]));
 }
+const focusAt = (r: Record<string, unknown>) => (r.context as { focusAt?: unknown }).focusAt;
 // Both roads, by selector and by name.
 const ROADS = (sel: string, name: string): Array<Record<string, unknown>> => [{ selector: sel }, { by: "ariaLabel", pattern: name }];
 
-const NO_FOCUS = "browser_fill: the field does not hold focus once focused, so typing would not reach it; context.focusAt is where focus is. Nothing was written.";
-const READ_ONLY = "browser_fill: the field is read-only. Nothing was written.";
+const BEHIND_MODAL = "browser_fill: a modal dialog is open and the field is outside it, so typing would not reach it; context.focusAt is where focus is. Nothing was written.";
+const INERT = "browser_fill: the field is in a part of the page marked inert, which takes no input; context.focusAt is where focus is. Nothing was written.";
 const DISABLED = "browser_fill: the field is disabled. Nothing was written.";
 const NOT_SHOWN = "browser_fill: the field is not shown. Nothing was written.";
 const HINT = ["browser_overview lists the page's controls and any dialog in front of the page"];
-const HINT_READ_ONLY = ["A person changes a read-only field through the page: press it, or the control beside it, with browser_click (a date field opens its picker)"];
 const HINT_OTHER = ["browser_overview lists the page's controls; name a field it shows and that is enabled"];
 
 // Runs `body` with CDP's focus emulation on: the page has focus, and its focus handlers run as the field takes focus.
@@ -83,59 +87,146 @@ async function focused(body: () => Promise<void>): Promise<void> {
     ws.close();
   }
 }
+// The same cell on a page without focus (headless) and with it.
+async function bothFocus(body: () => Promise<void>): Promise<void> {
+  await body();
+  await focused(body);
+}
 
-describe.skipIf(!CHROME)("browser_fill writes only where a person can type (internal #420)", () => {
-  it("a field behind a modal <dialog> is not written; focus stays on the dialog's field, named in context.focusAt", async () => {
-    for (const args of ROADS("#em", "Email address")) {
-      await page("", "");
-      await evaluateInTab(`document.body.insertAdjacentHTML('beforeend','<dialog id="dlg"><input id="inner" aria-label="Inner field"></dialog>');document.getElementById('dlg').showModal();true`, null, PORT);
-      const r = await fill(args);
-      expect(r.error, JSON.stringify(r)).toBe(NO_FOCUS);
-      expect(r.code).toBe("BrowserNoActionableTarget");
-      expect(r.suggest).toEqual(HINT);
-      expect((r.context as { focusAt?: unknown }).focusAt).toEqual({ name: "Inner field", tag: "input" });
-      expect(await val("em")).toBe("");
-      expect(await inputs()).toEqual([]);
-    }
-  });
-
-  it("a part inside a contenteditable behind a modal <dialog> is not written (its editing host takes no focus either)", async () => {
-    await page(`<div id="ce" contenteditable="true" aria-label="Editor"><p id="cep">old</p></div>`);
-    await evaluateInTab(`document.body.insertAdjacentHTML('beforeend','<dialog id="dlg"><input id="inner" aria-label="Inner field"></dialog>');document.getElementById('dlg').showModal();true`, null, PORT);
-    const r = await fill({ selector: "#cep" });
-    expect(r.error, JSON.stringify(r)).toBe(NO_FOCUS);
-    expect(await evaluateInTab("document.getElementById('ce').textContent", null, PORT)).toBe("old");
-  });
-
-  it("a read-only field behind a modal <dialog> answers the dialog, not read-only: the dialog is what stops a person", async () => {
-    for (const args of ROADS("#ro", "Read only")) {
-      await page(`<input id="ro" aria-label="Read only" readonly>`);
-      await evaluateInTab(`document.body.insertAdjacentHTML('beforeend','<dialog id="dlg"><input id="inner" aria-label="Inner field"></dialog>');document.getElementById('dlg').showModal();true`, null, PORT);
-      const r = await fill(args);
-      expect(r.error, JSON.stringify(r)).toBe(NO_FOCUS);
-      expect((r.context as { focusAt?: unknown }).focusAt).toEqual({ name: "Inner field", tag: "input" });
-      expect(await val("ro")).toBe("");
-    }
+describe.skipIf(!CHROME)("browser_fill does not type where a person cannot reach (internal #420)", () => {
+  it("a field behind a modal <dialog> is not written; focusAt names the dialog's field, with and without page focus", async () => {
+    await bothFocus(async () => {
+      for (const args of [...ROADS("#em", "Email address"), ...ROADS("#ta", "Notes")]) {
+        await page("");
+        await openModal();
+        const r = await fill(args);
+        expect(r.error, JSON.stringify(r)).toBe(BEHIND_MODAL);
+        expect(r.code).toBe("BrowserNoActionableTarget");
+        expect(r.suggest).toEqual(HINT);
+        expect(focusAt(r)).toEqual({ name: "Inner field", tag: "input" });
+        expect([await val("em"), await val("ta")]).toEqual(["", ""]);
+        expect(await inputs()).toEqual([]);
+      }
+    });
   });
 
   it("the dialog's own field is written", async () => {
-    for (const args of [{ selector: "#inner" }, { by: "ariaLabel", pattern: "Inner field" }]) {
+    for (const args of ROADS("#inner", "Inner field")) {
       await page("");
-      await evaluateInTab(`document.body.insertAdjacentHTML('beforeend','<dialog id="dlg"><input id="inner" aria-label="Inner field"></dialog>');document.getElementById('dlg').showModal();true`, null, PORT);
+      await openModal();
       const r = await fill(args);
       expect(r.ok, JSON.stringify(r)).toBe(true);
       expect(await val("inner")).toBe("SPK");
     }
   });
 
-  it("a field under inert is not written, with nothing focused (focusAt null)", async () => {
-    for (const args of ROADS("#em", "Email address")) {
-      await page("", "document.getElementById('bg').inert=true;");
-      const r = await fill(args);
-      expect(r.error, JSON.stringify(r)).toBe(NO_FOCUS);
-      expect((r.context as { focusAt?: unknown }).focusAt).toBeNull();
-      expect(await val("em")).toBe("");
+  it("a read-only field behind a modal <dialog> answers the dialog", async () => {
+    await page(`<input id="ro" aria-label="Read only" readonly>`);
+    await openModal();
+    const r = await fill({ selector: "#ro" });
+    expect(r.error, JSON.stringify(r)).toBe(BEHIND_MODAL);
+    expect(await val("ro")).toBe("");
+  });
+
+  it("a contenteditable, and a part inside one, behind a modal <dialog> are not written", async () => {
+    for (const sel of ["#ce", "#cep"]) {
+      await page(`<div id="ce" contenteditable="true" aria-label="Editor"><p id="cep">old</p></div>`);
+      await openModal();
+      const r = await fill({ selector: sel });
+      expect(r.error, JSON.stringify(r)).toBe(BEHIND_MODAL);
+      expect(await evaluateInTab("document.getElementById('ce').textContent", null, PORT)).toBe("old");
     }
+  });
+
+  it("a <select> behind a modal <dialog> is not changed, on both roads; with no dialog it is", async () => {
+    for (const args of ROADS("#sel", "Fruit")) {
+      const sel = `<select id="sel" aria-label="Fruit"><option value="a">Apple</option><option value="b">Banana</option></select>`;
+      await page(sel);
+      await openModal();
+      const r = await fill({ ...args, value: "b" });
+      expect(r.error, JSON.stringify(r)).toBe(BEHIND_MODAL);
+      expect(await val("sel")).toBe("a");
+      await page(sel);
+      expect((await fill({ ...args, value: "b" })).ok).toBe(true);
+      expect(await val("sel")).toBe("b");
+    }
+  });
+
+  it("stacked modal dialogs: a field in the lower one is behind the top one; the top one's field is written", async () => {
+    await page("");
+    await evaluateInTab(`document.body.insertAdjacentHTML('beforeend','<dialog id="d1"><input id="low" aria-label="Lower field"></dialog><dialog id="d2"><input id="up" aria-label="Upper field"></dialog>');` +
+      `document.getElementById('d1').showModal();document.getElementById('d2').showModal();true`, null, PORT);
+    const r = await fill({ selector: "#low" });
+    expect(r.error, JSON.stringify(r)).toBe(BEHIND_MODAL);
+    expect(focusAt(r)).toEqual({ name: "Upper field", tag: "input" });
+    expect((await fill({ selector: "#up" })).ok).toBe(true);
+    expect([await val("low"), await val("up")]).toEqual(["", "SPK"]);
+  });
+
+  it("two modal dialogs open and the focus in neither: a field outside both is behind them", async () => {
+    await page("");
+    await evaluateInTab(`document.body.insertAdjacentHTML('beforeend','<dialog id="d1"><p>One</p></dialog><dialog id="d2"><p>Two</p></dialog>');` +
+      `document.getElementById('d1').showModal();document.getElementById('d2').showModal();Object.getOwnPropertyDescriptor(Document.prototype,'activeElement').get.call(document).blur();true`, null, PORT);
+    const r = await fill({ selector: "#em" });
+    expect(r.error, JSON.stringify(r)).toBe(BEHIND_MODAL);
+    expect(await val("em")).toBe("");
+  });
+
+  it("a modal <dialog> inside a shadow root, its field focused: a field of the page is behind it", async () => {
+    await page(`<x-host id="xh"></x-host>`,
+      "customElements.define('x-host',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<dialog><input aria-label=\"Shadow inner\"></dialog>';}});" +
+      "document.getElementById('xh').shadowRoot.querySelector('dialog').showModal();");
+    const r = await fill({ selector: "#em" });
+    expect(r.error, JSON.stringify(r)).toBe(BEHIND_MODAL);
+    expect(focusAt(r)).toEqual({ name: "Shadow inner", tag: "input" });
+    expect(await val("em")).toBe("");
+  });
+
+  it("a field slotted into a component's modal dialog is inside it: written; a field of the page is behind it", async () => {
+    // Defined once: the second page shares the window's registry, and a second define would throw before showModal.
+    const open = "if(!customElements.get('x-sd'))customElements.define('x-sd',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<dialog><slot></slot></dialog>';}});" +
+      "document.getElementById('xs').shadowRoot.querySelector('dialog').showModal();document.getElementById('slotted').focus();";
+    await page(`<x-sd id="xs"><input id="slotted" aria-label="Slotted field"></x-sd>`, open);
+    const r = await fill({ selector: "#slotted" });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(await val("slotted")).toBe("SPK");
+    await page(`<x-sd id="xs"><input id="slotted" aria-label="Slotted field"></x-sd>`, open);
+    const b = await fill({ selector: "#em" });
+    expect(b.error, JSON.stringify(b)).toBe(BEHIND_MODAL);
+    expect(focusAt(b)).toEqual({ name: "Slotted field", tag: "input" });
+  });
+
+  it("stacked dialogs, the top one's focus inside a component in it: a field in the lower one is behind the top one", async () => {
+    await page("", "customElements.define('x-dg2',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open',delegatesFocus:true}).innerHTML='<input aria-label=\"Component field\">';}});");
+    await evaluateInTab(`document.getElementById('bg').insertAdjacentHTML('beforeend','<dialog id="d1"><input id="low" aria-label="Lower field"></dialog><dialog id="d2"><x-dg2 id="comp"></x-dg2></dialog>');` +
+      `document.getElementById('d1').showModal();document.getElementById('d2').showModal();document.getElementById('comp').focus();true`, null, PORT);
+    const r = await fill({ selector: "#low" });
+    expect(r.error, JSON.stringify(r)).toBe(BEHIND_MODAL);
+    expect(focusAt(r)).toEqual({ name: "Component field", tag: "input" });
+    expect(await val("low")).toBe("");
+  });
+
+  it("one modal dialog open and the focus outside it (blurred), on a page whose <img name=\"querySelectorAll\"> shadows the document's: a field of the page is behind it", async () => {
+    await page(`<img name="querySelectorAll">`);
+    await openModal();
+    await evaluateInTab("Object.getOwnPropertyDescriptor(Document.prototype,'activeElement').get.call(document).blur();true", null, PORT);
+    const r = await fill({ selector: "#em" });
+    expect(r.error, JSON.stringify(r)).toBe(BEHIND_MODAL);
+    expect(focusAt(r)).toBeNull();
+    expect(await val("em")).toBe("");
+  });
+
+  it("a field inside a part of the page marked inert is not written, with nothing focused (focusAt null)", async () => {
+    await bothFocus(async () => {
+      for (const args of ROADS("#em", "Email address")) {
+        await page("", "document.getElementById('bg').inert=true;");
+        const r = await fill(args);
+        expect(r.error, JSON.stringify(r)).toBe(INERT);
+        expect(r.suggest).toEqual(HINT);
+        expect(focusAt(r)).toBeNull();
+        expect(await val("em")).toBe("");
+      }
+    });
   });
 
   it("an aria-modal prompt over an inert page (booking.com's sign-in): focus on its close button, the field behind not written", async () => {
@@ -143,13 +234,21 @@ describe.skipIf(!CHROME)("browser_fill writes only where a person can type (inte
     for (const args of ROADS("#em", "Email address")) {
       await page(prompt, "document.getElementById('bg').inert=true;document.getElementById('x').focus();");
       const r = await fill(args);
-      expect(r.error, JSON.stringify(r)).toBe(NO_FOCUS);
-      expect((r.context as { focusAt?: unknown }).focusAt).toEqual({ name: "Close sign-in", tag: "button" });
+      expect(r.error, JSON.stringify(r)).toBe(INERT);
+      expect(focusAt(r)).toEqual({ name: "Close sign-in", tag: "button" });
       expect(await val("em")).toBe("");
     }
   });
 
-  it("an aria-modal div without inert: the field takes focus (Tab reaches it), and is written as before", async () => {
+  it("an inert shadow host: the field in its shadow root is not written", async () => {
+    await page(`<x-in id="xi" inert></x-in>`,
+      "customElements.define('x-in',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<input>';}get value(){return this.shadowRoot.querySelector('input').value}set value(v){this.shadowRoot.querySelector('input').value=v}});");
+    const r = await fill({ selector: "#xi" });
+    expect(r.error, JSON.stringify(r)).toBe(INERT);
+    expect(await val("xi")).toBe("");
+  });
+
+  it("an aria-modal div without inert: the page's fields still take focus (Tab reaches them), and are written as before", async () => {
     const prompt = `</main><div role="dialog" aria-modal="true" aria-label="Promo" style="position:fixed;left:0;top:200px;width:200px;height:50px;background:#fff"><input id="inner2" aria-label="Promo field"></div><main>`;
     for (const args of ROADS("#em", "Email address")) {
       await page(prompt, "document.getElementById('inner2').focus();");
@@ -168,159 +267,18 @@ describe.skipIf(!CHROME)("browser_fill writes only where a person can type (inte
     }
   });
 
-  it("a page whose <img name=\"activeElement\"> shadows document.activeElement still reads focus (behind a dialog: refused; plain: written)", async () => {
-    await page(`<img name="activeElement"><img name="hasFocus">`);
-    await evaluateInTab(`document.body.insertAdjacentHTML('beforeend','<dialog id="dlg"><input id="inner" aria-label="Inner field"></dialog>');document.getElementById('dlg').showModal();true`, null, PORT);
+  it("a page whose named images shadow document.activeElement, querySelectorAll, body: behind a dialog refused with focusAt; plain written", async () => {
+    const imgs = `<img name="activeElement"><img name="querySelectorAll"><img name="body"><img name="documentElement">`;
+    await page(imgs);
+    await openModal();
     const r = await fill({ selector: "#em" });
-    expect(r.error, JSON.stringify(r)).toBe(NO_FOCUS);
-    await page(`<img name="activeElement"><img name="hasFocus">`);
-    for (const args of ROADS("#em", "Email address")) {
-      const w = await fill(args);
-      expect(w.ok, JSON.stringify(w)).toBe(true);
-    }
+    expect(r.error, JSON.stringify(r)).toBe(BEHIND_MODAL);
+    expect(focusAt(r)).toEqual({ name: "Inner field", tag: "input" });
+    await page(imgs, "document.getElementById('bg').inert=true;");
+    expect(focusAt(await fill({ selector: "#em" }))).toBeNull();
+    await page(imgs);
+    for (const args of ROADS("#em", "Email address")) expect((await fill(args)).ok).toBe(true);
     expect(await val("em")).toBe("SPK");
-  });
-
-  it("on a page with focus whose <img name=\"hasFocus\"> shadows document.hasFocus, a read-only field is still refused", async () => {
-    await focused(async () => {
-      await page(`<img name="activeElement"><img name="hasFocus"><input id="ro" aria-label="Read only" readonly>`);
-      const r = await fill({ selector: "#ro" });
-      expect(r.error, JSON.stringify(r)).toBe(READ_ONLY);
-      expect(await val("ro")).toBe("");
-    });
-  });
-
-  it("focusAt reads through a shadow root: the input inside a component that took focus", async () => {
-    await focused(async () => {
-      await page(`<input id="fr" aria-label="Hands focus on"><x-sh id="sh"></x-sh>`,
-        "customElements.define('x-sh',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open',delegatesFocus:true}).innerHTML='<input aria-label=\"Shadow inner\">';}});" +
-        "document.getElementById('fr').addEventListener('focus',function(){document.getElementById('sh').focus()});");
-      const r = await fill({ selector: "#fr" });
-      expect(r.error, JSON.stringify(r)).toBe(NO_FOCUS);
-      expect((r.context as { focusAt?: unknown }).focusAt).toEqual({ name: "Shadow inner", tag: "input" });
-    });
-  });
-
-  it("a field that hands focus on to another is not written; focusAt names the one that has it", async () => {
-    await focused(async () => {
-      for (const args of ROADS("#fr", "Hands focus on")) {
-        await page(`<input id="fr" aria-label="Hands focus on"><input id="fr2" aria-label="Focus target">`, "document.getElementById('fr').addEventListener('focus',function(){document.getElementById('fr2').focus()});");
-        const r = await fill(args);
-        expect(r.error, JSON.stringify(r)).toBe(NO_FOCUS);
-        expect((r.context as { focusAt?: unknown }).focusAt).toEqual({ name: "Focus target", tag: "input" });
-        expect(await val("fr")).toBe("");
-        expect(await val("fr2")).toBe("");
-      }
-    });
-  });
-
-  it("focusAt gives a masked field's name, never its value", async () => {
-    await focused(async () => {
-      await page(`<input id="fr" aria-label="Hands focus on"><input id="pw" type="password" aria-label="Passcode" value="hunter2">`, "document.getElementById('fr').addEventListener('focus',function(){document.getElementById('pw').focus()});");
-      const r = await fill({ selector: "#fr" });
-      expect((r.context as { focusAt?: unknown }).focusAt).toEqual({ name: "Passcode", tag: "input" });
-      expect(JSON.stringify(r)).not.toContain("hunter2");
-    });
-  });
-
-  it("a read-only field is not written, on a page with focus", async () => {
-    await focused(async () => {
-      for (const args of ROADS("#ro", "Read only")) {
-        await page(`<input id="ro" aria-label="Read only" readonly>`);
-        const r = await fill(args);
-        expect(r.error, JSON.stringify(r)).toBe(READ_ONLY);
-        expect(r.suggest).toEqual(HINT_READ_ONLY);
-        expect(await val("ro")).toBe("");
-        expect(await inputs()).toEqual([]);
-      }
-    });
-  });
-
-  it("a field that drops readonly as it takes focus (a guard against autofill) is written", async () => {
-    await focused(async () => {
-      for (const args of ROADS("#ro", "Read only")) {
-        await page(`<input id="ro" aria-label="Read only" readonly onfocus="this.removeAttribute('readonly')">`);
-        const r = await fill(args);
-        expect(r.ok, JSON.stringify(r)).toBe(true);
-        expect(await val("ro")).toBe("SPK");
-      }
-    });
-  });
-
-  it("a page without focus (a hidden tab, a window behind) has not run its focus handlers: read-only and a hand-off are not checked, written as before, and the answer says pageFocused:false", async () => {
-    await page(`<input id="ro" aria-label="Read only" readonly><input id="fr" aria-label="Hands focus on"><input id="fr2" aria-label="Focus target">` +
-      `<input id="ar" aria-label="Anti autofill" readonly onfocus="this.removeAttribute('readonly')">`,
-      "document.getElementById('fr').addEventListener('focus',function(){document.getElementById('fr2').focus()});" +
-      "window.__win=[];window.addEventListener('focus',function(e){if(e.target===window)window.__win.push('focus')});window.addEventListener('blur',function(e){if(e.target===window)window.__win.push('blur')});");
-    if (process.env.HEADED) return;
-    expect(await evaluateInTab("document.hasFocus()", null, PORT)).toBe(false);
-    for (const args of [...ROADS("#ro", "Read only"), ...ROADS("#ar", "Anti autofill"), ...ROADS("#fr", "Hands focus on")]) {
-      const r = await fill(args);
-      expect(r.ok, JSON.stringify(r)).toBe(true);
-      expect(r.pageFocused).toBe(false);
-    }
-    expect([await val("ro"), await val("ar"), await val("fr"), await val("fr2")]).toEqual(["SPK", "SPK", "SPK", ""]);
-    // Nothing was done to the page's focus: no window focus or blur.
-    expect(await evaluateInTab("window.__win", null, PORT)).toEqual([]);
-    // Behind a modal dialog, the focus answer holds without page focus too: activeElement does not move.
-    await evaluateInTab(`document.body.insertAdjacentHTML('beforeend','<dialog id="dlg"><input id="inner" aria-label="Inner field"></dialog>');document.getElementById('dlg').showModal();true`, null, PORT);
-    expect((await fill({ selector: "#em" })).error).toBe(NO_FOCUS);
-  });
-
-  it("a page with focus: a written field's answer has no pageFocused", async () => {
-    await focused(async () => {
-      await page("");
-      const r = await fill({ selector: "#em" });
-      expect(r.ok, JSON.stringify(r)).toBe(true);
-      expect("pageFocused" in r).toBe(false);
-    });
-  });
-
-  it("a custom element with a hidden form proxy in its light DOM and its real input in its shadow root is written through the shown one", async () => {
-    await page(`<x-px id="xp"><input id="proxy" style="display:none"></x-px>`,
-      "customElements.define('x-px',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<slot></slot><input>';}get value(){return this.shadowRoot.querySelector('input').value}set value(v){this.shadowRoot.querySelector('input').value=v}});");
-    const r = await fill({ selector: "#xp" });
-    expect(r.ok, JSON.stringify(r)).toBe(true);
-    expect(await val("xp")).toBe("SPK");
-  });
-
-  it("a custom element that takes focus itself and hands it on outside: the hand-off answer, not its inner control", async () => {
-    await focused(async () => {
-      await page(`<x-ho id="xh" tabindex="0"><input id="xhi"></x-ho><input id="away" aria-label="Away field">`,
-        "customElements.define('x-ho',class extends HTMLElement{get value(){return this.querySelector('input').value}set value(v){this.querySelector('input').value=v}});" +
-        "document.getElementById('xh').addEventListener('focus',function(){document.getElementById('away').focus()});");
-      const r = await fill({ selector: "#xh" });
-      expect(r.error, JSON.stringify(r)).toBe(NO_FOCUS);
-      expect((r.context as { focusAt?: unknown }).focusAt).toEqual({ name: "Away field", tag: "input" });
-      expect(await val("xhi")).toBe("");
-    });
-  });
-
-  it("a read-only custom text field (sl-input readonly: the input inside holds focus) is not written", async () => {
-    await focused(async () => {
-      await page(`<x-ro id="xr"></x-ro>`,
-        "customElements.define('x-ro',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open',delegatesFocus:true}).innerHTML='<input readonly>';}get value(){return this.shadowRoot.querySelector('input').value}set value(v){this.shadowRoot.querySelector('input').value=v}});");
-      const r = await fill({ selector: "#xr" });
-      expect(r.error, JSON.stringify(r)).toBe(READ_ONLY);
-      expect(await val("xr")).toBe("");
-    });
-  });
-
-  it("an ion-input-style element whose text control is disabled says disabled", async () => {
-    await page(`<x-iond id="xd"><input disabled></x-iond>`, "customElements.define('x-iond',class extends HTMLElement{get value(){return this.querySelector('input').value}set value(v){this.querySelector('input').value=v}});");
-    const r = await fill({ selector: "#xd" });
-    expect(r.error, JSON.stringify(r)).toBe(DISABLED);
-    expect(await val("xd")).toBe("");
-  });
-
-  it("a field not shown (a hidden input, display:none, visibility:hidden) says so, not the focus answer", async () => {
-    for (const html of [`<input id="nh" type="hidden">`, `<textarea id="nh" style="display:none"></textarea>`, `<input id="nh" style="visibility:hidden">`]) {
-      await page(html);
-      const r = await fill({ selector: "#nh" });
-      expect(r.error, JSON.stringify(r)).toBe(NOT_SHOWN);
-      expect(r.suggest).toEqual(HINT_OTHER);
-      expect(await val("nh")).toBe("");
-    }
   });
 
   it("a page that removed ShadowRoot.prototype.activeElement still fills a plain field", async () => {
@@ -331,44 +289,12 @@ describe.skipIf(!CHROME)("browser_fill writes only where a person can type (inte
     }
   });
 
-  it("a <select> behind a modal <dialog> is not changed, on both roads", async () => {
-    for (const args of ROADS("#sel", "Fruit")) {
-      await page(`<select id="sel" aria-label="Fruit"><option value="a">Apple</option><option value="b">Banana</option></select>`);
-      await evaluateInTab(`document.body.insertAdjacentHTML('beforeend','<dialog id="dlg"><input id="inner" aria-label="Inner field"></dialog>');document.getElementById('dlg').showModal();true`, null, PORT);
-      const r = await fill({ ...args, value: "b" });
-      expect(r.error, JSON.stringify(r)).toBe(NO_FOCUS);
-      expect(await val("sel")).toBe("a");
-      await page(`<select id="sel" aria-label="Fruit"><option value="a">Apple</option><option value="b">Banana</option></select>`);
-      expect((await fill({ ...args, value: "b" })).ok).toBe(true);
-      expect(await val("sel")).toBe("b");
-    }
-  });
-
-  it("a custom element that takes no focus itself but holds a text control (Ionic's ion-input) is written; behind a dialog it is not", async () => {
-    const def = "customElements.define('x-ion',class extends HTMLElement{connectedCallback(){if(!this.firstChild)this.innerHTML='<input>'}get value(){return this.querySelector('input').value}set value(v){this.querySelector('input').value=v}});";
-    await page(`<x-ion id="xi"></x-ion>`, def);
-    const r = await fill({ selector: "#xi" });
-    expect(r.ok, JSON.stringify(r)).toBe(true);
-    expect(await val("xi")).toBe("SPK");
-    await page(`<x-ion id="xi"></x-ion>`, def);
-    await evaluateInTab(`document.body.insertAdjacentHTML('beforeend','<dialog id="dlg"><input id="inner" aria-label="Inner field"></dialog>');document.getElementById('dlg').showModal();true`, null, PORT);
-    expect((await fill({ selector: "#xi" })).error).toBe(NO_FOCUS);
-    expect(await val("xi")).toBe("");
-  });
-
-  it("a custom element whose text control sits in its shadow root, with no delegatesFocus, is written through that control", async () => {
-    await page(`<x-sr id="xr"></x-sr>`,
-      "customElements.define('x-sr',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<input>';}get value(){return this.shadowRoot.querySelector('input').value}set value(v){this.shadowRoot.querySelector('input').value=v}});");
-    const r = await fill({ selector: "#xr" });
-    expect(r.ok, JSON.stringify(r)).toBe(true);
-    expect(await val("xr")).toBe("SPK");
-  });
-
-  it("a page whose <img name=\"body\"> shadows document.body: nothing focused still reads focusAt null", async () => {
-    await page(`<img name="body"><img name="documentElement">`, "document.getElementById('bg').inert=true;");
+  it("focusAt gives a masked field's name, never its value", async () => {
+    await page("");
+    await openModal(`<input id="pw" type="password" aria-label="Passcode" value="hunter2">`);
     const r = await fill({ selector: "#em" });
-    expect(r.error, JSON.stringify(r)).toBe(NO_FOCUS);
-    expect((r.context as { focusAt?: unknown }).focusAt).toBeNull();
+    expect(focusAt(r)).toEqual({ name: "Passcode", tag: "input" });
+    expect(JSON.stringify(r)).not.toContain("hunter2");
   });
 
   it("a disabled field named by selector is not written (by name it was never a target)", async () => {
@@ -381,13 +307,6 @@ describe.skipIf(!CHROME)("browser_fill writes only where a person can type (inte
     expect(await val("dis")).toBe("");
   });
 
-  it("a custom element that says it is disabled (its own disabled property) is not written, though it takes focus", async () => {
-    await page(`<x-dis id="xd" tabindex="0"></x-dis>`, "customElements.define('x-dis',class extends HTMLElement{get disabled(){return true}get value(){return this._v||''}set value(v){this._v=String(v)}});");
-    const r = await fill({ selector: "#xd" });
-    expect(r.error, JSON.stringify(r)).toBe(DISABLED);
-    expect(await val("xd")).toBe("");
-  });
-
   it("a field inside a <fieldset disabled> is disabled too (by name, it was never a target)", async () => {
     await page(`<fieldset disabled><input id="fd" aria-label="Fieldset field"></fieldset>`);
     const r = await fill({ selector: "#fd" });
@@ -396,68 +315,70 @@ describe.skipIf(!CHROME)("browser_fill writes only where a person can type (inte
     expect(await val("fd")).toBe("");
   });
 
-  it("a custom element that hands focus to its own input (delegatesFocus, a value property) is written", async () => {
-    await focused(async () => {
-      await page(`<x-field id="xf"></x-field>`,
-        "customElements.define('x-field',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open',delegatesFocus:true}).innerHTML='<input>';}get value(){return this.shadowRoot.querySelector('input').value}set value(v){this.shadowRoot.querySelector('input').value=v}});");
-      const r = await fill({ selector: "#xf" });
-      expect(r.ok, JSON.stringify(r)).toBe(true);
-      expect(await val("xf")).toBe("SPK");
-    });
+  it("a custom element that says it is disabled (its own disabled property) is not written", async () => {
+    await page(`<x-dis id="xd" tabindex="0"></x-dis>`, "customElements.define('x-dis',class extends HTMLElement{get disabled(){return true}get value(){return this._v||''}set value(v){this._v=String(v)}});");
+    const r = await fill({ selector: "#xd" });
+    expect(r.error, JSON.stringify(r)).toBe(DISABLED);
+    expect(await val("xd")).toBe("");
   });
 
-  it("a custom element that focuses a slotted <input> of its own (Vaadin's text field) is written", async () => {
-    await focused(async () => {
-      await page(`<x-slot id="xs"><input id="xsi"></x-slot>`,
-        "customElements.define('x-slot',class extends HTMLElement{focus(){this.querySelector('input').focus()}get value(){return this.querySelector('input').value}set value(v){this.querySelector('input').value=v}});");
-      const r = await fill({ selector: "#xs" });
-      expect(r.ok, JSON.stringify(r)).toBe(true);
-      expect(await val("xsi")).toBe("SPK");
-    });
+  it("a native field not shown (a hidden input, display:none, visibility:hidden) says so", async () => {
+    for (const html of [`<input id="nh" type="hidden">`, `<textarea id="nh" style="display:none"></textarea>`, `<input id="nh" style="visibility:hidden">`]) {
+      await page(html);
+      const r = await fill({ selector: "#nh" });
+      expect(r.error, JSON.stringify(r)).toBe(NOT_SHOWN);
+      expect(r.suggest).toEqual(HINT_OTHER);
+      expect(await val("nh")).toBe("");
+    }
   });
 
-  it("an element with a value property that takes no focus at all is not written (nothing a person can type into)", async () => {
-    await page(`<x-val id="xv"></x-val>`, "customElements.define('x-val',class extends HTMLElement{get value(){return this._v||''}set value(v){this._v=String(v)}});");
-    const r = await fill({ selector: "#xv" });
-    expect(r.error, JSON.stringify(r)).toBe(NO_FOCUS);
-    expect(await val("xv")).toBe("");
-  });
-
-  it("a part inside a contenteditable whose host masks itself as it takes focus, then replaces the part: the value is withheld (codex on #1036)", async () => {
-    await focused(async () => {
-      for (const args of [{ selector: "#cep" }]) {
-        await page(`<div id="ce" contenteditable="true" aria-label="PIN"><p id="cep">old</p></div>`,
-          "var ce=document.getElementById('ce');ce.addEventListener('focus',function(){ce.style.webkitTextSecurity='disc'});" +
-          "ce.addEventListener('input',function(){var p=document.createElement('p');p.textContent='x';ce.replaceChildren(p)});");
+  it("not judged here, written as before, with and without page focus: read-only, one that drops readonly on focus, one that hands focus on", async () => {
+    await bothFocus(async () => {
+      await page(`<input id="ro" aria-label="Read only" readonly><input id="ar" aria-label="Anti autofill" readonly onfocus="this.removeAttribute('readonly')">` +
+        `<input id="fr" aria-label="Hands focus on"><input id="fr2" aria-label="Focus target">`,
+        "document.getElementById('fr').addEventListener('focus',function(){document.getElementById('fr2').focus()});");
+      for (const args of [...ROADS("#ro", "Read only"), ...ROADS("#ar", "Anti autofill"), ...ROADS("#fr", "Hands focus on")]) {
         const r = await fill(args);
         expect(r.ok, JSON.stringify(r)).toBe(true);
-        expect(r.valueWithheld).toBe("masked");
-        expect(JSON.stringify(r)).not.toContain("SPK");
+        expect("pageFocused" in r).toBe(false);
+      }
+      expect([await val("ro"), await val("ar"), await val("fr")]).toEqual(["SPK", "SPK", "SPK"]);
+    });
+  });
+
+  it("custom elements are written as before: delegatesFocus, a slotted input, a closed shadow root, one that takes no focus", async () => {
+    const defs: Array<[string, string]> = [
+      [`<x-dg id="c"></x-dg>`, "customElements.define('x-dg',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open',delegatesFocus:true}).innerHTML='<input>';}get value(){return this.shadowRoot.querySelector('input').value}set value(v){this.shadowRoot.querySelector('input').value=v}});"],
+      [`<x-sl id="c"><input></x-sl>`, "customElements.define('x-sl',class extends HTMLElement{focus(){this.querySelector('input').focus()}get value(){return this.querySelector('input').value}set value(v){this.querySelector('input').value=v}});"],
+      [`<x-cl id="c"></x-cl>`, "customElements.define('x-cl',class extends HTMLElement{constructor(){super();this._r=this.attachShadow({mode:'closed'});this._r.innerHTML='<input>';}get value(){return this._r.querySelector('input').value}set value(v){this._r.querySelector('input').value=v}});"],
+      [`<x-vo id="c"></x-vo>`, "customElements.define('x-vo',class extends HTMLElement{get value(){return this._v||''}set value(v){this._v=String(v)}});"],
+    ];
+    for (const [html, def] of defs) {
+      await page(html, def);
+      const r = await fill({ selector: "#c" });
+      expect(r.ok, `${html} ${JSON.stringify(r)}`).toBe(true);
+      expect(await val("c")).toBe("SPK");
+    }
+  });
+
+  it("an ion-input-style element (no focus of its own, a light-DOM input) behind a modal dialog is not written", async () => {
+    await page(`<x-ion id="xi"><input></x-ion>`, "customElements.define('x-ion',class extends HTMLElement{get value(){return this.querySelector('input').value}set value(v){this.querySelector('input').value=v}});");
+    await openModal();
+    expect((await fill({ selector: "#xi" })).error).toBe(BEHIND_MODAL);
+    expect(await val("xi")).toBe("");
+  });
+
+  it("plain fields and contenteditables are written on both roads, with and without page focus", async () => {
+    await bothFocus(async () => {
+      for (const args of [...ROADS("#em", "Email address"), ...ROADS("#ta", "Notes")]) {
+        await page("");
+        const r = await fill(args);
+        expect(r.ok, JSON.stringify(r)).toBe(true);
+      }
+      for (const sel of ["#ce", "#cep"]) {
+        await page(`<div id="ce" contenteditable="true" aria-label="Editor"><p id="cep">old</p></div>`);
+        expect((await fill({ selector: sel })).ok).toBe(true);
       }
     });
-  });
-
-  it("a contenteditable, and a part inside one, are written", async () => {
-    await focused(async () => {
-      await page(`<div id="ce" contenteditable="true" aria-label="Editor"><p id="cep">old</p></div>`);
-      expect((await fill({ selector: "#ce" })).ok).toBe(true);
-      expect(await evaluateInTab("document.getElementById('ce').textContent", null, PORT)).toBe("SPK");
-      await page(`<div id="ce" contenteditable="true" aria-label="Editor"><p id="cep">old</p></div>`);
-      const r = await fill({ selector: "#cep" });
-      expect(r.ok, JSON.stringify(r)).toBe(true);
-    });
-  });
-
-  it("plain fields are written on both roads, with and without page focus", async () => {
-    for (const withFocus of [false, true]) {
-      const run = async () => {
-        for (const args of [...ROADS("#em", "Email address"), ...ROADS("#ta", "Notes")]) {
-          await page("");
-          const r = await fill(args);
-          expect(r.ok, JSON.stringify(r)).toBe(true);
-        }
-      };
-      if (withFocus) await focused(run); else await run();
-    }
   });
 });

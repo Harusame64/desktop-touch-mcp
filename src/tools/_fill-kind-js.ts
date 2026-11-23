@@ -50,87 +50,69 @@ export const FILL_KIND_JS = `
       (el.getAttribute('inputmode') || '').toLowerCase() === 'none';
     return el.tagName === 'INPUT' && ro && __fillKind(el, axRole) === 'widget';
   }
-  // Whether a person could type into el once it was focused (internal #420): null when they could, else why not. A
-  // disabled field takes no typing, nor a read-only one once focus has reached it (behind a dialog, the dialog is what
-  // stops a person, so that is the answer), nor one not shown. Otherwise the browser's focus decides: the focused element, through
-  // open shadow roots, must be el or inside it (a custom element that hands focus to its own input), or the editing
-  // host around el. Behind a modal dialog or under inert, focus stays where it was; a field that hands
-  // focus on takes no typing either. The getters are the prototypes': a page's <img name="activeElement"> shadows
-  // document.activeElement.
-  // Whether the page has focus (a window in front, the tab shown). Without it the page's focus handlers have not run
-  // yet: a field that hands focus on, or drops readonly as it takes focus, has not done so (internal #420).
-  function __pageHasFocus() {
-    return typeof Document !== 'undefined' ? Document.prototype.hasFocus.call(document) : !!(document.hasFocus && document.hasFocus());
-  }
+  // Whether a person could type into el, by what the page's structure says (internal #420): null when nothing stops
+  // them, else why. Facts only, none that waits on a page's focus handler (read-only, a field that hands focus on: not
+  // judged here). Disabled (itself or by a <fieldset disabled>); a native control not shown; inside a part of the page
+  // marked inert (an ancestor's inert attribute, across shadow roots: booking.com's sign-in prompt); outside the top
+  // modal <dialog> while one is open. The top dialog is found from the focus, as #1031's note finds it: down open shadow
+  // roots, then up the composed tree; else the one open modal dialog of the document. The getters and querySelectorAll
+  // are the prototypes': a page's <img name="activeElement"> shadows document.activeElement.
   function __typingRefused(el) {
-    // Disabled by itself or by a <fieldset disabled> around it. First: a disabled field takes focus nowhere, so the
-    // focus answer would only hide why.
     let off = el.disabled === true;
     try { off = off || __matches(el, ':disabled'); } catch (e) { }
     if (off) return { why: 'disabled' };
-    // A prototype's getter, or null (no such class, or a page that removed it): then the instance's property is read.
+    const tag = el.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+      try {
+        if ((tag === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'hidden') || el.getClientRects().length === 0 ||
+          getComputedStyle(el).visibility === 'hidden') return { why: 'not_shown' };
+      } catch (e) { }
+    }
     const getter = function(C, k) {
       if (typeof C === 'undefined') return null;
       const d = Object.getOwnPropertyDescriptor(C.prototype, k);
       return d && d.get ? d.get : null;
     };
-    const docAct = getter(typeof Document !== 'undefined' ? Document : undefined, 'activeElement');
+    const D = typeof Document !== 'undefined' ? Document : undefined;
+    const docAct = getter(D, 'activeElement');
     const srAct = getter(typeof ShadowRoot !== 'undefined' ? ShadowRoot : undefined, 'activeElement');
     const srGet = getter(typeof Element !== 'undefined' ? Element : undefined, 'shadowRoot');
-    const deep = function() {
-      let a = docAct ? docAct.call(document) : document.activeElement;
-      const sr = function(n) { return srGet ? srGet.call(n) : n.shadowRoot; };
-      for (let r = a && sr(a); r && (srAct ? srAct.call(r) : r.activeElement); r = a && sr(a)) a = srAct ? srAct.call(r) : r.activeElement;
-      return a;
+    const slotGet = getter(typeof Element !== 'undefined' ? Element : undefined, 'assignedSlot');
+    // The composed parent: the assigned slot, the parent, or the host of the shadow root it sits in.
+    const up = function(n) {
+      const slot = n.nodeType === 1 && slotGet ? slotGet.call(n) : null;
+      if (slot) return slot;
+      const p = __parent(n);
+      if (p) return p;
+      const root = typeof Node !== 'undefined' ? Node.prototype.getRootNode.call(n) : (n.getRootNode ? n.getRootNode() : null);
+      return root && root.nodeType === 11 && root.host ? root.host : null;
     };
-    // A part inside a contenteditable (a paragraph) takes no focus of its own; a person's click puts the caret in the
-    // editing host around it, so the host is focused.
-    if (el.isContentEditable) {
-      let host = el;
-      while (__parent(host) && __parent(host).isContentEditable) host = __parent(host);
-      if (host !== el && deep() !== host) host.focus();
+    const within = function(n, box) { for (let d = 0; n && d < 256; d++, n = up(n)) if (n === box) return true; return false; };
+    let a = docAct ? docAct.call(document) : document.activeElement;
+    for (let r = a && (srGet ? srGet.call(a) : a.shadowRoot); r && (srAct ? srAct.call(r) : r.activeElement); r = a && (srGet ? srGet.call(a) : a.shadowRoot)) {
+      a = srAct ? srAct.call(r) : r.activeElement;
     }
-    const holds = function(a) {
-      if (a && a.isContentEditable && __contains(a, el)) return true;
-      // Up the composed tree from the focused element: el itself, a control inside it (Vaadin's slotted <input>), or
-      // one in its shadow tree (Shoelace, Material Web: delegatesFocus).
-      for (let n = a, d = 0; n && d < 64; d++) {
-        if (n === el) return true;
-        const p = __parent(n);
-        if (p) { n = p; continue; }
-        const root = typeof Node !== 'undefined' ? Node.prototype.getRootNode.call(n) : (n.getRootNode ? n.getRootNode() : null);
-        n = root && root.nodeType === 11 && root.host ? root.host : null;
-      }
-      return false;
+    const docGet = function(k) { const g = getter(D, k); return g ? g.call(document) : document[k]; };
+    const blocked = function(why) {
+      const at = a && a !== docGet('body') && a !== docGet('documentElement') ? a : null;
+      return { why: why, focusAt: at ? { name: __personName(at), tag: at.tagName.toLowerCase() } : null };
     };
-    let a = deep();
-    // A custom element that takes no focus itself (no tabindex, no delegatesFocus: its focus() did nothing, so no
-    // handler of its own moved focus) but holds a text control (Ionic's ion-input): a person's click lands in the first
-    // one shown, in its light DOM or its open shadow root (a hidden form proxy is not it), so that one is focused.
-    const own = srGet ? srGet.call(el) : el.shadowRoot;
-    if (!holds(a) && el.tagName.indexOf('-') > 0 && !el.hasAttribute('tabindex') && !(own && own.delegatesFocus)) {
-      const TEXT = 'input:not([type=hidden]),textarea,[contenteditable]:not([contenteditable=false])';
-      const all = Array.prototype.slice.call(el.querySelectorAll(TEXT)).concat(own ? Array.prototype.slice.call(own.querySelectorAll(TEXT)) : []);
-      const inner = all.filter(function(c) { try { return c.getClientRects().length > 0; } catch (e) { return false; } })[0] || null;
-      if (inner && inner.disabled === true) return { why: 'disabled' };
-      if (inner) { inner.focus(); a = deep(); }
+    const hasAttr = typeof Element !== 'undefined' ? Element.prototype.hasAttribute : null;
+    for (let n = el, d = 0; n && d < 256; d++, n = up(n)) {
+      if (n.nodeType === 1 && (hasAttr ? hasAttr.call(n, 'inert') : n.hasAttribute('inert'))) return blocked('inert');
     }
-    if (holds(a)) {
-      // Read-only, itself (a custom element's readOnly too) or the control inside it that holds focus (sl-input's
-      // input), once focus has reached it: behind a dialog, the dialog is what stops a person.
-      const ctlRO = a && a !== el && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && a.readOnly === true;
-      // On a page without focus read-only is not judged (it may be a guard against autofill that its focus handler
-      // has not lifted yet): written as before, and the answer carries pageFocused:false.
-      if ((el.readOnly === true || ctlRO) && __pageHasFocus()) return { why: 'read_only' };
-      return null;
+    let top = null;
+    for (let n = a, d = 0; n && d < 256; d++, n = up(n)) {
+      let modal = false;
+      try { modal = n.nodeType === 1 && n.tagName === 'DIALOG' && __matches(n, ':modal'); } catch (e) { }
+      if (modal) { top = n; break; }
     }
-    // Not shown (a hidden input, no box, visibility:hidden): no person sees it to type into.
-    try {
-      if ((el.tagName === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'hidden') || el.getClientRects().length === 0 ||
-        getComputedStyle(el).visibility === 'hidden') return { why: 'not_shown' };
-    } catch (e) { }
-    const docGet = function(k) { const g = getter(typeof Document !== 'undefined' ? Document : undefined, k); return g ? g.call(document) : document[k]; };
-    const at = a && a !== docGet('body') && a !== docGet('documentElement') ? a : null;
-    return { why: 'no_focus', focusAt: at ? { name: __personName(at), tag: at.tagName.toLowerCase() } : null };
+    let modals = [];
+    try { modals = Array.prototype.slice.call(D ? D.prototype.querySelectorAll.call(document, 'dialog:modal') : document.querySelectorAll('dialog:modal')); } catch (e) { }
+    if (!top && modals.length === 1) top = modals[0];
+    if (top) return within(el, top) ? null : blocked('behind_modal');
+    // Several open and the focus in none of them: outside all of them is behind one.
+    if (modals.length > 1 && !modals.some(function(m) { return within(el, m); })) return blocked('behind_modal');
+    return null;
   }
 `;

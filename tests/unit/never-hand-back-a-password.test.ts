@@ -119,14 +119,7 @@ class FakeEl {
     const p = this.parentElement;
     if (p) { p.childNodes = p.childNodes.filter((c) => c !== this); this.parentElement = null; }
   }
-  // Focus lands on the field, as in a real page: browser_fill writes only into the field that holds it (internal #420).
-  focus(): void {
-    if (this.maskOnFocus) this.attrs.style = "-webkit-text-security: disc";
-    let top: FakeEl | null = this.parentElement;
-    while (top?.parentElement) top = top.parentElement;
-    const doc = documentOf.get(top ?? this);
-    if (doc) doc.activeElement = this;
-  }
+  focus(): void { if (this.maskOnFocus) this.attrs.style = "-webkit-text-security: disc"; }
   select(): void {}
   scrollIntoView(): void {}
   dispatchEvent(event?: { type?: string }): boolean {
@@ -192,8 +185,6 @@ interface Page {
   document: Record<string, unknown>;
 }
 
-/** Each page's document, by its body: a field's focus() sets its own page's activeElement. */
-const documentOf = new WeakMap<FakeEl, { activeElement: FakeEl | null }>();
 function pageWith(body: FakeEl, activeElement: FakeEl | null = null): Page {
   const all = (): FakeEl[] => [body, ...body.descendants()];
   const style = (el: { attrs?: Record<string, string> }) => {
@@ -220,7 +211,7 @@ function pageWith(body: FakeEl, activeElement: FakeEl | null = null): Page {
       screenX: 0, screenY: 0, scrollY: 0, devicePixelRatio: 1,
       getComputedStyle: style,
     },
-    document: register(body, {
+    document: {
       body,
       documentElement: { scrollHeight: 1000 },
       activeElement,
@@ -228,12 +219,8 @@ function pageWith(body: FakeEl, activeElement: FakeEl | null = null): Page {
       querySelector: (s: string) => body.querySelector(s),
       getElementById: (id: string) => all().find((e) => e.id === id) ?? null,
       elementFromPoint: () => null,
-    }),
+    },
   };
-}
-function register<D extends { activeElement: FakeEl | null }>(body: FakeEl, doc: D): D {
-  documentOf.set(body, doc);
-  return doc;
 }
 
 class FakeEvent {
