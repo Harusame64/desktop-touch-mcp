@@ -56,7 +56,8 @@ export const FILL_KIND_JS = `
   // marked inert (an ancestor's inert attribute, across shadow roots: booking.com's sign-in prompt); outside the top
   // modal <dialog> while one is open. The top dialog is found from the focus, as #1031's note finds it: down open shadow
   // roots, then up the composed tree; else the one open modal dialog of the document or an open shadow root (a closed
-  // one's is not seen; with several and the focus in none, only outside all of them is known). The getters and querySelectorAll
+  // one's is not seen, nor an inert part of a closed shadow root around a slotted field; with several and the focus in
+  // none, only outside all of them is known). The getters and querySelectorAll
   // are the prototypes': a page's <img name="activeElement"> shadows document.activeElement.
   function __typingRefused(el) {
     let off = el.disabled === true;
@@ -110,13 +111,13 @@ export const FILL_KIND_JS = `
     for (let n = el, d = 0; n && d < CAP; d++, n = up(n)) {
       if (n.nodeType === 1 && (hasAttr ? hasAttr.call(n, 'inert') : n.hasAttribute('inert'))) return blocked('inert');
       let openModal = false;
-      try { openModal = n.nodeType === 1 && n.tagName === 'DIALOG' && __matches(n, ':modal'); } catch (e) { }
+      try { openModal = n.nodeType === 1 && String(n.localName).toLowerCase() === 'dialog' && __matches(n, ':modal'); } catch (e) { }
       if (openModal) break;
     }
     let top = null;
     for (let n = a, d = 0; n && d < CAP; d++, n = up(n)) {
       let modal = false;
-      try { modal = n.nodeType === 1 && n.tagName === 'DIALOG' && __matches(n, ':modal'); } catch (e) { }
+      try { modal = n.nodeType === 1 && String(n.localName).toLowerCase() === 'dialog' && __matches(n, ':modal'); } catch (e) { }
       if (modal) { top = n; break; }
     }
     if (top) return within(el, top) ? null : blocked('behind_modal');
@@ -126,7 +127,7 @@ export const FILL_KIND_JS = `
     try {
       const qsa = function(root, sel) { return Array.prototype.slice.call(D && root === document ? D.prototype.querySelectorAll.call(document, sel) : root.querySelectorAll(sel)); };
       const roots = [document];
-      for (let i = 0; i < roots.length && i < 2000; i++) {
+      for (let i = 0; i < roots.length; i++) {
         modals = modals.concat(qsa(roots[i], 'dialog:modal'));
         qsa(roots[i], '*').forEach(function(n) { const r = srGet ? srGet.call(n) : n.shadowRoot; if (r) roots.push(r); });
       }

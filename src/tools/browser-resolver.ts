@@ -757,7 +757,7 @@ export function buildUntagJs(nonce: string): string {
  * (re-non-uniqueness) and an overlay cannot be mis-targeted (occlusion). Returns
  * `{ ok:true, actual, fullActualLen, fullMatches }` (and `chose`, `select` for a select) or `{ ok:false, error }`
  * (index_out_of_range / resolved_element_lost / not_fillable) or `{ ok:false, selectError }` for a select refused
- * untouched. Pinned by snapshot.
+ * untouched, or `{ ok:false, typingRefused }` for a field a person could not reach (internal #420). Pinned by snapshot.
  */
 export function buildFillActJs(
   args: ActionFactsArgs,

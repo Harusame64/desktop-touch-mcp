@@ -255,6 +255,24 @@ describe.skipIf(!CHROME)("browser_fill does not type where a person cannot reach
     });
   });
 
+  it("by selector, a field whose focus handler opens a modal dialog only on a later focus: the second evaluate's re-check after focus refuses it", async () => {
+    await focused(async () => {
+      await page(`</main><dialog id="pop"><input id="popf" aria-label="Pop field"></dialog><main>`,
+        // The first focus (the first evaluate) lets focus go again; the second (the second evaluate) opens the dialog.
+        "window.__n=0;var em=document.getElementById('em');em.addEventListener('focus',function(){window.__n++;var d=document.getElementById('pop');" +
+        "if(window.__n===1)setTimeout(function(){em.blur()});else if(!d.open)d.showModal();});");
+      const r = await fill({ selector: "#em" });
+      expect(r.error, JSON.stringify(r)).toBe(BEHIND_MODAL);
+      expect(await val("em")).toBe("");
+    });
+  });
+
+  it("not seen, written as before: an inert wrapper inside a closed shadow root around a slotted field", async () => {
+    await page(`<x-cp id="xcp"><input id="slf" aria-label="Slotted"></x-cp>`,
+      "if(!customElements.get('x-cp'))customElements.define('x-cp',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'closed'}).innerHTML='<div inert><slot></slot></div>';}});");
+    expect((await fill({ selector: "#slf" })).ok).toBe(true);
+  });
+
   it("a refused field is not focused first: its focus handler does not run (behind a dialog; a focusable custom element that says it is disabled)", async () => {
     for (const args of ROADS("#em", "Email address")) {
       await page("", "window.__f=0;document.getElementById('em').addEventListener('focus',function(){window.__f++});");
