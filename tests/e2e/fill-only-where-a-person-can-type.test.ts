@@ -389,6 +389,20 @@ describe.skipIf(!CHROME)("browser_fill writes only where a person can type (inte
     expect(await val("xv")).toBe("");
   });
 
+  it("a part inside a contenteditable whose host masks itself as it takes focus, then replaces the part: the value is withheld (codex on #1036)", async () => {
+    await focused(async () => {
+      for (const args of [{ selector: "#cep" }]) {
+        await page(`<div id="ce" contenteditable="true" aria-label="PIN"><p id="cep">old</p></div>`,
+          "var ce=document.getElementById('ce');ce.addEventListener('focus',function(){ce.style.webkitTextSecurity='disc'});" +
+          "ce.addEventListener('input',function(){var p=document.createElement('p');p.textContent='x';ce.replaceChildren(p)});");
+        const r = await fill(args);
+        expect(r.ok, JSON.stringify(r)).toBe(true);
+        expect(r.valueWithheld).toBe("masked");
+        expect(JSON.stringify(r)).not.toContain("SPK");
+      }
+    });
+  });
+
   it("a contenteditable, and a part inside one, are written", async () => {
     await focused(async () => {
       await page(`<div id="ce" contenteditable="true" aria-label="Editor"><p id="cep">old</p></div>`);

@@ -1780,13 +1780,15 @@ ${FILL_KIND_JS}
   // A field a person could not type into once focused is not written, as on the by-axis road (internal #420).
   const refused = __typingRefused(el);
   if (refused) return { ok: false, typingRefused: refused };
+  // The check can focus the editing host or an inner control, whose focus handler can mask the field (codex on #1036).
+  const maskedAfterCheck = __isMasked(el);
   // A contenteditable with no value property takes its text, as on the by-axis road: a value expando changed nothing
   // and read back as a match (/code-review on this PR).
   if (el.isContentEditable && !('value' in el)) {
     el.textContent = ${jsLiteral(value)};
     el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: ${jsLiteral(value)} }));
     const ceText = el.textContent || '';
-    const ceMasked = maskedBefore || __isMasked(el);
+    const ceMasked = maskedBefore || maskedAfterCheck || __isMasked(el);
     return { ok: true, actual: ceMasked ? undefined : ceText.slice(0, 100), actualWithheld: ceMasked || undefined, fullActualLen: ceText.length, fullMatches: ceText === ${jsLiteral(value)} };
   }
   // Select all existing content before replacing
@@ -1814,7 +1816,7 @@ ${FILL_KIND_JS}
   // verification (matrix doc §3.1 browser_fill).
   const fullActual = el.value !== undefined ? el.value : (el.textContent || '');
   // A masked field's value never leaves the page; the comparison is made here, in the page.
-  const masked = maskedBefore || __isMasked(el);
+  const masked = maskedBefore || maskedAfterCheck || __isMasked(el);
   return {
     ok: true,
     actual: masked ? undefined : (fullActual || '').slice(0, 100),
