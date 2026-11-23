@@ -52,7 +52,7 @@ export const FILL_KIND_JS = `
   }
   // Whether a person could type into el once it was focused (internal #420): null when they could, else why not. A
   // disabled field takes no typing, nor a read-only one once focus has reached it (behind a dialog, the dialog is what
-  // stops a person, so that is the answer). Otherwise the browser's focus decides: the focused element, through
+  // stops a person, so that is the answer), nor one not shown. Otherwise the browser's focus decides: the focused element, through
   // open shadow roots, must be el or inside it (a custom element that hands focus to its own input), or the editing
   // host around el. Behind a modal dialog or under inert, focus stays where it was; a field that hands
   // focus on takes no typing either. The getters are the prototypes': a page's <img name="activeElement"> shadows
@@ -62,7 +62,12 @@ export const FILL_KIND_JS = `
     let off = el.disabled === true;
     try { off = off || __matches(el, ':disabled'); } catch (e) { }
     if (off) return { why: 'disabled' };
-    const getter = function(C, k) { return typeof C !== 'undefined' ? Object.getOwnPropertyDescriptor(C.prototype, k).get : null; };
+    // A prototype's getter, or null (no such class, or a page that removed it): then the instance's property is read.
+    const getter = function(C, k) {
+      if (typeof C === 'undefined') return null;
+      const d = Object.getOwnPropertyDescriptor(C.prototype, k);
+      return d && d.get ? d.get : null;
+    };
     const docAct = getter(typeof Document !== 'undefined' ? Document : undefined, 'activeElement');
     const srAct = getter(typeof ShadowRoot !== 'undefined' ? ShadowRoot : undefined, 'activeElement');
     const srGet = getter(typeof Element !== 'undefined' ? Element : undefined, 'shadowRoot');
@@ -99,17 +104,25 @@ export const FILL_KIND_JS = `
       const TEXT = 'input:not([type=hidden]),textarea,[contenteditable]:not([contenteditable=false])';
       const sr = srGet ? srGet.call(el) : el.shadowRoot;
       const inner = el.querySelector(TEXT) || (sr ? sr.querySelector(TEXT) : null);
+      if (inner && inner.disabled === true) return { why: 'disabled' };
       if (inner) { inner.focus(); a = deep(); }
     }
     if (holds(a)) {
-      // Read-only is read once the page's focus handlers ran: a field can drop readonly as it takes focus (a guard
-      // against autofill). browser_fill gives the page focus for its call (CDP focus emulation), so they have; a page
-      // still without focus (the emulation could not be set) runs them only when it gets focus, so there the field is
-      // written as before.
-      if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.readOnly === true &&
-        (typeof Document !== 'undefined' ? Document.prototype.hasFocus.call(document) : !!(document.hasFocus && document.hasFocus()))) return { why: 'read_only' };
+      // Read-only, itself (a custom element's readOnly too) or the control inside it that holds focus (sl-input's
+      // input), once focus has reached it: behind a dialog, the dialog is what stops a person. A page without focus
+      // has not run its focus handlers, which can make a field writable (a guard against autofill): said, not guessed.
+      const ctlRO = a && a !== el && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && a.readOnly === true;
+      if (el.readOnly === true || ctlRO) {
+        const focused = typeof Document !== 'undefined' ? Document.prototype.hasFocus.call(document) : !!(document.hasFocus && document.hasFocus());
+        return focused ? { why: 'read_only' } : { why: 'read_only', pageFocused: false };
+      }
       return null;
     }
+    // Not shown (a hidden input, no box, visibility:hidden): no person sees it to type into.
+    try {
+      if ((el.tagName === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'hidden') || el.getClientRects().length === 0 ||
+        getComputedStyle(el).visibility === 'hidden') return { why: 'not_shown' };
+    } catch (e) { }
     const docGet = function(k) { const g = getter(typeof Document !== 'undefined' ? Document : undefined, k); return g ? g.call(document) : document[k]; };
     const at = a && a !== docGet('body') && a !== docGet('documentElement') ? a : null;
     return { why: 'no_focus', focusAt: at ? { name: __personName(at), tag: at.tagName.toLowerCase() } : null };

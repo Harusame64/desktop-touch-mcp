@@ -5,9 +5,8 @@
  * then write only if it holds focus and is not read-only or disabled; otherwise nothing is written and context.focusAt
  * names where focus is.
  *
- * Headless Chrome gives the page no focus, as a hidden tab has. browser_fill gives the page focus for its call (CDP
- * focus emulation), so its focus handlers run there too; `focused()` gives it focus from outside as well, as a window
- * in front has, for the cells that must hold either way.
+ * Headless Chrome gives the page no focus, as a hidden tab or a window behind has: its focus handlers do not run.
+ * `focused()` turns on CDP's focus emulation from outside, as a window in front has, for the cells that need it.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import WebSocket from "ws";
@@ -53,6 +52,8 @@ const ROADS = (sel: string, name: string): Array<Record<string, unknown>> => [{ 
 const NO_FOCUS = "browser_fill: the field does not hold focus once focused, so typing would not reach it; context.focusAt is where focus is. Nothing was written.";
 const READ_ONLY = "browser_fill: the field is read-only. Nothing was written.";
 const DISABLED = "browser_fill: the field is disabled. Nothing was written.";
+const READ_ONLY_UNFOCUSED = "browser_fill: the field is read-only. The page does not have focus (a hidden tab or a window behind), so its focus handlers, which can make a field writable, have not run. Nothing was written.";
+const NOT_SHOWN = "browser_fill: the field is not shown. Nothing was written.";
 const HINT = ["browser_overview lists the page's controls and any dialog in front of the page"];
 
 // Runs `body` with CDP's focus emulation on: the page has focus, and its focus handlers run as the field takes focus.
@@ -245,22 +246,55 @@ describe.skipIf(!CHROME)("browser_fill writes only where a person can type (inte
     });
   });
 
-  it("a page without focus (a hidden tab) is given focus for the call: its focus handlers run, then it is left without focus again", async () => {
+  it("a page without focus (a hidden tab) has not run its focus handlers: read-only is said with pageFocused:false; a field that hands focus on is not seen", async () => {
     await page(`<input id="ro" aria-label="Read only" readonly><input id="fr" aria-label="Hands focus on"><input id="fr2" aria-label="Focus target">` +
       `<input id="ar" aria-label="Anti autofill" readonly onfocus="this.removeAttribute('readonly')">`,
       "document.getElementById('fr').addEventListener('focus',function(){document.getElementById('fr2').focus()});" +
       "window.__win=[];window.addEventListener('focus',function(e){if(e.target===window)window.__win.push('focus')});window.addEventListener('blur',function(e){if(e.target===window)window.__win.push('blur')});");
-    if (!process.env.HEADED) expect(await evaluateInTab("document.hasFocus()", null, PORT)).toBe(false);
-    expect((await fill({ selector: "#ro" })).error).toBe(READ_ONLY);
-    const fr = await fill({ by: "ariaLabel", pattern: "Hands focus on" });
-    expect(fr.error, JSON.stringify(fr)).toBe(NO_FOCUS);
-    expect((fr.context as { focusAt?: unknown }).focusAt).toEqual({ name: "Focus target", tag: "input" });
-    expect((await fill({ selector: "#ar" })).ok).toBe(true);
-    expect([await val("ro"), await val("fr"), await val("fr2"), await val("ar")]).toEqual(["", "", "", "SPK"]);
-    if (!process.env.HEADED) {
-      // As a person's switch to the tab and away: the window got focus and lost it, once per call.
-      expect(await evaluateInTab("window.__win", null, PORT)).toEqual(["focus", "blur", "focus", "blur", "focus", "blur"]);
-      expect(await evaluateInTab("document.hasFocus()", null, PORT)).toBe(false);
+    if (process.env.HEADED) return;
+    expect(await evaluateInTab("document.hasFocus()", null, PORT)).toBe(false);
+    for (const args of [...ROADS("#ro", "Read only"), ...ROADS("#ar", "Anti autofill")]) {
+      const r = await fill(args);
+      expect(r.error, JSON.stringify(r)).toBe(READ_ONLY_UNFOCUSED);
+      expect((r.context as { pageFocused?: unknown }).pageFocused).toBe(false);
+    }
+    expect((await fill({ by: "ariaLabel", pattern: "Hands focus on" })).ok).toBe(true);
+    expect([await val("ro"), await val("ar"), await val("fr"), await val("fr2")]).toEqual(["", "", "SPK", ""]);
+    // Nothing was done to the page's focus: no window focus or blur.
+    expect(await evaluateInTab("window.__win", null, PORT)).toEqual([]);
+  });
+
+  it("a read-only custom text field (sl-input readonly: the input inside holds focus) is not written", async () => {
+    await focused(async () => {
+      await page(`<x-ro id="xr"></x-ro>`,
+        "customElements.define('x-ro',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open',delegatesFocus:true}).innerHTML='<input readonly>';}get value(){return this.shadowRoot.querySelector('input').value}set value(v){this.shadowRoot.querySelector('input').value=v}});");
+      const r = await fill({ selector: "#xr" });
+      expect(r.error, JSON.stringify(r)).toBe(READ_ONLY);
+      expect(await val("xr")).toBe("");
+    });
+  });
+
+  it("an ion-input-style element whose text control is disabled says disabled", async () => {
+    await page(`<x-iond id="xd"><input disabled></x-iond>`, "customElements.define('x-iond',class extends HTMLElement{get value(){return this.querySelector('input').value}set value(v){this.querySelector('input').value=v}});");
+    const r = await fill({ selector: "#xd" });
+    expect(r.error, JSON.stringify(r)).toBe(DISABLED);
+    expect(await val("xd")).toBe("");
+  });
+
+  it("a field not shown (a hidden input, display:none, visibility:hidden) says so, not the focus answer", async () => {
+    for (const html of [`<input id="nh" type="hidden">`, `<textarea id="nh" style="display:none"></textarea>`, `<input id="nh" style="visibility:hidden">`]) {
+      await page(html);
+      const r = await fill({ selector: "#nh" });
+      expect(r.error, JSON.stringify(r)).toBe(NOT_SHOWN);
+      expect(await val("nh")).toBe("");
+    }
+  });
+
+  it("a page that removed ShadowRoot.prototype.activeElement still fills a plain field", async () => {
+    await page("", "delete ShadowRoot.prototype.activeElement;");
+    for (const args of ROADS("#em", "Email address")) {
+      const r = await fill(args);
+      expect(r.ok, JSON.stringify(r)).toBe(true);
     }
   });
 
