@@ -41,7 +41,7 @@ const inputs = async (): Promise<string[]> => (await evaluateInTab("window.__ev"
 // A modal dialog holding a field, opened with showModal: its field has focus. The body by Document's own getter: a
 // cell's <img name="body"> shadows document.body.
 const openModal = (inner = `<input id="inner" aria-label="Inner field">`) =>
-  evaluateInTab(`Object.getOwnPropertyDescriptor(Document.prototype,'body').get.call(document).insertAdjacentHTML('beforeend',${JSON.stringify(`<dialog id="dlg">${inner}</dialog>`)});document.getElementById('dlg').showModal();true`, null, PORT);
+  evaluateInTab(`Object.getOwnPropertyDescriptor(Document.prototype,'body').get.call(document).insertAdjacentHTML('beforeend',${JSON.stringify(`<dialog id="dlg">${inner}</dialog>`)});Document.prototype.getElementById.call(document,'dlg').showModal();true`, null, PORT);
 
 function payload(r: { content: Array<{ type: string; text?: string }> }): Record<string, unknown> {
   const text = r.content[0]?.type === "text" ? r.content[0].text ?? "{}" : "{}";
@@ -271,6 +271,27 @@ describe.skipIf(!CHROME)("browser_fill does not type where a person cannot reach
     await page(`<x-cp id="xcp"><input id="slf" aria-label="Slotted"></x-cp>`,
       "if(!customElements.get('x-cp'))customElements.define('x-cp',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'closed'}).innerHTML='<div inert><slot></slot></div>';}});");
     expect((await fill({ selector: "#slf" })).ok).toBe(true);
+  });
+
+  it("a page whose <img name=\"getElementById\"> breaks naming: the refusal stands, focusAt with an empty name", async () => {
+    await page(`<img name="getElementById"><span id="lbl">Labelled</span>`);
+    await openModal(`<input id="inner" aria-labelledby="lbl">`);
+    const r = await fill({ selector: "#em" });
+    expect(r.error, JSON.stringify(r)).toBe(BEHIND_MODAL);
+    expect(focusAt(r)).toEqual({ name: "", tag: "input" });
+    // Read by Document's own method: the cell's image shadows document.getElementById for this read too.
+    expect(await evaluateInTab("Document.prototype.getElementById.call(document,'em').value", null, PORT)).toBe("");
+  });
+
+  it("a focus handler that opens a modal dialog a moment later (a microtask): the selector road's second evaluate sees it; the by-axis road writes, as said", async () => {
+    await focused(async () => {
+      const open = "document.getElementById('em').addEventListener('focus',function(){queueMicrotask(function(){var d=document.getElementById('pop');if(!d.open)d.showModal();});});";
+      const pop = `</main><dialog id="pop"><input id="popf" aria-label="Pop field"></dialog><main>`;
+      await page(pop, open);
+      expect((await fill({ selector: "#em" })).error).toBe(BEHIND_MODAL);
+      await page(pop, open);
+      expect((await fill({ by: "ariaLabel", pattern: "Email address" })).ok).toBe(true);
+    });
   });
 
   it("a refused field is not focused first: its focus handler does not run (behind a dialog; a focusable custom element that says it is disabled)", async () => {

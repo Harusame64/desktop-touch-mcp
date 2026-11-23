@@ -1,7 +1,7 @@
 /**
  * _select-pick-js.ts — which option of a native <select> a fill takes, shared by browser_fill's selector road and its
  * by-axis road (internal #420), and the write that sets it. It needs ELEMENT_NAME_JS (for __standInFor and __isMasked)
- * spliced into the same script.
+ * and FILL_KIND_JS (for __typingRefused, which __setPickedOption calls) spliced into the same script.
  */
 /**
  * Which option of a native <select> a fill takes, as a person picks one (internal #420, /code-review on #1024): the

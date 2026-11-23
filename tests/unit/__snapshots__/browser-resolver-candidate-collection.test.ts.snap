@@ -2279,17 +2279,19 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   // none, only outside all of them is known). The getters and querySelectorAll
   // are the prototypes': a page's <img name="activeElement"> shadows document.activeElement.
   function __typingRefused(el) {
-    let off = el.disabled === true;
-    try { off = off || __matches(el, ':disabled'); } catch (e) { }
+    let off = false;
+    try { off = el.disabled === true || __matches(el, ':disabled'); } catch (e) { }
     if (off) return { why: 'disabled' };
     const tag = el.tagName;
     // Not shown: checkVisibility where Chrome has it (display:none, visibility hidden or collapse, inside a closed
     // <details> or content-visibility:hidden), else no box or visibility other than visible.
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
       try {
-        const unseen = typeof el.checkVisibility === 'function'
-          ? !el.checkVisibility({ visibilityProperty: true })
-          : el.getClientRects().length === 0 || getComputedStyle(el).visibility !== 'visible';
+        // checkVisibilityCSS is the option's older name (Chrome before 121); the style read covers a Chrome that knows
+        // neither.
+        const unseen = (typeof el.checkVisibility === 'function'
+          ? !el.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true })
+          : el.getClientRects().length === 0) || getComputedStyle(el).visibility !== 'visible';
         if (unseen || (tag === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'hidden')) return { why: 'not_shown' };
       } catch (e) { }
     }
@@ -2322,7 +2324,10 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
     const docGet = function(k) { const g = getter(D, k); return g ? g.call(document) : document[k]; };
     const blocked = function(why) {
       const at = a && a !== docGet('body') && a !== docGet('documentElement') ? a : null;
-      return { why: why, focusAt: at ? { name: __personName(at), tag: at.tagName.toLowerCase() } : null };
+      // The name is the page's to break (an <img name="getElementById">): the refusal stands without it.
+      let name = '';
+      try { name = at ? __personName(at) : ''; } catch (e) { }
+      return { why: why, focusAt: at ? { name: name, tag: String(at.localName).toLowerCase() } : null };
     };
     const hasAttr = typeof Element !== 'undefined' ? Element.prototype.hasAttribute : null;
     // Up to the first inert ancestor, but not past an open modal dialog: a modal dialog is not made inert by an inert
