@@ -49,6 +49,9 @@ export const SELECT_PICK_JS = `
     const refused = __typingRefused(el);
     if (refused) return { ok: false, typingRefused: refused };
     el.focus();
+    // Again once focused: its focus handler can open a modal dialog.
+    const refusedAfterFocus = __typingRefused(el);
+    if (refusedAfterFocus) return { ok: false, typingRefused: refusedAfterFocus };
     // The whole pick again, after focus: a handler can rebuild the list, change the option's value or disable it
     // (codex on #1025). Written only when it still picks the same option.
     const again = __pickOption(el, want);

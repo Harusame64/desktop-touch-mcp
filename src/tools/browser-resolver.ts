@@ -836,6 +836,9 @@ ${FILL_KIND_JS}
   const maskedAfterFocus = __isMasked(el);
   // A page can make it read-only as it takes focus: nothing is written, and the answer says focus moved.
   if (__choiceInput(el, axRole)) return { ok: false, error: 'not_fillable', tag: tag.toLowerCase() + (ty ? '[type=' + ty + ']' : ''), kind: 'widget', readOnlyChoice: true, afterFocus: true };
+  // ...and again once focus has arrived: its focus handler can open a modal dialog, which typing would then go to.
+  const refusedAfterFocus = __typingRefused(el);
+  if (refusedAfterFocus) return { ok: false, typingRefused: refusedAfterFocus };
   const val = ${jsLiteral(value)};
   if (isTextInput || isTextArea) {
     if (typeof el.select === 'function') el.select();

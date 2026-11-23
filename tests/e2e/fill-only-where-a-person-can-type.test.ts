@@ -235,6 +235,26 @@ describe.skipIf(!CHROME)("browser_fill does not type where a person cannot reach
     expect((await fill({ selector: "#low" })).ok).toBe(true);
   });
 
+  it("a field whose focus handler opens a modal dialog: typing would go to the dialog, so it is not written (both roads, and a select)", async () => {
+    const opener = (id: string) => `document.getElementById('${id}').addEventListener('focus',function(){var d=document.getElementById('pop');if(!d.open)d.showModal();});`;
+    const pop = `</main><dialog id="pop"><input id="popf" aria-label="Pop field"></dialog><main>`;
+    // A page with focus: a page without it runs the handler only when it gets focus, after the write (as on main).
+    await focused(async () => {
+      for (const args of ROADS("#em", "Email address")) {
+        await page(pop, opener("em"));
+        const r = await fill(args);
+        expect(r.error, JSON.stringify(r)).toBe(BEHIND_MODAL);
+        expect(focusAt(r)).toEqual({ name: "Pop field", tag: "input" });
+        expect(await val("em")).toBe("");
+      }
+      for (const args of ROADS("#sel", "Fruit")) {
+        await page(`<select id="sel" aria-label="Fruit"><option value="a">Apple</option><option value="b">Banana</option></select>${pop}`, opener("sel"));
+        expect((await fill({ ...args, value: "b" })).error).toBe(BEHIND_MODAL);
+        expect(await val("sel")).toBe("a");
+      }
+    });
+  });
+
   it("a refused field is not focused first: its focus handler does not run (behind a dialog; a focusable custom element that says it is disabled)", async () => {
     for (const args of ROADS("#em", "Email address")) {
       await page("", "window.__f=0;document.getElementById('em').addEventListener('focus',function(){window.__f++});");
