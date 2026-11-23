@@ -2202,6 +2202,12 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   // option (refused, unset, unless it picks the same option); the mask read after focus too, as the text road does.
   function __setPickedOption(el, pk, maskedBefore, want) {
     el.focus();
+    // A select a person could not reach once focused (behind a modal dialog, under inert) is not changed, as a text
+    // field is not (internal #420; __typingRefused is in FILL_KIND_JS, spliced beside this on both roads).
+    if (typeof __typingRefused === 'function') {
+      const refused = __typingRefused(el);
+      if (refused) return { ok: false, typingRefused: refused };
+    }
     // The whole pick again, after focus: a handler can rebuild the list, change the option's value or disable it
     // (codex on #1025). Written only when it still picks the same option.
     const again = __pickOption(el, want);
@@ -2274,7 +2280,8 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
     try { off = off || __matches(el, ':disabled'); } catch (e) { }
     if (off) return { why: 'disabled' };
     // Read-only is read once the page's focus handlers ran: a field can drop readonly as it takes focus (a guard
-    // against autofill). A page without focus (a hidden tab) runs them only when it gets focus, so there the field is
+    // against autofill). browser_fill gives the page focus for its call (CDP focus emulation), so they have; a page
+    // still without focus (the emulation could not be set) runs them only when it gets focus, so there the field is
     // written as before.
     if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.readOnly === true &&
       (typeof Document !== 'undefined' ? Document.prototype.hasFocus.call(document) : !!(document.hasFocus && document.hasFocus()))) return { why: 'read_only' };
@@ -2295,18 +2302,31 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
       while (__parent(host) && __parent(host).isContentEditable) host = __parent(host);
       if (host !== el && deep() !== host) host.focus();
     }
-    const a = deep();
-    if (a && a.isContentEditable && __contains(a, el)) return null;
-    // Up the composed tree from the focused element: el itself, a control inside it (Vaadin's slotted <input>), or one
-    // in its shadow tree (Shoelace, Material Web: delegatesFocus).
-    for (let n = a, d = 0; n && d < 64; d++) {
-      if (n === el) return null;
-      const p = __parent(n);
-      if (p) { n = p; continue; }
-      const root = typeof Node !== 'undefined' ? Node.prototype.getRootNode.call(n) : (n.getRootNode ? n.getRootNode() : null);
-      n = root && root.nodeType === 11 && root.host ? root.host : null;
+    const holds = function(a) {
+      if (a && a.isContentEditable && __contains(a, el)) return true;
+      // Up the composed tree from the focused element: el itself, a control inside it (Vaadin's slotted <input>), or
+      // one in its shadow tree (Shoelace, Material Web: delegatesFocus).
+      for (let n = a, d = 0; n && d < 64; d++) {
+        if (n === el) return true;
+        const p = __parent(n);
+        if (p) { n = p; continue; }
+        const root = typeof Node !== 'undefined' ? Node.prototype.getRootNode.call(n) : (n.getRootNode ? n.getRootNode() : null);
+        n = root && root.nodeType === 11 && root.host ? root.host : null;
+      }
+      return false;
+    };
+    let a = deep();
+    // A custom element that takes no focus itself but holds a text control (Ionic's ion-input): a person's click lands
+    // in that control, so it is focused.
+    if (!holds(a) && el.tagName.indexOf('-') > 0) {
+      const TEXT = 'input:not([type=hidden]),textarea,[contenteditable]:not([contenteditable=false])';
+      const sr = srGet ? srGet.call(el) : el.shadowRoot;
+      const inner = el.querySelector(TEXT) || (sr ? sr.querySelector(TEXT) : null);
+      if (inner) { inner.focus(); a = deep(); }
     }
-    const at = a && a !== document.body && a !== document.documentElement ? a : null;
+    if (holds(a)) return null;
+    const docGet = function(k) { const g = getter(typeof Document !== 'undefined' ? Document : undefined, k); return g ? g.call(document) : document[k]; };
+    const at = a && a !== docGet('body') && a !== docGet('documentElement') ? a : null;
     return { why: 'no_focus', focusAt: at ? { name: __personName(at), tag: at.tagName.toLowerCase() } : null };
   }
 

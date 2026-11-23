@@ -536,6 +536,23 @@ export async function bringTabToFront(tabId: string, port = DEFAULT_CDP_PORT): P
   await session.send("Page.bringToFront", {});
 }
 
+/**
+ * Turn CDP's focus emulation on or off for a tab (internal #420): on, the page has focus as when a person switches to
+ * the tab — the window gets focus, and the focused element's deferred focus event fires; off, both get blur (measured
+ * on headless Chrome). browser_fill turns it on for its call, so a page in a hidden tab or a window behind runs its
+ * focus handlers as the field takes focus. False when it could not be set.
+ */
+export async function setFocusEmulation(tabId: string | null, enabled: boolean, port = DEFAULT_CDP_PORT): Promise<boolean> {
+  try {
+    const tab = await resolveTab(tabId, port);
+    const session = await openSession(tab, port);
+    await session.send("Emulation.setFocusEmulationEnabled", { enabled });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ─── ADR-018 Phase 3 — Tier 2 wheel dispatch + observation ────────────────────
 
 /**

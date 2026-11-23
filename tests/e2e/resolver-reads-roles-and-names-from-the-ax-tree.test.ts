@@ -580,15 +580,16 @@ describe.skipIf(!CHROME)("by:'role' and by:'ariaLabel' read the accessibility tr
     await evaluateInTab(`(function(){customElements.define('x-field', class extends HTMLElement { get value(){return this._v||''} set value(v){this._v=String(v)} });return true})()`, null, PORT);
     expect((await out({ selector: "#xf" })).ok).toBe(true);
     expect(await evaluateInTab("document.getElementById('xf').value", null, PORT)).toBe("Banana");
-    // Controls, unchanged: a combobox a person types into (an autocomplete) is filled on both roads, and a read-only
-    // input that opens no list is written as before.
+    // Controls, unchanged: a combobox a person types into (an autocomplete) is filled on both roads. A read-only input
+    // that opens no list is not typed into either, as a person cannot (internal #420): refused, unchanged.
     for (const a of [{ selector: "#ro" }, { by: "ariaLabel", pattern: "Fruit" }]) {
       await page(`<label for="ro">Fruit</label><input id="ro" role="combobox" aria-autocomplete="list" value="" style="margin:40px">`);
       expect((await out(a)).ok).toBe(true);
       expect(await val()).toBe("Banana");
     }
     await page(`<label for="ro">Fruit</label><input id="ro" readonly value="Apple" style="margin:40px">`);
-    expect((await out({ selector: "#ro" })).ok).toBe(true);
+    expect((await out({ selector: "#ro" })).code).toBe("BrowserNoActionableTarget");
+    expect(await val()).toBe("Apple");
     expect(await marks()).toBe(0);
   });
 

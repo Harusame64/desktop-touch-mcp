@@ -45,6 +45,12 @@ export const SELECT_PICK_JS = `
   // option (refused, unset, unless it picks the same option); the mask read after focus too, as the text road does.
   function __setPickedOption(el, pk, maskedBefore, want) {
     el.focus();
+    // A select a person could not reach once focused (behind a modal dialog, under inert) is not changed, as a text
+    // field is not (internal #420; __typingRefused is in FILL_KIND_JS, spliced beside this on both roads).
+    if (typeof __typingRefused === 'function') {
+      const refused = __typingRefused(el);
+      if (refused) return { ok: false, typingRefused: refused };
+    }
     // The whole pick again, after focus: a handler can rebuild the list, change the option's value or disable it
     // (codex on #1025). Written only when it still picks the same option.
     const again = __pickOption(el, want);

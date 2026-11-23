@@ -5,8 +5,9 @@
  * then write only if it holds focus and is not read-only or disabled; otherwise nothing is written and context.focusAt
  * names where focus is.
  *
- * Headless Chrome gives the page no focus, so its focus handlers do not run; `focused()` turns on CDP's focus emulation
- * for the cells that need a page with focus (a field that hands focus on, read-only), as a window in front has.
+ * Headless Chrome gives the page no focus, as a hidden tab has. browser_fill gives the page focus for its call (CDP
+ * focus emulation), so its focus handlers run there too; `focused()` gives it focus from outside as well, as a window
+ * in front has, for the cells that must hold either way.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import WebSocket from "ws";
@@ -233,13 +234,55 @@ describe.skipIf(!CHROME)("browser_fill writes only where a person can type (inte
     });
   });
 
-  it("a page without focus (a hidden tab) has not run its focus handlers: a read-only field and one that hands focus on are written as before", async () => {
-    await page(`<input id="ro" aria-label="Read only" readonly><input id="fr" aria-label="Hands focus on"><input id="fr2" aria-label="Focus target">`, "document.getElementById('fr').addEventListener('focus',function(){document.getElementById('fr2').focus()});");
-    expect(await evaluateInTab("document.hasFocus()", null, PORT)).toBe(false);
-    expect((await fill({ selector: "#ro" })).ok).toBe(true);
-    expect((await fill({ by: "ariaLabel", pattern: "Hands focus on" })).ok).toBe(true);
-    expect(await val("ro")).toBe("SPK");
-    expect(await val("fr")).toBe("SPK");
+  it("a page without focus (a hidden tab) is given focus for the call: its focus handlers run, then it is left without focus again", async () => {
+    await page(`<input id="ro" aria-label="Read only" readonly><input id="fr" aria-label="Hands focus on"><input id="fr2" aria-label="Focus target">` +
+      `<input id="ar" aria-label="Anti autofill" readonly onfocus="this.removeAttribute('readonly')">`,
+      "document.getElementById('fr').addEventListener('focus',function(){document.getElementById('fr2').focus()});" +
+      "window.__win=[];window.addEventListener('focus',function(e){if(e.target===window)window.__win.push('focus')});window.addEventListener('blur',function(e){if(e.target===window)window.__win.push('blur')});");
+    if (!process.env.HEADED) expect(await evaluateInTab("document.hasFocus()", null, PORT)).toBe(false);
+    expect((await fill({ selector: "#ro" })).error).toBe(READ_ONLY);
+    const fr = await fill({ by: "ariaLabel", pattern: "Hands focus on" });
+    expect(fr.error, JSON.stringify(fr)).toBe(NO_FOCUS);
+    expect((fr.context as { focusAt?: unknown }).focusAt).toEqual({ name: "Focus target", tag: "input" });
+    expect((await fill({ selector: "#ar" })).ok).toBe(true);
+    expect([await val("ro"), await val("fr"), await val("fr2"), await val("ar")]).toEqual(["", "", "", "SPK"]);
+    if (!process.env.HEADED) {
+      // As a person's switch to the tab and away: the window got focus and lost it, once per call.
+      expect(await evaluateInTab("window.__win", null, PORT)).toEqual(["focus", "blur", "focus", "blur", "focus", "blur"]);
+      expect(await evaluateInTab("document.hasFocus()", null, PORT)).toBe(false);
+    }
+  });
+
+  it("a <select> behind a modal <dialog> is not changed, on both roads", async () => {
+    for (const args of ROADS("#sel", "Fruit")) {
+      await page(`<select id="sel" aria-label="Fruit"><option value="a">Apple</option><option value="b">Banana</option></select>`);
+      await evaluateInTab(`document.body.insertAdjacentHTML('beforeend','<dialog id="dlg"><input id="inner" aria-label="Inner field"></dialog>');document.getElementById('dlg').showModal();true`, null, PORT);
+      const r = await fill({ ...args, value: "b" });
+      expect(r.error, JSON.stringify(r)).toBe(NO_FOCUS);
+      expect(await val("sel")).toBe("a");
+      await page(`<select id="sel" aria-label="Fruit"><option value="a">Apple</option><option value="b">Banana</option></select>`);
+      expect((await fill({ ...args, value: "b" })).ok).toBe(true);
+      expect(await val("sel")).toBe("b");
+    }
+  });
+
+  it("a custom element that takes no focus itself but holds a text control (Ionic's ion-input) is written; behind a dialog it is not", async () => {
+    const def = "customElements.define('x-ion',class extends HTMLElement{connectedCallback(){if(!this.firstChild)this.innerHTML='<input>'}get value(){return this.querySelector('input').value}set value(v){this.querySelector('input').value=v}});";
+    await page(`<x-ion id="xi"></x-ion>`, def);
+    const r = await fill({ selector: "#xi" });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(await val("xi")).toBe("SPK");
+    await page(`<x-ion id="xi"></x-ion>`, def);
+    await evaluateInTab(`document.body.insertAdjacentHTML('beforeend','<dialog id="dlg"><input id="inner" aria-label="Inner field"></dialog>');document.getElementById('dlg').showModal();true`, null, PORT);
+    expect((await fill({ selector: "#xi" })).error).toBe(NO_FOCUS);
+    expect(await val("xi")).toBe("");
+  });
+
+  it("a page whose <img name=\"body\"> shadows document.body: nothing focused still reads focusAt null", async () => {
+    await page(`<img name="body"><img name="documentElement">`, "document.getElementById('bg').inert=true;");
+    const r = await fill({ selector: "#em" });
+    expect(r.error, JSON.stringify(r)).toBe(NO_FOCUS);
+    expect((r.context as { focusAt?: unknown }).focusAt).toBeNull();
   });
 
   it("a disabled field named by selector is not written (by name it was never a target)", async () => {
