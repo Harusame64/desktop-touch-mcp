@@ -52,9 +52,10 @@ const ROADS = (sel: string, name: string): Array<Record<string, unknown>> => [{ 
 const NO_FOCUS = "browser_fill: the field does not hold focus once focused, so typing would not reach it; context.focusAt is where focus is. Nothing was written.";
 const READ_ONLY = "browser_fill: the field is read-only. Nothing was written.";
 const DISABLED = "browser_fill: the field is disabled. Nothing was written.";
-const READ_ONLY_UNFOCUSED = "browser_fill: the field is read-only. The page does not have focus (a hidden tab or a window behind), so its focus handlers, which can make a field writable, have not run. Nothing was written.";
 const NOT_SHOWN = "browser_fill: the field is not shown. Nothing was written.";
 const HINT = ["browser_overview lists the page's controls and any dialog in front of the page"];
+const HINT_READ_ONLY = ["A person changes a read-only field through the page: press it, or the control beside it, with browser_click (a date field opens its picker)"];
+const HINT_OTHER = ["browser_overview lists the page's controls; name a field it shows and that is enabled"];
 
 // Runs `body` with CDP's focus emulation on: the page has focus, and its focus handlers run as the field takes focus.
 async function focused(body: () => Promise<void>): Promise<void> {
@@ -228,7 +229,7 @@ describe.skipIf(!CHROME)("browser_fill writes only where a person can type (inte
         await page(`<input id="ro" aria-label="Read only" readonly>`);
         const r = await fill(args);
         expect(r.error, JSON.stringify(r)).toBe(READ_ONLY);
-        expect(r.suggest).toEqual(HINT);
+        expect(r.suggest).toEqual(HINT_READ_ONLY);
         expect(await val("ro")).toBe("");
         expect(await inputs()).toEqual([]);
       }
@@ -246,22 +247,53 @@ describe.skipIf(!CHROME)("browser_fill writes only where a person can type (inte
     });
   });
 
-  it("a page without focus (a hidden tab) has not run its focus handlers: read-only is said with pageFocused:false; a field that hands focus on is not seen", async () => {
+  it("a page without focus (a hidden tab, a window behind) has not run its focus handlers: read-only and a hand-off are not checked, written as before, and the answer says pageFocused:false", async () => {
     await page(`<input id="ro" aria-label="Read only" readonly><input id="fr" aria-label="Hands focus on"><input id="fr2" aria-label="Focus target">` +
       `<input id="ar" aria-label="Anti autofill" readonly onfocus="this.removeAttribute('readonly')">`,
       "document.getElementById('fr').addEventListener('focus',function(){document.getElementById('fr2').focus()});" +
       "window.__win=[];window.addEventListener('focus',function(e){if(e.target===window)window.__win.push('focus')});window.addEventListener('blur',function(e){if(e.target===window)window.__win.push('blur')});");
     if (process.env.HEADED) return;
     expect(await evaluateInTab("document.hasFocus()", null, PORT)).toBe(false);
-    for (const args of [...ROADS("#ro", "Read only"), ...ROADS("#ar", "Anti autofill")]) {
+    for (const args of [...ROADS("#ro", "Read only"), ...ROADS("#ar", "Anti autofill"), ...ROADS("#fr", "Hands focus on")]) {
       const r = await fill(args);
-      expect(r.error, JSON.stringify(r)).toBe(READ_ONLY_UNFOCUSED);
-      expect((r.context as { pageFocused?: unknown }).pageFocused).toBe(false);
+      expect(r.ok, JSON.stringify(r)).toBe(true);
+      expect(r.pageFocused).toBe(false);
     }
-    expect((await fill({ by: "ariaLabel", pattern: "Hands focus on" })).ok).toBe(true);
-    expect([await val("ro"), await val("ar"), await val("fr"), await val("fr2")]).toEqual(["", "", "SPK", ""]);
+    expect([await val("ro"), await val("ar"), await val("fr"), await val("fr2")]).toEqual(["SPK", "SPK", "SPK", ""]);
     // Nothing was done to the page's focus: no window focus or blur.
     expect(await evaluateInTab("window.__win", null, PORT)).toEqual([]);
+    // Behind a modal dialog, the focus answer holds without page focus too: activeElement does not move.
+    await evaluateInTab(`document.body.insertAdjacentHTML('beforeend','<dialog id="dlg"><input id="inner" aria-label="Inner field"></dialog>');document.getElementById('dlg').showModal();true`, null, PORT);
+    expect((await fill({ selector: "#em" })).error).toBe(NO_FOCUS);
+  });
+
+  it("a page with focus: a written field's answer has no pageFocused", async () => {
+    await focused(async () => {
+      await page("");
+      const r = await fill({ selector: "#em" });
+      expect(r.ok, JSON.stringify(r)).toBe(true);
+      expect("pageFocused" in r).toBe(false);
+    });
+  });
+
+  it("a custom element with a hidden form proxy in its light DOM and its real input in its shadow root is written through the shown one", async () => {
+    await page(`<x-px id="xp"><input id="proxy" style="display:none"></x-px>`,
+      "customElements.define('x-px',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<slot></slot><input>';}get value(){return this.shadowRoot.querySelector('input').value}set value(v){this.shadowRoot.querySelector('input').value=v}});");
+    const r = await fill({ selector: "#xp" });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(await val("xp")).toBe("SPK");
+  });
+
+  it("a custom element that takes focus itself and hands it on outside: the hand-off answer, not its inner control", async () => {
+    await focused(async () => {
+      await page(`<x-ho id="xh" tabindex="0"><input id="xhi"></x-ho><input id="away" aria-label="Away field">`,
+        "customElements.define('x-ho',class extends HTMLElement{get value(){return this.querySelector('input').value}set value(v){this.querySelector('input').value=v}});" +
+        "document.getElementById('xh').addEventListener('focus',function(){document.getElementById('away').focus()});");
+      const r = await fill({ selector: "#xh" });
+      expect(r.error, JSON.stringify(r)).toBe(NO_FOCUS);
+      expect((r.context as { focusAt?: unknown }).focusAt).toEqual({ name: "Away field", tag: "input" });
+      expect(await val("xhi")).toBe("");
+    });
   });
 
   it("a read-only custom text field (sl-input readonly: the input inside holds focus) is not written", async () => {
@@ -286,6 +318,7 @@ describe.skipIf(!CHROME)("browser_fill writes only where a person can type (inte
       await page(html);
       const r = await fill({ selector: "#nh" });
       expect(r.error, JSON.stringify(r)).toBe(NOT_SHOWN);
+      expect(r.suggest).toEqual(HINT_OTHER);
       expect(await val("nh")).toBe("");
     }
   });
@@ -342,6 +375,7 @@ describe.skipIf(!CHROME)("browser_fill writes only where a person can type (inte
     await page(`<input id="dis" aria-label="Disabled field" disabled>`);
     const r = await fill({ selector: "#dis" });
     expect(r.error, JSON.stringify(r)).toBe(DISABLED);
+    expect(r.suggest).toEqual(HINT_OTHER);
     expect(await val("dis")).toBe("");
     expect((await fill({ by: "ariaLabel", pattern: "Disabled field" })).code).toBe("BrowserNoActionableTarget");
     expect(await val("dis")).toBe("");

@@ -57,8 +57,14 @@ export const FILL_KIND_JS = `
   // host around el. Behind a modal dialog or under inert, focus stays where it was; a field that hands
   // focus on takes no typing either. The getters are the prototypes': a page's <img name="activeElement"> shadows
   // document.activeElement.
+  // Whether the page has focus (a window in front, the tab shown). Without it the page's focus handlers have not run
+  // yet: a field that hands focus on, or drops readonly as it takes focus, has not done so (internal #420).
+  function __pageHasFocus() {
+    return typeof Document !== 'undefined' ? Document.prototype.hasFocus.call(document) : !!(document.hasFocus && document.hasFocus());
+  }
   function __typingRefused(el) {
-    // Disabled by itself or by a <fieldset disabled> around it.
+    // Disabled by itself or by a <fieldset disabled> around it. First: a disabled field takes focus nowhere, so the
+    // focus answer would only hide why.
     let off = el.disabled === true;
     try { off = off || __matches(el, ':disabled'); } catch (e) { }
     if (off) return { why: 'disabled' };
@@ -98,24 +104,24 @@ export const FILL_KIND_JS = `
       return false;
     };
     let a = deep();
-    // A custom element that takes no focus itself but holds a text control (Ionic's ion-input): a person's click lands
-    // in that control, so it is focused.
-    if (!holds(a) && el.tagName.indexOf('-') > 0) {
+    // A custom element that takes no focus itself (no tabindex, no delegatesFocus: its focus() did nothing, so no
+    // handler of its own moved focus) but holds a text control (Ionic's ion-input): a person's click lands in the first
+    // one shown, in its light DOM or its open shadow root (a hidden form proxy is not it), so that one is focused.
+    const own = srGet ? srGet.call(el) : el.shadowRoot;
+    if (!holds(a) && el.tagName.indexOf('-') > 0 && !el.hasAttribute('tabindex') && !(own && own.delegatesFocus)) {
       const TEXT = 'input:not([type=hidden]),textarea,[contenteditable]:not([contenteditable=false])';
-      const sr = srGet ? srGet.call(el) : el.shadowRoot;
-      const inner = el.querySelector(TEXT) || (sr ? sr.querySelector(TEXT) : null);
+      const all = Array.prototype.slice.call(el.querySelectorAll(TEXT)).concat(own ? Array.prototype.slice.call(own.querySelectorAll(TEXT)) : []);
+      const inner = all.filter(function(c) { try { return c.getClientRects().length > 0; } catch (e) { return false; } })[0] || null;
       if (inner && inner.disabled === true) return { why: 'disabled' };
       if (inner) { inner.focus(); a = deep(); }
     }
     if (holds(a)) {
       // Read-only, itself (a custom element's readOnly too) or the control inside it that holds focus (sl-input's
-      // input), once focus has reached it: behind a dialog, the dialog is what stops a person. A page without focus
-      // has not run its focus handlers, which can make a field writable (a guard against autofill): said, not guessed.
+      // input), once focus has reached it: behind a dialog, the dialog is what stops a person.
       const ctlRO = a && a !== el && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && a.readOnly === true;
-      if (el.readOnly === true || ctlRO) {
-        const focused = typeof Document !== 'undefined' ? Document.prototype.hasFocus.call(document) : !!(document.hasFocus && document.hasFocus());
-        return focused ? { why: 'read_only' } : { why: 'read_only', pageFocused: false };
-      }
+      // On a page without focus read-only is not judged (it may be a guard against autofill that its focus handler
+      // has not lifted yet): written as before, and the answer carries pageFocused:false.
+      if ((el.readOnly === true || ctlRO) && __pageHasFocus()) return { why: 'read_only' };
       return null;
     }
     // Not shown (a hidden input, no box, visibility:hidden): no person sees it to type into.

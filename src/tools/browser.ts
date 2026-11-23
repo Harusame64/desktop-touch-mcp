@@ -1453,7 +1453,7 @@ async function verdictFromClickProbe(
  * and ≤ requested) from outright rejection.
  */
 async function finalizeFillResult(
-  actResult: { ok: boolean; error?: string; actual?: string; actualWithheld?: boolean; fullActualLen?: number; fullMatches?: boolean; chose?: string; select?: boolean },
+  actResult: { ok: boolean; error?: string; actual?: string; actualWithheld?: boolean; fullActualLen?: number; fullMatches?: boolean; chose?: string; select?: boolean; pageFocused?: boolean },
   value: string,
   identity: Record<string, unknown>,
   includeContext: boolean,
@@ -1506,6 +1506,9 @@ async function finalizeFillResult(
       ...identity,
       // A select chosen by an option's shown text: actual is that option's value, said as chose (/code-review on #1024).
       ...(withheld ? { valueWithheld: "masked" } : { value, actual: actResult.actual, ...(actResult.chose !== undefined && actResult.chose !== value ? { chose: actResult.chose } : {}) }),
+      // A page without focus had not run its focus handlers: read-only and a field that hands focus on were not
+      // checked (internal #420).
+      ...(actResult.pageFocused === false && { pageFocused: false }),
       // matrix doc §4.2 規範 hint shape — always emit `delivered` on success.
       hints: { verifyDelivery: { status: "delivered", channel: "cdp" } },
     }),
@@ -1564,8 +1567,9 @@ async function handleBrowserFillByAxis(args: {
     if (outcome.axMark !== undefined) await clearAxMarks(outcome.axMark, outcome.tabId ?? tabId ?? null, port);
   }
 
-  // A native select the by-axis road refused, untouched: the selector road's answers (internal #420).
+  // A field a person could not type into once focused, any kind (internal #420).
   if (!actResult.ok && actResult.typingRefused) return typingRefusal(actResult.typingRefused, ctx);
+  // A native select the by-axis road refused, untouched: the selector road's answers (internal #420).
   if (!actResult.ok && actResult.selectError) return selectRefusal(actResult.selectError, ctx);
   if (!actResult.ok) {
     if (actResult.error === "not_fillable") return notFillable(actResult, ctx);
@@ -1640,9 +1644,15 @@ function selectRefusal(err: string, context: Record<string, unknown>): ToolResul
   return failCode("InvalidArgs", `browser_fill: ${why}. Nothing was changed.`, { suggest: FILL_HINTS_SELECT_NO_OPTION, ...ctx });
 }
 /** Why browser_fill did not write into a field once focused (__typingRefused in FILL_KIND_JS). */
-type TypingRefused = { why: "disabled" | "read_only" | "no_focus" | "not_shown"; focusAt?: { name: string; tag: string } | null; pageFocused?: boolean };
-const FILL_HINTS_NOT_TYPED: string[] = [
+type TypingRefused = { why: "disabled" | "read_only" | "no_focus" | "not_shown"; focusAt?: { name: string; tag: string } | null };
+const FILL_HINTS_NO_FOCUS: string[] = [
   "browser_overview lists the page's controls and any dialog in front of the page",
+];
+const FILL_HINTS_READ_ONLY: string[] = [
+  "A person changes a read-only field through the page: press it, or the control beside it, with browser_click (a date field opens its picker)",
+];
+const FILL_HINTS_OTHER_FIELD: string[] = [
+  "browser_overview lists the page's controls; name a field it shows and that is enabled",
 ];
 /**
  * A field a person could not type into once focused, on either road (internal #420): disabled, not shown, read-only,
@@ -1650,18 +1660,13 @@ const FILL_HINTS_NOT_TYPED: string[] = [
  * may have taken focus and handed it on. Fixed strings; where focus is goes in context.
  */
 function typingRefusal(r: TypingRefused, context: Record<string, unknown>): ToolResult {
-  if (r.why === "disabled") return failCode("BrowserNoActionableTarget", "browser_fill: the field is disabled. Nothing was written.", { suggest: FILL_HINTS_NOT_TYPED, context });
-  if (r.why === "read_only") {
-    // A page without focus has not run its focus handlers, which can make a field writable (a guard against autofill).
-    return r.pageFocused === false
-      ? failCode("BrowserNoActionableTarget", "browser_fill: the field is read-only. The page does not have focus (a hidden tab or a window behind), so its focus handlers, which can make a field writable, have not run. Nothing was written.", { suggest: FILL_HINTS_NOT_TYPED, context: { ...context, pageFocused: false } })
-      : failCode("BrowserNoActionableTarget", "browser_fill: the field is read-only. Nothing was written.", { suggest: FILL_HINTS_NOT_TYPED, context });
-  }
-  if (r.why === "not_shown") return failCode("BrowserNoActionableTarget", "browser_fill: the field is not shown. Nothing was written.", { suggest: FILL_HINTS_NOT_TYPED, context });
+  if (r.why === "disabled") return failCode("BrowserNoActionableTarget", "browser_fill: the field is disabled. Nothing was written.", { suggest: FILL_HINTS_OTHER_FIELD, context });
+  if (r.why === "read_only") return failCode("BrowserNoActionableTarget", "browser_fill: the field is read-only. Nothing was written.", { suggest: FILL_HINTS_READ_ONLY, context });
+  if (r.why === "not_shown") return failCode("BrowserNoActionableTarget", "browser_fill: the field is not shown. Nothing was written.", { suggest: FILL_HINTS_OTHER_FIELD, context });
   return failCode(
     "BrowserNoActionableTarget",
     "browser_fill: the field does not hold focus once focused, so typing would not reach it; context.focusAt is where focus is. Nothing was written.",
-    { suggest: FILL_HINTS_NOT_TYPED, context: { ...context, focusAt: r.focusAt ?? null } },
+    { suggest: FILL_HINTS_NO_FOCUS, context: { ...context, focusAt: r.focusAt ?? null } },
   );
 }
 const FILL_HINTS_OPTION: string[] = [
@@ -1789,7 +1794,7 @@ ${FILL_KIND_JS}
     el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: ${jsLiteral(value)} }));
     const ceText = el.textContent || '';
     const ceMasked = maskedBefore || maskedAfterCheck || __isMasked(el);
-    return { ok: true, actual: ceMasked ? undefined : ceText.slice(0, 100), actualWithheld: ceMasked || undefined, fullActualLen: ceText.length, fullMatches: ceText === ${jsLiteral(value)} };
+    return { ok: true, actual: ceMasked ? undefined : ceText.slice(0, 100), actualWithheld: ceMasked || undefined, fullActualLen: ceText.length, fullMatches: ceText === ${jsLiteral(value)}, pageFocused: __pageHasFocus() ? undefined : false };
   }
   // Select all existing content before replacing
   if (typeof el.select === 'function') {
@@ -1822,7 +1827,8 @@ ${FILL_KIND_JS}
     actual: masked ? undefined : (fullActual || '').slice(0, 100),
     actualWithheld: masked || undefined,
     fullActualLen: fullActual.length,
-    fullMatches: fullActual === ${JSON.stringify(value)}
+    fullMatches: fullActual === ${JSON.stringify(value)},
+    pageFocused: __pageHasFocus() ? undefined : false
   };
 })()`;
     const fillResult = await evaluateInTab(fillExpr, tabId ?? null, port) as
@@ -4611,7 +4617,7 @@ export function registerBrowserTools(server: McpServer): void {
     "browser_fill",
     {
       description:
-        "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Two ways to target: (1) selector — a CSS selector (use browser_overview / browser_locate to find one); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern (e.g. by:'ariaLabel', pattern:'Email address', or by:'role', pattern:'textbox'), so you do not have to build a CSS selector. by-axis resolves to a SINGLE fillable element and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ match, or code:'BrowserNoActionableTarget' when the match is not a fillable input/textarea/contenteditable/select, nothing matches, or every match is hidden or of another role — it never guesses; by:'role'|'ariaLabel' read the accessibility tree, which leaves out the page behind an open modal <dialog> (context.behindModal). Optionally add role to filter and scope to narrow. Provide EITHER selector OR by+pattern (not both). Use this over browser_eval when setting a controlled input's value via JS does not update framework state. A native <select> takes the option whose value is value, else the one option showing that text (chose names it); a value no option has, a disabled or multiple select, or one a widget stands in for is refused untouched, as is a read-only input of a choice widget (choose by pressing). Like a person, it types only into a field that holds focus once focused and is not read-only or disabled: a field behind a modal dialog, under inert, or that hands focus on is refused unwritten (BrowserNoActionableTarget, context.focusAt names where focus is); a page without focus (a hidden tab, a window behind) has not run its focus handlers, so read-only is answered with context.pageFocused:false and a field that hands focus on is not seen. Caveats: Requires browser_open (CDP active). actual in the response shows the element's value after fill; verify it matches the intended value (for a field the page masks, such as a password, neither the value you passed nor the one read back is echoed — valueWithheld:'masked' — and the match is still checked, in the page). Typed errors: code:'BrowserFillNotDelivered' on post-fill value mismatch — note the false-positive case where a React controlled input's onChange transforms the value (delivery actually succeeded; hints.verifyDelivery.subReason:'controlled_input_transform' for that case; the actual value is authoritative).",
+        "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Two ways to target: (1) selector — a CSS selector (use browser_overview / browser_locate to find one); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern (e.g. by:'ariaLabel', pattern:'Email address', or by:'role', pattern:'textbox'), so you do not have to build a CSS selector. by-axis resolves to a SINGLE fillable element and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ match, or code:'BrowserNoActionableTarget' when the match is not a fillable input/textarea/contenteditable/select, nothing matches, or every match is hidden or of another role — it never guesses; by:'role'|'ariaLabel' read the accessibility tree, which leaves out the page behind an open modal <dialog> (context.behindModal). Optionally add role to filter and scope to narrow. Provide EITHER selector OR by+pattern (not both). Use this over browser_eval when setting a controlled input's value via JS does not update framework state. A native <select> takes the option whose value is value, else the one option showing that text (chose names it); a value no option has, a disabled or multiple select, or one a widget stands in for is refused untouched, as is a read-only input of a choice widget (choose by pressing). Like a person, it types only into a field that holds focus once focused and is not read-only or disabled: a field behind a modal dialog, under inert, or that hands focus on is refused unwritten (BrowserNoActionableTarget, context.focusAt names where focus is); a page without focus (a hidden tab, a window behind) has not run its focus handlers, so there read-only and a field that hands focus on are not checked and the answer carries pageFocused:false. Caveats: Requires browser_open (CDP active). actual in the response shows the element's value after fill; verify it matches the intended value (for a field the page masks, such as a password, neither the value you passed nor the one read back is echoed — valueWithheld:'masked' — and the match is still checked, in the page). Typed errors: code:'BrowserFillNotDelivered' on post-fill value mismatch — note the false-positive case where a React controlled input's onChange transforms the value (delivery actually succeeded; hints.verifyDelivery.subReason:'controlled_input_transform' for that case; the actual value is authoritative).",
       inputSchema: browserFillRegistrationSchema,
     },
     browserFillRegistrationHandler as typeof browserFillInputHandler

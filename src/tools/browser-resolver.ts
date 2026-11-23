@@ -853,7 +853,7 @@ ${FILL_KIND_JS}
     const fullActual = el.value !== undefined ? el.value : '';
     // A masked field's value never leaves the page; the comparison is made here, in the page.
     const masked = maskedBefore || maskedAfterFocus || maskedAfterCheck || __isMasked(el);
-    return { ok: true, actual: masked ? undefined : (fullActual || '').slice(0, 100), actualWithheld: masked || undefined, fullActualLen: fullActual.length, fullMatches: fullActual === val };
+    return { ok: true, actual: masked ? undefined : (fullActual || '').slice(0, 100), actualWithheld: masked || undefined, fullActualLen: fullActual.length, fullMatches: fullActual === val, pageFocused: __pageHasFocus() ? undefined : false };
   }
   // contenteditable
   el.textContent = val;
@@ -861,7 +861,7 @@ ${FILL_KIND_JS}
   const fullActual = el.textContent || '';
   // A PIN pad can be a contenteditable the page masks; its text stays in the page as well.
   const maskedEditable = maskedBefore || maskedAfterFocus || maskedAfterCheck || __isMasked(el);
-  return { ok: true, actual: maskedEditable ? undefined : (fullActual || '').slice(0, 100), actualWithheld: maskedEditable || undefined, fullActualLen: fullActual.length, fullMatches: fullActual === val };
+  return { ok: true, actual: maskedEditable ? undefined : (fullActual || '').slice(0, 100), actualWithheld: maskedEditable || undefined, fullActualLen: fullActual.length, fullMatches: fullActual === val, pageFocused: __pageHasFocus() ? undefined : false };
 })()
 `;
 }

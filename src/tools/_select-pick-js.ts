@@ -67,6 +67,7 @@ export const SELECT_PICK_JS = `
     }
     const masked = maskedBefore || maskedAfterFocus || __isMasked(el);
     return { ok: true, actual: masked ? undefined : (el.value || '').slice(0, 100), actualWithheld: masked || undefined,
-      fullActualLen: (el.value || '').length, fullMatches: el.value === chosen, chose: masked ? undefined : chosen, select: true };
+      fullActualLen: (el.value || '').length, fullMatches: el.value === chosen, chose: masked ? undefined : chosen, select: true,
+      pageFocused: typeof __pageHasFocus === 'function' && !__pageHasFocus() ? false : undefined };
   }
 `;
