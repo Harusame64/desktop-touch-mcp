@@ -49,11 +49,8 @@ async function click(args: Record<string, unknown>) {
 async function fill(args: Record<string, unknown>) {
   return payload(await browserFillInputHandler({ port: PORT, includeContext: false, value: "x", ...args } as Parameters<typeof browserFillInputHandler>[0]));
 }
-// The axis's rule behind the dialog: what the DOM reading reads there, which holds beside matches it counted.
-const note = (by: string) =>
-  by === "role"
-    ? " A modal dialog is open: behind it, by:'role' matches only role attributes and buttons, links and headings, not other roles a tag gives (a checkbox, a text field)."
-    : " A modal dialog is open: behind it, by:'ariaLabel' matches only aria-label attributes, not a name from a <label>, aria-labelledby or the control's own text.";
+// The one fact the answer adds: the tree the axis reads leaves out the page behind the dialog.
+const note = (by: string) => ` A modal dialog is open: the browser's accessibility tree, which by:'${by}' reads, leaves out the page behind it.`;
 // The element browser_click would press (a press itself needs the Windows engine): its id, or the outcome's kind.
 async function presses(args: { by: "role" | "ariaLabel"; pattern: string; scope?: string }): Promise<string> {
   const o = await resolveBrowserActionTarget({ ...args, action: "click", requireReceivesEvents: true, port: PORT, tabId: null });
@@ -163,6 +160,15 @@ describe.skipIf(!CHROME)("a modal dialog hides the page behind it from the tree 
     expect(inHost.error, JSON.stringify(inHost)).toBe("browser_click: nothing matches. Nothing was done.");
   });
 
+  it("a light-DOM control slotted into a web component's dialog holds the focus: the dialog is found through the slot", async () => {
+    const comp = `<x-slot id="host"><button id="ok">OK</button></x-slot>`;
+    const open = "customElements.define('x-slot', class extends HTMLElement { connectedCallback() { const r = this.attachShadow({mode:'open'}); r.innerHTML = '<dialog><slot></slot></dialog>'; r.querySelector('dialog').showModal(); document.getElementById('ok').focus(); } });";
+    await page(open, comp);
+    expect(await evaluateInTab("document.activeElement.id", null, PORT)).toBe("ok");
+    const r = await click({ by: "ariaLabel", pattern: "Settings" });
+    expect(r.error, JSON.stringify(r)).toBe(`browser_click: nothing matches.${note("ariaLabel")} Nothing was done.`);
+  });
+
   it("with the focus out of the dialog, a single open modal dialog stands for it, past a page that shadows document.activeElement", async () => {
     await page(SHOW_MODAL + "Object.getOwnPropertyDescriptor(Document.prototype,'activeElement').get.call(document).blur();", `<img name="activeElement"><dialog id="dlg"><p>Text only</p></dialog>`);
     expect(await evaluateInTab("Object.getOwnPropertyDescriptor(Document.prototype,'activeElement').get.call(document) === document.body && document.activeElement.tagName === 'IMG'", null, PORT)).toBe(true);
@@ -170,7 +176,7 @@ describe.skipIf(!CHROME)("a modal dialog hides the page behind it from the tree 
     expect(r.error, JSON.stringify(r)).toBe(`browser_click: nothing matches.${note("ariaLabel")} Nothing was done.`);
   });
 
-  it("a match the DOM reading counted behind the dialog (an aria-label) is stated with the rule, which does not deny it", async () => {
+  it("a match the DOM reading counted behind the dialog (an aria-label) is stated with the fact, which does not deny it", async () => {
     await page(SHOW_MODAL, `<button id="hs" aria-label="Save" style="opacity:0">S</button><dialog id="dlg"><button id="close">Close</button></dialog>`);
     const r = await click({ by: "ariaLabel", pattern: "Save" });
     expect(r.error, JSON.stringify(r)).toBe(`browser_click: 1 match(es), none to act on: 1 hidden (no box, or display/visibility/opacity hides it).${note("ariaLabel")} Nothing was done.`);
