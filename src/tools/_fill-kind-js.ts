@@ -51,7 +51,8 @@ export const FILL_KIND_JS = `
     return el.tagName === 'INPUT' && ro && __fillKind(el, axRole) === 'widget';
   }
   // Whether a person could type into el once it was focused (internal #420): null when they could, else why not. A
-  // disabled or read-only field takes no typing. Otherwise the browser's focus decides: the focused element, through
+  // disabled field takes no typing, nor a read-only one once focus has reached it (behind a dialog, the dialog is what
+  // stops a person, so that is the answer). Otherwise the browser's focus decides: the focused element, through
   // open shadow roots, must be el or inside it (a custom element that hands focus to its own input), or the editing
   // host around el. Behind a modal dialog or under inert, focus stays where it was; a field that hands
   // focus on takes no typing either. The getters are the prototypes': a page's <img name="activeElement"> shadows
@@ -61,12 +62,6 @@ export const FILL_KIND_JS = `
     let off = el.disabled === true;
     try { off = off || __matches(el, ':disabled'); } catch (e) { }
     if (off) return { why: 'disabled' };
-    // Read-only is read once the page's focus handlers ran: a field can drop readonly as it takes focus (a guard
-    // against autofill). browser_fill gives the page focus for its call (CDP focus emulation), so they have; a page
-    // still without focus (the emulation could not be set) runs them only when it gets focus, so there the field is
-    // written as before.
-    if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.readOnly === true &&
-      (typeof Document !== 'undefined' ? Document.prototype.hasFocus.call(document) : !!(document.hasFocus && document.hasFocus()))) return { why: 'read_only' };
     const getter = function(C, k) { return typeof C !== 'undefined' ? Object.getOwnPropertyDescriptor(C.prototype, k).get : null; };
     const docAct = getter(typeof Document !== 'undefined' ? Document : undefined, 'activeElement');
     const srAct = getter(typeof ShadowRoot !== 'undefined' ? ShadowRoot : undefined, 'activeElement');
@@ -106,7 +101,15 @@ export const FILL_KIND_JS = `
       const inner = el.querySelector(TEXT) || (sr ? sr.querySelector(TEXT) : null);
       if (inner) { inner.focus(); a = deep(); }
     }
-    if (holds(a)) return null;
+    if (holds(a)) {
+      // Read-only is read once the page's focus handlers ran: a field can drop readonly as it takes focus (a guard
+      // against autofill). browser_fill gives the page focus for its call (CDP focus emulation), so they have; a page
+      // still without focus (the emulation could not be set) runs them only when it gets focus, so there the field is
+      // written as before.
+      if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.readOnly === true &&
+        (typeof Document !== 'undefined' ? Document.prototype.hasFocus.call(document) : !!(document.hasFocus && document.hasFocus()))) return { why: 'read_only' };
+      return null;
+    }
     const docGet = function(k) { const g = getter(typeof Document !== 'undefined' ? Document : undefined, k); return g ? g.call(document) : document[k]; };
     const at = a && a !== docGet('body') && a !== docGet('documentElement') ? a : null;
     return { why: 'no_focus', focusAt: at ? { name: __personName(at), tag: at.tagName.toLowerCase() } : null };

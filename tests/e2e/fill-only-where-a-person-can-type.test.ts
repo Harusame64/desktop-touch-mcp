@@ -105,6 +105,17 @@ describe.skipIf(!CHROME)("browser_fill writes only where a person can type (inte
     expect(await evaluateInTab("document.getElementById('ce').textContent", null, PORT)).toBe("old");
   });
 
+  it("a read-only field behind a modal <dialog> answers the dialog, not read-only: the dialog is what stops a person", async () => {
+    for (const args of ROADS("#ro", "Read only")) {
+      await page(`<input id="ro" aria-label="Read only" readonly>`);
+      await evaluateInTab(`document.body.insertAdjacentHTML('beforeend','<dialog id="dlg"><input id="inner" aria-label="Inner field"></dialog>');document.getElementById('dlg').showModal();true`, null, PORT);
+      const r = await fill(args);
+      expect(r.error, JSON.stringify(r)).toBe(NO_FOCUS);
+      expect((r.context as { focusAt?: unknown }).focusAt).toEqual({ name: "Inner field", tag: "input" });
+      expect(await val("ro")).toBe("");
+    }
+  });
+
   it("the dialog's own field is written", async () => {
     for (const args of [{ selector: "#inner" }, { by: "ariaLabel", pattern: "Inner field" }]) {
       await page("");
@@ -276,6 +287,14 @@ describe.skipIf(!CHROME)("browser_fill writes only where a person can type (inte
     await evaluateInTab(`document.body.insertAdjacentHTML('beforeend','<dialog id="dlg"><input id="inner" aria-label="Inner field"></dialog>');document.getElementById('dlg').showModal();true`, null, PORT);
     expect((await fill({ selector: "#xi" })).error).toBe(NO_FOCUS);
     expect(await val("xi")).toBe("");
+  });
+
+  it("a custom element whose text control sits in its shadow root, with no delegatesFocus, is written through that control", async () => {
+    await page(`<x-sr id="xr"></x-sr>`,
+      "customElements.define('x-sr',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<input>';}get value(){return this.shadowRoot.querySelector('input').value}set value(v){this.shadowRoot.querySelector('input').value=v}});");
+    const r = await fill({ selector: "#xr" });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    expect(await val("xr")).toBe("SPK");
   });
 
   it("a page whose <img name=\"body\"> shadows document.body: nothing focused still reads focusAt null", async () => {
