@@ -2201,13 +2201,11 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   // Focus first, as a person's pick; then the pick again, since a focus handler can rebuild the list or change the
   // option (refused, unset, unless it picks the same option); the mask read after focus too, as the text road does.
   function __setPickedOption(el, pk, maskedBefore, want) {
+    // A select a person could not reach (behind a modal dialog, under inert) is not changed, as a text field is not,
+    // and is not focused first (internal #420). __typingRefused is FILL_KIND_JS's: every caller splices it.
+    const refused = __typingRefused(el);
+    if (refused) return { ok: false, typingRefused: refused };
     el.focus();
-    // A select a person could not reach (behind a modal dialog, under inert) is not changed, as a text field is not
-    // (internal #420; __typingRefused is in FILL_KIND_JS, spliced beside this on both roads).
-    if (typeof __typingRefused === 'function') {
-      const refused = __typingRefused(el);
-      if (refused) return { ok: false, typingRefused: refused };
-    }
     // The whole pick again, after focus: a handler can rebuild the list, change the option's value or disable it
     // (codex on #1025). Written only when it still picks the same option.
     const again = __pickOption(el, want);
@@ -2273,17 +2271,22 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   // judged here). Disabled (itself or by a <fieldset disabled>); a native control not shown; inside a part of the page
   // marked inert (an ancestor's inert attribute, across shadow roots: booking.com's sign-in prompt); outside the top
   // modal <dialog> while one is open. The top dialog is found from the focus, as #1031's note finds it: down open shadow
-  // roots, then up the composed tree; else the one open modal dialog of the document. The getters and querySelectorAll
+  // roots, then up the composed tree; else the one open modal dialog of the document or an open shadow root (a closed
+  // one's is not seen; with several and the focus in none, only outside all of them is known). The getters and querySelectorAll
   // are the prototypes': a page's <img name="activeElement"> shadows document.activeElement.
   function __typingRefused(el) {
     let off = el.disabled === true;
     try { off = off || __matches(el, ':disabled'); } catch (e) { }
     if (off) return { why: 'disabled' };
     const tag = el.tagName;
+    // Not shown: checkVisibility where Chrome has it (display:none, visibility hidden or collapse, inside a closed
+    // <details> or content-visibility:hidden), else no box or visibility other than visible.
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
       try {
-        if ((tag === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'hidden') || el.getClientRects().length === 0 ||
-          getComputedStyle(el).visibility === 'hidden') return { why: 'not_shown' };
+        const unseen = typeof el.checkVisibility === 'function'
+          ? !el.checkVisibility({ visibilityProperty: true })
+          : el.getClientRects().length === 0 || getComputedStyle(el).visibility !== 'visible';
+        if (unseen || (tag === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'hidden')) return { why: 'not_shown' };
       } catch (e) { }
     }
     const getter = function(C, k) {
@@ -2305,7 +2308,9 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
       const root = typeof Node !== 'undefined' ? Node.prototype.getRootNode.call(n) : (n.getRootNode ? n.getRootNode() : null);
       return root && root.nodeType === 11 && root.host ? root.host : null;
     };
-    const within = function(n, box) { for (let d = 0; n && d < 256; d++, n = up(n)) if (n === box) return true; return false; };
+    // The walks end at the document; the cap only guards against a page that loops its parent getters.
+    const CAP = 100000;
+    const within = function(n, box) { for (let d = 0; n && d < CAP; d++, n = up(n)) if (n === box) return true; return false; };
     let a = docAct ? docAct.call(document) : document.activeElement;
     for (let r = a && (srGet ? srGet.call(a) : a.shadowRoot); r && (srAct ? srAct.call(r) : r.activeElement); r = a && (srGet ? srGet.call(a) : a.shadowRoot)) {
       a = srAct ? srAct.call(r) : r.activeElement;
@@ -2316,19 +2321,28 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
       return { why: why, focusAt: at ? { name: __personName(at), tag: at.tagName.toLowerCase() } : null };
     };
     const hasAttr = typeof Element !== 'undefined' ? Element.prototype.hasAttribute : null;
-    for (let n = el, d = 0; n && d < 256; d++, n = up(n)) {
+    for (let n = el, d = 0; n && d < CAP; d++, n = up(n)) {
       if (n.nodeType === 1 && (hasAttr ? hasAttr.call(n, 'inert') : n.hasAttribute('inert'))) return blocked('inert');
     }
     let top = null;
-    for (let n = a, d = 0; n && d < 256; d++, n = up(n)) {
+    for (let n = a, d = 0; n && d < CAP; d++, n = up(n)) {
       let modal = false;
       try { modal = n.nodeType === 1 && n.tagName === 'DIALOG' && __matches(n, ':modal'); } catch (e) { }
       if (modal) { top = n; break; }
     }
-    let modals = [];
-    try { modals = Array.prototype.slice.call(D ? D.prototype.querySelectorAll.call(document, 'dialog:modal') : document.querySelectorAll('dialog:modal')); } catch (e) { }
-    if (!top && modals.length === 1) top = modals[0];
     if (top) return within(el, top) ? null : blocked('behind_modal');
+    // Open modal dialogs: the document's, and those in open shadow roots (a component's dialog, focus elsewhere). A
+    // closed shadow root's is not seen.
+    let modals = [];
+    try {
+      const qsa = function(root, sel) { return Array.prototype.slice.call(D && root === document ? D.prototype.querySelectorAll.call(document, sel) : root.querySelectorAll(sel)); };
+      const roots = [document];
+      for (let i = 0; i < roots.length && i < 2000; i++) {
+        modals = modals.concat(qsa(roots[i], 'dialog:modal'));
+        qsa(roots[i], '*').forEach(function(n) { const r = srGet ? srGet.call(n) : n.shadowRoot; if (r) roots.push(r); });
+      }
+    } catch (e) { }
+    if (modals.length === 1) return within(el, modals[0]) ? null : blocked('behind_modal');
     // Several open and the focus in none of them: outside all of them is behind one.
     if (modals.length > 1 && !modals.some(function(m) { return within(el, m); })) return blocked('behind_modal');
     return null;
@@ -2344,6 +2358,10 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
     return { ok: false, error: 'not_fillable', tag: tag.toLowerCase() + (ty ? '[type=' + ty + ']' : ''), kind: __fillKind(el, axRole), readOnlyChoice: __choiceInput(el, axRole) || undefined };
   }
 
+  // A field a person could not reach (disabled, not shown, under inert, outside an open modal dialog) is not written,
+  // nor focused first (internal #420).
+  const refused = __typingRefused(el);
+  if (refused) return { ok: false, typingRefused: refused };
   // Read before any page handler runs: one can replace the element, and a detached element has no
   // computed style left to show that it was masked (PR 側 codex on #623).
   const maskedBefore = __isMasked(el);
@@ -2355,10 +2373,6 @@ exports[`ADR-023 Phase 1 PR4: buildFillActJs — by-axis fill act (snapshot) > e
   const maskedAfterFocus = __isMasked(el);
   // A page can make it read-only as it takes focus: nothing is written, and the answer says focus moved.
   if (__choiceInput(el, axRole)) return { ok: false, error: 'not_fillable', tag: tag.toLowerCase() + (ty ? '[type=' + ty + ']' : ''), kind: 'widget', readOnlyChoice: true, afterFocus: true };
-  // A field a person could not reach (disabled, not shown, under inert, outside an open modal dialog) is not written
-  // (internal #420).
-  const refused = __typingRefused(el);
-  if (refused) return { ok: false, typingRefused: refused };
   const val = "user@example.com";
   if (isTextInput || isTextArea) {
     if (typeof el.select === 'function') el.select();

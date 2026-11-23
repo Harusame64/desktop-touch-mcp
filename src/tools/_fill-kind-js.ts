@@ -55,17 +55,22 @@ export const FILL_KIND_JS = `
   // judged here). Disabled (itself or by a <fieldset disabled>); a native control not shown; inside a part of the page
   // marked inert (an ancestor's inert attribute, across shadow roots: booking.com's sign-in prompt); outside the top
   // modal <dialog> while one is open. The top dialog is found from the focus, as #1031's note finds it: down open shadow
-  // roots, then up the composed tree; else the one open modal dialog of the document. The getters and querySelectorAll
+  // roots, then up the composed tree; else the one open modal dialog of the document or an open shadow root (a closed
+  // one's is not seen; with several and the focus in none, only outside all of them is known). The getters and querySelectorAll
   // are the prototypes': a page's <img name="activeElement"> shadows document.activeElement.
   function __typingRefused(el) {
     let off = el.disabled === true;
     try { off = off || __matches(el, ':disabled'); } catch (e) { }
     if (off) return { why: 'disabled' };
     const tag = el.tagName;
+    // Not shown: checkVisibility where Chrome has it (display:none, visibility hidden or collapse, inside a closed
+    // <details> or content-visibility:hidden), else no box or visibility other than visible.
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
       try {
-        if ((tag === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'hidden') || el.getClientRects().length === 0 ||
-          getComputedStyle(el).visibility === 'hidden') return { why: 'not_shown' };
+        const unseen = typeof el.checkVisibility === 'function'
+          ? !el.checkVisibility({ visibilityProperty: true })
+          : el.getClientRects().length === 0 || getComputedStyle(el).visibility !== 'visible';
+        if (unseen || (tag === 'INPUT' && (el.getAttribute('type') || '').toLowerCase() === 'hidden')) return { why: 'not_shown' };
       } catch (e) { }
     }
     const getter = function(C, k) {
@@ -87,7 +92,9 @@ export const FILL_KIND_JS = `
       const root = typeof Node !== 'undefined' ? Node.prototype.getRootNode.call(n) : (n.getRootNode ? n.getRootNode() : null);
       return root && root.nodeType === 11 && root.host ? root.host : null;
     };
-    const within = function(n, box) { for (let d = 0; n && d < 256; d++, n = up(n)) if (n === box) return true; return false; };
+    // The walks end at the document; the cap only guards against a page that loops its parent getters.
+    const CAP = 100000;
+    const within = function(n, box) { for (let d = 0; n && d < CAP; d++, n = up(n)) if (n === box) return true; return false; };
     let a = docAct ? docAct.call(document) : document.activeElement;
     for (let r = a && (srGet ? srGet.call(a) : a.shadowRoot); r && (srAct ? srAct.call(r) : r.activeElement); r = a && (srGet ? srGet.call(a) : a.shadowRoot)) {
       a = srAct ? srAct.call(r) : r.activeElement;
@@ -98,19 +105,28 @@ export const FILL_KIND_JS = `
       return { why: why, focusAt: at ? { name: __personName(at), tag: at.tagName.toLowerCase() } : null };
     };
     const hasAttr = typeof Element !== 'undefined' ? Element.prototype.hasAttribute : null;
-    for (let n = el, d = 0; n && d < 256; d++, n = up(n)) {
+    for (let n = el, d = 0; n && d < CAP; d++, n = up(n)) {
       if (n.nodeType === 1 && (hasAttr ? hasAttr.call(n, 'inert') : n.hasAttribute('inert'))) return blocked('inert');
     }
     let top = null;
-    for (let n = a, d = 0; n && d < 256; d++, n = up(n)) {
+    for (let n = a, d = 0; n && d < CAP; d++, n = up(n)) {
       let modal = false;
       try { modal = n.nodeType === 1 && n.tagName === 'DIALOG' && __matches(n, ':modal'); } catch (e) { }
       if (modal) { top = n; break; }
     }
-    let modals = [];
-    try { modals = Array.prototype.slice.call(D ? D.prototype.querySelectorAll.call(document, 'dialog:modal') : document.querySelectorAll('dialog:modal')); } catch (e) { }
-    if (!top && modals.length === 1) top = modals[0];
     if (top) return within(el, top) ? null : blocked('behind_modal');
+    // Open modal dialogs: the document's, and those in open shadow roots (a component's dialog, focus elsewhere). A
+    // closed shadow root's is not seen.
+    let modals = [];
+    try {
+      const qsa = function(root, sel) { return Array.prototype.slice.call(D && root === document ? D.prototype.querySelectorAll.call(document, sel) : root.querySelectorAll(sel)); };
+      const roots = [document];
+      for (let i = 0; i < roots.length && i < 2000; i++) {
+        modals = modals.concat(qsa(roots[i], 'dialog:modal'));
+        qsa(roots[i], '*').forEach(function(n) { const r = srGet ? srGet.call(n) : n.shadowRoot; if (r) roots.push(r); });
+      }
+    } catch (e) { }
+    if (modals.length === 1) return within(el, modals[0]) ? null : blocked('behind_modal');
     // Several open and the focus in none of them: outside all of them is behind one.
     if (modals.length > 1 && !modals.some(function(m) { return within(el, m); })) return blocked('behind_modal');
     return null;

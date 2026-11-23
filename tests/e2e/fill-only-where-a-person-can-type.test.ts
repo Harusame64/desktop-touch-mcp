@@ -216,6 +216,39 @@ describe.skipIf(!CHROME)("browser_fill does not type where a person cannot reach
     expect(await val("em")).toBe("");
   });
 
+  it("a modal <dialog> in an open shadow root, focus blurred: a field of the page is behind it", async () => {
+    await page(`<x-ob id="xo"></x-ob>`,
+      "if(!customElements.get('x-ob'))customElements.define('x-ob',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<dialog><p>Hi</p></dialog>';}});" +
+      "document.getElementById('xo').shadowRoot.querySelector('dialog').showModal();document.activeElement&&document.activeElement.blur&&document.activeElement.blur();");
+    const r = await fill({ selector: "#em" });
+    expect(r.error, JSON.stringify(r)).toBe(BEHIND_MODAL);
+    expect(await val("em")).toBe("");
+  });
+
+  it("not seen, written as before: a modal in a closed shadow root; with two open and the focus in neither, a field in the lower one", async () => {
+    await page(`<x-cs id="xc"></x-cs>`,
+      "if(!customElements.get('x-cs'))customElements.define('x-cs',class extends HTMLElement{constructor(){super();const r=this.attachShadow({mode:'closed'});r.innerHTML='<dialog><input aria-label=\"Closed inner\"></dialog>';r.querySelector('dialog').showModal();}});");
+    expect((await fill({ selector: "#em" })).ok).toBe(true);
+    await page("");
+    await evaluateInTab(`document.getElementById('bg').insertAdjacentHTML('beforeend','<dialog id="d1"><input id="low" aria-label="Lower field"></dialog><dialog id="d2"><p>Two</p></dialog>');` +
+      `document.getElementById('d1').showModal();document.getElementById('d2').showModal();Object.getOwnPropertyDescriptor(Document.prototype,'activeElement').get.call(document).blur();true`, null, PORT);
+    expect((await fill({ selector: "#low" })).ok).toBe(true);
+  });
+
+  it("a refused field is not focused first: its focus handler does not run (behind a dialog; a focusable custom element that says it is disabled)", async () => {
+    for (const args of ROADS("#em", "Email address")) {
+      await page("", "window.__f=0;document.getElementById('em').addEventListener('focus',function(){window.__f++});");
+      await openModal();
+      expect((await fill(args)).error).toBe(BEHIND_MODAL);
+      expect(await evaluateInTab("window.__f", null, PORT)).toBe(0);
+    }
+    await focused(async () => {
+      await page(`<x-dis2 id="xd2" tabindex="0"></x-dis2>`, "window.__f=0;if(!customElements.get('x-dis2'))customElements.define('x-dis2',class extends HTMLElement{get disabled(){return true}get value(){return this._v||''}set value(v){this._v=String(v)}});document.getElementById('xd2').addEventListener('focus',function(){window.__f++});");
+      expect((await fill({ selector: "#xd2" })).error).toBe(DISABLED);
+      expect(await evaluateInTab("window.__f", null, PORT)).toBe(0);
+    });
+  });
+
   it("a field inside a part of the page marked inert is not written, with nothing focused (focusAt null)", async () => {
     await bothFocus(async () => {
       for (const args of ROADS("#em", "Email address")) {
@@ -322,8 +355,9 @@ describe.skipIf(!CHROME)("browser_fill does not type where a person cannot reach
     expect(await val("xd")).toBe("");
   });
 
-  it("a native field not shown (a hidden input, display:none, visibility:hidden) says so", async () => {
-    for (const html of [`<input id="nh" type="hidden">`, `<textarea id="nh" style="display:none"></textarea>`, `<input id="nh" style="visibility:hidden">`]) {
+  it("a native field not shown (a hidden input, display:none, visibility hidden or collapse, inside a closed <details>) says so", async () => {
+    for (const html of [`<input id="nh" type="hidden">`, `<textarea id="nh" style="display:none"></textarea>`, `<input id="nh" style="visibility:hidden">`,
+      `<input id="nh" style="visibility:collapse">`, `<details><summary>More</summary><input id="nh"></details>`]) {
       await page(html);
       const r = await fill({ selector: "#nh" });
       expect(r.error, JSON.stringify(r)).toBe(NOT_SHOWN);

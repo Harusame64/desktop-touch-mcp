@@ -1487,7 +1487,7 @@ async function finalizeFillResult(
             (withheld
               ? "The field is masked, so neither value is shown; actualLen is how much the page kept."
               : "Treat actual as authoritative.")
-          : "The DOM did not retain the requested value after fill — input may be readOnly, disabled, or guarded by a synthetic-event proxy that rejects programmatic writes.",
+          : "The DOM did not retain the requested value after fill — input may be readOnly or guarded by a synthetic-event proxy that rejects programmatic writes.",
       hints: {
         verifyDelivery: {
           status: "unverifiable",
@@ -1669,7 +1669,7 @@ const FILL_HINTS_TOGGLE: string[] = [
 ];
 const FILL_HINTS_TEXTLIKE: string[] = [
   "It is named a text field but does not take text here (an editor surface, a read-only display): press it with browser_click, then type with keyboard",
-  "Or find the field it writes to (often a hidden textarea) with browser_eval",
+  "Or set the field it writes to (often a hidden textarea) with browser_eval: browser_fill does not type into a field the page does not show",
 ];
 
 export const browserFillInputHandler = async ({
@@ -1729,12 +1729,16 @@ ${FILL_KIND_JS}
   // read back as a match: reported filled, nothing changed (/code-review on this PR). A custom element with a value
   // property (Shoelace, Material Web) still takes it.
   if (!el.isContentEditable && !('value' in el)) return { ok: false, notFillable: true, tag: __tagTy, kind: __fillKind(el, null) };
+  // A field a person could not reach is not focused, nor written (internal #420).
+  const refused = __typingRefused(el);
+  if (refused) return { ok: false, typingRefused: refused };
   el.focus();
   const tag = el.tagName.toLowerCase();
   const type = el.getAttribute('type') || '';
   return { ok: true, tag, type };
 })()`;
-    const focusResult = await evaluateInTab(focusExpr, tabId ?? null, port) as { ok: boolean; error?: string; selectError?: string; notFillable?: boolean; tag?: string; kind?: string; readOnlyChoice?: boolean; afterFocus?: boolean; type?: string };
+    const focusResult = await evaluateInTab(focusExpr, tabId ?? null, port) as { ok: boolean; error?: string; typingRefused?: TypingRefused; selectError?: string; notFillable?: boolean; tag?: string; kind?: string; readOnlyChoice?: boolean; afterFocus?: boolean; type?: string };
+    if (!focusResult.ok && focusResult.typingRefused) return typingRefusal(focusResult.typingRefused, { selector });
     if (!focusResult.ok && focusResult.selectError) return selectRefusal(focusResult.selectError, { selector });
     if (!focusResult.ok && focusResult.notFillable) return notFillable(focusResult, { selector });
     if (!focusResult.ok) {
@@ -1773,10 +1777,10 @@ ${SELECT_PICK_JS}
   // Read-only and a choice widget once the page's focus handlers ran: nothing is written.
 ${FILL_KIND_JS}
   if (__choiceInput(el, null)) return { ok: false, notFillable: true, tag: 'input' + (el.getAttribute('type') ? '[type=' + el.getAttribute('type').toLowerCase() + ']' : ''), kind: 'widget', readOnlyChoice: true, afterFocus: true };
-  el.focus();
-  // A field a person could not reach is not written, as on the by-axis road (internal #420).
+  // Checked again: the page can change between the two evaluates (internal #420).
   const refused = __typingRefused(el);
   if (refused) return { ok: false, typingRefused: refused };
+  el.focus();
   // A contenteditable with no value property takes its text, as on the by-axis road: a value expando changed nothing
   // and read back as a match (/code-review on this PR).
   if (el.isContentEditable && !('value' in el)) {
@@ -4606,7 +4610,7 @@ export function registerBrowserTools(server: McpServer): void {
     "browser_fill",
     {
       description:
-        "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Two ways to target: (1) selector — a CSS selector (use browser_overview / browser_locate to find one); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern (e.g. by:'ariaLabel', pattern:'Email address', or by:'role', pattern:'textbox'), so you do not have to build a CSS selector. by-axis resolves to a SINGLE fillable element and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ match, or code:'BrowserNoActionableTarget' when the match is not a fillable input/textarea/contenteditable/select, nothing matches, or every match is hidden or of another role — it never guesses; by:'role'|'ariaLabel' read the accessibility tree, which leaves out the page behind an open modal <dialog> (context.behindModal). Optionally add role to filter and scope to narrow. Provide EITHER selector OR by+pattern (not both). Use this over browser_eval when setting a controlled input's value via JS does not update framework state. A native <select> takes the option whose value is value, else the one option showing that text (chose names it); a value no option has, a disabled or multiple select, or one a widget stands in for is refused untouched, as is a read-only input of a choice widget (choose by pressing). Like a person, it does not type into a field that is disabled, not shown, in a part of the page marked inert, or outside an open modal dialog: refused unwritten (BrowserNoActionableTarget, context.focusAt names where focus is). Caveats: Requires browser_open (CDP active). actual in the response shows the element's value after fill; verify it matches the intended value (for a field the page masks, such as a password, neither the value you passed nor the one read back is echoed — valueWithheld:'masked' — and the match is still checked, in the page). Typed errors: code:'BrowserFillNotDelivered' on post-fill value mismatch — note the false-positive case where a React controlled input's onChange transforms the value (delivery actually succeeded; hints.verifyDelivery.subReason:'controlled_input_transform' for that case; the actual value is authoritative).",
+        "Fill a form input with a value via CDP — works on React/Vue/Svelte controlled inputs that reject browser_eval value assignment. Two ways to target: (1) selector — a CSS selector (use browser_overview / browser_locate to find one); or (2) by-axis (semantic) — by:'text'|'regex'|'role'|'ariaLabel' + pattern (e.g. by:'ariaLabel', pattern:'Email address', or by:'role', pattern:'textbox'), so you do not have to build a CSS selector. by-axis resolves to a SINGLE fillable element and STOPS with code:'BrowserAmbiguousTarget' (candidates[] + next[] hints) when 2+ match, or code:'BrowserNoActionableTarget' when the match is not a fillable input/textarea/contenteditable/select, nothing matches, or every match is hidden or of another role — it never guesses; by:'role'|'ariaLabel' read the accessibility tree, which leaves out the page behind an open modal <dialog> (context.behindModal). Optionally add role to filter and scope to narrow. Provide EITHER selector OR by+pattern (not both). Use this over browser_eval when setting a controlled input's value via JS does not update framework state. A native <select> takes the option whose value is value, else the one option showing that text (chose names it); a value no option has, a disabled or multiple select, or one a widget stands in for is refused untouched, as is a read-only input of a choice widget (choose by pressing). Like a person, it does not type into a field that is disabled, not shown, in a part of the page marked inert, or outside an open modal dialog: refused unwritten and unfocused (BrowserNoActionableTarget; for inert and the modal, context.focusAt names where focus is). Caveats: Requires browser_open (CDP active). actual in the response shows the element's value after fill; verify it matches the intended value (for a field the page masks, such as a password, neither the value you passed nor the one read back is echoed — valueWithheld:'masked' — and the match is still checked, in the page). Typed errors: code:'BrowserFillNotDelivered' on post-fill value mismatch — note the false-positive case where a React controlled input's onChange transforms the value (delivery actually succeeded; hints.verifyDelivery.subReason:'controlled_input_transform' for that case; the actual value is authoritative).",
       inputSchema: browserFillRegistrationSchema,
     },
     browserFillRegistrationHandler as typeof browserFillInputHandler

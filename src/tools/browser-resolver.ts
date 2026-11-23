@@ -821,6 +821,10 @@ ${FILL_KIND_JS}
     return { ok: false, error: 'not_fillable', tag: tag.toLowerCase() + (ty ? '[type=' + ty + ']' : ''), kind: __fillKind(el, axRole), readOnlyChoice: __choiceInput(el, axRole) || undefined };
   }
 
+  // A field a person could not reach (disabled, not shown, under inert, outside an open modal dialog) is not written,
+  // nor focused first (internal #420).
+  const refused = __typingRefused(el);
+  if (refused) return { ok: false, typingRefused: refused };
   // Read before any page handler runs: one can replace the element, and a detached element has no
   // computed style left to show that it was masked (PR 側 codex on #623).
   const maskedBefore = __isMasked(el);
@@ -832,10 +836,6 @@ ${FILL_KIND_JS}
   const maskedAfterFocus = __isMasked(el);
   // A page can make it read-only as it takes focus: nothing is written, and the answer says focus moved.
   if (__choiceInput(el, axRole)) return { ok: false, error: 'not_fillable', tag: tag.toLowerCase() + (ty ? '[type=' + ty + ']' : ''), kind: 'widget', readOnlyChoice: true, afterFocus: true };
-  // A field a person could not reach (disabled, not shown, under inert, outside an open modal dialog) is not written
-  // (internal #420).
-  const refused = __typingRefused(el);
-  if (refused) return { ok: false, typingRefused: refused };
   const val = ${jsLiteral(value)};
   if (isTextInput || isTextArea) {
     if (typeof el.select === 'function') el.select();
