@@ -438,7 +438,18 @@ function candidatePoolJs(args: ActionFactsArgs): string {
       if (!shown.has(candidates[i])) hidden++;
       if (roleFilter && !roleMatchesChain(candidates[i])) offRole++;
     }
+    // While a modal <dialog> is open, the browser's tree leaves out the page behind it (ignoredReasons
+    // activeModalDialog: no name, no role), so by:'role' and by:'ariaLabel' cannot find a match there. Said when part
+    // of what was searched lies outside every open modal dialog; inside one of two stacked dialogs is not said.
+    let behindModal = false;
+    if (by === 'role' || by === 'ariaLabel') {
+      try {
+        const modals = Array.from(document.querySelectorAll('dialog:modal'));
+        behindModal = modals.length > 0 && roots.some(function(r) { return modals.every(function(d) { return !__contains(d, r); }); });
+      } catch (e) { /* a browser without :modal: not said */ }
+    }
     seen = { matched: candidates.length, hidden: hidden, offRole: offRole, cut: aborted };
+    if (behindModal) seen.behindModal = true;
   }
   // internal #420 — a control with an equal accessible name wins over names containing it, among the matches seen and
   // of the role asked for. Only a control: a heading or a section named exactly so stays beside the field whose name
@@ -968,6 +979,8 @@ export interface PoolSeen {
   offRole: number;
   /** not every match was read: the scan's time budget ran out, or the tree's list stopped at its cap */
   cut: boolean;
+  /** by:'role' / by:'ariaLabel' only: a modal dialog is open and part of the search lies behind it, which the tree leaves out */
+  behindModal?: true;
 }
 
 /** Full return shape of `buildActionCandidateFactsJs` (success path). */
