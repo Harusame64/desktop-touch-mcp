@@ -105,8 +105,13 @@ export const FILL_KIND_JS = `
       return { why: why, focusAt: at ? { name: __personName(at), tag: at.tagName.toLowerCase() } : null };
     };
     const hasAttr = typeof Element !== 'undefined' ? Element.prototype.hasAttribute : null;
+    // Up to the first inert ancestor, but not past an open modal dialog: a modal dialog is not made inert by an inert
+    // ancestor (measured: its field takes focus inside an inert <main>; codex on #1036).
     for (let n = el, d = 0; n && d < CAP; d++, n = up(n)) {
       if (n.nodeType === 1 && (hasAttr ? hasAttr.call(n, 'inert') : n.hasAttribute('inert'))) return blocked('inert');
+      let openModal = false;
+      try { openModal = n.nodeType === 1 && n.tagName === 'DIALOG' && __matches(n, ':modal'); } catch (e) { }
+      if (openModal) break;
     }
     let top = null;
     for (let n = a, d = 0; n && d < CAP; d++, n = up(n)) {

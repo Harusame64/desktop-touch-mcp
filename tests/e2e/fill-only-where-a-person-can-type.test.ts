@@ -293,6 +293,19 @@ describe.skipIf(!CHROME)("browser_fill does not type where a person cannot reach
     }
   });
 
+  it("a modal <dialog> inside an inert part of the page is not inert: its field is written; one beside it in the inert part is not", async () => {
+    await page(`<section id="sec" inert><input id="out" aria-label="Out field"><dialog id="dd"><input id="inn" aria-label="Dialog field"></dialog></section>`,
+      "document.getElementById('dd').showModal();");
+    for (const args of ROADS("#inn", "Dialog field")) {
+      const r = await fill(args);
+      expect(r.ok, JSON.stringify(r)).toBe(true);
+    }
+    expect(await val("inn")).toBe("SPK");
+    const o = await fill({ selector: "#out" });
+    expect(o.error, JSON.stringify(o)).toBe(INERT);
+    expect(await val("out")).toBe("");
+  });
+
   it("an inert shadow host: the field in its shadow root is not written", async () => {
     await page(`<x-in id="xi" inert></x-in>`,
       "customElements.define('x-in',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<input>';}get value(){return this.shadowRoot.querySelector('input').value}set value(v){this.shadowRoot.querySelector('input').value=v}});");
