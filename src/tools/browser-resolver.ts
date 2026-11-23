@@ -439,14 +439,33 @@ function candidatePoolJs(args: ActionFactsArgs): string {
       if (roleFilter && !roleMatchesChain(candidates[i])) offRole++;
     }
     // While a modal <dialog> is open, the browser's tree leaves out the page behind it (ignoredReasons
-    // activeModalDialog: no name, no role), so by:'role' and by:'ariaLabel' cannot find a match there. Said when part
-    // of what was searched lies outside every open modal dialog; inside one of two stacked dialogs is not said.
+    // activeModalDialog: no name, no role), so by:'role' and by:'ariaLabel' cannot find a match there. The top modal
+    // dialog holds the focus (the rest of the page is inert), so it is found from the focused element, through open
+    // shadow roots (a web component's dialog) and a lower dialog of two stacked ones is behind it. In a shadow root,
+    // its outermost host stands for it. Said when part of what was searched lies outside it; with the focus in no
+    // modal dialog, a single one open on the page stands for it, and otherwise nothing is said.
     let behindModal = false;
     if (by === 'role' || by === 'ariaLabel') {
       try {
-        const modals = Array.from(document.querySelectorAll('dialog:modal'));
-        behindModal = modals.length > 0 && roots.some(function(r) { return modals.every(function(d) { return !__contains(d, r); }); });
-      } catch (e) { /* a browser without :modal: not said */ }
+        // From Document's and ShadowRoot's own getters: a page's <img name="activeElement"> shadows document's (/code-review).
+        const docAct = Object.getOwnPropertyDescriptor(Document.prototype, 'activeElement').get;
+        const srAct = Object.getOwnPropertyDescriptor(ShadowRoot.prototype, 'activeElement').get;
+        const actGet = function(n) { return n === document ? docAct.call(n) : srAct.call(n); };
+        const pnGet = Object.getOwnPropertyDescriptor(Node.prototype, 'parentNode').get;
+        let a = actGet(document);
+        while (a && a.shadowRoot && actGet(a.shadowRoot)) a = actGet(a.shadowRoot);
+        let top = null;
+        for (let n = a; n; ) {
+          if (!top && n.nodeType === 1 && n.tagName === 'DIALOG' && __matches(n, ':modal')) top = n;
+          const p = pnGet.call(n);
+          if (p && p.nodeType === 11 && p.host) { if (top) top = p.host; n = p.host; } else n = p;
+        }
+        if (top === null) {
+          const modals = Document.prototype.querySelectorAll.call(document, 'dialog:modal');
+          if (modals.length === 1) top = modals[0];
+        }
+        behindModal = top !== null && roots.some(function(r) { return !__contains(top, r); });
+      } catch (e) { /* a browser without :modal, or no DOM: not said */ }
     }
     seen = { matched: candidates.length, hidden: hidden, offRole: offRole, cut: aborted };
     if (behindModal) seen.behindModal = true;

@@ -9,7 +9,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { sleep } from "./helpers/wait.js";
-import { evaluateInTab, disconnectAll } from "../../src/engine/cdp-bridge.js";
+import { evaluateInTab, disconnectAll, clearAxMarks } from "../../src/engine/cdp-bridge.js";
+import { resolveBrowserActionTarget } from "../../src/tools/browser-resolver.js";
 import { browserClickElementHandler, browserFillInputHandler } from "../../src/tools/browser.js";
 
 const PORT = 9244;
@@ -48,9 +49,17 @@ async function click(args: Record<string, unknown>) {
 async function fill(args: Record<string, unknown>) {
   return payload(await browserFillInputHandler({ port: PORT, includeContext: false, value: "x", ...args } as Parameters<typeof browserFillInputHandler>[0]));
 }
+// The axis's rule behind the dialog: what the DOM reading reads there, which holds beside matches it counted.
 const note = (by: string) =>
-  ` A modal dialog is open: while it is, the browser gives no name or role to the page behind it, so by:'${by}' finds no match there.`;
-const HINT = "To reach the page behind the dialog: dismiss it (its close button or Escape) and retry, or match by:'text' or a selector, which read the page itself";
+  by === "role"
+    ? " A modal dialog is open: behind it, by:'role' matches only role attributes and buttons, links and headings, not other roles a tag gives (a checkbox, a text field)."
+    : " A modal dialog is open: behind it, by:'ariaLabel' matches only aria-label attributes, not a name from a <label>, aria-labelledby or the control's own text.";
+// The element browser_click would press (a press itself needs the Windows engine): its id, or the outcome's kind.
+async function presses(args: { by: "role" | "ariaLabel"; pattern: string; scope?: string }): Promise<string> {
+  const o = await resolveBrowserActionTarget({ ...args, action: "click", requireReceivesEvents: true, port: PORT, tabId: null });
+  if (o.kind === "resolved" && o.axMark !== undefined) await clearAxMarks(o.axMark, null, PORT);
+  return o.kind === "resolved" ? `#${o.matched.id ?? ""}` : o.kind;
+}
 
 describe.skipIf(!CHROME)("a modal dialog hides the page behind it from the tree (internal #420)", () => {
   it("by:'ariaLabel' for a button named by aria-labelledby behind the dialog says the dialog is open", async () => {
@@ -58,7 +67,8 @@ describe.skipIf(!CHROME)("a modal dialog hides the page behind it from the tree 
     const r = await click({ by: "ariaLabel", pattern: "Settings" });
     expect(r.code, JSON.stringify(r)).toBe("BrowserNoActionableTarget");
     expect(r.error).toBe(`browser_click: nothing matches.${note("ariaLabel")} Nothing was done.`);
-    expect((r.suggest as string[])[0]).toBe(HINT);
+    // No step to take: the control may be in the dialog, with the pattern wrong, and closing it can lose a form.
+    expect(r.suggest).toEqual(["Check the pattern and the axis: browser_search with the same by/pattern lists what matches, and browser_overview lists the page's controls"]);
     expect((r.context as { behindModal?: boolean }).behindModal).toBe(true);
     expect(await pressed()).toEqual([]);
   });
@@ -77,8 +87,10 @@ describe.skipIf(!CHROME)("a modal dialog hides the page behind it from the tree 
     expect(await pressed()).toEqual([]);
   });
 
-  it("with the dialog closed the same control is found: the note is about the dialog, not the name", async () => {
+  it("with the dialog closed the same controls are found: the note is about the dialog, not the name", async () => {
     await page("");
+    expect(await presses({ by: "ariaLabel", pattern: "Settings" })).toBe("#set");
+    expect(await presses({ by: "role", pattern: "checkbox" })).toBe("#cb");
     const r = await click({ by: "ariaLabel", pattern: "No such name" });
     expect(r.error, JSON.stringify(r)).toBe("browser_click: nothing matches. Nothing was done.");
     expect((r.context as { behindModal?: boolean }).behindModal).toBeUndefined();
@@ -120,12 +132,48 @@ describe.skipIf(!CHROME)("a modal dialog hides the page behind it from the tree 
     expect(await pressed()).toEqual([]);
   });
 
-  it("two stacked modal dialogs: a search scoped into the lower one is not said (which one is on top is not read)", async () => {
+  it("two stacked modal dialogs: the lower one is behind the top one, which holds the focus", async () => {
+    const two = `<dialog id="d1"><button id="b1">One</button></dialog><dialog id="d2"><button id="b2">Two</button></dialog>`;
+    const open = "document.getElementById('d1').showModal();document.getElementById('d2').showModal();";
+    await page(open, two);
+    const low = await click({ by: "ariaLabel", pattern: "One", scope: "#d1" });
+    expect(low.error, JSON.stringify(low)).toBe(`browser_click: nothing matches.${note("ariaLabel")} Nothing was done.`);
+    const top = await click({ by: "ariaLabel", pattern: "No such name", scope: "#d2" });
+    expect(top.error, JSON.stringify(top)).toBe("browser_click: nothing matches. Nothing was done.");
+    expect(await presses({ by: "ariaLabel", pattern: "Two", scope: "#d2" })).toBe("#b2");
+  });
+
+  it("a page that shadows document.activeElement in the lower of two dialogs does not make that one the top", async () => {
     await page(
       "document.getElementById('d1').showModal();document.getElementById('d2').showModal();",
-      `<dialog id="d1"><button id="b1">One</button></dialog><dialog id="d2"><button id="b2">Two</button></dialog>`,
+      `<dialog id="d1"><img name="activeElement"><button id="b1">One</button></dialog><dialog id="d2"><button id="b2">Two</button></dialog>`,
     );
-    const r = await click({ by: "ariaLabel", pattern: "No such name", scope: "#d1" });
-    expect(r.error, JSON.stringify(r)).toBe("browser_click: nothing matches. Nothing was done.");
+    const low = await click({ by: "ariaLabel", pattern: "One", scope: "#d1" });
+    expect(low.error, JSON.stringify(low)).toBe(`browser_click: nothing matches.${note("ariaLabel")} Nothing was done.`);
+  });
+
+  it("a modal dialog inside a web component's shadow root is found through its host", async () => {
+    const comp = `<x-dlg id="host"></x-dlg>`;
+    const open = "customElements.define('x-dlg', class extends HTMLElement { connectedCallback() { const r = this.attachShadow({mode:'open'}); r.innerHTML = '<dialog><button>Shadow close</button></dialog>'; r.querySelector('dialog').showModal(); } });";
+    await page(open, comp);
+    const r = await click({ by: "ariaLabel", pattern: "Settings" });
+    expect(r.error, JSON.stringify(r)).toBe(`browser_click: nothing matches.${note("ariaLabel")} Nothing was done.`);
+    // A scope on the host holds the dialog: inside it, nothing is said.
+    const inHost = await click({ by: "ariaLabel", pattern: "No such name", scope: "#host" });
+    expect(inHost.error, JSON.stringify(inHost)).toBe("browser_click: nothing matches. Nothing was done.");
+  });
+
+  it("with the focus out of the dialog, a single open modal dialog stands for it, past a page that shadows document.activeElement", async () => {
+    await page(SHOW_MODAL + "Object.getOwnPropertyDescriptor(Document.prototype,'activeElement').get.call(document).blur();", `<img name="activeElement"><dialog id="dlg"><p>Text only</p></dialog>`);
+    expect(await evaluateInTab("Object.getOwnPropertyDescriptor(Document.prototype,'activeElement').get.call(document) === document.body && document.activeElement.tagName === 'IMG'", null, PORT)).toBe(true);
+    const r = await click({ by: "ariaLabel", pattern: "Settings" });
+    expect(r.error, JSON.stringify(r)).toBe(`browser_click: nothing matches.${note("ariaLabel")} Nothing was done.`);
+  });
+
+  it("a match the DOM reading counted behind the dialog (an aria-label) is stated with the rule, which does not deny it", async () => {
+    await page(SHOW_MODAL, `<button id="hs" aria-label="Save" style="opacity:0">S</button><dialog id="dlg"><button id="close">Close</button></dialog>`);
+    const r = await click({ by: "ariaLabel", pattern: "Save" });
+    expect(r.error, JSON.stringify(r)).toBe(`browser_click: 1 match(es), none to act on: 1 hidden (no box, or display/visibility/opacity hides it).${note("ariaLabel")} Nothing was done.`);
+    expect((r.context as { behindModal?: boolean }).behindModal).toBe(true);
   });
 });
