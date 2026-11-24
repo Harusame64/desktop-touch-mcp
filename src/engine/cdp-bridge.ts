@@ -708,43 +708,70 @@ export async function markAxMatches(
       .sort((a, b) => Number(a.name) - Number(b.name))
       .map((p) => p.value!.objectId!);
     if (roots.length === 0) return null;
-    // The tree under each root, as queryAXTree gives it: the whole tree read once (getFullAXTree), and under each root
-    // its node's descendants by the tree's own children, depth first. Not queryAXTree per root: in a tab that is not
-    // shown it waits for a frame that does not come, so each call ran into the 15 s command timeout and the caller fell
-    // back to the DOM reading (win2; mac headless: queryAXTree and a requestAnimationFrame never answer in a hidden
-    // tab, getFullAXTree and DOM.describeNode do, and read changes made while it is hidden). On 9 real pages
-    // (Wikipedia, MDN, GitHub, Ionic, the HTML spec, ...) and under scopes, aria-owns, shadow roots, slots and
-    // display: contents, this walk gave queryAXTree's nodes in queryAXTree's order (spike on internal #420); a root
-    // with no node of its own in the tree (display: none, aria-hidden) gave none, as queryAXTree did. A root the DOM
-    // cannot describe is left out, not the others (/code-review on #1029); with none described, the tree could not be
-    // read. A node aria-owns places under two roots is kept once.
+    // The tree under each root. In a tab that is shown, asked per root (queryAXTree), together (a class scope can match
+    // hundreds). In a tab that is not shown, queryAXTree waits for a frame that does not come, so each call ran into the
+    // 15 s command timeout and the caller fell back to the DOM reading (win2; mac headless: queryAXTree and a
+    // requestAnimationFrame never answer there, getFullAXTree and DOM.describeNode do, and read changes made while it
+    // is hidden). There the whole tree is read once (getFullAXTree) and walked from each root's node by the tree's own
+    // children, depth first: on 9 real pages (Wikipedia, MDN, GitHub, Ionic, the HTML spec, ...) and under scopes,
+    // aria-owns, shadow roots, slots and display: contents, that walk gave queryAXTree's nodes in queryAXTree's order,
+    // and nothing for a root with no node of its own in the tree (display: none, aria-hidden), as queryAXTree did
+    // (spike on internal #420). Not in a shown tab too: the whole tree of a very large page takes 9-13 s to read (the
+    // HTML spec on one page, 900,000 nodes) where queryAXTree under a narrow scope takes a few ms. A root the tree (or
+    // the DOM) cannot answer for is left out, not the others (/code-review on #1029); with none answered, the tree could
+    // not be read. A node aria-owns places under two roots is kept once.
     const queryTree = async (role?: string): Promise<AxNode[]> => {
-      const full = ((await s.send("Accessibility.getFullAXTree", {})) as { nodes?: AxNode[] }).nodes ?? [];
-      const byId = new Map<string, AxNode>();
-      const byBackend = new Map<number, AxNode>();
-      for (const n of full) {
-        byId.set(n.nodeId, n);
-        if (n.backendDOMNodeId !== undefined && !byBackend.has(n.backendDOMNodeId)) byBackend.set(n.backendDOMNodeId, n);
+      const vis = (await s.send("Runtime.evaluate", { expression: "document.visibilityState", returnByValue: true })) as { result?: { value?: unknown } };
+      let per: Array<AxNode[] | null>;
+      if (vis.result?.value !== "hidden") {
+        per = await Promise.all(roots.map((objectId) =>
+          (s.send("Accessibility.queryAXTree", role === undefined ? { objectId } : { objectId, role }) as Promise<{ nodes: AxNode[] }>)
+            .then((r) => r.nodes, () => null)));
+      } else {
+        const full = ((await s.send("Accessibility.getFullAXTree", {})) as { nodes?: AxNode[] }).nodes ?? [];
+        const byId = new Map<string, AxNode>();
+        const byBackend = new Map<number, AxNode>();
+        for (const n of full) {
+          byId.set(n.nodeId, n);
+          if (n.backendDOMNodeId !== undefined && !byBackend.has(n.backendDOMNodeId)) byBackend.set(n.backendDOMNodeId, n);
+        }
+        const backends = await Promise.all(roots.map((objectId) =>
+          (s.send("DOM.describeNode", { objectId }) as Promise<{ node?: { backendNodeId?: number } }>)
+            .then((r) => r.node?.backendNodeId, () => undefined)));
+        per = backends.map((backend) => {
+          if (backend === undefined) return null;
+          // Depth first by an explicit stack, children in their order: a deep page does not run out of call stack.
+          const nodes: AxNode[] = [];
+          const stack: AxNode[] = [];
+          const top = byBackend.get(backend);
+          if (top) stack.push(top);
+          const met = new Set<string>();
+          while (stack.length > 0) {
+            const n = stack.pop()!;
+            if (met.has(n.nodeId)) continue;
+            met.add(n.nodeId);
+            if (role === undefined || n.role?.value === role) nodes.push(n);
+            const kids = n.childIds ?? [];
+            for (let i = kids.length - 1; i >= 0; i--) {
+              const c = byId.get(kids[i]);
+              if (c) stack.push(c);
+            }
+          }
+          return nodes;
+        });
       }
-      const seen = new Set<string>();
+      if (per.every((n) => n === null)) throw new Error("the tree could not be read under any root of the scope");
+      const seen = new Set<number>();
       const out: AxNode[] = [];
-      const walk = (n: AxNode | undefined): void => {
-        if (!n || seen.has(n.nodeId)) return;
-        seen.add(n.nodeId);
-        if (role === undefined || n.role?.value === role) out.push(n);
-        for (const c of n.childIds ?? []) walk(byId.get(c));
-      };
-      let described = 0;
-      for (const objectId of roots) {
-        let backend: number | undefined;
-        try {
-          backend = ((await s.send("DOM.describeNode", { objectId })) as { node?: { backendNodeId?: number } }).node?.backendNodeId;
-        } catch { /* left out */ }
-        if (backend === undefined) continue;
-        described++;
-        walk(byBackend.get(backend));
+      for (const nodes of per) {
+        for (const n of nodes ?? []) {
+          if (n.backendDOMNodeId !== undefined) {
+            if (seen.has(n.backendDOMNodeId)) continue;
+            seen.add(n.backendDOMNodeId);
+          }
+          out.push(n);
+        }
       }
-      if (described === 0) throw new Error("the tree could not be read under any root of the scope");
       return out;
     };
     const scored: Array<{ backend: number; score: number; control: boolean; role: string }> = [];

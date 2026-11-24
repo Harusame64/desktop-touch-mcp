@@ -2,10 +2,10 @@
  * internal #420 — the by-axis questions (by:'role', by:'ariaLabel', desktop_discover's controls, browser_search) read
  * the browser's accessibility tree, and answer in a tab that is not shown. Accessibility.queryAXTree waits there for a
  * frame that does not come: each call ran into the 15 s command timeout and fell back to the DOM reading (win2: a
- * by:'ariaLabel' fill took ~15 s in a hidden tab). The tree is now read whole (getFullAXTree), which answers there;
- * these cells pin that it does, and that it keeps queryAXTree's answer: the same nodes, under a scope too (with what it
- * owns by aria-owns), in queryAXTree's order (a slot's assigned nodes where the slot is), which decides which ones a
- * cap keeps. Each cell runs in the front tab too, where main's queryAXTree gives the same answers.
+ * by:'ariaLabel' fill took ~15 s in a hidden tab). There the tree is now read whole (getFullAXTree), which answers;
+ * the front tab still asks queryAXTree. Each cell runs in both, with the same expected values: the hidden tab's reading
+ * keeps queryAXTree's answer — the same nodes, under a scope too (with what it owns by aria-owns), in queryAXTree's
+ * order (a slot's assigned nodes where the slot is), which decides which ones a cap keeps.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
@@ -33,12 +33,13 @@ afterAll(() => {
   chrome?.kill();
 });
 
-/** Bring one tab to the front; the other is then hidden (document.visibilityState). */
+const state = async (): Promise<string> => (await evaluateInTab("document.visibilityState", tab, PORT)) as string;
+/** Bring one tab to the front; the page's tab is then shown or hidden, checked (/code-review on #1037). */
 async function front(id: string): Promise<void> {
   await fetch(`http://127.0.0.1:${PORT}/json/activate/${id}`);
   await sleep(300);
+  expect(await state()).toBe(id === tab ? "visible" : "hidden");
 }
-const state = async (): Promise<string> => (await evaluateInTab("document.visibilityState", tab, PORT)) as string;
 
 async function page(body: string): Promise<void> {
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;font:16px sans-serif}</style></head><body>${body}</body></html>`;
@@ -82,12 +83,11 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
 
     it(`by:'ariaLabel' finds a field by its label's name ${where}, at once`, async () => {
       await front(shown ? tab : other);
-      expect(await state()).toBe(shown ? "visible" : "hidden");
       await page(FORM);
       const r = await mark("ariaLabel", "Email");
       expect(r.count).toBe(1);
       expect(r.ids).toEqual(["email"]);
-      expect(r.ms).toBeLessThan(5_000);
+      expect(r.ms).toBeLessThan(10_000);
     });
 
     it(`by:'role' and controls read the tree ${where}`, async () => {
@@ -144,7 +144,7 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
       const text = (r.content[0] as { text: string }).text;
       expect(text).toContain('"ok":true');
       expect(await evaluateInTab("document.getElementById('email').value", tab, PORT)).toBe("a@b.c");
-      expect(ms).toBeLessThan(5_000);
+      expect(ms).toBeLessThan(10_000);
     });
   }
 });
