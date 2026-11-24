@@ -591,12 +591,15 @@ export class CdpClickDispatchError extends Error {
   }
 }
 
-/**
- * Numbers each call's object group. A call releases its group when it ends; calls on one tab share the session, so
- * a fixed name let the first to end release the objects of another still reading (internal #430). As the wheel
- * observer does.
- */
 let objectGroupSeq = 0;
+/**
+ * A name for one call's object group. A call releases its group when it ends, and calls on one tab share the session
+ * (groups are kept per session), so a fixed name let the first to end release the objects of another still reading
+ * (internal #430).
+ */
+function nextObjectGroup(prefix: string): string {
+  return `dtm-${prefix}-${++objectGroupSeq}`;
+}
 
 /**
  * internal #421 — what the browser itself says about the element at a page point, for telling a widget's skin from
@@ -611,7 +614,7 @@ export async function inspectHitAtPoint(
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT,
 ): Promise<{ role: string; name: string; ignored: boolean } | null> {
-  const group = `dtm-inspect-hit-${process.pid}-${++objectGroupSeq}`;
+  const group = nextObjectGroup("inspect-hit");
   let session: CdpSession | null = null;
   try {
     const tab = await resolveTab(tabId, port);
@@ -807,7 +810,7 @@ export async function markAxMatches(
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT,
 ): Promise<number | null> {
-  const group = `dtm-ax-mark-${process.pid}-${++objectGroupSeq}`;
+  const group = nextObjectGroup("ax-mark");
   let session: CdpSession | null = null;
   try {
     const tab = await resolveTab(tabId, port);
@@ -865,7 +868,7 @@ export async function markAxMatches(
     const queryTree = async (role?: string): Promise<AxNode[]> => {
       let hidden = false;
       try {
-        const st = (await s.send("Runtime.evaluate", { expression: PAGE_HIDDEN_JS, returnByValue: true })) as { result?: { value?: unknown } };
+        const st = (await s.send("Runtime.evaluate", { expression: PAGE_HIDDEN_JS, returnByValue: true, objectGroup: group })) as { result?: { value?: unknown } };
         hidden = st.result?.value === true;
       } catch { /* taken as shown */ }
       let per: Array<AxNode[] | null>;
@@ -1087,6 +1090,7 @@ export async function markAxMatches(
         const r = (await s.send("Runtime.evaluate", {
           expression: widgetsForLabelledSelectsJs(opts.nonce, opts.pattern, opts.caseSensitive, opts.scope ?? null),
           returnByValue: true,
+          objectGroup: group,
         })) as { result?: { value?: number } };
         count += typeof r.result?.value === "number" ? r.result.value : 0;
       } catch { /* keep the tree's answer */ }
@@ -1416,8 +1420,6 @@ export interface WheelVerdict {
   underLabel?: string;
 }
 
-let wheelObserverSeq = 0;
-
 /**
  * internal #403 — arms the observer for one CDP wheel on the tab's main frame, in an isolated world (nothing
  * in the page's own globals; the page's scripts cannot see or change it) under an object group of this call.
@@ -1429,7 +1431,7 @@ export async function armWheelObserver(
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT,
 ): Promise<{ verdict(sign: 1 | -1, seenMs: number, settleMs: number, maxMs: number): Promise<WheelVerdict | null>; release(): Promise<void> } | null> {
-  const objectGroup = `dtm-wheel-${process.pid}-${++wheelObserverSeq}`;
+  const objectGroup = nextObjectGroup("wheel");
   let session: CdpSession;
   try {
     session = await openSession(await resolveTab(tabId, port), port);

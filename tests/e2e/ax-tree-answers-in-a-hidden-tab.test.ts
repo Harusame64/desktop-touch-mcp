@@ -108,12 +108,14 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
       await page(`${FORM}<div id="pad"></div><script>var d = document.getElementById('pad'), f = document.createDocumentFragment();
         for (var i = 0; i < 30000; i++) { var p = document.createElement('p'); p.textContent = 'line ' + i; f.appendChild(p); } d.appendChild(f);</script>`);
       for (let round = 0; round < 3; round++) {
-        let done = false;
-        const long = mark("role", "button").finally(() => { done = true; });
+        let longEnded = 0;
+        const long = mark("role", "button").finally(() => { longEnded = Date.now(); });
         const short: string[][] = [];
-        while (!done) short.push((await mark("ariaLabel", "Save", { scope: "#f" })).ids);
+        let firstShortEnded = 0;
+        while (!longEnded) { short.push((await mark("ariaLabel", "Save", { scope: "#f" })).ids); firstShortEnded ||= Date.now(); }
         expect((await long).ids, `round ${round}`).toEqual(["save", "save2"]);
-        expect(short.length).toBeGreaterThan(0);
+        // A short call ended, and released its group, while the long one was still reading.
+        expect(firstShortEnded).toBeLessThanOrEqual(longEnded);
         for (const ids of short) expect(ids).toEqual(["save"]);
       }
     });
