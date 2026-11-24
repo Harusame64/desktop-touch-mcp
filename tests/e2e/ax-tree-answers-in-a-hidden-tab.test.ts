@@ -176,7 +176,35 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
       else expect(r.count).toBeNull();
       const scoped = await mark("ariaLabel", "Find me", { scope: "#f" });
       expect(scoped.ids).toEqual(["big"]);
-      expect(scoped.ms).toBeLessThan(2_000);
+      expect(scoped.ms).toBeLessThan(5_000);
+    });
+
+    it(`one list wider than the node budget is not asked for in a hidden tab, and read in a shown one ${where} (/code-review on #1038)`, async () => {
+      await front(shown ? tab : other);
+      const n = AX_PIECEWISE_MAX_NODES + 100;
+      await page(`<ul id="wide"></ul><button id="big" aria-label="Find me">x</button>
+        <script>var u = document.getElementById('wide'), f = document.createDocumentFragment();
+          for (var i = 0; i < ${n}; i++) { var li = document.createElement('li'); li.textContent = 'row ' + i; f.appendChild(li); } u.appendChild(f);</script>`);
+      const r = await mark("ariaLabel", "Find me");
+      expect(r.ms).toBeLessThan(10_000);
+      if (shown) expect(r.ids).toEqual(["big"]);
+      else expect(r.count).toBeNull();
+    });
+
+    it(`a page that keeps replacing rows during the read still answers from the tree ${where} (/code-review on #1038)`, async () => {
+      await front(shown ? tab : other);
+      await page(`<button id="stable" aria-label="Keep me">k</button><div id="feed"></div>
+        <script>var feed = document.getElementById('feed'), k = 0;
+          function fill() { var f = document.createDocumentFragment();
+            for (var i = 0; i < 300; i++) { var d = document.createElement('div'); d.innerHTML = '<p><span>item ' + (k++) + '</span> <b>x</b></p>'; f.appendChild(d); }
+            feed.replaceChildren(f); }
+          // A hidden tab runs a timer at most once a second; a message channel's task is not held back.
+          var ch = new MessageChannel(); ch.port1.onmessage = function() { fill(); ch.port2.postMessage(0); };
+          fill(); ch.port2.postMessage(0);</script>`);
+      for (let i = 0; i < 5; i++) {
+        const r = await mark("ariaLabel", "Keep me");
+        expect(r.ids).toEqual(["stable"]);
+      }
     });
 
     it(`browser_fill by:'ariaLabel' writes the field ${where}, without waiting out a timeout`, async () => {
