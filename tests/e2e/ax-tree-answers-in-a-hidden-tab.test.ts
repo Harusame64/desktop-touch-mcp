@@ -228,6 +228,12 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
       const r = await mark("ariaLabel", "Find me", { scope: "#pick" });
       if (shown) expect(r.ids).toEqual(["big"]);
       else { expect(r.count).toBeNull(); expect(r.ms).toBeLessThan(2_000); }
+      // A small frame whose widget owns by aria-owns: its ids are looked up in the frame's own document, and the read
+      // goes on (codex on #1038: the frame's document was taken for a shadow root, and the lookup threw).
+      await page(`<div id="pick"><button id="big" aria-label="Find me">x</button><iframe id="fr"></iframe></div>`);
+      await evaluateInTab(`(function() { var d = document.getElementById('fr').contentDocument; d.open();
+        d.write('<div role="listbox" aria-owns="o1" aria-label="In frame"></div><div id="o1" role="option">a</div>'); d.close(); return true; })()`, tab, PORT);
+      expect((await mark("ariaLabel", "Find me", { scope: "#pick" })).ids).toEqual(["big"]);
     });
 
     it(`a page's inline script and style text is not counted ${where} (/code-review round 4 on #1038)`, async () => {

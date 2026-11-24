@@ -719,7 +719,7 @@ const PAGE_HIDDEN_JS = `(function() {
  * holding an iframe of 150,100 rows took 1.6 s, 12 ms with the iframe empty; /code-review round 7 on #1038), and how
  * many characters of text, counted until past either limit. What aria-owns (the attribute, or
  * ariaOwnsElements where the browser has it: Chrome 157 does not, measured) brings in from outside the roots is counted with its subtree, as the tree places it
- * there; an id is looked up in the owner's own document or shadow root. Each element is counted once, whichever walk
+ * there; an id is looked up in the owner's own document (a frame's too) or shadow root. Each element is counted once, whichever walk
  * reaches it first, and a walk passes over the subtree of an element already counted, in either nesting order and
  * across shadow roots (/code-review rounds 5-7 on #1038). What is never in the tree is not counted, nor is a root that is one:
  * script, style, noscript and template contents (a page's inline JSON state can be megabytes; /code-review round 4),
@@ -759,7 +759,7 @@ const COUNT_UNDER_ROOTS_FN = `function(maxNodes, maxText) {
         for (var g = 0; g < docGets.length; g++) if (isProto.call(docGets[g][0], c)) { var cd = docGets[g][1].call(c); if (cd) stack.push(cd); }
         var ids = getAttr.call(c, 'aria-owns');
         if (ids) {
-          var scope = rootOf.call(c), find = scope === document ? docById : fragById;
+          var scope = rootOf.call(c), find = ntGet.call(scope) === 9 ? docById : fragById;
           var list = String(ids).replace(/[ \\t\\n\\r\\f]+/g, ' ').split(' ');
           for (var i = 0; i < list.length; i++) if (list[i]) own(find.call(scope, list[i]));
         }
