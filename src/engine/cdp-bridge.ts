@@ -676,30 +676,38 @@ const AX_TEXT_ROLES = new Set(["StaticText", "InlineTextBox", "LineBreak", "Root
 export const AX_MARK_CAP = 200;
 
 /**
- * The most elements a hidden tab's page may have for its accessibility tree to be read whole (getFullAXTree): the
- * reply is one message of about 1-2 KB per element, and one over the socket's 100 MiB closes the tab's session.
+ * The most tree nodes a hidden tab's read walks under the scope's roots before it gives up and the caller keeps the
+ * DOM reading (internal #423): about 2 s (MDN's input page, 18,000 nodes, ~0.9 s; the HTML spec, 400,000+, does not
+ * finish in 30 s).
  */
-export const AX_WHOLE_TREE_MAX_ELEMENTS = 20_000;
+export const AX_PIECEWISE_MAX_NODES = 40_000;
+
+/** How many getChildAXNodes calls a hidden tab's read keeps in flight at once (spike on internal #423). */
+const AX_PIECEWISE_IN_FLIGHT = 128;
+
+/** Page script: whether the page is hidden, by Document.prototype's getter (not a property the page gives the document itself). */
+const PAGE_HIDDEN_JS = `(function() {
+  var d = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState');
+  return (d && d.get ? d.get.call(document) : document.visibilityState) === 'hidden';
+})()`;
 
 /**
- * Page script: whether the page is hidden, by Document.prototype's getter (not a property the page gives the document
- * itself); and only then how many elements it has, its open shadow roots' included (/code-review on #1037: a page of
- * components holds most of them there), counted until past AX_WHOLE_TREE_MAX_ELEMENTS.
+ * The Accessibility domain is enabled on a session only while a hidden tab's read walks it (getChildAXNodes needs it),
+ * counted, so one read finishing does not disable it under another.
  */
-const PAGE_SHOWN_AND_SIZE_JS = `(function() {
-  var d = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState');
-  var vs = d && d.get ? d.get.call(document) : document.visibilityState;
-  if (vs !== 'hidden') return { hidden: false, elements: 0 };
-  var max = ${AX_WHOLE_TREE_MAX_ELEMENTS}, n = 0, roots = [document];
-  var srGet = Object.getOwnPropertyDescriptor(Element.prototype, 'shadowRoot').get;
-  while (roots.length > 0 && n <= max) {
-    var r = roots.pop();
-    var all = r === document ? Document.prototype.getElementsByTagName.call(document, '*') : DocumentFragment.prototype.querySelectorAll.call(r, '*');
-    n += all.length;
-    for (var i = 0; i < all.length && n <= max; i++) { var sr = srGet.call(all[i]); if (sr) roots.push(sr); }
+const axEnabledReads = new WeakMap<CdpSession, number>();
+async function withAxEnabled<T>(s: CdpSession, fn: () => Promise<T>): Promise<T> {
+  const n = axEnabledReads.get(s) ?? 0;
+  axEnabledReads.set(s, n + 1);
+  try {
+    if (n === 0) await s.send("Accessibility.enable", {});
+    return await fn();
+  } finally {
+    const left = (axEnabledReads.get(s) ?? 1) - 1;
+    axEnabledReads.set(s, left);
+    if (left === 0) await s.send("Accessibility.disable", {}).catch(() => { /* the session may be gone */ });
   }
-  return { hidden: true, elements: n };
-})()`;
+}
 
 export async function markAxMatches(
   opts: { by: "role" | "ariaLabel" | "controls"; pattern: string; caseSensitive: boolean; nonce: string; scope?: string; cap?: number; onFound?: (found: number, triedAll: boolean) => void;
@@ -737,31 +745,27 @@ export async function markAxMatches(
     // The tree under each root. In a tab that is shown, asked per root (queryAXTree), together (a class scope can match
     // hundreds). In a tab that is not shown, queryAXTree waits for a frame that does not come, so each call ran into the
     // 15 s command timeout and the caller fell back to the DOM reading (win2; mac headless: queryAXTree and a
-    // requestAnimationFrame never answer there, getFullAXTree and DOM.describeNode do, and read changes made while it
-    // is hidden). There the whole tree is read once (getFullAXTree) and walked from each root's node by the tree's own
-    // children, depth first: on 9 real pages (Wikipedia, MDN, GitHub, Ionic, the HTML spec, ...) and under scopes,
-    // aria-owns, shadow roots, slots and display: contents, that walk gave queryAXTree's nodes in queryAXTree's order,
-    // and nothing for a root with no node of its own in the tree (display: none, aria-hidden), as queryAXTree did
-    // (spike on internal #420). Not in a shown tab too: the whole tree of a very large page takes 9-13 s to read (the
-    // HTML spec on one page, 900,000 nodes) where queryAXTree under a narrow scope takes a few ms. A root the tree (or
-    // the DOM) cannot answer for is left out, not the others (/code-review on #1029); with none answered, the tree could
-    // not be read. A node aria-owns places under two roots is kept once.
+    // requestAnimationFrame never answer there; the tree's other calls do, and read changes made while it is hidden).
+    // There the tree is read in pieces: each root's node (getPartialAXTree), then the children of every node met
+    // (getChildAXNodes, many in flight), and walked depth first by the tree's own children. That walk gives
+    // queryAXTree's nodes in queryAXTree's order, under scopes, aria-owns, shadow roots, slots and display: contents,
+    // and nothing for a root with no node of its own in the tree (display: none, aria-hidden) (spikes on internal #420
+    // and #423). A text run's children (its line boxes, never an element) are not asked for.
     //
-    // The whole tree comes in one message, about 1-2 KB per element (the HTML spec: 340,000 elements, 307 MiB; MDN's
-    // input page: 3,700 elements, 7 MiB). Over the socket's 100 MiB a message closes the tab's session, failing the
-    // calls beside it; so a hidden page of more than AX_WHOLE_TREE_MAX_ELEMENTS elements is not read whole, and the
-    // caller keeps the DOM reading at once, as main gave it after the 15 s wait (/code-review on #1037). Whether the
-    // tab is shown is read by Document.prototype's getter, so a page that gives the document its own visibilityState
-    // is still seen hidden; one that replaces the prototype's getter is taken as shown, and waits as on main. When that
-    // read fails, the tab is taken as shown (/code-review on #1037).
+    // Each reply is small. #1037 read the whole tree in one message instead, and a large page's (the HTML spec: 307 MiB)
+    // closed the tab's session at the socket's 100 MiB; it counted elements to stay under that, which a page of long
+    // text could still pass (internal #423). Past AX_PIECEWISE_MAX_NODES nodes the read gives up and the caller keeps
+    // the DOM reading. Not in a shown tab too: there queryAXTree under a narrow scope takes a few ms. A root the tree
+    // (or the DOM) cannot answer for is left out, not the others (/code-review on #1029); with none answered, the tree
+    // could not be read. A node aria-owns places under two roots is kept once. Whether the tab is shown is read by
+    // Document.prototype's getter, so a page that gives the document its own visibilityState is still seen hidden; one
+    // that replaces the prototype's getter is taken as shown, and waits as on main. When that read fails, the tab is
+    // taken as shown (/code-review on #1037).
     const queryTree = async (role?: string): Promise<AxNode[]> => {
       let hidden = false;
-      let elements = 0;
       try {
-        const st = (await s.send("Runtime.evaluate", { expression: PAGE_SHOWN_AND_SIZE_JS, returnByValue: true })) as { result?: { value?: unknown } };
-        const v = st.result?.value as { hidden?: boolean; elements?: number } | undefined;
-        hidden = v?.hidden === true;
-        elements = typeof v?.elements === "number" ? v.elements : 0;
+        const st = (await s.send("Runtime.evaluate", { expression: PAGE_HIDDEN_JS, returnByValue: true })) as { result?: { value?: unknown } };
+        hidden = st.result?.value === true;
       } catch { /* taken as shown */ }
       let per: Array<AxNode[] | null>;
       if (!hidden) {
@@ -769,37 +773,59 @@ export async function markAxMatches(
           (s.send("Accessibility.queryAXTree", role === undefined ? { objectId } : { objectId, role }) as Promise<{ nodes: AxNode[] }>)
             .then((r) => r.nodes, () => null)));
       } else {
-        if (elements > AX_WHOLE_TREE_MAX_ELEMENTS) throw new Error("a hidden page too large to read its tree whole");
-        const full = ((await s.send("Accessibility.getFullAXTree", {})) as { nodes?: AxNode[] }).nodes ?? [];
-        const byId = new Map<string, AxNode>();
-        const byBackend = new Map<number, AxNode>();
-        for (const n of full) {
-          byId.set(n.nodeId, n);
-          if (n.backendDOMNodeId !== undefined && !byBackend.has(n.backendDOMNodeId)) byBackend.set(n.backendDOMNodeId, n);
-        }
-        const backends = await Promise.all(roots.map((objectId) =>
-          (s.send("DOM.describeNode", { objectId }) as Promise<{ node?: { backendNodeId?: number } }>)
-            .then((r) => r.node?.backendNodeId, () => undefined)));
-        per = backends.map((backend) => {
-          if (backend === undefined) return null;
-          // Depth first by an explicit stack, children in their order: a deep page does not run out of call stack.
-          const nodes: AxNode[] = [];
-          const stack: AxNode[] = [];
-          const top = byBackend.get(backend);
-          if (top) stack.push(top);
-          const met = new Set<string>();
-          while (stack.length > 0) {
-            const n = stack.pop()!;
-            if (met.has(n.nodeId)) continue;
-            met.add(n.nodeId);
-            if (role === undefined || n.role?.value === role) nodes.push(n);
-            const kids = n.childIds ?? [];
-            for (let i = kids.length - 1; i >= 0; i--) {
-              const c = byId.get(kids[i]);
-              if (c) stack.push(c);
+        per = await withAxEnabled(s, async () => {
+          const backends = await Promise.all(roots.map((objectId) =>
+            (s.send("DOM.describeNode", { objectId }) as Promise<{ node?: { backendNodeId?: number } }>)
+              .then((r) => r.node?.backendNodeId, () => undefined)));
+          // Each root's own node: the one for that element (a root with none, display: none or aria-hidden, has none).
+          const tops = await Promise.all(backends.map((backendNodeId) => backendNodeId === undefined
+            ? Promise.resolve(null)
+            : (s.send("Accessibility.getPartialAXTree", { backendNodeId, fetchRelatives: false }) as Promise<{ nodes?: AxNode[] }>)
+              .then((r) => (r.nodes ?? []).find((n) => n.backendDOMNodeId === backendNodeId) ?? undefined, () => null)));
+          // Every node under the tops, read in pieces with AX_PIECEWISE_IN_FLIGHT calls at once.
+          const byId = new Map<string, AxNode>();
+          const queue: string[] = [];
+          const asked = new Set<string>();
+          const ask = (n: AxNode): void => {
+            if (n.childIds?.length && n.role?.value !== "StaticText" && !asked.has(n.nodeId)) { asked.add(n.nodeId); queue.push(n.nodeId); }
+          };
+          for (const t of tops) if (t) { byId.set(t.nodeId, t); ask(t); }
+          let failed: unknown = null;
+          const inFlight = new Set<Promise<void>>();
+          while ((queue.length > 0 || inFlight.size > 0) && failed === null) {
+            if (byId.size > AX_PIECEWISE_MAX_NODES) throw new Error("a hidden page's tree too large to read under this scope");
+            while (queue.length > 0 && inFlight.size < AX_PIECEWISE_IN_FLIGHT) {
+              const id = queue.shift()!;
+              const p: Promise<void> = (s.send("Accessibility.getChildAXNodes", { id }) as Promise<{ nodes?: AxNode[] }>)
+                .then((r) => { for (const n of r.nodes ?? []) { if (!byId.has(n.nodeId)) byId.set(n.nodeId, n); ask(n); } }, (e) => { failed = e; })
+                .finally(() => { inFlight.delete(p); });
+              inFlight.add(p);
             }
+            if (inFlight.size > 0) await Promise.race(inFlight);
           }
-          return nodes;
+          await Promise.all(inFlight);
+          if (failed !== null) throw failed;
+          if (byId.size > AX_PIECEWISE_MAX_NODES) throw new Error("a hidden page's tree too large to read under this scope");
+          return tops.map((top) => {
+            if (top === null) return null;
+            // Depth first by an explicit stack, children in their order: a deep page does not run out of call stack.
+            const nodes: AxNode[] = [];
+            const stack: AxNode[] = [];
+            if (top) stack.push(top);
+            const met = new Set<string>();
+            while (stack.length > 0) {
+              const n = stack.pop()!;
+              if (met.has(n.nodeId)) continue;
+              met.add(n.nodeId);
+              if (role === undefined || n.role?.value === role) nodes.push(n);
+              const kids = n.childIds ?? [];
+              for (let i = kids.length - 1; i >= 0; i--) {
+                const c = byId.get(kids[i]);
+                if (c) stack.push(c);
+              }
+            }
+            return nodes;
+          });
         });
       }
       if (per.every((n) => n === null)) throw new Error("the tree could not be read under any root of the scope");
