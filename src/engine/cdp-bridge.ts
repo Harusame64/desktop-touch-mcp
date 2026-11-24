@@ -675,6 +675,19 @@ const AX_TEXT_ROLES = new Set(["StaticText", "InlineTextBox", "LineBreak", "Root
 /** How many tree matches a by-axis question marks by default (its best ones): a list that reaches it may hold more. */
 export const AX_MARK_CAP = 200;
 
+/**
+ * The most elements a hidden tab's page may have for its accessibility tree to be read whole (getFullAXTree): the
+ * reply is one message of about 1-2 KB per element, and one over the socket's 100 MiB closes the tab's session.
+ */
+export const AX_WHOLE_TREE_MAX_ELEMENTS = 20_000;
+
+/** Page script: whether the page is hidden, and how many elements it has, by the prototypes' getters. */
+const PAGE_SHOWN_AND_SIZE_JS = `(function() {
+  var d = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState');
+  var vs = d && d.get ? d.get.call(document) : document.visibilityState;
+  return { hidden: vs === 'hidden', elements: Document.prototype.getElementsByTagName.call(document, '*').length };
+})()`;
+
 export async function markAxMatches(
   opts: { by: "role" | "ariaLabel" | "controls"; pattern: string; caseSensitive: boolean; nonce: string; scope?: string; cap?: number; onFound?: (found: number, triedAll: boolean) => void;
     /** browser_search lists a native multi-row select (role listbox); an action leaves it out (a press picks an option). */
@@ -720,14 +733,29 @@ export async function markAxMatches(
     // HTML spec on one page, 900,000 nodes) where queryAXTree under a narrow scope takes a few ms. A root the tree (or
     // the DOM) cannot answer for is left out, not the others (/code-review on #1029); with none answered, the tree could
     // not be read. A node aria-owns places under two roots is kept once.
+    //
+    // The whole tree comes in one message, about 1-2 KB per element (the HTML spec: 340,000 elements, 307 MiB; MDN's
+    // input page: 3,700 elements, 7 MiB). Over the socket's 100 MiB a message closes the tab's session, failing the
+    // calls beside it; so a hidden page of more than AX_WHOLE_TREE_MAX_ELEMENTS elements is not read whole, and the
+    // caller keeps the DOM reading at once, as main gave it after the 15 s wait (/code-review on #1037). Whether the
+    // tab is shown and how many elements it has are read by the prototypes' getters, which a page does not replace;
+    // when that read fails, the tab is taken as shown (/code-review on #1037).
     const queryTree = async (role?: string): Promise<AxNode[]> => {
-      const vis = (await s.send("Runtime.evaluate", { expression: "document.visibilityState", returnByValue: true })) as { result?: { value?: unknown } };
+      let hidden = false;
+      let elements = 0;
+      try {
+        const st = (await s.send("Runtime.evaluate", { expression: PAGE_SHOWN_AND_SIZE_JS, returnByValue: true })) as { result?: { value?: unknown } };
+        const v = st.result?.value as { hidden?: boolean; elements?: number } | undefined;
+        hidden = v?.hidden === true;
+        elements = typeof v?.elements === "number" ? v.elements : 0;
+      } catch { /* taken as shown */ }
       let per: Array<AxNode[] | null>;
-      if (vis.result?.value !== "hidden") {
+      if (!hidden) {
         per = await Promise.all(roots.map((objectId) =>
           (s.send("Accessibility.queryAXTree", role === undefined ? { objectId } : { objectId, role }) as Promise<{ nodes: AxNode[] }>)
             .then((r) => r.nodes, () => null)));
       } else {
+        if (elements > AX_WHOLE_TREE_MAX_ELEMENTS) throw new Error("a hidden page too large to read its tree whole");
         const full = ((await s.send("Accessibility.getFullAXTree", {})) as { nodes?: AxNode[] }).nodes ?? [];
         const byId = new Map<string, AxNode>();
         const byBackend = new Map<number, AxNode>();

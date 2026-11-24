@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { sleep } from "./helpers/wait.js";
-import { evaluateInTab, disconnectAll, markAxMatches, clearAxMarks } from "../../src/engine/cdp-bridge.js";
+import { evaluateInTab, disconnectAll, markAxMatches, clearAxMarks, AX_WHOLE_TREE_MAX_ELEMENTS } from "../../src/engine/cdp-bridge.js";
 import { browserFillInputHandler } from "../../src/tools/browser.js";
 
 const PORT = 9246;
@@ -33,12 +33,15 @@ afterAll(() => {
   chrome?.kill();
 });
 
-const state = async (): Promise<string> => (await evaluateInTab("document.visibilityState", tab, PORT)) as string;
+// By the prototype's getter: a cell below gives the document its own visibilityState, which document.write keeps.
+const state = async (): Promise<string> =>
+  (await evaluateInTab("Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState').get.call(document)", tab, PORT)) as string;
 /** Bring one tab to the front; the page's tab is then shown or hidden, checked (/code-review on #1037). */
 async function front(id: string): Promise<void> {
-  await fetch(`http://127.0.0.1:${PORT}/json/activate/${id}`);
-  await sleep(300);
-  expect(await state()).toBe(id === tab ? "visible" : "hidden");
+  expect((await fetch(`http://127.0.0.1:${PORT}/json/activate/${id}`)).ok).toBe(true);
+  const want = id === tab ? "visible" : "hidden";
+  for (let t0 = Date.now(); Date.now() - t0 < 5_000 && (await state()) !== want;) await sleep(100);
+  expect(await state()).toBe(want);
 }
 
 async function page(body: string): Promise<void> {
@@ -133,6 +136,31 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
         document.getElementById('save').style.display='none'; true`, tab, PORT);
       expect((await mark("ariaLabel", "Work email")).ids).toEqual(["email"]);
       expect((await mark("role", "button")).ids).toEqual(["save2"]);
+    });
+
+    it(`a page that says it is shown is still read as hidden ${where} (/code-review on #1037)`, async () => {
+      await front(shown ? tab : other);
+      await page(FORM + `<script>Object.defineProperty(document, 'visibilityState', { configurable: true, get: function() { return 'visible'; } });</script>`);
+      expect(await evaluateInTab("document.visibilityState", tab, PORT)).toBe("visible");
+      try {
+        const r = await mark("ariaLabel", "Email");
+        expect(r.ids).toEqual(["email"]);
+        expect(r.ms).toBeLessThan(10_000);
+      } finally {
+        expect(await evaluateInTab("delete document.visibilityState", tab, PORT)).toBe(true);
+      }
+    });
+
+    it(`a hidden page too large to read whole falls back at once, a shown one reads the tree ${where} (/code-review on #1037)`, async () => {
+      await front(shown ? tab : other);
+      const n = AX_WHOLE_TREE_MAX_ELEMENTS + 100;
+      await page(`<div id="many"></div><button id="big" aria-label="Find me">x</button>
+        <script>var m = document.getElementById('many'), f = document.createDocumentFragment();
+          for (var i = 0; i < ${n}; i++) f.appendChild(document.createElement('i')); m.appendChild(f);</script>`);
+      const r = await mark("ariaLabel", "Find me");
+      expect(r.ms).toBeLessThan(10_000);
+      if (shown) expect(r.ids).toEqual(["big"]);
+      else expect(r.count).toBeNull();
     });
 
     it(`browser_fill by:'ariaLabel' writes the field ${where}, without waiting out a timeout`, async () => {
