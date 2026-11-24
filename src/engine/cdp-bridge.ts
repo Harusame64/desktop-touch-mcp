@@ -561,6 +561,11 @@ export async function dispatchWheelInTab(
 ): Promise<void> {
   const tab = await resolveTab(tabId, port);
   const session = await openSession(tab, port);
+  // Windows Chrome: a page's first horizontal wheel that pushes past an edge starts the overscroll back/forward
+  // gesture (OverscrollHistoryNavigation), and every wheel after it is taken by that gesture and scrolls nothing,
+  // until the pointer moves. A move to the point first ends it (win2 on internal #431, Chrome 157, headless and
+  // headed; overscroll-behavior does not stop it). The pointer is at the point anyway when the wheel comes.
+  await session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
   await session.send("Input.dispatchMouseEvent", {
     type: "mouseWheel",
     x,
