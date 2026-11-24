@@ -163,7 +163,7 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
       }
     });
 
-    it(`a hidden page past the node budget falls back at once, a scope under it is read; a shown one reads the tree ${where}`, async () => {
+    it(`a hidden page past the node budget falls back within the time limit, a scope under it is read; a shown one reads the tree ${where}`, async () => {
       await front(shown ? tab : other);
       // Each paragraph is two nodes in the tree (it and its text); an empty element is none.
       const n = AX_PIECEWISE_MAX_NODES / 2 + 100;

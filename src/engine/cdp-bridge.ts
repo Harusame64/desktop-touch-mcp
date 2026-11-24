@@ -677,13 +677,16 @@ export const AX_MARK_CAP = 200;
 
 /**
  * The most tree nodes a hidden tab's read walks under the scope's roots before it gives up and the caller keeps the
- * DOM reading (internal #423): about 2 s (MDN's input page, 18,000 nodes, ~0.9 s; the HTML spec, 400,000+, does not
- * finish in 30 s).
+ * DOM reading (internal #423). MDN's input page is 18,000 nodes: ~0.9 s headless on mac, 2.0-2.3 s on win2's Chrome;
+ * the HTML spec, 400,000+, does not finish in 30 s.
  */
 export const AX_PIECEWISE_MAX_NODES = 40_000;
 
-/** How long a hidden tab's read may take before it gives up the same way (/code-review on #1038: each level of depth is one round trip). */
-const AX_PIECEWISE_MAX_MS = 3_000;
+/**
+ * How long a hidden tab's read may take before it gives up the same way (/code-review on #1038: each level of depth is
+ * one round trip), with room over win2's 2.0-2.3 s for MDN's input page.
+ */
+const AX_PIECEWISE_MAX_MS = 5_000;
 
 /** How many getChildAXNodes calls a hidden tab's read keeps in flight at once (spike on internal #423). */
 const AX_PIECEWISE_IN_FLIGHT = 128;
@@ -766,7 +769,9 @@ export async function markAxMatches(
     // Each reply is small. #1037 read the whole tree in one message instead, and a large page's (the HTML spec: 307 MiB)
     // closed the tab's session at the socket's 100 MiB; it counted elements to stay under that, which a page of long
     // text could still pass (internal #423). Past AX_PIECEWISE_MAX_NODES nodes the read gives up and the caller keeps
-    // the DOM reading. Not in a shown tab too: there queryAXTree under a narrow scope takes a few ms. A root the tree
+    // the DOM reading. Picking the pages small enough to read whole by their elements and text was measured and
+    // left: a <pre> of 200,000 lines is 5 elements and a 117 MiB tree (each line is a node), so no count bounds the
+    // message. Not in a shown tab too: there queryAXTree under a narrow scope takes a few ms. A root the tree
     // (or the DOM) cannot answer for is left out, not the others (/code-review on #1029); with none answered, the tree
     // could not be read. A node aria-owns places under two roots is kept once. Whether the tab is shown is read by
     // Document.prototype's getter, so a page that gives the document its own visibilityState is still seen hidden; one
