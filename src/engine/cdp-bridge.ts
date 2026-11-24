@@ -715,25 +715,42 @@ const PAGE_HIDDEN_JS = `(function() {
 
 /**
  * Called on the scope's roots (an array): how many elements and text nodes are under them, open shadow roots'
- * included, and how many characters of text, counted until past either limit. What is never in the tree is not
- * counted: script, style, noscript and template contents (a page's inline JSON state can be megabytes; /code-review
- * round 4 on #1038). Read through the prototypes, so a form control named nodeType or data does not stand in for them.
+ * included, and how many characters of text, counted until past either limit. What aria-owns brings in from elsewhere
+ * is counted with its subtree, as the tree places it there (/code-review round 5 on #1038). What is never in the tree
+ * is not counted: script, style, noscript and template contents (a page's inline JSON state can be megabytes;
+ * /code-review round 4), by localName, so an SVG's or an XHTML page's lowercase ones too. Read through the
+ * prototypes, so a form control named nodeType or data does not stand in for them.
  */
 const COUNT_UNDER_ROOTS_FN = `function(maxNodes, maxText) {
   var ntGet = Object.getOwnPropertyDescriptor(Node.prototype, 'nodeType').get;
   var dataGet = Object.getOwnPropertyDescriptor(CharacterData.prototype, 'data').get;
   var srGet = Object.getOwnPropertyDescriptor(Element.prototype, 'shadowRoot').get;
-  var nameGet = Object.getOwnPropertyDescriptor(Element.prototype, 'tagName').get;
+  var lnGet = Object.getOwnPropertyDescriptor(Element.prototype, 'localName').get;
+  var getAttr = Element.prototype.getAttribute, byId = Document.prototype.getElementById;
+  var next = TreeWalker.prototype.nextNode, walker = Document.prototype.createTreeWalker;
+  var skip = { script: 1, style: 1, noscript: 1, template: 1 };
+  var owned = [];
   var n = 0, t = 0, stack = Array.prototype.slice.call(this);
   while (stack.length > 0 && n <= maxNodes && t <= maxText) {
     var r = stack.pop();
-    var w = Document.prototype.createTreeWalker.call(document, r, 5, { acceptNode: function(x) {
-      return ntGet.call(x) === 1 && /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(nameGet.call(x)) ? 2 : 1;
+    var w = walker.call(document, r, 5, { acceptNode: function(x) {
+      return ntGet.call(x) === 1 && skip[String(lnGet.call(x)).toLowerCase()] === 1 ? 2 : 1;
     } });
-    for (var c = r; c && n <= maxNodes && t <= maxText; c = w.nextNode()) {
+    for (var c = r; c && n <= maxNodes && t <= maxText; c = next.call(w)) {
       var k = ntGet.call(c);
       if (k === 3) { n++; t += dataGet.call(c).length; }
-      else if (k === 1) { n++; var sr = srGet.call(c); if (sr) stack.push(sr); }
+      else if (k === 1) {
+        n++;
+        var sr = srGet.call(c); if (sr) stack.push(sr);
+        var ids = getAttr.call(c, 'aria-owns');
+        if (ids) {
+          var list = String(ids).replace(/[ \\t\\n\\r\\f]+/g, ' ').split(' ');
+          for (var i = 0; i < list.length; i++) {
+            var o = list[i] ? byId.call(document, list[i]) : null;
+            if (o && owned.indexOf(o) < 0) { owned.push(o); stack.push(o); }
+          }
+        }
+      }
     }
   }
   return { nodes: n, text: t };
