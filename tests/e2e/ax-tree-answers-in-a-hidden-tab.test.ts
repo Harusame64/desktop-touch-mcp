@@ -101,6 +101,23 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
       expect((await mark("controls", "")).ids).toEqual(["sw"]);
     });
 
+    it(`calls at once on one tab keep their own objects ${where} (internal #430: one shared object group, released by the first to end)`, async () => {
+      await front(shown ? tab : other);
+      // A long read (a page of 30,000 paragraphs) while short ones on the same tab begin and end: each short call's end
+      // released the long one's objects when they shared one group.
+      await page(`${FORM}<div id="pad"></div><script>var d = document.getElementById('pad'), f = document.createDocumentFragment();
+        for (var i = 0; i < 30000; i++) { var p = document.createElement('p'); p.textContent = 'line ' + i; f.appendChild(p); } d.appendChild(f);</script>`);
+      for (let round = 0; round < 3; round++) {
+        let done = false;
+        const long = mark("role", "button").finally(() => { done = true; });
+        const short: string[][] = [];
+        while (!done) short.push((await mark("ariaLabel", "Save", { scope: "#f" })).ids);
+        expect((await long).ids, `round ${round}`).toEqual(["save", "save2"]);
+        expect(short.length).toBeGreaterThan(0);
+        for (const ids of short) expect(ids).toEqual(["save"]);
+      }
+    });
+
     it(`a scope keeps the nodes under it ${where}`, async () => {
       await front(shown ? tab : other);
       await page(FORM);

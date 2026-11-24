@@ -592,6 +592,13 @@ export class CdpClickDispatchError extends Error {
 }
 
 /**
+ * Numbers each call's object group. A call releases its group when it ends; calls on one tab share the session, so
+ * a fixed name let the first to end release the objects of another still reading (internal #430). As the wheel
+ * observer does.
+ */
+let objectGroupSeq = 0;
+
+/**
  * internal #421 — what the browser itself says about the element at a page point, for telling a widget's skin from
  * a cover: the accessibility node of the hit (role, name, ignored). Measured on real libraries (spike 3): skins are
  * unnamed with no role of their own (iCheck's `ins.iCheck-helper`: insertion ""); every cover a person has to deal
@@ -604,7 +611,7 @@ export async function inspectHitAtPoint(
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT,
 ): Promise<{ role: string; name: string; ignored: boolean } | null> {
-  const group = "dtm-inspect-hit";
+  const group = `dtm-inspect-hit-${process.pid}-${++objectGroupSeq}`;
   let session: CdpSession | null = null;
   try {
     const tab = await resolveTab(tabId, port);
@@ -800,7 +807,7 @@ export async function markAxMatches(
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT,
 ): Promise<number | null> {
-  const group = "dtm-ax-mark";
+  const group = `dtm-ax-mark-${process.pid}-${++objectGroupSeq}`;
   let session: CdpSession | null = null;
   try {
     const tab = await resolveTab(tabId, port);
