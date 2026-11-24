@@ -689,7 +689,7 @@ export async function markAxMatches(
     session = await openSession(tab, port);
     const s = session;
     type AxNode = {
-      ignored?: boolean; role?: { value?: string }; name?: { value?: string }; backendDOMNodeId?: number;
+      nodeId: string; childIds?: string[]; ignored?: boolean; role?: { value?: string }; name?: { value?: string }; backendDOMNodeId?: number;
       properties?: Array<{ name?: string; value?: { value?: unknown } }>;
     };
     // The root (or each element the scope matches, internal #420) by an object id, so no DOM domain is enabled on
@@ -708,26 +708,43 @@ export async function markAxMatches(
       .sort((a, b) => Number(a.name) - Number(b.name))
       .map((p) => p.value!.objectId!);
     if (roots.length === 0) return null;
-    // The tree under each root, asked together (a class scope can match hundreds), kept in the roots' order: the roots
-    // are disjoint and in document order, so the nodes are too. A root the tree cannot answer for is left out, not the
-    // others (/code-review on this change); with none answered, the tree could not be read. A node that aria-owns
-    // places under two roots is kept once.
+    // The tree under each root, as queryAXTree gives it: the whole tree read once (getFullAXTree), and under each root
+    // its node's descendants by the tree's own children, depth first. Not queryAXTree per root: in a tab that is not
+    // shown it waits for a frame that does not come, so each call ran into the 15 s command timeout and the caller fell
+    // back to the DOM reading (win2; mac headless: queryAXTree and a requestAnimationFrame never answer in a hidden
+    // tab, getFullAXTree and DOM.describeNode do, and read changes made while it is hidden). On 9 real pages
+    // (Wikipedia, MDN, GitHub, Ionic, the HTML spec, ...) and under scopes, aria-owns, shadow roots, slots and
+    // display: contents, this walk gave queryAXTree's nodes in queryAXTree's order (spike on internal #420); a root
+    // with no node of its own in the tree (display: none, aria-hidden) gave none, as queryAXTree did. A root the DOM
+    // cannot describe is left out, not the others (/code-review on #1029); with none described, the tree could not be
+    // read. A node aria-owns places under two roots is kept once.
     const queryTree = async (role?: string): Promise<AxNode[]> => {
-      const per = await Promise.all(roots.map((objectId) =>
-        (s.send("Accessibility.queryAXTree", role === undefined ? { objectId } : { objectId, role }) as Promise<{ nodes: AxNode[] }>)
-          .then((r) => r.nodes, () => null)));
-      if (per.every((n) => n === null)) throw new Error("the tree could not be read under any root of the scope");
-      const seen = new Set<number>();
-      const out: AxNode[] = [];
-      for (const nodes of per) {
-        for (const n of nodes ?? []) {
-          if (n.backendDOMNodeId !== undefined) {
-            if (seen.has(n.backendDOMNodeId)) continue;
-            seen.add(n.backendDOMNodeId);
-          }
-          out.push(n);
-        }
+      const full = ((await s.send("Accessibility.getFullAXTree", {})) as { nodes?: AxNode[] }).nodes ?? [];
+      const byId = new Map<string, AxNode>();
+      const byBackend = new Map<number, AxNode>();
+      for (const n of full) {
+        byId.set(n.nodeId, n);
+        if (n.backendDOMNodeId !== undefined && !byBackend.has(n.backendDOMNodeId)) byBackend.set(n.backendDOMNodeId, n);
       }
+      const seen = new Set<string>();
+      const out: AxNode[] = [];
+      const walk = (n: AxNode | undefined): void => {
+        if (!n || seen.has(n.nodeId)) return;
+        seen.add(n.nodeId);
+        if (role === undefined || n.role?.value === role) out.push(n);
+        for (const c of n.childIds ?? []) walk(byId.get(c));
+      };
+      let described = 0;
+      for (const objectId of roots) {
+        let backend: number | undefined;
+        try {
+          backend = ((await s.send("DOM.describeNode", { objectId })) as { node?: { backendNodeId?: number } }).node?.backendNodeId;
+        } catch { /* left out */ }
+        if (backend === undefined) continue;
+        described++;
+        walk(byBackend.get(backend));
+      }
+      if (described === 0) throw new Error("the tree could not be read under any root of the scope");
       return out;
     };
     const scored: Array<{ backend: number; score: number; control: boolean; role: string }> = [];
@@ -786,8 +803,8 @@ export async function markAxMatches(
           arguments: [{ value: `${opts.nonce}:${m.score}:${m.control ? "c" : ""}:${m.role}` }, { value: m.role }, { value: opts.keepNativeListbox === true }],
           functionDeclaration: `function(v, role, keepNativeListbox) {
             // Not in a shadow root, and not in a frame: the gather reads the top document only, and only there are
-            // marks cleared. queryAXTree did not walk into a same-origin frame when measured (Chrome 157); the frame
-            // test stays for one that does (/code-review on #1008).
+            // marks cleared. The top frame's tree holds no frame's nodes (nor did queryAXTree's when measured, Chrome
+            // 157); the frame test stays for one that does (/code-review on #1008).
             if (this.nodeType !== 1 || this.getRootNode() !== document || window !== window.top) return 0;
             if (role === 'listbox' && this.tagName === 'SELECT' && !keepNativeListbox) return 0;
             // One token per call, beside other calls' tokens: a discover and a click on the same tab do not overwrite
