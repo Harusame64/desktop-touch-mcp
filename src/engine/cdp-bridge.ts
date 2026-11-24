@@ -561,18 +561,36 @@ export async function dispatchWheelInTab(
 ): Promise<void> {
   const tab = await resolveTab(tabId, port);
   const session = await openSession(tab, port);
-  // Windows Chrome: a page's first horizontal wheel that pushes past an edge starts the overscroll back/forward
-  // gesture (OverscrollHistoryNavigation), and every wheel after it is taken by that gesture and scrolls nothing,
-  // until the pointer moves. A move to the point first ends it (win2 on internal #431, Chrome 157, headless and
-  // headed; overscroll-behavior does not stop it). The pointer is at the point anyway when the wheel comes.
-  await session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
-  await session.send("Input.dispatchMouseEvent", {
-    type: "mouseWheel",
-    x,
-    y,
-    deltaX,
-    deltaY,
-  });
+  // Sideways, one event per notch at most (internal #431, win2 on Windows Chrome 157): a single horizontal wheel past
+  // an edge of 240 px or more (headless; 600 headed, whatever the window's width) holds a back/forward that the next
+  // pointer move carries out (a CDP move, measured; a real mouse's was not). Steps of 120 sent one after another never did, 20 or 40 of them.
+  const steps = Math.max(1, Math.ceil(Math.abs(deltaX) / CDP_WHEEL_MAX_SIDEWAYS_STEP));
+  for (let i = 0; i < steps; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 16));
+    const left = Math.abs(deltaX) - i * CDP_WHEEL_MAX_SIDEWAYS_STEP;
+    await session.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x,
+      y,
+      deltaX: Math.sign(deltaX) * Math.min(CDP_WHEEL_MAX_SIDEWAYS_STEP, left),
+      deltaY: i === 0 ? deltaY : 0,
+    });
+  }
+}
+
+/** The largest sideways delta one CDP wheel event carries (internal #431). */
+export const CDP_WHEEL_MAX_SIDEWAYS_STEP = 120;
+
+/**
+ * internal #431 — moves the tab's pointer off the page, to (-1, -1). On Windows Chrome, a sideways wheel at an edge
+ * starts the overscroll back/forward gesture, and every wheel after it scrolls nothing until the pointer moves; this
+ * move ends it (win2, headless and headed). Off the page, so nothing is hovered by it: an element the pointer was
+ * over gets its leave events, as when a mouse leaves the window. Sent only when a sideways wheel had room and did not
+ * move, before it is sent again.
+ */
+export async function dispatchPointerAwayInTab(tabId: string | null = null, port = DEFAULT_CDP_PORT): Promise<void> {
+  const session = await openSession(await resolveTab(tabId, port), port);
+  await session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: -1, y: -1, button: "none", buttons: 0 });
 }
 
 /**

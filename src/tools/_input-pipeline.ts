@@ -149,6 +149,7 @@ import {
 import {
   listTabsLight,
   dispatchWheelInTab,
+  dispatchPointerAwayInTab,
   readScrollPositionInTab,
   armWheelObserver,
   getBrowserProcessId,
@@ -2228,7 +2229,19 @@ export async function dispatchScrollWheel(
       );
       logDispatchSink({ sink: "cdp", tool: "scroll", targetHwnd: null, tier: "2" });
       const sent = { channel: "cdp" as const, ...(pointNotUsed !== undefined && { pointNotUsed }) };
-      const verdict = observer !== null ? await observer.verdict(sign, CDP_WHEEL_SEEN_MS, CDP_WHEEL_SETTLE_MS, CDP_WHEEL_MAX_MS) : null;
+      let verdict = observer !== null ? await observer.verdict(sign, CDP_WHEEL_SEEN_MS, CDP_WHEEL_SETTLE_MS, CDP_WHEEL_MAX_MS) : null;
+      // internal #431 — sideways, a scroller had room and nothing moved: on Windows Chrome an earlier wheel past an
+      // edge leaves the overscroll back/forward gesture taking every wheel until the pointer moves. The pointer is
+      // moved off the page (dispatchPointerAwayInTab) and the wheel sent once more, judged by a fresh observer. Only
+      // then, so a scroll that moves never moves the pointer.
+      if (!axisIsVertical && verdict !== null && verdict.seen && verdict.moved === undefined && !verdict.defaultPrevented && verdict.under === "room") {
+        await observer?.release();
+        observer = null;
+        await dispatchPointerAwayInTab(dest.tabId, port);
+        observer = await armWheelObserver(axisIsVertical, dest.tabId, port);
+        await dispatchWheelInTab(wheelDelta.x, wheelDelta.y, cx, cy, dest.tabId, port);
+        verdict = observer !== null ? await observer.verdict(sign, CDP_WHEEL_SEEN_MS, CDP_WHEEL_SETTLE_MS, CDP_WHEEL_MAX_MS) : null;
+      }
       if (verdict !== null && verdict.seen) {
         if (verdict.moved !== undefined) return { scrolled: true, reason: "delivered_via_cdp", ...sent };
         if (verdict.defaultPrevented) return { scrolled: false, reason: "page_handled_wheel", ...sent };
