@@ -717,8 +717,9 @@ const PAGE_HIDDEN_JS = `(function() {
  * Called on the scope's roots (an array): how many elements and text nodes are under them, open shadow roots'
  * included, and how many characters of text, counted until past either limit. What aria-owns (the attribute, or
  * ariaOwnsElements where the browser has it: Chrome 157 does not, measured) brings in from outside the roots is counted with its subtree, as the tree places it
- * there; an id is looked up in the owner's own document or shadow root, and what is already under a root or another
- * owned element is not counted twice (/code-review rounds 5 and 6 on #1038). What is never in the tree is not counted:
+ * there; an id is looked up in the owner's own document or shadow root. Each element is counted once, whichever walk
+ * reaches it first, and a walk passes over the subtree of an element already counted, in either nesting order and
+ * across shadow roots (/code-review rounds 5-7 on #1038). What is never in the tree is not counted, nor is a root that is one:
  * script, style, noscript and template contents (a page's inline JSON state can be megabytes; /code-review round 4),
  * by localName as the parser gives it (lowercase in HTML, SVG and XHTML). Read through the prototypes, so a form
  * control named nodeType or data does not stand in for them.
@@ -729,29 +730,24 @@ const COUNT_UNDER_ROOTS_FN = `function(maxNodes, maxText) {
   var srGet = Object.getOwnPropertyDescriptor(Element.prototype, 'shadowRoot').get;
   var lnGet = Object.getOwnPropertyDescriptor(Element.prototype, 'localName').get;
   var getAttr = Element.prototype.getAttribute, docById = Document.prototype.getElementById, fragById = DocumentFragment.prototype.getElementById;
-  var rootOf = Node.prototype.getRootNode, contains = Node.prototype.contains;
+  var rootOf = Node.prototype.getRootNode;
   var ownsDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'ariaOwnsElements');
   var ownsGet = ownsDesc && ownsDesc.get;
   var next = TreeWalker.prototype.nextNode, walker = Document.prototype.createTreeWalker;
   var skip = { script: 1, style: 1, noscript: 1, template: 1 };
-  var roots = Array.prototype.slice.call(this), owned = [], seen = new Set();
-  var n = 0, t = 0, stack = roots.slice();
-  function counted(o) {
-    for (var i = 0; i < roots.length; i++) if (contains.call(roots[i], o)) return true;
-    for (var j = 0; j < owned.length; j++) if (contains.call(owned[j], o)) return true;
-    return false;
-  }
-  function own(o) { if (o && !seen.has(o) && !counted(o)) { seen.add(o); owned.push(o); stack.push(o); } }
+  var visited = new Set(), pushed = new Set();
+  var n = 0, t = 0, stack = Array.prototype.slice.call(this);
+  function own(o) { if (o && !pushed.has(o) && !visited.has(o)) { pushed.add(o); stack.push(o); } }
+  function passed(x) { return ntGet.call(x) === 1 && (skip[lnGet.call(x)] === 1 || visited.has(x)); }
   while (stack.length > 0 && n <= maxNodes && t <= maxText) {
     var r = stack.pop();
-    var w = walker.call(document, r, 5, { acceptNode: function(x) {
-      return ntGet.call(x) === 1 && skip[lnGet.call(x)] === 1 ? 2 : 1;
-    } });
+    if (passed(r)) continue;
+    var w = walker.call(document, r, 5, { acceptNode: function(x) { return passed(x) ? 2 : 1; } });
     for (var c = r; c && n <= maxNodes && t <= maxText; c = next.call(w)) {
       var k = ntGet.call(c);
       if (k === 3) { n++; t += dataGet.call(c).length; }
       else if (k === 1) {
-        n++;
+        n++; visited.add(c);
         var sr = srGet.call(c); if (sr) stack.push(sr);
         var ids = getAttr.call(c, 'aria-owns');
         if (ids) {

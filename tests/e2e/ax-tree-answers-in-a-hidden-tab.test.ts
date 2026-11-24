@@ -244,7 +244,7 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
       expect(await evaluateInTab("1 + 1", tab, PORT)).toBe(2);
     });
 
-    it(`what aria-owns brings in is counted once, and by the owner's own ids ${where} (/code-review round 6 on #1038)`, async () => {
+    it(`what aria-owns brings in is counted once, and by the owner's own ids ${where} (/code-review rounds 6 and 7 on #1038)`, async () => {
       await front(shown ? tab : other);
       // An owner inside the page pointing at 60,000 elements also inside it: counted once, so under the budget.
       await page(`<div role="group" aria-owns="area" aria-label="Area"></div><div id="area"></div><button id="big" aria-label="Find me">x</button>
@@ -257,6 +257,24 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
           for (var i = 0; i < 120000; i++) f.appendChild(document.createElement('i')); l.appendChild(f);
           document.getElementById('bar').attachShadow({ mode: 'open' }).innerHTML = '<div role="listbox" aria-owns="list" aria-label="Inner"></div><div id="list"><div role="option">a</div></div>';</script>`);
       expect((await mark("ariaLabel", "Find me", { scope: "#toolbar" })).ids).toEqual(["big"]);
+      // Inside a shadow root, an owner pointing at 60,000 elements of the same shadow root: counted once (round 7).
+      await page(`<x-bar id="bar"></x-bar><button id="big" aria-label="Find me">x</button>
+        <script>var sr = document.getElementById('bar').attachShadow({ mode: 'open' });
+          sr.innerHTML = '<div role="listbox" aria-owns="list" aria-label="Inner"></div><div id="list"></div>';
+          var l = sr.getElementById('list'), f = document.createDocumentFragment();
+          for (var i = 0; i < 60000; i++) f.appendChild(document.createElement('i')); l.appendChild(f);</script>`);
+      expect((await mark("ariaLabel", "Find me")).ids).toEqual(["big"]);
+      // An owned element that holds one owned before it (aria-owns="inner outer"): the inner 60,000 are counted once (round 7).
+      await page(`<div id="pick"><div role="group" aria-owns="inner outer" aria-label="Area"></div><button id="big" aria-label="Find me">x</button></div>
+        <div id="outer"><div id="inner"></div></div>
+        <script>var l = document.getElementById('inner'), f = document.createDocumentFragment();
+          for (var i = 0; i < 60000; i++) f.appendChild(document.createElement('i')); l.appendChild(f);</script>`);
+      expect((await mark("ariaLabel", "Find me", { scope: "#pick" })).ids).toEqual(["big"]);
+      // A script that aria-owns brings in is not counted with its text, as one under a root is not (round 7).
+      await page(`<div id="pick"><div role="group" aria-owns="state" aria-label="Area"></div><button id="big" aria-label="Find me">x</button></div>
+        <script id="state" type="application/json"></script>
+        <script>document.getElementById('state').textContent = JSON.stringify({ s: 'a'.repeat(4000100) });</script>`);
+      expect((await mark("ariaLabel", "Find me", { scope: "#pick" })).ids).toEqual(["big"]);
     });
 
     it(`a hidden page of few elements and very long text falls back before reading ${where} (/code-review on #1038)`, async () => {
