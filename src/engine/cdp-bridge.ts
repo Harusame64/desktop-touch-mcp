@@ -763,7 +763,8 @@ export async function markAxMatches(
     // and nothing for a root with no node of its own in the tree (display: none, aria-hidden) (spikes on internal #420
     // and #423). A text run's children (its line boxes, never an element) are not asked for. Unlike one getFullAXTree,
     // the pieces are read at different moments: a subtree the page moves during the read (tens of ms to ~1 s) can be
-    // seen under both parents (kept once) or under neither (/code-review on #1038). Past AX_PIECEWISE_MAX_MS the read
+    // seen under both parents (kept once) or under neither (/code-review on #1038), and a container that replaces its
+    // children after it was read loses them (its reply's new children are not the ids it listed). Past AX_PIECEWISE_MAX_MS the read
     // gives up too.
     //
     // Each reply is small. #1037 read the whole tree in one message instead, and a large page's (the HTML spec: 307 MiB)
@@ -789,12 +790,16 @@ export async function markAxMatches(
           (s.send("Accessibility.queryAXTree", role === undefined ? { objectId } : { objectId, role }) as Promise<{ nodes: AxNode[] }>)
             .then((r) => r.nodes, () => null)));
       } else {
+        // The time limit counts from before the enable (which builds the page's tree) and is checked by a timer, not
+        // only between replies (/code-review round 2 on #1038).
+        const started = Date.now();
+        const overTime = (): boolean => Date.now() - started > AX_PIECEWISE_MAX_MS;
         per = await withAxEnabled(s, async () => {
-          const started = Date.now();
           // Each root's own node: the one for that element (a root with none, display: none or aria-hidden, has none).
           // AX_PIECEWISE_IN_FLIGHT roots at a time: a class scope can match thousands (/code-review on #1038).
           const tops: Array<AxNode | null | undefined> = [];
           for (let i = 0; i < roots.length; i += AX_PIECEWISE_IN_FLIGHT) {
+            if (overTime()) throw new Error("a hidden page's tree too slow to read under this scope");
             tops.push(...await Promise.all(roots.slice(i, i + AX_PIECEWISE_IN_FLIGHT).map(async (objectId) => {
               const backendNodeId = await (s.send("DOM.describeNode", { objectId }) as Promise<{ node?: { backendNodeId?: number } }>)
                 .then((r) => r.node?.backendNodeId, () => undefined);
@@ -806,6 +811,10 @@ export async function markAxMatches(
           // Every node under the tops, read in pieces with AX_PIECEWISE_IN_FLIGHT calls at once. A node's children are
           // counted before they are asked for, by the ids the node already lists: one reply holds all of one node's
           // children (150,000 list items: 67.5 MiB), so a wide node past the budget is never asked (/code-review on #1038).
+          // A reply also holds, through every ignored child, that child's own children (measured, Chrome 157: html >
+          // body > div > div, all ignored, over 5,000 rows came back whole for a node listing one child). So an ignored
+          // node that came in a reply is not asked again, and what a reply holds counts too; a page that puts more than
+          // about 200,000 nodes under ignored wrappers alone can still send one reply over 100 MiB (/code-review round 2).
           const tooLarge = (): Error => new Error("a hidden page's tree too large to read under this scope");
           const byId = new Map<string, AxNode>();
           const queue: string[] = [];
@@ -819,15 +828,21 @@ export async function markAxMatches(
             }
           };
           for (const t of tops) if (t) { byId.set(t.nodeId, t); counted++; ask(t); }
+          const tooMany = (): boolean => Math.max(counted, byId.size) > AX_PIECEWISE_MAX_NODES;
           let failed: unknown = null;
           const inFlight = new Set<Promise<void>>();
           while (queue.length > 0 || inFlight.size > 0) {
             if (failed !== null) throw failed;
-            if (counted > AX_PIECEWISE_MAX_NODES || Date.now() - started > AX_PIECEWISE_MAX_MS) throw tooLarge();
+            if (tooMany() || overTime()) throw tooLarge();
             while (queue.length > 0 && inFlight.size < AX_PIECEWISE_IN_FLIGHT) {
               const id = queue.shift()!;
               const p: Promise<void> = (s.send("Accessibility.getChildAXNodes", { id }) as Promise<{ nodes?: AxNode[] }>)
-                .then((r) => { for (const n of r.nodes ?? []) { if (!byId.has(n.nodeId)) byId.set(n.nodeId, n); ask(n); } }, (e: unknown) => {
+                .then((r) => {
+                  for (const n of r.nodes ?? []) {
+                    if (!byId.has(n.nodeId)) byId.set(n.nodeId, n);
+                    if (n.ignored) asked.add(n.nodeId); else ask(n);
+                  }
+                }, (e: unknown) => {
                   // A node the page removed after its parent listed it answers "Invalid ID": its subtree is gone, and
                   // the walk goes on without it (measured, Chrome 157). Anything else fails the read.
                   if (!/Invalid ID/.test(String((e as Error)?.message ?? e))) failed = e;
@@ -835,10 +850,14 @@ export async function markAxMatches(
                 .finally(() => { inFlight.delete(p); });
               inFlight.add(p);
             }
-            if (inFlight.size > 0) await Promise.race(inFlight);
+            if (inFlight.size > 0) {
+              let timer: ReturnType<typeof setTimeout> | undefined;
+              await Promise.race([...inFlight, new Promise<void>((res) => { timer = setTimeout(res, Math.max(0, AX_PIECEWISE_MAX_MS - (Date.now() - started)) + 1); })]);
+              clearTimeout(timer);
+            }
           }
           if (failed !== null) throw failed;
-          if (counted > AX_PIECEWISE_MAX_NODES) throw tooLarge();
+          if (tooMany()) throw tooLarge();
           return tops.map((top) => {
             if (top === null) return null;
             // Depth first by an explicit stack, children in their order: a deep page does not run out of call stack.

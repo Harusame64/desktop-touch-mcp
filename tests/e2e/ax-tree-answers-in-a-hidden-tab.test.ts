@@ -151,12 +151,14 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
       }
     });
 
+    // Paragraphs: each is two nodes in the tree (it and its text), so 15,000 are 30,000 nodes, under the budget; an
+    // empty element is none (/code-review round 2 on #1038).
     it(`a page of many elements is read ${where}, in a shadow root too (internal #423: #1037 gave up past 20,000)`, async () => {
       for (const inShadow of [false, true]) {
         await front(shown ? tab : other);
         await page(`<div id="host"></div><button id="big" aria-label="Find me">x</button>
           <script>var h = document.getElementById('host'), r = ${inShadow} ? h.attachShadow({ mode: 'open' }) : h, f = document.createDocumentFragment();
-            for (var i = 0; i < 20100; i++) f.appendChild(document.createElement('i')); r.appendChild(f);</script>`);
+            for (var i = 0; i < 15000; i++) { var p = document.createElement('p'); p.textContent = 'p' + i; f.appendChild(p); } r.appendChild(f);</script>`);
         const r = await mark("ariaLabel", "Find me");
         expect(r.ms).toBeLessThan(10_000);
         expect(r.ids).toEqual(["big"]);
@@ -199,11 +201,16 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
             for (var i = 0; i < 300; i++) { var d = document.createElement('div'); d.innerHTML = '<p><span>item ' + (k++) + '</span> <b>x</b></p>'; f.appendChild(d); }
             feed.replaceChildren(f); }
           // A hidden tab runs a timer at most once a second; a message channel's task is not held back.
-          var ch = new MessageChannel(); ch.port1.onmessage = function() { fill(); ch.port2.postMessage(0); };
-          fill(); ch.port2.postMessage(0);</script>`);
-      for (let i = 0; i < 5; i++) {
-        const r = await mark("ariaLabel", "Keep me");
-        expect(r.ids).toEqual(["stable"]);
+          window.__ch = new MessageChannel(); __ch.port1.onmessage = function() { fill(); __ch.port2.postMessage(0); };
+          fill(); __ch.port2.postMessage(0);</script>`);
+      try {
+        for (let i = 0; i < 5; i++) {
+          const r = await mark("ariaLabel", "Keep me");
+          expect(r.ids).toEqual(["stable"]);
+        }
+      } finally {
+        // document.write keeps the window, and the loop with it: stopped here (/code-review round 2 on #1038).
+        await evaluateInTab("__ch.port1.onmessage = null; __ch.port1.close(); true", tab, PORT);
       }
     });
 
