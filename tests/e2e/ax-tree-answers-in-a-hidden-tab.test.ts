@@ -2,15 +2,15 @@
  * internal #420 — the by-axis questions (by:'role', by:'ariaLabel', desktop_discover's controls, browser_search) read
  * the browser's accessibility tree, and answer in a tab that is not shown. Accessibility.queryAXTree waits there for a
  * frame that does not come: each call ran into the 15 s command timeout and fell back to the DOM reading (win2: a
- * by:'ariaLabel' fill took ~15 s in a hidden tab). There the tree is now read whole (getFullAXTree), which answers;
- * the front tab still asks queryAXTree. Each cell runs in both, with the same expected values: the hidden tab's reading
+ * by:'ariaLabel' fill took ~15 s in a hidden tab). There the tree is now read in pieces (getChildAXNodes, internal
+ * #423) when the DOM under the scope is small enough, which answers; the front tab still asks queryAXTree. Each cell runs in both, with the same expected values: the hidden tab's reading
  * keeps queryAXTree's answer — the same nodes, under a scope too (with what it owns by aria-owns), in queryAXTree's
  * order (a slot's assigned nodes where the slot is), which decides which ones a cap keeps.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { sleep } from "./helpers/wait.js";
-import { evaluateInTab, disconnectAll, markAxMatches, clearAxMarks, AX_WHOLE_TREE_MAX_ELEMENTS } from "../../src/engine/cdp-bridge.js";
+import { evaluateInTab, disconnectAll, markAxMatches, clearAxMarks, AX_HIDDEN_READ_MAX_DOM_NODES } from "../../src/engine/cdp-bridge.js";
 import { browserFillInputHandler } from "../../src/tools/browser.js";
 
 const PORT = 9246;
@@ -151,28 +151,184 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
       }
     });
 
-    it(`a hidden page too large to read whole falls back at once, a shown one reads the tree ${where} (/code-review on #1037)`, async () => {
-      await front(shown ? tab : other);
-      const n = AX_WHOLE_TREE_MAX_ELEMENTS + 100;
-      await page(`<div id="many"></div><button id="big" aria-label="Find me">x</button>
-        <script>var m = document.getElementById('many'), f = document.createDocumentFragment();
-          for (var i = 0; i < ${n}; i++) f.appendChild(document.createElement('i')); m.appendChild(f);</script>`);
-      const r = await mark("ariaLabel", "Find me");
-      expect(r.ms).toBeLessThan(10_000);
-      if (shown) expect(r.ids).toEqual(["big"]);
-      else expect(r.count).toBeNull();
+    // 20,100 elements: past #1037's element limit, under the DOM budget (an empty element is no node of the tree, but
+    // it is counted).
+    it(`a page of many elements is read ${where}, in a shadow root too (internal #423: #1037 gave up past 20,000)`, async () => {
+      for (const inShadow of [false, true]) {
+        await front(shown ? tab : other);
+        await page(`<div id="host"></div><button id="big" aria-label="Find me">x</button>
+          <script>var h = document.getElementById('host'), r = ${inShadow} ? h.attachShadow({ mode: 'open' }) : h, f = document.createDocumentFragment();
+            for (var i = 0; i < 20100; i++) f.appendChild(document.createElement('i')); r.appendChild(f);</script>`);
+        const r = await mark("ariaLabel", "Find me");
+        expect(r.ms).toBeLessThan(10_000);
+        expect(r.ids).toEqual(["big"]);
+      }
     });
 
-    it(`elements in shadow roots count toward that limit ${where} (/code-review on #1037)`, async () => {
+    it(`a page of MDN's size in DOM nodes (48,500) is read from the tree ${where} (round 3 on #1038: a 40,000 budget left MDN out)`, async () => {
       await front(shown ? tab : other);
-      const n = AX_WHOLE_TREE_MAX_ELEMENTS + 100;
+      // 160 paragraphs of 150 words, each in its own span: 48,160 elements and text nodes.
+      await page(`<div id="many"></div><button id="big" aria-label="Find me">x</button>
+        <script>var m = document.getElementById('many'), f = document.createDocumentFragment();
+          for (var i = 0; i < 160; i++) { var p = document.createElement('p');
+            for (var j = 0; j < 150; j++) { var s = document.createElement('span'); s.textContent = 'w' + j; p.appendChild(s); } f.appendChild(p); }
+          m.appendChild(f);</script>`);
+      const r = await mark("ariaLabel", "Find me");
+      expect(r.ids).toEqual(["big"]);
+      expect(r.ms).toBeLessThan(10_000);
+    });
+
+    it(`a hidden page past the DOM budget falls back before reading, a scope under it is read; a shown one reads the tree ${where}`, async () => {
+      await front(shown ? tab : other);
+      // Each paragraph is two DOM nodes (it and its text).
+      const n = AX_HIDDEN_READ_MAX_DOM_NODES / 2 + 100;
+      await page(`<div id="many"></div><form id="f"><button id="big" aria-label="Find me">x</button></form>
+        <script>var m = document.getElementById('many'), f = document.createDocumentFragment();
+          for (var i = 0; i < ${n}; i++) { var p = document.createElement('p'); p.textContent = 'p' + i; f.appendChild(p); } m.appendChild(f);</script>`);
+      const r = await mark("ariaLabel", "Find me");
+      expect(r.ms).toBeLessThan(shown ? 10_000 : 2_000);
+      if (shown) expect(r.ids).toEqual(["big"]);
+      else expect(r.count).toBeNull();
+      const scoped = await mark("ariaLabel", "Find me", { scope: "#f" });
+      expect(scoped.ids).toEqual(["big"]);
+      expect(scoped.ms).toBeLessThan(5_000);
+    });
+
+    // Hidden tab only: queryAXTree over 100,000 items runs past the command timeout; the shown tab is unchanged.
+    it.skipIf(shown)(`one list wider than the budget is not asked for in a hidden tab ${where} (/code-review on #1038)`, async () => {
+      await front(other);
+      const n = AX_HIDDEN_READ_MAX_DOM_NODES + 100;
+      await page(`<ul id="wide"></ul><button id="big" aria-label="Find me">x</button>
+        <script>var u = document.getElementById('wide'), f = document.createDocumentFragment();
+          for (var i = 0; i < ${n}; i++) { var li = document.createElement('li'); li.textContent = 'row ' + i; f.appendChild(li); } u.appendChild(f);</script>`);
+      const r = await mark("ariaLabel", "Find me");
+      expect(r.ms).toBeLessThan(10_000);
+      expect(r.count).toBeNull();
+    });
+
+    it(`elements in a shadow root count toward the DOM budget ${where} (/code-review on #1037 and #1038)`, async () => {
+      await front(shown ? tab : other);
+      const n = AX_HIDDEN_READ_MAX_DOM_NODES + 100;
       await page(`<div id="host"></div><button id="big" aria-label="Find me">x</button>
         <script>var sr = document.getElementById('host').attachShadow({ mode: 'open' }), f = document.createDocumentFragment();
           for (var i = 0; i < ${n}; i++) f.appendChild(document.createElement('i')); sr.appendChild(f);</script>`);
       const r = await mark("ariaLabel", "Find me");
-      expect(r.ms).toBeLessThan(10_000);
       if (shown) expect(r.ids).toEqual(["big"]);
-      else expect(r.count).toBeNull();
+      else { expect(r.count).toBeNull(); expect(r.ms).toBeLessThan(2_000); }
+    });
+
+    it(`a same-origin iframe's document counts toward the DOM budget ${where} (/code-review round 7 on #1038)`, async () => {
+      await front(shown ? tab : other);
+      // The hidden read walks into the frame's tree (measured: 1.6 s with these rows, 12 ms with the frame empty).
+      const n = AX_HIDDEN_READ_MAX_DOM_NODES + 100;
+      await page(`<div id="pick"><button id="big" aria-label="Find me">x</button><iframe id="fr"></iframe></div>`);
+      await evaluateInTab(`(function() { var d = document.getElementById('fr').contentDocument; d.open(); d.write('<ul id="u"></ul>'); d.close();
+        var u = d.getElementById('u'), f = d.createDocumentFragment();
+        for (var i = 0; i < ${n}; i++) f.appendChild(d.createElement('i')); u.appendChild(f); return true; })()`, tab, PORT);
+      const r = await mark("ariaLabel", "Find me", { scope: "#pick" });
+      if (shown) expect(r.ids).toEqual(["big"]);
+      else { expect(r.count).toBeNull(); expect(r.ms).toBeLessThan(2_000); }
+      // A small frame whose widget owns by aria-owns: its ids are looked up in the frame's own document, and the read
+      // goes on (codex on #1038: the frame's document was taken for a shadow root, and the lookup threw).
+      await page(`<div id="pick"><button id="big" aria-label="Find me">x</button><iframe id="fr"></iframe></div>`);
+      await evaluateInTab(`(function() { var d = document.getElementById('fr').contentDocument; d.open();
+        d.write('<div role="listbox" aria-owns="o1" aria-label="In frame"></div><div id="o1" role="option">a</div>'); d.close(); return true; })()`, tab, PORT);
+      expect((await mark("ariaLabel", "Find me", { scope: "#pick" })).ids).toEqual(["big"]);
+    });
+
+    it(`a page's inline script and style text is not counted ${where} (/code-review round 4 on #1038)`, async () => {
+      await front(shown ? tab : other);
+      await page(`<script id="state" type="application/json"></script><style id="css"></style><svg><style id="svgcss"></style></svg>
+        <button id="big" aria-label="Find me">x</button>
+        <script>document.getElementById('state').textContent = JSON.stringify({ s: 'a'.repeat(4000100) });
+          document.getElementById('css').textContent = '/*' + 'b'.repeat(4000100) + '*/';
+          document.getElementById('svgcss').textContent = '/*' + 'c'.repeat(4000100) + '*/';</script>`);
+      const r = await mark("ariaLabel", "Find me");
+      expect(r.ids).toEqual(["big"]);
+    });
+
+    it.skipIf(shown)(`a list aria-owns brings in from outside the scope, wider than the budget, is not asked for ${where} (/code-review round 4 on #1038)`, async () => {
+      await front(other);
+      // Owned through wrappers of role none (ignored nodes, whose children come in their owner's reply: measured, the
+      // combobox's own childIds list 2), with labels long enough that the one reply would pass the socket's 100 MiB
+      // (/code-review round 5 on #1038).
+      await page(`<div id="pick"><div role="combobox" aria-expanded="true" aria-owns="wrap" aria-label="Pick" tabindex="0">p</div>
+        <button id="big" aria-label="Find me">x</button></div><div id="wrap" role="none"><div id="opts" role="none"></div></div>
+        <script>var o = document.getElementById('opts'), f = document.createDocumentFragment(), pad = 'x'.repeat(400);
+          for (var i = 0; i < 200100; i++) { var d = document.createElement('div'); d.setAttribute('role', 'option'); d.setAttribute('aria-label', pad + i); f.appendChild(d); } o.appendChild(f);</script>`);
+      const r = await mark("ariaLabel", "Find me", { scope: "#pick" });
+      expect(r.count).toBeNull();
+      expect(r.ms).toBeLessThan(2_000);
+      // The tab's session is still open.
+      expect(await evaluateInTab("1 + 1", tab, PORT)).toBe(2);
+    });
+
+    it(`what aria-owns brings in is counted once, and by the owner's own ids ${where} (/code-review rounds 6 and 7 on #1038)`, async () => {
+      await front(shown ? tab : other);
+      // An owner inside the page pointing at 60,000 elements also inside it: counted once, so under the budget.
+      await page(`<div role="group" aria-owns="area" aria-label="Area"></div><div id="area"></div><button id="big" aria-label="Find me">x</button>
+        <script>var a = document.getElementById('area'), f = document.createDocumentFragment();
+          for (var i = 0; i < 60000; i++) f.appendChild(document.createElement('i')); a.appendChild(f);</script>`);
+      expect((await mark("ariaLabel", "Find me")).ids).toEqual(["big"]);
+      // An id inside a shadow root is looked up there, not in the page: the page's own #list of 120,000 is not counted.
+      await page(`<div id="toolbar"><x-bar id="bar"></x-bar><button id="big" aria-label="Find me">x</button></div><div id="list"></div>
+        <script>var l = document.getElementById('list'), f = document.createDocumentFragment();
+          for (var i = 0; i < 120000; i++) f.appendChild(document.createElement('i')); l.appendChild(f);
+          document.getElementById('bar').attachShadow({ mode: 'open' }).innerHTML = '<div role="listbox" aria-owns="list" aria-label="Inner"></div><div id="list"><div role="option">a</div></div>';</script>`);
+      expect((await mark("ariaLabel", "Find me", { scope: "#toolbar" })).ids).toEqual(["big"]);
+      // Inside a shadow root, an owner pointing at 60,000 elements of the same shadow root: counted once (round 7).
+      await page(`<x-bar id="bar"></x-bar><button id="big" aria-label="Find me">x</button>
+        <script>var sr = document.getElementById('bar').attachShadow({ mode: 'open' });
+          sr.innerHTML = '<div role="listbox" aria-owns="list" aria-label="Inner"></div><div id="list"></div>';
+          var l = sr.getElementById('list'), f = document.createDocumentFragment();
+          for (var i = 0; i < 60000; i++) f.appendChild(document.createElement('i')); l.appendChild(f);</script>`);
+      expect((await mark("ariaLabel", "Find me")).ids).toEqual(["big"]);
+      // An owned element that holds another owned one, in either order: the inner 60,000 are counted once. The last id
+      // is walked first, so "inner outer" passes over inner as a root and "outer inner" inside outer's walk (round 7).
+      for (const owns of ["inner outer", "outer inner"]) {
+        await page(`<div id="pick"><div role="group" aria-owns="${owns}" aria-label="Area"></div><button id="big" aria-label="Find me">x</button></div>
+          <div id="outer"><div id="inner"></div></div>
+          <script>var l = document.getElementById('inner'), f = document.createDocumentFragment();
+            for (var i = 0; i < 60000; i++) f.appendChild(document.createElement('i')); l.appendChild(f);</script>`);
+        expect((await mark("ariaLabel", "Find me", { scope: "#pick" })).ids, owns).toEqual(["big"]);
+      }
+      // A script that aria-owns brings in is not counted with its text, as one under a root is not (round 7).
+      await page(`<div id="pick"><div role="group" aria-owns="state" aria-label="Area"></div><button id="big" aria-label="Find me">x</button></div>
+        <script id="state" type="application/json"></script>
+        <script>document.getElementById('state').textContent = JSON.stringify({ s: 'a'.repeat(4000100) });</script>`);
+      expect((await mark("ariaLabel", "Find me", { scope: "#pick" })).ids).toEqual(["big"]);
+    });
+
+    it(`a hidden page of few elements and very long text falls back before reading ${where} (/code-review on #1038)`, async () => {
+      await front(shown ? tab : other);
+      await page(`<pre id="long"></pre><button id="big" aria-label="Find me">x</button>
+        <script>document.getElementById('long').textContent = 'a'.repeat(4000100);</script>`);
+      const r = await mark("ariaLabel", "Find me", shown ? { scope: "#big" } : {});
+      if (shown) expect(r.ids).toEqual(["big"]);
+      else { expect(r.count).toBeNull(); expect(r.ms).toBeLessThan(2_000); }
+      const scoped = await mark("ariaLabel", "Find me", { scope: "#big" });
+      expect(scoped.ids).toEqual(["big"]);
+    });
+
+    it(`a page that keeps replacing rows during the read still answers from the tree ${where} (/code-review on #1038)`, async () => {
+      await front(shown ? tab : other);
+      await page(`<button id="stable" aria-label="Keep me">k</button><div id="feed"></div>
+        <script>var feed = document.getElementById('feed'), k = 0;
+          function fill() { var f = document.createDocumentFragment();
+            for (var i = 0; i < 300; i++) { var d = document.createElement('div'); d.innerHTML = '<p><span>item ' + (k++) + '</span> <b>x</b></p>'; f.appendChild(d); }
+            feed.replaceChildren(f); }
+          // A hidden tab runs a timer at most once a second; a message channel's task is not held back.
+          window.__ch = new MessageChannel(); __ch.port1.onmessage = function() { fill(); __ch.port2.postMessage(0); };
+          fill(); __ch.port2.postMessage(0);</script>`);
+      try {
+        for (let i = 0; i < 5; i++) {
+          const r = await mark("ariaLabel", "Keep me");
+          expect(r.ids).toEqual(["stable"]);
+        }
+      } finally {
+        // document.write keeps the window, and the loop with it: stopped here (/code-review round 2 on #1038).
+        await evaluateInTab("__ch.port1.onmessage = null; __ch.port1.close(); true", tab, PORT);
+      }
     });
 
     it(`browser_fill by:'ariaLabel' writes the field ${where}, without waiting out a timeout`, async () => {
