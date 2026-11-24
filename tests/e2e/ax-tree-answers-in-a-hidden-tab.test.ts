@@ -244,6 +244,21 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
       expect(await evaluateInTab("1 + 1", tab, PORT)).toBe(2);
     });
 
+    it(`what aria-owns brings in is counted once, and by the owner's own ids ${where} (/code-review round 6 on #1038)`, async () => {
+      await front(shown ? tab : other);
+      // An owner inside the page pointing at 60,000 elements also inside it: counted once, so under the budget.
+      await page(`<div role="group" aria-owns="area" aria-label="Area"></div><div id="area"></div><button id="big" aria-label="Find me">x</button>
+        <script>var a = document.getElementById('area'), f = document.createDocumentFragment();
+          for (var i = 0; i < 60000; i++) f.appendChild(document.createElement('i')); a.appendChild(f);</script>`);
+      expect((await mark("ariaLabel", "Find me")).ids).toEqual(["big"]);
+      // An id inside a shadow root is looked up there, not in the page: the page's own #list of 120,000 is not counted.
+      await page(`<div id="toolbar"><x-bar id="bar"></x-bar><button id="big" aria-label="Find me">x</button></div><div id="list"></div>
+        <script>var l = document.getElementById('list'), f = document.createDocumentFragment();
+          for (var i = 0; i < 120000; i++) f.appendChild(document.createElement('i')); l.appendChild(f);
+          document.getElementById('bar').attachShadow({ mode: 'open' }).innerHTML = '<div role="listbox" aria-owns="list" aria-label="Inner"></div><div id="list"><div role="option">a</div></div>';</script>`);
+      expect((await mark("ariaLabel", "Find me", { scope: "#toolbar" })).ids).toEqual(["big"]);
+    });
+
     it(`a hidden page of few elements and very long text falls back before reading ${where} (/code-review on #1038)`, async () => {
       await front(shown ? tab : other);
       await page(`<pre id="long"></pre><button id="big" aria-label="Find me">x</button>
