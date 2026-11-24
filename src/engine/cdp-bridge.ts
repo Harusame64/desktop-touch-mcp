@@ -715,7 +715,9 @@ const PAGE_HIDDEN_JS = `(function() {
 
 /**
  * Called on the scope's roots (an array): how many elements and text nodes are under them, open shadow roots'
- * included, and how many characters of text, counted until past either limit. What aria-owns (the attribute, or
+ * included, and a same-origin frame's document (the read walks into it: measured, a hidden tab's read of a scope
+ * holding an iframe of 150,100 rows took 1.6 s, 12 ms with the iframe empty; /code-review round 7 on #1038), and how
+ * many characters of text, counted until past either limit. What aria-owns (the attribute, or
  * ariaOwnsElements where the browser has it: Chrome 157 does not, measured) brings in from outside the roots is counted with its subtree, as the tree places it
  * there; an id is looked up in the owner's own document or shadow root. Each element is counted once, whichever walk
  * reaches it first, and a walk passes over the subtree of an element already counted, in either nesting order and
@@ -735,6 +737,11 @@ const COUNT_UNDER_ROOTS_FN = `function(maxNodes, maxText) {
   var ownsGet = ownsDesc && ownsDesc.get;
   var next = TreeWalker.prototype.nextNode, walker = Document.prototype.createTreeWalker;
   var skip = { script: 1, style: 1, noscript: 1, template: 1 };
+  var docGets = [];
+  [window.HTMLIFrameElement, window.HTMLFrameElement, window.HTMLObjectElement].forEach(function(C) {
+    var d = C && Object.getOwnPropertyDescriptor(C.prototype, 'contentDocument'); if (d && d.get) docGets.push([C.prototype, d.get]);
+  });
+  var isProto = Object.prototype.isPrototypeOf;
   var visited = new Set(), pushed = new Set();
   var n = 0, t = 0, stack = Array.prototype.slice.call(this);
   function own(o) { if (o && !pushed.has(o) && !visited.has(o)) { pushed.add(o); stack.push(o); } }
@@ -749,6 +756,7 @@ const COUNT_UNDER_ROOTS_FN = `function(maxNodes, maxText) {
       else if (k === 1) {
         n++; visited.add(c);
         var sr = srGet.call(c); if (sr) stack.push(sr);
+        for (var g = 0; g < docGets.length; g++) if (isProto.call(docGets[g][0], c)) { var cd = docGets[g][1].call(c); if (cd) stack.push(cd); }
         var ids = getAttr.call(c, 'aria-owns');
         if (ids) {
           var scope = rootOf.call(c), find = scope === document ? docById : fragById;

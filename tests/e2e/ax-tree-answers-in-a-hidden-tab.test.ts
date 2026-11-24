@@ -217,6 +217,19 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
       else { expect(r.count).toBeNull(); expect(r.ms).toBeLessThan(2_000); }
     });
 
+    it(`a same-origin iframe's document counts toward the DOM budget ${where} (/code-review round 7 on #1038)`, async () => {
+      await front(shown ? tab : other);
+      // The hidden read walks into the frame's tree (measured: 1.6 s with these rows, 12 ms with the frame empty).
+      const n = AX_HIDDEN_READ_MAX_DOM_NODES + 100;
+      await page(`<div id="pick"><button id="big" aria-label="Find me">x</button><iframe id="fr"></iframe></div>`);
+      await evaluateInTab(`(function() { var d = document.getElementById('fr').contentDocument; d.open(); d.write('<ul id="u"></ul>'); d.close();
+        var u = d.getElementById('u'), f = d.createDocumentFragment();
+        for (var i = 0; i < ${n}; i++) f.appendChild(d.createElement('i')); u.appendChild(f); return true; })()`, tab, PORT);
+      const r = await mark("ariaLabel", "Find me", { scope: "#pick" });
+      if (shown) expect(r.ids).toEqual(["big"]);
+      else { expect(r.count).toBeNull(); expect(r.ms).toBeLessThan(2_000); }
+    });
+
     it(`a page's inline script and style text is not counted ${where} (/code-review round 4 on #1038)`, async () => {
       await front(shown ? tab : other);
       await page(`<script id="state" type="application/json"></script><style id="css"></style><svg><style id="svgcss"></style></svg>
@@ -264,12 +277,15 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
           var l = sr.getElementById('list'), f = document.createDocumentFragment();
           for (var i = 0; i < 60000; i++) f.appendChild(document.createElement('i')); l.appendChild(f);</script>`);
       expect((await mark("ariaLabel", "Find me")).ids).toEqual(["big"]);
-      // An owned element that holds one owned before it (aria-owns="inner outer"): the inner 60,000 are counted once (round 7).
-      await page(`<div id="pick"><div role="group" aria-owns="inner outer" aria-label="Area"></div><button id="big" aria-label="Find me">x</button></div>
-        <div id="outer"><div id="inner"></div></div>
-        <script>var l = document.getElementById('inner'), f = document.createDocumentFragment();
-          for (var i = 0; i < 60000; i++) f.appendChild(document.createElement('i')); l.appendChild(f);</script>`);
-      expect((await mark("ariaLabel", "Find me", { scope: "#pick" })).ids).toEqual(["big"]);
+      // An owned element that holds another owned one, in either order: the inner 60,000 are counted once. The last id
+      // is walked first, so "inner outer" passes over inner as a root and "outer inner" inside outer's walk (round 7).
+      for (const owns of ["inner outer", "outer inner"]) {
+        await page(`<div id="pick"><div role="group" aria-owns="${owns}" aria-label="Area"></div><button id="big" aria-label="Find me">x</button></div>
+          <div id="outer"><div id="inner"></div></div>
+          <script>var l = document.getElementById('inner'), f = document.createDocumentFragment();
+            for (var i = 0; i < 60000; i++) f.appendChild(document.createElement('i')); l.appendChild(f);</script>`);
+        expect((await mark("ariaLabel", "Find me", { scope: "#pick" })).ids, owns).toEqual(["big"]);
+      }
       // A script that aria-owns brings in is not counted with its text, as one under a root is not (round 7).
       await page(`<div id="pick"><div role="group" aria-owns="state" aria-label="Area"></div><button id="big" aria-label="Find me">x</button></div>
         <script id="state" type="application/json"></script>
