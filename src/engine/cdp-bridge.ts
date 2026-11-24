@@ -675,6 +675,32 @@ const AX_TEXT_ROLES = new Set(["StaticText", "InlineTextBox", "LineBreak", "Root
 /** How many tree matches a by-axis question marks by default (its best ones): a list that reaches it may hold more. */
 export const AX_MARK_CAP = 200;
 
+/**
+ * The most elements a hidden tab's page may have for its accessibility tree to be read whole (getFullAXTree): the
+ * reply is one message of about 1-2 KB per element, and one over the socket's 100 MiB closes the tab's session.
+ */
+export const AX_WHOLE_TREE_MAX_ELEMENTS = 20_000;
+
+/**
+ * Page script: whether the page is hidden, by Document.prototype's getter (not a property the page gives the document
+ * itself); and only then how many elements it has, its open shadow roots' included (/code-review on #1037: a page of
+ * components holds most of them there), counted until past AX_WHOLE_TREE_MAX_ELEMENTS.
+ */
+const PAGE_SHOWN_AND_SIZE_JS = `(function() {
+  var d = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState');
+  var vs = d && d.get ? d.get.call(document) : document.visibilityState;
+  if (vs !== 'hidden') return { hidden: false, elements: 0 };
+  var max = ${AX_WHOLE_TREE_MAX_ELEMENTS}, n = 0, roots = [document];
+  var srGet = Object.getOwnPropertyDescriptor(Element.prototype, 'shadowRoot').get;
+  while (roots.length > 0 && n <= max) {
+    var r = roots.pop();
+    var all = r === document ? Document.prototype.getElementsByTagName.call(document, '*') : DocumentFragment.prototype.querySelectorAll.call(r, '*');
+    n += all.length;
+    for (var i = 0; i < all.length && n <= max; i++) { var sr = srGet.call(all[i]); if (sr) roots.push(sr); }
+  }
+  return { hidden: true, elements: n };
+})()`;
+
 export async function markAxMatches(
   opts: { by: "role" | "ariaLabel" | "controls"; pattern: string; caseSensitive: boolean; nonce: string; scope?: string; cap?: number; onFound?: (found: number, triedAll: boolean) => void;
     /** browser_search lists a native multi-row select (role listbox); an action leaves it out (a press picks an option). */
@@ -689,7 +715,7 @@ export async function markAxMatches(
     session = await openSession(tab, port);
     const s = session;
     type AxNode = {
-      ignored?: boolean; role?: { value?: string }; name?: { value?: string }; backendDOMNodeId?: number;
+      nodeId: string; childIds?: string[]; ignored?: boolean; role?: { value?: string }; name?: { value?: string }; backendDOMNodeId?: number;
       properties?: Array<{ name?: string; value?: { value?: unknown } }>;
     };
     // The root (or each element the scope matches, internal #420) by an object id, so no DOM domain is enabled on
@@ -708,14 +734,74 @@ export async function markAxMatches(
       .sort((a, b) => Number(a.name) - Number(b.name))
       .map((p) => p.value!.objectId!);
     if (roots.length === 0) return null;
-    // The tree under each root, asked together (a class scope can match hundreds), kept in the roots' order: the roots
-    // are disjoint and in document order, so the nodes are too. A root the tree cannot answer for is left out, not the
-    // others (/code-review on this change); with none answered, the tree could not be read. A node that aria-owns
-    // places under two roots is kept once.
+    // The tree under each root. In a tab that is shown, asked per root (queryAXTree), together (a class scope can match
+    // hundreds). In a tab that is not shown, queryAXTree waits for a frame that does not come, so each call ran into the
+    // 15 s command timeout and the caller fell back to the DOM reading (win2; mac headless: queryAXTree and a
+    // requestAnimationFrame never answer there, getFullAXTree and DOM.describeNode do, and read changes made while it
+    // is hidden). There the whole tree is read once (getFullAXTree) and walked from each root's node by the tree's own
+    // children, depth first: on 9 real pages (Wikipedia, MDN, GitHub, Ionic, the HTML spec, ...) and under scopes,
+    // aria-owns, shadow roots, slots and display: contents, that walk gave queryAXTree's nodes in queryAXTree's order,
+    // and nothing for a root with no node of its own in the tree (display: none, aria-hidden), as queryAXTree did
+    // (spike on internal #420). Not in a shown tab too: the whole tree of a very large page takes 9-13 s to read (the
+    // HTML spec on one page, 900,000 nodes) where queryAXTree under a narrow scope takes a few ms. A root the tree (or
+    // the DOM) cannot answer for is left out, not the others (/code-review on #1029); with none answered, the tree could
+    // not be read. A node aria-owns places under two roots is kept once.
+    //
+    // The whole tree comes in one message, about 1-2 KB per element (the HTML spec: 340,000 elements, 307 MiB; MDN's
+    // input page: 3,700 elements, 7 MiB). Over the socket's 100 MiB a message closes the tab's session, failing the
+    // calls beside it; so a hidden page of more than AX_WHOLE_TREE_MAX_ELEMENTS elements is not read whole, and the
+    // caller keeps the DOM reading at once, as main gave it after the 15 s wait (/code-review on #1037). Whether the
+    // tab is shown is read by Document.prototype's getter, so a page that gives the document its own visibilityState
+    // is still seen hidden; one that replaces the prototype's getter is taken as shown, and waits as on main. When that
+    // read fails, the tab is taken as shown (/code-review on #1037).
     const queryTree = async (role?: string): Promise<AxNode[]> => {
-      const per = await Promise.all(roots.map((objectId) =>
-        (s.send("Accessibility.queryAXTree", role === undefined ? { objectId } : { objectId, role }) as Promise<{ nodes: AxNode[] }>)
-          .then((r) => r.nodes, () => null)));
+      let hidden = false;
+      let elements = 0;
+      try {
+        const st = (await s.send("Runtime.evaluate", { expression: PAGE_SHOWN_AND_SIZE_JS, returnByValue: true })) as { result?: { value?: unknown } };
+        const v = st.result?.value as { hidden?: boolean; elements?: number } | undefined;
+        hidden = v?.hidden === true;
+        elements = typeof v?.elements === "number" ? v.elements : 0;
+      } catch { /* taken as shown */ }
+      let per: Array<AxNode[] | null>;
+      if (!hidden) {
+        per = await Promise.all(roots.map((objectId) =>
+          (s.send("Accessibility.queryAXTree", role === undefined ? { objectId } : { objectId, role }) as Promise<{ nodes: AxNode[] }>)
+            .then((r) => r.nodes, () => null)));
+      } else {
+        if (elements > AX_WHOLE_TREE_MAX_ELEMENTS) throw new Error("a hidden page too large to read its tree whole");
+        const full = ((await s.send("Accessibility.getFullAXTree", {})) as { nodes?: AxNode[] }).nodes ?? [];
+        const byId = new Map<string, AxNode>();
+        const byBackend = new Map<number, AxNode>();
+        for (const n of full) {
+          byId.set(n.nodeId, n);
+          if (n.backendDOMNodeId !== undefined && !byBackend.has(n.backendDOMNodeId)) byBackend.set(n.backendDOMNodeId, n);
+        }
+        const backends = await Promise.all(roots.map((objectId) =>
+          (s.send("DOM.describeNode", { objectId }) as Promise<{ node?: { backendNodeId?: number } }>)
+            .then((r) => r.node?.backendNodeId, () => undefined)));
+        per = backends.map((backend) => {
+          if (backend === undefined) return null;
+          // Depth first by an explicit stack, children in their order: a deep page does not run out of call stack.
+          const nodes: AxNode[] = [];
+          const stack: AxNode[] = [];
+          const top = byBackend.get(backend);
+          if (top) stack.push(top);
+          const met = new Set<string>();
+          while (stack.length > 0) {
+            const n = stack.pop()!;
+            if (met.has(n.nodeId)) continue;
+            met.add(n.nodeId);
+            if (role === undefined || n.role?.value === role) nodes.push(n);
+            const kids = n.childIds ?? [];
+            for (let i = kids.length - 1; i >= 0; i--) {
+              const c = byId.get(kids[i]);
+              if (c) stack.push(c);
+            }
+          }
+          return nodes;
+        });
+      }
       if (per.every((n) => n === null)) throw new Error("the tree could not be read under any root of the scope");
       const seen = new Set<number>();
       const out: AxNode[] = [];
@@ -786,8 +872,8 @@ export async function markAxMatches(
           arguments: [{ value: `${opts.nonce}:${m.score}:${m.control ? "c" : ""}:${m.role}` }, { value: m.role }, { value: opts.keepNativeListbox === true }],
           functionDeclaration: `function(v, role, keepNativeListbox) {
             // Not in a shadow root, and not in a frame: the gather reads the top document only, and only there are
-            // marks cleared. queryAXTree did not walk into a same-origin frame when measured (Chrome 157); the frame
-            // test stays for one that does (/code-review on #1008).
+            // marks cleared. The top frame's tree holds no frame's nodes (nor did queryAXTree's when measured, Chrome
+            // 157); the frame test stays for one that does (/code-review on #1008).
             if (this.nodeType !== 1 || this.getRootNode() !== document || window !== window.top) return 0;
             if (role === 'listbox' && this.tagName === 'SELECT' && !keepNativeListbox) return 0;
             // One token per call, beside other calls' tokens: a discover and a click on the same tab do not overwrite
