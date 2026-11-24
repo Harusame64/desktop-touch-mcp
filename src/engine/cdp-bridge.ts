@@ -692,10 +692,11 @@ export const AX_HIDDEN_READ_MAX_DOM_NODES = 100_000;
 const AX_HIDDEN_READ_MAX_TEXT = 4_000_000;
 
 /**
- * The most tree nodes the read walks, a backstop over the DOM count for what that count cannot see: list markers and
- * generated content, nodes aria-owns brings in from elsewhere, closed shadow roots.
+ * The most tree nodes the read walks or asks for, a backstop over the DOM count for what that count cannot see: list
+ * markers and generated content, nodes aria-owns brings in from elsewhere, closed shadow roots, nodes added after the
+ * count. Under the socket's 100 MiB at the measured 0.45 KB a node (/code-review round 4 on #1038).
  */
-const AX_PIECEWISE_MAX_NODES = 3 * AX_HIDDEN_READ_MAX_DOM_NODES;
+const AX_PIECEWISE_MAX_NODES = 200_000;
 
 /**
  * How long a hidden tab's read may take, from before the Accessibility domain is enabled, before it gives up the same
@@ -714,17 +715,21 @@ const PAGE_HIDDEN_JS = `(function() {
 
 /**
  * Called on the scope's roots (an array): how many elements and text nodes are under them, open shadow roots'
- * included, and how many characters of text, counted until past either limit. Read through the prototypes, so a form
- * control named nodeType or data does not stand in for them.
+ * included, and how many characters of text, counted until past either limit. What is never in the tree is not
+ * counted: script, style, noscript and template contents (a page's inline JSON state can be megabytes; /code-review
+ * round 4 on #1038). Read through the prototypes, so a form control named nodeType or data does not stand in for them.
  */
 const COUNT_UNDER_ROOTS_FN = `function(maxNodes, maxText) {
   var ntGet = Object.getOwnPropertyDescriptor(Node.prototype, 'nodeType').get;
   var dataGet = Object.getOwnPropertyDescriptor(CharacterData.prototype, 'data').get;
   var srGet = Object.getOwnPropertyDescriptor(Element.prototype, 'shadowRoot').get;
+  var nameGet = Object.getOwnPropertyDescriptor(Element.prototype, 'tagName').get;
   var n = 0, t = 0, stack = Array.prototype.slice.call(this);
   while (stack.length > 0 && n <= maxNodes && t <= maxText) {
     var r = stack.pop();
-    var w = Document.prototype.createTreeWalker.call(document, r, 5);
+    var w = Document.prototype.createTreeWalker.call(document, r, 5, { acceptNode: function(x) {
+      return ntGet.call(x) === 1 && /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(nameGet.call(x)) ? 2 : 1;
+    } });
     for (var c = r; c && n <= maxNodes && t <= maxText; c = w.nextNode()) {
       var k = ntGet.call(c);
       if (k === 3) { n++; t += dataGet.call(c).length; }
@@ -808,7 +813,8 @@ export async function markAxMatches(
     // tree in one message and counted elements, which a <pre> of 200,000 lines passed with 5 elements and a 117 MiB
     // tree (each line is a node of the whole tree; a text run's line boxes are not asked for here). An ignored node
     // that came in a reply is not asked again when the reply holds its children. Past AX_PIECEWISE_MAX_NODES nodes or
-    // AX_PIECEWISE_MAX_MS the read gives up too.
+    // AX_PIECEWISE_MAX_MS the read gives up too. Not bounded (/code-review round 4 on #1038, not seen on a real page):
+    // names taken from attributes or references, e.g. hundreds of elements labelled by one element of megabytes of text.
     //
     // The pieces are read at different moments: a subtree the page moves during the read can be seen under both
     // parents (kept once) or under neither, and a container that replaces its children after it was read loses them;
@@ -855,6 +861,7 @@ export async function markAxMatches(
           // AX_PIECEWISE_IN_FLIGHT roots at a time: a class scope can match thousands (/code-review on #1038).
           const tops: Array<AxNode | null | undefined> = [];
           for (let i = 0; i < roots.length; i += AX_PIECEWISE_IN_FLIGHT) {
+            if (timedOut) throw tooSlow();
             tops.push(...await inTime(Promise.all(roots.slice(i, i + AX_PIECEWISE_IN_FLIGHT).map(async (objectId) => {
               const backendNodeId = await (s.send("DOM.describeNode", { objectId }) as Promise<{ node?: { backendNodeId?: number } }>)
                 .then((r) => r.node?.backendNodeId, () => undefined);
@@ -866,17 +873,26 @@ export async function markAxMatches(
           const byId = new Map<string, AxNode>();
           const queue: string[] = [];
           const asked = new Set<string>();
+          // A node's children are counted before they are asked for, by the ids it lists: one reply holds all of them
+          // (150,000 list items: 67.5 MiB), and a list aria-owns brings in from outside the scope was not in the DOM
+          // count (/code-review rounds 1 and 4 on #1038).
+          let counted = 0;
           const ask = (x: AxNode): void => {
-            if (x.childIds?.length && x.role?.value !== "StaticText" && !asked.has(x.nodeId)) { asked.add(x.nodeId); queue.push(x.nodeId); }
+            if (x.childIds?.length && x.role?.value !== "StaticText" && !asked.has(x.nodeId)) {
+              asked.add(x.nodeId);
+              counted += x.childIds.length;
+              queue.push(x.nodeId);
+            }
           };
+          const tooMany = (): boolean => Math.max(counted, byId.size) > AX_PIECEWISE_MAX_NODES;
           for (const t of tops) if (t) { byId.set(t.nodeId, t); ask(t); }
           let failed: unknown = null;
           const inFlight = new Set<Promise<void>>();
           while (queue.length > 0 || inFlight.size > 0) {
             if (failed !== null) throw failed;
             if (timedOut) throw tooSlow();
-            if (byId.size > AX_PIECEWISE_MAX_NODES) throw new Error("a hidden page's tree too large to read under this scope");
-            while (queue.length > 0 && inFlight.size < AX_PIECEWISE_IN_FLIGHT) {
+            if (tooMany()) throw new Error("a hidden page's tree too large to read under this scope");
+            while (queue.length > 0 && inFlight.size < AX_PIECEWISE_IN_FLIGHT && !timedOut && !tooMany()) {
               const id = queue.shift()!;
               const p: Promise<void> = (s.send("Accessibility.getChildAXNodes", { id }) as Promise<{ nodes?: AxNode[] }>)
                 .then((r) => {
@@ -899,7 +915,8 @@ export async function markAxMatches(
             if (inFlight.size > 0) await new Promise<void>((res) => { wake = res; });
           }
           if (failed !== null) throw failed;
-          if (byId.size > AX_PIECEWISE_MAX_NODES) throw new Error("a hidden page's tree too large to read under this scope");
+          if (timedOut) throw tooSlow();
+          if (tooMany()) throw new Error("a hidden page's tree too large to read under this scope");
           return tops.map((top) => {
             if (top === null) return null;
             // Depth first by an explicit stack, children in their order: a deep page does not run out of call stack.

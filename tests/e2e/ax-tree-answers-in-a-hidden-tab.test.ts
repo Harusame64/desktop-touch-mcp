@@ -194,8 +194,8 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
       expect(scoped.ms).toBeLessThan(5_000);
     });
 
-    it(`one list wider than the budget is not asked for in a hidden tab ${where} (/code-review on #1038)`, async () => {
-      if (shown) return; // queryAXTree over 100,000 items runs past the command timeout; the shown tab is unchanged.
+    // Hidden tab only: queryAXTree over 100,000 items runs past the command timeout; the shown tab is unchanged.
+    it.skipIf(shown)(`one list wider than the budget is not asked for in a hidden tab ${where} (/code-review on #1038)`, async () => {
       await front(other);
       const n = AX_HIDDEN_READ_MAX_DOM_NODES + 100;
       await page(`<ul id="wide"></ul><button id="big" aria-label="Find me">x</button>
@@ -203,8 +203,7 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
           for (var i = 0; i < ${n}; i++) { var li = document.createElement('li'); li.textContent = 'row ' + i; f.appendChild(li); } u.appendChild(f);</script>`);
       const r = await mark("ariaLabel", "Find me");
       expect(r.ms).toBeLessThan(10_000);
-      if (shown) expect(r.ids).toEqual(["big"]);
-      else expect(r.count).toBeNull();
+      expect(r.count).toBeNull();
     });
 
     it(`elements in a shadow root count toward the DOM budget ${where} (/code-review on #1037 and #1038)`, async () => {
@@ -216,6 +215,26 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
       const r = await mark("ariaLabel", "Find me");
       if (shown) expect(r.ids).toEqual(["big"]);
       else { expect(r.count).toBeNull(); expect(r.ms).toBeLessThan(2_000); }
+    });
+
+    it(`a page's inline script and style text is not counted ${where} (/code-review round 4 on #1038)`, async () => {
+      await front(shown ? tab : other);
+      await page(`<script id="state" type="application/json"></script><style id="css"></style><button id="big" aria-label="Find me">x</button>
+        <script>document.getElementById('state').textContent = JSON.stringify({ s: 'a'.repeat(4000100) });
+          document.getElementById('css').textContent = '/*' + 'b'.repeat(4000100) + '*/';</script>`);
+      const r = await mark("ariaLabel", "Find me");
+      expect(r.ids).toEqual(["big"]);
+    });
+
+    it.skipIf(shown)(`a list aria-owns brings in from outside the scope, wider than the budget, is not asked for ${where} (/code-review round 4 on #1038)`, async () => {
+      await front(other);
+      await page(`<div id="pick"><div role="combobox" aria-expanded="true" aria-controls="opts" aria-owns="opts" aria-label="Pick" tabindex="0">p</div>
+        <button id="big" aria-label="Find me">x</button></div><div id="opts" role="listbox"></div>
+        <script>var o = document.getElementById('opts'), f = document.createDocumentFragment();
+          for (var i = 0; i < 200100; i++) { var d = document.createElement('div'); d.setAttribute('role', 'option'); f.appendChild(d); } o.appendChild(f);</script>`);
+      const r = await mark("ariaLabel", "Find me", { scope: "#pick" });
+      expect(r.count).toBeNull();
+      expect(r.ms).toBeLessThan(5_000);
     });
 
     it(`a hidden page of few elements and very long text falls back before reading ${where} (/code-review on #1038)`, async () => {
