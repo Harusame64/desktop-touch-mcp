@@ -101,6 +101,42 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
       expect((await mark("controls", "")).ids).toEqual(["sw"]);
     });
 
+    it(`calls at once on one tab keep their own objects ${where} (internal #430: one shared object group, released by the first to end)`, async () => {
+      await front(shown ? tab : other);
+      // A long call while short ones on the same tab begin and end: each short call's end released the long one's
+      // objects when they shared one group. In the front tab the long one reads a page of 30,000 paragraphs (queryAXTree
+      // takes a while). In a hidden tab that page reads near its 5 s limit on win2, so there the long one marks 1,000
+      // switches up to the cap instead, each through its own objects, and the tree stays small.
+      const pad = shown
+        ? "for (var i = 0; i < 30000; i++) { var p = document.createElement('p'); p.textContent = 'line ' + i; f.appendChild(p); }"
+        : "for (var i = 0; i < 1000; i++) { var w = document.createElement('div'); w.setAttribute('role', 'switch'); w.setAttribute('aria-checked', 'false'); w.tabIndex = 0; w.setAttribute('aria-label', 'Toggle ' + i); w.textContent = 't'; f.appendChild(w); }";
+      await page(`${FORM}<div id="pad"></div><script>var d = document.getElementById('pad'), f = document.createDocumentFragment(); ${pad} d.appendChild(f);</script>`);
+      const longCall = (): Promise<{ ids: string[]; ms: number }> => shown ? mark("role", "button") : mark("controls", "");
+      const longIds = shown ? ["save", "save2"] : null;
+      let overlapped = 0;
+      for (let round = 0; round < 5; round++) {
+        let longEnded = false;
+        const longStart = Date.now();
+        const long = longCall().finally(() => { longEnded = true; });
+        const spans: Array<[number, number]> = [];
+        const short: string[][] = [];
+        while (!longEnded) {
+          const st = Date.now();
+          const r = await mark("ariaLabel", "Save", { scope: "#f" });
+          short.push(r.ids); spans.push([st, st + r.ms]);
+        }
+        const l = await long;
+        if (longIds) expect(l.ids, `round ${round}`).toEqual(longIds);
+        else { expect(l.ids.length, `round ${round}`).toBe(1000); expect(l.ids[0]).toBe("sw"); }
+        for (const ids of short) expect(ids, `round ${round}`).toEqual(["save"]);
+        // The calls ran at once: whichever ended first released its group while the other was still reading (in the
+        // front tab the long one ends first, in a hidden one the short ones do).
+        const longEnd = longStart + l.ms;
+        if (spans.some(([a, b]) => a < longEnd && b > longStart)) overlapped++;
+      }
+      expect(overlapped).toBeGreaterThan(0);
+    });
+
     it(`a scope keeps the nodes under it ${where}`, async () => {
       await front(shown ? tab : other);
       await page(FORM);
