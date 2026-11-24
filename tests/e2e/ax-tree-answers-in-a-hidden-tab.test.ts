@@ -3,14 +3,14 @@
  * the browser's accessibility tree, and answer in a tab that is not shown. Accessibility.queryAXTree waits there for a
  * frame that does not come: each call ran into the 15 s command timeout and fell back to the DOM reading (win2: a
  * by:'ariaLabel' fill took ~15 s in a hidden tab). There the tree is now read in pieces (getChildAXNodes, internal
- * #423), which answers; the front tab still asks queryAXTree. Each cell runs in both, with the same expected values: the hidden tab's reading
+ * #423) when the DOM under the scope is small enough, which answers; the front tab still asks queryAXTree. Each cell runs in both, with the same expected values: the hidden tab's reading
  * keeps queryAXTree's answer — the same nodes, under a scope too (with what it owns by aria-owns), in queryAXTree's
  * order (a slot's assigned nodes where the slot is), which decides which ones a cap keeps.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { sleep } from "./helpers/wait.js";
-import { evaluateInTab, disconnectAll, markAxMatches, clearAxMarks, AX_PIECEWISE_MAX_NODES } from "../../src/engine/cdp-bridge.js";
+import { evaluateInTab, disconnectAll, markAxMatches, clearAxMarks, AX_HIDDEN_READ_MAX_DOM_NODES } from "../../src/engine/cdp-bridge.js";
 import { browserFillInputHandler } from "../../src/tools/browser.js";
 
 const PORT = 9246;
@@ -151,29 +151,29 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
       }
     });
 
-    // Paragraphs: each is two nodes in the tree (it and its text), so 15,000 are 30,000 nodes, under the budget; an
-    // empty element is none (/code-review round 2 on #1038).
+    // 20,100 elements: past #1037's element limit, under the DOM budget (an empty element is no node of the tree, but
+    // it is counted).
     it(`a page of many elements is read ${where}, in a shadow root too (internal #423: #1037 gave up past 20,000)`, async () => {
       for (const inShadow of [false, true]) {
         await front(shown ? tab : other);
         await page(`<div id="host"></div><button id="big" aria-label="Find me">x</button>
           <script>var h = document.getElementById('host'), r = ${inShadow} ? h.attachShadow({ mode: 'open' }) : h, f = document.createDocumentFragment();
-            for (var i = 0; i < 15000; i++) { var p = document.createElement('p'); p.textContent = 'p' + i; f.appendChild(p); } r.appendChild(f);</script>`);
+            for (var i = 0; i < 20100; i++) f.appendChild(document.createElement('i')); r.appendChild(f);</script>`);
         const r = await mark("ariaLabel", "Find me");
         expect(r.ms).toBeLessThan(10_000);
         expect(r.ids).toEqual(["big"]);
       }
     });
 
-    it(`a hidden page past the node budget falls back within the time limit, a scope under it is read; a shown one reads the tree ${where}`, async () => {
+    it(`a hidden page past the DOM budget falls back before reading, a scope under it is read; a shown one reads the tree ${where}`, async () => {
       await front(shown ? tab : other);
-      // Each paragraph is two nodes in the tree (it and its text); an empty element is none.
-      const n = AX_PIECEWISE_MAX_NODES / 2 + 100;
+      // Each paragraph is two DOM nodes (it and its text).
+      const n = AX_HIDDEN_READ_MAX_DOM_NODES / 2 + 100;
       await page(`<div id="many"></div><form id="f"><button id="big" aria-label="Find me">x</button></form>
         <script>var m = document.getElementById('many'), f = document.createDocumentFragment();
           for (var i = 0; i < ${n}; i++) { var p = document.createElement('p'); p.textContent = 'p' + i; f.appendChild(p); } m.appendChild(f);</script>`);
       const r = await mark("ariaLabel", "Find me");
-      expect(r.ms).toBeLessThan(10_000);
+      expect(r.ms).toBeLessThan(shown ? 10_000 : 2_000);
       if (shown) expect(r.ids).toEqual(["big"]);
       else expect(r.count).toBeNull();
       const scoped = await mark("ariaLabel", "Find me", { scope: "#f" });
@@ -183,7 +183,7 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
 
     it(`one list wider than the node budget is not asked for in a hidden tab, and read in a shown one ${where} (/code-review on #1038)`, async () => {
       await front(shown ? tab : other);
-      const n = AX_PIECEWISE_MAX_NODES + 100;
+      const n = AX_HIDDEN_READ_MAX_DOM_NODES + 100;
       await page(`<ul id="wide"></ul><button id="big" aria-label="Find me">x</button>
         <script>var u = document.getElementById('wide'), f = document.createDocumentFragment();
           for (var i = 0; i < ${n}; i++) { var li = document.createElement('li'); li.textContent = 'row ' + i; f.appendChild(li); } u.appendChild(f);</script>`);
@@ -191,6 +191,28 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
       expect(r.ms).toBeLessThan(10_000);
       if (shown) expect(r.ids).toEqual(["big"]);
       else expect(r.count).toBeNull();
+    });
+
+    it(`elements in a shadow root count toward the DOM budget ${where} (/code-review on #1037 and #1038)`, async () => {
+      await front(shown ? tab : other);
+      const n = AX_HIDDEN_READ_MAX_DOM_NODES + 100;
+      await page(`<div id="host"></div><button id="big" aria-label="Find me">x</button>
+        <script>var sr = document.getElementById('host').attachShadow({ mode: 'open' }), f = document.createDocumentFragment();
+          for (var i = 0; i < ${n}; i++) f.appendChild(document.createElement('i')); sr.appendChild(f);</script>`);
+      const r = await mark("ariaLabel", "Find me");
+      if (shown) expect(r.ids).toEqual(["big"]);
+      else { expect(r.count).toBeNull(); expect(r.ms).toBeLessThan(2_000); }
+    });
+
+    it(`a hidden page of few elements and very long text falls back before reading ${where} (/code-review on #1038)`, async () => {
+      await front(shown ? tab : other);
+      await page(`<pre id="long"></pre><button id="big" aria-label="Find me">x</button>
+        <script>document.getElementById('long').textContent = 'a'.repeat(10000100);</script>`);
+      const r = await mark("ariaLabel", "Find me", shown ? { scope: "#big" } : {});
+      if (shown) expect(r.ids).toEqual(["big"]);
+      else { expect(r.count).toBeNull(); expect(r.ms).toBeLessThan(2_000); }
+      const scoped = await mark("ariaLabel", "Find me", { scope: "#big" });
+      expect(scoped.ids).toEqual(["big"]);
     });
 
     it(`a page that keeps replacing rows during the read still answers from the tree ${where} (/code-review on #1038)`, async () => {
