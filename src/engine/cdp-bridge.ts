@@ -678,14 +678,18 @@ export const AX_MARK_CAP = 200;
 /**
  * The most DOM nodes (elements and text, open shadow roots' included) a hidden tab's read may have under the scope's
  * roots (internal #423). Every node a getChildAXNodes reply holds stands for one of them, or for a list marker or
- * generated content beside one, so this bounds every reply before anything is asked; past it the caller keeps the DOM
- * reading at once. MDN's input page is about 16,500 elements and 18,000 tree nodes: ~0.8 s headless on mac,
- * 1.9-2.4 s on win2's Chrome.
+ * generated content beside one, so this bounds every reply before anything is asked (at most about 0.45 KB a node
+ * measured, so 45 MB for the nodes); past it the caller keeps the DOM reading at once. Real pages, whole document:
+ * MDN's input page 48,500 (read in 1.7-2.4 s on win2's Chrome), the Python docs' stdtypes 41,500, Wikipedia "Tokyo"
+ * 29,900, Stack Overflow 19,200, GitHub 3,800.
  */
-export const AX_HIDDEN_READ_MAX_DOM_NODES = 40_000;
+export const AX_HIDDEN_READ_MAX_DOM_NODES = 100_000;
 
-/** The most characters of text under the scope's roots a hidden tab's read may have: a text run's name is its text. */
-const AX_HIDDEN_READ_MAX_TEXT = 10_000_000;
+/**
+ * The most characters of text under the scope's roots a hidden tab's read may have: a text run's name is its text, and
+ * a link's, button's, heading's or row's name repeats the text inside it.
+ */
+const AX_HIDDEN_READ_MAX_TEXT = 4_000_000;
 
 /**
  * The most tree nodes the read walks, a backstop over the DOM count for what that count cannot see: list markers and
