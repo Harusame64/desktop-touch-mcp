@@ -681,11 +681,24 @@ export const AX_MARK_CAP = 200;
  */
 export const AX_WHOLE_TREE_MAX_ELEMENTS = 20_000;
 
-/** Page script: whether the page is hidden, and how many elements it has, by the prototypes' getters. */
+/**
+ * Page script: whether the page is hidden, by Document.prototype's getter (not a property the page gives the document
+ * itself); and only then how many elements it has, its open shadow roots' included (/code-review on #1037: a page of
+ * components holds most of them there), counted until past AX_WHOLE_TREE_MAX_ELEMENTS.
+ */
 const PAGE_SHOWN_AND_SIZE_JS = `(function() {
   var d = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState');
   var vs = d && d.get ? d.get.call(document) : document.visibilityState;
-  return { hidden: vs === 'hidden', elements: Document.prototype.getElementsByTagName.call(document, '*').length };
+  if (vs !== 'hidden') return { hidden: false, elements: 0 };
+  var max = ${AX_WHOLE_TREE_MAX_ELEMENTS}, n = 0, roots = [document];
+  var srGet = Object.getOwnPropertyDescriptor(Element.prototype, 'shadowRoot').get;
+  while (roots.length > 0 && n <= max) {
+    var r = roots.pop();
+    var all = r === document ? Document.prototype.getElementsByTagName.call(document, '*') : DocumentFragment.prototype.querySelectorAll.call(r, '*');
+    n += all.length;
+    for (var i = 0; i < all.length && n <= max; i++) { var sr = srGet.call(all[i]); if (sr) roots.push(sr); }
+  }
+  return { hidden: true, elements: n };
 })()`;
 
 export async function markAxMatches(
@@ -738,8 +751,9 @@ export async function markAxMatches(
     // input page: 3,700 elements, 7 MiB). Over the socket's 100 MiB a message closes the tab's session, failing the
     // calls beside it; so a hidden page of more than AX_WHOLE_TREE_MAX_ELEMENTS elements is not read whole, and the
     // caller keeps the DOM reading at once, as main gave it after the 15 s wait (/code-review on #1037). Whether the
-    // tab is shown and how many elements it has are read by the prototypes' getters, which a page does not replace;
-    // when that read fails, the tab is taken as shown (/code-review on #1037).
+    // tab is shown is read by Document.prototype's getter, so a page that gives the document its own visibilityState
+    // is still seen hidden; one that replaces the prototype's getter is taken as shown, and waits as on main. When that
+    // read fails, the tab is taken as shown (/code-review on #1037).
     const queryTree = async (role?: string): Promise<AxNode[]> => {
       let hidden = false;
       let elements = 0;

@@ -163,6 +163,18 @@ describe.skipIf(!CHROME)("the accessibility tree answers in a hidden tab (intern
       else expect(r.count).toBeNull();
     });
 
+    it(`elements in shadow roots count toward that limit ${where} (/code-review on #1037)`, async () => {
+      await front(shown ? tab : other);
+      const n = AX_WHOLE_TREE_MAX_ELEMENTS + 100;
+      await page(`<div id="host"></div><button id="big" aria-label="Find me">x</button>
+        <script>var sr = document.getElementById('host').attachShadow({ mode: 'open' }), f = document.createDocumentFragment();
+          for (var i = 0; i < ${n}; i++) f.appendChild(document.createElement('i')); sr.appendChild(f);</script>`);
+      const r = await mark("ariaLabel", "Find me");
+      expect(r.ms).toBeLessThan(10_000);
+      if (shown) expect(r.ids).toEqual(["big"]);
+      else expect(r.count).toBeNull();
+    });
+
     it(`browser_fill by:'ariaLabel' writes the field ${where}, without waiting out a timeout`, async () => {
       await front(shown ? tab : other);
       await page(FORM);
