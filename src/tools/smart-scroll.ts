@@ -239,16 +239,23 @@ async function tryCdp(params: {
   // the top layer, overflow-clip-margin, will-change, slots). A tall target partly shown still intersects; a row
   // touching the box's edge with no area inside does not (isIntersecting says yes there, the ratio says 0).
   // It answers a frame later, so the position is read again from its entry: a page that moved the target out of the
-  // window meanwhile gets that position, not clipped. Not asked: a target with no size, or outside the window. A page
+  // window meanwhile gets that position, not clipped. Not asked: a target outside the window, or one with no box
+  // (display:none, removed, empty: no position either, clipCheck 'gone'). A page
   // that is not visible may not render, so it is not asked either; that and no answer within 500 ms are said in
   // clipCheck, since in-view is then only the window's answer.
-  if (out.viewportPosition !== 'in-view' || !(r.width > 0 && r.height > 0)) { out.clipCheck = 'not-needed'; return out; }
-  if (document.visibilityState !== 'visible' || typeof IntersectionObserver !== 'function') { out.clipCheck = 'page-not-visible'; return out; }
+  if (!(r.width > 0 && r.height > 0)) { out.viewportPosition = null; out.clipCheck = 'gone'; return out; }
+  if (out.viewportPosition !== 'in-view') { out.clipCheck = 'not-needed'; return out; }
+  if (document.visibilityState !== 'visible') { out.clipCheck = 'page-not-visible'; return out; }
+  if (typeof IntersectionObserver !== 'function') { out.clipCheck = 'no-observer'; return out; }
   return await new Promise(function(res) {
     let timer = 0;
     const o = new IntersectionObserver(function(es) {
       o.disconnect(); clearTimeout(timer);
       const e = es[es.length - 1];
+      // Gone in that frame (removed, display:none): no box to be clipped, and no position to give.
+      if (!el.isConnected || !(e.boundingClientRect.width > 0 && e.boundingClientRect.height > 0)) {
+        out.viewportPosition = null; out.clipCheck = 'gone'; res(out); return;
+      }
       const now = at(e.boundingClientRect);
       res(now !== 'in-view'
         ? { viewportPosition: now, pageRatio: ratio(e.boundingClientRect), clipped: false, clipCheck: 'moved' }
@@ -265,10 +272,17 @@ async function tryCdp(params: {
       warnings.push(`The position after the scroll was not read: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     });
-    if (finalState?.clipCheck === "page-not-visible" || finalState?.clipCheck === "no-answer") {
-      warnings.push(finalState.clipCheck === "page-not-visible"
-        ? "viewportPosition says only that the target is inside the window: the page is not visible, so whether an ancestor clips it was not checked"
-        : "viewportPosition says only that the target is inside the window: the browser did not answer within 500 ms whether an ancestor clips it");
+    const notChecked: Record<string, string> = {
+      "page-not-visible": "the page is not visible, so whether an ancestor clips it was not checked",
+      "no-observer": "the page has no IntersectionObserver, so whether an ancestor clips it was not checked",
+      "no-answer": "the browser did not answer within 500 ms whether an ancestor clips it",
+      "gone": "the target has no box on the page (display:none, removed, or empty), so it is not on screen either",
+    };
+    const why = finalState?.clipCheck !== undefined ? notChecked[finalState.clipCheck] : undefined;
+    if (why) {
+      warnings.push(finalState?.clipCheck === "gone"
+        ? `viewportPosition is null: ${why}`
+        : `viewportPosition says only that the target was inside the window: ${why}`);
     }
     const ancestorsOut = ancestors.map(a => ({
       selector: a.cssSelectorPath,
@@ -280,12 +294,16 @@ async function tryCdp(params: {
     if (finalState?.clipped) {
       return failCode(
         "TargetClipped",
-        "The target is inside the window, but an ancestor cuts it off, so nothing of it is on screen.",
+        occludedBy
+          // The tool's own sticky-header shift ran first, and can be what moved the target out of its box.
+          ? "The target is inside the window, but an ancestor cuts it off, so nothing of it is on screen. This tool shifted the target's parent for a sticky header first (see warnings), which may be what cut it off."
+          : "The target is inside the window, but an ancestor cuts it off, so nothing of it is on screen.",
         {
           suggest: getSuggestsForCode("TargetClipped"),
-          // The scrolls already ran: carry what the success answer carries (ancestors as walked before the scroll).
+          // The scrolls already ran: say so, with what the success answer carries (ancestors as walked before the scroll).
           context: {
-            target, pageRatio: finalState.pageRatio, ancestors: ancestorsOut,
+            target, path: "cdp", scrolled: true, viewportPosition: finalState.viewportPosition,
+            pageRatio: finalState.pageRatio, ancestors: ancestorsOut,
             ...(occludedBy && { occludedBy }), ...(warnings.length > 0 && { warnings }),
           },
         },

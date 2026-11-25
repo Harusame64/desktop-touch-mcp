@@ -45,13 +45,18 @@ const HTML = `<title>t</title><style>body{margin:0}</style>
 <div id="free" style="height:200px;overflow:auto">${rows("f")}</div>
 <div style="height:200px;overflow:auto">${rows("o")}</div>
 <div id="jump" style="height:20px">jump</div>
+<div id="gone" style="height:20px">gone</div>
 <div style="height:1500px"></div>
 <div style="position:fixed;inset:0;background:rgba(0,0,0,.1)"></div>
 <script>
 customElements.define('x-host', class extends HTMLElement { constructor() { super();
   this.attachShadow({ mode: 'open' }).innerHTML = '<div style="height:100px;overflow:clip"><div style="height:200px"></div><slot></slot></div>'; } });
 document.getElementById('pop').showPopover();
-addEventListener('scroll', () => { if (window.__armJump) { window.__armJump = false; document.getElementById('jump').style.marginTop = '5000px'; } });
+window.__IO = IntersectionObserver;
+addEventListener('scroll', () => {
+  if (window.__armJump) { window.__armJump = false; document.getElementById('jump').style.marginTop = '5000px'; }
+  if (window.__armGone) { window.__armGone = false; document.getElementById('gone').style.display = 'none'; }
+});
 </script>`;
 
 async function scroll(target: string, inline = "center") {
@@ -75,8 +80,12 @@ beforeEach(async () => {
   if (!CHROME_AVAILABLE) return;
   // No reload: a data: page does not reload itself (location.reload() left window state in place, measured). Every
   // cell only scrolls, so putting each box and the window back at the start is enough.
-  await evaluateInTab(`window.__armJump = false; document.getElementById('jump').style.marginTop = '';
+  await evaluateInTab(`window.__armJump = false; window.__armGone = false;
+    document.getElementById('jump').style.marginTop = ''; document.getElementById('gone').style.display = '';
+    window.IntersectionObserver = window.__IO; delete document.visibilityState;
     scrollTo(0, 0); document.querySelectorAll('div').forEach((b) => { b.scrollTop = 0; b.scrollLeft = 0; }); 1`, null, PORT);
+  // Let the reset's own scroll event fire before a cell arms a trap on the next one (/code-review).
+  await evaluateInTab(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(1))))`, null, PORT);
 });
 
 afterAll(() => {
@@ -100,6 +109,7 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the
       expect(r.code).toBe("TargetClipped");
       expect(r.error).toContain("an ancestor cuts it off, so nothing of it is on screen");
       // The scroll already ran: the answer still says what it did.
+      expect(r.context).toMatchObject({ path: "cdp", scrolled: true, viewportPosition: "in-view" });
       expect(Array.isArray(r.context.ancestors)).toBe(true);
       expect(typeof r.context.pageRatio).toBe("number");
       // The truth the answer is about: the target's centre is inside the window, and nothing there is the target.
@@ -136,6 +146,30 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the
     expect(r.ok).toBe(true);
     expect(r.viewportPosition).toBe("below");
     expect(await evaluateInTab(`document.getElementById('jump').getBoundingClientRect().top > innerHeight`, null, PORT)).toBe(true);
+  });
+
+  for (const [name, setup, said] of [
+    ["the page is not visible", `Object.defineProperty(document, 'visibilityState', { get: () => 'hidden', configurable: true }); 1`, /the page is not visible/],
+    ["the browser does not answer", `window.IntersectionObserver = function () { return { observe() {}, disconnect() {} }; }; 1`, /did not answer within 500 ms/],
+    ["the page hides the target on the scroll", `window.__armGone = true; 1`, /the target has no box on the page/],
+  ] as const) {
+    it(`when ${name}, the answer warns that it was not checked`, async () => {
+      await evaluateInTab(setup, null, PORT);
+      const r = await scroll(name.includes("hides") ? "#gone" : "#c-45");
+      expect(r.ok).toBe(true);
+      // A hidden target has no position; the others are inside the window, unchecked.
+      expect(r.viewportPosition).toBe(name.includes("hides") ? null : "in-view");
+      expect(r.warnings).toContainEqual(expect.stringMatching(said));
+    });
+  }
+
+  it("a final read that fails answers ok with a warning, without falling through to the other roads", async () => {
+    await evaluateInTab(`window.IntersectionObserver = function () { throw new Error('observer broke'); }; 1`, null, PORT);
+    const r = await scroll("#c-45");
+    expect(r.ok).toBe(true);
+    expect(r.path).toBe("cdp");
+    expect(r.viewportPosition).toBeNull();
+    expect(r.warnings).toContainEqual(expect.stringMatching(/The position after the scroll was not read: .*observer broke/));
   });
 
   it("a row in an ordinary scroller is in view", async () => {
