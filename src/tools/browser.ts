@@ -29,6 +29,7 @@ import {
   getDomHtml,
   disconnectAll,
   getTabContext,
+  getListedTabContext,
   clearAxMarks,
   markAxMatches,
   isOffscreenMinimized,
@@ -257,7 +258,8 @@ export const browserNavigateSchema = {
   ),
   loadTimeoutMs: z.coerce.number().int().min(500).max(30000).default(15000).describe(
     "Max milliseconds to wait for page load when waitForLoad=true (default 15000). " +
-    "On timeout, returns ok:true with readyState set to current state and hints.warnings=['NavigateTimeout']."
+    "On timeout, returns ok:true with readyState set to current state and hints.warnings=['NavigateTimeout']; " +
+    "when the page did not answer (a script holding it), also 'PageNotAnswering', with the title and URL from the browser's tab list and the last readyState the page gave ('loading' if none)."
   ),
   lensId: z.string().optional().describe(
     "Optional perception lens ID. Guards (target.identityStable) are evaluated before navigating, " +
@@ -3398,6 +3400,9 @@ export const browserGetDomHandler = async ({
   }
 };
 
+/** How long a timed-out load wait still asks the page for its title before reading the tab list. */
+const PAGE_ANSWER_GRACE_MS = 300;
+
 export const browserNavigateHandler = async ({
   url,
   narrate,
@@ -3479,10 +3484,12 @@ export const browserNavigateHandler = async ({
 
     // Wait for document.readyState === "complete"
     await new Promise<void>((r) => setTimeout(r, 200));
+    let lastState: string | null = null;
     const poll = await pollUntil(
       async () => {
         try {
           const state = await evaluateInTab("document.readyState", tabId ?? null, port);
+          if (typeof state === "string") lastState = state;
           return state === "complete" ? true : null;
         } catch {
           return null;
@@ -3491,21 +3498,46 @@ export const browserNavigateHandler = async ({
       { intervalMs: 150, timeoutMs: loadTimeoutMs }
     );
 
-    const tabCtx = await getTabContext(tabId ?? null, port);
-    const elapsedMs = Date.now() - startedAt;
-
     if (!poll.ok) {
-      // Timeout — not a failure, LLM can continue
+      // Timeout — not a failure, LLM can continue. The page is asked for its title, URL and
+      // readyState for at most PAGE_ANSWER_GRACE_MS: a page whose script holds its thread does not
+      // answer until it lets go, and waiting for it took CDP's own 15 s (18.2 s against
+      // loadTimeoutMs 3000 on main, mac). The browser's tab list answers without the page. A page
+      // that answers within the grace is reported as before, even when the last readyState read
+      // ran a few ms past the deadline (/code-review).
+      const answered = await Promise.race([
+        getTabContext(tabId ?? null, port),
+        new Promise<null>((r) => setTimeout(() => r(null), PAGE_ANSWER_GRACE_MS)),
+      ]);
+      if (answered && answered.id !== null) {
+        return ok({
+          ok: true,
+          url: answered.url || url,
+          title: answered.title,
+          readyState: answered.readyState,
+          elapsedMs: Date.now() - startedAt,
+          waited: true,
+          hints: { warnings: ["NavigateTimeout"] },
+          ...(perceptionEnvNav && { _perceptionForPost: perceptionEnvNav }),
+        });
+      }
+      const listed = await getListedTabContext(tabId ?? null, port);
+      // "complete" cannot be the last state here: the wait would have ended ok.
+      const rs: string | null = lastState;
       return ok({
         ok: true,
-        url: tabCtx.url || url,
-        title: tabCtx.title,
-        readyState: tabCtx.readyState,
-        elapsedMs,
+        url: listed?.url || url,
+        title: listed?.title ?? "",
+        readyState: rs === "interactive" ? "interactive" : "loading",
+        elapsedMs: Date.now() - startedAt,
         waited: true,
-        hints: { warnings: ["NavigateTimeout"] },
+        hints: { warnings: ["NavigateTimeout", "PageNotAnswering"] },
+        ...(perceptionEnvNav && { _perceptionForPost: perceptionEnvNav }),
       });
     }
+
+    const tabCtx = await getTabContext(tabId ?? null, port);
+    const elapsedMs = Date.now() - startedAt;
 
     // Build rich navigation block
     const richBlock: RichBlock | undefined = narrate === "rich" ? {
