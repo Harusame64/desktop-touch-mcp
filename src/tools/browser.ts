@@ -1676,6 +1676,17 @@ const FILL_HINTS_TEXTLIKE: string[] = [
   "Or set the field it writes to (often a hidden textarea) with browser_eval: browser_fill does not type into a field the page does not show",
 ];
 
+/**
+ * The tab a call works on, chosen once at its start (internal #423). With no tabId every read resolved the
+ * default page tab again (the most recently used one in the browser's list), so a tab brought to the front
+ * mid-call took the later reads: on main (mac) browser_fill focused the field in one tab and wrote the value
+ * into another, answering ok and "delivered". When no tab can be resolved here, the call's own reads answer
+ * that as before.
+ */
+async function pinTab(tabId: string | undefined, port: number): Promise<string | undefined> {
+  return tabId ?? (await resolveTabId(null, port).catch(() => undefined));
+}
+
 export const browserFillInputHandler = async ({
   selector,
   by,
@@ -1700,6 +1711,7 @@ export const browserFillInputHandler = async ({
   includeContext: boolean;
 }): Promise<ToolResult> => {
   try {
+    tabId = await pinTab(tabId, port);
     // ADR-023 Phase 1: by-axis (semantic) fill path. The registration schema's
     // .refine() guarantees exactly-one-of(selector | by+pattern), so a present
     // `by` means selector is absent → resolver path. Selector mode below is
@@ -1861,6 +1873,7 @@ export const browserGetFormHandler = async ({
   includeContext: boolean;
 }): Promise<ToolResult> => {
   try {
+    tabId = await pinTab(tabId, port);
     const expr = `
 (function() {
 ${ELEMENT_NAME_JS}
@@ -2057,6 +2070,7 @@ export const browserFindElementHandler = async ({
   includeContext: boolean;
 }): Promise<ToolResult> => {
   try {
+    tabId = await pinTab(tabId, port);
     // ADR-040 — one tab for the coordinates and the window they are placed on (codex on #967).
     const tab = tabId ?? await resolveTabId(null, port).catch(() => null);
     const raw = await getElementScreenCoords(
@@ -2896,6 +2910,7 @@ export const browserClickElementHandler = async ({
 }): Promise<ToolResult> => {
   const force = forceFocus ?? (process.env.DESKTOP_TOUCH_FORCE_FOCUS === "1");
   try {
+    tabId = await pinTab(tabId, port);
     // ADR-023 Phase 1: by-axis (semantic) targeting path. The registration
     // schema's .refine() guarantees exactly-one-of(selector | by+pattern), so a
     // present `by` means selector is absent → resolver path. The selector path
@@ -3242,6 +3257,7 @@ export const browserEvalJsHandler = async ({
   withPerception?: boolean;
 }): Promise<ToolResult> => {
   try {
+    tabId = await pinTab(tabId, port);
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
       const guardResult = await evaluatePreToolGuards(lensId, "browser_eval", {});
@@ -3369,6 +3385,7 @@ export const browserGetDomHandler = async ({
   includeContext: boolean;
 }): Promise<ToolResult> => {
   try {
+    tabId = await pinTab(tabId, port);
     const html = await getDomHtml(
       selector ?? null,
       tabId ?? null,
@@ -3609,6 +3626,7 @@ export const browserGetInteractiveHandler = async ({
   includeContext: boolean;
 }): Promise<ToolResult> => {
   try {
+    tabId = await pinTab(tabId, port);
     const includeAll = types.includes("all");
     const includeLinks   = includeAll || types.includes("link");
     const includeButtons = includeAll || types.includes("button");
@@ -4034,6 +4052,7 @@ export const browserSearchHandler = async ({
   port: number;
 }): Promise<ToolResult> => {
   try {
+    tabId = await pinTab(tabId, port);
     // ADR-023 Phase 1 (S1/S7): the candidate-collection IIFE is now built by the
     // shared resolver module (verbatim extraction; bit-equal output pinned by
     // tests/unit/browser-resolver-candidate-collection.test.ts). Later phases
@@ -4159,6 +4178,7 @@ export const browserGetAppStateHandler = async ({
   includeContext: boolean;
 }): Promise<ToolResult> => {
   try {
+    tabId = await pinTab(tabId, port);
     const probes: Array<{ selector: string; framework: string }> = selectors
       ? selectors.map((s) => ({ selector: s, framework: "custom" }))
       : [
