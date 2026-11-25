@@ -245,9 +245,11 @@ async function tryCdp(params: {
   };
   const none = function(why) { return { viewportPosition: null, pageRatio: null, clipped: false, clipCheck: why }; };
   if (unmeasured(el)) return none(unmeasured(el));
-  // bounds: the observer's root rect when it gives one (it leaves the scrollbars out), else the window's.
+  // bounds: the observer's root rect when it gives one with a size (it leaves the scrollbars out; for a node detached
+  // meanwhile it is empty, measured), else the window's.
   const at = function(r, bounds) {
-    const w = bounds ? bounds.right : window.innerWidth, h = bounds ? bounds.bottom : window.innerHeight;
+    const use = bounds && bounds.width > 0 && bounds.height > 0;
+    const w = use ? bounds.right : window.innerWidth, h = use ? bounds.bottom : window.innerHeight;
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     return cy < 0 ? 'above' : cy > h ? 'below' : cx < 0 ? 'left' : cx > w ? 'right' : 'in-view';
   };
@@ -279,10 +281,11 @@ async function tryCdp(params: {
       // detached and a new one matching: answer for the new one where it is now, unchecked for clipping.
       if (!el.isConnected) {
         const fresh = document.querySelector(sel);
-        if (fresh && !unmeasured(fresh)) {
+        if (fresh) {
+          const fu = unmeasured(fresh);
           const fr = fresh.getBoundingClientRect();
           clearTimeout(timer);
-          res({ viewportPosition: at(fr), pageRatio: ratio(fr), clipped: false, clipCheck: 'replaced' });
+          res(fu ? none(fu) : { viewportPosition: at(fr, e.rootBounds), pageRatio: ratio(fr), clipped: false, clipCheck: 'replaced' });
           return;
         }
       }

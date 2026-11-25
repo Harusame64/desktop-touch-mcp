@@ -95,6 +95,8 @@ beforeEach(async () => {
   // No reload: a data: page does not reload itself (location.reload() left window state in place, measured). Every
   // cell only scrolls, so putting each box and the window back at the start is enough.
   await evaluateInTab(`window.__armJump = false; window.__armGone = false; window.__armSwap = false; window.__armRemove = false;
+    if (!document.getElementById('removed')) { const d = document.createElement('div'); d.id = 'removed'; d.style.height = '20px';
+      d.textContent = 'removed'; document.getElementById('swap').after(d); }
     document.getElementById('jump').style.marginTop = ''; document.getElementById('gone').style.display = '';
     window.IntersectionObserver = window.__IO; delete document.visibilityState;
     scrollTo(0, 0); document.querySelectorAll('div').forEach((b) => { b.scrollTop = 0; b.scrollLeft = 0; }); 1`, null, PORT);
