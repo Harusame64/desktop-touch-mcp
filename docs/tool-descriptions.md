@@ -34,7 +34,7 @@ argument schemas are in `src/stub-tool-catalog.ts`.
 | `scroll` | Scroll a window or page. |
 | `server_status` | Return MCP server status. |
 | `terminal` | Interact with a terminal window: read output, send input, or run+wait+read in one call. |
-| `wait_until` | Server-side poll for an observable condition — eliminates screenshot-polling loops when waiting for state changes. |
+| `wait_until` | Server-side poll for an observable condition — replaces run_macro({sleep:N}) and screenshot-polling loops. |
 | `window_dock` | Decorate a window: pin (always-on-top), unpin, or dock (move + resize + optional pin). |
 | `workspace_launch` | Launch an application and wait for its window to appear, returning the window's title, HWND, and PID. |
 | `workspace_snapshot` | Orient fully in one call — returns display layouts, all window thumbnails (WebP), and per-window actionable element lists with clickAt coords. |

@@ -7,10 +7,11 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
-import { evaluateInTab, disconnectAll } from "../../src/engine/cdp-bridge.js";
+import { evaluateInTab, disconnectAll, listTabs, rememberTabPort } from "../../src/engine/cdp-bridge.js";
 import { registerBrowserTools } from "../../src/tools/browser.js";
 import { waitUntilHandler, setBrowserSearchHook } from "../../src/tools/wait-until.js";
 import { parsePayload } from "./helpers/wait.js";
+import { getCdpPort } from "../../src/utils/desktop-config.js";
 
 const PORT = 9247;
 /** No listener: checked in beforeAll. */
@@ -34,6 +35,8 @@ beforeAll(async () => {
   }
   const open = await fetch(`http://127.0.0.1:${CLOSED_PORT}/json/version`, { signal: AbortSignal.timeout(1000) }).then(() => true, () => false);
   if (open) throw new Error(`port ${CLOSED_PORT} has a listener; this suite needs it closed`);
+  const defaultOpen = await fetch(`http://127.0.0.1:${getCdpPort()}/json/version`, { signal: AbortSignal.timeout(1000) }).then(() => true, () => false);
+  if (defaultOpen) throw new Error(`the configured CDP port ${getCdpPort()} has a listener; the tabId cell needs it closed`);
 }, 20_000);
 
 afterAll(() => {
@@ -53,14 +56,31 @@ describe.skipIf(!CHROME_AVAILABLE)("wait_until(element_matches) passes browser_s
     const { r, wall } = await wait({ by: "text", pattern: "Save", port: CLOSED_PORT });
     expect(r.code).toBe("BrowserNotConnected");
     expect(wall).toBeLessThan(1000);
-    expect(r.error).not.toContain("BrowserNotConnected: BrowserNotConnected:");
+    expect(r.error.match(/BrowserNotConnected/g)).toHaveLength(1);
   });
 
-  it("a regex that does not compile is answered at once, not polled", async () => {
-    const { r, wall } = await wait({ by: "regex", pattern: "([unclosed", port: PORT });
-    expect(r.ok).toBe(false);
-    expect(r.code).not.toBe("WaitTimeout");
-    expect(r.error).toMatch(/not a valid regular expression/);
+  it("a tabId alone is looked for on the port that tab was listed on, not the configured default", async () => {
+    // The configured default port has no browser (checked in beforeAll); the tab lives on PORT. The hook used the default.
+    const tab = (await listTabs(PORT)).find((t) => t.type === "page")!;
+    rememberTabPort(tab.id, PORT);
+    const { r } = await wait({ by: "text", pattern: "Save", tabId: tab.id });
+    expect(r.ok).toBe(true);
+  });
+
+  it("a regex that does not compile is answered at once as InvalidArgs, whatever words it holds", async () => {
+    // The code was once read from words that carried the pattern: "(wait timeout" came back WaitTimeout.
+    for (const pattern of ["([unclosed", "(wait timeout", "(browser not connected"]) {
+      const { r, wall } = await wait({ by: "regex", pattern, port: PORT });
+      expect(r.code, pattern).toBe("InvalidArgs");
+      expect(r.error).toMatch(/target\.pattern is not a valid regular expression/);
+      expect(wall).toBeLessThan(1000);
+    }
+  });
+
+  it("a scope that is not valid CSS is answered at once as InvalidArgs", async () => {
+    const { r, wall } = await wait({ by: "text", pattern: "Save", scope: "#a[", port: PORT });
+    expect(r.code).toBe("InvalidArgs");
+    expect(r.error).toMatch(/target\.scope is not a valid CSS selector/);
     expect(wall).toBeLessThan(1000);
   });
 

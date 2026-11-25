@@ -26,6 +26,18 @@ export type BrowserSearchHook = (params: {
   by: "text" | "regex" | "role" | "ariaLabel"; pattern: string; scope?: string;
 }) => Promise<Array<{ text: string; selector: string }>>;
 
+/**
+ * A browser_search that answered a failure other than "found nothing", as the registered hook passes it
+ * up: the envelope's code and its words, kept apart so the probe decides on the code and never on words
+ * that can carry the caller's pattern (/code-review: a regex "(wait timeout" read as WaitTimeout).
+ */
+export class BrowserSearchFailure extends Error {
+  constructor(readonly code: string, readonly detail: string) {
+    super(`${code}: ${detail}`);
+    this.name = "BrowserSearchFailure";
+  }
+}
+
 let terminalReadHook: TerminalReadHook | null = null;
 let browserSearchHook: BrowserSearchHook | null = null;
 
@@ -425,18 +437,30 @@ function probeElementMatches(
       }
       return null;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // The registered hook passes browser_search's failures up as "<code>: <words>" (browser.ts).
-      // A regex that does not compile never will: answered at once, as a validation error.
-      if (/\bInvalidRegex\b/.test(msg)) {
-        throw new Error(`target.pattern is not a valid regular expression (${msg})`, { cause: err });
-      }
-      // A search that timed out, or a scope that matches nothing yet, may pass: waited past, and said on the
-      // timeout as context.lastLook.error. Ahead of the test below, which would read "CDP" as a closed browser.
-      if (!msg.startsWith("BrowserNotConnected:") && (msg.includes("CDP timeout:") || /^(ScopeNotFound|BrowserSearchTimeout|UiaTimeout|ToolError):/.test(msg))) {
-        write(look, { error: msg });
+      if (err instanceof BrowserSearchFailure) {
+        const { code, detail } = err;
+        // The words after the last "<code>: " (failWith writes "browser_search failed: <Code>: …").
+        const words = detail.includes(`${code}: `) ? detail.slice(detail.lastIndexOf(`${code}: `) + code.length + 2) : detail;
+        // A browser that is gone, or a session that closed under the poll: answered at once, as url_matches does.
+        if (code === "BrowserNotConnected" || /CDP connection closed unexpectedly|CDP session is not open/.test(detail)) {
+          throw new Error(`BrowserNotConnected: ${words}`, { cause: err });
+        }
+        // What never compiles never will: answered at once, with the code first so the words are not read
+        // for one. browser_search answers an invalid regex as BrowserSearchNoResults, with its own prefix.
+        if (detail.startsWith("browser_search: InvalidRegex")) {
+          throw new Error("InvalidArgs: target.pattern is not a valid regular expression", { cause: err });
+        }
+        if (/is not a valid selector/.test(detail)) {
+          throw new Error("InvalidArgs: target.scope is not a valid CSS selector", { cause: err });
+        }
+        // A CDP call that timed out (a busy page), a scope that matches nothing yet, anything else: may
+        // pass, so waited past and named on the timeout. A CDP timeout is kept from its own prefix, as
+        // url_matches records it.
+        const cdp = detail.indexOf("CDP timeout:");
+        write(look, { error: cdp >= 0 ? detail.slice(cdp) : `${code}: ${words}` });
         return null;
       }
+      const msg = err instanceof Error ? err.message : String(err);
       // Bubble up "browser not connected" — no point polling against a dead CDP.
       if (/not connected|econnrefused|cdp/i.test(msg)) {
         if (msg.startsWith("BrowserNotConnected:")) throw err;
@@ -597,7 +621,7 @@ export const waitUntilHandler = async ({ condition, target, timeoutMs, intervalM
             ? [`No look answered within timeoutMs (the first had run ${unfinished}ms), so nothing was observed. The window or page is answering slowly — a page busy with a script or holding a dialog does this`]
             : []),
           ...(slowPage
-            ? ["The page did not answer within the CDP call's own 15 s, so its URL was not read — it is busy (a script holding it, or a dialog open). Wait for it or close the dialog before waiting again"]
+            ? ["The page did not answer within the CDP call's own 15 s, so it was not read — it is busy (a script holding it, or a dialog open). Wait for it or close the dialog before waiting again"]
             : []),
           ...earnedAdvice(look),
           ...(unfinished !== undefined && r.answeredPolls > 0
@@ -646,10 +670,10 @@ export function registerWaitUntilTool(server: McpServer): void {
   server.tool(
     "wait_until",
     buildDesc({
-      purpose: "Server-side poll for an observable condition — eliminates screenshot-polling loops when waiting for state changes.",
+      purpose: "Server-side poll for an observable condition — replaces run_macro({sleep:N}) and screenshot-polling loops.",
       details: "condition selects what to watch: window_appears/window_disappears (target.windowTitle required), focus_changes (optional target.fromHwnd), element_appears/value_changes (target.windowTitle + target.elementName required, UIA; min 500ms interval, except before the last look), ready_state (target.windowTitle; visible + not minimized), terminal_output_contains (target.windowTitle + target.pattern required [+target.regex:true], needs terminal tools loaded), element_matches (target.by + target.pattern required, needs browser tools loaded), url_matches (target.pattern required [+target.regex:true]; matches the active tab's location.href via CDP — use for SPA route changes, redirects, OAuth flows). Returns {ok:true, elapsedMs, observed} on success. timeoutMs default 5000 (max 60000).",
-      prefer: "Use instead of run_macro({sleep:N}) + screenshot loops. Use terminal_output_contains to detect CLI command completion. Use element_matches for browser DOM readiness after navigation.",
-      caveats: "element_matches/url_matches need a browser CDP connection (open --remote-debugging-port=9222 first). On timeout: {ok:false, code:'WaitTimeout', error, suggest:[...]}; suggest[] may open with a line earned by the last poll — read it, do not index. element_appears/value_changes spawn a UIA process per poll and on timeout return context.lastLook: did the element resolve, why not, and for value_changes baseline/latest — the field's VALUE, so a masked credential arrives as mask characters; for url_matches and element_matches, context.lastLook.error says why the last read failed (a CDP timeout, a scope matching nothing). For any condition, a poll unfinished at timeoutMs gives context.lastPoll {answered:false, ranMs}. Other codes: 'ToolError' (validation / missing hook — read the message), 'BrowserNotConnected' (re-attach via browser_open), and 'WindowExcluded' for a target this server may not act through, answered at once rather than polled. Branch on code.",
+      prefer: "Use terminal_output_contains to detect CLI command completion. Use element_matches for browser DOM readiness after navigation.",
+      caveats: "element_matches/url_matches need a browser CDP connection (open --remote-debugging-port=9222 first). On timeout: {ok:false, code:'WaitTimeout', error, suggest:[...]}; suggest[] may open with a line earned by the last poll — read it, do not index. element_appears/value_changes spawn a UIA process per poll and on timeout return context.lastLook: did the element resolve, why not, and for value_changes baseline/latest — the field's VALUE, so a masked credential arrives as mask characters; for url_matches and element_matches, context.lastLook.error says why the last read failed (a CDP timeout, a scope matching nothing). For any condition, a poll unfinished at timeoutMs gives context.lastPoll {answered:false, ranMs}. Other codes: 'InvalidArgs' (a regex or scope that cannot compile), 'ToolError' (validation / missing hook — read the message), 'BrowserNotConnected' (re-attach via browser_open), and 'WindowExcluded' for a target this server may not act through, answered at once rather than polled. Branch on code.",
       examples: [
         "wait_until({condition:'window_appears', target:{windowTitle:'Save As'}, timeoutMs:10000})",
         "wait_until({condition:'terminal_output_contains', target:{windowTitle:'Terminal', pattern:'$ '}, timeoutMs:30000})",
