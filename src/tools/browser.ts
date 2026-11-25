@@ -50,7 +50,7 @@ import { setBrowserSearchHook, BrowserSearchFailure } from "./wait-until.js";
 import { narrateParam, withRichNarration } from "./_narration.js";
 import { makeCommitWrapper, makeQueryWrapper, withEnvelopeIncludeSchema, withEnvelopeIncludeForUnion, flattenUnionToObjectSchema, parseActionArgsOrFail, genericQueryCausedByProjector, defaultQuerySessionId } from "./_envelope.js";
 import type { RichBlock } from "../engine/uia-diff.js";
-import { evaluatePreToolGuards, buildEnvelopeFor } from "../engine/perception/registry.js";
+import { evaluatePreToolGuards, buildEnvelopeFor, getLens, lensCdpPort } from "../engine/perception/registry.js";
 import { runActionGuard, isAutoGuardEnabled, validateAndPrepareFix, consumeFix } from "./_action-guard.js";
 import { prepareBrowserEvalExpression } from "./browser-eval-helpers.js";
 import { ELEMENT_NAME_JS } from "./_element-name-js.js";
@@ -1683,10 +1683,25 @@ const FILL_HINTS_TEXTLIKE: string[] = [
  * into another, answering ok and "delivered". A tab that cannot be resolved is answered here, as the call's
  * first read would have answered it.
  */
-async function pinTab(tabId: string | undefined, port: number): Promise<string> {
+async function pinTab(tabId: string | undefined, port: number, lensId?: string): Promise<string> {
   // A failure is passed on, not swallowed: swallowing it let the call's first read wait the same timeout
   // again, so a browser slow to answer failed after twice the time (/code-review).
-  return tabId ?? (await resolveTabId(null, port));
+  return tabId ?? lensTab(lensId, port) ?? (await resolveTabId(null, port));
+}
+
+/**
+ * The tab a browser-tab lens is bound to, for a call given lensId and no tabId. The guards check that tab, so
+ * the call works on it too: on main (mac) browser_eval with a lens bound to a tab behind the front one ran its
+ * expression in the front tab, while the guards had checked the lens's (internal #423).
+ */
+function lensTab(lensId: string | undefined, port: number): string | undefined {
+  if (!lensId) return undefined;
+  const lens = getLens(lensId);
+  if (lens?.spec.target.kind !== "browserTab") return undefined;
+  // Only on the port the lens was bound on: its tab id means nothing to another browser (/code-review).
+  if (lensCdpPort(lens) !== port) return undefined;
+  const id = lens.binding.hwnd;
+  return typeof id === "string" && id.length > 0 ? id : undefined;
 }
 
 export const browserFillInputHandler = async ({
@@ -2921,7 +2936,7 @@ export const browserClickElementHandler = async ({
     // below is unchanged (bit-equal, NFR-1 / AC-9).
     if (by && pattern) {
       // The selector path below chooses its tab once after the fixId prologue (ADR-040).
-      tabId = await pinTab(tabId, port);
+      tabId = await pinTab(tabId, port, lensId);
       return await handleBrowserClickByAxis({ by, pattern, role, scope, caseSensitive, narrate, tabId, port, lensId, force });
     }
     if (!selector) {
@@ -2942,7 +2957,7 @@ export const browserClickElementHandler = async ({
     }
     // ADR-040 — one tab for the coordinates and for the window they are placed on: `/json/list` order is
     // not stable between calls, and two resolutions could pair one tab's element with another's window.
-    if (effectiveTabId === undefined) effectiveTabId = await resolveTabId(null, port).catch(() => undefined);
+    if (effectiveTabId === undefined) effectiveTabId = lensTab(lensId, port) ?? await resolveTabId(null, port).catch(() => undefined);
 
     let perceptionEnvBrowser: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
@@ -3263,7 +3278,7 @@ export const browserEvalJsHandler = async ({
   withPerception?: boolean;
 }): Promise<ToolResult> => {
   try {
-    tabId = await pinTab(tabId, port);
+    tabId = await pinTab(tabId, port, lensId);
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
       const guardResult = await evaluatePreToolGuards(lensId, "browser_eval", {});
@@ -3454,7 +3469,7 @@ export const browserNavigateHandler = async ({
     // so a tab brought to the front during the wait was read instead: on main (mac) a navigation still loading
     // answered ok with the other tab's title, URL and readyState "complete" (internal #423). When the browser
     // cannot be reached here, the guard and the navigation answer it as before.
-    const chosen = tabId ?? await resolveTabId(null, port).catch(() => null);
+    const chosen = tabId ?? lensTab(lensId, port) ?? await resolveTabId(null, port).catch(() => null);
     let perceptionEnvNav: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
       const guardResult = await evaluatePreToolGuards(lensId, "browser_navigate", {});
