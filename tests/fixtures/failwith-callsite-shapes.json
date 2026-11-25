@@ -174,21 +174,21 @@
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 3889,
+      "line": 3892,
       "tool": "browser_open",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 4045,
+      "line": 4048,
       "tool": "browser_search",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 4193,
+      "line": 4196,
       "tool": "browser_disconnect",
       "errKind": "identifier",
       "contextShape": "none"
@@ -601,14 +601,14 @@
     },
     {
       "file": "src/tools/wait-until.ts",
-      "line": 469,
+      "line": 487,
       "tool": "wait_until",
       "errKind": "string-literal",
       "contextShape": "none"
     },
     {
       "file": "src/tools/wait-until.ts",
-      "line": 505,
+      "line": 523,
       "tool": "wait_until",
       "errKind": "string-literal",
       "contextShape": "none"
