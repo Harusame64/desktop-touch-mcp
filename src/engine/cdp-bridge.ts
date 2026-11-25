@@ -564,7 +564,7 @@ export async function dispatchWheelInTab(
   // Sideways, one event per notch at most (internal #431, win2 on Windows Chrome 157): a single horizontal wheel past
   // an edge of 240 px or more (headless; 600 headed, whatever the window's width) holds a back/forward that the next
   // pointer move carries out (a CDP move, measured; a real mouse's was not). Steps of 120 sent one after another
-  // never did, 20 or 40 of them, 16 or 50 ms apart.
+  // never did: 20 to 50 of them, each sent when the last was answered, or 4, 16 or 50 ms apart.
   // Only the first step's failure is thrown: once a wheel went out, the call does not say nothing was sent.
   const steps = Math.max(1, Math.ceil(Math.abs(deltaX) / CDP_WHEEL_MAX_SIDEWAYS_STEP));
   const step = (i: number): Promise<unknown> => session.send("Input.dispatchMouseEvent", {
@@ -576,10 +576,7 @@ export async function dispatchWheelInTab(
   });
   await step(0);
   for (let i = 1; i < steps; i++) {
-    try {
-      await new Promise((r) => setTimeout(r, 16));
-      await step(i);
-    } catch { return; }
+    try { await step(i); } catch { return; }
   }
 }
 
