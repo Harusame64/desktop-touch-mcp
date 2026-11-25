@@ -441,14 +441,16 @@ function probeElementMatches(
         const { code, detail } = err;
         // The words after the last "<code>: " (failWith writes "browser_search failed: <Code>: …").
         const words = detail.includes(`${code}: `) ? detail.slice(detail.lastIndexOf(`${code}: `) + code.length + 2) : detail;
-        // A browser that is gone, or a session that closed under the poll: answered at once, as url_matches does.
-        if (code === "BrowserNotConnected" || /CDP connection closed unexpectedly|CDP session is not open/.test(detail)) {
-          throw new Error(`BrowserNotConnected: ${words}`, { cause: err });
-        }
         // What never compiles never will: answered at once, with the code first so the words are not read
         // for one. browser_search answers an invalid regex as BrowserSearchNoResults, with its own prefix.
+        // First, since its words carry the pattern, which can hold anything below (codex on #1044).
         if (detail.startsWith("browser_search: InvalidRegex")) {
           throw new Error("InvalidArgs: target.pattern is not a valid regular expression", { cause: err });
+        }
+        // A browser that is gone, or a session that closed under the poll: answered at once, as url_matches
+        // does. The bridge's own words, matched where failWith puts them, not anywhere in the text.
+        if (code === "BrowserNotConnected" || /^browser_search failed: (CDP connection closed unexpectedly|CDP session is not open)/.test(detail)) {
+          throw new Error(`BrowserNotConnected: ${words}`, { cause: err });
         }
         if (/is not a valid selector/.test(detail)) {
           throw new Error("InvalidArgs: target.scope is not a valid CSS selector", { cause: err });

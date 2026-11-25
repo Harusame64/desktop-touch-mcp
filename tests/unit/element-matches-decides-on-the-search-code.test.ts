@@ -54,6 +54,14 @@ describe("element_matches decides on the search's code", () => {
     expect(out.context.lastLook.error).toBe("ScopeNotFound: browser_search: ScopeNotFound — #panel");
   });
 
+  it("an invalid regex whose words hold the bridge's closed-session words is still InvalidArgs (codex on #1044)", async () => {
+    for (const pattern of ["(CDP session is not open", "(CDP connection closed unexpectedly"]) {
+      const { out } = await waitWith(new BrowserSearchFailure("BrowserSearchNoResults",
+        `browser_search: InvalidRegex — Invalid regular expression: /${pattern}/: Unterminated group`), 2000);
+      expect(out.code, pattern).toBe("InvalidArgs");
+    }
+  });
+
   it("an invalid regex is InvalidArgs at once, even when its words name another code", async () => {
     const { out, wall } = await waitWith(new BrowserSearchFailure("BrowserSearchNoResults",
       "browser_search: InvalidRegex — Invalid regular expression: /(wait timeout/: Unterminated group"), 2000);
