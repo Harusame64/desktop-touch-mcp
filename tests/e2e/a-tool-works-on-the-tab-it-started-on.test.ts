@@ -67,9 +67,9 @@ beforeAll(async () => {
     res.setHeader("content-type", "text/html");
     if (req.url?.startsWith("/form")) {
       // Focusing the field holds the thread for 2 s: the gap between browser_fill's focus and its fill.
-      res.end(`<title>form</title><form id="f"><input id="q" name="q" onfocus="const t = Date.now(); while (Date.now() - t < 2000);"></form><p>needle</p><a href="#a">link</a>`);
+      res.end(`<title>form</title><form id="f"><input id="q" name="q" aria-label="Query" onfocus="const t = Date.now(); while (Date.now() - t < 2000);"></form><p>needle</p><a href="#a">link</a>`);
     } else {
-      res.end(`<title>other</title><input id="q"><p>needle</p>`);
+      res.end(`<title>other</title><input id="q" aria-label="Query"><p>needle</p>`);
     }
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
@@ -87,7 +87,7 @@ beforeEach(async () => {
   if (!CHROME_AVAILABLE) return;
   // The first tab in front again, its field empty.
   await fetch(`http://127.0.0.1:${PORT}/json/activate/${firstTab}`);
-  await evaluateInTab(`document.querySelector('#q').value = ''; window.__done = 1`, firstTab, PORT);
+  await evaluateInTab(`document.querySelector('#q').value = ''; document.title = 'form'`, firstTab, PORT);
 });
 
 afterEach(async () => {
@@ -117,6 +117,16 @@ describe.skipIf(!CHROME_AVAILABLE)("a browser tool works on the tab it started o
     await switching;
     expect(text).toMatch(/^\{"ok":true/);
     expect(await evaluateInTab("document.querySelector('#q').value", firstTab, PORT)).toBe("hello");
+    expect(await evaluateInTab("document.querySelector('#q').value", secondTab!, PORT)).toBe("");
+    expect(activeTabOf(text).id).toBe(firstTab);
+  }, 30_000);
+
+  it("browser_fill by ariaLabel writes into the field it focused", async () => {
+    const switching = switchTabsAfter(700);
+    const text = replyText(await browserFillInputHandler({ by: "ariaLabel", pattern: "Query", value: "by-axis", port: PORT, includeContext: true } as never));
+    await switching;
+    expect(text).toMatch(/"ok":true/);
+    expect(await evaluateInTab("document.querySelector('#q').value", firstTab, PORT)).toBe("by-axis");
     expect(await evaluateInTab("document.querySelector('#q').value", secondTab!, PORT)).toBe("");
     expect(activeTabOf(text).id).toBe(firstTab);
   }, 30_000);

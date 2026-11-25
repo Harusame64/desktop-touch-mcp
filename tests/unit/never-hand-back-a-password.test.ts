@@ -17,6 +17,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("../../src/engine/cdp-bridge.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/engine/cdp-bridge.js")>()),
   evaluateInTab: vi.fn(),
+  // The tools choose their tab once at the start (internal #423); no browser runs here.
+  resolveTabId: vi.fn(async (tabId: string | null) => tabId ?? "TAB-1"),
 }));
 
 import { evaluateInTab } from "../../src/engine/cdp-bridge.js";
