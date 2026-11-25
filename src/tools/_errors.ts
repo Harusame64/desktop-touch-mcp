@@ -221,7 +221,7 @@ const SUGGESTS: Record<string, string[]> = {
   ],
   // internal #423: scroll(action:'smart') brought the target inside the window, but an ancestor cuts it off.
   TargetClipped: [
-    "Nothing of the target is on screen: an ancestor cuts it off (overflow:clip, clip-path and contain:paint cannot be scrolled; an overflow box may not have scrolled far enough)",
+    "None of the target is on screen: an ancestor cuts it off (overflow:clip, clip-path and contain:paint cannot be scrolled; an overflow box may not have scrolled far enough)",
     "Reveal it the way a person would, with the page's own control (a carousel's next button, a tab, an expand toggle), then scroll again",
   ],
   GuardFailed: [

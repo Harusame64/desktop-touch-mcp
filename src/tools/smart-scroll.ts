@@ -260,14 +260,17 @@ async function tryCdp(params: {
   return await new Promise(function(res) {
     let timer = 0;
     const o = new IntersectionObserver(function(es) {
-      o.disconnect(); clearTimeout(timer);
+      o.disconnect();
       const e = es[es.length - 1];
-      // Gone in that frame (removed, display:none): no box to be clipped, and no position to give.
-      if (unmeasured()) { res(none(unmeasured())); return; }
-      const now = at(e.boundingClientRect);
-      res(now !== 'in-view'
-        ? { viewportPosition: now, pageRatio: ratio(e.boundingClientRect), clipped: false, clipCheck: 'moved' }
-        : { viewportPosition: now, pageRatio: ratio(e.boundingClientRect), clipped: !(e.intersectionRatio > 0), clipCheck: 'asked' });
+      // No position in that frame (removed, no box), or one that left the window, or the verdict. The timer is cleared
+      // only once an answer is in hand: a throw here leaves it to answer 'no-answer' (agy).
+      const u = unmeasured();
+      const now = u ? null : at(e.boundingClientRect);
+      const answer = u ? none(u)
+        : now !== 'in-view'
+          ? { viewportPosition: now, pageRatio: ratio(e.boundingClientRect), clipped: false, clipCheck: 'moved' }
+          : { viewportPosition: now, pageRatio: ratio(e.boundingClientRect), clipped: !(e.intersectionRatio > 0), clipCheck: 'asked' };
+      clearTimeout(timer); res(answer);
     });
     timer = setTimeout(function() { o.disconnect(); out.clipCheck = 'no-answer'; res(out); }, 500);
     o.observe(el);
@@ -305,8 +308,8 @@ async function tryCdp(params: {
         "TargetClipped",
         occludedBy
           // The tool's own sticky-header shift ran first, and can be what moved the target out of its box.
-          ? "The target is inside the window, but an ancestor cuts it off, so nothing of it is on screen. This tool shifted the target's parent for a sticky header first (see warnings), which may be what cut it off."
-          : "The target is inside the window, but an ancestor cuts it off, so nothing of it is on screen.",
+          ? "The target is inside the window, but an ancestor cuts it off, so none of it is on screen. This tool shifted the target's parent for a sticky header first (see warnings), which may be what cut it off."
+          : "The target is inside the window, but an ancestor cuts it off, so none of it is on screen.",
         {
           suggest: getSuggestsForCode("TargetClipped"),
           // The scrolls already ran: say so, with what the success answer carries (ancestors as walked before the scroll).

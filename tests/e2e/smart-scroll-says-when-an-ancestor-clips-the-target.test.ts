@@ -1,6 +1,6 @@
 /**
  * scroll(action:'smart') answers TargetClipped, not in-view, when the target ends up inside the window but an
- * ancestor cuts it off, so nothing of it is on screen.
+ * ancestor cuts it off, so none of it is on screen.
  *
  * MEASURED on main (mac, headless Chrome): a row 1800px down an overflow:clip box, and one under a clip-path box,
  * both answered ok:true, viewportPosition:'in-view'. Nothing at the row's centre was the row. in-view looked only
@@ -116,7 +116,7 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the
       const r = await scroll(target);
       expect(r.ok).toBe(false);
       expect(r.code).toBe("TargetClipped");
-      expect(r.error).toContain("an ancestor cuts it off, so nothing of it is on screen");
+      expect(r.error).toContain("an ancestor cuts it off, so none of it is on screen");
       // The scroll already ran: the answer still says what it did.
       expect(r.context).toMatchObject({ path: "cdp", scrolled: true, viewportPosition: "in-view" });
       expect(Array.isArray(r.context.ancestors)).toBe(true);
