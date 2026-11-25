@@ -1733,17 +1733,21 @@ export async function getListedTabContext(
  * Only http:// and https:// URLs are accepted; javascript: and file: are rejected.
  * Returns { frameId, errorText } from Page.navigate response.
  */
-export async function navigateTo(
-  url: string,
-  tabId: string | null = null,
-  port = DEFAULT_CDP_PORT
-): Promise<{ frameId?: string; errorText?: string }> {
-  // P2 fix: reject non-http(s) URLs to prevent javascript: injection and file: access
+/** P2 fix: reject non-http(s) URLs to prevent javascript: injection and file: access. */
+export function assertNavigableUrl(url: string): void {
   if (!/^https?:\/\//i.test(url)) {
     throw new Error(
       `browser_navigate only accepts http:// and https:// URLs. Got: ${url}`
     );
   }
+}
+
+export async function navigateTo(
+  url: string,
+  tabId: string | null = null,
+  port = DEFAULT_CDP_PORT
+): Promise<{ frameId?: string; errorText?: string }> {
+  assertNavigableUrl(url);
   const tab = await resolveTab(tabId, port);
   const session = await openSession(tab, port);
   const result = (await session.send("Page.navigate", { url })) as {

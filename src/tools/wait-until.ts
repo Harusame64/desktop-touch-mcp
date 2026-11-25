@@ -43,9 +43,13 @@ export class BrowserSearchFailure extends Error {
  * start. A tab id never comes back, so the wait answers at once rather than polling to its timeout: on
  * main (mac) url_matches with a closed tab's id waited the full timeoutMs and answered WaitTimeout.
  */
-const TAB_NOT_FOUND = /^Tab "[^"]*" not found\. Available tab IDs:/;
-function tabNotFound(tabId: string | undefined, cause: unknown): Error {
-  return new Error(`InvalidArgs: target.tabId ${JSON.stringify(tabId ?? "")} names no open tab — list the tabs with browser_open`, { cause });
+const TAB_NOT_FOUND = /^Tab ".*" not found\. Available tab IDs:/s;
+/**
+ * Only when the FIRST look misses the tab: a tab that was there and closed during the wait (an OAuth popup
+ * that closes itself) is not a wrong argument, so later misses are waited past as before (/code-review).
+ */
+function tabNotFound(tabId: string | undefined, port: number, cause: unknown): Error {
+  return new Error(`InvalidArgs: target.tabId ${JSON.stringify(tabId ?? "")} names no open tab on port ${port} — list the tabs with browser_open`, { cause });
 }
 
 let terminalReadHook: TerminalReadHook | null = null;
@@ -395,7 +399,9 @@ function probeUrlMatches(
   const matcher = regex ? new RegExp(pattern) : null;
   // The tab's own port when none is given (gate 2 on #776, llm22 F13).
   const effectivePort = port ?? portForTab(tabId);
+  let looks = 0;
   return async () => {
+    const first = looks++ === 0;
     try {
       const url = (await evaluateInTab("location.href", tabId ?? null, effectivePort)) as string | null;
       if (typeof url !== "string") {
@@ -409,7 +415,11 @@ function probeUrlMatches(
       return matched ? { url } : null;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (TAB_NOT_FOUND.test(msg)) throw tabNotFound(tabId, err);
+      if (TAB_NOT_FOUND.test(msg)) {
+        if (first) throw tabNotFound(tabId, effectivePort, err);
+        write(look, { error: "the tab closed during the wait" });
+        return null;
+      }
       // A CDP call that did not answer in time is a page that is slow to answer (a script holding
       // its thread, a dialog open), not a browser that is gone. Read as BrowserNotConnected, a busy
       // page ended the wait at 15 s with "re-attach via browser_open" against a live connection.
@@ -438,7 +448,9 @@ function probeElementMatches(
   tabId?: string,
   scope?: string
 ): () => Promise<{ selector: string; text: string } | null> {
+  let looks = 0;
   return async () => {
+    const first = looks++ === 0;
     if (!browserSearchHook) return null;
     try {
       const results = await browserSearchHook({ port, tabId, by, pattern, scope });
@@ -463,7 +475,11 @@ function probeElementMatches(
         if (code === "BrowserNotConnected" || /^browser_search failed: (CDP connection closed unexpectedly|CDP session is not open)/.test(detail)) {
           throw new Error(`BrowserNotConnected: ${words}`, { cause: err });
         }
-        if (TAB_NOT_FOUND.test(detail.replace(/^browser_search failed: /, ""))) throw tabNotFound(tabId, err);
+        if (TAB_NOT_FOUND.test(detail.replace(/^browser_search failed: /, ""))) {
+          if (first) throw tabNotFound(tabId, port ?? portForTab(tabId), err);
+          write(look, { error: "the tab closed during the wait" });
+          return null;
+        }
         if (/is not a valid selector/.test(detail)) {
           throw new Error("InvalidArgs: target.scope is not a valid CSS selector", { cause: err });
         }

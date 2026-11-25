@@ -30,6 +30,7 @@ import {
   disconnectAll,
   getTabContext,
   getListedTabContext,
+  assertNavigableUrl,
   portForTab,
   clearAxMarks,
   markAxMatches,
@@ -3422,6 +3423,15 @@ export const browserNavigateHandler = async ({
   lensId?: string;
 }): Promise<ToolResult> => {
   try {
+    // A URL that will be refused is said before anything looks for a tab: resolving the tab first answered a
+    // file: URL with "cannot reach the browser" when none was running (/code-review).
+    assertNavigableUrl(url);
+    // The tab is chosen once, before the guard, so the guard checks the tab that is navigated. With no tabId,
+    // every read used to pick the default page tab again (the most recently used one in the browser's list),
+    // so a tab brought to the front during the wait was read instead: on main (mac) a navigation still loading
+    // answered ok with the other tab's title, URL and readyState "complete" (internal #423). When the browser
+    // cannot be reached here, the guard and the navigation answer it as before.
+    const chosen = tabId ?? await resolveTabId(null, port).catch(() => null);
     let perceptionEnvNav: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
       const guardResult = await evaluatePreToolGuards(lensId, "browser_navigate", {});
@@ -3436,7 +3446,7 @@ export const browserNavigateHandler = async ({
       perceptionEnvNav = buildEnvelopeFor(lensId, { toolName: "browser_navigate" }) ?? undefined;
     } else if (isAutoGuardEnabled() && (tabId || port)) {
       const descriptor: import("./_action-guard.js").ActionTargetDescriptor = {
-        kind: "browserTab", port, tabId, urlIncludes: undefined,
+        kind: "browserTab", port, tabId: chosen ?? undefined, urlIncludes: undefined,
       };
       // Phase F: navigationGate policy — interactive is acceptable for pre-navigation guard
       const ag = await runActionGuard({
@@ -3449,11 +3459,7 @@ export const browserNavigateHandler = async ({
       perceptionEnvNav = ag.summary;
     }
     const startedAt = Date.now();
-    // The tab is chosen once. With no tabId, every read below used to pick the default page tab again
-    // (the most recently used one in the browser's list), so a tab brought to the front during the
-    // wait was read instead: on main (mac) a navigation still loading answered ok with the other tab's
-    // title, URL and readyState "complete" (internal #423).
-    const tab = tabId ?? await resolveTabId(null, port);
+    const tab = chosen ?? await resolveTabId(null, port);
     // Capture beforeUrl for rich narration
     let beforeUrl: string | null = null;
     if (narrate === "rich") {
@@ -3492,17 +3498,31 @@ export const browserNavigateHandler = async ({
     await new Promise<void>((r) => setTimeout(r, 200));
     let lastState: string | null = null;
     const poll = await pollUntil(
-      async () => {
+      async (): Promise<"complete" | "gone" | null> => {
         try {
           const state = await evaluateInTab("document.readyState", tab, port);
           if (typeof state === "string") lastState = state;
-          return state === "complete" ? true : null;
-        } catch {
-          return null;
+          return state === "complete" ? "complete" : null;
+        } catch (err) {
+          // The tab closed under the wait: it will not load, so the wait ends here rather than reporting a
+          // slow page in a tab that is gone (/code-review). The bridge's own words, from their start.
+          const msg = err instanceof Error ? err.message : String(err);
+          return /^Tab ".*" not found\. Available tab IDs:/s.test(msg) ? "gone" : null;
         }
       },
       { intervalMs: 150, timeoutMs: loadTimeoutMs }
     );
+    if (poll.ok && poll.value === "gone") {
+      return failCode(
+        "NavigateFailed",
+        "browser_navigate: the tab closed while its page was loading",
+        {
+          suggest: ["List the open tabs with browser_open and navigate one of them"],
+          context: { url, tabId: tab },
+          ...(perceptionEnvNav && { rootExtras: { _perceptionForPost: perceptionEnvNav } }),
+        },
+      );
+    }
 
     if (!poll.ok) {
       // Timeout — not a failure, LLM can continue. The page is asked for its title, URL and
