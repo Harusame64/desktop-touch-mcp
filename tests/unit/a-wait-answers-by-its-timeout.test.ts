@@ -52,23 +52,41 @@ describe("pollUntil answers by its timeout", () => {
     const r = await pollUntil(async () => { at.push(Date.now() - t); return null; }, { intervalMs: 5000, timeoutMs: 300 });
     const wall = Date.now() - t;
     expect(r.ok).toBe(false);
-    expect(wall).toBeGreaterThanOrEqual(290);
+    // The last look is aimed to end a margin (at least 20 ms) before the deadline.
+    expect(wall).toBeGreaterThanOrEqual(260);
     expect(wall).toBeLessThan(600);
     expect(at.length).toBe(2);
-    expect(at[1]).toBeGreaterThanOrEqual(280);
+    expect(at[1]).toBeGreaterThanOrEqual(260);
     expect(r.ok === false && r.unfinishedPollMs).toBeUndefined();
   });
 
   it("a change shortly before the deadline is seen: the last poll is timed to end at it", async () => {
-    // value_changes' shape: interval 500, a read of about 100 ms, timeoutMs 1000. A sleep cut to
-    // the deadline and nothing after it read at 0 and 600 only, and missed a change at 800.
+    // value_changes' shape: interval 500, a read of about 200 ms, timeoutMs 1500. Reads at 0, 700
+    // and, moved up, about 1260 (ending 40 ms before the deadline). A sleep cut to the deadline and
+    // nothing after it read at 0 and 700 only; one that polled at the deadline was cut there.
     const t = Date.now();
     const r = await pollUntil(async () => {
-      await sleep(100);
-      return Date.now() - t >= 850 ? "changed" : null;
-    }, { intervalMs: 500, timeoutMs: 1000 });
+      await sleep(200);
+      return Date.now() - t >= 1150 ? "changed" : null;
+    }, { intervalMs: 500, timeoutMs: 1500 });
     expect(r).toMatchObject({ ok: true, value: "changed" });
-    expect(Date.now() - t).toBeLessThan(1100);
+    expect(Date.now() - t).toBeLessThan(1600);
+  });
+
+  it("a slow look followed by a fast one goes on polling the time that is left", async () => {
+    // The first look takes 1500 ms of a 2000 ms wait, so the room left (500 ms) is less than it,
+    // and the next look is moved up. It is fast, so 500 ms remain, and they are
+    // polled at the interval rather than answered at once (/code-review).
+    const at: number[] = [];
+    const t = Date.now();
+    const r = await pollUntil(async () => {
+      at.push(Date.now() - t);
+      if (at.length === 1) await sleep(1500);
+      return null;
+    }, { intervalMs: 100, timeoutMs: 2000 });
+    expect(r.ok).toBe(false);
+    expect(Date.now() - t).toBeGreaterThanOrEqual(1900);
+    expect(at.length).toBeGreaterThanOrEqual(5);
   });
 
   it("a poll still starts in time left shorter than the last one took, and is cut at the deadline", async () => {
@@ -183,6 +201,19 @@ describe("wait_until answers by its timeoutMs", () => {
     expect(out.code).toBe("WaitTimeout");
     expect(out.suggest[0]).toMatch(/^The page did not answer within the CDP call's own 15 s/);
     expect(out.context.lastLook.error).toMatch(/^CDP timeout:/);
+  });
+
+  it("url_matches: an early CDP timeout is not reported after later polls answered", async () => {
+    evalSteps.push(async () => { throw new Error("CDP timeout: Runtime.evaluate did not respond within 15000ms"); });
+    for (let i = 0; i < 20; i++) {
+      evalSteps.push(async () => { throw new Error("Execution context was destroyed."); });
+    }
+    const out = payload(await waitUntilHandler({
+      condition: "url_matches", target: { pattern: "/dashboard" }, timeoutMs: 300, intervalMs: 50,
+    }));
+    expect(out.code).toBe("WaitTimeout");
+    expect(out.suggest.join("\n")).not.toMatch(/did not answer within the CDP call/);
+    expect(out.context).not.toHaveProperty("lastLook");
   });
 
   it("url_matches: a URL that was read and did not match leaves no lastLook (it may carry a code)", async () => {

@@ -60,8 +60,8 @@ export async function pollUntil<T>(
   const start = Date.now();
   const deadline = start + timeoutMs;
   let answeredPolls = 0;
-  /** The coming poll was moved up to end before the deadline; after it the wait answers. */
-  let lastLook = false;
+  /** The poll just taken was moved up to end before the deadline (see the loop's end). */
+  let movedUp = false;
 
   while (true) {
     // A timer that fired late can land past the deadline; a poll started there would be cut at once.
@@ -84,16 +84,29 @@ export async function pollUntil<T>(
     }
 
     const left = deadline - Date.now();
-    if (left <= 0 || lastLook) {
+    if (left <= 0) {
       return { ok: false, timeout: true, elapsedMs: Date.now() - start, answeredPolls };
     }
 
-    // Aimed to end a little before the deadline (a tenth of the last poll, at least 5 ms), since
-    // timers and reads run a little late and a poll ending just past it is dropped.
-    const margin = Math.max(5, Math.round(pollMs / 10));
+    // Aimed to end a little before the deadline (a fifth of the last poll, at least 20 ms), since
+    // timers and reads run late (Windows timers by up to about 15.6 ms) and a poll ending just past
+    // it is dropped.
+    const margin = Math.max(20, Math.round(pollMs / 5));
     const wait = Math.max(0, left - pollMs - margin);
-    if (wait < intervalMs) lastLook = true;
-    await new Promise<void>((r) => setTimeout(r, Math.min(intervalMs, wait)));
+    if (wait >= intervalMs) {
+      movedUp = false;
+      await new Promise<void>((r) => setTimeout(r, intervalMs));
+      continue;
+    }
+    // Less than an interval and a poll left. One look is moved up to end before the deadline; if it
+    // was that look and there is still no room for a whole interval, the wait answers. The room is
+    // measured again after every look: a slow look followed by a fast one leaves seconds, and those
+    // are polled as usual (/code-review).
+    if (movedUp) {
+      return { ok: false, timeout: true, elapsedMs: Date.now() - start, answeredPolls };
+    }
+    movedUp = true;
+    await new Promise<void>((r) => setTimeout(r, wait));
   }
 }
 
