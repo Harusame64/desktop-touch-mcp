@@ -28,7 +28,7 @@ let chrome: ChromeInstance;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const rows = (p: string) => Array.from({ length: 60 }, (_, i) => `<div id="${p}-${i}" style="height:40px">${p} ${i}</div>`).join("");
-const HTML = `<title>t</title><style>body{margin:0}</style>
+const HTML = `<!doctype html><title>t</title><style>body{margin:0}</style>
 <div style="height:200px;overflow:clip">${rows("c")}<a id="c-anchor"></a></div>
 <div style="height:200px;clip-path:inset(0)"><div>${rows("p")}</div></div>
 <div style="height:200px;contain:paint"><div>${rows("k")}</div></div>
@@ -82,17 +82,20 @@ async function scroll(target: string, inline = "center") {
 
 beforeAll(async () => {
   if (!CHROME_AVAILABLE) return;
-  chrome = await launchChrome(PORT, true, `data:text/html,${encodeURIComponent(HTML)}`);
+  // The page is written into about:blank, as the neighbour e2e files do: as a data: URL on the command line it is
+  // 41,027 characters, past Windows' 32,767 for CreateProcess, and the spawn failed with ENAMETOOLONG (win2).
+  chrome = await launchChrome(PORT, true, "about:blank");
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     try { if (await evaluateInTab("document.readyState", null, PORT) === "complete") break; } catch { /* not ready */ }
     await sleep(300);
   }
+  await evaluateInTab(`document.open(); document.write(${JSON.stringify(HTML)}); document.close(); true`, null, PORT);
 }, 20_000);
 
 beforeEach(async () => {
   if (!CHROME_AVAILABLE) return;
-  // No reload: a data: page does not reload itself (location.reload() left window state in place, measured). Every
+  // No reload: the page is written, not loaded, and a data: page did not reload itself either (measured). Every
   // cell only scrolls, so putting each box and the window back at the start is enough.
   await evaluateInTab(`window.__armJump = false; window.__armGone = false; window.__armSwap = false; window.__armRemove = false;
     if (!document.getElementById('removed')) { const d = document.createElement('div'); d.id = 'removed'; d.style.height = '20px';
