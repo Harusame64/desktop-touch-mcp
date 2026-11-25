@@ -35,6 +35,8 @@ vi.mock("../../src/engine/cdp-bridge.js", () => ({
   detectStickyHeaderCdp: detectStickyHeaderCdpMock,
   setScrollPositionCdp: setScrollPositionCdpMock,
   scrollVirtualListCdp: scrollVirtualListCdpMock,
+  // The Chrome path resolves its tab once before the steps (internal #423); no browser runs here.
+  resolveTabId: vi.fn(async (tabId: string | null) => tabId ?? "TAB-1"),
 }));
 
 // smart-scroll imports several engine modules that the CDP-strategy code path
