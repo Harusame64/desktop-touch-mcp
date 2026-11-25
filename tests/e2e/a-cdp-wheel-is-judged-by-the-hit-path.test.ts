@@ -157,7 +157,15 @@ describe.skipIf(!CHROME_AVAILABLE)("the CDP wheel is judged by the path the brow
   it("right-to-left: at the right edge, right is the end and left moves (gate 2 on #980)", async () => {
     await open("rtl");
     expect(await wheelAt(200, 300, 0, 120)).toMatchObject({ under: "end", underLabel: "div#W" });
-    expect(await wheelAt(200, 300, 0, -120)).toMatchObject({ moved: "div#W" });
+    // On Windows Chrome the wheel past the edge started the overscroll back/forward gesture, which takes the next
+    // wheel until the pointer moves (internal #431): there the left wheel answers room, and the scroll pipeline sends
+    // the pointer away and the wheel once more, as here. On the mac it moves the first time.
+    const left = await wheelAt(200, 300, 0, -120);
+    if (left?.moved === undefined) {
+      expect(left).toMatchObject({ under: "room", underLabel: "div#W" });
+      await dispatchPointerAwayInTab(null, PORT);
+      expect(await wheelAt(200, 300, 0, -120)).toMatchObject({ moved: "div#W" });
+    } else expect(left).toMatchObject({ moved: "div#W" });
   });
 
   it("a sideways wheel of several notches arrives as one event per notch, and still moves and is judged (internal #431)", async () => {
