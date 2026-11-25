@@ -13,7 +13,7 @@ import {
 } from "../engine/win32.js";
 import { getElementBounds } from "../engine/uia-bridge.js";
 import { WindowExcludedError } from "../engine/tool-exclusion.js";
-import { evaluateInTab, portForTab } from "../engine/cdp-bridge.js";
+import { evaluateInTab, portForTab, listTabsLight } from "../engine/cdp-bridge.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // External hooks — set by terminal.ts and browser.ts after they load.
@@ -51,6 +51,21 @@ const TAB_NOT_FOUND = /^Tab ".*" not found\. Available tab IDs:/s;
 function tabNotFound(tabId: string | undefined, port: number, cause: unknown): Error {
   return new Error(`InvalidArgs: target.tabId ${JSON.stringify(tabId ?? "")} names no open tab on port ${port} — list the tabs with browser_open`, { cause });
 }
+
+/**
+ * A tab's CDP session closed under a look. That is the tab's own socket, so it says nothing yet about the
+ * browser: win2 saw a tab closed mid-wait answer "CDP connection closed unexpectedly", read as
+ * BrowserNotConnected. The browser's tab list tells them apart: no list, the browser is gone; a list
+ * without the tab, the tab closed during the wait (waited past, as a tab-not-found after the first look
+ * is); the tab still listed, a passing drop the next look reconnects.
+ */
+async function afterClosedSession(look: LastLook, tabId: string | undefined, port: number, words: string, cause: unknown): Promise<null> {
+  const tabs = await listTabsLight(port).catch(() => null);
+  if (tabs === null) throw new Error(`BrowserNotConnected: ${words}`, { cause });
+  write(look, { error: tabId && !tabs.some((t) => t.id === tabId) ? "the tab closed during the wait" : words });
+  return null;
+}
+const CLOSED_SESSION = /^(CDP connection closed unexpectedly|CDP session is not open)/;
 
 let terminalReadHook: TerminalReadHook | null = null;
 let browserSearchHook: BrowserSearchHook | null = null;
@@ -428,6 +443,7 @@ function probeUrlMatches(
         write(look, { error: msg });
         return null;
       }
+      if (CLOSED_SESSION.test(msg)) return afterClosedSession(look, tabId, effectivePort, msg, err);
       if (/not connected|econnrefused|cdp/i.test(msg)) {
         if (msg.startsWith("BrowserNotConnected:")) throw err;
         throw new Error("BrowserNotConnected: " + msg, { cause: err });
@@ -470,12 +486,13 @@ function probeElementMatches(
         if (detail.startsWith("browser_search: InvalidRegex")) {
           throw new Error("InvalidArgs: target.pattern is not a valid regular expression", { cause: err });
         }
-        // A browser that is gone, or a session that closed under the poll: answered at once, as url_matches
-        // does. The bridge's own words, matched where failWith puts them, not anywhere in the text.
-        if (code === "BrowserNotConnected" || /^browser_search failed: (CDP connection closed unexpectedly|CDP session is not open)/.test(detail)) {
-          throw new Error(`BrowserNotConnected: ${words}`, { cause: err });
-        }
-        if (TAB_NOT_FOUND.test(detail.replace(/^browser_search failed: /, ""))) {
+        // A browser that is gone: answered at once. A session that closed under the poll is told apart by
+        // the tab list, as url_matches does. The bridge's own words, matched where failWith puts them, not
+        // anywhere in the text.
+        if (code === "BrowserNotConnected") throw new Error(`BrowserNotConnected: ${words}`, { cause: err });
+        const bridgeWords = detail.replace(/^browser_search failed: /, "");
+        if (CLOSED_SESSION.test(bridgeWords)) return afterClosedSession(look, tabId, port ?? portForTab(tabId), bridgeWords, err);
+        if (TAB_NOT_FOUND.test(bridgeWords)) {
           if (first) throw tabNotFound(tabId, port ?? portForTab(tabId), err);
           write(look, { error: "the tab closed during the wait" });
           return null;

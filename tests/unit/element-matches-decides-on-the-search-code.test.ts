@@ -9,9 +9,19 @@ vi.mock("../../src/engine/uia-bridge.js", () => ({
   getElementBounds: async () => ({ found: null, why: "element_not_found", via: "powershell" }),
 }));
 
+let listedTabs: Array<{ id: string; title: string; url: string; type: string }> | null = null;
+vi.mock("../../src/engine/cdp-bridge.js", () => ({
+  evaluateInTab: async () => null,
+  portForTab: () => 9333,
+  listTabsLight: async () => {
+    if (listedTabs === null) throw new Error("BrowserNotConnected: Cannot reach Chrome/Edge CDP at port 9333.");
+    return listedTabs;
+  },
+}));
+
 import { waitUntilHandler, setBrowserSearchHook, BrowserSearchFailure } from "../../src/tools/wait-until.js";
 
-afterEach(() => setBrowserSearchHook(null));
+afterEach(() => { setBrowserSearchHook(null); listedTabs = null; });
 
 const payload = (r: { content: Array<{ type: string; text?: string }> }) =>
   JSON.parse(r.content.find((b) => b.type === "text")!.text!);
@@ -34,7 +44,17 @@ describe("element_matches decides on the search's code", () => {
     expect(out.error.match(/BrowserNotConnected/g)).toHaveLength(1);
   });
 
-  it("a session that closed under the poll is BrowserNotConnected, as url_matches answers it", async () => {
+  it("a session that closed while the browser still lists tabs is waited past, the tab named as closed", async () => {
+    listedTabs = [{ id: "OTHER", title: "", url: "", type: "page" }];
+    setBrowserSearchHook(async () => { throw new BrowserSearchFailure("ToolError", "browser_search failed: CDP connection closed unexpectedly"); });
+    const out = payload(await waitUntilHandler({
+      condition: "element_matches", target: { by: "text", pattern: "Save", tabId: "T1" }, timeoutMs: 300, intervalMs: 50,
+    } as never));
+    expect(out.code).toBe("WaitTimeout");
+    expect(out.context.lastLook.error).toBe("the tab closed during the wait");
+  });
+
+  it("a session that closed with no browser listing tabs is BrowserNotConnected", async () => {
     const { out, wall } = await waitWith(new BrowserSearchFailure("ToolError", "browser_search failed: CDP connection closed unexpectedly"), 2000);
     expect(out.code).toBe("BrowserNotConnected");
     expect(wall).toBeLessThan(500);

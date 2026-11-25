@@ -12,9 +12,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 type EvalStep = () => Promise<unknown>;
 const evalSteps: EvalStep[] = [];
 let evalCalls = 0;
+/** What the browser's tab list answers after a closed session: null = the browser is gone. */
+let listedTabs: Array<{ id: string; title: string; url: string; type: string }> | null = null;
 vi.mock("../../src/engine/cdp-bridge.js", () => ({
   DEFAULT_CDP_PORT: 9222,
   portForTab: () => 9333,
+  listTabsLight: vi.fn().mockImplementation(async () => {
+    if (listedTabs === null) throw new Error("BrowserNotConnected: Cannot reach Chrome/Edge CDP at port 9333.");
+    return listedTabs;
+  }),
   evaluateInTab: vi.fn().mockImplementation(async () => {
     evalCalls += 1;
     const step = evalSteps.shift();
@@ -42,6 +48,7 @@ const payload = (r: { content: Array<{ type: string; text?: string }> }) =>
 beforeEach(() => {
   evalSteps.length = 0;
   evalCalls = 0;
+  listedTabs = null;
   uiaDelays.length = 0;
 });
 
@@ -241,7 +248,22 @@ describe("wait_until answers by its timeoutMs", () => {
     expect(JSON.stringify(out)).not.toContain("secret");
   });
 
-  it("url_matches: a closed connection is still BrowserNotConnected at once", async () => {
+  it("url_matches: a closed session whose tab is no longer listed is the tab closing, waited past (win2 on #1045)", async () => {
+    listedTabs = [{ id: "OTHER", title: "", url: "", type: "page" }];
+    evalSteps.push(async () => "https://app.example.com/start");
+    evalSteps.push(async () => { throw new Error("CDP connection closed unexpectedly"); });
+    // Later looks find the tab gone, as the bridge says it.
+    for (let i = 0; i < 20; i++) {
+      evalSteps.push(async () => { throw new Error('Tab "T1" not found. Available tab IDs: OTHER'); });
+    }
+    const out = payload(await waitUntilHandler({
+      condition: "url_matches", target: { pattern: "/dashboard", tabId: "T1" }, timeoutMs: 400, intervalMs: 50,
+    }));
+    expect(out.code).toBe("WaitTimeout");
+    expect(out.context.lastLook.error).toBe("the tab closed during the wait");
+  });
+
+  it("url_matches: a closed session with no browser listing tabs is BrowserNotConnected at once", async () => {
     evalSteps.push(async () => { throw new Error("CDP connection closed unexpectedly"); });
     const t = Date.now();
     const out = payload(await waitUntilHandler({
