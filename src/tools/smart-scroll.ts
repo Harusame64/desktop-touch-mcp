@@ -117,12 +117,23 @@ async function tryCdp(params: {
   const { target, tabId, port, inline, maxDepth, verifyWithHash, virtualIndex, virtualTotal, expandHidden } = params;
   const warnings: string[] = [];
 
+  // Puts back what an unlock opened, and removes the walk's markers. Run before the walk too, for what a call
+  // that failed part-way may have left behind.
+  const restoreExpr = `
+(function(){
+  const old = document.querySelectorAll('[data-dt-prev-overflow]');
+  for (const el of old) { el.style.overflow = el.getAttribute('data-dt-prev-overflow') || ''; el.removeAttribute('data-dt-prev-overflow'); }
+  const marked = document.querySelectorAll('[data-dt-hidden-ancestor]');
+  for (const el of marked) { el.removeAttribute('data-dt-hidden-ancestor'); }
+})()`;
+  let tab: string | null = null;
   try {
     // The tab is chosen once (internal #423). With no tabId each of the steps below resolved the default page tab
     // again, so a tab brought to the front mid-call took the later steps: the unlock, restore, scroll and final
     // read could run in another tab than the one whose ancestors were walked and marked. A tab that cannot be
     // resolved fails this path at once, for the caller to try the next strategy.
-    const tab = tabId ?? await resolveTabId(null, port);
+    tab = tabId ?? await resolveTabId(null, port);
+    try { await evaluateInTab(restoreExpr, tab, port); } catch { /* ignore */ }
     // Ancestor walk
     const { ancestors, warnings: ancWarn } = await getScrollAncestorsCdp(target, tab, port, maxDepth, expandHidden);
     warnings.push(...ancWarn);
@@ -137,24 +148,19 @@ async function tryCdp(params: {
       );
     }
 
-    // Unlock hidden ancestors if requested.
-    // getScrollAncestorsCdp already marked each hidden ancestor with data-dt-hidden-ancestor,
-    // so the unlock expression needs no external data embedded — pure attribute query.
+    // Unlock hidden ancestors if requested, for this scroll only: they are put back when it ends (finally,
+    // below). getScrollAncestorsCdp already marked each hidden ancestor with data-dt-hidden-ancestor, so the
+    // unlock expression needs no external data embedded — pure attribute query.
+    //
+    // The restore used to run right here, after the unlock and before any scroll, while the answer said
+    // "unlocked — call smart_scroll again to restore": nothing stayed unlocked and there was nothing to restore
+    // (internal #423, from /code-review on #1047). The target was still reached, since scrollIntoView scrolls an
+    // overflow:hidden box; the unlock now covers the scroll as the parameter's description says.
     if (expandHidden && hiddenAncestors.length > 0) {
-      const unlockExpr = `(function(){var els=document.querySelectorAll('[data-dt-hidden-ancestor]');els.forEach(function(el){el.setAttribute('data-dt-prev-overflow','hidden');el.style.overflow='auto';el.removeAttribute('data-dt-hidden-ancestor');});})()`;
+      const unlockExpr = `(function(){var els=document.querySelectorAll('[data-dt-hidden-ancestor]');els.forEach(function(el){el.setAttribute('data-dt-prev-overflow',el.style.overflow||'');el.style.overflow='auto';el.removeAttribute('data-dt-hidden-ancestor');});})()`;
       try { await evaluateInTab(unlockExpr, tab, port); } catch { /* ignore */ }
-      warnings.push("expandHidden: overflow:hidden unlocked — call smart_scroll again to restore");
+      warnings.push("expandHidden: overflow:hidden was opened for this scroll and put back when it ended");
     }
-
-    // Restore any previously unlocked elements, and clean up stale data-dt-hidden-ancestor markers.
-    const restoreExpr = `
-(function(){
-  const old = document.querySelectorAll('[data-dt-prev-overflow]');
-  for (const el of old) { el.style.overflow = el.getAttribute('data-dt-prev-overflow') || ''; el.removeAttribute('data-dt-prev-overflow'); }
-  const marked = document.querySelectorAll('[data-dt-hidden-ancestor]');
-  for (const el of marked) { el.removeAttribute('data-dt-hidden-ancestor'); }
-})()`;
-    try { await evaluateInTab(restoreExpr, tab, port); } catch { /* ignore */ }
 
     // Virtual list
     const virtualAncestors = ancestors.filter(a => a.isVirtualized);
@@ -268,6 +274,11 @@ async function tryCdp(params: {
   } catch {
     // Let caller try next strategy
     return null;
+  } finally {
+    // The markers a refused call left (OverflowHiddenAncestor), and what an unlock opened, are put back.
+    if (tab !== null) {
+      try { await evaluateInTab(restoreExpr, tab, port); } catch { /* ignore */ }
+    }
   }
 }
 
