@@ -73,6 +73,21 @@ describe("pollUntil answers by its timeout", () => {
     expect(Date.now() - t).toBeLessThan(1600);
   });
 
+  it("a moved-up look that comes back fast is followed by another aimed at the deadline", async () => {
+    // codex on #1041: timeoutMs 1500, intervalMs 5000, a 600 ms first look and fast ones after it.
+    // The moved-up look came at about 780 ms and the wait answered there, missing a change at 900.
+    const at: number[] = [];
+    const t = Date.now();
+    const r = await pollUntil(async () => {
+      at.push(Date.now() - t);
+      if (at.length === 1) await sleep(600);
+      return Date.now() - t >= 900 ? "changed" : null;
+    }, { intervalMs: 5000, timeoutMs: 1500 });
+    expect(r).toMatchObject({ ok: true, value: "changed" });
+    expect(Date.now() - t).toBeLessThan(1500);
+    expect(at.length).toBe(3);
+  });
+
   it("a slow look followed by a fast one goes on polling the time that is left", async () => {
     // The first look takes 1500 ms of a 2000 ms wait, so the room left (500 ms) is less than it,
     // and the next look is moved up. It is fast, so 500 ms remain, and they are

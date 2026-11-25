@@ -98,11 +98,13 @@ export async function pollUntil<T>(
       await new Promise<void>((r) => setTimeout(r, intervalMs));
       continue;
     }
-    // Less than an interval and a poll left. One look is moved up to end before the deadline; if it
-    // was that look and there is still no room for a whole interval, the wait answers. The room is
-    // measured again after every look: a slow look followed by a fast one leaves seconds, and those
-    // are polled as usual (/code-review).
-    if (movedUp) {
+    // Less than an interval and a poll left: the next look is moved up to end before the deadline.
+    // The room is measured again after every look. A slow look followed by a fast one can leave
+    // seconds, polled as usual when they hold an interval (/code-review), or a shorter span, which
+    // is aimed at again (codex on #1041: a 600 ms look then fast ones answered at 780 ms of 1500).
+    // The wait answers once a moved-up look leaves no more than a margin; every sleep here then is
+    // longer than a margin, so this does not spin.
+    if (movedUp && wait <= margin) {
       return { ok: false, timeout: true, elapsedMs: Date.now() - start, answeredPolls };
     }
     movedUp = true;
