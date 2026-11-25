@@ -219,6 +219,11 @@ const SUGGESTS: Record<string, string[]> = {
     "Provide virtualIndex + virtualTotal for direct proportional seeking",
     "Increase retryCount (default 3) or narrow search with hint:'above'|'below'",
   ],
+  // internal #423: scroll(action:'smart') brought the target inside the window, but an ancestor cuts it off.
+  TargetClipped: [
+    "None of the target is on screen: an ancestor cuts it off (overflow:clip, clip-path and contain:paint cannot be scrolled; an overflow box may not have scrolled far enough)",
+    "Reveal it the way a person would, with the page's own control (a carousel's next button, a tab, an expand toggle), then scroll again",
+  ],
   GuardFailed: [
     "Read the perception envelope for attention/guard details",
     "Call desktop_state to force a fresh observation before retrying",

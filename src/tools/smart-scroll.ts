@@ -28,7 +28,7 @@ import { captureWindowRawAndHash, getCachedRaw } from "../engine/layer-buffer.js
 import { getCdpPort } from "../utils/desktop-config.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { failWith, failArgs } from "./_errors.js";
+import { failWith, failArgs, failCode, getSuggestsForCode } from "./_errors.js";
 import { coercedBooleanWithDefault } from "./_coerce.js";
 import { WHEEL_DELTA_PER_NOTCH } from "./_input-pipeline.js";
 
@@ -221,28 +221,139 @@ async function tryCdp(params: {
       warnings.push(`Sticky header occlusion detected (height ~${headerHeight}px), scrolled an extra ${headerHeight + 8}px`);
     }
 
-    // Compute final state
-    const finalStateExpr = `
-(function() {
-  const el = document.querySelector(${JSON.stringify(target)});
-  if (!el) return null;
-  const r = el.getBoundingClientRect();
-  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-  const vp = cy < 0 ? 'above' : cy > window.innerHeight ? 'below' : cx < 0 ? 'left' : cx > window.innerWidth ? 'right' : 'in-view';
-  const pageRatio = (window.scrollY + r.top) / (document.documentElement.scrollHeight || 1);
-  return { viewportPosition: vp, pageRatio: Math.max(0, Math.min(1, pageRatio)) };
-})()`;
-    const finalState = await evaluateInTab(finalStateExpr, tab, port) as {
-      viewportPosition: string; pageRatio: number;
-    } | null;
-
-    // Hash verification
-    const scrolled = true;
+    // Hash verification: before the final read, so a TargetClipped answer carries the note as the success answer does.
     if (verifyWithHash) {
       // We can't easily do pre/post hash without a before-capture, so mark as assumed-true
       // when verifyWithHash is set but no pre-hash exists. The image path does full verification.
       warnings.push("verifyWithHash: pre-scroll hash not available for CDP path — scrolled:true assumed");
     }
+
+    // Compute final state
+    const finalStateExpr = `
+(async function() {
+  const sel = ${JSON.stringify(target)};
+  const el = document.querySelector(sel);
+  // No position to give when nothing matches, the target was removed, or it has no box the browser renders.
+  // checkVisibility() is the browser's answer to the last (measured): false for display:none, display:contents, an
+  // <option> drawn by its <select>, and what a closed <details> hides; true for a box of no area (an empty anchor, a
+  // line), which the observer below judges like any other.
+  const unmeasured = function(n) {
+    if (!n) return 'not-found';
+    if (!n.isConnected) return 'gone';
+    const shown = typeof n.checkVisibility === 'function' ? n.checkVisibility() : n.getClientRects().length > 0;
+    return shown ? null : 'no-box';
+  };
+  const none = function(why) { return { viewportPosition: null, pageRatio: null, clipped: false, clipCheck: why }; };
+  if (unmeasured(el)) return none(unmeasured(el));
+  // bounds: the observer's root rect when it gives one with a size (it leaves the scrollbars out; for a node detached
+  // meanwhile it is empty, measured), else the window's.
+  const at = function(r, bounds) {
+    const use = bounds && bounds.width > 0 && bounds.height > 0;
+    const w = use ? bounds.right : window.innerWidth, h = use ? bounds.bottom : window.innerHeight;
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    return cy < 0 ? 'above' : cy > h ? 'below' : cx < 0 ? 'left' : cx > w ? 'right' : 'in-view';
+  };
+  const ratio = function(r) { return Math.max(0, Math.min(1, (window.scrollY + r.top) / (document.documentElement.scrollHeight || 1))); };
+  const r = el.getBoundingClientRect();
+  const out = { viewportPosition: at(r), pageRatio: ratio(r), clipped: false, clipCheck: 'asked' };
+  // Inside the window is not yet on screen: an ancestor (overflow:clip, clip-path, contain:paint, or a box the scroll
+  // did not move far enough) can still cut the target off. The browser's own IntersectionObserver answers it: it cuts
+  // the target by each clip on its containing-block chain, and so knows what a hand walk kept missing (display:contents,
+  // the top layer, overflow-clip-margin, will-change, slots). A tall target partly shown still intersects; a row
+  // touching the box's edge with no area inside does not (isIntersecting says yes there, the ratio says 0).
+  // It answers a frame later, so the position is read again from its entry: a page that moved the target out of the
+  // window meanwhile gets that position, not clipped. A target with a box of no area is asked too: the observer gives
+  // it ratio 1 when it touches the window's visible area and 0 when it does not. Not asked: a target outside the
+  // window, or one with no position (above). A page that is not visible may not render, so
+  // it is not asked either; that and no answer within 500 ms are said in clipCheck, since in-view is then only the
+  // window's answer. The page's own IntersectionObserver is trusted, as every script here trusts the page's globals.
+  if (out.viewportPosition !== 'in-view') { out.clipCheck = 'not-needed'; return out; }
+  if (document.visibilityState !== 'visible') { out.clipCheck = 'page-not-visible'; return out; }
+  if (typeof IntersectionObserver !== 'function') { out.clipCheck = 'no-observer'; return out; }
+  return await new Promise(function(res) {
+    let timer = 0;
+    const o = new IntersectionObserver(function(es) {
+      o.disconnect();
+      const e = es[es.length - 1];
+      // No position in that frame (removed, no box), or one that left the window, or the verdict. The timer is cleared
+      // only once an answer is in hand: a throw here leaves it to answer 'no-answer' (agy).
+      // A page that re-rendered the target in that frame (a list re-mounting its rows) left the observed node
+      // detached and a new one matching: answer for the new one where it is now, unchecked for clipping.
+      if (!el.isConnected) {
+        const fresh = document.querySelector(sel);
+        if (fresh) {
+          const fu = unmeasured(fresh);
+          const fr = fresh.getBoundingClientRect();
+          clearTimeout(timer);
+          res(fu ? none(fu) : { viewportPosition: at(fr, e.rootBounds), pageRatio: ratio(fr), clipped: false, clipCheck: 'replaced' });
+          return;
+        }
+      }
+      const u = unmeasured(el);
+      const now = u ? null : at(e.boundingClientRect, e.rootBounds);
+      const answer = u ? none(u)
+        : now !== 'in-view'
+          ? { viewportPosition: now, pageRatio: ratio(e.boundingClientRect), clipped: false, clipCheck: 'moved' }
+          : { viewportPosition: now, pageRatio: ratio(e.boundingClientRect), clipped: !(e.intersectionRatio > 0), clipCheck: 'asked' };
+      clearTimeout(timer); res(answer);
+    });
+    timer = setTimeout(function() { o.disconnect(); out.clipCheck = 'no-answer'; res(out); }, 500);
+    o.observe(el);
+  });
+  // pageRatio is read when the answer is built, from that frame's rect: approximate on a page still scrolling.
+})()`;
+    // The scrolls have already run: a page that navigates during the read must not send the caller to the other roads,
+    // which would scroll again. Answer without a final state instead.
+    type FinalState = { viewportPosition: string | null; pageRatio: number | null; clipped?: boolean; clipCheck?: string };
+    const finalState = await (evaluateInTab(finalStateExpr, tab, port) as Promise<FinalState | null>).catch((err: unknown) => {
+      warnings.push(`The position after the scroll was not read: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    });
+    const notChecked: Record<string, string> = {
+      "page-not-visible": "the page is not visible, so whether an ancestor clips it was not checked",
+      "no-observer": "the page has no IntersectionObserver, so whether an ancestor clips it was not checked",
+      "no-answer": "the browser did not answer within 500 ms whether an ancestor clips it",
+      "not-found": "no element matches the target selector after the scroll",
+      "gone": "the target was removed from the page",
+      "no-box": "the browser renders no box for the target (for example display:none, display:contents, an <option> inside a <select>, or content a closed <details> or hidden=until-found hides)",
+      "replaced": "the page replaced the target with a new element during the read, and the new one was not checked for clipping",
+    };
+    const why = finalState?.clipCheck !== undefined ? notChecked[finalState.clipCheck] : undefined;
+    if (why) {
+      const vp = finalState?.viewportPosition;
+      warnings.push(vp === null || vp === undefined
+        ? `viewportPosition is null: ${why}`
+        : vp === "in-view"
+          ? `viewportPosition says only that the target was inside the window: ${why}`
+          : `viewportPosition is '${vp}': ${why}`);
+    }
+    const ancestorsOut = ancestors.map(a => ({
+      selector: a.cssSelectorPath,
+      overflowY: a.overflowY,
+      isVirtualized: a.isVirtualized,
+      scrollTop: a.scrollTop,
+      scrollHeight: a.scrollHeight,
+    }));
+    if (finalState?.clipped) {
+      return failCode(
+        "TargetClipped",
+        occludedBy
+          // The tool's own sticky-header shift ran first, and can be what moved the target out of its box.
+          ? "The target is inside the window, but an ancestor cuts it off, so none of it is on screen. This tool shifted the target's parent for a sticky header first (see warnings), which may be what cut it off."
+          : "The target is inside the window, but an ancestor cuts it off, so none of it is on screen.",
+        {
+          suggest: getSuggestsForCode("TargetClipped"),
+          // The scrolls already ran: say so, with what the success answer carries (ancestors as walked before the scroll).
+          context: {
+            target, path: "cdp", scrolled: true, viewportPosition: finalState.viewportPosition,
+            pageRatio: finalState.pageRatio, ancestors: ancestorsOut,
+            ...(occludedBy && { occludedBy }), ...(warnings.length > 0 && { warnings }),
+          },
+        },
+      );
+    }
+
+    const scrolled = true;
 
     return ok({
       ok: true,
@@ -250,13 +361,7 @@ async function tryCdp(params: {
       attempts: 1,
       pageRatio: finalState?.pageRatio ?? null,
       scrolled,
-      ancestors: ancestors.map(a => ({
-        selector: a.cssSelectorPath,
-        overflowY: a.overflowY,
-        isVirtualized: a.isVirtualized,
-        scrollTop: a.scrollTop,
-        scrollHeight: a.scrollHeight,
-      })),
+      ancestors: ancestorsOut,
       viewportPosition: finalState?.viewportPosition ?? null,
       ...(occludedBy && { occludedBy }),
       ...(warnings.length > 0 && { warnings }),
