@@ -211,7 +211,7 @@ const SUGGESTS: Record<string, string[]> = {
   ],
   OverflowHiddenAncestor: [
     "A parent element has overflow:hidden which silently swallows scroll input",
-    "Pass expandHidden:true to temporarily unlock it (mutates live CSS)",
+    "Pass expandHidden:true to scroll inside it anyway (the page's CSS is not changed)",
     "Or click an expand/collapse control on the page to reveal the content first",
   ],
   VirtualScrollExhausted: [

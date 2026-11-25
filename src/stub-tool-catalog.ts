@@ -1804,7 +1804,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "maximum": 9007199254740991
         },
         "expandHidden": {
-          "description": "Set overflow:hidden ancestors to overflow:auto for this scroll, and put them back when it ends. Mutates live CSS meanwhile.",
+          "description": "Scroll the target into view even inside overflow:hidden ancestors (refused by default: such content may be hidden on purpose). The page's CSS is not changed.",
           "type": "boolean",
           "default": false
         },
