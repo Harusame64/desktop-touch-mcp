@@ -14,7 +14,10 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { evaluateInTab, disconnectAll, listTabs } from "../../src/engine/cdp-bridge.js";
-import { browserFillInputHandler, browserSearchHandler, browserEvalJsHandler } from "../../src/tools/browser.js";
+import {
+  browserFillInputHandler, browserSearchHandler, browserEvalJsHandler,
+  browserGetFormHandler, browserGetDomHandler, browserGetInteractiveHandler, browserGetAppStateHandler,
+} from "../../src/tools/browser.js";
 import { parsePayload } from "./helpers/wait.js";
 
 /** The text of a reply, and the activeTab line includeContext appends to it. */
@@ -23,8 +26,11 @@ function replyText(r: { content: Array<{ type: string; text?: string }> }): stri
 }
 function activeTabOf(text: string): { id: string; title: string } {
   const m = /^activeTab: (\{.*\})$/m.exec(text);
-  if (!m) throw new Error(`no activeTab line in: ${text.slice(0, 200)}`);
-  return JSON.parse(m[1]!);
+  if (m) return JSON.parse(m[1]!);
+  // Some tools put it in their JSON instead of a trailing line.
+  const inJson = (() => { try { return (JSON.parse(text) as { activeTab?: { id: string; title: string } }).activeTab; } catch { return undefined; } })();
+  if (!inJson) throw new Error(`no activeTab in: ${text.slice(0, 200)}`);
+  return inJson;
 }
 
 const PORT = 9249;
@@ -61,7 +67,7 @@ beforeAll(async () => {
     res.setHeader("content-type", "text/html");
     if (req.url?.startsWith("/form")) {
       // Focusing the field holds the thread for 2 s: the gap between browser_fill's focus and its fill.
-      res.end(`<title>form</title><input id="q" onfocus="const t = Date.now(); while (Date.now() - t < 2000);"><p>needle</p>`);
+      res.end(`<title>form</title><form id="f"><input id="q" name="q" onfocus="const t = Date.now(); while (Date.now() - t < 2000);"></form><p>needle</p><a href="#a">link</a>`);
     } else {
       res.end(`<title>other</title><input id="q"><p>needle</p>`);
     }
@@ -135,4 +141,21 @@ describe.skipIf(!CHROME_AVAILABLE)("a browser tool works on the tab it started o
     expect(text).toMatch(/^form\b/);
     expect(activeTabOf(text).id).toBe(firstTab);
   }, 30_000);
+
+  // The other tools that name a tab with includeContext: each must name the tab it read.
+  const contextCalls: Array<[string, () => Promise<{ content: Array<{ type: string; text?: string }> }>]> = [
+    ["browser_form", () => browserGetFormHandler({ selector: "#f", includeHidden: false, maxResults: 50, port: PORT, includeContext: true } as never)],
+    ["browser_get_dom", () => browserGetDomHandler({ selector: "#f", port: PORT, maxLength: 2000, includeContext: true } as never)],
+    ["browser_overview", () => browserGetInteractiveHandler({ types: ["all"], inViewportOnly: false, maxResults: 50, port: PORT, includeContext: true } as never)],
+    ["browser_get_app_state", () => browserGetAppStateHandler({ maxBytes: 2000, port: PORT, includeContext: true } as never)],
+  ];
+  for (const [name, call] of contextCalls) {
+    it(`${name} names the tab it read`, async () => {
+      await holdFirstTab();
+      const switching = switchTabsAfter(700);
+      const text = replyText(await call());
+      await switching;
+      expect(activeTabOf(text).id).toBe(firstTab);
+    }, 30_000);
+  }
 });
