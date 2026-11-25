@@ -46,7 +46,11 @@ vi.mock("../../src/engine/uia-bridge.js", () => ({
   scrollByPercent: vi.fn(),
   scrollElementIntoView: vi.fn(),
 }));
-vi.mock("../../src/engine/win32.js", () => ({
+// The rest of win32.js kept as is: smart-scroll's imports reach constants such as VK_CONTROL (bg-input.ts via
+// _blocked-by-dialog.ts), and a mock without them stopped this file from loading at all, on Windows and mac
+// alike, so none of its cells ran (found on #1047).
+vi.mock("../../src/engine/win32.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/engine/win32.js")>()),
   readScrollInfo: vi.fn(),
   enumWindowsInZOrder: vi.fn().mockReturnValue([]),
   restoreAndFocusWindow: vi.fn(),
