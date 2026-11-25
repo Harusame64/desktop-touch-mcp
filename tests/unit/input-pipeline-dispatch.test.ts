@@ -210,6 +210,7 @@ const {
   assertTier4Reachable,
   postWheelToHwnd,
   wheelPointDeps,
+  wheelRetryDeps,
   tabOfFrameDeps,
 } = await import("../../src/tools/_input-pipeline.js");
 
@@ -943,7 +944,28 @@ describe("ADR-018 Phase 3 — dispatchScrollWheel (Tier 2 CDP path)", () => {
         armWheelObserverMock.mockResolvedValueOnce({ verdict: v1, release: r1 }).mockResolvedValueOnce({ verdict: v2, release: r2 });
         return { r1, r2 };
       };
-      beforeEach(() => { dispatchPointerAwayInTabMock.mockClear(); dispatchWheelInTabMock.mockClear(); });
+      const realPlatform = wheelRetryDeps.platform;
+      beforeEach(() => { dispatchPointerAwayInTabMock.mockReset(); dispatchPointerAwayInTabMock.mockResolvedValue(undefined); dispatchWheelInTabMock.mockClear(); wheelRetryDeps.platform = () => "win32"; });
+      afterEach(() => { wheelRetryDeps.platform = realPlatform; });
+
+      it("not on Windows (where the gesture was measured), no retry: room stays room", async () => {
+        wheelRetryDeps.platform = () => "darwin";
+        armed({ seen: true, defaultPrevented: false, under: "room" });
+        expect(await send("left")).toEqual({ scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: "room_not_moved" });
+        expect(dispatchPointerAwayInTabMock).not.toHaveBeenCalled();
+        expect(dispatchWheelInTabMock).toHaveBeenCalledTimes(1);
+      });
+
+      it("the retry fails, or its observer cannot be armed: the first verdict stands (a wheel was sent), not null", async () => {
+        twice({ seen: true, defaultPrevented: false, under: "room" }, { seen: true, defaultPrevented: false, moved: "div#W" });
+        dispatchPointerAwayInTabMock.mockRejectedValueOnce(new Error("socket closed"));
+        expect(await send("left")).toEqual({ scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: "room_not_moved" });
+        armWheelObserverMock.mockReset();
+        const r1 = vi.fn(async () => {});
+        armWheelObserverMock.mockResolvedValueOnce({ verdict: vi.fn(async () => ({ seen: true, defaultPrevented: false, under: "room" as const })), release: r1 }).mockResolvedValueOnce(null);
+        expect(await send("left")).toEqual({ scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: "room_not_moved" });
+        expect(r1).toHaveBeenCalledTimes(1);
+      });
 
       it("moved the second time → delivered; both observers released, the pointer moved away once, between the wheels", async () => {
         const { r1, r2 } = twice({ seen: true, defaultPrevented: false, under: "room" }, { seen: true, defaultPrevented: false, moved: "div#W" });
