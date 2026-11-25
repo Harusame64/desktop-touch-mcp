@@ -84,7 +84,7 @@ export const smartScrollSchema = {
     "Total row count in a virtualised list. Required when virtualIndex is set."
   ),
   expandHidden: coercedBooleanWithDefault(false).describe(
-    "Temporarily set overflow:hidden ancestors to overflow:auto to unlock scroll. Mutates live CSS."
+    "Set overflow:hidden ancestors to overflow:auto for this scroll, and put them back when it ends. Mutates live CSS meanwhile."
   ),
   hint: z.enum(["above", "below", "left", "right"]).optional().describe(
     "Scroll direction hint for binary-search (image path). Seeds lo/hi bounds to reduce attempts."

@@ -1804,7 +1804,7 @@ export const STUB_TOOL_CATALOG: StubToolCatalogEntry[] = [
           "maximum": 9007199254740991
         },
         "expandHidden": {
-          "description": "Temporarily set overflow:hidden ancestors to overflow:auto to unlock scroll. Mutates live CSS.",
+          "description": "Set overflow:hidden ancestors to overflow:auto for this scroll, and put them back when it ends. Mutates live CSS meanwhile.",
           "type": "boolean",
           "default": false
         },

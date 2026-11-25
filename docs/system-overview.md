@@ -907,7 +907,7 @@ Unified scroll dispatcher that handles the cases where `scroll(action='to_elemen
 | Virtualised list (TanStack, React Virtualized) | TanStack API → `data-index` DOM → proportional bisect (≤6 iterations) |
 | Nested scroll containers | Walks ancestor chain (CDP or UIA), scrolls outer → inner |
 | Sticky header occlusion | Detects fixed/sticky header overlap, compensates `scrollTop` |
-| `overflow:hidden` ancestor | Returns `OverflowHiddenAncestor` error; `expandHidden:true` unlocks |
+| `overflow:hidden` ancestor | Returns `OverflowHiddenAncestor` error; `expandHidden:true` opens it for the scroll and puts it back after |
 | No CDP/UIA (image-only) | Win32 `GetScrollInfo` + scrollbar-strip pixel sampling + dHash binary-search |
 
 **Scroll verification:** `verifyWithHash:true` (auto-enabled for image path) computes a 64-bit perceptual hash before and after each attempt — if Hamming distance < 5, the page didn't move (virtual scroll boundary or swallowed input). Reported as `scrolled:false`.
