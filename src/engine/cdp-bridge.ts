@@ -561,13 +561,38 @@ export async function dispatchWheelInTab(
 ): Promise<void> {
   const tab = await resolveTab(tabId, port);
   const session = await openSession(tab, port);
-  await session.send("Input.dispatchMouseEvent", {
+  // Sideways, one event per notch at most (internal #431, win2 on Windows Chrome 157): a single horizontal wheel past
+  // an edge of 240 px or more (headless; 600 headed, whatever the window's width) holds a back/forward that the next
+  // pointer move carries out (a CDP move, measured; a real mouse's was not). Steps of 120 sent one after another
+  // never did: 20 to 50 of them, each sent when the last was answered, or 4, 16 or 50 ms apart.
+  // Only the first step's failure is thrown: once a wheel went out, the call does not say nothing was sent.
+  const steps = Math.max(1, Math.ceil(Math.abs(deltaX) / CDP_WHEEL_MAX_SIDEWAYS_STEP));
+  const step = (i: number): Promise<unknown> => session.send("Input.dispatchMouseEvent", {
     type: "mouseWheel",
     x,
     y,
-    deltaX,
-    deltaY,
+    deltaX: Math.sign(deltaX) * Math.min(CDP_WHEEL_MAX_SIDEWAYS_STEP, Math.abs(deltaX) - i * CDP_WHEEL_MAX_SIDEWAYS_STEP),
+    deltaY: i === 0 ? deltaY : 0,
   });
+  await step(0);
+  for (let i = 1; i < steps; i++) {
+    try { await step(i); } catch { return; }
+  }
+}
+
+/** The largest sideways delta one CDP wheel event carries (internal #431). */
+export const CDP_WHEEL_MAX_SIDEWAYS_STEP = 120;
+
+/**
+ * internal #431 — moves the tab's pointer off the page, to (-1, -1). On Windows Chrome, a sideways wheel at an edge
+ * starts the overscroll back/forward gesture, and every wheel after it scrolls nothing until the pointer moves; this
+ * move ends it (win2, headless and headed). Off the page, so nothing is hovered by it: an element the pointer was
+ * over gets its leave events, as when a mouse leaves the window. Sent only when a sideways wheel had room and did not
+ * move, before it is sent again.
+ */
+export async function dispatchPointerAwayInTab(tabId: string | null = null, port = DEFAULT_CDP_PORT): Promise<void> {
+  const session = await openSession(await resolveTab(tabId, port), port);
+  await session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: -1, y: -1, button: "none", buttons: 0 });
 }
 
 /**

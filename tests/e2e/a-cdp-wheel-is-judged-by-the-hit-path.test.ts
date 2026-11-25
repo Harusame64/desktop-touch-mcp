@@ -10,7 +10,7 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
 import { sleep } from "./helpers/wait.js";
-import { armWheelObserver, dispatchWheelInTab, evaluateInTab, disconnectAll, type WheelVerdict } from "../../src/engine/cdp-bridge.js";
+import { armWheelObserver, dispatchWheelInTab, dispatchPointerAwayInTab, dispatchMouseMoveInTab, evaluateInTab, disconnectAll, type WheelVerdict } from "../../src/engine/cdp-bridge.js";
 import { CDP_WHEEL_SEEN_MS, CDP_WHEEL_SETTLE_MS, CDP_WHEEL_MAX_MS } from "../../src/tools/_input-pipeline.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -157,7 +157,40 @@ describe.skipIf(!CHROME_AVAILABLE)("the CDP wheel is judged by the path the brow
   it("right-to-left: at the right edge, right is the end and left moves (gate 2 on #980)", async () => {
     await open("rtl");
     expect(await wheelAt(200, 300, 0, 120)).toMatchObject({ under: "end", underLabel: "div#W" });
-    expect(await wheelAt(200, 300, 0, -120)).toMatchObject({ moved: "div#W" });
+    // On Windows Chrome the wheel past the edge started the overscroll back/forward gesture, which takes the next
+    // wheel until the pointer moves (internal #431): there the left wheel answers room, and the scroll pipeline sends
+    // the pointer away and the wheel once more, as here. Elsewhere it must move the first time.
+    const left = await wheelAt(200, 300, 0, -120);
+    if (process.platform === "win32" && left?.moved === undefined) {
+      expect(left).toMatchObject({ under: "room", underLabel: "div#W" });
+      await dispatchPointerAwayInTab(null, PORT);
+      expect(await wheelAt(200, 300, 0, -120)).toMatchObject({ moved: "div#W" });
+    } else expect(left).toMatchObject({ moved: "div#W" });
+  });
+
+  it("a sideways wheel of several notches arrives as one event per notch, and still moves and is judged (internal #431)", async () => {
+    // One sideways event past an edge of 240 px or more holds a back/forward on Windows Chrome (win2); the steps do not.
+    await open("rtl");
+    await evaluateInTab("window.__dx = []; addEventListener('wheel', function (e) { __dx.push(e.deltaX); }, true); true", null, PORT);
+    expect(await wheelAt(200, 300, 0, -360)).toMatchObject({ moved: "div#W" });
+    await sleep(100);
+    expect(await evaluateInTab("__dx", null, PORT)).toEqual([-120, -120, -120]);
+    expect(await evaluateInTab("document.getElementById('W').scrollLeft", null, PORT)).toBeLessThanOrEqual(-240);
+    await evaluateInTab("window.__dx = []; true", null, PORT);
+    await dispatchWheelInTab(-250, 0, 200, 300, null, PORT);
+    await sleep(100);
+    expect(await evaluateInTab("__dx", null, PORT)).toEqual([-120, -120, -10]);
+  });
+
+  it("the pointer sent away leaves the page: a hovered pane gets its leave events, and nothing is entered (internal #431)", async () => {
+    await open("rtl");
+    await evaluateInTab("window.__ev = []; ['mouseover', 'mouseout', 'mouseleave'].forEach(function (t) { document.getElementById('W').addEventListener(t, function () { __ev.push(t); }); }); true", null, PORT);
+    await dispatchMouseMoveInTab(200, 300, null, PORT);
+    await sleep(50);
+    expect(await evaluateInTab("__ev", null, PORT)).toEqual(["mouseover"]);
+    await dispatchPointerAwayInTab(null, PORT);
+    await sleep(50);
+    expect(await evaluateInTab("__ev", null, PORT)).toEqual(["mouseover", "mouseout", "mouseleave"]);
   });
 
   it("the listeners come off when no verdict is read (release alone)", async () => {

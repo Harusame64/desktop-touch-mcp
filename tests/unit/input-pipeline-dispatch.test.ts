@@ -164,6 +164,7 @@ vi.mock("../../src/engine/win32.js", () => ({
 // Phase 3 Tier 2 CDP — mock the cdp-bridge surface used by the dispatcher.
 const listTabsLightMock = vi.fn();
 const dispatchWheelInTabMock = vi.fn();
+const dispatchPointerAwayInTabMock = vi.fn(async (..._a: unknown[]) => {});
 const readScrollPositionInTabMock = vi.fn();
 const getBrowserProcessIdMock = vi.fn(async (_port?: number) => 4242);
 const evaluateInTabMock = vi.fn();
@@ -177,6 +178,7 @@ vi.mock("../../src/engine/cdp-bridge.js", () => ({
   evaluateInTab: (...a: unknown[]) => evaluateInTabMock(...a),
   listTabsLight: listTabsLightMock,
   dispatchWheelInTab: dispatchWheelInTabMock,
+  dispatchPointerAwayInTab: (...a: unknown[]) => dispatchPointerAwayInTabMock(...a),
   readScrollPositionInTab: readScrollPositionInTabMock,
   getBrowserProcessId: getBrowserProcessIdMock,
 }));
@@ -208,6 +210,7 @@ const {
   assertTier4Reachable,
   postWheelToHwnd,
   wheelPointDeps,
+  wheelRetryDeps,
   tabOfFrameDeps,
 } = await import("../../src/tools/_input-pipeline.js");
 
@@ -931,6 +934,80 @@ describe("ADR-018 Phase 3 — dispatchScrollWheel (Tier 2 CDP path)", () => {
     it("the scroller nearest the point could move that way and did not → sent, not moved (room_not_moved)", async () => {
       armed({ seen: true, defaultPrevented: false, under: "room" });
       expect(await send()).toEqual({ scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: "room_not_moved" });
+    });
+
+    describe("sideways, room and nothing moved: the pointer leaves the page and the wheel goes once more (internal #431)", () => {
+      // Two observers, one per wheel: the first answers room, the second what the second wheel did.
+      const twice = (first: Verdict, second: Verdict) => {
+        const v1 = vi.fn(async () => first), v2 = vi.fn(async () => second);
+        const r1 = vi.fn(async () => {}), r2 = vi.fn(async () => {});
+        armWheelObserverMock.mockResolvedValueOnce({ verdict: v1, release: r1 }).mockResolvedValueOnce({ verdict: v2, release: r2 });
+        return { r1, r2 };
+      };
+      const realPlatform = wheelRetryDeps.platform;
+      beforeEach(() => { dispatchPointerAwayInTabMock.mockReset(); dispatchPointerAwayInTabMock.mockResolvedValue(undefined); dispatchWheelInTabMock.mockClear(); wheelRetryDeps.platform = () => "win32"; });
+      afterEach(() => { wheelRetryDeps.platform = realPlatform; });
+
+      it("not on Windows (where the gesture was measured), no retry: room stays room", async () => {
+        wheelRetryDeps.platform = () => "darwin";
+        armed({ seen: true, defaultPrevented: false, under: "room" });
+        expect(await send("left")).toEqual({ scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: "room_not_moved" });
+        expect(dispatchPointerAwayInTabMock).not.toHaveBeenCalled();
+        expect(dispatchWheelInTabMock).toHaveBeenCalledTimes(1);
+      });
+
+      it("the pointer cannot be moved: no second wheel, the first verdict stands (not null)", async () => {
+        twice({ seen: true, defaultPrevented: false, under: "room" }, { seen: true, defaultPrevented: false, moved: "div#W" });
+        dispatchPointerAwayInTabMock.mockRejectedValueOnce(new Error("socket closed"));
+        expect(await send("left")).toEqual({ scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: "room_not_moved" });
+        expect(dispatchWheelInTabMock).toHaveBeenCalledTimes(1);
+      });
+
+      it("the second wheel went out and cannot be judged: the document decides (moved → delivered; still → document_still)", async () => {
+        const unarmed = () => {
+          armWheelObserverMock.mockReset();
+          armWheelObserverMock.mockResolvedValueOnce({ verdict: vi.fn(async () => ({ seen: true, defaultPrevented: false, under: "room" as const })), release: vi.fn(async () => {}) })
+            .mockResolvedValueOnce(null);
+        };
+        unarmed();
+        expect(await send("left", snap(0, -120))).toEqual({ scrolled: true, channel: "cdp", reason: "delivered_via_cdp" });
+        unarmed();
+        expect(await send("left")).toEqual({ scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: "document_still" });
+        // The second wheel throws after it may have gone out: judged the same way.
+        twice({ seen: true, defaultPrevented: false, under: "room" }, { seen: true, defaultPrevented: false, moved: "div#W" });
+        dispatchWheelInTabMock.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("no reply"));
+        expect(await send("left", snap(0, -120))).toEqual({ scrolled: true, channel: "cdp", reason: "delivered_via_cdp" });
+      });
+
+      it("moved the second time → delivered; both observers released, the pointer moved away once, between the wheels", async () => {
+        const { r1, r2 } = twice({ seen: true, defaultPrevented: false, under: "room" }, { seen: true, defaultPrevented: false, moved: "div#W" });
+        expect(await send("left")).toEqual({ scrolled: true, channel: "cdp", reason: "delivered_via_cdp" });
+        expect(dispatchPointerAwayInTabMock).toHaveBeenCalledTimes(1);
+        expect(dispatchPointerAwayInTabMock).toHaveBeenCalledWith("TAB-X", 9222);
+        expect(dispatchWheelInTabMock).toHaveBeenCalledTimes(2);
+        expect(dispatchPointerAwayInTabMock.mock.invocationCallOrder[0]).toBeGreaterThan(dispatchWheelInTabMock.mock.invocationCallOrder[0]!);
+        expect(dispatchPointerAwayInTabMock.mock.invocationCallOrder[0]).toBeLessThan(dispatchWheelInTabMock.mock.invocationCallOrder[1]!);
+        expect(r1).toHaveBeenCalledTimes(1);
+        expect(r2).toHaveBeenCalledTimes(1);
+      });
+
+      it("room again the second time → sent, not moved; not a third time", async () => {
+        twice({ seen: true, defaultPrevented: false, under: "room" }, { seen: true, defaultPrevented: false, under: "room" });
+        expect(await send("right")).toEqual({ scrolled: false, channel: "cdp", reason: "target_unreachable", sentNotMoved: "room_not_moved" });
+        expect(dispatchWheelInTabMock).toHaveBeenCalledTimes(2);
+        expect(dispatchPointerAwayInTabMock).toHaveBeenCalledTimes(1);
+      });
+
+      it("up and down, or a sideways wheel that moved, never move the pointer", async () => {
+        armed({ seen: true, defaultPrevented: false, under: "room" });
+        await send("down");
+        armed({ seen: true, defaultPrevented: false, moved: "div#W" });
+        await send("left");
+        armed({ seen: true, defaultPrevented: false, under: "end" });
+        await send("left");
+        expect(dispatchPointerAwayInTabMock).not.toHaveBeenCalled();
+        expect(dispatchWheelInTabMock).toHaveBeenCalledTimes(3);
+      });
     });
 
     it("the scroller nearest the point stands at its end that way → delivered at the end (already-at-boundary is success)", async () => {
