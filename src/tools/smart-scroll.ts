@@ -28,7 +28,7 @@ import { captureWindowRawAndHash, getCachedRaw } from "../engine/layer-buffer.js
 import { getCdpPort } from "../utils/desktop-config.js";
 import { ok } from "./_types.js";
 import type { ToolResult } from "./_types.js";
-import { failWith, failArgs } from "./_errors.js";
+import { failWith, failArgs, failCode, getSuggestsForCode } from "./_errors.js";
 import { coercedBooleanWithDefault } from "./_coerce.js";
 import { WHEEL_DELTA_PER_NOTCH } from "./_input-pipeline.js";
 
@@ -230,11 +230,36 @@ async function tryCdp(params: {
   const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
   const vp = cy < 0 ? 'above' : cy > window.innerHeight ? 'below' : cx < 0 ? 'left' : cx > window.innerWidth ? 'right' : 'in-view';
   const pageRatio = (window.scrollY + r.top) / (document.documentElement.scrollHeight || 1);
-  return { viewportPosition: vp, pageRatio: Math.max(0, Math.min(1, pageRatio)) };
+  // Inside the window is not yet on screen: an ancestor (overflow:clip, clip-path, contain:paint, or a box the scroll
+  // did not move far enough) can still cut the target off. Clipped needs two witnesses: nothing at the target's centre
+  // is the target (a pointer-events:none target is missing there too), and a clipping ancestor leaves the centre outside.
+  let clippedBy = null;
+  if (vp === 'in-view' && !document.elementsFromPoint(cx, cy).some(function(e) { return e === el || el.contains(e); })) {
+    const up = function(n) { const root = n.getRootNode(); return n.parentElement || (root && root.host) || null; };
+    for (let a = up(el), n = 0; a && n < 200; a = up(a), n++) {
+      if (a === document.body || a === document.documentElement) break;
+      const s = getComputedStyle(a);
+      const both = s.clipPath !== 'none' || /paint|strict|content/.test(s.contain);
+      const b = a.getBoundingClientRect();
+      if (((both || s.overflowX !== 'visible') && (cx < b.left || cx > b.right))
+       || ((both || s.overflowY !== 'visible') && (cy < b.top || cy > b.bottom))) {
+        clippedBy = a.tagName.toLowerCase() + (a.id ? '#' + a.id : '');
+        break;
+      }
+    }
+  }
+  return { viewportPosition: vp, pageRatio: Math.max(0, Math.min(1, pageRatio)), clippedBy: clippedBy };
 })()`;
     const finalState = await evaluateInTab(finalStateExpr, tab, port) as {
-      viewportPosition: string; pageRatio: number;
+      viewportPosition: string; pageRatio: number; clippedBy?: string | null;
     } | null;
+    if (finalState?.clippedBy) {
+      return failCode(
+        "TargetClipped",
+        `The target is inside the window, but '${finalState.clippedBy}' cuts it off, so it is not on screen.`,
+        { suggest: getSuggestsForCode("TargetClipped"), context: { target, clippedBy: finalState.clippedBy } },
+      );
+    }
 
     // Hash verification
     const scrolled = true;
