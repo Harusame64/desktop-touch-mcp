@@ -36,10 +36,10 @@ import { wheelPointOnPage, type WheelPointDeps, type WheelPagePoint, type PointN
 import { resolvePageSurface } from "../engine/page-surface.js";
 import { tabOfFrame, type TabOfFrameDeps } from "../engine/cdp-tab-of-frame.js";
 
-/** Exported so tests can replace the window reads (ADR-040 PR ②). */
 /** internal #431 — the platform the sideways retry asks for; tests stand in for it. */
 export const wheelRetryDeps = { platform: (): NodeJS.Platform => process.platform };
 
+/** Exported so tests can replace the window reads (ADR-040 PR ②). */
 export const wheelPointDeps: WheelPointDeps = {
   rootOf: (h) => getWindowRoot(h),
   classOf: (h) => getWindowClassName(h),
@@ -2237,20 +2237,26 @@ export async function dispatchScrollWheel(
       // edge leaves Chrome's overscroll back/forward gesture taking every wheel until the pointer moves. The pointer
       // is moved off the page (dispatchPointerAwayInTab) and the wheel sent once more, judged by a fresh observer.
       // Only then, so a scroll that moves never moves the pointer; only on Windows, where the gesture was measured
-      // (elsewhere a scroll that lands late would be sent twice). When the retry cannot be judged or fails, the first
-      // verdict stands: a wheel was sent.
+      // (elsewhere a scroll that lands late would be sent twice). When the pointer could not be moved, no second wheel
+      // went out and the first verdict stands. When the second wheel went out (or may have) and cannot be judged,
+      // the document's own position decides below, as for an unarmed observer: pre was read before both wheels.
       if (wheelRetryDeps.platform() === "win32" && !axisIsVertical && verdict !== null && verdict.seen && verdict.moved === undefined
         && !verdict.defaultPrevented && verdict.under === "room") {
-        const first = verdict;
+        let away = false;
         try {
           await observer?.release();
           observer = null;
           await dispatchPointerAwayInTab(dest.tabId, port);
-          observer = await armWheelObserver(axisIsVertical, dest.tabId, port);
-          await dispatchWheelInTab(wheelDelta.x, wheelDelta.y, cx, cy, dest.tabId, port);
-          verdict = (observer !== null ? await observer.verdict(sign, CDP_WHEEL_SEEN_MS, CDP_WHEEL_SETTLE_MS, CDP_WHEEL_MAX_MS) : null) ?? first;
-        } catch {
-          verdict = first;
+          away = true;
+        } catch { /* nothing more was sent: the first verdict stands */ }
+        if (away) {
+          try {
+            observer = await armWheelObserver(axisIsVertical, dest.tabId, port);
+            await dispatchWheelInTab(wheelDelta.x, wheelDelta.y, cx, cy, dest.tabId, port);
+            verdict = observer !== null ? await observer.verdict(sign, CDP_WHEEL_SEEN_MS, CDP_WHEEL_SETTLE_MS, CDP_WHEEL_MAX_MS) : null;
+          } catch {
+            verdict = null;
+          }
         }
       }
       if (verdict !== null && verdict.seen) {
