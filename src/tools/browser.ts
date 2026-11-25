@@ -4558,10 +4558,21 @@ export function registerBrowserTools(server: McpServer): void {
         tabId, port: port ?? _defaultPort,
       });
       const text = result.content[0]?.type === "text" ? result.content[0].text : "{}";
-      const parsed = JSON.parse(text) as { results?: Array<{ selector: string; text: string }> };
-      return parsed.results ?? [];
-    } catch {
-      return [];
+      const parsed = JSON.parse(text) as {
+        ok?: boolean; code?: string; error?: string; results?: Array<{ selector: string; text: string }>;
+      };
+      if (parsed.ok !== false) return parsed.results ?? [];
+      // Only a search that ran and found nothing is "no match yet". Every other failure is passed up with
+      // its code in front, as the probe reads it: a closed browser (BrowserNotConnected), a scope that
+      // matches nothing, an invalid regex (which browser_search answers as BrowserSearchNoResults with
+      // "InvalidRegex" in its words). All of these were [] before, so wait_until(element_matches) polled a
+      // closed browser to its timeout and answered WaitTimeout (measured on main, mac).
+      const nothingFound = parsed.code === "BrowserSearchNoResults" && / returned 0 results$/.test(parsed.error ?? "");
+      if (nothingFound) return [];
+      throw new Error(`${parsed.code ?? "ToolError"}: ${parsed.error ?? "browser_search failed"}`);
+    } catch (err) {
+      if (err instanceof SyntaxError) return [];
+      throw err;
     }
   });
 
