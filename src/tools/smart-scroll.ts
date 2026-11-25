@@ -119,12 +119,12 @@ async function tryCdp(params: {
 
   try {
     // The tab is chosen once (internal #423). With no tabId each of the steps below resolved the default page tab
-    // again, so a tab brought to the front mid-call took the later steps: the unlock, restore, scroll and final
-    // read could run in another tab than the one whose ancestors were walked. A tab that cannot be resolved fails
-    // this path at once, for the caller to try the next strategy.
+    // again, so a tab brought to the front mid-call took the later steps: the layer scrolls, scrollIntoView, the
+    // sticky-header shift and the final read could run in another tab than the one whose ancestors were walked. A
+    // tab that cannot be resolved fails this path at once, for the caller to try the next strategy.
     const tab = tabId ?? await resolveTabId(null, port);
     // Ancestor walk. Nothing is marked: expandHidden changes no CSS (below).
-    const { ancestors, warnings: ancWarn } = await getScrollAncestorsCdp(target, tab, port, maxDepth, false);
+    const { ancestors, warnings: ancWarn } = await getScrollAncestorsCdp(target, tab, port, maxDepth);
     warnings.push(...ancWarn);
 
     // Overflow:hidden check
@@ -146,7 +146,10 @@ async function tryCdp(params: {
     // Windows' classic scrollbars rewrapped the layout the answer was read in, and two calls in one tab undid
     // each other's changes.
     if (expandHidden && hiddenAncestors.length > 0) {
-      warnings.push(`expandHidden: scrolled inside overflow:hidden '${hiddenAncestors[0]?.cssSelectorPath}'; the page's CSS is not changed`);
+      // Said as the permission it is, not as a scroll done: nothing here measures whether the hidden box moved (a
+      // box of height 0 does not), and the virtual-list road does not run scrollIntoView (/code-review).
+      const names = hiddenAncestors.map((a) => `'${a.cssSelectorPath}'`).join(", ");
+      warnings.push(`expandHidden: scrolling allowed inside overflow:hidden ancestor(s) ${names}; the page's CSS is not changed`);
     }
 
     // Virtual list

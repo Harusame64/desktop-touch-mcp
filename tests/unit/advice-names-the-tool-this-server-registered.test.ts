@@ -507,6 +507,8 @@ describe("ADR-036 B2c — advice names the tool this server registered", () => {
     // same as no list. Adding a code here is the deliberate act; the cell only insists
     // that the act happened.
     const CHANGED_BY_HAND: Record<string, string> = {
+      OverflowHiddenAncestor:
+        "internal #423: expandHidden no longer changes the page's CSS (it never needed to: scrollIntoView scrolls an overflow:hidden box), so the line no longer says it unlocks and mutates live CSS",
       InvalidArgs:
         "internal #244: the line about name / automationId was click_element's rule, handed to every tool's argument refusal; the three tools it fits say it in their own message",
       AutoGuardBlocked:
