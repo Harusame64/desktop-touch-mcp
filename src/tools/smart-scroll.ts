@@ -6,6 +6,7 @@ import {
   setScrollPositionCdp,
   detectStickyHeaderCdp,
   scrollVirtualListCdp,
+  resolveTabId,
 } from "../engine/cdp-bridge.js";
 import {
   getScrollAncestors,
@@ -117,8 +118,13 @@ async function tryCdp(params: {
   const warnings: string[] = [];
 
   try {
+    // The tab is chosen once (internal #423). With no tabId each of the steps below resolved the default page tab
+    // again, so a tab brought to the front mid-call took the later steps: the unlock, restore, scroll and final
+    // read could run in another tab than the one whose ancestors were walked and marked. A tab that cannot be
+    // resolved fails this path at once, for the caller to try the next strategy.
+    const tab = tabId ?? await resolveTabId(null, port);
     // Ancestor walk
-    const { ancestors, warnings: ancWarn } = await getScrollAncestorsCdp(target, tabId ?? null, port, maxDepth, expandHidden);
+    const { ancestors, warnings: ancWarn } = await getScrollAncestorsCdp(target, tab, port, maxDepth, expandHidden);
     warnings.push(...ancWarn);
 
     // Overflow:hidden check
@@ -136,7 +142,7 @@ async function tryCdp(params: {
     // so the unlock expression needs no external data embedded — pure attribute query.
     if (expandHidden && hiddenAncestors.length > 0) {
       const unlockExpr = `(function(){var els=document.querySelectorAll('[data-dt-hidden-ancestor]');els.forEach(function(el){el.setAttribute('data-dt-prev-overflow','hidden');el.style.overflow='auto';el.removeAttribute('data-dt-hidden-ancestor');});})()`;
-      try { await evaluateInTab(unlockExpr, tabId ?? null, port); } catch { /* ignore */ }
+      try { await evaluateInTab(unlockExpr, tab, port); } catch { /* ignore */ }
       warnings.push("expandHidden: overflow:hidden unlocked — call smart_scroll again to restore");
     }
 
@@ -148,13 +154,13 @@ async function tryCdp(params: {
   const marked = document.querySelectorAll('[data-dt-hidden-ancestor]');
   for (const el of marked) { el.removeAttribute('data-dt-hidden-ancestor'); }
 })()`;
-    try { await evaluateInTab(restoreExpr, tabId ?? null, port); } catch { /* ignore */ }
+    try { await evaluateInTab(restoreExpr, tab, port); } catch { /* ignore */ }
 
     // Virtual list
     const virtualAncestors = ancestors.filter(a => a.isVirtualized);
     if (virtualAncestors.length > 0 && virtualIndex !== undefined && virtualTotal !== undefined) {
       const vResult = await scrollVirtualListCdp(
-        virtualAncestors[0]!.cssSelectorPath, virtualIndex, virtualTotal, tabId ?? null, port
+        virtualAncestors[0]!.cssSelectorPath, virtualIndex, virtualTotal, tab, port
       );
       warnings.push(...(vResult.warnings ?? []));
       if (!vResult.ok) {
@@ -165,7 +171,7 @@ async function tryCdp(params: {
       for (const ancestor of ancestors.filter(a => !a.isHidden)) {
         // Calculate desired scrollTop so the element ends up at `inline` position
         const targetScrollTop = Math.max(0, ancestor.scrollTop + (ancestor.scrollHeight - ancestor.clientHeight) * 0.5);
-        await setScrollPositionCdp(ancestor.cssSelectorPath, targetScrollTop, ancestor.scrollLeft, tabId ?? null, port);
+        await setScrollPositionCdp(ancestor.cssSelectorPath, targetScrollTop, ancestor.scrollLeft, tab, port);
       }
       // Final scrollIntoView.
       //
@@ -193,7 +199,7 @@ async function tryCdp(params: {
   const r = el.getBoundingClientRect();
   return { ok: true, viewportTop: Math.round(r.top), viewportBottom: Math.round(r.bottom) };
 })()`;
-      const svResult = await evaluateInTab(scrollExpr, tabId ?? null, port) as {
+      const svResult = await evaluateInTab(scrollExpr, tab, port) as {
         ok: boolean; error?: string; viewportTop?: number; viewportBottom?: number;
       };
       if (!svResult.ok) {
@@ -202,7 +208,7 @@ async function tryCdp(params: {
     }
 
     // Sticky header check
-    const headerCheck = await detectStickyHeaderCdp(target, tabId ?? null, port);
+    const headerCheck = await detectStickyHeaderCdp(target, tab, port);
     let occludedBy: { header?: boolean } | undefined;
     if (headerCheck.occluded) {
       occludedBy = { header: true };
@@ -215,7 +221,7 @@ async function tryCdp(params: {
   const scrollEl = el.parentElement;
   if (scrollEl) scrollEl.scrollTop -= ${headerHeight + 8};
 })()`;
-      try { await evaluateInTab(shiftExpr, tabId ?? null, port); } catch { /* ignore */ }
+      try { await evaluateInTab(shiftExpr, tab, port); } catch { /* ignore */ }
       warnings.push(`Sticky header occlusion detected (height ~${headerHeight}px), scrolled an extra ${headerHeight + 8}px`);
     }
 
@@ -230,7 +236,7 @@ async function tryCdp(params: {
   const pageRatio = (window.scrollY + r.top) / (document.documentElement.scrollHeight || 1);
   return { viewportPosition: vp, pageRatio: Math.max(0, Math.min(1, pageRatio)) };
 })()`;
-    const finalState = await evaluateInTab(finalStateExpr, tabId ?? null, port) as {
+    const finalState = await evaluateInTab(finalStateExpr, tab, port) as {
       viewportPosition: string; pageRatio: number;
     } | null;
 
