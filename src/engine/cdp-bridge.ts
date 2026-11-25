@@ -1707,6 +1707,23 @@ export async function getTabContext(
 }
 
 /**
+ * The tab's title and URL as the browser lists them (DevTools /json), without asking the page.
+ * A page whose script holds its thread does not answer Runtime.evaluate until it lets go (CDP waits
+ * 15 s), but the browser still lists the tab. Null when the tab cannot be found or the list fails.
+ */
+export async function getListedTabContext(
+  tabId: string | null,
+  port = DEFAULT_CDP_PORT
+): Promise<{ id: string; title: string; url: string } | null> {
+  try {
+    const tab = await resolveTab(tabId, port);
+    return { id: tab.id, title: tab.title ?? "", url: tab.url ?? "" };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Navigate the browser tab to a URL.
  * Only http:// and https:// URLs are accepted; javascript: and file: are rejected.
  * Returns { frameId, errorText } from Page.navigate response.

@@ -29,6 +29,7 @@ import {
   getDomHtml,
   disconnectAll,
   getTabContext,
+  getListedTabContext,
   clearAxMarks,
   markAxMatches,
   isOffscreenMinimized,
@@ -257,7 +258,8 @@ export const browserNavigateSchema = {
   ),
   loadTimeoutMs: z.coerce.number().int().min(500).max(30000).default(15000).describe(
     "Max milliseconds to wait for page load when waitForLoad=true (default 15000). " +
-    "On timeout, returns ok:true with readyState set to current state and hints.warnings=['NavigateTimeout']."
+    "On timeout, returns ok:true with readyState set to current state and hints.warnings=['NavigateTimeout']; " +
+    "when the page did not answer (a script holding it), also 'PageNotAnswering', with the title and URL from the browser's tab list and the last readyState the page gave ('loading' if none)."
   ),
   lensId: z.string().optional().describe(
     "Optional perception lens ID. Guards (target.identityStable) are evaluated before navigating, " +
@@ -3479,10 +3481,12 @@ export const browserNavigateHandler = async ({
 
     // Wait for document.readyState === "complete"
     await new Promise<void>((r) => setTimeout(r, 200));
+    let lastState: string | null = null;
     const poll = await pollUntil(
       async () => {
         try {
           const state = await evaluateInTab("document.readyState", tabId ?? null, port);
+          if (typeof state === "string") lastState = state;
           return state === "complete" ? true : null;
         } catch {
           return null;
@@ -3490,6 +3494,24 @@ export const browserNavigateHandler = async ({
       },
       { intervalMs: 150, timeoutMs: loadTimeoutMs }
     );
+
+    if (!poll.ok && poll.unfinishedPollMs !== undefined) {
+      // The page did not answer its last readyState read by loadTimeoutMs: a script is holding its
+      // thread. Asking it for its title too waited on CDP's own 15 s, so the answer came about 15 s
+      // after loadTimeoutMs (18.2 s against 3000 on main, mac). The browser's tab list answers
+      // without the page, and the readyState is the last one the page gave, if any.
+      const listed = await getListedTabContext(tabId ?? null, port);
+      const rs = lastState as string | null;
+      return ok({
+        ok: true,
+        url: listed?.url || url,
+        title: listed?.title ?? "",
+        readyState: rs === "loading" || rs === "interactive" || rs === "complete" ? rs : "loading",
+        elapsedMs: Date.now() - startedAt,
+        waited: true,
+        hints: { warnings: ["NavigateTimeout", "PageNotAnswering"] },
+      });
+    }
 
     const tabCtx = await getTabContext(tabId ?? null, port);
     const elapsedMs = Date.now() - startedAt;
