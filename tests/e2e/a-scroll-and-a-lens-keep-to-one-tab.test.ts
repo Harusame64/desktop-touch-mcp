@@ -118,6 +118,21 @@ describe.skipIf(!CHROME_AVAILABLE)("a scroll and a lens keep to one tab", () => 
     expect(text).toMatch(/^lensed/);
   }, 30_000);
 
+  it("a lens bound on another port is not used for a call on this one", async () => {
+    const lensed = await openTab("/lensed");
+    await untilLoaded(lensed);
+    const { lensId } = await registry.registerLensAsync({
+      name: "t", target: { kind: "browserTab", match: { urlIncludes: "/lensed" } }, maintain: [], guards: [],
+    } as never);
+    // Pretend the lens was bound on another browser's port.
+    (registry.getLens(lensId)!.boundIdentity as { port: number }).port = PORT + 1;
+    const front = await openTab("/front");
+    await untilLoaded(front);
+    const text = (await browserEvalJsHandler({ expression: "document.title", port: PORT, includeContext: false, lensId } as never))
+      .content.find((b) => b.type === "text")!.text!;
+    expect(text).toMatch(/^front/);
+  }, 30_000);
+
   it("browser_navigate with lensId and no tabId navigates the lens's tab", async () => {
     const lensed = await openTab("/lensed");
     await untilLoaded(lensed);
@@ -126,7 +141,9 @@ describe.skipIf(!CHROME_AVAILABLE)("a scroll and a lens keep to one tab", () => 
     } as never);
     const front = await openTab("/front");
     await untilLoaded(front);
-    await browserNavigateHandler({ url: `${base}/lensed-next`, port: PORT, waitForLoad: true, loadTimeoutMs: 5000, lensId } as never);
+    const r = parsePayload(await browserNavigateHandler({ url: `${base}/lensed-next`, port: PORT, waitForLoad: true, loadTimeoutMs: 5000, lensId } as never));
+    expect(r.ok).toBe(true);
+    expect(r.url).toBe(`${base}/lensed-next`);
     const tabs = await listTabs(PORT);
     expect(tabs.find((t) => t.id === lensed)!.url).toBe(`${base}/lensed-next`);
     expect(tabs.find((t) => t.id === front)!.url).toBe(`${base}/front`);

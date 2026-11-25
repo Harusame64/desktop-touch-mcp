@@ -823,7 +823,8 @@ function _registerBrowserTabLens(_spec: LensSpec): { lensId: string; seq: number
  * identity, so what the lens says it is bound to and where it reads cannot part (gate 2 on #925). No
  * config read per call: the sensor loop runs every 250 ms.
  */
-function lensCdpPort(lens: PerceptionLens): number {
+/** The port a browser-tab lens was bound on (its recorded identity), else the configured one. */
+export function lensCdpPort(lens: PerceptionLens): number {
   const port = (lens.boundIdentity as Partial<BrowserTabIdentity>).port;
   return typeof port === "number" ? port : getCdpPort();
 }
