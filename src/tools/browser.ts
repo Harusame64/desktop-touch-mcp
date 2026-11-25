@@ -1676,6 +1676,19 @@ const FILL_HINTS_TEXTLIKE: string[] = [
   "Or set the field it writes to (often a hidden textarea) with browser_eval: browser_fill does not type into a field the page does not show",
 ];
 
+/**
+ * The tab a call works on, chosen once at its start (internal #423). With no tabId every read resolved the
+ * default page tab again (the most recently used one in the browser's list), so a tab brought to the front
+ * mid-call took the later reads: on main (mac) browser_fill focused the field in one tab and wrote the value
+ * into another, answering ok and "delivered". A tab that cannot be resolved is answered here, as the call's
+ * first read would have answered it.
+ */
+async function pinTab(tabId: string | undefined, port: number): Promise<string> {
+  // A failure is passed on, not swallowed: swallowing it let the call's first read wait the same timeout
+  // again, so a browser slow to answer failed after twice the time (/code-review).
+  return tabId ?? (await resolveTabId(null, port));
+}
+
 export const browserFillInputHandler = async ({
   selector,
   by,
@@ -1705,6 +1718,7 @@ export const browserFillInputHandler = async ({
     // `by` means selector is absent → resolver path. Selector mode below is
     // unchanged (bit-equal 2-eval, AC-9).
     if (by && pattern) {
+      tabId = await pinTab(tabId, port);
       return await handleBrowserFillByAxis({ by, pattern, role, scope, caseSensitive, value, tabId, port, includeContext });
     }
     if (!selector) {
@@ -1712,6 +1726,8 @@ export const browserFillInputHandler = async ({
         suggest: ["Pass a CSS selector, or by+pattern (e.g. by:'ariaLabel', pattern:'Email')."],
       });
     }
+    // After the arguments are checked: a refused call is answered before anything looks for a tab.
+    tabId = await pinTab(tabId, port);
 
     // Fill sequence: focus the element first, then update its value from page context
     // using the native prototype setter and dispatch InputEvent/change so frameworks
@@ -1861,6 +1877,7 @@ export const browserGetFormHandler = async ({
   includeContext: boolean;
 }): Promise<ToolResult> => {
   try {
+    tabId = await pinTab(tabId, port);
     const expr = `
 (function() {
 ${ELEMENT_NAME_JS}
@@ -2057,8 +2074,10 @@ export const browserFindElementHandler = async ({
   includeContext: boolean;
 }): Promise<ToolResult> => {
   try {
-    // ADR-040 — one tab for the coordinates and the window they are placed on (codex on #967).
+    // ADR-040 — one tab for the coordinates and the window they are placed on (codex on #967); the context
+    // read below uses it too.
     const tab = tabId ?? await resolveTabId(null, port).catch(() => null);
+    tabId = tab ?? undefined;
     const raw = await getElementScreenCoords(
       selector,
       tab,
@@ -2901,6 +2920,8 @@ export const browserClickElementHandler = async ({
     // present `by` means selector is absent → resolver path. The selector path
     // below is unchanged (bit-equal, NFR-1 / AC-9).
     if (by && pattern) {
+      // The selector path below chooses its tab once after the fixId prologue (ADR-040).
+      tabId = await pinTab(tabId, port);
       return await handleBrowserClickByAxis({ by, pattern, role, scope, caseSensitive, narrate, tabId, port, lensId, force });
     }
     if (!selector) {
@@ -3242,6 +3263,7 @@ export const browserEvalJsHandler = async ({
   withPerception?: boolean;
 }): Promise<ToolResult> => {
   try {
+    tabId = await pinTab(tabId, port);
     let perceptionEnv: import("../engine/perception/types.js").PostPerception | undefined;
     if (lensId) {
       const guardResult = await evaluatePreToolGuards(lensId, "browser_eval", {});
@@ -3369,6 +3391,7 @@ export const browserGetDomHandler = async ({
   includeContext: boolean;
 }): Promise<ToolResult> => {
   try {
+    tabId = await pinTab(tabId, port);
     const html = await getDomHtml(
       selector ?? null,
       tabId ?? null,
@@ -3609,6 +3632,7 @@ export const browserGetInteractiveHandler = async ({
   includeContext: boolean;
 }): Promise<ToolResult> => {
   try {
+    tabId = await pinTab(tabId, port);
     const includeAll = types.includes("all");
     const includeLinks   = includeAll || types.includes("link");
     const includeButtons = includeAll || types.includes("button");
@@ -4034,6 +4058,7 @@ export const browserSearchHandler = async ({
   port: number;
 }): Promise<ToolResult> => {
   try {
+    tabId = await pinTab(tabId, port);
     // ADR-023 Phase 1 (S1/S7): the candidate-collection IIFE is now built by the
     // shared resolver module (verbatim extraction; bit-equal output pinned by
     // tests/unit/browser-resolver-candidate-collection.test.ts). Later phases
@@ -4159,6 +4184,7 @@ export const browserGetAppStateHandler = async ({
   includeContext: boolean;
 }): Promise<ToolResult> => {
   try {
+    tabId = await pinTab(tabId, port);
     const probes: Array<{ selector: string; framework: string }> = selectors
       ? selectors.map((s) => ({ selector: s, framework: "custom" }))
       : [
