@@ -10,7 +10,7 @@
  * - The target is missing at its own centre. Alone, this would also refuse a pointer-events:none target (that cell
  *   guards the second witness).
  * - Nothing of the target's box is left once the window and each clipping ancestor's box are cut from it. Alone,
- *   this would also refuse a position:fixed child of a clip box, which escapes it (that cell guards the first witness).
+ *   this would also refuse a row that a clip-path reaching past its box still paints (that cell guards the first witness).
  * A tall target partly shown is not clipped. Neither is a position:absolute target that escapes an overflow box,
  * since overflow clips only what has the box on its containing-block chain. A full-window overlay covers the target;
  * it does not clip it.
@@ -37,6 +37,7 @@ const HTML = `<title>t</title><style>body{margin:0}</style>
 <div id="clipfix" style="height:200px;overflow:clip"><div id="fixed" style="position:fixed;top:300px;left:0;height:40px">fixed</div>${rows("x")}</div>
 <div id="short" style="height:100px;overflow:auto"><div style="height:300px"></div><div id="tall" style="height:500px">tall</div><div style="height:300px"></div></div>
 <div style="position:relative"><div id="ab" style="overflow:auto;height:100px"><div id="abs" style="position:absolute;top:300px;pointer-events:none">abs</div></div></div>
+<div id="wide" style="height:200px;clip-path:inset(0 0 -3000px 0)"><div>${rows("w")}</div></div>
 <div id="free" style="height:200px;overflow:auto">${rows("f")}</div>
 <div id="ovl" style="height:200px;overflow:auto">${rows("o")}</div>
 <div style="position:fixed;inset:0;background:rgba(0,0,0,.1)"></div>`;
@@ -114,6 +115,12 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the
 
   it("a position:absolute pointer-events:none target that escapes an overflow box is in view", async () => {
     const r = await scroll("#abs");
+    expect(r.ok).toBe(true);
+    expect(r.viewportPosition).toBe("in-view");
+  });
+
+  it("a row painted outside its box by a clip-path that reaches past it is in view (the box is not the clip)", async () => {
+    const r = await scroll("#w-45");
     expect(r.ok).toBe(true);
     expect(r.viewportPosition).toBe("in-view");
   });
