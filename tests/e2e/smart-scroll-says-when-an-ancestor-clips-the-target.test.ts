@@ -10,7 +10,9 @@
  * containing blocks, display:contents, the top layer, overflow-clip-margin, will-change, slots. A spike of those
  * 13 shapes gave the observer's answer as the page's in every one. The in-view cells here are the shapes a hand
  * walk got wrong: missing at its centre (pointer-events:none), escaping the box (position:fixed/absolute),
- * partly shown, painted past the box.
+ * partly shown, painted past the box. Each asserts the observer answered (no "viewportPosition says only" warning),
+ * so a road that skips it cannot pass them. A row touching the box's edge is clipped: the observer calls that
+ * intersecting with ratio 0 (measured), so the ratio decides.
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
@@ -42,12 +44,14 @@ const HTML = `<title>t</title><style>body{margin:0}</style>
 <div style="height:200px;overflow:clip;overflow-clip-margin:100px"><div style="height:250px"></div><div id="ocm" style="height:20px;pointer-events:none">ocm</div></div>
 <div id="free" style="height:200px;overflow:auto">${rows("f")}</div>
 <div style="height:200px;overflow:auto">${rows("o")}</div>
+<div id="jump" style="height:20px">jump</div>
 <div style="height:1500px"></div>
 <div style="position:fixed;inset:0;background:rgba(0,0,0,.1)"></div>
 <script>
 customElements.define('x-host', class extends HTMLElement { constructor() { super();
   this.attachShadow({ mode: 'open' }).innerHTML = '<div style="height:100px;overflow:clip"><div style="height:200px"></div><slot></slot></div>'; } });
 document.getElementById('pop').showPopover();
+addEventListener('scroll', () => { if (window.__armJump) { window.__armJump = false; document.getElementById('jump').style.marginTop = '5000px'; } });
 </script>`;
 
 async function scroll(target: string, inline = "center") {
@@ -71,7 +75,8 @@ beforeEach(async () => {
   if (!CHROME_AVAILABLE) return;
   // No reload: a data: page does not reload itself (location.reload() left window state in place, measured). Every
   // cell only scrolls, so putting each box and the window back at the start is enough.
-  await evaluateInTab(`scrollTo(0, 0); document.querySelectorAll('div').forEach((b) => { b.scrollTop = 0; b.scrollLeft = 0; }); 1`, null, PORT);
+  await evaluateInTab(`window.__armJump = false; document.getElementById('jump').style.marginTop = '';
+    scrollTo(0, 0); document.querySelectorAll('div').forEach((b) => { b.scrollTop = 0; b.scrollLeft = 0; }); 1`, null, PORT);
 });
 
 afterAll(() => {
@@ -82,6 +87,8 @@ afterAll(() => {
 describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the target off", () => {
   for (const [name, target] of [
     ["overflow:clip", "#c-45"],
+    ["overflow:clip, touching the box's bottom edge with no area inside", "#c-5"],
+    ["clip-path, touching the box's bottom edge with no area inside", "#p-5"],
     ["clip-path", "#p-45"],
     ["contain:paint", "#k-45"],
     ["an overflow:clip box that a will-change containing block puts a fixed child under", "#wc"],
@@ -117,8 +124,19 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the
       const r = await scroll(target, inline);
       expect(r.ok).toBe(true);
       expect(r.viewportPosition).toBe("in-view");
+      // The browser was asked and answered: in-view here is not the window's answer alone.
+      expect(r.warnings ?? []).not.toContainEqual(expect.stringMatching(/viewportPosition says only/));
     });
   }
+
+  it("a target the page moves out of the window on its scroll event answers where it went, not clipped", async () => {
+    // The observer answers a frame later, after the page's scroll handlers ran: the position is read again from it.
+    await evaluateInTab(`window.__armJump = true; 1`, null, PORT);
+    const r = await scroll("#jump");
+    expect(r.ok).toBe(true);
+    expect(r.viewportPosition).toBe("below");
+    expect(await evaluateInTab(`document.getElementById('jump').getBoundingClientRect().top > innerHeight`, null, PORT)).toBe(true);
+  });
 
   it("a row in an ordinary scroller is in view", async () => {
     const r = await scroll("#f-45");

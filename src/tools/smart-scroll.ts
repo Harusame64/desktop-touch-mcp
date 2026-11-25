@@ -226,34 +226,50 @@ async function tryCdp(params: {
 (async function() {
   const el = document.querySelector(${JSON.stringify(target)});
   if (!el) return null;
+  const at = function(r) {
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    return cy < 0 ? 'above' : cy > window.innerHeight ? 'below' : cx < 0 ? 'left' : cx > window.innerWidth ? 'right' : 'in-view';
+  };
+  const ratio = function(r) { return Math.max(0, Math.min(1, (window.scrollY + r.top) / (document.documentElement.scrollHeight || 1))); };
   const r = el.getBoundingClientRect();
-  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-  const vp = cy < 0 ? 'above' : cy > window.innerHeight ? 'below' : cx < 0 ? 'left' : cx > window.innerWidth ? 'right' : 'in-view';
-  const pageRatio = (window.scrollY + r.top) / (document.documentElement.scrollHeight || 1);
+  const out = { viewportPosition: at(r), pageRatio: ratio(r), clipped: false, clipCheck: 'asked' };
   // Inside the window is not yet on screen: an ancestor (overflow:clip, clip-path, contain:paint, or a box the scroll
   // did not move far enough) can still cut the target off. The browser's own IntersectionObserver answers it: it cuts
   // the target by each clip on its containing-block chain, and so knows what a hand walk kept missing (display:contents,
-  // the top layer, overflow-clip-margin, will-change, slots). A tall target partly shown still intersects. It is not
-  // asked about a target with no size, nor in a page that is not visible (it reports on rendering, which a hidden page
-  // may not run); no answer within 500 ms leaves in-view as it was.
-  let clipped = false;
-  if (vp === 'in-view' && r.width > 0 && r.height > 0 && document.visibilityState === 'visible'
-      && typeof IntersectionObserver === 'function') {
-    clipped = await new Promise(function(res) {
-      let timer = 0;
-      const o = new IntersectionObserver(function(es) {
-        o.disconnect(); clearTimeout(timer);
-        res(!es[es.length - 1].isIntersecting);
-      });
-      timer = setTimeout(function() { o.disconnect(); res(false); }, 500);
-      o.observe(el);
+  // the top layer, overflow-clip-margin, will-change, slots). A tall target partly shown still intersects; a row
+  // touching the box's edge with no area inside does not (isIntersecting says yes there, the ratio says 0).
+  // It answers a frame later, so the position is read again from its entry: a page that moved the target out of the
+  // window meanwhile gets that position, not clipped. Not asked: a target with no size, or outside the window. A page
+  // that is not visible may not render, so it is not asked either; that and no answer within 500 ms are said in
+  // clipCheck, since in-view is then only the window's answer.
+  if (out.viewportPosition !== 'in-view' || !(r.width > 0 && r.height > 0)) { out.clipCheck = 'not-needed'; return out; }
+  if (document.visibilityState !== 'visible' || typeof IntersectionObserver !== 'function') { out.clipCheck = 'page-not-visible'; return out; }
+  return await new Promise(function(res) {
+    let timer = 0;
+    const o = new IntersectionObserver(function(es) {
+      o.disconnect(); clearTimeout(timer);
+      const e = es[es.length - 1];
+      const now = at(e.boundingClientRect);
+      res(now !== 'in-view'
+        ? { viewportPosition: now, pageRatio: ratio(e.boundingClientRect), clipped: false, clipCheck: 'moved' }
+        : { viewportPosition: now, pageRatio: ratio(e.boundingClientRect), clipped: !(e.intersectionRatio > 0), clipCheck: 'asked' });
     });
-  }
-  return { viewportPosition: vp, pageRatio: Math.max(0, Math.min(1, pageRatio)), clipped: clipped };
+    timer = setTimeout(function() { o.disconnect(); out.clipCheck = 'no-answer'; res(out); }, 500);
+    o.observe(el);
+  });
 })()`;
-    const finalState = await evaluateInTab(finalStateExpr, tab, port) as {
-      viewportPosition: string; pageRatio: number; clipped?: boolean;
-    } | null;
+    // The scrolls have already run: a page that navigates during the read must not send the caller to the other roads,
+    // which would scroll again. Answer without a final state instead.
+    type FinalState = { viewportPosition: string; pageRatio: number; clipped?: boolean; clipCheck?: string };
+    const finalState = await (evaluateInTab(finalStateExpr, tab, port) as Promise<FinalState | null>).catch((err: unknown) => {
+      warnings.push(`The position after the scroll was not read: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    });
+    if (finalState?.clipCheck === "page-not-visible" || finalState?.clipCheck === "no-answer") {
+      warnings.push(finalState.clipCheck === "page-not-visible"
+        ? "viewportPosition says only that the target is inside the window: the page is not visible, so whether an ancestor clips it was not checked"
+        : "viewportPosition says only that the target is inside the window: the browser did not answer within 500 ms whether an ancestor clips it");
+    }
     const ancestorsOut = ancestors.map(a => ({
       selector: a.cssSelectorPath,
       overflowY: a.overflowY,
@@ -267,7 +283,7 @@ async function tryCdp(params: {
         "The target is inside the window, but an ancestor cuts it off, so nothing of it is on screen.",
         {
           suggest: getSuggestsForCode("TargetClipped"),
-          // The scrolls already ran: say what they did, as the success answer would.
+          // The scrolls already ran: carry what the success answer carries (ancestors as walked before the scroll).
           context: {
             target, pageRatio: finalState.pageRatio, ancestors: ancestorsOut,
             ...(occludedBy && { occludedBy }), ...(warnings.length > 0 && { warnings }),
