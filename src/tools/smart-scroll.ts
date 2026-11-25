@@ -232,17 +232,37 @@ async function tryCdp(params: {
   const pageRatio = (window.scrollY + r.top) / (document.documentElement.scrollHeight || 1);
   // Inside the window is not yet on screen: an ancestor (overflow:clip, clip-path, contain:paint, or a box the scroll
   // did not move far enough) can still cut the target off. Clipped needs two witnesses: nothing at the target's centre
-  // is the target (a pointer-events:none target is missing there too), and a clipping ancestor leaves the centre outside.
+  // is the target (a pointer-events:none target is missing there too), and no part of the target's box is left once
+  // the window and each clipping ancestor's box are cut from it (a tall target partly shown is not clipped).
+  // An ancestor's overflow clips only what has it on its containing-block chain (a position:absolute or fixed target
+  // can escape it); clip-path and contain:paint clip every descendant. A target with no size is not judged.
   let clippedBy = null;
-  if (vp === 'in-view' && !document.elementsFromPoint(cx, cy).some(function(e) { return e === el || el.contains(e); })) {
+  if (vp === 'in-view' && r.width > 0 && r.height > 0
+      && !document.elementsFromPoint(cx, cy).some(function(e) { return e === el || el.contains(e); })) {
     const up = function(n) { const root = n.getRootNode(); return n.parentElement || (root && root.host) || null; };
+    const cbOf = function(n) {
+      const pos = getComputedStyle(n).position;
+      if (pos !== 'absolute' && pos !== 'fixed') return up(n);
+      for (let a = up(n); a; a = up(a)) {
+        const s = getComputedStyle(a);
+        if (s.transform !== 'none' || s.perspective !== 'none' || s.filter !== 'none' || /paint|layout|strict|content/.test(s.contain)) return a;
+        if (pos === 'absolute' && s.position !== 'static') return a;
+      }
+      return null;
+    };
+    let L = Math.max(r.left, 0), R = Math.min(r.right, window.innerWidth);
+    let T = Math.max(r.top, 0), B = Math.min(r.bottom, window.innerHeight);
+    let cb = cbOf(el);
     for (let a = up(el), n = 0; a && n < 200; a = up(a), n++) {
       if (a === document.body || a === document.documentElement) break;
       const s = getComputedStyle(a);
-      const both = s.clipPath !== 'none' || /paint|strict|content/.test(s.contain);
+      const paints = s.clipPath !== 'none' || /paint|strict|content/.test(s.contain);
+      const onChain = a === cb;
+      if (onChain) cb = cbOf(a);
       const b = a.getBoundingClientRect();
-      if (((both || s.overflowX !== 'visible') && (cx < b.left || cx > b.right))
-       || ((both || s.overflowY !== 'visible') && (cy < b.top || cy > b.bottom))) {
+      if (paints || (onChain && s.overflowX !== 'visible')) { L = Math.max(L, b.left); R = Math.min(R, b.right); }
+      if (paints || (onChain && s.overflowY !== 'visible')) { T = Math.max(T, b.top); B = Math.min(B, b.bottom); }
+      if (L >= R || T >= B) {
         clippedBy = a.tagName.toLowerCase() + (a.id ? '#' + a.id : '');
         break;
       }
@@ -253,11 +273,25 @@ async function tryCdp(params: {
     const finalState = await evaluateInTab(finalStateExpr, tab, port) as {
       viewportPosition: string; pageRatio: number; clippedBy?: string | null;
     } | null;
+    const ancestorsOut = ancestors.map(a => ({
+      selector: a.cssSelectorPath,
+      overflowY: a.overflowY,
+      isVirtualized: a.isVirtualized,
+      scrollTop: a.scrollTop,
+      scrollHeight: a.scrollHeight,
+    }));
     if (finalState?.clippedBy) {
       return failCode(
         "TargetClipped",
         `The target is inside the window, but '${finalState.clippedBy}' cuts it off, so it is not on screen.`,
-        { suggest: getSuggestsForCode("TargetClipped"), context: { target, clippedBy: finalState.clippedBy } },
+        {
+          suggest: getSuggestsForCode("TargetClipped"),
+          // The scrolls already ran: say what they did, as the success answer would.
+          context: {
+            target, clippedBy: finalState.clippedBy, ancestors: ancestorsOut,
+            ...(occludedBy && { occludedBy }), ...(warnings.length > 0 && { warnings }),
+          },
+        },
       );
     }
 
@@ -275,13 +309,7 @@ async function tryCdp(params: {
       attempts: 1,
       pageRatio: finalState?.pageRatio ?? null,
       scrolled,
-      ancestors: ancestors.map(a => ({
-        selector: a.cssSelectorPath,
-        overflowY: a.overflowY,
-        isVirtualized: a.isVirtualized,
-        scrollTop: a.scrollTop,
-        scrollHeight: a.scrollHeight,
-      })),
+      ancestors: ancestorsOut,
       viewportPosition: finalState?.viewportPosition ?? null,
       ...(occludedBy && { occludedBy }),
       ...(warnings.length > 0 && { warnings }),
