@@ -259,7 +259,7 @@ export const browserNavigateSchema = {
   loadTimeoutMs: z.coerce.number().int().min(500).max(30000).default(15000).describe(
     "Max milliseconds to wait for page load when waitForLoad=true (default 15000). " +
     "On timeout, returns ok:true with readyState set to current state and hints.warnings=['NavigateTimeout']; " +
-    "when the page did not answer (a script holding it), also 'PageNotAnswering', with the title and URL from the browser's tab list and the last readyState the page gave ('loading' if none)."
+    "when the page did not answer (a script holding it), hints.warnings also includes 'PageNotAnswering', with the title and URL from the browser's tab list and the last readyState the page gave ('loading' if none)."
   ),
   lensId: z.string().optional().describe(
     "Optional perception lens ID. Guards (target.identityStable) are evaluated before navigating, " +
