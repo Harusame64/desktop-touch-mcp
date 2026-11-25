@@ -30,6 +30,7 @@ import {
   disconnectAll,
   getTabContext,
   getListedTabContext,
+  portForTab,
   clearAxMarks,
   markAxMatches,
   isOffscreenMinimized,
@@ -44,7 +45,7 @@ import {
 import { defaultPageTab, isDevToolsFrontEnd } from "../engine/cdp-default-tab.js";
 import { resolveWellKnownPath, spawnDetached, killProcessesByName } from "../utils/launch.js";
 import { getCdpPort } from "../utils/desktop-config.js";
-import { setBrowserSearchHook } from "./wait-until.js";
+import { setBrowserSearchHook, BrowserSearchFailure } from "./wait-until.js";
 import { narrateParam, withRichNarration } from "./_narration.js";
 import { makeCommitWrapper, makeQueryWrapper, withEnvelopeIncludeSchema, withEnvelopeIncludeForUnion, flattenUnionToObjectSchema, parseActionArgsOrFail, genericQueryCausedByProjector, defaultQuerySessionId } from "./_envelope.js";
 import type { RichBlock } from "../engine/uia-diff.js";
@@ -4555,13 +4556,27 @@ export function registerBrowserTools(server: McpServer): void {
       const result = await browserSearchHandler({
         by, pattern, scope, maxResults: 5, offset: 0,
         visibleOnly: true, inViewportOnly: false, caseSensitive: false,
-        tabId, port: port ?? _defaultPort,
+        // The tab's own port when none is given, as url_matches resolves it (llm22 F13): the configured
+        // default could be a port with no browser, now answered as BrowserNotConnected (/code-review).
+        tabId, port: port ?? portForTab(tabId),
       });
       const text = result.content[0]?.type === "text" ? result.content[0].text : "{}";
-      const parsed = JSON.parse(text) as { results?: Array<{ selector: string; text: string }> };
-      return parsed.results ?? [];
-    } catch {
-      return [];
+      const parsed = JSON.parse(text) as {
+        ok?: boolean; code?: string; error?: string; results?: Array<{ selector: string; text: string }>;
+      };
+      if (parsed.ok !== false) return parsed.results ?? [];
+      // Only a search that ran and found nothing is "no match yet". Every other failure is passed up with
+      // its code in front, as the probe reads it: a closed browser (BrowserNotConnected), a scope that
+      // matches nothing, an invalid regex (which browser_search answers as BrowserSearchNoResults with
+      // "InvalidRegex" in its words). All of these were [] before, so wait_until(element_matches) polled a
+      // closed browser to its timeout and answered WaitTimeout (measured on main, mac).
+      // browser_search answers an invalid regex with the same code, under its own prefix.
+      const nothingFound = parsed.code === "BrowserSearchNoResults" && !(parsed.error ?? "").startsWith("browser_search: InvalidRegex");
+      if (nothingFound) return [];
+      throw new BrowserSearchFailure(parsed.code ?? "ToolError", parsed.error ?? "browser_search failed");
+    } catch (err) {
+      if (err instanceof SyntaxError) return [];
+      throw err;
     }
   });
 
