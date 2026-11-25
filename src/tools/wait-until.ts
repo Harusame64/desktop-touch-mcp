@@ -38,6 +38,16 @@ export class BrowserSearchFailure extends Error {
   }
 }
 
+/**
+ * The bridge's words for a tabId that names no open tab (cdp-bridge.ts resolveTab), matched from their
+ * start. A tab id never comes back, so the wait answers at once rather than polling to its timeout: on
+ * main (mac) url_matches with a closed tab's id waited the full timeoutMs and answered WaitTimeout.
+ */
+const TAB_NOT_FOUND = /^Tab "[^"]*" not found\. Available tab IDs:/;
+function tabNotFound(tabId: string | undefined, cause: unknown): Error {
+  return new Error(`InvalidArgs: target.tabId ${JSON.stringify(tabId ?? "")} names no open tab — list the tabs with browser_open`, { cause });
+}
+
 let terminalReadHook: TerminalReadHook | null = null;
 let browserSearchHook: BrowserSearchHook | null = null;
 
@@ -399,6 +409,7 @@ function probeUrlMatches(
       return matched ? { url } : null;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (TAB_NOT_FOUND.test(msg)) throw tabNotFound(tabId, err);
       // A CDP call that did not answer in time is a page that is slow to answer (a script holding
       // its thread, a dialog open), not a browser that is gone. Read as BrowserNotConnected, a busy
       // page ended the wait at 15 s with "re-attach via browser_open" against a live connection.
@@ -452,6 +463,7 @@ function probeElementMatches(
         if (code === "BrowserNotConnected" || /^browser_search failed: (CDP connection closed unexpectedly|CDP session is not open)/.test(detail)) {
           throw new Error(`BrowserNotConnected: ${words}`, { cause: err });
         }
+        if (TAB_NOT_FOUND.test(detail.replace(/^browser_search failed: /, ""))) throw tabNotFound(tabId, err);
         if (/is not a valid selector/.test(detail)) {
           throw new Error("InvalidArgs: target.scope is not a valid CSS selector", { cause: err });
         }
@@ -675,7 +687,7 @@ export function registerWaitUntilTool(server: McpServer): void {
       purpose: "Server-side poll for an observable condition — replaces run_macro({sleep:N}) and screenshot-polling loops.",
       details: "condition selects what to watch: window_appears/window_disappears (target.windowTitle required), focus_changes (optional target.fromHwnd), element_appears/value_changes (target.windowTitle + target.elementName required, UIA; min 500ms interval, except before the last look), ready_state (target.windowTitle; visible + not minimized), terminal_output_contains (target.windowTitle + target.pattern required [+target.regex:true], needs terminal tools loaded), element_matches (target.by + target.pattern required, needs browser tools loaded), url_matches (target.pattern required [+target.regex:true]; matches the active tab's location.href via CDP — use for SPA route changes, redirects, OAuth flows). Returns {ok:true, elapsedMs, observed} on success. timeoutMs default 5000 (max 60000).",
       prefer: "Use terminal_output_contains to detect CLI command completion. Use element_matches for browser DOM readiness after navigation.",
-      caveats: "element_matches/url_matches need a browser CDP connection (open --remote-debugging-port=9222 first). On timeout: {ok:false, code:'WaitTimeout', error, suggest:[...]}; suggest[] may open with a line earned by the last poll — read it, do not index. element_appears/value_changes spawn a UIA process per poll and on timeout return context.lastLook: did the element resolve, why not, and for value_changes baseline/latest — the field's VALUE, so a masked credential arrives as mask characters; for url_matches and element_matches, context.lastLook.error says why the last read failed (a CDP timeout, a scope matching nothing). For any condition, a poll unfinished at timeoutMs gives context.lastPoll {answered:false, ranMs}. Other codes: 'InvalidArgs' (a regex or scope that cannot compile), 'ToolError' (validation / missing hook — read the message), 'BrowserNotConnected' (re-attach via browser_open), and 'WindowExcluded' for a target this server may not act through, answered at once rather than polled. Branch on code.",
+      caveats: "element_matches/url_matches need a browser CDP connection (browser_open first). On timeout: {ok:false, code:'WaitTimeout', error, suggest:[...]}; suggest[] may open with a line earned by the last poll — read it, do not index. element_appears/value_changes spawn a UIA process per poll and on timeout return context.lastLook: did the element resolve, why not, and for value_changes baseline/latest — the field's VALUE, so a masked credential arrives as mask characters; for url_matches and element_matches, context.lastLook.error says why the last read failed (CDP timeout, a scope matching nothing). For any condition, a poll unfinished at timeoutMs gives context.lastPoll {answered:false, ranMs}. Other codes: 'InvalidArgs' (a regex or scope that won't compile, an unknown tabId), 'ToolError' (validation / missing hook — read the message), 'BrowserNotConnected' (re-attach via browser_open), and 'WindowExcluded' for a target this server may not act through, answered at once rather than polled. Branch on code.",
       examples: [
         "wait_until({condition:'window_appears', target:{windowTitle:'Save As'}, timeoutMs:10000})",
         "wait_until({condition:'terminal_output_contains', target:{windowTitle:'Terminal', pattern:'$ '}, timeoutMs:30000})",

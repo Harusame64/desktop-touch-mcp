@@ -3449,15 +3449,20 @@ export const browserNavigateHandler = async ({
       perceptionEnvNav = ag.summary;
     }
     const startedAt = Date.now();
+    // The tab is chosen once. With no tabId, every read below used to pick the default page tab again
+    // (the most recently used one in the browser's list), so a tab brought to the front during the
+    // wait was read instead: on main (mac) a navigation still loading answered ok with the other tab's
+    // title, URL and readyState "complete" (internal #423).
+    const tab = tabId ?? await resolveTabId(null, port);
     // Capture beforeUrl for rich narration
     let beforeUrl: string | null = null;
     if (narrate === "rich") {
       try {
-        const ctx = await getTabContext(tabId ?? null, port);
+        const ctx = await getTabContext(tab, port);
         beforeUrl = ctx.url ?? null;
       } catch { /* ignore */ }
     }
-    const navResult = await navigateTo(url, tabId ?? null, port);
+    const navResult = await navigateTo(url, tab, port);
 
     // Surface CDP navigation errors (DNS failure etc.)
     if (navResult.errorText) {
@@ -3489,7 +3494,7 @@ export const browserNavigateHandler = async ({
     const poll = await pollUntil(
       async () => {
         try {
-          const state = await evaluateInTab("document.readyState", tabId ?? null, port);
+          const state = await evaluateInTab("document.readyState", tab, port);
           if (typeof state === "string") lastState = state;
           return state === "complete" ? true : null;
         } catch {
@@ -3507,7 +3512,7 @@ export const browserNavigateHandler = async ({
       // that answers within the grace is reported as before, even when the last readyState read
       // ran a few ms past the deadline (/code-review).
       const answered = await Promise.race([
-        getTabContext(tabId ?? null, port),
+        getTabContext(tab, port),
         new Promise<null>((r) => setTimeout(() => r(null), PAGE_ANSWER_GRACE_MS)),
       ]);
       if (answered && answered.id !== null) {
@@ -3522,7 +3527,7 @@ export const browserNavigateHandler = async ({
           ...(perceptionEnvNav && { _perceptionForPost: perceptionEnvNav }),
         });
       }
-      const listed = await getListedTabContext(tabId ?? null, port);
+      const listed = await getListedTabContext(tab, port);
       // "complete" cannot be the last state here: the wait would have ended ok.
       const rs: string | null = lastState;
       return ok({
@@ -3537,7 +3542,7 @@ export const browserNavigateHandler = async ({
       });
     }
 
-    const tabCtx = await getTabContext(tabId ?? null, port);
+    const tabCtx = await getTabContext(tab, port);
     const elapsedMs = Date.now() - startedAt;
 
     // Build rich navigation block

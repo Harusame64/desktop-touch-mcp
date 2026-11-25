@@ -160,35 +160,35 @@
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 3565,
+      "line": 3570,
       "tool": "browser_navigate",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 3770,
+      "line": 3775,
       "tool": "browser_overview",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 3925,
+      "line": 3930,
       "tool": "browser_open",
       "errKind": "identifier",
       "contextShape": "none"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 4081,
+      "line": 4086,
       "tool": "browser_search",
       "errKind": "identifier",
       "contextShape": "object-plain"
     },
     {
       "file": "src/tools/browser.ts",
-      "line": 4229,
+      "line": 4234,
       "tool": "browser_disconnect",
       "errKind": "identifier",
       "contextShape": "none"
@@ -601,14 +601,14 @@
     },
     {
       "file": "src/tools/wait-until.ts",
-      "line": 527,
+      "line": 539,
       "tool": "wait_until",
       "errKind": "string-literal",
       "contextShape": "none"
     },
     {
       "file": "src/tools/wait-until.ts",
-      "line": 563,
+      "line": 575,
       "tool": "wait_until",
       "errKind": "string-literal",
       "contextShape": "none"
