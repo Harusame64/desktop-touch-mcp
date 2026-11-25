@@ -100,7 +100,7 @@ export const scrollSchema = z.discriminatedUnion("action", [
       "Total row count in a virtualised list. Required when virtualIndex is set."
     ),
     expandHidden: coercedBooleanWithDefault(false).describe(
-      "Temporarily set overflow:hidden ancestors to overflow:auto to unlock scroll. Mutates live CSS."
+      "Scroll the target into view even inside overflow:hidden ancestors (refused by default: such content may be hidden on purpose). The page's CSS is not changed."
     ),
     hint: z.enum(["above", "below", "left", "right"]).optional().describe(
       "Scroll direction hint for binary-search (image path). Seeds lo/hi bounds to reduce attempts."

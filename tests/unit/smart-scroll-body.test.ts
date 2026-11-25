@@ -101,8 +101,8 @@ describe("smart-scroll target='body' — ADR-018 Phase 3 / §5 R3 fix", () => {
     getScrollAncestorsCdpMock.mockResolvedValue({ ancestors: [], warnings: [] });
     detectStickyHeaderCdpMock.mockResolvedValue({ occluded: false });
 
-    // The CDP path issues 4 evaluateInTab calls (restore, scrollExpr,
-    // finalState) when ancestors is empty + expandHidden is false. The mock
+    // The CDP path issues 2 evaluateInTab calls (scrollExpr, finalState) when
+    // ancestors is empty; the sticky-header check has its own mock. The mock
     // returns a benign shape for each — the test asserts on the expression
     // *sent*, not on what comes back.
     evaluateInTabMock.mockImplementation((expr: string) => {

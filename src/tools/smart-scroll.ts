@@ -84,7 +84,7 @@ export const smartScrollSchema = {
     "Total row count in a virtualised list. Required when virtualIndex is set."
   ),
   expandHidden: coercedBooleanWithDefault(false).describe(
-    "Temporarily set overflow:hidden ancestors to overflow:auto to unlock scroll. Mutates live CSS."
+    "Scroll the target into view even inside overflow:hidden ancestors (refused by default: such content may be hidden on purpose). The page's CSS is not changed."
   ),
   hint: z.enum(["above", "below", "left", "right"]).optional().describe(
     "Scroll direction hint for binary-search (image path). Seeds lo/hi bounds to reduce attempts."
@@ -119,12 +119,12 @@ async function tryCdp(params: {
 
   try {
     // The tab is chosen once (internal #423). With no tabId each of the steps below resolved the default page tab
-    // again, so a tab brought to the front mid-call took the later steps: the unlock, restore, scroll and final
-    // read could run in another tab than the one whose ancestors were walked and marked. A tab that cannot be
-    // resolved fails this path at once, for the caller to try the next strategy.
+    // again, so a tab brought to the front mid-call took the later steps: the layer scrolls, scrollIntoView, the
+    // sticky-header shift and the final read could run in another tab than the one whose ancestors were walked. A
+    // tab that cannot be resolved fails this path at once, for the caller to try the next strategy.
     const tab = tabId ?? await resolveTabId(null, port);
-    // Ancestor walk
-    const { ancestors, warnings: ancWarn } = await getScrollAncestorsCdp(target, tab, port, maxDepth, expandHidden);
+    // Ancestor walk. Nothing is marked: expandHidden changes no CSS (below).
+    const { ancestors, warnings: ancWarn } = await getScrollAncestorsCdp(target, tab, port, maxDepth);
     warnings.push(...ancWarn);
 
     // Overflow:hidden check
@@ -137,24 +137,20 @@ async function tryCdp(params: {
       );
     }
 
-    // Unlock hidden ancestors if requested.
-    // getScrollAncestorsCdp already marked each hidden ancestor with data-dt-hidden-ancestor,
-    // so the unlock expression needs no external data embedded — pure attribute query.
+    // expandHidden is a permission to scroll inside an overflow:hidden ancestor, not a CSS change: an
+    // overflow:hidden box is a scroll container, and scrollIntoView (below) scrolls it as it does an auto one.
+    // The page's CSS is left as it is. It used to be unlocked to overflow:auto and put back in the same call,
+    // before any scroll, so the unlock did nothing while the answer said "unlocked — call smart_scroll again to
+    // restore", and the put-back wrote overflow:hidden inline whatever the element had (internal #423). Opening it
+    // for the scroll instead was worse (/code-review): an inline overflow-y or !important came back wrong,
+    // Windows' classic scrollbars rewrapped the layout the answer was read in, and two calls in one tab undid
+    // each other's changes.
     if (expandHidden && hiddenAncestors.length > 0) {
-      const unlockExpr = `(function(){var els=document.querySelectorAll('[data-dt-hidden-ancestor]');els.forEach(function(el){el.setAttribute('data-dt-prev-overflow','hidden');el.style.overflow='auto';el.removeAttribute('data-dt-hidden-ancestor');});})()`;
-      try { await evaluateInTab(unlockExpr, tab, port); } catch { /* ignore */ }
-      warnings.push("expandHidden: overflow:hidden unlocked — call smart_scroll again to restore");
+      // Said as the permission it is, not as a scroll done: nothing here measures whether the hidden box moved (a
+      // box of height 0 does not), and the virtual-list road does not run scrollIntoView (/code-review).
+      const names = hiddenAncestors.map((a) => `'${a.cssSelectorPath}'`).join(", ");
+      warnings.push(`expandHidden: scrolling allowed inside overflow:hidden ancestor(s) ${names}; the page's CSS is not changed`);
     }
-
-    // Restore any previously unlocked elements, and clean up stale data-dt-hidden-ancestor markers.
-    const restoreExpr = `
-(function(){
-  const old = document.querySelectorAll('[data-dt-prev-overflow]');
-  for (const el of old) { el.style.overflow = el.getAttribute('data-dt-prev-overflow') || ''; el.removeAttribute('data-dt-prev-overflow'); }
-  const marked = document.querySelectorAll('[data-dt-hidden-ancestor]');
-  for (const el of marked) { el.removeAttribute('data-dt-hidden-ancestor'); }
-})()`;
-    try { await evaluateInTab(restoreExpr, tab, port); } catch { /* ignore */ }
 
     // Virtual list
     const virtualAncestors = ancestors.filter(a => a.isVirtualized);
