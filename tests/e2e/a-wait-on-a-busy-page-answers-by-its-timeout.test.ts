@@ -58,7 +58,7 @@ describe.skipIf(!CHROME_AVAILABLE)("a wait on a busy page answers by its timeout
     expect(r.code).toBe("WaitTimeout");
     expect(wall).toBeLessThan(4000);
     expect(r.context.lastPoll.answered).toBe(false);
-    expect(r.suggest[0]).toMatch(/^The last look had not answered/);
+    expect(r.suggest[0]).toMatch(/^No look answered within timeoutMs/);
     await untilThePageAnswers();
   }, 60_000);
 

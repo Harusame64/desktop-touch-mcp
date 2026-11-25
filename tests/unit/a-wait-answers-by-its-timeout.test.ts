@@ -23,8 +23,13 @@ vi.mock("../../src/engine/cdp-bridge.js", () => ({
 }));
 vi.mock("../../src/utils/desktop-config.js", () => ({ getCdpPort: () => 9333 }));
 vi.mock("../../src/engine/win32.js", () => ({ enumWindowsInZOrder: () => [], getWindowProcessId: () => 0 }));
+const uiaDelays: number[] = [];
 vi.mock("../../src/engine/uia-bridge.js", () => ({
-  getElementBounds: async () => ({ found: null, why: "element_not_found", via: "powershell" }),
+  getElementBounds: async () => {
+    const ms = uiaDelays.shift() ?? 0;
+    if (ms > 0) await new Promise((r) => setTimeout(r, ms));
+    return { found: null, why: "window_not_found", via: "powershell" };
+  },
 }));
 
 import { pollUntil } from "../../src/engine/poll.js";
@@ -37,20 +42,44 @@ const payload = (r: { content: Array<{ type: string; text?: string }> }) =>
 beforeEach(() => {
   evalSteps.length = 0;
   evalCalls = 0;
+  uiaDelays.length = 0;
 });
 
 describe("pollUntil answers by its timeout", () => {
-  it("an interval longer than the time left is cut to it", async () => {
-    let calls = 0;
+  it("an interval longer than the time left is cut, and the last look is taken at the deadline", async () => {
+    const at: number[] = [];
     const t = Date.now();
-    const r = await pollUntil(async () => { calls += 1; return null; }, { intervalMs: 5000, timeoutMs: 300 });
+    const r = await pollUntil(async () => { at.push(Date.now() - t); return null; }, { intervalMs: 5000, timeoutMs: 300 });
     const wall = Date.now() - t;
     expect(r.ok).toBe(false);
     expect(wall).toBeGreaterThanOrEqual(290);
     expect(wall).toBeLessThan(600);
-    // No poll starts at or after the deadline.
-    expect(calls).toBe(1);
+    expect(at.length).toBe(2);
+    expect(at[1]).toBeGreaterThanOrEqual(280);
     expect(r.ok === false && r.unfinishedPollMs).toBeUndefined();
+  });
+
+  it("a change shortly before the deadline is seen: the last poll is timed to end at it", async () => {
+    // value_changes' shape: interval 500, a read of about 100 ms, timeoutMs 1000. A sleep cut to
+    // the deadline and nothing after it read at 0 and 600 only, and missed a change at 800.
+    const t = Date.now();
+    const r = await pollUntil(async () => {
+      await sleep(100);
+      return Date.now() - t >= 850 ? "changed" : null;
+    }, { intervalMs: 500, timeoutMs: 1000 });
+    expect(r).toMatchObject({ ok: true, value: "changed" });
+    expect(Date.now() - t).toBeLessThan(1100);
+  });
+
+  it("a poll still starts in time left shorter than the last one took, and is cut at the deadline", async () => {
+    let calls = 0;
+    const t = Date.now();
+    const r = await pollUntil(async () => { calls += 1; await sleep(250); return null; }, { intervalMs: 50, timeoutMs: 400 });
+    expect(r.ok).toBe(false);
+    expect(Date.now() - t).toBeLessThan(600);
+    expect(calls).toBe(2);
+    expect(r.ok === false && r.answeredPolls).toBe(1);
+    expect(r.ok === false && r.unfinishedPollMs).toBeGreaterThanOrEqual(100);
   });
 
   it("a poll still running at the deadline is dropped and says how long it ran", async () => {
@@ -105,7 +134,22 @@ describe("wait_until answers by its timeoutMs", () => {
     expect(out.code).toBe("WaitTimeout");
     expect(out.context.lastPoll.answered).toBe(false);
     expect(out.context.lastPoll.ranMs).toBeGreaterThanOrEqual(250);
-    expect(out.suggest[0]).toMatch(/^The last look had not answered when timeoutMs ran out/);
+    expect(out.suggest[0]).toMatch(/^No look answered within timeoutMs/);
+  });
+
+  it("a last look cut after others answered is said after the advice the earlier looks earned", async () => {
+    // Two quick reads answer window_not_found; the third is slow and is still running at 1000 ms.
+    uiaDelays.push(0, 0, 3000);
+    const out = payload(await waitUntilHandler({
+      condition: "element_appears", target: { windowTitle: "no such window", elementName: "OK" }, timeoutMs: 1000, intervalMs: 500,
+    }));
+    expect(out.code).toBe("WaitTimeout");
+    expect(out.suggest[0]).toMatch(/^No window matched target\.windowTitle/);
+    const cut = out.suggest.findIndex((l: string) => /^The last look was still running when timeoutMs ran out/.test(l));
+    expect(cut).toBe(1);
+    expect(out.suggest.join("\n")).not.toMatch(/answering slowly/);
+    expect(out.context.lastPoll.answered).toBe(false);
+    expect(out.context.lastLook.why).toBe("window_not_found");
   });
 
   it("a wait whose last poll answered has no lastPoll and no such line", async () => {
@@ -126,6 +170,29 @@ describe("wait_until answers by its timeoutMs", () => {
     }));
     expect(out.ok).toBe(true);
     expect(evalCalls).toBe(2);
+  });
+
+  it("url_matches: a CDP timeout that came back before the deadline is said on the timeout", async () => {
+    // Every read times out (more steps than the wait can take).
+    for (let i = 0; i < 20; i++) {
+      evalSteps.push(async () => { throw new Error("CDP timeout: Runtime.evaluate did not respond within 15000ms"); });
+    }
+    const out = payload(await waitUntilHandler({
+      condition: "url_matches", target: { pattern: "/dashboard" }, timeoutMs: 200, intervalMs: 50,
+    }));
+    expect(out.code).toBe("WaitTimeout");
+    expect(out.suggest[0]).toMatch(/^The page did not answer within the CDP call's own 15 s/);
+    expect(out.context.lastLook.error).toMatch(/^CDP timeout:/);
+  });
+
+  it("url_matches: a URL that was read and did not match leaves no lastLook (it may carry a code)", async () => {
+    evalSteps.push(async () => "https://app.example.com/cb?code=secret");
+    const out = payload(await waitUntilHandler({
+      condition: "url_matches", target: { pattern: "/dashboard" }, timeoutMs: 150, intervalMs: 50,
+    }));
+    expect(out.code).toBe("WaitTimeout");
+    expect(out.context).not.toHaveProperty("lastLook");
+    expect(JSON.stringify(out)).not.toContain("secret");
   });
 
   it("url_matches: a closed connection is still BrowserNotConnected at once", async () => {
