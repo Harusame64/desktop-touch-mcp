@@ -48,6 +48,9 @@ const HTML = `<title>t</title><style>body{margin:0}</style>
 <div id="gone" style="height:20px">gone</div>
 <a id="anchor"></a><div style="height:20px">after the anchor</div>
 <div id="hidden" style="display:none">hidden</div>
+<div id="dctarget" style="display:contents"><span>shown through a display:contents target</span></div>
+<select><option id="opt">a</option><option>b</option></select>
+<details><summary>more</summary><div id="det">inside a closed details</div></details>
 <div style="height:1500px"></div>
 <div style="position:fixed;inset:0;background:rgba(0,0,0,.1)"></div>
 <script>
@@ -157,7 +160,7 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the
   for (const [name, setup, said] of [
     ["the page is not visible", `Object.defineProperty(document, 'visibilityState', { get: () => 'hidden', configurable: true }); 1`, /the page is not visible/],
     ["the browser does not answer", `window.IntersectionObserver = function () { return { observe() {}, disconnect() {} }; }; 1`, /did not answer within 500 ms/],
-    ["the page hides the target as the observer starts", `window.__armGone = true; 1`, /the target has no box on the page/],
+    ["the page hides the target as the observer starts", `window.__armGone = true; 1`, /the target has no box of its own to measure/],
   ] as const) {
     it(`when ${name}, the answer warns that it was not checked`, async () => {
       await evaluateInTab(setup, null, PORT);
@@ -178,12 +181,19 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the
     expect(r.warnings).toContainEqual(expect.stringMatching(/The position after the scroll was not read: .*observer broke/));
   });
 
-  it("a display:none target answers no position, with a warning, before any observer", async () => {
-    const r = await scroll("#hidden");
-    expect(r.ok).toBe(true);
-    expect(r.viewportPosition).toBeNull();
-    expect(r.warnings).toContainEqual(expect.stringMatching(/the target has no box on the page/));
-  });
+  for (const [name, target] of [
+    ["a display:none target", "#hidden"],
+    ["a display:contents target whose child is shown", "#dctarget"],
+    ["an <option> drawn by its <select>", "#opt"],
+    ["what a closed <details> hides", "#det"],
+  ] as const) {
+    it(`${name} answers no position with a warning, not TargetClipped`, async () => {
+      const r = await scroll(target);
+      expect(r.ok).toBe(true);
+      expect(r.viewportPosition).toBeNull();
+      expect(r.warnings).toContainEqual(expect.stringMatching(/viewportPosition is null: the target has no box of its own to measure/));
+    });
+  }
 
   it("an empty anchor (a box of no area) scrolled into view is in view, checked", async () => {
     const r = await scroll("#anchor");

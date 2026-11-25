@@ -225,13 +225,17 @@ async function tryCdp(params: {
     const finalStateExpr = `
 (async function() {
   const el = document.querySelector(${JSON.stringify(target)});
-  const gone = { viewportPosition: null, pageRatio: null, clipped: false, clipCheck: 'gone' };
-  // No box at all: removed, or display:none (itself or an ancestor). An empty anchor or a line has a box of no area,
-  // which is still on the page; display:contents has none of its own, and keeps the answer it had.
-  const boxless = function() {
-    return !el.isConnected || (el.getClientRects().length === 0 && getComputedStyle(el).display !== 'contents');
+  // No position to give when the target is removed, or has no box of its own to measure. checkVisibility() is the
+  // browser's answer to the latter (measured): false for display:none, display:contents, an <option> drawn by its
+  // <select>, and what a closed <details> hides; true for a box of no area (an empty anchor, a line), which the
+  // observer below judges like any other.
+  const unmeasured = function() {
+    if (!el || !el.isConnected) return 'gone';
+    const shown = typeof el.checkVisibility === 'function' ? el.checkVisibility() : el.getClientRects().length > 0;
+    return shown ? null : 'no-box';
   };
-  if (!el || boxless()) return gone;
+  const none = function(why) { return { viewportPosition: null, pageRatio: null, clipped: false, clipCheck: why }; };
+  if (unmeasured()) return none(unmeasured());
   const at = function(r) {
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     return cy < 0 ? 'above' : cy > window.innerHeight ? 'below' : cx < 0 ? 'left' : cx > window.innerWidth ? 'right' : 'in-view';
@@ -247,7 +251,7 @@ async function tryCdp(params: {
   // It answers a frame later, so the position is read again from its entry: a page that moved the target out of the
   // window meanwhile gets that position, not clipped. A target with a box of no area is asked too: the observer gives
   // it ratio 1 when it touches the window's visible area and 0 when it does not. Not asked: a target outside the
-  // window, or one with no box (no position either, clipCheck 'gone'). A page that is not visible may not render, so
+  // window, or one with no position (above). A page that is not visible may not render, so
   // it is not asked either; that and no answer within 500 ms are said in clipCheck, since in-view is then only the
   // window's answer. The page's own IntersectionObserver is trusted, as every script here trusts the page's globals.
   if (out.viewportPosition !== 'in-view') { out.clipCheck = 'not-needed'; return out; }
@@ -259,7 +263,7 @@ async function tryCdp(params: {
       o.disconnect(); clearTimeout(timer);
       const e = es[es.length - 1];
       // Gone in that frame (removed, display:none): no box to be clipped, and no position to give.
-      if (boxless()) { res(gone); return; }
+      if (unmeasured()) { res(none(unmeasured())); return; }
       const now = at(e.boundingClientRect);
       res(now !== 'in-view'
         ? { viewportPosition: now, pageRatio: ratio(e.boundingClientRect), clipped: false, clipCheck: 'moved' }
@@ -280,11 +284,12 @@ async function tryCdp(params: {
       "page-not-visible": "the page is not visible, so whether an ancestor clips it was not checked",
       "no-observer": "the page has no IntersectionObserver, so whether an ancestor clips it was not checked",
       "no-answer": "the browser did not answer within 500 ms whether an ancestor clips it",
-      "gone": "the target has no box on the page (removed, or display:none), so it is not on screen either",
+      "gone": "the target was removed from the page",
+      "no-box": "the target has no box of its own to measure (display:none, display:contents, an <option> inside a <select>, or what a closed <details> hides)",
     };
     const why = finalState?.clipCheck !== undefined ? notChecked[finalState.clipCheck] : undefined;
     if (why) {
-      warnings.push(finalState?.clipCheck === "gone"
+      warnings.push(finalState?.viewportPosition === null
         ? `viewportPosition is null: ${why}`
         : `viewportPosition says only that the target was inside the window: ${why}`);
     }
