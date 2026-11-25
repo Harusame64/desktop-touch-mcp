@@ -1,19 +1,16 @@
 /**
  * scroll(action:'smart') answers TargetClipped, not in-view, when the target ends up inside the window but an
- * ancestor cuts it off, so it is not on screen.
+ * ancestor cuts it off, so nothing of it is on screen.
  *
  * MEASURED on main (mac, headless Chrome): a row 1800px down an overflow:clip box, and one under a clip-path box,
  * both answered ok:true, viewportPosition:'in-view'. Nothing at the row's centre was the row. in-view looked only
  * at the window, and the ancestor walk counts overflow:hidden/auto/scroll, not clip, clip-path or contain.
  *
- * Clipped needs two witnesses:
- * - The target is missing at its own centre. Alone, this would also refuse a pointer-events:none target (that cell
- *   guards the second witness).
- * - Nothing of the target's box is left once the window and each clipping ancestor's box are cut from it. Alone,
- *   this would also refuse a row that a clip-path reaching past its box still paints (that cell guards the first witness).
- * A tall target partly shown is not clipped. Neither is a position:absolute target that escapes an overflow box,
- * since overflow clips only what has the box on its containing-block chain. A full-window overlay covers the target;
- * it does not clip it.
+ * The browser's IntersectionObserver decides. Two rounds of a hand walk over the ancestors kept missing CSS:
+ * containing blocks, display:contents, the top layer, overflow-clip-margin, will-change, slots. A spike of those
+ * 13 shapes gave the observer's answer as the page's in every one. The in-view cells here are the shapes a hand
+ * walk got wrong: missing at its centre (pointer-events:none), escaping the box (position:fixed/absolute),
+ * partly shown, painted past the box.
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
@@ -30,17 +27,28 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const rows = (p: string) => Array.from({ length: 60 }, (_, i) => `<div id="${p}-${i}" style="height:40px">${p} ${i}</div>`).join("");
 const HTML = `<title>t</title><style>body{margin:0}</style>
-<div id="clip" style="height:200px;overflow:clip">${rows("c")}</div>
-<div id="cp" style="height:200px;clip-path:inset(0)"><div>${rows("p")}</div></div>
-<div id="paint" style="height:200px;contain:paint"><div>${rows("k")}</div></div>
-<div id="pen" style="height:200px;overflow:auto"><div style="pointer-events:none">${rows("e")}</div></div>
-<div id="clipfix" style="height:200px;overflow:clip"><div id="fixed" style="position:fixed;top:300px;left:0;height:40px">fixed</div>${rows("x")}</div>
-<div id="short" style="height:100px;overflow:auto"><div style="height:300px"></div><div id="tall" style="height:500px">tall</div><div style="height:300px"></div></div>
-<div style="position:relative"><div id="ab" style="overflow:auto;height:100px"><div id="abs" style="position:absolute;top:300px;pointer-events:none">abs</div></div></div>
-<div id="wide" style="height:200px;clip-path:inset(0 0 -3000px 0)"><div>${rows("w")}</div></div>
+<div style="height:200px;overflow:clip">${rows("c")}</div>
+<div style="height:200px;clip-path:inset(0)"><div>${rows("p")}</div></div>
+<div style="height:200px;contain:paint"><div>${rows("k")}</div></div>
+<div style="height:100px;overflow:clip"><div style="will-change:transform"><div id="wc" style="position:fixed;top:200px;height:20px">wc</div></div></div>
+<x-host><div id="slotted" style="height:20px">slotted</div></x-host>
+<div style="height:200px;overflow:auto"><div style="pointer-events:none">${rows("e")}</div></div>
+<div style="height:200px;overflow:clip"><div id="fixed" style="position:fixed;top:300px;left:0;height:40px;pointer-events:none">fixed</div>${rows("x")}</div>
+<div style="height:100px;overflow:auto"><div style="height:300px"></div><div id="tall" style="height:500px">tall</div><div style="height:300px"></div></div>
+<div style="position:relative"><div style="overflow:auto;height:100px"><div id="abs" style="position:absolute;top:300px;pointer-events:none">abs</div></div></div>
+<div style="height:200px;clip-path:inset(0 0 -3000px 0)"><div>${rows("w")}</div></div>
+<div style="display:contents;overflow:clip"><div id="dc" style="pointer-events:none;height:40px">dc</div></div>
+<div style="contain:paint;height:40px"><div popover id="pop"><span id="popt" style="pointer-events:none">Item</span></div></div>
+<div style="height:200px;overflow:clip;overflow-clip-margin:100px"><div style="height:250px"></div><div id="ocm" style="height:20px;pointer-events:none">ocm</div></div>
 <div id="free" style="height:200px;overflow:auto">${rows("f")}</div>
-<div id="ovl" style="height:200px;overflow:auto">${rows("o")}</div>
-<div style="position:fixed;inset:0;background:rgba(0,0,0,.1)"></div>`;
+<div style="height:200px;overflow:auto">${rows("o")}</div>
+<div style="height:1500px"></div>
+<div style="position:fixed;inset:0;background:rgba(0,0,0,.1)"></div>
+<script>
+customElements.define('x-host', class extends HTMLElement { constructor() { super();
+  this.attachShadow({ mode: 'open' }).innerHTML = '<div style="height:100px;overflow:clip"><div style="height:200px"></div><slot></slot></div>'; } });
+document.getElementById('pop').showPopover();
+</script>`;
 
 async function scroll(target: string, inline = "center") {
   return parsePayload(await smartScrollHandler({
@@ -61,12 +69,8 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   if (!CHROME_AVAILABLE) return;
-  await evaluateInTab(`location.reload()`, null, PORT).catch(() => undefined);
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    await sleep(100);
-    try { if (await evaluateInTab("document.readyState", null, PORT) === "complete") break; } catch { /* reloading */ }
-  }
+  // No reload: a data: page does not reload itself (location.reload() left window state in place, measured). Every
+  // cell only scrolls, so putting each box and the window back at the start is enough.
   await evaluateInTab(`scrollTo(0, 0); document.querySelectorAll('div').forEach((b) => { b.scrollTop = 0; b.scrollLeft = 0; }); 1`, null, PORT);
 });
 
@@ -76,60 +80,45 @@ afterAll(() => {
 });
 
 describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the target off", () => {
-  for (const [name, target, box] of [
-    ["overflow:clip", "#c-45", "div#clip"],
-    ["clip-path", "#p-45", "div#cp"],
-    ["contain:paint", "#k-45", "div#paint"],
+  for (const [name, target] of [
+    ["overflow:clip", "#c-45"],
+    ["clip-path", "#p-45"],
+    ["contain:paint", "#k-45"],
+    ["an overflow:clip box that a will-change containing block puts a fixed child under", "#wc"],
+    ["an overflow:clip box inside the host's shadow root, for a slotted row", "#slotted"],
   ] as const) {
-    it(`a row cut off by ${name} answers TargetClipped naming the box`, async () => {
+    it(`a target cut off by ${name} answers TargetClipped`, async () => {
       const r = await scroll(target);
       expect(r.ok).toBe(false);
       expect(r.code).toBe("TargetClipped");
-      expect(r.context.clippedBy).toBe(box);
-      expect(r.error).toContain(`'${box}' cuts it off`);
-      // The scroll already ran: the answer still says what it walked.
+      expect(r.error).toContain("an ancestor cuts it off, so nothing of it is on screen");
+      // The scroll already ran: the answer still says what it did.
       expect(Array.isArray(r.context.ancestors)).toBe(true);
-      // The truth the answer is about: nothing at the row's centre is the row.
+      expect(typeof r.context.pageRatio).toBe("number");
+      // The truth the answer is about: the target's centre is inside the window, and nothing there is the target.
       expect(await evaluateInTab(`(() => { const t = document.querySelector(${JSON.stringify(target)}); const b = t.getBoundingClientRect();
-        return document.elementsFromPoint(b.left + b.width / 2, b.top + b.height / 2).includes(t); })()`, null, PORT)).toBe(false);
+        const cx = b.left + b.width / 2, cy = b.top + b.height / 2;
+        return cy >= 0 && cy <= innerHeight && !document.elementsFromPoint(cx, cy).includes(t); })()`, null, PORT)).toBe(true);
     });
   }
 
-  it("a pointer-events:none row in a scroller is in view (missing at its centre is not clipped)", async () => {
-    const r = await scroll("#e-45");
-    expect(r.ok).toBe(true);
-    expect(r.viewportPosition).toBe("in-view");
-  });
-
-  it("a position:fixed child of an overflow:clip box is in view (outside the box is not clipped)", async () => {
-    const r = await scroll("#fixed");
-    expect(r.ok).toBe(true);
-    expect(r.viewportPosition).toBe("in-view");
-  });
-
-  it("a tall target scrolled to the start of a short scroller is in view (partly shown is not clipped)", async () => {
-    const r = await scroll("#tall", "start");
-    expect(r.ok).toBe(true);
-    expect(r.viewportPosition).toBe("in-view");
-  });
-
-  it("a position:absolute pointer-events:none target that escapes an overflow box is in view", async () => {
-    const r = await scroll("#abs");
-    expect(r.ok).toBe(true);
-    expect(r.viewportPosition).toBe("in-view");
-  });
-
-  it("a row painted outside its box by a clip-path that reaches past it is in view (the box is not the clip)", async () => {
-    const r = await scroll("#w-45");
-    expect(r.ok).toBe(true);
-    expect(r.viewportPosition).toBe("in-view");
-  });
-
-  it("a row under a full-window overlay is in view (covered is not clipped)", async () => {
-    const r = await scroll("#o-45");
-    expect(r.ok).toBe(true);
-    expect(r.viewportPosition).toBe("in-view");
-  });
+  for (const [name, target, inline] of [
+    ["a pointer-events:none row in a scroller (missing at its centre)", "#e-45", "center"],
+    ["a pointer-events:none position:fixed child of an overflow:clip box (escapes it)", "#fixed", "center"],
+    ["a pointer-events:none position:absolute target that escapes an overflow box", "#abs", "center"],
+    ["a tall target scrolled to the start of a short scroller (partly shown)", "#tall", "start"],
+    ["a row a clip-path reaching past its box still paints", "#w-45", "center"],
+    ["a pointer-events:none child of an overflow:clip display:contents wrapper (no box to clip)", "#dc", "center"],
+    ["a pointer-events:none item of a popover declared inside a contain:paint box (top layer)", "#popt", "center"],
+    ["a pointer-events:none row inside an overflow-clip-margin", "#ocm", "center"],
+    ["a row under a full-window overlay (covered, not clipped)", "#o-45", "center"],
+  ] as const) {
+    it(`${name} is in view`, async () => {
+      const r = await scroll(target, inline);
+      expect(r.ok).toBe(true);
+      expect(r.viewportPosition).toBe("in-view");
+    });
+  }
 
   it("a row in an ordinary scroller is in view", async () => {
     const r = await scroll("#f-45");

@@ -908,7 +908,7 @@ Unified scroll dispatcher that handles the cases where `scroll(action='to_elemen
 | Nested scroll containers | Walks ancestor chain (CDP or UIA), scrolls outer → inner |
 | Sticky header occlusion | Detects fixed/sticky header overlap, compensates `scrollTop` |
 | `overflow:hidden` ancestor | Returns `OverflowHiddenAncestor` error; `expandHidden:true` scrolls inside it anyway, without changing the page's CSS |
-| Ancestor that cuts the target off (`overflow:clip`, `clip-path`, `contain:paint`) | Returns `TargetClipped` (`context.clippedBy`) instead of `in-view` when the target is inside the window but not on screen |
+| Ancestor that cuts the target off (`overflow:clip`, `clip-path`, `contain:paint`, or a box not scrolled far enough) | Returns `TargetClipped` instead of `in-view` when the target is inside the window but nothing of it is on screen (the browser's IntersectionObserver decides) |
 | No CDP/UIA (image-only) | Win32 `GetScrollInfo` + scrollbar-strip pixel sampling + dHash binary-search |
 
 **Scroll verification:** `verifyWithHash:true` (auto-enabled for image path) computes a 64-bit perceptual hash before and after each attempt — if Hamming distance < 5, the page didn't move (virtual scroll boundary or swallowed input). Reported as `scrolled:false`.

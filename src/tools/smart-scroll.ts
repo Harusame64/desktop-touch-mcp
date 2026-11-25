@@ -223,7 +223,7 @@ async function tryCdp(params: {
 
     // Compute final state
     const finalStateExpr = `
-(function() {
+(async function() {
   const el = document.querySelector(${JSON.stringify(target)});
   if (!el) return null;
   const r = el.getBoundingClientRect();
@@ -231,47 +231,28 @@ async function tryCdp(params: {
   const vp = cy < 0 ? 'above' : cy > window.innerHeight ? 'below' : cx < 0 ? 'left' : cx > window.innerWidth ? 'right' : 'in-view';
   const pageRatio = (window.scrollY + r.top) / (document.documentElement.scrollHeight || 1);
   // Inside the window is not yet on screen: an ancestor (overflow:clip, clip-path, contain:paint, or a box the scroll
-  // did not move far enough) can still cut the target off. Clipped needs two witnesses: nothing at the target's centre
-  // is the target (a pointer-events:none target is missing there too), and no part of the target's box is left once
-  // the window and each clipping ancestor's box are cut from it (a tall target partly shown is not clipped).
-  // An ancestor's overflow clips only what has it on its containing-block chain (a position:absolute or fixed target
-  // can escape it); clip-path and contain:paint clip every descendant. A target with no size is not judged.
-  let clippedBy = null;
-  if (vp === 'in-view' && r.width > 0 && r.height > 0
-      && !document.elementsFromPoint(cx, cy).some(function(e) { return e === el || el.contains(e); })) {
-    const up = function(n) { const root = n.getRootNode(); return n.parentElement || (root && root.host) || null; };
-    const cbOf = function(n) {
-      const pos = getComputedStyle(n).position;
-      if (pos !== 'absolute' && pos !== 'fixed') return up(n);
-      for (let a = up(n); a; a = up(a)) {
-        const s = getComputedStyle(a);
-        if (s.transform !== 'none' || s.perspective !== 'none' || s.filter !== 'none' || /paint|layout|strict|content/.test(s.contain)) return a;
-        if (pos === 'absolute' && s.position !== 'static') return a;
-      }
-      return null;
-    };
-    let L = Math.max(r.left, 0), R = Math.min(r.right, window.innerWidth);
-    let T = Math.max(r.top, 0), B = Math.min(r.bottom, window.innerHeight);
-    let cb = cbOf(el);
-    for (let a = up(el), n = 0; a && n < 200; a = up(a), n++) {
-      if (a === document.body || a === document.documentElement) break;
-      const s = getComputedStyle(a);
-      const paints = s.clipPath !== 'none' || /paint|strict|content/.test(s.contain);
-      const onChain = a === cb;
-      if (onChain) cb = cbOf(a);
-      const b = a.getBoundingClientRect();
-      if (paints || (onChain && s.overflowX !== 'visible')) { L = Math.max(L, b.left); R = Math.min(R, b.right); }
-      if (paints || (onChain && s.overflowY !== 'visible')) { T = Math.max(T, b.top); B = Math.min(B, b.bottom); }
-      if (L >= R || T >= B) {
-        clippedBy = a.tagName.toLowerCase() + (a.id ? '#' + a.id : '');
-        break;
-      }
-    }
+  // did not move far enough) can still cut the target off. The browser's own IntersectionObserver answers it: it cuts
+  // the target by each clip on its containing-block chain, and so knows what a hand walk kept missing (display:contents,
+  // the top layer, overflow-clip-margin, will-change, slots). A tall target partly shown still intersects. It is not
+  // asked about a target with no size, nor in a page that is not visible (it reports on rendering, which a hidden page
+  // may not run); no answer within 500 ms leaves in-view as it was.
+  let clipped = false;
+  if (vp === 'in-view' && r.width > 0 && r.height > 0 && document.visibilityState === 'visible'
+      && typeof IntersectionObserver === 'function') {
+    clipped = await new Promise(function(res) {
+      let timer = 0;
+      const o = new IntersectionObserver(function(es) {
+        o.disconnect(); clearTimeout(timer);
+        res(!es[es.length - 1].isIntersecting);
+      });
+      timer = setTimeout(function() { o.disconnect(); res(false); }, 500);
+      o.observe(el);
+    });
   }
-  return { viewportPosition: vp, pageRatio: Math.max(0, Math.min(1, pageRatio)), clippedBy: clippedBy };
+  return { viewportPosition: vp, pageRatio: Math.max(0, Math.min(1, pageRatio)), clipped: clipped };
 })()`;
     const finalState = await evaluateInTab(finalStateExpr, tab, port) as {
-      viewportPosition: string; pageRatio: number; clippedBy?: string | null;
+      viewportPosition: string; pageRatio: number; clipped?: boolean;
     } | null;
     const ancestorsOut = ancestors.map(a => ({
       selector: a.cssSelectorPath,
@@ -280,15 +261,15 @@ async function tryCdp(params: {
       scrollTop: a.scrollTop,
       scrollHeight: a.scrollHeight,
     }));
-    if (finalState?.clippedBy) {
+    if (finalState?.clipped) {
       return failCode(
         "TargetClipped",
-        `The target is inside the window, but '${finalState.clippedBy}' cuts it off, so it is not on screen.`,
+        "The target is inside the window, but an ancestor cuts it off, so nothing of it is on screen.",
         {
           suggest: getSuggestsForCode("TargetClipped"),
           // The scrolls already ran: say what they did, as the success answer would.
           context: {
-            target, clippedBy: finalState.clippedBy, ancestors: ancestorsOut,
+            target, pageRatio: finalState.pageRatio, ancestors: ancestorsOut,
             ...(occludedBy && { occludedBy }), ...(warnings.length > 0 && { warnings }),
           },
         },
