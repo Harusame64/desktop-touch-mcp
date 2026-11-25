@@ -225,7 +225,13 @@ async function tryCdp(params: {
     const finalStateExpr = `
 (async function() {
   const el = document.querySelector(${JSON.stringify(target)});
-  if (!el) return null;
+  const gone = { viewportPosition: null, pageRatio: null, clipped: false, clipCheck: 'gone' };
+  // No box at all: removed, or display:none (itself or an ancestor). An empty anchor or a line has a box of no area,
+  // which is still on the page; display:contents has none of its own, and keeps the answer it had.
+  const boxless = function() {
+    return !el.isConnected || (el.getClientRects().length === 0 && getComputedStyle(el).display !== 'contents');
+  };
+  if (!el || boxless()) return gone;
   const at = function(r) {
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     return cy < 0 ? 'above' : cy > window.innerHeight ? 'below' : cx < 0 ? 'left' : cx > window.innerWidth ? 'right' : 'in-view';
@@ -239,11 +245,11 @@ async function tryCdp(params: {
   // the top layer, overflow-clip-margin, will-change, slots). A tall target partly shown still intersects; a row
   // touching the box's edge with no area inside does not (isIntersecting says yes there, the ratio says 0).
   // It answers a frame later, so the position is read again from its entry: a page that moved the target out of the
-  // window meanwhile gets that position, not clipped. Not asked: a target outside the window, or one with no box
-  // (display:none, removed, empty: no position either, clipCheck 'gone'). A page
-  // that is not visible may not render, so it is not asked either; that and no answer within 500 ms are said in
-  // clipCheck, since in-view is then only the window's answer.
-  if (!(r.width > 0 && r.height > 0)) { out.viewportPosition = null; out.clipCheck = 'gone'; return out; }
+  // window meanwhile gets that position, not clipped. A target with a box of no area is asked too: the observer gives
+  // it ratio 1 when it touches the window's visible area and 0 when it does not. Not asked: a target outside the
+  // window, or one with no box (no position either, clipCheck 'gone'). A page that is not visible may not render, so
+  // it is not asked either; that and no answer within 500 ms are said in clipCheck, since in-view is then only the
+  // window's answer. The page's own IntersectionObserver is trusted, as every script here trusts the page's globals.
   if (out.viewportPosition !== 'in-view') { out.clipCheck = 'not-needed'; return out; }
   if (document.visibilityState !== 'visible') { out.clipCheck = 'page-not-visible'; return out; }
   if (typeof IntersectionObserver !== 'function') { out.clipCheck = 'no-observer'; return out; }
@@ -253,9 +259,7 @@ async function tryCdp(params: {
       o.disconnect(); clearTimeout(timer);
       const e = es[es.length - 1];
       // Gone in that frame (removed, display:none): no box to be clipped, and no position to give.
-      if (!el.isConnected || !(e.boundingClientRect.width > 0 && e.boundingClientRect.height > 0)) {
-        out.viewportPosition = null; out.clipCheck = 'gone'; res(out); return;
-      }
+      if (boxless()) { res(gone); return; }
       const now = at(e.boundingClientRect);
       res(now !== 'in-view'
         ? { viewportPosition: now, pageRatio: ratio(e.boundingClientRect), clipped: false, clipCheck: 'moved' }
@@ -267,7 +271,7 @@ async function tryCdp(params: {
 })()`;
     // The scrolls have already run: a page that navigates during the read must not send the caller to the other roads,
     // which would scroll again. Answer without a final state instead.
-    type FinalState = { viewportPosition: string; pageRatio: number; clipped?: boolean; clipCheck?: string };
+    type FinalState = { viewportPosition: string | null; pageRatio: number | null; clipped?: boolean; clipCheck?: string };
     const finalState = await (evaluateInTab(finalStateExpr, tab, port) as Promise<FinalState | null>).catch((err: unknown) => {
       warnings.push(`The position after the scroll was not read: ${err instanceof Error ? err.message : String(err)}`);
       return null;
@@ -276,7 +280,7 @@ async function tryCdp(params: {
       "page-not-visible": "the page is not visible, so whether an ancestor clips it was not checked",
       "no-observer": "the page has no IntersectionObserver, so whether an ancestor clips it was not checked",
       "no-answer": "the browser did not answer within 500 ms whether an ancestor clips it",
-      "gone": "the target has no box on the page (display:none, removed, or empty), so it is not on screen either",
+      "gone": "the target has no box on the page (removed, or display:none), so it is not on screen either",
     };
     const why = finalState?.clipCheck !== undefined ? notChecked[finalState.clipCheck] : undefined;
     if (why) {

@@ -29,7 +29,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const rows = (p: string) => Array.from({ length: 60 }, (_, i) => `<div id="${p}-${i}" style="height:40px">${p} ${i}</div>`).join("");
 const HTML = `<title>t</title><style>body{margin:0}</style>
-<div style="height:200px;overflow:clip">${rows("c")}</div>
+<div style="height:200px;overflow:clip">${rows("c")}<a id="c-anchor"></a></div>
 <div style="height:200px;clip-path:inset(0)"><div>${rows("p")}</div></div>
 <div style="height:200px;contain:paint"><div>${rows("k")}</div></div>
 <div style="height:100px;overflow:clip"><div style="will-change:transform"><div id="wc" style="position:fixed;top:200px;height:20px">wc</div></div></div>
@@ -46,6 +46,8 @@ const HTML = `<title>t</title><style>body{margin:0}</style>
 <div style="height:200px;overflow:auto">${rows("o")}</div>
 <div id="jump" style="height:20px">jump</div>
 <div id="gone" style="height:20px">gone</div>
+<a id="anchor"></a><div style="height:20px">after the anchor</div>
+<div id="hidden" style="display:none">hidden</div>
 <div style="height:1500px"></div>
 <div style="position:fixed;inset:0;background:rgba(0,0,0,.1)"></div>
 <script>
@@ -53,10 +55,14 @@ customElements.define('x-host', class extends HTMLElement { constructor() { supe
   this.attachShadow({ mode: 'open' }).innerHTML = '<div style="height:100px;overflow:clip"><div style="height:200px"></div><slot></slot></div>'; } });
 document.getElementById('pop').showPopover();
 window.__IO = IntersectionObserver;
-addEventListener('scroll', () => {
+// The traps go off when the tool's observer starts looking, after its synchronous read: the page changes in the
+// frame the observer answers for, so its own entry is what has to tell.
+const __observe = IntersectionObserver.prototype.observe;
+IntersectionObserver.prototype.observe = function (t) {
   if (window.__armJump) { window.__armJump = false; document.getElementById('jump').style.marginTop = '5000px'; }
   if (window.__armGone) { window.__armGone = false; document.getElementById('gone').style.display = 'none'; }
-});
+  return __observe.call(this, t);
+};
 </script>`;
 
 async function scroll(target: string, inline = "center") {
@@ -139,8 +145,8 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the
     });
   }
 
-  it("a target the page moves out of the window on its scroll event answers where it went, not clipped", async () => {
-    // The observer answers a frame later, after the page's scroll handlers ran: the position is read again from it.
+  it("a target the page moves out of the window as the observer starts answers where it went, not clipped", async () => {
+    // The observer answers a frame later, after the page may have moved the target: the position is read again from it.
     await evaluateInTab(`window.__armJump = true; 1`, null, PORT);
     const r = await scroll("#jump");
     expect(r.ok).toBe(true);
@@ -151,7 +157,7 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the
   for (const [name, setup, said] of [
     ["the page is not visible", `Object.defineProperty(document, 'visibilityState', { get: () => 'hidden', configurable: true }); 1`, /the page is not visible/],
     ["the browser does not answer", `window.IntersectionObserver = function () { return { observe() {}, disconnect() {} }; }; 1`, /did not answer within 500 ms/],
-    ["the page hides the target on the scroll", `window.__armGone = true; 1`, /the target has no box on the page/],
+    ["the page hides the target as the observer starts", `window.__armGone = true; 1`, /the target has no box on the page/],
   ] as const) {
     it(`when ${name}, the answer warns that it was not checked`, async () => {
       await evaluateInTab(setup, null, PORT);
@@ -170,6 +176,26 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the
     expect(r.path).toBe("cdp");
     expect(r.viewportPosition).toBeNull();
     expect(r.warnings).toContainEqual(expect.stringMatching(/The position after the scroll was not read: .*observer broke/));
+  });
+
+  it("a display:none target answers no position, with a warning, before any observer", async () => {
+    const r = await scroll("#hidden");
+    expect(r.ok).toBe(true);
+    expect(r.viewportPosition).toBeNull();
+    expect(r.warnings).toContainEqual(expect.stringMatching(/the target has no box on the page/));
+  });
+
+  it("an empty anchor (a box of no area) scrolled into view is in view, checked", async () => {
+    const r = await scroll("#anchor");
+    expect(r.ok).toBe(true);
+    expect(r.viewportPosition).toBe("in-view");
+    expect(r.warnings ?? []).toEqual([]);
+  });
+
+  it("an empty anchor cut off by an overflow:clip box answers TargetClipped", async () => {
+    const r = await scroll("#c-anchor");
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("TargetClipped");
   });
 
   it("a row in an ordinary scroller is in view", async () => {
