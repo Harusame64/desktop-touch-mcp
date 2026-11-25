@@ -221,24 +221,35 @@ async function tryCdp(params: {
       warnings.push(`Sticky header occlusion detected (height ~${headerHeight}px), scrolled an extra ${headerHeight + 8}px`);
     }
 
+    // Hash verification: before the final read, so a TargetClipped answer carries the note as the success answer does.
+    if (verifyWithHash) {
+      // We can't easily do pre/post hash without a before-capture, so mark as assumed-true
+      // when verifyWithHash is set but no pre-hash exists. The image path does full verification.
+      warnings.push("verifyWithHash: pre-scroll hash not available for CDP path — scrolled:true assumed");
+    }
+
     // Compute final state
     const finalStateExpr = `
 (async function() {
-  const el = document.querySelector(${JSON.stringify(target)});
-  // No position to give when the target is removed, or has no box of its own to measure. checkVisibility() is the
-  // browser's answer to the latter (measured): false for display:none, display:contents, an <option> drawn by its
-  // <select>, and what a closed <details> hides; true for a box of no area (an empty anchor, a line), which the
-  // observer below judges like any other.
-  const unmeasured = function() {
-    if (!el || !el.isConnected) return 'gone';
-    const shown = typeof el.checkVisibility === 'function' ? el.checkVisibility() : el.getClientRects().length > 0;
+  const sel = ${JSON.stringify(target)};
+  const el = document.querySelector(sel);
+  // No position to give when nothing matches, the target was removed, or it has no box the browser renders.
+  // checkVisibility() is the browser's answer to the last (measured): false for display:none, display:contents, an
+  // <option> drawn by its <select>, and what a closed <details> hides; true for a box of no area (an empty anchor, a
+  // line), which the observer below judges like any other.
+  const unmeasured = function(n) {
+    if (!n) return 'not-found';
+    if (!n.isConnected) return 'gone';
+    const shown = typeof n.checkVisibility === 'function' ? n.checkVisibility() : n.getClientRects().length > 0;
     return shown ? null : 'no-box';
   };
   const none = function(why) { return { viewportPosition: null, pageRatio: null, clipped: false, clipCheck: why }; };
-  if (unmeasured()) return none(unmeasured());
-  const at = function(r) {
+  if (unmeasured(el)) return none(unmeasured(el));
+  // bounds: the observer's root rect when it gives one (it leaves the scrollbars out), else the window's.
+  const at = function(r, bounds) {
+    const w = bounds ? bounds.right : window.innerWidth, h = bounds ? bounds.bottom : window.innerHeight;
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-    return cy < 0 ? 'above' : cy > window.innerHeight ? 'below' : cx < 0 ? 'left' : cx > window.innerWidth ? 'right' : 'in-view';
+    return cy < 0 ? 'above' : cy > h ? 'below' : cx < 0 ? 'left' : cx > w ? 'right' : 'in-view';
   };
   const ratio = function(r) { return Math.max(0, Math.min(1, (window.scrollY + r.top) / (document.documentElement.scrollHeight || 1))); };
   const r = el.getBoundingClientRect();
@@ -264,8 +275,19 @@ async function tryCdp(params: {
       const e = es[es.length - 1];
       // No position in that frame (removed, no box), or one that left the window, or the verdict. The timer is cleared
       // only once an answer is in hand: a throw here leaves it to answer 'no-answer' (agy).
-      const u = unmeasured();
-      const now = u ? null : at(e.boundingClientRect);
+      // A page that re-rendered the target in that frame (a list re-mounting its rows) left the observed node
+      // detached and a new one matching: answer for the new one where it is now, unchecked for clipping.
+      if (!el.isConnected) {
+        const fresh = document.querySelector(sel);
+        if (fresh && !unmeasured(fresh)) {
+          const fr = fresh.getBoundingClientRect();
+          clearTimeout(timer);
+          res({ viewportPosition: at(fr), pageRatio: ratio(fr), clipped: false, clipCheck: 'replaced' });
+          return;
+        }
+      }
+      const u = unmeasured(el);
+      const now = u ? null : at(e.boundingClientRect, e.rootBounds);
       const answer = u ? none(u)
         : now !== 'in-view'
           ? { viewportPosition: now, pageRatio: ratio(e.boundingClientRect), clipped: false, clipCheck: 'moved' }
@@ -275,6 +297,7 @@ async function tryCdp(params: {
     timer = setTimeout(function() { o.disconnect(); out.clipCheck = 'no-answer'; res(out); }, 500);
     o.observe(el);
   });
+  // pageRatio is read when the answer is built, from that frame's rect: approximate on a page still scrolling.
 })()`;
     // The scrolls have already run: a page that navigates during the read must not send the caller to the other roads,
     // which would scroll again. Answer without a final state instead.
@@ -287,14 +310,19 @@ async function tryCdp(params: {
       "page-not-visible": "the page is not visible, so whether an ancestor clips it was not checked",
       "no-observer": "the page has no IntersectionObserver, so whether an ancestor clips it was not checked",
       "no-answer": "the browser did not answer within 500 ms whether an ancestor clips it",
+      "not-found": "no element matches the target selector after the scroll",
       "gone": "the target was removed from the page",
-      "no-box": "the target has no box of its own to measure (display:none, display:contents, an <option> inside a <select>, or what a closed <details> hides)",
+      "no-box": "the browser renders no box for the target (for example display:none, display:contents, an <option> inside a <select>, or content a closed <details> or hidden=until-found hides)",
+      "replaced": "the page replaced the target with a new element during the read, and the new one was not checked for clipping",
     };
     const why = finalState?.clipCheck !== undefined ? notChecked[finalState.clipCheck] : undefined;
     if (why) {
-      warnings.push(finalState?.viewportPosition === null
+      const vp = finalState?.viewportPosition;
+      warnings.push(vp === null || vp === undefined
         ? `viewportPosition is null: ${why}`
-        : `viewportPosition says only that the target was inside the window: ${why}`);
+        : vp === "in-view"
+          ? `viewportPosition says only that the target was inside the window: ${why}`
+          : `viewportPosition is '${vp}': ${why}`);
     }
     const ancestorsOut = ancestors.map(a => ({
       selector: a.cssSelectorPath,
@@ -322,13 +350,7 @@ async function tryCdp(params: {
       );
     }
 
-    // Hash verification
     const scrolled = true;
-    if (verifyWithHash) {
-      // We can't easily do pre/post hash without a before-capture, so mark as assumed-true
-      // when verifyWithHash is set but no pre-hash exists. The image path does full verification.
-      warnings.push("verifyWithHash: pre-scroll hash not available for CDP path — scrolled:true assumed");
-    }
 
     return ok({
       ok: true,

@@ -46,6 +46,9 @@ const HTML = `<title>t</title><style>body{margin:0}</style>
 <div style="height:200px;overflow:auto">${rows("o")}</div>
 <div id="jump" style="height:20px">jump</div>
 <div id="gone" style="height:20px">gone</div>
+<div id="swap" style="height:20px">swap</div>
+<div id="removed" style="height:20px">removed</div>
+<div hidden="until-found"><div id="uf">until found</div></div>
 <a id="anchor"></a><div style="height:20px">after the anchor</div>
 <div id="hidden" style="display:none">hidden</div>
 <div id="dctarget" style="display:contents"><span>shown through a display:contents target</span></div>
@@ -64,6 +67,8 @@ const __observe = IntersectionObserver.prototype.observe;
 IntersectionObserver.prototype.observe = function (t) {
   if (window.__armJump) { window.__armJump = false; document.getElementById('jump').style.marginTop = '5000px'; }
   if (window.__armGone) { window.__armGone = false; document.getElementById('gone').style.display = 'none'; }
+  if (window.__armSwap) { window.__armSwap = false; const o = document.getElementById('swap'); o.replaceWith(o.cloneNode(true)); }
+  if (window.__armRemove) { window.__armRemove = false; document.getElementById('removed').remove(); }
   return __observe.call(this, t);
 };
 </script>`;
@@ -89,7 +94,7 @@ beforeEach(async () => {
   if (!CHROME_AVAILABLE) return;
   // No reload: a data: page does not reload itself (location.reload() left window state in place, measured). Every
   // cell only scrolls, so putting each box and the window back at the start is enough.
-  await evaluateInTab(`window.__armJump = false; window.__armGone = false;
+  await evaluateInTab(`window.__armJump = false; window.__armGone = false; window.__armSwap = false; window.__armRemove = false;
     document.getElementById('jump').style.marginTop = ''; document.getElementById('gone').style.display = '';
     window.IntersectionObserver = window.__IO; delete document.visibilityState;
     scrollTo(0, 0); document.querySelectorAll('div').forEach((b) => { b.scrollTop = 0; b.scrollLeft = 0; }); 1`, null, PORT);
@@ -160,14 +165,16 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the
   for (const [name, setup, said] of [
     ["the page is not visible", `Object.defineProperty(document, 'visibilityState', { get: () => 'hidden', configurable: true }); 1`, /the page is not visible/],
     ["the browser does not answer", `window.IntersectionObserver = function () { return { observe() {}, disconnect() {} }; }; 1`, /did not answer within 500 ms/],
-    ["the page hides the target as the observer starts", `window.__armGone = true; 1`, /the target has no box of its own to measure/],
+    ["the page hides the target as the observer starts", `window.__armGone = true; 1`, /viewportPosition is null: the browser renders no box for the target/],
+    ["the page removes the target as the observer starts", `window.__armRemove = true; 1`, /viewportPosition is null: the target was removed from the page/],
+    ["the page re-renders the target as the observer starts", `window.__armSwap = true; 1`, /the page replaced the target with a new element during the read/],
   ] as const) {
     it(`when ${name}, the answer warns that it was not checked`, async () => {
       await evaluateInTab(setup, null, PORT);
-      const r = await scroll(name.includes("hides") ? "#gone" : "#c-45");
+      const r = await scroll(name.includes("hides") ? "#gone" : name.includes("removes") ? "#removed" : name.includes("re-renders") ? "#swap" : "#c-45");
       expect(r.ok).toBe(true);
-      // A hidden target has no position; the others are inside the window, unchecked.
-      expect(r.viewportPosition).toBe(name.includes("hides") ? null : "in-view");
+      // A hidden or removed target has no position; the others are inside the window, unchecked.
+      expect(r.viewportPosition).toBe(name.includes("hides") || name.includes("removes") ? null : "in-view");
       expect(r.warnings).toContainEqual(expect.stringMatching(said));
     });
   }
@@ -186,12 +193,13 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the
     ["a display:contents target whose child is shown", "#dctarget"],
     ["an <option> drawn by its <select>", "#opt"],
     ["what a closed <details> hides", "#det"],
+    ["what hidden=until-found hides", "#uf"],
   ] as const) {
     it(`${name} answers no position with a warning, not TargetClipped`, async () => {
       const r = await scroll(target);
       expect(r.ok).toBe(true);
       expect(r.viewportPosition).toBeNull();
-      expect(r.warnings).toContainEqual(expect.stringMatching(/viewportPosition is null: the target has no box of its own to measure/));
+      expect(r.warnings).toContainEqual(expect.stringMatching(/viewportPosition is null: the browser renders no box for the target/));
     });
   }
 
@@ -206,6 +214,15 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the
     const r = await scroll("#c-anchor");
     expect(r.ok).toBe(false);
     expect(r.code).toBe("TargetClipped");
+  });
+
+  it("TargetClipped carries the verifyWithHash note, as the success answer does", async () => {
+    const r = parsePayload(await smartScrollHandler({
+      target: "#c-45", port: PORT, strategy: "cdp", direction: "into-view", inline: "center",
+      maxDepth: 10, retryCount: 1, verifyWithHash: true, expandHidden: false,
+    } as never));
+    expect(r.code).toBe("TargetClipped");
+    expect(r.context.warnings).toContainEqual(expect.stringMatching(/^verifyWithHash: pre-scroll hash not available/));
   });
 
   it("a row in an ordinary scroller is in view", async () => {
