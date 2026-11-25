@@ -5,7 +5,7 @@
  * 3000, with title "" (the page never answered).
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { launchChrome, tryFindChrome, type ChromeInstance } from "./helpers/chrome-launcher.js";
@@ -22,12 +22,14 @@ let prevAutoGuard: string | undefined;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** After each cell, so one cell's held page does not run into the next, pass or fail. */
 async function untilThePageAnswers(): Promise<void> {
   const deadline = Date.now() + 40_000;
   while (Date.now() < deadline) {
     try { if (await evaluateInTab("1", null, PORT) === 1) return; } catch { /* still held */ }
     await sleep(300);
   }
+  throw new Error("the page still did not answer 40 s after the cell");
 }
 
 beforeAll(async () => {
@@ -36,7 +38,9 @@ beforeAll(async () => {
   process.env.DESKTOP_TOUCH_AUTO_GUARD = "0";
   server = createServer((req, res) => {
     res.setHeader("content-type", "text/html");
-    if (req.url?.startsWith("/busy")) {
+    if (req.url?.startsWith("/busy-untitled")) {
+      res.end(`<script>const t = Date.now(); while (Date.now() - t < 20000);</script><title>late</title><p>x</p>`);
+    } else if (req.url?.startsWith("/busy")) {
       res.end(`<title>busy</title><script>const t = Date.now(); while (Date.now() - t < 20000);</script><p>x</p>`);
     } else if (req.url?.startsWith("/hang-img")) {
       res.end(`<title>hang</title><p>x</p><img src="/never">`);
@@ -72,6 +76,8 @@ async function navigate(path: string, loadTimeoutMs: number): Promise<{ r: any; 
 }
 
 describe.skipIf(!CHROME_AVAILABLE)("browser_navigate to a busy page answers by its loadTimeoutMs", () => {
+  afterEach(async () => { await untilThePageAnswers(); }, 45_000);
+
   it("a page whose script holds its thread: NavigateTimeout and PageNotAnswering at about loadTimeoutMs, title from the tab list", async () => {
     const { r, wall } = await navigate("/busy", 3000);
     expect(wall).toBeLessThan(4500);
@@ -79,7 +85,14 @@ describe.skipIf(!CHROME_AVAILABLE)("browser_navigate to a busy page answers by i
     expect(r.hints.warnings).toEqual(["NavigateTimeout", "PageNotAnswering"]);
     expect(r.url).toBe(`${base}/busy`);
     expect(r.title).toBe("busy");
-    await untilThePageAnswers();
+  }, 60_000);
+
+  it("a held page whose title is not parsed yet answers title \"\", not its URL as the tab list shows it", async () => {
+    const { r, wall } = await navigate("/busy-untitled", 2000);
+    expect(wall).toBeLessThan(3500);
+    expect(r.hints.warnings).toEqual(["NavigateTimeout", "PageNotAnswering"]);
+    expect(r.title).toBe("");
+    expect(r.readyState).toBe("loading");
   }, 60_000);
 
   it("a page that answers but never completes: NavigateTimeout only, its own readyState", async () => {

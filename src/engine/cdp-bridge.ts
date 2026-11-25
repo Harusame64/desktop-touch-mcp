@@ -1717,7 +1717,12 @@ export async function getListedTabContext(
 ): Promise<{ id: string; title: string; url: string } | null> {
   try {
     const tab = await resolveTab(tabId, port);
-    return { id: tab.id, title: tab.title ?? "", url: tab.url ?? "" };
+    const url = tab.url ?? "";
+    // Chrome lists a page with no title (or one not parsed yet) under its URL, often without the
+    // scheme; document.title would be "" (/code-review).
+    const title = tab.title ?? "";
+    const untitled = title === url || title === url.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+    return { id: tab.id, title: untitled ? "" : title, url };
   } catch {
     return null;
   }

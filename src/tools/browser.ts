@@ -3400,6 +3400,9 @@ export const browserGetDomHandler = async ({
   }
 };
 
+/** How long a timed-out load wait still asks the page for its title before reading the tab list. */
+const PAGE_ANSWER_GRACE_MS = 300;
+
 export const browserNavigateHandler = async ({
   url,
   narrate,
@@ -3495,39 +3498,46 @@ export const browserNavigateHandler = async ({
       { intervalMs: 150, timeoutMs: loadTimeoutMs }
     );
 
-    if (!poll.ok && poll.unfinishedPollMs !== undefined) {
-      // The page did not answer its last readyState read by loadTimeoutMs: a script is holding its
-      // thread. Asking it for its title too waited on CDP's own 15 s, so the answer came about 15 s
-      // after loadTimeoutMs (18.2 s against 3000 on main, mac). The browser's tab list answers
-      // without the page, and the readyState is the last one the page gave, if any.
+    if (!poll.ok) {
+      // Timeout — not a failure, LLM can continue. The page is asked for its title, URL and
+      // readyState for at most PAGE_ANSWER_GRACE_MS: a page whose script holds its thread does not
+      // answer until it lets go, and waiting for it took CDP's own 15 s (18.2 s against
+      // loadTimeoutMs 3000 on main, mac). The browser's tab list answers without the page. A page
+      // that answers within the grace is reported as before, even when the last readyState read
+      // ran a few ms past the deadline (/code-review).
+      const answered = await Promise.race([
+        getTabContext(tabId ?? null, port),
+        new Promise<null>((r) => setTimeout(() => r(null), PAGE_ANSWER_GRACE_MS)),
+      ]);
+      if (answered && answered.id !== null) {
+        return ok({
+          ok: true,
+          url: answered.url || url,
+          title: answered.title,
+          readyState: answered.readyState,
+          elapsedMs: Date.now() - startedAt,
+          waited: true,
+          hints: { warnings: ["NavigateTimeout"] },
+          ...(perceptionEnvNav && { _perceptionForPost: perceptionEnvNav }),
+        });
+      }
       const listed = await getListedTabContext(tabId ?? null, port);
-      const rs = lastState as string | null;
+      // "complete" cannot be the last state here: the wait would have ended ok.
+      const rs: string | null = lastState;
       return ok({
         ok: true,
         url: listed?.url || url,
         title: listed?.title ?? "",
-        readyState: rs === "loading" || rs === "interactive" || rs === "complete" ? rs : "loading",
+        readyState: rs === "interactive" ? "interactive" : "loading",
         elapsedMs: Date.now() - startedAt,
         waited: true,
         hints: { warnings: ["NavigateTimeout", "PageNotAnswering"] },
+        ...(perceptionEnvNav && { _perceptionForPost: perceptionEnvNav }),
       });
     }
 
     const tabCtx = await getTabContext(tabId ?? null, port);
     const elapsedMs = Date.now() - startedAt;
-
-    if (!poll.ok) {
-      // Timeout — not a failure, LLM can continue
-      return ok({
-        ok: true,
-        url: tabCtx.url || url,
-        title: tabCtx.title,
-        readyState: tabCtx.readyState,
-        elapsedMs,
-        waited: true,
-        hints: { warnings: ["NavigateTimeout"] },
-      });
-    }
 
     // Build rich navigation block
     const richBlock: RichBlock | undefined = narrate === "rich" ? {
