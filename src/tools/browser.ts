@@ -3863,7 +3863,10 @@ export const browserLaunchHandler = async ({
           type: "text" as const,
           text: [
             `${chosenKey} launched but CDP endpoint on port ${port} did not respond within ${waitMs}ms.`,
-            `Last error: ${String(lastErr)}`,
+            // A probe still running at waitMs never reached its catch (/code-review on the wait fix).
+            pollResult.unfinishedPollMs !== undefined
+              ? `The last probe had not answered after ${pollResult.unfinishedPollMs}ms.${lastErr !== null ? ` The one before it failed: ${String(lastErr)}` : ""}`
+              : `Last error: ${String(lastErr)}`,
             `Try increasing waitMs, or check that no stray process holds the port (close existing ${chosenKey} with the same --user-data-dir).`,
           ].join("\n"),
         }],
