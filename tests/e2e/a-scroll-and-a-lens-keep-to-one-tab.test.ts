@@ -55,7 +55,8 @@ beforeAll(async () => {
   process.env.DESKTOP_TOUCH_AUTO_GUARD = "0";
   server = createServer((req, res) => {
     res.setHeader("content-type", "text/html");
-    const name = (req.url ?? "/").slice(1);
+    // The path is echoed into the page, so escape it: even a test server should not reflect markup.
+    const name = (req.url ?? "/").slice(1).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
     if (name === "list") {
       const rows = Array.from({ length: 200 }, (_, i) => `<div id="row-${i}" style="height:40px">row ${i}</div>`).join("");
       res.end(`<title>list</title><div id="box" style="height:300px;overflow:auto">${rows}</div>`);
