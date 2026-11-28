@@ -18,7 +18,17 @@ type Sent = { method: string; type?: string; button?: string; x?: number; y?: nu
 let server: Server | undefined;
 let port = 0;
 
-async function fakeBrowser(closeAtType: string | null): Promise<Sent[]> {
+/**
+ * `holdMoves`: answer a move only when a release comes, as a page the browser does not draw does (#1054).
+ * `failNoButtonRelease`: answer a release with no button with a protocol error, without bringing a held move through.
+ * `failMoveThenRelease`: answer the move with an error, and the release 100 ms later.
+ * `silentNoButtonRelease`: never answer a release with no button.
+ * `delayNoButtonReleaseMs`: answer a release with no button after that many ms.
+ */
+async function fakeBrowser(
+  closeAtType: string | null,
+  opts: { holdMoves?: boolean; failNoButtonRelease?: boolean; failMoveThenRelease?: boolean; silentNoButtonRelease?: boolean; delayNoButtonReleaseMs?: number } = {},
+): Promise<Sent[]> {
   const sent: Sent[] = [];
   server = createServer((req, res) => {
     res.setHeader("content-type", "application/json");
@@ -28,13 +38,36 @@ async function fakeBrowser(closeAtType: string | null): Promise<Sent[]> {
   });
   const wss = new WebSocketServer({ server });
   wss.on("connection", (ws) => {
+    const held: number[] = [];
     ws.on("message", (data) => {
       const msg = JSON.parse(data.toString()) as { id: number; method: string; params?: Record<string, unknown> };
       const type = msg.params?.type as string | undefined;
       sent.push({ method: msg.method, type, button: msg.params?.button as string | undefined, x: msg.params?.x as number, y: msg.params?.y as number });
-      if (type === closeAtType) {
+      // Not at the move's own no-button release: the case names the click's events.
+      if (type === closeAtType && !(type === "mouseReleased" && msg.params?.button === "none")) {
         ws.terminate();
         return;
+      }
+      if (opts.failMoveThenRelease && type === "mouseMoved") {
+        ws.send(JSON.stringify({ id: msg.id, error: { code: -32000, message: "move failed" } }));
+        return;
+      }
+      if (opts.failMoveThenRelease && type === "mouseReleased") {
+        setTimeout(() => ws.send(JSON.stringify({ id: msg.id, result: {} })), 100);
+        return;
+      }
+      if (opts.silentNoButtonRelease && type === "mouseReleased" && msg.params?.button === "none") return;
+      if (opts.delayNoButtonReleaseMs !== undefined && type === "mouseReleased" && msg.params?.button === "none") {
+        setTimeout(() => ws.send(JSON.stringify({ id: msg.id, result: {} })), opts.delayNoButtonReleaseMs);
+        return;
+      }
+      if (opts.holdMoves && type === "mouseMoved") { held.push(msg.id); return; }
+      if (type === "mouseReleased") {
+        if (opts.failNoButtonRelease && msg.params?.button === "none") {
+          ws.send(JSON.stringify({ id: msg.id, error: { code: -32602, message: "Invalid parameters" } }));
+          return;
+        }
+        for (const id of held.splice(0)) ws.send(JSON.stringify({ id, result: {} }));
       }
       ws.send(JSON.stringify({ id: msg.id, result: {} }));
     });
@@ -57,6 +90,7 @@ describe("dispatchMouseMoveInTab / dispatchClickInTab (internal #415)", () => {
     await dispatchClickInTab(12.5, 40, "T1", port);
     expect(sent).toEqual([
       { method: "Input.dispatchMouseEvent", type: "mouseMoved", button: "none", x: 12.5, y: 40 },
+      { method: "Input.dispatchMouseEvent", type: "mouseReleased", button: "none", x: 12.5, y: 40 },
       { method: "Input.dispatchMouseEvent", type: "mousePressed", button: "left", x: 12.5, y: 40 },
       { method: "Input.dispatchMouseEvent", type: "mouseReleased", button: "left", x: 12.5, y: 40 },
     ]);
@@ -67,6 +101,59 @@ describe("dispatchMouseMoveInTab / dispatchClickInTab (internal #415)", () => {
     const err = await dispatchMouseMoveInTab(1, 1, "T1", port).then(() => null, (e: unknown) => e);
     expect(err).toBeInstanceOf(CdpClickDispatchError);
     expect((err as CdpClickDispatchError).pressSent).toBe(false);
+  });
+
+  it("#1054: a release with no button brings a held move through, so the move does not wait for a frame", async () => {
+    const sent = await fakeBrowser(null, { holdMoves: true });
+    const t0 = Date.now();
+    await dispatchMouseMoveInTab(5, 6, "T1", port);
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(sent.map((s) => [s.type, s.button])).toEqual([["mouseMoved", "none"], ["mouseReleased", "none"]]);
+  });
+
+  it("#1054: a release the browser refuses changes nothing: the move is still waited for", async () => {
+    const sent = await fakeBrowser(null, { holdMoves: true, failNoButtonRelease: true });
+    let settled = false;
+    const call = dispatchMouseMoveInTab(5, 6, "T1", port).then(() => null, (e: unknown) => e).finally(() => { settled = true; });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(settled).toBe(false);
+    expect(sent.map((s) => s.type)).toEqual(["mouseMoved", "mouseReleased"]);
+    disconnectAll(port); // end the held move: it fails, and says the press was not sent
+    const err = await call;
+    expect(err).toBeInstanceOf(CdpClickDispatchError);
+    expect((err as CdpClickDispatchError).pressSent).toBe(false);
+  });
+
+  it("#1054: a release that is never answered does not hold the move back", async () => {
+    const sent = await fakeBrowser(null, { silentNoButtonRelease: true });
+    const t0 = Date.now();
+    await dispatchMouseMoveInTab(5, 6, "T1", port);
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(sent.map((s) => s.type)).toEqual(["mouseMoved", "mouseReleased"]);
+  });
+
+  it("#1054: an answered release is waited for, so it is handled before the click probe goes in", async () => {
+    const sent = await fakeBrowser(null, { delayNoButtonReleaseMs: 20 });
+    const t0 = Date.now();
+    await dispatchMouseMoveInTab(5, 6, "T1", port);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(15);
+    expect(sent.map((s) => s.type)).toEqual(["mouseMoved", "mouseReleased"]);
+  });
+
+  it("#1054: a move that fails while the release is pending is thrown, not left unhandled", async () => {
+    await fakeBrowser(null, { failMoveThenRelease: true });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => { unhandled.push(e); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const err = await dispatchMouseMoveInTab(5, 6, "T1", port).then(() => null, (e: unknown) => e);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(err).toBeInstanceOf(CdpClickDispatchError);
+      expect((err as CdpClickDispatchError).pressSent).toBe(false);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 
   it("says the press may have been sent when the browser fails on the press", async () => {

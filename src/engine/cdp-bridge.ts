@@ -603,7 +603,8 @@ export async function dispatchPointerAwayInTab(tabId: string | null = null, port
  *
  * Two calls, so a caller can install its click probe between them and not count hover effects as the click (the
  * order browser_click keeps with the OS cursor): `dispatchMouseMoveInTab` moves the pointer to the point,
- * `dispatchClickInTab` presses and releases there.
+ * `dispatchClickInTab` presses and releases there. The move is followed by a release with no button, which brings
+ * it through on a page the browser does not draw (#1054); the page gets no event of its own from it.
  *
  * A failure is thrown as `CdpClickDispatchError` with `pressSent`: false means no press reached the browser (a
  * fallback may press), true means the press was written to an open session and its answer or the release did not
@@ -1213,6 +1214,9 @@ export async function clearAxMarks(nonce: string, tabId: string | null = null, p
   ).catch(() => null);
 }
 
+/** #1054 — how long the no-button release after a move is waited for (it answers in about 1 ms, win2's spike3). */
+export const RELEASE_ANSWER_WAIT_MS = 50;
+
 export async function dispatchMouseMoveInTab(
   x: number,
   y: number,
@@ -1222,7 +1226,25 @@ export async function dispatchMouseMoveInTab(
   try {
     const tab = await resolveTab(tabId, port);
     const session = await openSession(tab, port);
-    await session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: 0 });
+    const moved = session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: 0 });
+    // #1054 — a page the browser does not draw (its window fully covered, minimized, or a background tab) holds a
+    // move until a frame that does not come, and answers it after about 5 s (win2: 5,002–5,017 ms). A release with no
+    // button brings it through at once and reaches the page as nothing of its own: no pointerup, mouseup or click,
+    // and focus, selection and value unchanged (win2's spike3, M1: a covered window, a background tab, and a page that
+    // is drawn). Then the move has reached the page before the click probe goes in, as on a page that is drawn.
+    // Judged by the move alone. The release is waited for only up to RELEASE_ANSWER_WAIT_MS: it answers in about
+    // 1 ms whether the page is drawn or not (spike3), and once answered it has been handled before the click probe
+    // goes in. Refused or not answered within the wait, it leaves the move's own answer (or its timeout) to decide,
+    // as before. The move's failure is handled from the start (`settledMove`), so it is never unhandled.
+    const settledMove = moved.then(() => null, (e: unknown) => ({ error: e }));
+    const released = session.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "none", buttons: 0 });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      released.catch(() => undefined),
+      new Promise<void>((r) => { timer = setTimeout(r, RELEASE_ANSWER_WAIT_MS); }),
+    ]).finally(() => clearTimeout(timer));
+    const failed = await settledMove;
+    if (failed) throw failed.error;
   } catch (e) {
     throw new CdpClickDispatchError(e instanceof Error ? e.message : String(e), false, { cause: e });
   }
