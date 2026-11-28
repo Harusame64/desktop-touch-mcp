@@ -25,14 +25,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // scrollExpr step.
 const evaluateInTabMock = vi.fn();
 const getScrollAncestorsCdpMock = vi.fn();
-const detectStickyHeaderCdpMock = vi.fn();
+const clearCoverBandCdpMock = vi.fn();
 const setScrollPositionCdpMock = vi.fn();
 const scrollVirtualListCdpMock = vi.fn();
 
 vi.mock("../../src/engine/cdp-bridge.js", () => ({
   evaluateInTab: evaluateInTabMock,
   getScrollAncestorsCdp: getScrollAncestorsCdpMock,
-  detectStickyHeaderCdp: detectStickyHeaderCdpMock,
+  clearCoverBandCdp: clearCoverBandCdpMock,
   setScrollPositionCdp: setScrollPositionCdpMock,
   scrollVirtualListCdp: scrollVirtualListCdpMock,
   // The Chrome path resolves its tab once before the steps (internal #423); no browser runs here.
@@ -94,15 +94,15 @@ describe("smart-scroll target='body' — ADR-018 Phase 3 / §5 R3 fix", () => {
   beforeEach(() => {
     evaluateInTabMock.mockReset();
     getScrollAncestorsCdpMock.mockReset();
-    detectStickyHeaderCdpMock.mockReset();
+    clearCoverBandCdpMock.mockReset();
     setScrollPositionCdpMock.mockReset();
     scrollVirtualListCdpMock.mockReset();
 
     getScrollAncestorsCdpMock.mockResolvedValue({ ancestors: [], warnings: [] });
-    detectStickyHeaderCdpMock.mockResolvedValue({ occluded: false });
+    clearCoverBandCdpMock.mockResolvedValue({ covered: false });
 
     // The CDP path issues 4 evaluateInTab calls when ancestors is empty: the offsets read for `scrolled`, scrollExpr,
-    // finalState, and the offsets read again (internal #433). The sticky-header check has its own mock. The mock returns
+    // finalState, and the offsets read again (internal #433). The band check has its own mock. The mock returns
     // a benign shape for each; these cells assert on the expression *sent*, not on what comes back.
     evaluateInTabMock.mockImplementation((expr: string) => {
       if (expr.includes("assignedSlot")) return Promise.resolve([0, 0, 0, 0]);
@@ -196,7 +196,7 @@ describe("smart-scroll answers from where the target ended and what moved — in
   beforeEach(() => {
     evaluateInTabMock.mockReset();
     getScrollAncestorsCdpMock.mockReset().mockResolvedValue({ ancestors: [], warnings: [] });
-    detectStickyHeaderCdpMock.mockReset().mockResolvedValue({ occluded: false });
+    clearCoverBandCdpMock.mockReset().mockResolvedValue({ covered: false });
     scrollVirtualListCdpMock.mockReset();
   });
 
