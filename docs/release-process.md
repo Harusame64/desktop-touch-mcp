@@ -333,6 +333,45 @@ Record every narrowing here so the exceptions stay visible:
     a pid Windows has since given to another program, and the mark is tested by pid alone (internal #327).
   - MCP Registry: published 2.4.0 from mac (`mcp-publisher` 1.8.4, GitHub device login relayed to the user);
     latest = 2.4.0, active.
+- **v2.4.4 (2026-11-28)**: the full pass, as for 2.3.2. Release head eccd8261 at first, then ce2abb83 after #1055.
+  - D0 on eccd8261:
+    - `test:capture` failed 51 cells in 16 files, against 52 in 17 for v2.4.3 (`--no-file-parallelism`). The one
+      2.4.4-only failure (terminal-console-paste-load L1) passed 4/4 when rerun alone on both versions.
+    - HTTP 6/6 reporting 2.4.4, 32 tools.
+    - `publish --dry-run`: 5 files, 39.4 kB.
+    - npx from the packed tarball stopped at the PENDING manifest (exit 1).
+  - D1: the 2.2.0 script gave the same answers as 2.3.2, except two changes the CHANGELOG names: `browser_fill`
+    by ariaLabel now writes, and `browser_form` with Chrome stopped answers `BrowserNotConnected`.
+  - D2 a–f, 3/3 each, all as expected:
+    - a: CDP press with another window in front.
+    - b: `BrowserPointCovered`.
+    - c: native select by name.
+    - d: background-tab by-axis.
+    - e: `TargetClipped`.
+    - f: per-row button names and `query`.
+  - e was first run on a row outside the window. That row answers `below` (the clip check runs only for `in-view`),
+    so it was rerun on a row inside the window, with v2.4.3 as a positive control (`ok: true`, `in-view`). The
+    `below` answer for a box that cannot scroll is the same on v2.4.3 (#1053).
+  - a took 5.7 s per press, where v2.4.3 took 113 ms but pressed the covering window. Three spikes found the cause
+    (#1054): Chrome holds a CDP `mouseMoved` for about 5 s on a page it does not draw (window covered, minimized,
+    or a background tab). #1055 sends a no-button `mouseReleased` right after the move, which brings the move
+    through. The release changes nothing a page can see.
+  - #1055 on win2 (17e85f13):
+    - Presses took 0.69–0.86 s covered, minimized and in a background tab, against 5.7–5.9 s before. A shown page
+      was unchanged (0.61–0.68 s).
+    - Hover menus: 18/18.
+    - The release fired no events, did not end a held press, and D2 a–f matched 2.4.4.
+  - Not taken for #1054:
+    - Not waiting for the move: two review rounds found new edges in telling hover changes from the click's.
+    - Focus emulation: tells the page it is visible and focused.
+  - Post-publish (tag v2.4.4 = f609eab6; npm latest 2.4.4; every release job green):
+    - macOS (mac, real cache): `--help` installed v2.4.4 and printed the macOS-preview usage. The prune removed
+      v2.3.4 and kept v2.4.0. The addon had no quarantine attribute, and `smoke-macos.mjs` listed 4 tools.
+    - Windows (win2, real cache, cwd %TEMP%): `--help` installed v2.4.4 in 111 s (sha256 not pending).
+      initialize over npx stdio answered in 3.8 s with `desktop-touch 2.4.4` and 32 tools, and stdin EOF exited 0
+      in 46 ms. v2.4.0 was pruned. Ten v2.4.3 processes kept their pids.
+    - MCP Registry: published 2.4.4 from mac (`mcp-publisher` 1.8.21, GitHub device login relayed to the user).
+      latest = 2.4.4, active.
 
 ### HTTP Transport Verification (Required)
 
