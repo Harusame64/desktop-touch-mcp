@@ -2111,7 +2111,10 @@ export async function clearCoverBandCdp(
   const scrollerOf = function(n) {
     for (let m = up(n), steps = 0; m && m !== root && steps < 10000; m = up(m), steps++) {
       const cs = getComputedStyle(m);
-      if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') return m;
+      // clip makes no scroll container, as visible does not: a page wrapper with overflow-x:clip leaves its sticky
+      // header stuck to the window (codex on #1061).
+      const scrolls = function(v) { return v !== 'visible' && v !== 'clip'; };
+      if (scrolls(cs.overflowX) || scrolls(cs.overflowY)) return m;
     }
     return root;
   };

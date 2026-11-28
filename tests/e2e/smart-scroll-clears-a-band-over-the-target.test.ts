@@ -263,6 +263,14 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll clears a band over the target",
     expect(await shownAt("top")).toBe(true);
   });
 
+  it("a sticky header inside an overflow-x:clip page wrapper is cleared by the document (codex)", async () => {
+    await load(`${head}<div style="overflow-x:clip"><header id="ch" style="position:sticky;top:0;height:60px;background:#333;z-index:1">bar</header>
+      ${filler(1500)}<div id="t" style="height:40px">target</div>${filler(1500)}</div>`);
+    const r = await scroll("#t", "start");
+    expect(r.occludedBy).toMatchObject({ side: "top", by: "header#ch", box: "document", stillCovered: false });
+    expect(await shownAt("top")).toBe(true);
+  });
+
   it("a full-window veil is not a band", async () => {
     await load(VEIL);
     const r = await scroll("#t", "center");
