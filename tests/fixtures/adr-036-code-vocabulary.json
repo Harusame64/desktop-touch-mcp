@@ -138,6 +138,7 @@
     "ScopeNotFound",
     "ScrollNotDelivered",
     "TargetClipped",
+    "TargetOutOfView",
     "TerminalNotInFront",
     "TerminalTextPatternUnavailable",
     "TerminalWindowNotFound",

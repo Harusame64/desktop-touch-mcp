@@ -101,11 +101,11 @@ describe("smart-scroll target='body' — ADR-018 Phase 3 / §5 R3 fix", () => {
     getScrollAncestorsCdpMock.mockResolvedValue({ ancestors: [], warnings: [] });
     detectStickyHeaderCdpMock.mockResolvedValue({ occluded: false });
 
-    // The CDP path issues 2 evaluateInTab calls (scrollExpr, finalState) when
-    // ancestors is empty; the sticky-header check has its own mock. The mock
-    // returns a benign shape for each — the test asserts on the expression
-    // *sent*, not on what comes back.
+    // The CDP path issues 4 evaluateInTab calls when ancestors is empty: the offsets read for `scrolled`, scrollExpr,
+    // finalState, and the offsets read again (internal #433). The sticky-header check has its own mock. The mock returns
+    // a benign shape for each; these cells assert on the expression *sent*, not on what comes back.
     evaluateInTabMock.mockImplementation((expr: string) => {
+      if (expr.includes("assignedSlot")) return Promise.resolve([0, 0, 0, 0]);
       if (expr.includes("scrollIntoView") || expr.includes("scrollingElement")) {
         return Promise.resolve({ ok: true, viewportTop: 0, viewportBottom: 100 });
       }
@@ -123,7 +123,8 @@ describe("smart-scroll target='body' — ADR-018 Phase 3 / §5 R3 fix", () => {
     // identifiers.
     const calls = evaluateInTabMock.mock.calls.filter((call) => {
       const expr = String(call[0]);
-      return expr.includes("scrollingElement") && expr.includes("isRoot");
+      // viewportTop: the offsets read for `scrolled` (internal #433) names both identifiers too.
+      return expr.includes("scrollingElement") && expr.includes("isRoot") && expr.includes("viewportTop");
     });
     if (calls.length === 0) {
       throw new Error(
@@ -171,5 +172,90 @@ describe("smart-scroll target='body' — ADR-018 Phase 3 / §5 R3 fix", () => {
     // is "scrollIntoView exists in the expression and is gated by isRoot",
     // not "scrollIntoView is absent for non-root".
     expect(scrollExpr).toContain("scrollIntoView");
+  });
+});
+
+/**
+ * internal #433 — the answer after the scrolls: TargetOutOfView when the target is left outside the window, and
+ * `scrolled` from the offsets read before and after. The e2e files run these in Chrome; these cells pin the order of
+ * the branches and the comparison where no browser runs.
+ */
+describe("smart-scroll answers from where the target ended and what moved — internal #433", () => {
+  function page(o: { before?: unknown; after?: unknown; final: Record<string, unknown> | null }) {
+    const offsets = [o.before === undefined ? [0, 0, 0, 0] : o.before, o.after === undefined ? [0, 0, 0, 0] : o.after];
+    evaluateInTabMock.mockImplementation((expr: string) => {
+      if (expr.includes("assignedSlot")) return Promise.resolve(offsets.shift());
+      if (expr.includes("viewportTop")) return Promise.resolve({ ok: true, viewportTop: 0, viewportBottom: 10 });
+      if (expr.includes("clipCheck")) return Promise.resolve(o.final);
+      return Promise.resolve(undefined);
+    });
+  }
+  const run = async (target = "#t", extra: Record<string, unknown> = {}) =>
+    JSON.parse(((await smartScrollHandler({ ...baseParams, target, ...extra } as never)) as { content: { text: string }[] }).content[0]!.text);
+
+  beforeEach(() => {
+    evaluateInTabMock.mockReset();
+    getScrollAncestorsCdpMock.mockReset().mockResolvedValue({ ancestors: [], warnings: [] });
+    detectStickyHeaderCdpMock.mockReset().mockResolvedValue({ occluded: false });
+    scrollVirtualListCdpMock.mockReset();
+  });
+
+  it("outside the window with nothing moved is TargetOutOfView, scrolled:false", async () => {
+    page({ final: { viewportPosition: "below", pageRatio: 0.1, clipped: false, clipCheck: "not-needed" } });
+    const r = await run();
+    expect(r.code).toBe("TargetOutOfView");
+    expect(r.error).toContain("nothing on the page scrolled");
+    expect(r.context).toMatchObject({ scrolled: false, viewportPosition: "below" });
+  });
+
+  it("outside the window after a move is TargetOutOfView, scrolled:true", async () => {
+    page({ after: [0, 0, 300, 0], final: { viewportPosition: "above", pageRatio: 0.1, clipped: false, clipCheck: "not-needed" } });
+    const r = await run();
+    expect(r.code).toBe("TargetOutOfView");
+    expect(r.error).toContain("still outside the window (above)");
+    expect(r.context.scrolled).toBe(true);
+  });
+
+  it("a sub-pixel move counts as a move", async () => {
+    page({ after: [0.8, 0, 0, 0], final: { viewportPosition: "in-view", pageRatio: 0.1, clipped: false, clipCheck: "asked" } });
+    expect((await run()).scrolled).toBe(true);
+  });
+
+  it("in view with nothing moved is ok, scrolled:false", async () => {
+    page({ final: { viewportPosition: "in-view", pageRatio: 0.1, clipped: false, clipCheck: "asked" } });
+    const r = await run();
+    expect(r.ok).toBe(true);
+    expect(r.scrolled).toBe(false);
+  });
+
+  it("in view and clipped is TargetClipped, with the measured scrolled", async () => {
+    page({ after: [5, 0, 0, 0], final: { viewportPosition: "in-view", pageRatio: 0.1, clipped: true, clipCheck: "asked" } });
+    const r = await run();
+    expect(r.code).toBe("TargetClipped");
+    expect(r.context.scrolled).toBe(true);
+  });
+
+  it("offsets that cannot be compared keep scrolled:true, with a warning", async () => {
+    page({ after: [0, 0], final: { viewportPosition: "in-view", pageRatio: 0.1, clipped: false, clipCheck: "asked" } });
+    const r = await run();
+    expect(r.scrolled).toBe(true);
+    expect(r.warnings).toContainEqual(expect.stringMatching(/Whether anything scrolled was not read/));
+  });
+
+  it("the document's root is in view whatever body's box says", async () => {
+    page({ final: { viewportPosition: "above", pageRatio: 0, clipped: false, clipCheck: "not-needed" } });
+    const r = await run("body");
+    expect(r.ok).toBe(true);
+    expect(r.viewportPosition).toBe("in-view");
+  });
+
+  it("on the virtual-list road the answer says only the list was scrolled", async () => {
+    getScrollAncestorsCdpMock.mockResolvedValue({ ancestors: [{ cssSelectorPath: "div#list", isVirtualized: true, isHidden: false,
+      overflowY: "auto", scrollTop: 0, scrollHeight: 30000, clientHeight: 300, scrollLeft: 0 }], warnings: [] });
+    scrollVirtualListCdpMock.mockResolvedValue({ ok: true, warnings: [] });
+    page({ after: [0, 0, 1200, 0, 0, 0], before: [0, 0, 0, 0, 0, 0], final: { viewportPosition: "below", pageRatio: 0.9, clipped: false, clipCheck: "not-needed" } });
+    const r = await run("[data-index='40']", { virtualIndex: 40, virtualTotal: 1000 });
+    expect(r.code).toBe("TargetOutOfView");
+    expect(r.error).toContain("only the virtual list was scrolled");
   });
 });

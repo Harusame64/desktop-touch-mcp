@@ -99,6 +99,59 @@ function isSelectorLike(target: string): boolean {
   return /^[#.[a-zA-Z]/.test(target.trim());
 }
 
+/**
+ * internal #433 — the scroll offsets of every box that holds the target (its composed ancestors, across shadow roots
+ * and slots), followed by the window's. `scrolled` compares a read before the scrolls with one after them: the CDP road
+ * used to answer scrolled:true whatever moved, and win2 measured it saying so when nothing on the page had moved (a
+ * target in an overflow:clip box, position:fixed outside the window, a transform). Null when the target is not found or
+ * the read fails.
+ */
+async function readHolderOffsets(target: string, tab: string, port: number): Promise<number[] | null> {
+  const expr = `
+(function() {
+  const sel = ${JSON.stringify(target)};
+  const isRoot = sel === 'body' || sel === 'html';
+  const el = isRoot ? (document.scrollingElement || document.documentElement) : document.querySelector(sel);
+  if (!el) return null;
+  // Read through the prototypes' own getters, and the walk capped: a form whose control is named parentNode,
+  // assignedSlot or scrollTop shadows the form's own, and a walk by the page's properties could loop forever (as the
+  // ancestor walk did, /code-review on #1020).
+  const get = function(proto, name) { return Object.getOwnPropertyDescriptor(proto, name).get; };
+  const pn = get(Node.prototype, 'parentNode'), slot = get(Element.prototype, 'assignedSlot');
+  const host = get(ShadowRoot.prototype, 'host');
+  const top = get(Element.prototype, 'scrollTop'), left = get(Element.prototype, 'scrollLeft');
+  const out = [];
+  for (let n = el, steps = 0; n && steps < 10000; steps++) {
+    if (n instanceof Element) {
+      out.push(top.call(n), left.call(n));
+      n = slot.call(n) || pn.call(n);
+    } else if (n instanceof ShadowRoot) {
+      n = host.call(n);
+    } else {
+      n = null;
+    }
+  }
+  out.push(window.scrollY, window.scrollX);
+  return out;
+})()`;
+  try {
+    const r = await evaluateInTab(expr, tab, port);
+    return Array.isArray(r) && r.every((v) => typeof v === "number") ? r as number[] : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether anything moved between two reads of `readHolderOffsets`. Undefined when that cannot be told: a read failed,
+ * or the page re-rendered the target into another chain of boxes between them.
+ */
+function holdersMoved(before: number[] | null, after: number[] | null): boolean | undefined {
+  if (before === null || after === null || before.length !== after.length) return undefined;
+  // scrollTop is fractional on a scaled display or a zoomed page: a 0.8px move is a move (/code-review).
+  return before.some((v, i) => Math.abs(v - after[i]!) > 0.01);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // CDP path
 // ─────────────────────────────────────────────────────────────────────────────
@@ -151,6 +204,9 @@ async function tryCdp(params: {
       const names = hiddenAncestors.map((a) => `'${a.cssSelectorPath}'`).join(", ");
       warnings.push(`expandHidden: scrolling allowed inside overflow:hidden ancestor(s) ${names}; the page's CSS is not changed`);
     }
+
+    // Read before anything below scrolls: `scrolled` in the answer compares it with a read after (internal #433).
+    const offsetsBefore = await readHolderOffsets(target, tab, port);
 
     // Virtual list
     const virtualAncestors = ancestors.filter(a => a.isVirtualized);
@@ -250,8 +306,19 @@ async function tryCdp(params: {
   const at = function(r, bounds) {
     const use = bounds && bounds.width > 0 && bounds.height > 0;
     const w = use ? bounds.right : window.innerWidth, h = use ? bounds.bottom : window.innerHeight;
-    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-    return cy < 0 ? 'above' : cy > h ? 'below' : cx < 0 ? 'left' : cx > w ? 'right' : 'in-view';
+    // internal #433 — on each axis, in view when at least half of what could be shown is shown: half the box, or half
+    // the window for a box larger than it. For a box smaller than the window that is its centre being inside, as before,
+    // so a button with 1px on screen is not in view (a click at its centre would miss, /code-review). A target taller
+    // than the window, scrolled to its start, fills the screen with its centre below it: win2 measured the centre rule
+    // answering 'below' there. A box of no area is in view when it lies on the window, edges included. Otherwise the
+    // side it is left on, the vertical one first, as before.
+    const over = function(a, b, hi) {
+      if (a === b) return a >= 0 && a <= hi;
+      return Math.min(b, hi) - Math.max(a, 0) >= Math.min(b - a, hi) / 2;
+    };
+    if (!over(r.top, r.bottom, h)) return r.top + r.bottom < h ? 'above' : 'below';
+    if (!over(r.left, r.right, w)) return r.left + r.right < w ? 'left' : 'right';
+    return 'in-view';
   };
   const ratio = function(r) { return Math.max(0, Math.min(1, (window.scrollY + r.top) / (document.documentElement.scrollHeight || 1))); };
   const r = el.getBoundingClientRect();
@@ -334,6 +401,40 @@ async function tryCdp(params: {
       scrollTop: a.scrollTop,
       scrollHeight: a.scrollHeight,
     }));
+    // internal #433 — measured, not assumed. When it cannot be told (a read failed, or the page re-rendered the target
+    // into other boxes) the answer says so and keeps true, the value it always gave.
+    const moved = holdersMoved(offsetsBefore, await readHolderOffsets(target, tab, port));
+    if (moved === undefined) warnings.push("Whether anything scrolled was not read: scrolled:true is assumed");
+    const scrolled = moved ?? true;
+
+    // internal #433 — the scrolls left the target outside the window: nothing that can scroll holds it there (an
+    // overflow:clip box, position:fixed or a transform placing it outside, a page too short), or the page moved it after.
+    // It answered ok:true scrolled:true with 'below' and the like, which read as though the scroll had helped.
+    // The document's root is in view by definition (the R3 fix above never scrolls it), though body's box can end above
+    // the window on a page scrolled past it (/code-review). On the virtual-list road only the list is scrolled, not the
+    // window, so the answer says so rather than that nothing could bring the row in (/code-review).
+    const vp = finalState?.viewportPosition;
+    const isRoot = target === "body" || target === "html";
+    const viaVirtualList = virtualAncestors.length > 0 && virtualIndex !== undefined && virtualTotal !== undefined;
+    if (!isRoot && (vp === "above" || vp === "below" || vp === "left" || vp === "right")) {
+      return failCode(
+        "TargetOutOfView",
+        viaVirtualList
+          ? `The row is outside the window (${vp}): only the virtual list was scrolled, not the window around it.`
+          : moved === false
+            ? `The target is outside the window (${vp}), and nothing on the page scrolled to bring it in.`
+            : `The target is still outside the window (${vp}) after the scroll.`,
+        {
+          suggest: getSuggestsForCode("TargetOutOfView"),
+          context: {
+            target, path: "cdp", scrolled, viewportPosition: vp,
+            pageRatio: finalState?.pageRatio ?? null, ancestors: ancestorsOut,
+            ...(occludedBy && { occludedBy }), ...(warnings.length > 0 && { warnings }),
+          },
+        },
+      );
+    }
+
     if (finalState?.clipped) {
       return failCode(
         "TargetClipped",
@@ -345,15 +446,13 @@ async function tryCdp(params: {
           suggest: getSuggestsForCode("TargetClipped"),
           // The scrolls already ran: say so, with what the success answer carries (ancestors as walked before the scroll).
           context: {
-            target, path: "cdp", scrolled: true, viewportPosition: finalState.viewportPosition,
+            target, path: "cdp", scrolled, viewportPosition: finalState.viewportPosition,
             pageRatio: finalState.pageRatio, ancestors: ancestorsOut,
             ...(occludedBy && { occludedBy }), ...(warnings.length > 0 && { warnings }),
           },
         },
       );
     }
-
-    const scrolled = true;
 
     return ok({
       ok: true,
@@ -362,7 +461,8 @@ async function tryCdp(params: {
       pageRatio: finalState?.pageRatio ?? null,
       scrolled,
       ancestors: ancestorsOut,
-      viewportPosition: finalState?.viewportPosition ?? null,
+      // The root is in view by definition: body's own box can sit above the window on a page scrolled past it (win2).
+      viewportPosition: isRoot && finalState !== null ? "in-view" : finalState?.viewportPosition ?? null,
       ...(occludedBy && { occludedBy }),
       ...(warnings.length > 0 && { warnings }),
     });
