@@ -605,17 +605,8 @@ type ClickProbeReading = {
  * `characterData:true` is intentionally omitted — it produces high-noise
  * matches on text-content tickers (clocks, live regions) that fire
  * independently of the click and would mask silent-fail.
- *
- * #1054 — with `fromPress`, what changes from the press on is counted. The CDP click no longer waits for the move's
- * answer, and on a page the browser does not draw the move reaches the page only with the press, after this probe is
- * in: what the hover changes (a tooltip, a menu opening) would otherwise read as the click's effect. The press's own
- * trusted `pointerdown` (or `mousedown`) starts the count, and what the hover queued before it is dropped. When no
- * press is seen in the top window (it landed in an iframe, or a page listener stopped it first), every change is
- * counted, as without `fromPress`. On a page that is drawn the move came before the probe, so that is the old answer.
- * Not covered: a hover effect the page renders after the press (a delayed tooltip, a framework that renders in a
- * later task) still counts on a page that is not drawn, as a delayed one already did on a page that is.
  */
-export function buildInstallClickProbeExpr(selector: string | null, fromPress = false): string {
+function buildInstallClickProbeExpr(selector: string | null): string {
   return `
 (function() {
   try {
@@ -646,16 +637,8 @@ export function buildInstallClickProbeExpr(selector: string | null, fromPress = 
     if (window.__dtmClickProbe && window.__dtmClickProbe.observer) {
       try { window.__dtmClickProbe.observer.disconnect(); } catch (_e) { /* ignore */ }
     }
-    if (window.__dtmClickProbe && window.__dtmClickProbe.onPress) {
-      window.removeEventListener('pointerdown', window.__dtmClickProbe.onPress, true);
-      window.removeEventListener('mousedown', window.__dtmClickProbe.onPress, true);
-    }
     var probe = {
-      fromPress: ${fromPress ? "true" : "false"},
-      pressSeen: false,
-      onPress: null,
       mutationCount: 0,
-      fromPressCount: 0,
       beforeUrl: location.href,
       beforeActive: document.activeElement,
       selectorFound: !!el,
@@ -665,20 +648,9 @@ export function buildInstallClickProbeExpr(selector: string | null, fromPress = 
     var obs = new MutationObserver(function(records) {
       // Aggregate count is sufficient — we only need to know "did anything happen".
       probe.mutationCount += records.length;
-      if (probe.pressSeen) probe.fromPressCount += records.length;
     });
     obs.observe(document.body, { subtree: true, childList: true, attributes: true });
     probe.observer = obs;
-    if (probe.fromPress) {
-      probe.onPress = function(e) {
-        // A page's own synthetic mousedown is not the press (as the press guard).
-        if (probe.pressSeen || !e || !e.isTrusted) return;
-        try { probe.mutationCount += obs.takeRecords().length; } catch (_e) { /* ignore */ }
-        probe.pressSeen = true;
-      };
-      window.addEventListener('pointerdown', probe.onPress, true);
-      window.addEventListener('mousedown', probe.onPress, true);
-    }
     window.__dtmClickProbe = probe;
     return { ok: true, selectorFound: !!el, inIframe: inIframe };
   } catch (e) {
@@ -691,22 +663,18 @@ export function buildInstallClickProbeExpr(selector: string | null, fromPress = 
  * Read out the probe state, disconnect the observer, and clear the slot.
  * After this call the page state is back to baseline (no observer leak).
  */
-export function buildReadClickProbeExpr(): string {
+function buildReadClickProbeExpr(): string {
   return `
 (function() {
   try {
     var probe = window.__dtmClickProbe;
     if (!probe) return { ok: false, reason: 'probe_missing' };
     try { if (probe.observer) probe.observer.disconnect(); } catch (_e) { /* ignore */ }
-    if (probe.onPress) {
-      window.removeEventListener('pointerdown', probe.onPress, true);
-      window.removeEventListener('mousedown', probe.onPress, true);
-    }
     var afterUrl = location.href;
     var afterActive = document.activeElement;
     var result = {
       ok: true,
-      mutationCount: probe.fromPress && probe.pressSeen ? probe.fromPressCount : probe.mutationCount,
+      mutationCount: probe.mutationCount,
       urlChanged: probe.beforeUrl !== afterUrl,
       activeElementChanged: probe.beforeActive !== afterActive,
       selectorFound: probe.selectorFound,
@@ -732,10 +700,9 @@ async function installClickProbe(
   selector: string | null,
   tabId: string | null,
   port: number,
-  fromPress = false,
 ): Promise<{ installed: boolean; selectorFound?: boolean; inIframe?: boolean; reason?: string }> {
   try {
-    const r = (await evaluateInTab(buildInstallClickProbeExpr(selector, fromPress), tabId, port)) as
+    const r = (await evaluateInTab(buildInstallClickProbeExpr(selector), tabId, port)) as
       | { ok: true; selectorFound: boolean; inIframe: boolean }
       | { ok: false; reason: string };
     if (!r.ok) return { installed: false, reason: r.reason };
@@ -1376,8 +1343,7 @@ const SKIN_ROLES = new Set(["", "generic", "none", "presentation", "insertion", 
  * internal #415 — desktop_act's click, sent to the tab by CDP, and what the click probe saw.
  *
  * The press goes where {@link pressPointFor} says (internal #421). The pointer moves first and the probe and the
- * press guard are installed after it. The move may reach the page only with the press (#1054), so the probe counts
- * from the press (`fromPress`) and hover effects are not read as the click. The guard stops a press whose hit
+ * press guard are installed after it, so hover effects are not read as the click. The guard stops a press whose hit
  * the landing rule does not allow — the layout moved between the read and the press — and that press is refused as
  * not landed, nothing clicked.
  */
@@ -1402,8 +1368,7 @@ export async function cdpDispatchClickAndVerify(
   };
   const before = await pageIds();
   await dispatchMouseMoveInTab(point.x, point.y, tabId, port);
-  // From the press on: the move may reach the page only with the press (#1054, dispatchMouseMoveInTab).
-  const probe = await installClickProbe(selector, tabId, port, true);
+  const probe = await installClickProbe(selector, tabId, port);
   await evaluateInTab(buildPressGuardJs(selector), tabId, port).catch(() => null);
   // Read (and so removed) whether or not the install answered: its answer can be lost after it ran. The guard also
   // removes itself after a few seconds in the page.
