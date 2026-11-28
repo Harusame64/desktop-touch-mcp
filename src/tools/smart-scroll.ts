@@ -262,20 +262,30 @@ async function tryCdp(params: {
     // internal #436 — a fixed or sticky band at the window's edge (a site's top bar, a cookie banner) covering the
     // target's edge: scroll the target's nearest scroller with room just far enough to clear it, and say what moved.
     const band = await clearCoverBandCdp(target, tab, port);
-    let occludedBy: { header: true; side?: "top" | "bottom"; by?: string; box?: string; movedPx?: number; stillCovered?: boolean } | undefined;
+    let occludedBy: {
+      header: true; side?: "top" | "bottom"; by?: string; box?: string; movedPx?: number; stillCovered?: boolean;
+      nowCovered?: "top" | "bottom"; nowCoveredBy?: string;
+    } | undefined;
     if (band.covered) {
       occludedBy = {
         header: true, side: band.side, by: band.cover,
         ...(band.box !== undefined && { box: band.box, movedPx: band.movedPx }), stillCovered: band.stillCovered === true,
+        ...(band.nowCovered !== undefined && { nowCovered: band.nowCovered, nowCoveredBy: band.nowCoveredBy }),
       };
       const by = `a ${band.side} band '${band.cover}'`;
-      if (band.box !== undefined && (band.movedPx ?? 0) > 0) {
-        warnings.push(`The target's ${band.side} edge was under ${by}: scrolled '${band.box}' ${band.movedPx}px to clear it`);
-      }
-      if (band.stillCovered) {
-        warnings.push(band.box === undefined || (band.movedPx ?? 0) === 0
-          ? `The target's ${band.side} edge is under ${by}, and no box around it could scroll to clear it`
-          : `The target's ${band.side} edge is still under ${by} after that scroll`);
+      const moved = band.movedPx ?? 0;
+      if (band.box === undefined) {
+        warnings.push(`The target's ${band.side} edge is under ${by}, and no box around it could scroll to clear it`);
+      } else if (moved === 0) {
+        // The box had room, and the page put it back (scroll-snap, a scroll handler) (/code-review).
+        warnings.push(`The target's ${band.side} edge is under ${by}: '${band.box}' was scrolled to clear it, and did not move`);
+      } else {
+        warnings.push(`The target's ${band.side} edge was under ${by}: scrolled '${band.box}' ${moved}px to clear it`);
+        if (band.nowCovered !== undefined) {
+          warnings.push(`That scroll put the target's ${band.nowCovered} edge under a ${band.nowCovered} band '${band.nowCoveredBy}'`);
+        } else if (band.stillCovered) {
+          warnings.push(`The target's ${band.side} edge is still under ${by} after that scroll`);
+        }
       }
     }
 

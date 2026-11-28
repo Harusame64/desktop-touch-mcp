@@ -2017,8 +2017,11 @@ export interface CoverBandResult {
   box?: string;
   /** px the box actually moved (read back, not the amount asked). */
   movedPx?: number;
-  /** The band still covers the target's edge after the shift. */
+  /** A band still covers one of the target's edges after the shift. */
   stillCovered?: boolean;
+  /** The other edge is now under a band (clearing a top bar put the bottom under a banner), and that band. */
+  nowCovered?: "top" | "bottom";
+  nowCoveredBy?: string;
 }
 
 /**
@@ -2041,7 +2044,7 @@ export interface CoverBandResult {
  *   A full-window veil and a popover in the middle are left alone. z-index is not read.
  * - That box is scrolled, instantly: a page's scroll-behavior:smooth only starts an animation (measured on MDN and
  *   GitHub). The answer says what moved, read back, and whether the band still covers the edge.
- * Everything is read through the prototypes' getters and every walk is capped.
+ * The walks read the tree through the prototypes' getters and are capped; names in the answer are read as the page gives them.
  */
 export async function clearCoverBandCdp(
   selector: string,
@@ -2069,10 +2072,10 @@ export async function clearCoverBandCdp(
   };
   const vh = window.innerHeight, vw = window.innerWidth;
   const root = document.scrollingElement || document.documentElement;
-  // The boxes that scroll the target, nearest first, ending with the document.
+  // The boxes that scroll the target, nearest first, ending with the document. body is one when it is the page's
+  // scroller (html{overflow:hidden} body{overflow:auto}, /code-review).
   const boxes = [];
-  for (let n = up(el), steps = 0; n && steps < 10000; n = up(n), steps++) {
-    if (n === root || n === document.body) break;
+  for (let n = up(el), steps = 0; n && n !== root && steps < 10000; n = up(n), steps++) {
     const oy = getComputedStyle(n).overflowY;
     if (oy === 'auto' || oy === 'scroll') boxes.push(n);
   }
@@ -2082,57 +2085,83 @@ export async function clearCoverBandCdp(
     const t = rectOf.call(b).top + b.clientTop;
     return { top: t, bottom: t + b.clientHeight };
   };
+  // Clearing a top band moves the content down (scroll up), a bottom band the other way.
+  const roomOf = function(b, side) { return side === 'top' ? b.scrollTop : b.scrollHeight - b.clientHeight - b.scrollTop; };
   // A band sits at the top or bottom edge of a box that scrolls the target (the window for a site's bar, a scroller for
   // a bar inside it) and is shorter than half of what that box shows. A popover in the middle of the window, a fixed
-  // child of a transformed box, or a full-window veil is not one. That box is the one scrolled to clear it.
+  // child of a transformed box, or a full-window veil is not one. Of the boxes it sits at the edge of, the first with
+  // room that way is scrolled; null when none has room (/code-review: a panel at the window's top whose scrollTop is 0
+  // under a site's bar is cleared by the document).
   const bandBox = function(c, side) {
+    let at = false;
     for (const b of boxes) {
       const v = viewOf(b);
       if (c.r.height >= (v.bottom - v.top) / 2) continue;
       if (side === 'top' ? Math.abs(c.r.top - v.top) < c.r.height && c.r.bottom <= v.bottom
-        : Math.abs(v.bottom - c.r.bottom) < c.r.height && c.r.top >= v.top) return b;
+        : Math.abs(v.bottom - c.r.bottom) < c.r.height && c.r.top >= v.top) {
+        at = true;
+        if (roomOf(b, side) >= 1) return { box: b };
+      }
     }
-    return null;
+    return at ? { box: null } : null;
   };
-  const coverAt = function(x, y) {
-    const hits = document.elementsFromPoint(x, y);
-    if (!hits.length || own(hits[0])) return null;
-    for (let n = hits[0], steps = 0; n && steps < 1000; n = up(n), steps++) {
+  // The fixed or sticky elements above the point that are not the target's own, innermost first: a sticky row inside a
+  // fixed header is tried, then the header (/code-review). The hit is followed into open shadow roots, where the page's
+  // hit test stops at the host. A band with pointer-events:none is not hit, and is not seen.
+  const coversAt = function(x, y) {
+    let hit = document.elementsFromPoint(x, y)[0];
+    for (let i = 0; hit && hit.shadowRoot && i < 32; i++) {
+      const inner = hit.shadowRoot.elementsFromPoint(x, y)[0];
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    if (!hit || own(hit)) return [];
+    const out = [];
+    for (let n = hit, steps = 0; n && steps < 1000; n = up(n), steps++) {
       const p = getComputedStyle(n).position;
       if (p !== 'fixed' && p !== 'sticky') continue;
-      return own(n) ? null : { node: n, r: rectOf.call(n) };
+      if (own(n)) break;
+      out.push({ node: n, r: rectOf.call(n) });
+    }
+    return out;
+  };
+  const bandAt = function(x, y, side) {
+    for (const c of coversAt(x, y)) {
+      const b = bandBox(c, side);
+      if (b) return { c: c, box: b.box };
     }
     return null;
   };
+  // Each edge is probed while it is inside the window, with 1px of slack: at 125% scaling an edge scrolled to the
+  // window's top lands at -0.3 (/code-review).
   const probe = function() {
     const r = rectOf.call(el);
     const left = Math.max(r.left, 0), right = Math.min(r.right, vw);
     if (right <= left) return null;
     const x = (left + right) / 2;
-    if (r.top >= 0 && r.top < vh) {
-      const c = coverAt(x, r.top + 2), b = c && bandBox(c, 'top');
-      if (b) return { side: 'top', c: c, box: b, d: c.r.bottom - r.top + 8 };
+    if (r.top > -1 && r.top < vh) {
+      const f = bandAt(x, Math.min(Math.max(r.top + 2, 0), vh - 1), 'top');
+      if (f) return { side: 'top', c: f.c, box: f.box, d: f.c.r.bottom - r.top + 8 };
     }
-    if (r.bottom > 0 && r.bottom <= vh) {
-      const c = coverAt(x, r.bottom - 2), b = c && bandBox(c, 'bottom');
-      if (b) return { side: 'bottom', c: c, box: b, d: r.bottom - c.r.top + 8 };
+    if (r.bottom > 0 && r.bottom < vh + 1) {
+      const f = bandAt(x, Math.min(Math.max(r.bottom - 2, 0), vh - 1), 'bottom');
+      if (f) return { side: 'bottom', c: f.c, box: f.box, d: r.bottom - f.c.r.top + 8 };
     }
     return null;
   };
   const found = probe();
   if (!found) return { covered: false };
-  // Clearing a top band moves the content down (scroll up), a bottom band the other way.
-  const sign = found.side === 'top' ? -1 : 1;
-  const box = found.box;
-  const room = sign < 0 ? box.scrollTop : box.scrollHeight - box.clientHeight - box.scrollTop;
   const out = { covered: true, side: found.side, cover: path(found.c.node) };
-  if (room < 1) { out.stillCovered = true; return out; }
+  if (!found.box) { out.stillCovered = true; return out; }
+  const box = found.box;
   const before = box.scrollTop;
-  box.scrollBy({ top: sign * Math.ceil(found.d), behavior: 'instant' });
+  box.scrollBy({ top: (found.side === 'top' ? -1 : 1) * Math.ceil(found.d), behavior: 'instant' });
   out.box = path(box);
   out.movedPx = Math.round(Math.abs(box.scrollTop - before));
+  // Either edge: clearing a top bar can put the bottom edge under a cookie banner (/code-review).
   const again = probe();
-  out.stillCovered = !!(again && again.side === found.side);
+  out.stillCovered = !!again;
+  if (again && again.side !== found.side) { out.nowCovered = again.side; out.nowCoveredBy = path(again.c.node); }
   return out;
 })()`;
   try {

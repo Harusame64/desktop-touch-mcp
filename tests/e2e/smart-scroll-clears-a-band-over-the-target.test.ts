@@ -44,6 +44,29 @@ const VEIL = `${head}<div style="position:fixed;inset:0;background:rgba(0,0,0,.2
 const TALL = `${head}<header style="position:sticky;top:0;height:60px;background:#333;z-index:1">bar</header>
 ${filler(1500)}<div id="t" style="height:3000px;background:#eee">tall</div>${filler(1500)}`;
 
+/** html{overflow:hidden} body{overflow:auto}: body is the page's scroller. */
+const BODY_SCROLLER = `<!doctype html><title>t</title><style>html{overflow:hidden;height:100%}body{margin:0;overflow:auto;height:100%}</style>
+<div id="bar" style="position:fixed;top:0;left:0;right:0;height:60px;background:#333">bar</div>${filler(1500)}<div id="t" style="height:40px">target</div>${filler(1500)}`;
+/** A site bar over a scroller whose first row is the target: the scroller has no room up, the document has. */
+const PANEL = `${head}<div id="bar" style="position:fixed;top:0;left:0;right:0;height:60px;background:#333">bar</div>${filler(1500)}
+<div id="panel" style="height:400px;overflow:auto"><div id="t" style="height:40px">target</div>${filler(1200)}</div>${filler(1500)}`;
+/** The bar is a fixed <header> inside an open shadow root of a static host. */
+const SHADOW_BAR = `${head}<site-header></site-header>${filler(1500)}<div id="t" style="height:40px">target</div>${filler(1500)}
+<script>customElements.define('site-header', class extends HTMLElement { constructor() { super();
+  this.attachShadow({ mode: 'open' }).innerHTML = '<header style="position:fixed;top:0;left:0;right:0;height:60px;background:#333">bar</header>'; } });</script>`;
+/** A fixed header holding a sticky row lower down; the target's top is under the row, and the page cannot scroll up. */
+const ROW_IN_HEADER = `${head}<header id="hd" style="position:fixed;top:0;left:0;right:0;height:100px;background:#333">
+<div style="height:50px"></div><div id="row" style="position:sticky;top:50px;height:50px;background:#555">row</div></header>
+<div id="t" style="margin-top:60px;height:40px">target</div>${filler(1500)}`;
+/** A target almost the window's height between a top bar and a bottom banner. */
+const BOTH = `${head}<div style="position:fixed;top:0;left:0;right:0;height:60px;background:#333">bar</div>
+<div id="ban" style="position:fixed;left:0;right:0;bottom:0;height:80px;background:#333">cookies</div>
+${filler(1500)}<div id="t" style="height:calc(100vh - 100px);background:#eee">target</div>${filler(1500)}`;
+/** A sticky bar in a scroller whose only snap point is the target's start: the clearing scroll is put back. */
+const SNAP = `${head}<div id="sc" style="height:400px;overflow:auto;scroll-snap-type:y mandatory">
+<div style="position:sticky;top:0;height:50px;background:#333;z-index:1">bar</div>
+${Array.from({ length: 30 }, (_, i) => `<div ${i === 15 ? 'id="t" style="height:100px;scroll-snap-align:start"' : 'style="height:100px"'}>row ${i}</div>`).join("")}</div>`;
+
 async function load(html: string) {
   await evaluateInTab(`document.open(); document.write(${JSON.stringify(html)}); document.close(); scrollTo(0, 0); 1`, null, PORT);
   await evaluateInTab(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(1))))`, null, PORT);
@@ -80,6 +103,9 @@ afterAll(() => {
 
 describe.skipIf(!CHROME_AVAILABLE)("smart scroll clears a band over the target", () => {
   for (const [name, html, box] of [
+    ["a fixed bar on a page whose body is the scroller", BODY_SCROLLER, "body"],
+    ["a site bar over a panel that cannot scroll that way, cleared by the document", PANEL, "document"],
+    ["a fixed bar rendered inside a web component's shadow root", SHADOW_BAR, "document"],
     ["a sticky document bar over a target in a plain wrapper", DOC_BAR("1"), "document"],
     ["a z-index:auto sticky bar", DOC_BAR("auto"), "document"],
     ["a sticky bar on a page with scroll-behavior:smooth", DOC_BAR("1").replace("html,body{margin:0}", "html,body{margin:0} html{scroll-behavior:smooth}"), "document"],
@@ -103,13 +129,15 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll clears a band over the target",
   ] as const) {
     it(`${name} that does not cover a centred target is left alone`, async () => {
       await load(html);
-      const before = await evaluateInTab(`[scrollY, (document.getElementById('sc') || {}).scrollTop || 0]`, null, PORT);
       const r = await scroll("#t", "center");
       expect(r.ok).toBe(true);
       expect(r.occludedBy).toBeUndefined();
       expect(r.warnings ?? []).not.toContainEqual(expect.stringMatching(/band/));
       expect(await shownAt("top")).toBe(true);
-      expect(before).toBeDefined();
+      // Where scrollIntoView center alone leaves it: the target's centre at its box's centre (/code-review).
+      expect(await evaluateInTab(`(() => { const t = document.getElementById('t').getBoundingClientRect();
+        const sc = document.getElementById('sc'); const b = sc ? sc.getBoundingClientRect() : { top: 0, bottom: innerHeight };
+        return Math.abs((t.top + t.bottom) / 2 - (b.top + b.bottom) / 2) < 2; })()`, null, PORT)).toBe(true);
     });
   }
 
@@ -144,6 +172,27 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll clears a band over the target",
     expect(r.occludedBy.movedPx).toBeGreaterThan(0);
     expect(r.warnings).toContainEqual(expect.stringMatching(/still under a bottom band 'div#ban' after that scroll/));
     expect(await shownAt("bottom")).toBe(false);
+  });
+
+  it("a sticky row inside a fixed header is passed for the header", async () => {
+    await load(ROW_IN_HEADER);
+    const r = await scroll("#t", "start");
+    expect(r.occludedBy).toMatchObject({ side: "top", by: "header#hd", stillCovered: true });
+  });
+
+  it("clearing a top bar that puts the bottom edge under a banner says so", async () => {
+    await load(BOTH);
+    const r = await scroll("#t", "start");
+    expect(r.occludedBy).toMatchObject({ side: "top", stillCovered: true, nowCovered: "bottom", nowCoveredBy: "div#ban" });
+    expect(r.warnings).toContainEqual(expect.stringMatching(/put the target's bottom edge under a bottom band 'div#ban'/));
+    expect(await shownAt("bottom")).toBe(false);
+  });
+
+  it("a clearing scroll the page snaps back says the box did not move", async () => {
+    await load(SNAP);
+    const r = await scroll("#t", "start");
+    expect(r.occludedBy).toMatchObject({ side: "top", box: "div#sc", movedPx: 0, stillCovered: true });
+    expect(r.warnings).toContainEqual(expect.stringMatching(/was scrolled to clear it, and did not move/));
   });
 
   it("a full-window veil is not a band", async () => {
