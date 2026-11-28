@@ -2076,11 +2076,17 @@ export async function clearCoverBandCdp(
   const root = document.scrollingElement || document.documentElement;
   // The boxes that scroll the target, nearest first, ending with the document. body is one when it is the page's
   // scroller (html{overflow:hidden} body{overflow:auto}, /code-review).
+  // A fixed target, or one inside a fixed box, is not moved by the boxes outside it: they end at the first fixed one, and
+  // the document is not one of them (codex on #1061: a fixed target under a fixed header shifted the page behind it).
   const boxes = [];
-  for (let n = up(el), steps = 0; n && n !== root && steps < 10000; n = up(n), steps++) {
-    const oy = getComputedStyle(n).overflowY;
+  let pinned = getComputedStyle(el).position === 'fixed';
+  for (let n = up(el), steps = 0; n && n !== root && !pinned && steps < 10000; n = up(n), steps++) {
+    const cs = getComputedStyle(n);
+    const oy = cs.overflowY;
     if (oy === 'auto' || oy === 'scroll' || (${allowHidden ? "true" : "false"} && oy === 'hidden')) boxes.push(n);
+    if (cs.position === 'fixed') pinned = true;
   }
+  // The window is still where a band is looked for; it is only not scrolled for a pinned target.
   boxes.push(root);
   const viewOf = function(b) {
     if (b === root) return { top: 0, bottom: vh };
@@ -2102,7 +2108,7 @@ export async function clearCoverBandCdp(
       if (side === 'top' ? Math.abs(c.r.top - v.top) < c.r.height && c.r.bottom <= v.bottom
         : Math.abs(v.bottom - c.r.bottom) < c.r.height && c.r.top >= v.top) {
         at = true;
-        if (roomOf(b, side) >= 1) return { box: b };
+        if (!(pinned && b === root) && roomOf(b, side) >= 1) return { box: b };
       }
     }
     return at ? { box: null } : null;
