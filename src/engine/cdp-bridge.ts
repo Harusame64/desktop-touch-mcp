@@ -2142,6 +2142,9 @@ export async function clearCoverBandCdp(
     for (let n = hit, steps = 0; n && steps < 1000; n = up(n), steps++) {
       const p = getComputedStyle(n).position;
       if (p !== 'fixed' && p !== 'sticky') continue;
+      // A fixed box held by a transformed ancestor moves with the page around it, so scrolling cannot clear it (codex on
+      // #1061). It is passed for the next one out.
+      if (p === 'fixed' && !toWindow(n)) continue;
       if (own(n)) break;
       out.push({ node: n, r: rectOf.call(n) });
     }
@@ -2180,9 +2183,14 @@ export async function clearCoverBandCdp(
   box.scrollBy({ top: (found.side === 'top' ? -1 : 1) * Math.ceil(found.d), behavior: 'instant' });
   out.box = path(box);
   out.movedPx = Math.round(Math.abs(box.scrollTop - before));
-  // Either edge: clearing a top bar can put the bottom edge under a cookie banner (/code-review).
+  // Either edge: clearing a top bar can put the bottom edge under a cookie banner (/code-review). And the same band at
+  // the same edge, wherever it sits now: a band that moved with the scroll is no longer at an edge, yet still covers.
   const again = probe();
-  out.stillCovered = !!again;
+  const rr = rectOf.call(el);
+  const edgeY = found.side === 'top' ? rr.top + 2 : rr.bottom - 2;
+  const sameStill = edgeY >= 0 && edgeY < vh
+    && coversAt((Math.max(rr.left, 0) + Math.min(rr.right, vw)) / 2, edgeY).some(function(c) { return c.node === found.c.node; });
+  out.stillCovered = !!again || sameStill;
   if (again && again.side !== found.side) { out.nowCovered = again.side; out.nowCoveredBy = path(again.c.node); }
   return out;
 })()`;
