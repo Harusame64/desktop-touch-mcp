@@ -11,14 +11,14 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer } from "ws";
 
-import { CdpClickDispatchError, disconnectAll, dispatchClickInTab, dispatchMouseMoveInTab } from "../../src/engine/cdp-bridge.js";
+import { CdpClickDispatchError, MOVE_ANSWER_WAIT_MS, disconnectAll, dispatchClickInTab, dispatchMouseMoveInTab } from "../../src/engine/cdp-bridge.js";
 
 type Sent = { method: string; type?: string; button?: string; x?: number; y?: number };
 
 let server: Server | undefined;
 let port = 0;
 
-async function fakeBrowser(closeAtType: string | null): Promise<Sent[]> {
+async function fakeBrowser(closeAtType: string | null, silentAtType: string | null = null): Promise<Sent[]> {
   const sent: Sent[] = [];
   server = createServer((req, res) => {
     res.setHeader("content-type", "application/json");
@@ -36,6 +36,8 @@ async function fakeBrowser(closeAtType: string | null): Promise<Sent[]> {
         ws.terminate();
         return;
       }
+      // A page the browser does not draw: the move is not answered (#1054).
+      if (type === silentAtType) return;
       ws.send(JSON.stringify({ id: msg.id, result: {} }));
     });
   });
@@ -67,6 +69,17 @@ describe("dispatchMouseMoveInTab / dispatchClickInTab (internal #415)", () => {
     const err = await dispatchMouseMoveInTab(1, 1, "T1", port).then(() => null, (e: unknown) => e);
     expect(err).toBeInstanceOf(CdpClickDispatchError);
     expect((err as CdpClickDispatchError).pressSent).toBe(false);
+  });
+
+  it("#1054: goes on to the press when the move is not answered, as on a page the browser does not draw", async () => {
+    const sent = await fakeBrowser(null, "mouseMoved");
+    const t0 = Date.now();
+    await dispatchMouseMoveInTab(5, 6, "T1", port);
+    const waited = Date.now() - t0;
+    await dispatchClickInTab(5, 6, "T1", port);
+    expect(waited).toBeGreaterThanOrEqual(MOVE_ANSWER_WAIT_MS - 5);
+    expect(waited).toBeLessThan(1000);
+    expect(sent.map((s) => s.type)).toEqual(["mouseMoved", "mousePressed", "mouseReleased"]);
   });
 
   it("says the press may have been sent when the browser fails on the press", async () => {

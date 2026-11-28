@@ -601,9 +601,10 @@ export async function dispatchPointerAwayInTab(tabId: string | null = null, port
  * front of the point cannot take it (win2's spike: delivered in front, behind another window, in a background tab
  * and minimized, at 150 % zoom; the user's typing was not taken).
  *
- * Two calls, so a caller can install its click probe between them and not count hover effects as the click (the
- * order browser_click keeps with the OS cursor): `dispatchMouseMoveInTab` moves the pointer to the point,
- * `dispatchClickInTab` presses and releases there.
+ * Two calls, so a caller can install its click probe between them (the order browser_click keeps with the OS
+ * cursor): `dispatchMouseMoveInTab` moves the pointer to the point, `dispatchClickInTab` presses and releases there.
+ * The move is not waited for past `MOVE_ANSWER_WAIT_MS` (#1054), and on a page the browser does not draw it reaches
+ * the page only with the press, so the probe counts from the press (`buildInstallClickProbeExpr`'s `fromPress`).
  *
  * A failure is thrown as `CdpClickDispatchError` with `pressSent`: false means no press reached the browser (a
  * fallback may press), true means the press was written to an open session and its answer or the release did not
@@ -1213,6 +1214,14 @@ export async function clearAxMarks(nonce: string, tabId: string | null = null, p
   ).catch(() => null);
 }
 
+/**
+ * #1054 — how long the move's answer is waited for before the press goes on without it. A page that shows answers
+ * in 0.5–3 ms (win2). A page the browser does not draw (its window fully covered, minimized, or a background tab)
+ * answers only when the next input comes or after about 5 s: the move waits for a frame that does not come, and the
+ * press that follows brings it through first, so the page still gets the move before `pointerdown` (win2's spikes).
+ */
+export const MOVE_ANSWER_WAIT_MS = 50;
+
 export async function dispatchMouseMoveInTab(
   x: number,
   y: number,
@@ -1222,7 +1231,15 @@ export async function dispatchMouseMoveInTab(
   try {
     const tab = await resolveTab(tabId, port);
     const session = await openSession(tab, port);
-    await session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: 0 });
+    const answer = session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: 0 });
+    // A failure within the wait (the session closed) is still thrown, so no press is sent; a later one has nothing
+    // left to stop, and the press that follows answers for itself.
+    answer.catch(() => { /* answered after the wait */ });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      answer,
+      new Promise<void>((r) => { timer = setTimeout(r, MOVE_ANSWER_WAIT_MS); }),
+    ]).finally(() => clearTimeout(timer));
   } catch (e) {
     throw new CdpClickDispatchError(e instanceof Error ? e.message : String(e), false, { cause: e });
   }
