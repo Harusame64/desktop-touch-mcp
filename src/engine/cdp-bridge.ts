@@ -2108,10 +2108,19 @@ export async function clearCoverBandCdp(
   // The fixed or sticky elements above the point that are not the target's own, innermost first: a sticky row inside a
   // fixed header is tried, then the header (/code-review). The hit is followed into open shadow roots, where the page's
   // hit test stops at the host. A band with pointer-events:none is not hit, and is not seen.
+  // The first hit that is painted: GitHub keeps a 2px opacity:0 fixed loader above its 48px sticky bar (win2), and it is
+  // not what covers the target.
+  const shown = function(n) {
+    return typeof n.checkVisibility !== 'function' || n.checkVisibility({ opacityProperty: true, visibilityProperty: true });
+  };
+  const firstShown = function(list) {
+    for (let i = 0; i < list.length && i < 1000; i++) if (shown(list[i])) return list[i];
+    return undefined;
+  };
   const coversAt = function(x, y) {
-    let hit = document.elementsFromPoint(x, y)[0];
+    let hit = firstShown(document.elementsFromPoint(x, y));
     for (let i = 0; hit && hit.shadowRoot && i < 32; i++) {
-      const inner = hit.shadowRoot.elementsFromPoint(x, y)[0];
+      const inner = firstShown(hit.shadowRoot.elementsFromPoint(x, y));
       if (!inner || inner === hit) break;
       hit = inner;
     }

@@ -67,6 +67,13 @@ const SNAP = `${head}<div id="sc" style="height:400px;overflow:auto;scroll-snap-
 <div style="position:sticky;top:0;height:50px;background:#333;z-index:1">bar</div>
 ${Array.from({ length: 30 }, (_, i) => `<div ${i === 15 ? 'id="t" style="height:100px;scroll-snap-align:start"' : 'style="height:100px"'}>row ${i}</div>`).join("")}</div>`;
 
+/** GitHub: a 2px opacity:0 fixed loader at the window's top, above the sticky bar. */
+const GITHUB_LIKE = `${head}<span style="position:fixed;top:0;left:0;right:0;height:2px;opacity:0;z-index:99;display:block"></span>
+<div id="bar" style="position:sticky;top:0;height:48px;background:#333;z-index:1">bar</div>${filler(1500)}<div id="t" style="height:40px">target</div>${filler(1500)}`;
+/** A fractional layout above the target: scrollIntoView start leaves its top a fraction off 0 (MDN -0.11, GitHub -0.03). */
+const FRACTION = `${head}<div id="bar" style="position:sticky;top:0;height:60px;background:#333;z-index:1">bar</div>
+<div style="height:1500.4px"></div><div id="t" style="height:40px">target</div>${filler(1500)}`;
+
 async function load(html: string) {
   await evaluateInTab(`document.open(); document.write(${JSON.stringify(html)}); document.close(); scrollTo(0, 0); 1`, null, PORT);
   await evaluateInTab(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(1))))`, null, PORT);
@@ -107,6 +114,8 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll clears a band over the target",
     ["a site bar over a panel that cannot scroll that way, cleared by the document", PANEL, "document"],
     ["a fixed bar rendered inside a web component's shadow root", SHADOW_BAR, "document"],
     ["a sticky document bar over a target in a plain wrapper", DOC_BAR("1"), "document"],
+    ["a bar under an invisible 2px fixed loader (GitHub)", GITHUB_LIKE, "document"],
+    ["a bar over a target whose top lands a fraction above the window (MDN, GitHub)", FRACTION, "document"],
     ["a z-index:auto sticky bar", DOC_BAR("auto"), "document"],
     ["a sticky bar on a page with scroll-behavior:smooth", DOC_BAR("1").replace("html,body{margin:0}", "html,body{margin:0} html{scroll-behavior:smooth}"), "document"],
     ["a bar whose child is at the point", CHILD_BAR, "document"],
