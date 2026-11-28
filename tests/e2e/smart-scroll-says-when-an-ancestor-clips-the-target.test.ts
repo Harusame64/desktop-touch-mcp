@@ -128,7 +128,9 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the
       expect(r.code).toBe("TargetClipped");
       expect(r.error).toContain("an ancestor cuts it off, so none of it is on screen");
       // The scroll already ran: the answer still says what it did.
-      expect(r.context).toMatchObject({ path: "cdp", scrolled: true, viewportPosition: "in-view" });
+      expect(r.context).toMatchObject({ path: "cdp", viewportPosition: "in-view" });
+      // Measured since internal #433: a row the box holds at the top of the page needs no scroll (#c-5).
+      expect(r.context.scrolled).toBe(target !== "#c-5");
       expect(Array.isArray(r.context.ancestors)).toBe(true);
       expect(typeof r.context.pageRatio).toBe("number");
       // The truth the answer is about: the target's centre is inside the window, and nothing there is the target.
@@ -160,10 +162,12 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the
 
   it("a target the page moves out of the window as the observer starts answers where it went, not clipped", async () => {
     // The observer answers a frame later, after the page may have moved the target: the position is read again from it.
+    // Outside the window is TargetOutOfView since internal #433 (it was ok:true with 'below').
     await evaluateInTab(`window.__armJump = true; 1`, null, PORT);
     const r = await scroll("#jump");
-    expect(r.ok).toBe(true);
-    expect(r.viewportPosition).toBe("below");
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("TargetOutOfView");
+    expect(r.context.viewportPosition).toBe("below");
     expect(await evaluateInTab(`document.getElementById('jump').getBoundingClientRect().top > innerHeight`, null, PORT)).toBe(true);
   });
 
@@ -234,6 +238,7 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when an ancestor clips the
     const r = await scroll("#f-45");
     expect(r.ok).toBe(true);
     expect(r.viewportPosition).toBe("in-view");
+    expect(r.scrolled).toBe(true);
     expect(await evaluateInTab(`document.getElementById('free').scrollTop`, null, PORT)).toBeGreaterThan(0);
   });
 });

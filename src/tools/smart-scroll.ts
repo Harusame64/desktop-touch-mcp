@@ -99,6 +99,45 @@ function isSelectorLike(target: string): boolean {
   return /^[#.[a-zA-Z]/.test(target.trim());
 }
 
+/**
+ * internal #433 — the scroll offsets of every box that holds the target (its composed ancestors, across shadow roots
+ * and slots), followed by the window's. `scrolled` compares a read before the scrolls with one after them: the CDP road
+ * used to answer scrolled:true whatever moved, and win2 measured it saying so when nothing on the page had moved (a
+ * target in an overflow:clip box, position:fixed outside the window, a transform). Null when the target is not found or
+ * the read fails.
+ */
+async function readHolderOffsets(target: string, tab: string, port: number): Promise<number[] | null> {
+  const expr = `
+(function() {
+  const sel = ${JSON.stringify(target)};
+  const isRoot = sel === 'body' || sel === 'html';
+  const el = isRoot ? (document.scrollingElement || document.documentElement) : document.querySelector(sel);
+  if (!el) return null;
+  const out = [];
+  for (let n = el; n; ) {
+    if (n.nodeType === 1) out.push(n.scrollTop, n.scrollLeft);
+    n = n.assignedSlot || n.parentElement || (n.parentNode && n.parentNode.host) || null;
+  }
+  out.push(window.scrollY, window.scrollX);
+  return out;
+})()`;
+  try {
+    const r = await evaluateInTab(expr, tab, port);
+    return Array.isArray(r) && r.every((v) => typeof v === "number") ? r as number[] : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether anything moved between two reads of `readHolderOffsets`. Undefined when that cannot be told: a read failed,
+ * or the page re-rendered the target into another chain of boxes between them.
+ */
+function holdersMoved(before: number[] | null, after: number[] | null): boolean | undefined {
+  if (before === null || after === null || before.length !== after.length) return undefined;
+  return before.some((v, i) => Math.abs(v - after[i]!) >= 1);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // CDP path
 // ─────────────────────────────────────────────────────────────────────────────
@@ -151,6 +190,9 @@ async function tryCdp(params: {
       const names = hiddenAncestors.map((a) => `'${a.cssSelectorPath}'`).join(", ");
       warnings.push(`expandHidden: scrolling allowed inside overflow:hidden ancestor(s) ${names}; the page's CSS is not changed`);
     }
+
+    // Read before anything below scrolls: `scrolled` in the answer compares it with a read after (internal #433).
+    const offsetsBefore = await readHolderOffsets(target, tab, port);
 
     // Virtual list
     const virtualAncestors = ancestors.filter(a => a.isVirtualized);
@@ -250,8 +292,14 @@ async function tryCdp(params: {
   const at = function(r, bounds) {
     const use = bounds && bounds.width > 0 && bounds.height > 0;
     const w = use ? bounds.right : window.innerWidth, h = use ? bounds.bottom : window.innerHeight;
-    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-    return cy < 0 ? 'above' : cy > h ? 'below' : cx < 0 ? 'left' : cx > w ? 'right' : 'in-view';
+    // internal #433 — in-view when the box overlaps the window, not when its centre is inside it: a target taller than
+    // the window, scrolled to its start, fills the screen with its centre below it (win2 measured 'below' there). A
+    // box of no area overlaps when it lies on the window, edges included. Otherwise the side it is left on, the
+    // vertical one first, as before.
+    const over = function(a, b, hi) { return a === b ? a >= 0 && a <= hi : a < hi && b > 0; };
+    if (!over(r.top, r.bottom, h)) return r.bottom <= 0 ? 'above' : 'below';
+    if (!over(r.left, r.right, w)) return r.right <= 0 ? 'left' : 'right';
+    return 'in-view';
   };
   const ratio = function(r) { return Math.max(0, Math.min(1, (window.scrollY + r.top) / (document.documentElement.scrollHeight || 1))); };
   const r = el.getBoundingClientRect();
@@ -334,6 +382,33 @@ async function tryCdp(params: {
       scrollTop: a.scrollTop,
       scrollHeight: a.scrollHeight,
     }));
+    // internal #433 — measured, not assumed. When it cannot be told (a read failed, or the page re-rendered the target
+    // into other boxes) the answer says so and keeps true, the value it always gave.
+    const moved = holdersMoved(offsetsBefore, await readHolderOffsets(target, tab, port));
+    if (moved === undefined) warnings.push("Whether anything scrolled was not read: scrolled:true is assumed");
+    const scrolled = moved ?? true;
+
+    // internal #433 — the scrolls left the target outside the window: nothing that can scroll holds it there (an
+    // overflow:clip box, position:fixed or a transform placing it outside, a page too short), or the page moved it after.
+    // It answered ok:true scrolled:true with 'below' and the like, which read as though the scroll had helped.
+    const vp = finalState?.viewportPosition;
+    if (vp === "above" || vp === "below" || vp === "left" || vp === "right") {
+      return failCode(
+        "TargetOutOfView",
+        moved === false
+          ? `The target is outside the window (${vp}), and nothing on the page scrolled to bring it in.`
+          : `The target is still outside the window (${vp}) after the scroll.`,
+        {
+          suggest: getSuggestsForCode("TargetOutOfView"),
+          context: {
+            target, path: "cdp", scrolled, viewportPosition: vp,
+            pageRatio: finalState?.pageRatio ?? null, ancestors: ancestorsOut,
+            ...(occludedBy && { occludedBy }), ...(warnings.length > 0 && { warnings }),
+          },
+        },
+      );
+    }
+
     if (finalState?.clipped) {
       return failCode(
         "TargetClipped",
@@ -345,15 +420,13 @@ async function tryCdp(params: {
           suggest: getSuggestsForCode("TargetClipped"),
           // The scrolls already ran: say so, with what the success answer carries (ancestors as walked before the scroll).
           context: {
-            target, path: "cdp", scrolled: true, viewportPosition: finalState.viewportPosition,
+            target, path: "cdp", scrolled, viewportPosition: finalState.viewportPosition,
             pageRatio: finalState.pageRatio, ancestors: ancestorsOut,
             ...(occludedBy && { occludedBy }), ...(warnings.length > 0 && { warnings }),
           },
         },
       );
     }
-
-    const scrolled = true;
 
     return ok({
       ok: true,

@@ -224,6 +224,11 @@ const SUGGESTS: Record<string, string[]> = {
     "None of the target is on screen: an ancestor cuts it off (overflow:clip, clip-path and contain:paint cannot be scrolled; an overflow box may not have scrolled far enough)",
     "Reveal it the way a person would, with the page's own control (a carousel's next button, a tab, an expand toggle), then scroll again",
   ],
+  // internal #433: scroll(action:'smart') left the target outside the window.
+  TargetOutOfView: [
+    "Nothing that scrolls can bring it in: it sits in an overflow:clip box, position:fixed or a transform places it outside the window, or the page is too short to scroll that far (context.scrolled says whether anything moved)",
+    "Reveal it the way a person would, with the page's own control (a carousel's next button, a tab, an expand toggle), then scroll again",
+  ],
   GuardFailed: [
     "Read the perception envelope for attention/guard details",
     "Call desktop_state to force a fresh observation before retrying",
