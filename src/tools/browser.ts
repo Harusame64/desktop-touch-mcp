@@ -605,12 +605,15 @@ type ClickProbeReading = {
  * `characterData:true` is intentionally omitted — it produces high-noise
  * matches on text-content tickers (clocks, live regions) that fire
  * independently of the click and would mask silent-fail.
- */
-/**
- * #1054 — with `fromPress`, only what changes from the press on is counted. The CDP click no longer waits for the
- * move's answer, and on a page the browser does not draw the move reaches the page only with the press, after this
- * probe is in: what the hover changes (a tooltip, a menu opening) would otherwise read as the click's effect. The
- * press's own `pointerdown` (or `mousedown`) starts the count, and what the hover queued before it is dropped.
+ *
+ * #1054 — with `fromPress`, what changes from the press on is counted. The CDP click no longer waits for the move's
+ * answer, and on a page the browser does not draw the move reaches the page only with the press, after this probe is
+ * in: what the hover changes (a tooltip, a menu opening) would otherwise read as the click's effect. The press's own
+ * trusted `pointerdown` (or `mousedown`) starts the count, and what the hover queued before it is dropped. When no
+ * press is seen in the top window (it landed in an iframe, or a page listener stopped it first), every change is
+ * counted, as without `fromPress`. On a page that is drawn the move came before the probe, so that is the old answer.
+ * Not covered: a hover effect the page renders after the press (a delayed tooltip, a framework that renders in a
+ * later task) still counts on a page that is not drawn, as a delayed one already did on a page that is.
  */
 export function buildInstallClickProbeExpr(selector: string | null, fromPress = false): string {
   return `
@@ -652,6 +655,7 @@ export function buildInstallClickProbeExpr(selector: string | null, fromPress = 
       pressSeen: false,
       onPress: null,
       mutationCount: 0,
+      fromPressCount: 0,
       beforeUrl: location.href,
       beforeActive: document.activeElement,
       selectorFound: !!el,
@@ -660,15 +664,16 @@ export function buildInstallClickProbeExpr(selector: string | null, fromPress = 
     };
     var obs = new MutationObserver(function(records) {
       // Aggregate count is sufficient — we only need to know "did anything happen".
-      if (probe.fromPress && !probe.pressSeen) return;
       probe.mutationCount += records.length;
+      if (probe.pressSeen) probe.fromPressCount += records.length;
     });
     obs.observe(document.body, { subtree: true, childList: true, attributes: true });
     probe.observer = obs;
     if (probe.fromPress) {
-      probe.onPress = function() {
-        if (probe.pressSeen) return;
-        try { obs.takeRecords(); } catch (_e) { /* ignore */ }
+      probe.onPress = function(e) {
+        // A page's own synthetic mousedown is not the press (as the press guard).
+        if (probe.pressSeen || !e || !e.isTrusted) return;
+        try { probe.mutationCount += obs.takeRecords().length; } catch (_e) { /* ignore */ }
         probe.pressSeen = true;
       };
       window.addEventListener('pointerdown', probe.onPress, true);
@@ -701,7 +706,7 @@ export function buildReadClickProbeExpr(): string {
     var afterActive = document.activeElement;
     var result = {
       ok: true,
-      mutationCount: probe.mutationCount,
+      mutationCount: probe.fromPress && probe.pressSeen ? probe.fromPressCount : probe.mutationCount,
       urlChanged: probe.beforeUrl !== afterUrl,
       activeElementChanged: probe.beforeActive !== afterActive,
       selectorFound: probe.selectorFound,
@@ -1371,7 +1376,8 @@ const SKIN_ROLES = new Set(["", "generic", "none", "presentation", "insertion", 
  * internal #415 — desktop_act's click, sent to the tab by CDP, and what the click probe saw.
  *
  * The press goes where {@link pressPointFor} says (internal #421). The pointer moves first and the probe and the
- * press guard are installed after it, so hover effects are not read as the click. The guard stops a press whose hit
+ * press guard are installed after it. The move may reach the page only with the press (#1054), so the probe counts
+ * from the press (`fromPress`) and hover effects are not read as the click. The guard stops a press whose hit
  * the landing rule does not allow — the layout moved between the read and the press — and that press is refused as
  * not landed, nothing clicked.
  */

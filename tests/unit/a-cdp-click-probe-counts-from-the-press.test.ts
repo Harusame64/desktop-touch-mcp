@@ -3,7 +3,7 @@
  * covered window, minimized, a background tab) the move reaches the page only with the press, after the click
  * probe is in (win2's spike2, S1: 0/3 in every state). What the hover changes then lands inside the probe's window
  * and would read as the click's effect. With `fromPress` the probe counts from the press's own `pointerdown`
- * (or `mousedown`) and drops what the hover queued before it.
+ * (or `mousedown`) and drops what the hover queued before it. With no press seen it counts every change, as before.
  *
  * The probe's page script runs against a small fake page: a MutationObserver whose records the cell delivers by
  * hand, and a window that keeps its capture listeners so the cell can fire the press.
@@ -11,7 +11,7 @@
 import { describe, expect, it } from "vitest";
 import { buildInstallClickProbeExpr, buildReadClickProbeExpr } from "../../src/tools/browser.js";
 
-type Listener = () => void;
+type Listener = (e: { isTrusted: boolean }) => void;
 
 function fakePage() {
   let callback: ((records: unknown[]) => void) | null = null;
@@ -41,7 +41,7 @@ function fakePage() {
     mutate(n = 1) { for (let i = 0; i < n; i++) queued.push({}); const r = queued; queued = []; callback?.(r); },
     /** A mutation queued but not yet delivered when the next event comes. */
     queue(n = 1) { for (let i = 0; i < n; i++) queued.push({}); },
-    fire(type: string) { for (const fn of listeners.get(type) ?? []) fn(); },
+    fire(type: string, isTrusted = true) { for (const fn of listeners.get(type) ?? []) fn({ isTrusted }); },
     listenerCount() { return [...listeners.values()].reduce((a, l) => a + l.length, 0); },
   };
 }
@@ -66,11 +66,21 @@ describe("#1054: the CDP click's probe counts from the press", () => {
     expect(p.run(buildReadClickProbeExpr())).toMatchObject({ mutationCount: 1 });
   });
 
-  it("counts nothing when no press reached the page", () => {
+  it("counts every change when no press is seen in the top window (an iframe, a listener that stopped it)", () => {
     const p = fakePage();
     p.run(buildInstallClickProbeExpr("#b", true));
     p.mutate(5);
-    expect(p.run(buildReadClickProbeExpr())).toMatchObject({ mutationCount: 0 });
+    expect(p.run(buildReadClickProbeExpr())).toMatchObject({ mutationCount: 5 });
+  });
+
+  it("does not start on the page's own synthetic mousedown", () => {
+    const p = fakePage();
+    p.run(buildInstallClickProbeExpr("#b", true));
+    p.fire("mousedown", false); // a hover handler's dispatchEvent
+    p.mutate(3); // the menu it opened
+    p.fire("pointerdown");
+    p.mutate(1);
+    expect(p.run(buildReadClickProbeExpr())).toMatchObject({ mutationCount: 1 });
   });
 
   it("starts on mousedown when no pointerdown comes", () => {

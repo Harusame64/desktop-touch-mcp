@@ -1232,8 +1232,9 @@ export async function dispatchMouseMoveInTab(
     const tab = await resolveTab(tabId, port);
     const session = await openSession(tab, port);
     const answer = session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: 0 });
-    // A failure within the wait (the session closed) is still thrown, so no press is sent; a later one has nothing
-    // left to stop, and the press that follows answers for itself.
+    // A failure within the wait (the session closed) is still thrown, so no press is sent. A later one has nothing
+    // left to stop: the press that follows answers for itself, and lands where it is sent, with the boundary events
+    // a press brings but without the move's hover (win2's spike V1).
     answer.catch(() => { /* answered after the wait */ });
     let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
