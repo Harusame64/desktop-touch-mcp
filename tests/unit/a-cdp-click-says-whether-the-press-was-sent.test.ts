@@ -23,10 +23,11 @@ let port = 0;
  * `failNoButtonRelease`: answer a release with no button with a protocol error, without bringing a held move through.
  * `failMoveThenRelease`: answer the move with an error, and the release 100 ms later.
  * `silentNoButtonRelease`: never answer a release with no button.
+ * `delayNoButtonReleaseMs`: answer a release with no button after that many ms.
  */
 async function fakeBrowser(
   closeAtType: string | null,
-  opts: { holdMoves?: boolean; failNoButtonRelease?: boolean; failMoveThenRelease?: boolean; silentNoButtonRelease?: boolean } = {},
+  opts: { holdMoves?: boolean; failNoButtonRelease?: boolean; failMoveThenRelease?: boolean; silentNoButtonRelease?: boolean; delayNoButtonReleaseMs?: number } = {},
 ): Promise<Sent[]> {
   const sent: Sent[] = [];
   server = createServer((req, res) => {
@@ -56,6 +57,10 @@ async function fakeBrowser(
         return;
       }
       if (opts.silentNoButtonRelease && type === "mouseReleased" && msg.params?.button === "none") return;
+      if (opts.delayNoButtonReleaseMs !== undefined && type === "mouseReleased" && msg.params?.button === "none") {
+        setTimeout(() => ws.send(JSON.stringify({ id: msg.id, result: {} })), opts.delayNoButtonReleaseMs);
+        return;
+      }
       if (opts.holdMoves && type === "mouseMoved") { held.push(msg.id); return; }
       if (type === "mouseReleased") {
         if (opts.failNoButtonRelease && msg.params?.button === "none") {
@@ -124,6 +129,14 @@ describe("dispatchMouseMoveInTab / dispatchClickInTab (internal #415)", () => {
     const t0 = Date.now();
     await dispatchMouseMoveInTab(5, 6, "T1", port);
     expect(Date.now() - t0).toBeLessThan(1000);
+    expect(sent.map((s) => s.type)).toEqual(["mouseMoved", "mouseReleased"]);
+  });
+
+  it("#1054: an answered release is waited for, so it is handled before the click probe goes in", async () => {
+    const sent = await fakeBrowser(null, { delayNoButtonReleaseMs: 20 });
+    const t0 = Date.now();
+    await dispatchMouseMoveInTab(5, 6, "T1", port);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(15);
     expect(sent.map((s) => s.type)).toEqual(["mouseMoved", "mouseReleased"]);
   });
 

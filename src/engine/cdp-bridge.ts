@@ -1214,6 +1214,9 @@ export async function clearAxMarks(nonce: string, tabId: string | null = null, p
   ).catch(() => null);
 }
 
+/** #1054 — how long the no-button release after a move is waited for (it answers in about 1 ms, win2's spike3). */
+export const RELEASE_ANSWER_WAIT_MS = 50;
+
 export async function dispatchMouseMoveInTab(
   x: number,
   y: number,
@@ -1229,10 +1232,19 @@ export async function dispatchMouseMoveInTab(
     // button brings it through at once and reaches the page as nothing of its own: no pointerup, mouseup or click,
     // and focus, selection and value unchanged (win2's spike3, M1: a covered window, a background tab, and a page that
     // is drawn). Then the move has reached the page before the click probe goes in, as on a page that is drawn.
-    // Judged by the move alone, and the release is not waited for: refused or not answered, it leaves the move's own
-    // answer (or its timeout) to decide, as before. The move is awaited at once, so its failure is never unhandled.
-    session.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "none", buttons: 0 }).catch(() => undefined);
-    await moved;
+    // Judged by the move alone. The release is waited for only up to RELEASE_ANSWER_WAIT_MS: it answers in about
+    // 1 ms whether the page is drawn or not (spike3), and once answered it has been handled before the click probe
+    // goes in. Refused or not answered within the wait, it leaves the move's own answer (or its timeout) to decide,
+    // as before. The move's failure is handled from the start (`settledMove`), so it is never unhandled.
+    const settledMove = moved.then(() => null, (e: unknown) => ({ error: e }));
+    const released = session.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "none", buttons: 0 });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      released.catch(() => undefined),
+      new Promise<void>((r) => { timer = setTimeout(r, RELEASE_ANSWER_WAIT_MS); }),
+    ]).finally(() => clearTimeout(timer));
+    const failed = await settledMove;
+    if (failed) throw failed.error;
   } catch (e) {
     throw new CdpClickDispatchError(e instanceof Error ? e.message : String(e), false, { cause: e });
   }
