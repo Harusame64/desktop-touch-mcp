@@ -2076,15 +2076,20 @@ export async function clearCoverBandCdp(
   const root = document.scrollingElement || document.documentElement;
   // The boxes that scroll the target, nearest first, ending with the document. body is one when it is the page's
   // scroller (html{overflow:hidden} body{overflow:auto}, /code-review).
-  // A fixed target, or one inside a fixed box, is not moved by the boxes outside it: they end at the first fixed one, and
-  // the document is not one of them (codex on #1061: a fixed target under a fixed header shifted the page behind it).
+  // A target fixed to the window, or inside a box fixed to it, is not moved by the boxes outside: they end there, and the
+  // document is not scrolled for it (codex on #1061: a fixed target under a fixed header shifted the page behind it).
+  // Fixed to the window, not to a transformed or filtered ancestor that holds it (codex again): the browser answers
+  // that, as offsetParent is null for a fixed box only when no ancestor establishes its containing block.
+  const opGet = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetParent').get;
+  const toWindow = function(n) {
+    return getComputedStyle(n).position === 'fixed' && n instanceof HTMLElement && opGet.call(n) === null;
+  };
   const boxes = [];
-  let pinned = getComputedStyle(el).position === 'fixed';
+  let pinned = toWindow(el);
   for (let n = up(el), steps = 0; n && n !== root && !pinned && steps < 10000; n = up(n), steps++) {
-    const cs = getComputedStyle(n);
-    const oy = cs.overflowY;
+    const oy = getComputedStyle(n).overflowY;
     if (oy === 'auto' || oy === 'scroll' || (${allowHidden ? "true" : "false"} && oy === 'hidden')) boxes.push(n);
-    if (cs.position === 'fixed') pinned = true;
+    if (toWindow(n)) pinned = true;
   }
   // The window is still where a band is looked for; it is only not scrolled for a pinned target.
   boxes.push(root);

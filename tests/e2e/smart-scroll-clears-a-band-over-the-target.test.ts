@@ -225,6 +225,14 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll clears a band over the target",
     expect(await evaluateInTab("scrollY", null, PORT)).toBe(1000);
   });
 
+  it("a fixed target held by a transformed box is cleared by scrolling the document (codex)", async () => {
+    await load(`${head}<div style="position:fixed;top:0;left:0;right:0;height:60px;background:#333;z-index:2">bar</div>${filler(1500)}
+      <div style="transform:translateZ(0);height:200px"><div id="t" style="position:fixed;top:0;left:0;width:200px;height:40px">held</div></div>${filler(1500)}`);
+    const r = await scroll("#t", "start");
+    expect(r.occludedBy).toMatchObject({ side: "top", box: "document", stillCovered: false });
+    expect(await shownAt("top")).toBe(true);
+  });
+
   it("a full-window veil is not a band", async () => {
     await load(VEIL);
     const r = await scroll("#t", "center");
