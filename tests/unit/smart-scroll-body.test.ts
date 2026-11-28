@@ -123,7 +123,8 @@ describe("smart-scroll target='body' — ADR-018 Phase 3 / §5 R3 fix", () => {
     // identifiers.
     const calls = evaluateInTabMock.mock.calls.filter((call) => {
       const expr = String(call[0]);
-      return expr.includes("scrollingElement") && expr.includes("isRoot");
+      // viewportTop: the offsets read for `scrolled` (internal #433) names both identifiers too.
+      return expr.includes("scrollingElement") && expr.includes("isRoot") && expr.includes("viewportTop");
     });
     if (calls.length === 0) {
       throw new Error(
