@@ -1229,11 +1229,10 @@ export async function dispatchMouseMoveInTab(
     // button brings it through at once and reaches the page as nothing of its own: no pointerup, mouseup or click,
     // and focus, selection and value unchanged (win2's spike3, M1: a covered window, a background tab, and a page that
     // is drawn). Then the move has reached the page before the click probe goes in, as on a page that is drawn.
-    // Settled together and judged by the move alone: a release refused or not answered leaves the move's own answer
-    // (or its timeout) to decide, as before, and a move that fails while the release is pending is not left unhandled.
-    const released = session.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "none", buttons: 0 });
-    const [move] = await Promise.allSettled([moved, released]);
-    if (move.status === "rejected") throw move.reason;
+    // Judged by the move alone, and the release is not waited for: refused or not answered, it leaves the move's own
+    // answer (or its timeout) to decide, as before. The move is awaited at once, so its failure is never unhandled.
+    session.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "none", buttons: 0 }).catch(() => undefined);
+    await moved;
   } catch (e) {
     throw new CdpClickDispatchError(e instanceof Error ? e.message : String(e), false, { cause: e });
   }
