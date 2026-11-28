@@ -1,6 +1,6 @@
 # Changelog
 
-## [2.4.4] - YYYY-MM-DD — Clicks and fills in Chrome and Edge go where a person would, and say what is in front when they cannot
+## [2.4.4] - 2026-11-28 — Clicks and fills in Chrome and Edge go where a person would, and say what is in front when they cannot
 
 `browser_click` and `desktop_act` on a Chrome or Edge page now press an element the way a person would: past its own
 label, a skin drawn over it or a sticky header. Browser calls, `browser_fill` included, work on the tab the call
