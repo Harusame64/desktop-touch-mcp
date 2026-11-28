@@ -82,10 +82,10 @@ async function load(html: string) {
   await evaluateInTab(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(1))))`, null, PORT);
 }
 
-async function scroll(target: string, inline: string) {
+async function scroll(target: string, inline: string, expandHidden = false) {
   return parsePayload(await smartScrollHandler({
     target, port: PORT, strategy: "cdp", direction: "into-view", inline,
-    maxDepth: 10, retryCount: 1, verifyWithHash: false, expandHidden: false,
+    maxDepth: 10, retryCount: 1, verifyWithHash: false, expandHidden,
   } as never));
 }
 
@@ -205,6 +205,14 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll clears a band over the target",
     const r = await scroll("#t", "start");
     expect(r.occludedBy).toMatchObject({ side: "top", box: "div#sc", movedPx: 0, stillCovered: true });
     expect(r.warnings).toContainEqual(expect.stringMatching(/was scrolled to clear it, and did not move/));
+  });
+
+  it("with expandHidden, an overflow:hidden box at the window's top is scrolled to clear a fixed bar (codex)", async () => {
+    await load(`${head}<div style="position:fixed;top:0;left:0;right:0;height:60px;background:#333;z-index:1">bar</div>
+      <div id="hid" style="height:400px;overflow:hidden">${filler(1200)}<div id="t" style="height:40px">target</div>${filler(1200)}</div>`);
+    const r = await scroll("#t", "start", true);
+    expect(r.occludedBy).toMatchObject({ side: "top", box: "div#hid", stillCovered: false });
+    expect(await shownAt("top")).toBe(true);
   });
 
   it("a full-window veil is not a band", async () => {

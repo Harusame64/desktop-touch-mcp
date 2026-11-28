@@ -2049,7 +2049,9 @@ export interface CoverBandResult {
 export async function clearCoverBandCdp(
   selector: string,
   tabId: string | null = null,
-  port = DEFAULT_CDP_PORT
+  port = DEFAULT_CDP_PORT,
+  /** expandHidden: an overflow:hidden box the caller allowed scrolling inside counts as a box (codex on #1061). */
+  allowHidden = false,
 ): Promise<CoverBandResult> {
   const expr = `
 (function() {
@@ -2077,7 +2079,7 @@ export async function clearCoverBandCdp(
   const boxes = [];
   for (let n = up(el), steps = 0; n && n !== root && steps < 10000; n = up(n), steps++) {
     const oy = getComputedStyle(n).overflowY;
-    if (oy === 'auto' || oy === 'scroll') boxes.push(n);
+    if (oy === 'auto' || oy === 'scroll' || (${allowHidden ? "true" : "false"} && oy === 'hidden')) boxes.push(n);
   }
   boxes.push(root);
   const viewOf = function(b) {

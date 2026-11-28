@@ -261,7 +261,7 @@ async function tryCdp(params: {
 
     // internal #436 — a fixed or sticky band at the window's edge (a site's top bar, a cookie banner) covering the
     // target's edge: scroll the target's nearest scroller with room just far enough to clear it, and say what moved.
-    const band = await clearCoverBandCdp(target, tab, port);
+    const band = await clearCoverBandCdp(target, tab, port, expandHidden);
     let occludedBy: {
       header: true; side?: "top" | "bottom"; by?: string; box?: string; movedPx?: number; stillCovered?: boolean;
       nowCovered?: "top" | "bottom"; nowCoveredBy?: string;
