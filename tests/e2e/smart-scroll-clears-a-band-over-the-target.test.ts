@@ -254,6 +254,15 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll clears a band over the target",
     expect(await shownAt("top")).toBe(true);
   });
 
+  it("a sticky bar in a scroller fixed to the window stays when the document scrolls, and is cleared by it", async () => {
+    await load(`${head}<div id="ov" style="position:fixed;top:0;left:0;right:0;height:200px;overflow:auto;pointer-events:none">
+      <div id="obar" style="position:sticky;top:0;height:60px;background:#333;pointer-events:auto">bar</div>${filler(600)}</div>
+      ${filler(1500)}<div id="t" style="height:40px">target</div>${filler(1500)}`);
+    const r = await scroll("#t", "start");
+    expect(r.occludedBy).toMatchObject({ side: "top", by: "div#obar", box: "document", stillCovered: false });
+    expect(await shownAt("top")).toBe(true);
+  });
+
   it("a full-window veil is not a band", async () => {
     await load(VEIL);
     const r = await scroll("#t", "center");

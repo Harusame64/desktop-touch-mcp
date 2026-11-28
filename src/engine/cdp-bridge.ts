@@ -2116,14 +2116,23 @@ export async function clearCoverBandCdp(
     return root;
   };
   const inside = function(b, n) { return b === root || b === n || contains.call(b, n); };
-  const movesWith = function(band, b) {
-    if (getComputedStyle(band).position === 'fixed') {
-      if (toWindow(band)) return false;
-      const holder = band instanceof HTMLElement ? opGet.call(band) : null;
-      return holder !== null && inside(b, holder);
+  // Whether scrolling b moves n: n is inside b, and nothing between them is fixed to the window or to a holder outside b.
+  const carried = function(n, b) {
+    for (let m = n, steps = 0; m && steps < 10000; m = up(m), steps++) {
+      if (m === b) return true;
+      if (getComputedStyle(m).position === 'fixed') {
+        if (toWindow(m)) return false;
+        const holder = m instanceof HTMLElement ? opGet.call(m) : null;
+        return holder !== null && inside(b, holder);
+      }
+      if (m === root) return b === root;
     }
-    const s = scrollerOf(band);
-    return s !== b && inside(b, s);
+    return false;
+  };
+  // A sticky band stays put in its own scroll container; otherwise it moves when the box carries it.
+  const movesWith = function(band, b) {
+    if (getComputedStyle(band).position === 'sticky' && scrollerOf(band) === b) return false;
+    return carried(band, b);
   };
   const bandBox = function(c, side) {
     let at = false;
