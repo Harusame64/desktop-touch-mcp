@@ -2,43 +2,58 @@
 
 ## [2.4.4] - YYYY-MM-DD — Clicks and fills in Chrome and Edge go where a person would, and say what is in front when they cannot
 
-`browser_click`, `browser_fill` and `desktop_act` on a Chrome or Edge page now act on an element the way a person
-would: past its own label, a skin drawn over it or a sticky header, and on the tab the call started on. Some calls
-that answered `ok: true` (or pressed or wrote) now refuse, with nothing done: `browser_fill` into a field that is
-disabled, not shown, inside an `inert` part of the page or outside an open modal `<dialog>`, or into a read-only input
-of a choice widget (`BrowserNoActionableTarget`); `browser_fill` on a `<select>` with a value no option has
-(`InvalidArgs`, where it used to clear the choice); `browser_click` when a banner, menu or overlay that is not a
-modal dialog covers the element (`BrowserPointCovered`), and `desktop_act` on a browser element covered by a dialog
-or anything else (`modal_blocking` / `aim_route_failed`), where the press could land on the cover;
-`browser_click` by axis when several matching controls can each be pressed (`BrowserAmbiguousTarget`), where it pressed one; and `scroll(action:'smart')` on a target an ancestor cuts
-off (`TargetClipped`), where it answered `in-view`. A few answers change code: a match only scrolled out of view is
-`ElementNotInViewport`, and `wait_until` answers `BrowserNotConnected` or `InvalidArgs` at once instead of
-`WaitTimeout`.
+`browser_click` and `desktop_act` on a Chrome or Edge page now press an element the way a person would: past its own
+label, a skin drawn over it or a sticky header. Browser calls, `browser_fill` included, work on the tab the call
+started on. Some calls that answered `ok: true` (or pressed or wrote) now refuse, with nothing done:
+- `browser_fill` into a field that is disabled, not shown, inside an `inert` part of the page or outside an open
+  modal `<dialog>`; into a read-only input of a choice widget, or by selector into a `div[role=combobox]`; and on a
+  disabled select or option, a multiple select, or a select hidden behind a widget (`BrowserNoActionableTarget`).
+- `browser_fill` on a `<select>` with a value no option has (`InvalidArgs`, where it used to clear the choice).
+- `browser_click` by selector when a banner, menu or overlay that is not a modal dialog covers the element
+  (`BrowserPointCovered`), where the press could land on the cover.
+- `browser_click` by axis when several matching controls can each be pressed, or with one match in each element a
+  comma or class `scope` matches (`BrowserAmbiguousTarget`), where it pressed one, or the first.
+- `desktop_act` on a browser element covered by a dialog or anything else (`modal_blocking` / `aim_route_failed`),
+  behind another window (`aim_occluded`) or behind a window this server may not act through
+  (`aim_blocked_by_excluded_window`), where the press could land on what is in front. On the OS-cursor road, an
+  element whose centre is covered, or that only an off-centre point would reach, is `aim_route_failed`, with nothing
+  clicked.
+- `browser_overview` with a scope that matches nothing (`ScopeNotFound`, where it listed the whole page).
+- `scroll(action:'smart')` on a target an ancestor cuts off (`TargetClipped`), where it answered `in-view`.
+
+A few answers change code: a match only scrolled out of view is `ElementNotInViewport`, and `wait_until` answers
+`BrowserNotConnected` or `InvalidArgs` at once instead of `WaitTimeout`.
 
 ### Changed — Windows
 - **`desktop_act` presses a browser element by sending the click to its tab.** It used to move the OS cursor to the
   element's point, so a window in front of that point (even another window of the same page) took the click and the
-  act answered `ok: true`. The press now goes to the tab over CDP: the window is not brought forward, the tab is not
-  switched to, and a window in front cannot take it. The OS cursor is used only when the press could not be sent at
-  all; that road presses the element's centre only, refuses when something covers it, and names what is in front
-  (`aim_occluded` for another window). When the press was sent but did not finish, the act answers
-  `aim_route_failed`, says it may have taken effect, and does not press again.
+  act answered `ok: true`. The press now goes to the tab over CDP, after an element outside the viewport is scrolled into view (one that
+  cannot be brought into view is refused as `aim_route_failed`); on that road the window is not brought forward,
+  the tab is not switched to, and a window in front cannot take it. The OS cursor is used only when the press could
+  not be sent at all; a press that was sent and then failed (its landing could not be read, or it could not be
+  verified) does not fall back to the OS road. That road brings the browser and the tab forward, presses the element's
+  centre only, refuses when something covers it, and names what is in front (`aim_occluded` for another window).
+  When the press was sent but did not finish, the act answers `aim_route_failed`, says it may
+  have taken effect, and does not press again.
 - **`desktop_act` on a browser element presses it the way a person would, and refuses only what a person would have
-  to deal with first.** A visible part of the element, its own `<label>`, a skin its widget draws over it (iCheck),
-  or the element once a sticky header is scrolled off it is pressed. A dialog in front (Bootstrap, a native
+  to deal with first.** It presses a visible part of the element, its own `<label>`, a skin its widget draws over it
+  (iCheck), or the element once a sticky header is scrolled off it. A dialog in front (Bootstrap, a native
   `<dialog>`, SweetAlert2) is refused as `modal_blocking`, and anything else in front (an open date picker, a cookie
   banner, a loading overlay that stays after a short wait) as `aim_route_failed`; either way nothing is pressed, and
   `if_unexpected.detail` names what is in front and what it offers. Before, such a press closed the dialog or picked
-  a date, and another control's label could take it. A press the layout moved under between the read and the press
+  a date, and another control's label could take it. If the layout moves between the read and the press, the press
   is stopped in the page.
 - **`browser_click` presses past a label, a skin or a sticky header, and refuses a banner, menu or overlay in
   front.** Both the selector road and a single by-axis match press a point a person would press: a visible part of
   the element, its own label, a skin the browser confirms, the widget drawn in its place, the button or link it sits
   in, or the element once a sticky header is scrolled off it. The reply's `pressedAt` says where. When nothing reaches
   the element, it refuses before any focus or cursor move: a dialog that blocks the page is `BrowserModalBlocking` as
-  before, now with `context.offers`, and anything else in front is `BrowserPointCovered` with `coveredBy: "page"`,
-  `context.cover` and `context.offers`. Before, a cover that was not a modal dialog was clicked through. A press
-  whose first event lands on something else in the page is stopped there (`coveredBy: "page_stopped"`).
+  before, now with `context.offers`, and anything else in front is `BrowserPointCovered` with
+  `context.coveredBy: "page"`, `context.cover` and `context.offers`. Before, by selector, the OS click landed on a
+  cover that was not a modal dialog and the call could still answer success (`verifyDelivery: "delivered"` or
+  `"unverifiable"`); by axis, such a match stopped as `BrowserNoActionableTarget` without naming the cover. A press
+  whose first event lands on something else in the page is stopped there (`context.coveredBy: "page_stopped"`), and
+  `context.pageReacted` says whether the page still reacted.
 - **`browser_click` by axis no longer picks one of several controls a person can each press.** With one match that
   passes the hit test at its centre beside others pressed through their own labels (a plain radio beside two
   visually hidden ones, a visible checkbox beside an sr-only one), it pressed the first. It now answers
@@ -50,13 +65,13 @@ off (`TargetClipped`), where it answered `in-view`. A few answers change code: a
   selector road and a scroll first on the by-axis road; nothing is pressed or scrolled. A target in a fixed drawer or
   sheet, or one scrolling cannot bring in, keeps `BrowserNoActionableTarget`.
 - **`by:'role'` and `by:'ariaLabel'` read the browser's accessibility tree, in `browser_click`, `browser_fill` and
-  `browser_search`.** They read roles and names from the page's markup by hand, and missed a checkbox named by its
-  `<label>`, a name from `aria-labelledby`, a submit input as a `button`, and widgets such as Select2 and Choices.
-  They now take the role and accessible name the browser computes, and a widget drawn for a hidden `<select>` is
-  found by that select's `<label>`. Two changes follow ARIA: `role:'textbox'` no longer matches a search field
-  (`searchbox`) or a number field (`spinbutton`), and two elements with the same accessible name are ambiguous (add
-  `role` to pick one). `browser_search` keeps every result it found before and adds the tree's; a result's `role` is
-  the browser's. When the tree cannot be read, the old reading is used.
+  `browser_search`.** They used to read roles and names from the page's markup themselves, and missed a checkbox
+  named by its `<label>`, a name from `aria-labelledby`, a submit input as a `button`, and widgets such as Select2
+  and Choices. They now take the role and accessible name the browser computes, and a widget drawn for a hidden
+  `<select>` is found by that select's `<label>`. Two changes follow ARIA: `role:'textbox'` no longer matches a
+  search field (`searchbox`) or a number field (`spinbutton`), and two elements with the same accessible name are
+  ambiguous (add `role` to pick one). `browser_search` keeps every result it found before and adds the tree's; a
+  result's `role` is the browser's. When the tree cannot be read, the old reading is used.
 - **`browser_fill` does not type into a field a person cannot reach.** It wrote, and answered `ok: true` with
   `verifyDelivery: "delivered"`, into a field that was disabled (itself or a `<fieldset disabled>`), a native control
   not shown (`type=hidden`, `display:none`, `visibility:hidden`, inside a closed `<details>`), a field inside a part
@@ -64,7 +79,7 @@ off (`TargetClipped`), where it answered `in-view`. A few answers change code: a
   nothing written, as `BrowserNoActionableTarget`; for `inert` and the modal dialog, `context.focusAt` names where
   the focus is (a field by its name, never its value). The check runs before the field is focused and again after,
   so a focus handler that opens a modal dialog is caught when the page has the focus. Unchanged: a field behind an
-  `aria-modal` element with no `inert`, and a read-only field, are written as before.
+  `aria-modal` element with no `inert` and a plain read-only field are written as before.
 - **`browser_fill` sets a native `<select>` as a person picks an option, by selector or by name.** It used to write
   the value straight in: a value no option has (an option's shown text, say) cleared the choice, fired `change`, and
   left a React or Vue form's state empty. It now takes the option whose value is `value`, else the one option showing
@@ -75,22 +90,23 @@ off (`TargetClipped`), where it answered `in-view`. A few answers change code: a
   `browser_search` and a second fill.
 - **`browser_fill` refuses an element that takes no text, and says what to do instead.** A read-only input of a
   choice widget (Ant Design's Select, Vuetify's v-select, a read-only MUI Autocomplete) was written while the
-  widget's choice stayed the same, and on MUI answered delivered; a `div[role=combobox]` by selector took a value
-  that read back as a match. Both are now refused before the focus moves, as `BrowserNoActionableTarget`. The next
-  steps follow what the element is: for a choice widget, press it with `browser_click`, then its option by its text;
-  for an option, press it; otherwise `by:'ariaLabel'`, or `by:'role'` with `pattern:'textbox'`. An autocomplete a
-  person types into, and a `contenteditable`, take text as before.
+  widget's choice stayed the same, and on MUI answered `verifyDelivery: "delivered"`; a `div[role=combobox]` by
+  selector took a value that read back as a match. Both are now refused before the focus moves, as
+  `BrowserNoActionableTarget`. The next steps follow what the element is: for a choice widget, press it with
+  `browser_click`, then its option by its text; for an option, press it; otherwise `by:'ariaLabel'`, or `by:'role'`
+  with `pattern:'textbox'`. An autocomplete a person types into, and a `contenteditable`, take text as before.
 - **`desktop_discover` names browser controls that share a label by what tells them apart.** A "Delete" in each row
   of a table, or an "Add to cart" on each product card, was one entity, and only the first could be reached. Each is
   now listed as `Delete — Alpha`, `Add to cart — <the card's heading>`, taking the words of the smallest block that
-  holds it and none of its namesakes (a row, a card, or the heading before it); the added words are also in
-  `labelContext`. Controls still alike after that are numbered, `(1 of 2)`. `query` matches a control's own name,
-  not the added words. A label the page has once is unchanged.
+  holds it and none of its namesakes (a row, a card, the landmark it sits in, or the heading before it). Controls
+  still alike after that are each numbered in page order, `Delete — Alpha (1 of 2)` and `(2 of 2)`, or
+  `Delete — (1 of 2)` when no words were found. `query` matches a control's own name, not the added words. A label
+  that appears once on the page is unchanged.
 - **`wait_until` answers at once when waiting cannot help.** `element_matches` with no browser on the port polled to
   `timeoutMs` and answered `WaitTimeout`; it now answers `BrowserNotConnected` at once, as `url_matches` does. An
   invalid regex or CSS scope is `InvalidArgs` at once, and so is a `tabId` that names no open tab (for `url_matches`
-  and `element_matches`). A tab that was open and closes during the wait (a sign-in popup closing itself) is waited
-  past, with `context.lastLook.error` saying so, where it could answer `BrowserNotConnected`. With only a `tabId`,
+  and `element_matches`). When a tab that was open closes during the wait (a sign-in popup closing itself), the wait
+  goes on (`context.lastLook.error` says so), where it could answer `BrowserNotConnected`. With only a `tabId`,
   `element_matches` searches the port that tab is on.
 - **`scroll(action:'smart')` answers `TargetClipped` when an ancestor cuts the target off.** A row far down an
   `overflow:clip` box, or under a `clip-path`, answered `ok: true, viewportPosition: 'in-view'` with none of it on
@@ -105,16 +121,21 @@ off (`TargetClipped`), where it answered `in-view`. A few answers change code: a
   had set it, and the answer said to call again to restore. `expandHidden` now only allows scrolling inside such an
   ancestor; the answer names those ancestors and says the page's CSS is not changed. Without it, such a target is
   refused as before (`OverflowHiddenAncestor`).
+- **`scope` covers every element it matches.** A comma or class scope (`'#s1, #s2'`, `'.card'`) searched only the
+  first element, so `browser_click` with one match in each section pressed the first instead of answering
+  `BrowserAmbiguousTarget`. This applies to `browser_click`, `browser_fill`, `browser_search`, `browser_overview` and
+  `wait_until`. `browser_overview` with a scope that matches nothing answers `ScopeNotFound`, where it listed the
+  whole page.
 
 ### Fixed — Windows
 - **`desktop_discover` lists the controls the browser's accessibility tree shows.** iCheck's checkbox, a radio of no
   size pressed through its label, Select2's and Choices' widgets and a `role=checkbox` element were left out, and a
-  native checkbox was offered for typing. They are now listed, a checkbox, radio or switch as a `button` to press,
-  and a widget's combobox named by its label or the value it shows. A field kept from people (a widget's hidden
+  native checkbox was offered for typing. They are now listed: a checkbox, radio or switch as a `button` to press,
+  and a widget's combobox named by its label or the value it shows. A field hidden from people (a widget's hidden
   `<select>`, a honeypot) stays out.
 - **Selectors from `browser_overview` and `desktop_discover` match their element alone.** They could return an id
-  the page repeats, a radio group's shared `name`, a link path other links share, or a path that matched every alike
-  card or row; a click on it pressed the first match. Each selector is now checked against the document and made
+  the page repeats, a radio group's shared `name`, a link path other links share, or a path that matched every card
+  or row like it; a click on it pressed the first match. Each selector is now checked against the document and made
   longer until it names only that element.
 - **An element's text leaves out what the page does not draw.** `browser_search` `by:'text'` and `by:'regex'` with
   `visibleOnly:false` matched a `<script>`'s source, a `<style>`'s rules, a `<noscript>`, a `<template>` and the
@@ -125,26 +146,21 @@ off (`TargetClipped`), where it answered `in-view`. A few answers change code: a
   buttons labelled "Close dialog" and "Close panel" were both listed as "X", and a widget found through a hidden
   select's label had no name. A control pressed through its own label (a visually hidden radio or checkbox) is now
   listed with `receivesEvents: true`.
-- **`scope` covers every element it matches.** A comma or class scope (`'#s1, #s2'`, `'.card'`) searched only the
-  first element, so `browser_click` with one match in each section pressed the first instead of answering
-  `BrowserAmbiguousTarget`. This applies to `browser_click`, `browser_fill`, `browser_search`, `browser_overview` and
-  `wait_until`. `browser_overview` with a scope that matches nothing answers `ScopeNotFound`, where it listed the
-  whole page.
 - **When a by-axis search finds nothing to act on, the answer says what it counted.** "0 match(es) found but none is
-  an auto-actionable target" covered no match at all, matches all hidden, and matches of another role. The answer,
+  an auto-actionable target" covered no match at all, only hidden matches, and matches of another role. The answer,
   still `BrowserNoActionableTarget`, now gives those counts (also in `context`), says when the search stopped before
-  reading every match, and with a scope gives the rule that it searches inside what the scope matches. While a modal
+  reading every match, and, with a scope, says that it searches inside what the scope matches. While a modal
   `<dialog>` is open, it adds that `by:'role'` and `by:'ariaLabel'` cannot see the page behind it
   (`context.behindModal`).
 - **`browser_click` works on a page whose form has a control named `closest`, `matches`, `contains`,
-  `parentElement` or `querySelectorAll`.** Such a form answered `ToolError` ("is not a function"), and with a control
-  named `parentElement` a by-axis click hung until the client gave up. `browser_overview` and `browser_form` read
-  such a form too.
-- **`by:'role'`, `by:'ariaLabel'` and `desktop_discover` answer at once in a tab that is not shown.** In a background
-  tab, each such question waited about 15 seconds and then answered from the markup alone, without the browser's
-  roles and names. A hidden tab's accessibility tree is now read in small pieces, and answers as the tab in front
-  does. A very large page (past a bound on what is read) falls back to the markup at once, as before but without the
-  wait; a scope keeps the read small on such a page.
+  `parentElement` or `querySelectorAll`.** `browser_click` could answer `ToolError` ("is not a function") when its
+  press point fell on such a form, and a by-axis click hung on a control named `parentElement` until the client gave
+  up. Both now work; `browser_overview` and `browser_form` read such a form too.
+- **`by:'role'`, `by:'ariaLabel'` and `desktop_discover` answer at once in a background tab.** In a background tab,
+  each such call waited about 15 seconds and then answered from the markup alone, without the browser's roles and
+  names. A background tab's accessibility tree is now read in small pieces, and answers as the tab in front does.
+  A very large page (past a bound on what is read) falls back to the markup at once, as before but without the wait;
+  a scope keeps the read small on such a page.
 - **Two by-axis calls at once on one tab no longer break each other.** The first to finish released what the other
   was still reading, so a `browser_fill` by `ariaLabel` could answer "nothing matches" and a search fell back to the
   markup.
@@ -152,7 +168,7 @@ off (`TargetClipped`), where it answered `in-view`. A few answers change code: a
   `browser_form`, `browser_eval`, `browser_get_dom`, `browser_overview`, `browser_search`, `browser_get_app_state`,
   by-axis `browser_click` and `scroll(action:'smart')` looked up the most recently used tab again at each step, so a
   tab brought to the front mid-call took the rest: `browser_fill` wrote into the other tab's field and answered
-  `ok: true`, delivered, and `browser_navigate` answered with the other tab's title. The tab is now chosen once.
+  `verifyDelivery: "delivered"`, and `browser_navigate` answered with the other tab's title. The tab is now chosen once.
   `browser_navigate` answers `NavigateFailed` when its tab closes while loading. With `lensId` and no `tabId`,
   `browser_eval`, `browser_click` and `browser_navigate` act on the lens's tab, where the guard checked the lens's
   tab while the call ran on another.
@@ -160,14 +176,16 @@ off (`TargetClipped`), where it answered `in-view`. A few answers change code: a
   slow look past its deadline (5 s for a 1 s timeout), and on a page whose script held its thread `url_matches`
   answered `BrowserNotConnected` after 15 s against a live browser. A look still running at the deadline is now
   dropped, and the timeout says so (`context.lastPoll`). The same holds for the waits in `browser_open`,
-  `browser_navigate` and `workspace_launch`. `browser_navigate` with `waitForLoad` on such a page answered at about
+  `browser_navigate` and `workspace_launch`; `browser_open`'s timeout now says its last probe had not answered,
+  instead of "Last error: null". `browser_navigate` with `waitForLoad` on such a page answered at about
   18 s against a `loadTimeoutMs` of 3 s; it now answers near `loadTimeoutMs`, with the title and URL from the
   browser's tab list and `PageNotAnswering` in `hints.warnings`.
-- **A sideways `scroll` through CDP no longer gets stuck or goes back a page.** In Chrome, a horizontal wheel past a
-  page's edge started its back/forward gesture: every later sideways wheel scrolled nothing, and a wheel of
-  `amount` 2 or more could leave a back/forward that the next pointer move carried out. A sideways wheel is now sent
-  one notch at a time, and when one had room but nothing moved, the pointer is moved off the page and the wheel sent
-  once more. Up and down are unchanged.
+- **A sideways `scroll` through CDP no longer gets stuck or goes back a page.** In Chrome (where it was measured), a
+  horizontal wheel past a page's edge started its back/forward gesture: every later sideways wheel scrolled nothing,
+  and a wheel of `amount` 2 or more could leave a back/forward navigation pending that the next pointer move carried
+  out. A sideways wheel is now sent one notch at a time, in every browser on the CDP port, Edge included. On
+  Windows, when one has room but nothing moves, the pointer is moved off the page and the wheel is sent once more.
+  Up and down are unchanged.
 
 ## [2.4.3] - 2026-11-14 — The first start of a new version installs with PowerShell 7's module path set
 
