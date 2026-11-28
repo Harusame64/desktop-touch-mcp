@@ -909,7 +909,7 @@ Unified scroll dispatcher that handles the cases where `scroll(action='to_elemen
 | Sticky header occlusion | Detects fixed/sticky header overlap, compensates `scrollTop` |
 | `overflow:hidden` ancestor | Returns `OverflowHiddenAncestor` error; `expandHidden:true` scrolls inside it anyway, without changing the page's CSS |
 | Ancestor that cuts the target off (`overflow:clip`, `clip-path`, `contain:paint`, or a box not scrolled far enough) | Returns `TargetClipped` instead of `in-view` when the target is inside the window but none of it is on screen (the browser's IntersectionObserver decides) |
-| Target left outside the window (in an `overflow:clip` box, placed outside by `position:fixed` or a transform, or the page too short to scroll that far) | Returns `TargetOutOfView`; `context.scrolled` says whether anything on the page moved. A target counts as in view when its box overlaps the window, so a target taller than the window that fills it is in view |
+| Target left outside the window (in an `overflow:clip` box, placed outside by `position:fixed` or a transform, or the page too short to scroll that far) | Returns `TargetOutOfView`; `context.scrolled` says whether anything on the page moved. On each axis a target counts as in view when at least half of it is shown, or half the window for a target larger than it, so a target taller than the window that fills it is in view |
 | No CDP/UIA (image-only) | Win32 `GetScrollInfo` + scrollbar-strip pixel sampling + dHash binary-search |
 
 **Scroll verification:** `verifyWithHash:true` (auto-enabled for image path) computes a 64-bit perceptual hash before and after each attempt — if Hamming distance < 5, the page didn't move (virtual scroll boundary or swallowed input). Reported as `scrolled:false`.

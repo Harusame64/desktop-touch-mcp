@@ -226,7 +226,8 @@ const SUGGESTS: Record<string, string[]> = {
   ],
   // internal #433: scroll(action:'smart') left the target outside the window.
   TargetOutOfView: [
-    "Nothing that scrolls can bring it in: it sits in an overflow:clip box, position:fixed or a transform places it outside the window, or the page is too short to scroll that far (context.scrolled says whether anything moved)",
+    "The scroll did not bring it in: it may sit in an overflow:clip box, position:fixed or a transform may place it outside the window, or the page is too short to scroll that far (context.scrolled says whether anything moved)",
+    "After a virtual-list scroll (virtualIndex), only the list moved: scroll the window to the list first, then scroll again",
     "Reveal it the way a person would, with the page's own control (a carousel's next button, a tab, an expand toggle), then scroll again",
   ],
   GuardFailed: [

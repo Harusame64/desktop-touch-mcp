@@ -33,7 +33,10 @@ const SHORT = `<!doctype html><title>short</title><style>html,body{margin:0}</st
 <div id="clip" style="height:150px;overflow:clip">${rows}</div>
 <div id="fixed" style="position:fixed;top:-500px;left:0;height:40px">fixed</div>
 <div id="moved" style="height:40px;transform:translateX(-3000px)">moved</div>
-<div id="near" style="height:40px">near</div>`;
+<div id="near" style="height:40px">near</div>
+<div id="edge" style="position:fixed;left:0;top:calc(100vh - 1px);height:200px;width:100px">edge</div>
+<div id="most" style="position:fixed;left:200px;top:calc(100vh - 150px);height:200px;width:100px">most</div>
+<form id="f"><input name="parentNode"><input name="assignedSlot"><input name="scrollTop"><div id="inform" style="height:20px">in a form</div></form>`;
 const TALL = `<!doctype html><title>tall</title><style>html,body{margin:0}</style>
 <div id="top-shown" style="height:2000px;margin-top:300px;background:#ddd">top shown</div>
 <div style="height:1500px"></div>
@@ -124,12 +127,45 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll says when the target stays out 
     expect(r.warnings ?? []).not.toContainEqual(expect.stringMatching(/viewportPosition says only/));
   });
 
-  it("a tall target whose top is shown is in view without a scroll", async () => {
+  it("a tall target whose top is shown, scrolled with nearest, is in view", async () => {
     await load(TALL);
     const r = await scroll("#top-shown", "nearest");
     expect(r.ok).toBe(true);
     expect(r.viewportPosition).toBe("in-view");
-    expect((await overlap("#top-shown")).h).toBeGreaterThan(0);
+    // nearest aligns a box larger than the window to its start, so the window moves (/code-review).
+    expect(r.scrolled).toBe(true);
+    expect((await overlap("#top-shown")).h).toBe(await evaluateInTab("innerHeight", null, PORT));
+  });
+
+  it("a box smaller than the window with 1px on screen is not in view: a click at its centre would miss", async () => {
+    await load(SHORT);
+    const r = await scroll("#edge");
+    expect(r.code).toBe("TargetOutOfView");
+    expect(r.context.viewportPosition).toBe("below");
+    expect((await overlap("#edge")).h).toBe(1);
+  });
+
+  it("a box with most of it on screen is in view", async () => {
+    await load(SHORT);
+    const r = await scroll("#most");
+    expect(r.ok).toBe(true);
+    expect(r.viewportPosition).toBe("in-view");
+  });
+
+  it("a form whose controls are named parentNode, assignedSlot and scrollTop does not stop the offsets read", async () => {
+    await load(SHORT);
+    const r = await scroll("#inform", "nearest");
+    expect(r.ok).toBe(true);
+    expect(r.scrolled).toBe(false);
+    expect(r.warnings ?? []).not.toContainEqual(expect.stringMatching(/Whether anything scrolled was not read/));
+  });
+
+  it("target 'body' on a page scrolled past one screen is ok: the root is in view by definition", async () => {
+    await load(TALL);
+    await evaluateInTab("scrollTo(0, 3000); 1", null, PORT);
+    const r = await scroll("body");
+    expect(r.ok).toBe(true);
+    expect(await evaluateInTab("scrollY", null, PORT)).toBe(3000);
   });
 
   it("a target down a long page answers ok, scrolled:true", async () => {
