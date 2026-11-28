@@ -137,6 +137,15 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll clears a band over the target",
     expect(r.occludedBy).toBeUndefined();
   });
 
+  it("a bottom band the page can scroll only partly past is said to still cover the target after the scroll", async () => {
+    await load(BOTTOM(20));
+    const r = await scroll("#t", "end");
+    expect(r.occludedBy).toMatchObject({ side: "bottom", box: "document", stillCovered: true });
+    expect(r.occludedBy.movedPx).toBeGreaterThan(0);
+    expect(r.warnings).toContainEqual(expect.stringMatching(/still under a bottom band 'div#ban' after that scroll/));
+    expect(await shownAt("bottom")).toBe(false);
+  });
+
   it("a full-window veil is not a band", async () => {
     await load(VEIL);
     const r = await scroll("#t", "center");
