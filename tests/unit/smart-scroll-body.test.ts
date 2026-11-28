@@ -246,6 +246,7 @@ describe("smart-scroll answers from where the target ended and what moved — in
     page({ final: { viewportPosition: "above", pageRatio: 0, clipped: false, clipCheck: "not-needed" } });
     const r = await run("body");
     expect(r.ok).toBe(true);
+    expect(r.viewportPosition).toBe("in-view");
   });
 
   it("on the virtual-list road the answer says only the list was scrolled", async () => {

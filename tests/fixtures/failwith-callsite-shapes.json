@@ -517,7 +517,7 @@
     },
     {
       "file": "src/tools/smart-scroll.ts",
-      "line": 603,
+      "line": 604,
       "tool": "scroll(action='smart')",
       "errKind": "string-literal",
       "contextShape": "object-plain"

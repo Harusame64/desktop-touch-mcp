@@ -461,7 +461,8 @@ async function tryCdp(params: {
       pageRatio: finalState?.pageRatio ?? null,
       scrolled,
       ancestors: ancestorsOut,
-      viewportPosition: finalState?.viewportPosition ?? null,
+      // The root is in view by definition: body's own box can sit above the window on a page scrolled past it (win2).
+      viewportPosition: isRoot && finalState !== null ? "in-view" : finalState?.viewportPosition ?? null,
       ...(occludedBy && { occludedBy }),
       ...(warnings.length > 0 && { warnings }),
     });
