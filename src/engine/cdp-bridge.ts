@@ -2102,9 +2102,29 @@ export async function clearCoverBandCdp(
   const roomOf = function(b, side) { return side === 'top' ? b.scrollTop : b.scrollHeight - b.clientHeight - b.scrollTop; };
   // A band sits at the top or bottom edge of a box that scrolls the target (the window for a site's bar, a scroller for
   // a bar inside it) and is shorter than half of what that box shows. A popover in the middle of the window, a fixed
-  // child of a transformed box, or a full-window veil is not one. Of the boxes it sits at the edge of, the first with
-  // room that way is scrolled; null when none has room (/code-review: a panel at the window's top whose scrollTop is 0
+  // child of a transformed box, or a full-window veil is not one. Of the boxes it sits at the edge of, the first that
+  // moves the target past it (not carrying it along) with room that way is scrolled; null when none can (/code-review: a panel at the window's top whose scrollTop is 0
   // under a site's bar is cleared by the document).
+  // Whether scrolling box b carries the band along with the target, so it cannot clear it (codex on #1061, twice, from
+  // both sides). A fixed band fixed to the window stays; one held by a transformed ancestor moves with every box that
+  // holds that ancestor. A sticky band stays in its own scroll container and moves with the boxes around it.
+  const scrollerOf = function(n) {
+    for (let m = up(n), steps = 0; m && m !== root && steps < 10000; m = up(m), steps++) {
+      const cs = getComputedStyle(m);
+      if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') return m;
+    }
+    return root;
+  };
+  const inside = function(b, n) { return b === root || b === n || contains.call(b, n); };
+  const movesWith = function(band, b) {
+    if (getComputedStyle(band).position === 'fixed') {
+      if (toWindow(band)) return false;
+      const holder = band instanceof HTMLElement ? opGet.call(band) : null;
+      return holder !== null && inside(b, holder);
+    }
+    const s = scrollerOf(band);
+    return s !== b && inside(b, s);
+  };
   const bandBox = function(c, side) {
     let at = false;
     for (const b of boxes) {
@@ -2113,7 +2133,7 @@ export async function clearCoverBandCdp(
       if (side === 'top' ? Math.abs(c.r.top - v.top) < c.r.height && c.r.bottom <= v.bottom
         : Math.abs(v.bottom - c.r.bottom) < c.r.height && c.r.top >= v.top) {
         at = true;
-        if (!(pinned && b === root) && roomOf(b, side) >= 1) return { box: b };
+        if (!(pinned && b === root) && !movesWith(c.node, b) && roomOf(b, side) >= 1) return { box: b };
       }
     }
     return at ? { box: null } : null;
@@ -2142,9 +2162,6 @@ export async function clearCoverBandCdp(
     for (let n = hit, steps = 0; n && steps < 1000; n = up(n), steps++) {
       const p = getComputedStyle(n).position;
       if (p !== 'fixed' && p !== 'sticky') continue;
-      // A fixed box held by a transformed ancestor moves with the page around it, so scrolling cannot clear it (codex on
-      // #1061). It is passed for the next one out.
-      if (p === 'fixed' && !toWindow(n)) continue;
       if (own(n)) break;
       out.push({ node: n, r: rectOf.call(n) });
     }

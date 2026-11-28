@@ -233,13 +233,25 @@ describe.skipIf(!CHROME_AVAILABLE)("smart scroll clears a band over the target",
     expect(await shownAt("top")).toBe(true);
   });
 
-  it("a fixed bar held by a transformed box with the target moves with it, and is not scrolled for (codex)", async () => {
+  it("a fixed bar held by a transformed box with the target moves with the document: said, not scrolled for (codex)", async () => {
     await load(`${head}${filler(1500)}<div style="transform:translateZ(0)">
-      <div style="position:fixed;top:0;left:0;right:0;height:60px;background:#333;z-index:2">held bar</div>
+      <div id="held" style="position:fixed;top:0;left:0;right:0;height:60px;background:#333;z-index:2">held bar</div>
       <div id="t" style="height:40px">target</div></div>${filler(1500)}`);
     const r = await scroll("#t", "start");
-    expect(r.occludedBy).toBeUndefined();
-    expect(r.warnings ?? []).not.toContainEqual(expect.stringMatching(/band/));
+    expect(r.occludedBy).toMatchObject({ side: "top", by: "div#held", stillCovered: true });
+    expect(r.occludedBy.box).toBeUndefined();
+    expect(r.warnings).toContainEqual(expect.stringMatching(/no box around it could scroll to clear it/));
+    // Where scrollIntoView start left it: no extra scroll for a bar that would only come along.
+    expect(Math.abs(await evaluateInTab("document.getElementById('t').getBoundingClientRect().top", null, PORT) as number)).toBeLessThan(1);
+  });
+
+  it("the same held bar over a panel inside its box is cleared by scrolling the panel (codex)", async () => {
+    await load(`${head}<div style="transform:translateZ(0)">
+      <div id="held" style="position:fixed;top:0;left:0;right:0;height:60px;background:#333;z-index:2">held bar</div>
+      <div id="panel" style="height:400px;overflow:auto">${filler(600)}<div id="t" style="height:40px">target</div>${filler(600)}</div></div>`);
+    const r = await scroll("#t", "start");
+    expect(r.occludedBy).toMatchObject({ side: "top", by: "div#held", box: "div#panel", stillCovered: false });
+    expect(await shownAt("top")).toBe(true);
   });
 
   it("a full-window veil is not a band", async () => {
