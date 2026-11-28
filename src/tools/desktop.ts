@@ -33,7 +33,12 @@ import type { AttentionState } from "../engine/perception/types.js";
  * own name: a query for a row's name ("Beta") does not return that row's "Delete" (internal #420, /code-review on #1026).
  */
 export function entityMatchesQuery(e: UiEntity, q: string): boolean {
-  const own = e.labelContext && e.label?.endsWith(` — ${e.labelContext}`) ? e.label.slice(0, -(e.labelContext.length + 3)) : e.label;
+  // The added words are joined with " — ", or with a space when the label already holds " — " (browser-provider.ts:
+  // "Save — draft (1 of 2)"); strip either (/code-review on #1052: "1 of 2" matched that one).
+  const ctx = e.labelContext;
+  const own = ctx && e.label?.endsWith(` — ${ctx}`) ? e.label.slice(0, -(ctx.length + 3))
+    : ctx && e.label?.endsWith(` ${ctx}`) ? e.label.slice(0, -(ctx.length + 1))
+    : e.label;
   return !!(own?.toLowerCase().includes(q) || e.locator?.uia?.visibleText?.toLowerCase().includes(q));
 }
 

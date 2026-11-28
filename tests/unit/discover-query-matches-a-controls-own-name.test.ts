@@ -21,4 +21,11 @@ describe("entityMatchesQuery", () => {
   it("matches a plain label as before, including one that holds ' — ' itself", () => {
     expect(entityMatchesQuery(ent("Save — draft"), "draft")).toBe(true);
   });
+  it("does not match the number added to alike controls, however it was joined", () => {
+    expect(entityMatchesQuery(ent("Delete — (1 of 2)", "(1 of 2)"), "1 of 2")).toBe(false);
+    expect(entityMatchesQuery(ent("Delete — Alpha (1 of 2)", "Alpha (1 of 2)"), "1 of 2")).toBe(false);
+    // A label that holds " — " itself gets the number after a space (browser-provider.ts).
+    expect(entityMatchesQuery(ent("Save — draft (1 of 2)", "(1 of 2)"), "1 of 2")).toBe(false);
+    expect(entityMatchesQuery(ent("Save — draft (1 of 2)", "(1 of 2)"), "draft")).toBe(true);
+  });
 });
