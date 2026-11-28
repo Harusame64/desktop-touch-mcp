@@ -838,7 +838,7 @@ const uiaClientSchema = z.enum(["default", "classic"]).optional().describe(
 export const desktopSeeSchema = {
   target:      targetSchema.describe("Target window (windowTitle / hwnd) or browser tab (tabId). Omit for foreground window."),
   view:        z.enum(["action", "explore", "debug"]).optional().describe("action (default, ≤20 entities), explore (≤50), debug (includes raw rect)"),
-  query:       z.string().optional().describe("Filter entities by label substring (case-insensitive). A Word page also matches by the text visible on it, which is not returned"),
+  query:       z.string().optional().describe("Filter entities by their own name (case-insensitive substring). The words added to tell same-named browser controls apart (`Delete — Alpha`, `(1 of 2)`) are not matched. A Word page also matches by the text visible on it, which is not returned"),
   maxEntities: z.number().int().min(1).max(200).optional().describe("Override entity count limit"),
   debug:       coercedBoolean().optional().describe("Include raw screen coordinates in response (debug only — never relay to end-users)"),
   uiaClient:   uiaClientSchema,

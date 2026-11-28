@@ -33,6 +33,8 @@
 
 - `lease_expired` / `lease_generation_mismatch` / `lease_digest_mismatch` / `entity_not_found` → `desktop_discover` を再実行
 - `modal_blocking` → `response.blockingElement` (含まれていれば) がブロック中の modal を識別する。`role: "dialog"` は、別のダイアログ窓が対象の窓を無効にしていることを表す。`blockingElement.hwnd` がそのダイアログなので、`target.hwnd = blockingElement.hwnd` で `desktop_discover` し直して答えてからリトライ（`name` は題名で、空や他と同じことがある）。それ以外の role は、`desktop_discover` のスナップショットに写っている窓で、この entity を塞いでいるかを OS が答えられなかったもの。`blockingElement.hwnd` があれば `target.hwnd = blockingElement.hwnd` で `desktop_discover` し直して答え、無ければ `click_element(name=blockingElement.name)` で閉じる。そのあと元の対象を `desktop_discover` し直し、新しい lease で撃つ（この拒否はそのスナップショットから出たので、同じ lease では再び拒まれる）。`blockingElement` が無く、`response.detail` がブラウザのページの中のダイアログを挙げているときは、要素はそのダイアログの下にあり、何も押していない。`detail` にダイアログが出している操作が並ぶので、そのどれか（`desktop_discover` に出る）か Escape で答えてから、`desktop_discover` し直す
+- `aim_route_failed` → `if_unexpected.detail` が「効いた可能性がある」と言わない限り、何も押していないし打っていない（言うときは、押し直す前に窓を見る。`click_element` も同じ）。ブラウザの要素がページの中で覆われているときは、覆っている物とその操作を挙げる: 先にそれに答えてから `desktop_discover` し直す
+- `aim_occluded` → その点の上に描かれた別の窓が押下を取ってしまうので、何もしていない。目的の窓を前に出す（`focus_window`）か、`click_element` を使う（一覧・ツリー・グリッドの項目は除く。Invoke で開く・実行する・編集するため）
 - `entity_outside_viewport` → 要素が画面外へ移動: `scroll(action='to_element' | 'raw')` 後に `desktop_discover` 再実行（窓ごと移動・閉じた場合は再 discover）
 - `origin_window_not_visible` → 要素の由来ウィンドウが最小化 / 非表示で、発見時の座標には何も描画されていない: `focus_window`（`title`、またはそのウィンドウを指す `hwnd`）で復元してから `desktop_discover` 再実行
 - `coordinate_outside_reachable_bounds` → 座標がどのモニタ上にも無い。座標ベースのマウス入力（`mouse_click` / `mouse_drag` / `scroll` / `browser_click`、および `desktop_act` の mouse route）は**全モニタで動作する**ようになった（プライマリの左 / 上に置いたモニタを含む）ため、このエラーは通常「座標が古い」ことを意味する — 読み取った後にウィンドウが移動 / 閉じた場合。`desktop_discover` を再実行して新しい座標で操作する。サーバが内蔵の Windows 入力モジュール無しで動いている場合はプライマリモニタのみに fallback する（その旨がエラーメッセージに出る）。対処はウィンドウをプライマリへ移すか、サーバの再インストール
@@ -563,6 +565,8 @@ v0.16.x での opt-in フラグです。v0.17 以降は V2 がデフォルト ON
 
 - `lease_expired` / `*_mismatch` / `entity_not_found` → `desktop_discover` を再実行してリースを更新
 - `modal_blocking` → `response.blockingElement` (含まれていれば) が `{ name, role, automationId?, hwnd? }` を返す。`role: "dialog"` のときは別のダイアログ窓が対象の窓を無効にしており、`hwnd` がそれ — `target.hwnd = blockingElement.hwnd` で `desktop_discover` し直して答えてから retry。それ以外の role はスナップショットに写った窓で、OS が確かめられなかったもの — `hwnd` があれば `target.hwnd = blockingElement.hwnd` で `desktop_discover`、無ければ `click_element(name=blockingElement.name)` で閉じる。そのあと元の対象を discover し直して新しい lease で撃つ（同じ lease では再び拒まれる）。`blockingElement` が無く、`response.detail` がブラウザのページの中のダイアログを挙げているときは、要素はそのダイアログの下にあり、何も押していない。`detail` にダイアログが出している操作が並ぶので、そのどれか（`desktop_discover` に出る）か Escape で答えてから、`desktop_discover` し直す
+- `aim_route_failed` → `if_unexpected.detail` が「効いた可能性がある」と言わない限り、何も押していないし打っていない（言うときは、押し直す前に窓を見る。`click_element` も同じ）。ブラウザの要素がページの中で覆われているときは、覆っている物とその操作を挙げる: 先にそれに答えてから `desktop_discover` し直す
+- `aim_occluded` → その点の上に描かれた別の窓が押下を取ってしまうので、何もしていない。目的の窓を前に出す（`focus_window`）か、`click_element` を使う（一覧・ツリー・グリッドの項目は除く。Invoke で開く・実行する・編集するため）
 - `entity_outside_viewport` → 要素が画面外へ移動: 由来ウィンドウ内でスクロールアウトしたなら `scroll` / `scroll(action='to_element')`、ウィンドウごと移動・閉じたなら `desktop_discover` を再実行
 - `origin_window_not_visible` → `focus_window`（`title`、またはそのウィンドウを指す `hwnd`）で最小化 / 非表示のウィンドウを復元してから `desktop_discover` を再実行
 - `coordinate_outside_reachable_bounds` → 座標がどのモニタ上にも無い（通常は座標が古い）: `desktop_discover` を再実行する。内蔵 Windows 入力モジュール無しの構成ではプライマリモニタのみ到達可（その旨がメッセージに出る）
