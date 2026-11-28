@@ -603,7 +603,8 @@ export async function dispatchPointerAwayInTab(tabId: string | null = null, port
  *
  * Two calls, so a caller can install its click probe between them and not count hover effects as the click (the
  * order browser_click keeps with the OS cursor): `dispatchMouseMoveInTab` moves the pointer to the point,
- * `dispatchClickInTab` presses and releases there.
+ * `dispatchClickInTab` presses and releases there. The move is followed by a release with no button, which brings
+ * it through on a page the browser does not draw (#1054); the page gets no event of its own from it.
  *
  * A failure is thrown as `CdpClickDispatchError` with `pressSent`: false means no press reached the browser (a
  * fallback may press), true means the press was written to an open session and its answer or the release did not
@@ -1226,11 +1227,13 @@ export async function dispatchMouseMoveInTab(
     // #1054 — a page the browser does not draw (its window fully covered, minimized, or a background tab) holds a
     // move until a frame that does not come, and answers it after about 5 s (win2: 5,002–5,017 ms). A release with no
     // button brings it through at once and reaches the page as nothing of its own: no pointerup, mouseup or click,
-    // and focus, selection and value unchanged, in all three states and on a page that is drawn (win2's spike3, M1).
-    // Then the move has reached the page before the click probe goes in, as on a page that is drawn. Not answered,
-    // it changes nothing: the move is still waited for, as before.
-    await session.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "none", buttons: 0 }).catch(() => undefined);
-    await moved;
+    // and focus, selection and value unchanged (win2's spike3, M1: a covered window, a background tab, and a page that
+    // is drawn). Then the move has reached the page before the click probe goes in, as on a page that is drawn.
+    // Settled together and judged by the move alone: a release refused or not answered leaves the move's own answer
+    // (or its timeout) to decide, as before, and a move that fails while the release is pending is not left unhandled.
+    const released = session.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "none", buttons: 0 });
+    const [move] = await Promise.allSettled([moved, released]);
+    if (move.status === "rejected") throw move.reason;
   } catch (e) {
     throw new CdpClickDispatchError(e instanceof Error ? e.message : String(e), false, { cause: e });
   }
