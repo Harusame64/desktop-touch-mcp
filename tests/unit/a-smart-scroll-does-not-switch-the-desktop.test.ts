@@ -11,7 +11,7 @@ const { mockRestore, mockAway, listed } = vi.hoisted(() => ({
 }));
 
 vi.mock("../../src/engine/cdp-bridge.js", () => ({
-  evaluateInTab: vi.fn(), getScrollAncestorsCdp: vi.fn(), detectStickyHeaderCdp: vi.fn(),
+  evaluateInTab: vi.fn(), getScrollAncestorsCdp: vi.fn(), clearCoverBandCdp: vi.fn(),
   setScrollPositionCdp: vi.fn(), scrollVirtualListCdp: vi.fn(),
 }));
 vi.mock("../../src/engine/uia-bridge.js", () => ({

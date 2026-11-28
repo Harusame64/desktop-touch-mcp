@@ -906,7 +906,7 @@ Unified scroll dispatcher that handles the cases where `scroll(action='to_elemen
 |---|---|
 | Virtualised list (TanStack, React Virtualized) | TanStack API → `data-index` DOM → proportional bisect (≤6 iterations) |
 | Nested scroll containers | Walks ancestor chain (CDP or UIA), scrolls outer → inner |
-| Sticky header occlusion | Detects fixed/sticky header overlap, compensates `scrollTop` |
+| A fixed or sticky band at the window's edge (a site's top bar, a cookie banner) covering the target's top or bottom edge | Scrolls the target's nearest scroller that has room just far enough to clear it; `occludedBy` names the band, the box, the px it moved and whether the band still covers it. A full-window veil is left alone |
 | `overflow:hidden` ancestor | Returns `OverflowHiddenAncestor` error; `expandHidden:true` scrolls inside it anyway, without changing the page's CSS |
 | Ancestor that cuts the target off (`overflow:clip`, `clip-path`, `contain:paint`, or a box not scrolled far enough) | Returns `TargetClipped` instead of `in-view` when the target is inside the window but none of it is on screen (the browser's IntersectionObserver decides) |
 | Target left outside the window (in an `overflow:clip` box, placed outside by `position:fixed` or a transform, or the page too short to scroll that far) | Returns `TargetOutOfView`; `context.scrolled` says whether anything on the page moved. On each axis a target counts as in view when at least half of it is shown, or half the window for a target larger than it, so a target taller than the window that fills it is in view |

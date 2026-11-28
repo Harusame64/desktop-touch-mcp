@@ -2006,43 +2006,140 @@ export async function setScrollPositionCdp(
   }
 }
 
+/** internal #436 — what `clearCoverBandCdp` found and did. */
+export interface CoverBandResult {
+  /** A fixed or sticky band at the window's top or bottom edge covered the target's edge after the scroll. */
+  covered: boolean;
+  side?: "top" | "bottom";
+  /** The band: a short path to it (tag#id.class). */
+  cover?: string;
+  /** The box scrolled to clear it, or undefined when none had room. */
+  box?: string;
+  /** px the box actually moved (read back, not the amount asked). */
+  movedPx?: number;
+  /** The band still covers the target's edge after the shift. */
+  stillCovered?: boolean;
+}
+
 /**
- * Detect whether the element matching selector is occluded by a sticky or fixed header
- * after scrolling. Returns occluded=true only when position is sticky/fixed, z-index ≥ 1,
- * and the x-range overlaps the target element.
+ * internal #436 — after scrollIntoView, find a fixed or sticky band at the window's edge that covers the target, and
+ * scroll the target's nearest scroller that has room just far enough to clear it.
+ *
+ * It replaces a check that looked only for a sticky/fixed z-index≥1 element at y=4 and shifted the target's parent. In
+ * win2's spike (internal dev/w436-spike) that check fixed 1 of 13 hidden targets and fired on 6 that were not hidden. It
+ * shifted a parent that was not a scroller, so nothing moved, yet it still said "scrolled an extra Npx". It read only
+ * the element at the point, so it missed MDN's and GitHub's bars, where that element is a child of the sticky bar. It
+ * also missed z-index:auto bars and bottom bands.
+ *
+ * Now:
+ * - The point is the target's own top edge (+2px), and only while that edge is inside the window. The bottom edge is
+ *   checked the same way. A target taller than the window, centred, has its edges outside: the spike's one false
+ *   positive (Stack Overflow) was a probe there.
+ * - The topmost element at the point is climbed to its first fixed/sticky ancestor. That ancestor is a cover when it is
+ *   not the target's own (not the target, inside it, or holding it) and is a band: at the top or bottom edge of a box
+ *   that scrolls the target (the window, or a scroller for a bar inside it), shorter than half of what that box shows.
+ *   A full-window veil and a popover in the middle are left alone. z-index is not read.
+ * - That box is scrolled, instantly: a page's scroll-behavior:smooth only starts an animation (measured on MDN and
+ *   GitHub). The answer says what moved, read back, and whether the band still covers the edge.
+ * Everything is read through the prototypes' getters and every walk is capped.
  */
-export async function detectStickyHeaderCdp(
+export async function clearCoverBandCdp(
   selector: string,
   tabId: string | null = null,
   port = DEFAULT_CDP_PORT
-): Promise<{ occluded: boolean; headerRect?: { top: number; left: number; width: number; height: number } }> {
+): Promise<CoverBandResult> {
   const expr = `
 (function() {
-  const el = document.querySelector(${JSON.stringify(selector)});
-  if (!el) return { occluded: false };
-  const rect = el.getBoundingClientRect();
-  const midX = rect.left + rect.width / 2;
-  const probeY = 4;
-  const header = document.elementFromPoint(midX, probeY);
-  if (!header || Node.prototype.contains.call(el, header) || Node.prototype.contains.call(header, el)) return { occluded: false };
-  const hs = getComputedStyle(header);
-  const position = hs.position;
-  if (position !== 'sticky' && position !== 'fixed') return { occluded: false };
-  const zi = parseInt(hs.zIndex, 10);
-  if (isNaN(zi) || zi < 1) return { occluded: false };
-  const hr = header.getBoundingClientRect();
-  // Check x-range overlap
-  if (hr.right < rect.left || hr.left > rect.right) return { occluded: false };
-  return { occluded: true, headerRect: { top: hr.top, left: hr.left, width: hr.width, height: hr.height } };
+  const sel = ${JSON.stringify(selector)};
+  if (sel === 'body' || sel === 'html') return { covered: false };
+  const el = document.querySelector(sel);
+  if (!el) return { covered: false };
+  const get = function(proto, name) { return Object.getOwnPropertyDescriptor(proto, name).get; };
+  const pn = get(Node.prototype, 'parentNode'), host = get(ShadowRoot.prototype, 'host');
+  const contains = Node.prototype.contains, rectOf = Element.prototype.getBoundingClientRect;
+  const up = function(n) {
+    const p = pn.call(n);
+    return p instanceof ShadowRoot ? host.call(p) : p instanceof Element ? p : null;
+  };
+  const own = function(n) { return n === el || contains.call(el, n) || contains.call(n, el); };
+  const path = function(n) {
+    if (n === document.scrollingElement || n === document.documentElement) return 'document';
+    const tag = n.tagName.toLowerCase(), id = n.id ? '#' + n.id : '';
+    return id ? tag + id : tag + (n.classList.length ? '.' + Array.from(n.classList).slice(0, 2).join('.') : '');
+  };
+  const vh = window.innerHeight, vw = window.innerWidth;
+  const root = document.scrollingElement || document.documentElement;
+  // The boxes that scroll the target, nearest first, ending with the document.
+  const boxes = [];
+  for (let n = up(el), steps = 0; n && steps < 10000; n = up(n), steps++) {
+    if (n === root || n === document.body) break;
+    const oy = getComputedStyle(n).overflowY;
+    if (oy === 'auto' || oy === 'scroll') boxes.push(n);
+  }
+  boxes.push(root);
+  const viewOf = function(b) {
+    if (b === root) return { top: 0, bottom: vh };
+    const t = rectOf.call(b).top + b.clientTop;
+    return { top: t, bottom: t + b.clientHeight };
+  };
+  // A band sits at the top or bottom edge of a box that scrolls the target (the window for a site's bar, a scroller for
+  // a bar inside it) and is shorter than half of what that box shows. A popover in the middle of the window, a fixed
+  // child of a transformed box, or a full-window veil is not one. That box is the one scrolled to clear it.
+  const bandBox = function(c, side) {
+    for (const b of boxes) {
+      const v = viewOf(b);
+      if (c.r.height >= (v.bottom - v.top) / 2) continue;
+      if (side === 'top' ? Math.abs(c.r.top - v.top) < c.r.height && c.r.bottom <= v.bottom
+        : Math.abs(v.bottom - c.r.bottom) < c.r.height && c.r.top >= v.top) return b;
+    }
+    return null;
+  };
+  const coverAt = function(x, y) {
+    const hits = document.elementsFromPoint(x, y);
+    if (!hits.length || own(hits[0])) return null;
+    for (let n = hits[0], steps = 0; n && steps < 1000; n = up(n), steps++) {
+      const p = getComputedStyle(n).position;
+      if (p !== 'fixed' && p !== 'sticky') continue;
+      return own(n) ? null : { node: n, r: rectOf.call(n) };
+    }
+    return null;
+  };
+  const probe = function() {
+    const r = rectOf.call(el);
+    const left = Math.max(r.left, 0), right = Math.min(r.right, vw);
+    if (right <= left) return null;
+    const x = (left + right) / 2;
+    if (r.top >= 0 && r.top < vh) {
+      const c = coverAt(x, r.top + 2), b = c && bandBox(c, 'top');
+      if (b) return { side: 'top', c: c, box: b, d: c.r.bottom - r.top + 8 };
+    }
+    if (r.bottom > 0 && r.bottom <= vh) {
+      const c = coverAt(x, r.bottom - 2), b = c && bandBox(c, 'bottom');
+      if (b) return { side: 'bottom', c: c, box: b, d: r.bottom - c.r.top + 8 };
+    }
+    return null;
+  };
+  const found = probe();
+  if (!found) return { covered: false };
+  // Clearing a top band moves the content down (scroll up), a bottom band the other way.
+  const sign = found.side === 'top' ? -1 : 1;
+  const box = found.box;
+  const room = sign < 0 ? box.scrollTop : box.scrollHeight - box.clientHeight - box.scrollTop;
+  const out = { covered: true, side: found.side, cover: path(found.c.node) };
+  if (room < 1) { out.stillCovered = true; return out; }
+  const before = box.scrollTop;
+  box.scrollBy({ top: sign * Math.ceil(found.d), behavior: 'instant' });
+  out.box = path(box);
+  out.movedPx = Math.round(Math.abs(box.scrollTop - before));
+  const again = probe();
+  out.stillCovered = !!(again && again.side === found.side);
+  return out;
 })()`;
   try {
-    const result = await evaluateInTab(expr, tabId, port) as {
-      occluded: boolean;
-      headerRect?: { top: number; left: number; width: number; height: number };
-    };
-    return result;
+    const r = await evaluateInTab(expr, tabId, port) as CoverBandResult | null;
+    return r && typeof r.covered === "boolean" ? r : { covered: false };
   } catch {
-    return { occluded: false };
+    return { covered: false };
   }
 }
 

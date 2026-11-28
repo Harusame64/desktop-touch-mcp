@@ -4,7 +4,7 @@ import {
   evaluateInTab,
   getScrollAncestorsCdp,
   setScrollPositionCdp,
-  detectStickyHeaderCdp,
+  clearCoverBandCdp,
   scrollVirtualListCdp,
   resolveTabId,
 } from "../engine/cdp-bridge.js";
@@ -259,22 +259,24 @@ async function tryCdp(params: {
       }
     }
 
-    // Sticky header check
-    const headerCheck = await detectStickyHeaderCdp(target, tab, port);
-    let occludedBy: { header?: boolean } | undefined;
-    if (headerCheck.occluded) {
-      occludedBy = { header: true };
-      // Shift scrollTop to compensate
-      const headerHeight = headerCheck.headerRect?.height ?? 56;
-      const shiftExpr = `
-(function() {
-  const el = document.querySelector(${JSON.stringify(target)});
-  if (!el) return;
-  const scrollEl = el.parentElement;
-  if (scrollEl) scrollEl.scrollTop -= ${headerHeight + 8};
-})()`;
-      try { await evaluateInTab(shiftExpr, tab, port); } catch { /* ignore */ }
-      warnings.push(`Sticky header occlusion detected (height ~${headerHeight}px), scrolled an extra ${headerHeight + 8}px`);
+    // internal #436 — a fixed or sticky band at the window's edge (a site's top bar, a cookie banner) covering the
+    // target's edge: scroll the target's nearest scroller with room just far enough to clear it, and say what moved.
+    const band = await clearCoverBandCdp(target, tab, port);
+    let occludedBy: { header: true; side?: "top" | "bottom"; by?: string; box?: string; movedPx?: number; stillCovered?: boolean } | undefined;
+    if (band.covered) {
+      occludedBy = {
+        header: true, side: band.side, by: band.cover,
+        ...(band.box !== undefined && { box: band.box, movedPx: band.movedPx }), stillCovered: band.stillCovered === true,
+      };
+      const by = `a ${band.side} band '${band.cover}'`;
+      if (band.box !== undefined && (band.movedPx ?? 0) > 0) {
+        warnings.push(`The target's ${band.side} edge was under ${by}: scrolled '${band.box}' ${band.movedPx}px to clear it`);
+      }
+      if (band.stillCovered) {
+        warnings.push(band.box === undefined || (band.movedPx ?? 0) === 0
+          ? `The target's ${band.side} edge is under ${by}, and no box around it could scroll to clear it`
+          : `The target's ${band.side} edge is still under ${by} after that scroll`);
+      }
     }
 
     // Hash verification: before the final read, so a TargetClipped answer carries the note as the success answer does.
@@ -438,9 +440,9 @@ async function tryCdp(params: {
     if (finalState?.clipped) {
       return failCode(
         "TargetClipped",
-        occludedBy
-          // The tool's own sticky-header shift ran first, and can be what moved the target out of its box.
-          ? "The target is inside the window, but an ancestor cuts it off, so none of it is on screen. This tool shifted the target's parent for a sticky header first (see warnings), which may be what cut it off."
+        (occludedBy?.movedPx ?? 0) > 0
+          // The tool's own band-clearing scroll ran first, and can be what moved the target out of its box.
+          ? "The target is inside the window, but an ancestor cuts it off, so none of it is on screen. This tool scrolled to clear a fixed or sticky band first (see occludedBy), which may be what cut it off."
           : "The target is inside the window, but an ancestor cuts it off, so none of it is on screen.",
         {
           suggest: getSuggestsForCode("TargetClipped"),
