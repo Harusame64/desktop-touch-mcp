@@ -67,11 +67,14 @@ const SNAP = `${head}<div id="sc" style="height:400px;overflow:auto;scroll-snap-
 <div style="position:sticky;top:0;height:50px;background:#333;z-index:1">bar</div>
 ${Array.from({ length: 30 }, (_, i) => `<div ${i === 15 ? 'id="t" style="height:100px;scroll-snap-align:start"' : 'style="height:100px"'}>row ${i}</div>`).join("")}</div>`;
 
-/** GitHub: a 2px opacity:0 fixed loader at the window's top, above the sticky bar. */
-const GITHUB_LIKE = `${head}<span style="position:fixed;top:0;left:0;right:0;height:2px;opacity:0;z-index:99;display:block"></span>
+/** GitHub: an opacity:0 fixed loader at the window's top, above the sticky bar (2px there; 4px here, so the probe hits it). */
+const GITHUB_LIKE = `${head}<span style="position:fixed;top:0;left:0;right:0;height:4px;opacity:0;z-index:99;display:block"></span>
 <div id="bar" style="position:sticky;top:0;height:48px;background:#333;z-index:1">bar</div>${filler(1500)}<div id="t" style="height:40px">target</div>${filler(1500)}`;
-/** A fractional layout above the target: scrollIntoView start leaves its top a fraction off 0 (MDN -0.11, GitHub -0.03). */
-const FRACTION = `${head}<div id="bar" style="position:sticky;top:0;height:60px;background:#333;z-index:1">bar</div>
+/**
+ * A fractional layout above the target: scrollIntoView start leaves its top a fraction above 0, as on MDN (-0.11) and
+ * GitHub (-0.03). Measured on mac: zoom 1.25 over 1500.4px puts it at -0.5; zoom 1 puts it at +0.39.
+ */
+const FRACTION = `${head}<style>html{zoom:1.25}</style><div id="bar" style="position:sticky;top:0;height:60px;background:#333;z-index:1">bar</div>
 <div style="height:1500.4px"></div><div id="t" style="height:40px">target</div>${filler(1500)}`;
 
 async function load(html: string) {
